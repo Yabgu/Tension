@@ -1,0 +1,49 @@
+TENSION ENGINE API CONTRACT
+===========================
+
+This document defines the contract between the Tension engine core (host) and 
+WASM modules (guests).
+
+HOST IMPORTS (functions modules can call)
+-----------------------------------------
+
+createBox(x: f32, y: f32, w: f32, h: f32) -> i32
+  Creates a rectangular entity at position (x, y) with size (w, h).
+  Returns entity ID on success, -1 on failure.
+
+moveEntity(id: i32, dx: f32, dy: f32) -> void
+  Moves entity with given ID by delta (dx, dy).
+  No-op if entity ID doesn't exist.
+
+log(ptr: i32, len: i32) -> void
+  Logs a UTF-8 string from WASM memory at ptr with length len.
+  Used for debugging and console output.
+
+time() -> f32
+  Returns current time in seconds since engine start.
+  Monotonic, suitable for delta time calculations.
+
+input(key: i32) -> bool
+  Returns true if the specified key is currently pressed.
+  Key codes follow SDL2 scancode constants.
+
+MODULE EXPORTS (functions modules must provide)
+-----------------------------------------------
+
+start() -> void
+  Called once when the module is loaded.
+  Use for initialization, creating entities, etc.
+
+update(dt: f32) -> void
+  Called every frame with delta time in seconds.
+  Contains the main game logic loop.
+
+MEMORY MODEL
+------------
+- WASM modules manage their own linear memory
+- String data passed via ptr/len pairs  
+- Host maintains entity state, modules work with IDs
+- No direct memory sharing between host and guest
+
+VERSION: 1.0
+COMPATIBILITY: Breaking changes increment major version

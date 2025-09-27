@@ -1,0 +1,27 @@
+# Build artifacts
+zig-cache/
+.zig-cache/
+zig-out/
+*.wasm
+*.wat
+scene.wasm
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+*.swp
+*.swo
+*~
+
+# IDE files
+.vscode/
+.idea/
+*.suo
+*.user
+
+# Temporary files
+/tmp/
+*.tmp
+*.log

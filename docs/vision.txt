@@ -1,0 +1,80 @@
+TENSION ENGINE VISION
+=====================
+
+ROADMAP
+-------
+
+Year 1: Foundation
+- Core runtime with SDL2 integration
+- WASM host with stable API
+- Hot-reload system working
+- 3+ demo modules showing capabilities
+- Documentation and contribution guides
+- First playable games built with Tension
+
+Year 2: Ecosystem Growth  
+- 10+ community-contributed modules
+- Package manager for WASM modules
+- Cross-platform distribution
+- Performance optimizations
+- Advanced graphics features
+- Developer tools and utilities
+
+Year 3: Maturity & Governance
+- 100+ modules in ecosystem
+- Community governance structure
+- Sustainable funding model ($5K+/month)
+- 1K+ GitHub stars
+- Conference talks and recognition
+- Mentorship programs for contributors
+
+IMPACT GOALS
+------------
+
+For Developers:
+- Fastest iteration cycle in game dev
+- Freedom from engine vendor lock-in
+- Learn transferable skills (WASM, native dev)
+- Build portfolio of reusable modules
+
+For the Industry:
+- Demonstrate viability of minimal tooling
+- Push back against bloated proprietary engines
+- Establish open standards for game modules
+- Foster innovation through constraints
+
+For the Community:
+- Create sustainable open source project
+- Build inclusive contributor community
+- Share knowledge through documentation
+- Mentor next generation of engine developers
+
+METRICS FOR SUCCESS
+-------------------
+
+Technical:
+- Sub-100ms hot-reload times
+- <10MB core runtime binary
+- 60+ FPS with complex scenes
+- Cross-platform compatibility
+
+Community:
+- 1000+ GitHub stars
+- 50+ contributors
+- 100+ modules published
+- 10+ games shipped commercially
+
+Financial:
+- $60K+ annual recurring donations
+- Self-sustaining core team
+- Transparent financial reporting
+- Fair compensation for maintainers
+
+LONG-TERM VISION
+----------------
+
+Tension becomes the "Linux of game engines" - a reliable, minimal,
+community-driven foundation that empowers creators without imposing
+artificial limitations or extracting rent. It should be the engine
+that developers reach for when they want full control and fast
+iteration without the baggage of commercial engines.

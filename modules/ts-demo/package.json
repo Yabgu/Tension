@@ -1,0 +1,21 @@
+{
+  "name": "tension-ts-demo",
+  "version": "1.0.0",
+  "description": "TypeScript/AssemblyScript demo module for Tension engine",
+  "main": "scene.ts",
+  "scripts": {
+    "build": "./build.sh",
+    "dev": "asc scene.ts --target debug --outFile scene.wasm --watch"
+  },
+  "devDependencies": {
+    "assemblyscript": "^0.27.0"
+  },
+  "keywords": [
+    "tension",
+    "wasm",
+    "assemblyscript",
+    "game-engine"
+  ],
+  "author": "Tension Contributors",
+  "license": "MIT"
+}

@@ -1,0 +1,24 @@
+# Technical Reasoning
+
+## Why Zig Core
+- Manual memory control, no hidden allocations.
+- Direct C interop (SDL2, OpenGL, OpenAL).
+- Less compiler friction than Rust, safer than C.
+
+## Why TypeScript (AssemblyScript) Modules
+- Familiar syntax for web-native devs.
+- Easy to compile to WASM.
+- Great for rapid prototyping and modding.
+
+## Why WASM
+- Language-agnostic: Rust, C, TS, Grain all possible.
+- Sandboxed execution.
+- Hot-reloadable modules.
+
+## Comparison
+| Feature | C++ | Rust | Zig |
+|---------|-----|------|-----|
+| Safety | Low | High | Medium |
+| Complexity | High | High | Low |
+| WASM Support | Manual | Excellent | Excellent |
+| Build Friction | High | High | Low |

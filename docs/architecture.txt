@@ -1,0 +1,98 @@
+TENSION ARCHITECTURE (HIGH-LEVEL)
+=================================
+
+Purpose
+-------
+Provide a brutally minimal, deterministic core that hosts hot‑reloadable, future‑proof modules compiled to WebAssembly. Everything exists to shorten the iteration loop without locking creators into a single language, editor, or proprietary stack.
+
+Essence of the Runtime Loop
+---------------------------
+1. Boot core systems (window, timing, input, render context).
+2. Load a WASM scene/module and (optionally) call `start`.
+3. Frame loop:
+   - Collect input (pure, observable state only).
+   - Advance simulation via `update(dt)` in the active module.
+   - Render host‑owned entities (data created via explicit host APIs).
+   - Detect and apply module hot‑reloads deterministically.
+4. Shut down cleanly (explicit teardown, no hidden globals).
+
+Layered Model
+-------------
+Core (Zig)
+- Owns memory boundaries, timing, event loop, and rendering primitives.
+- Exposes a narrow, explicit surface – no implicit object model or scripting VM baked in.
+
+WASM Host Boundary
+- Stable ABI (documented separately) providing small primitives: create/move entities, log, time, input.
+- Treats modules as pure(ish) logic + data sources; state that must persist across reloads is explicitly serialized.
+
+Modules (WASM, any language)
+- Provide `start()` (optional) and `update(dt)`.
+- Interact only through the stable import set; no privileged backdoors.
+- Are replaceable at runtime (hot‑reload) without redefining the host architecture.
+
+Principle Alignment
+-------------------
+Brutally Minimal: The host owns only what cannot be sensibly externalized (loop, memory ownership, minimal rendering + input). No editor, no monolithic scripting layer.
+
+Deterministic: Frame progression, timing, and reload boundaries are controlled. Any preserved state across a reload must be serialized through an explicit, documented path. Non-deterministic sources (clock, RNG) are seedable.
+
+Hot‑Reloadable: Reload swaps the module code while retaining approved state snapshots. Reload is a development feature that never compromises release determinism.
+
+Future‑Proof: WASM as the sole extension boundary; language choice remains open. ABI evolves via versioning, not ad‑hoc host inspection.
+
+Intentional Omissions
+---------------------
+- No bundled GUI editor or scene graph authoring tool.
+- No automatic global state resurrection without explicit serialization.
+- No proprietary asset or scripting formats.
+- No hidden scheduling or reflection-heavy runtime that obscures cost.
+
+Deterministic Reload Contract (Conceptual)
+-----------------------------------------
+1. Pre-reload: module may emit a snapshot (structured bytes / schema versioned).
+2. Host swaps module binary.
+3. New module optionally performs migration from prior snapshot.
+4. Resume loop with consistent timing baseline.
+
+Extension Surface (Conceptual Minimal Set)
+------------------------------------------
+Imports exposed to modules (stable names/types defined in the ABI doc):
+- createBox, moveEntity
+- log
+- time (monotonic seconds)
+- input (key state)
+
+Exports expected from modules:
+- start (optional)
+- update(dt)
+
+Evolving Without Bloat
+----------------------
+Additions must justify themselves against: does this shorten iteration while preserving determinism and openness? If not, prototype externally (module/tool) rather than inside core.
+
+Relationship to Other Docs
+--------------------------
+- Philosophy: This file operationalizes “Brutally Minimal / Deterministic / Hot‑Reloadable / Future‑Proof.”
+- API Contract: Holds concrete function signatures; this document stays abstract.
+- Vision: Architecture here is the foundation for the Year 1 goals (stable core + hot‑reload + demos).
+- Reasoning: Explains why Zig + WASM; this file shows how that manifests structurally.
+
+Guiding Heuristics
+------------------
+1. Prefer data + pure logic in modules; keep side effects concentrated in the host boundary.
+2. Keep the ABI small; remove or refactor before adding more.
+3. Make reload cost and timing explicit; never hide frame stalls.
+4. Everything observable is testable: deterministic seeds, fixed snapshots, replayable loops.
+5. Replaceable pieces > extensible monolith.
+
+Future Clarifications (to live in focused docs)
+----------------------------------------------
+- WASM ABI Versioning & Compatibility
+- Hot‑Reload Snapshot Format & Migration
+- Deterministic Mode / Replay Guidance
+- Governance & Contribution (separate policy)
+
+Summary
+-------
+The architecture is a thin host loop + stable WASM boundary. By design it resists feature creep: evolution happens through versioned ABI increments and external modules, not core expansion. This fulfills the engine’s intent: a lean, predictable foundation that accelerates experimentation without creating a new walled garden.
