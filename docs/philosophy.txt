@@ -9,24 +9,28 @@ Brutally Minimal
 - No unnecessary abstractions  
 - Keep the core tight and focused
 - "Do one thing well" Unix philosophy
+- Community tooling (CLI, IDE plugins, lightweight GUIs) is encouraged if it surfaces—never hides—the underlying system. We do not ship a bundled heavy editor.
 
 Deterministic
 - Consistent behavior across platforms
 - Reproducible builds and execution
 - Predictable performance characteristics
 - No hidden state or magic
+- Hot-reload and tooling must not weaken determinism of released artifacts. Preserved state uses documented, deterministic serialization; RNGs and clocks are seedable for replay.
 
 Hot-Reloadable  
 - Immediate feedback loop for developers
 - Watch files and reload automatically
 - Preserve game state during reloads
 - Fast iteration cycles
+- Primarily a development feature; production / release builds omit automatic state-preserving reloads unless explicitly opted in with documented guarantees.
 
 Future-Proof
 - Language-agnostic via WebAssembly
 - Portable across operating systems
 - Modular architecture allows evolution
 - Open standards, no vendor lock-in
+- Stable WASM plugin boundary with semantic versioning and migration policy to avoid fragmentation and lock-in to a single scripting model.
 
 ANTI-GOALS
 ----------
@@ -37,6 +41,7 @@ We explicitly reject:
 - Feature bloat and kitchen sink mentality
 - Proprietary formats and protocols
 - GUI editors that hide the underlying system
+	(Extension model centers on WASM plugins instead of a single privileged, bundled scripting language.)
 
 ENGINEERING VALUES
 ------------------
@@ -64,3 +69,12 @@ Community
 - Contributor-friendly codebase
 - Sustainable funding model
 - Knowledge sharing and mentorship
+- Funding and sponsorship must preserve open governance and avoid corporate capture via transparency, documented decision processes, and conflict-of-interest disclosure.
+
+POLICY STUBS (TO BE DOCUMENTED)
+-------------------------------
+The following focused policy docs will be added to keep philosophy enforced in practice:
+- Hot Reload Lifecycle: serialize → migrate → restore hooks; deterministic snapshot format.
+- WASM ABI & Versioning: semantic versioning, compatibility guarantees, deprecation / migration workflow.
+- Governance & Funding: maintainer roles, decision process, sponsorship transparency safeguards.
+- Onboarding & Examples: minimal guided tutorials complementing “source as documentation.”
