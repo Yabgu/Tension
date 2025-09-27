@@ -1,5 +1,6 @@
 # Build artifacts
 zig-cache/
+.zig-cache/
 zig-out/
 *.wasm
 *.wat
