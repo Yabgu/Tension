@@ -1,0 +1,66 @@
+TENSION ENGINE PHILOSOPHY
+=========================
+
+CORE PRINCIPLES
+---------------
+
+Brutally Minimal
+- No bloated GUI editor
+- No unnecessary abstractions  
+- Keep the core tight and focused
+- "Do one thing well" Unix philosophy
+
+Deterministic
+- Consistent behavior across platforms
+- Reproducible builds and execution
+- Predictable performance characteristics
+- No hidden state or magic
+
+Hot-Reloadable  
+- Immediate feedback loop for developers
+- Watch files and reload automatically
+- Preserve game state during reloads
+- Fast iteration cycles
+
+Future-Proof
+- Language-agnostic via WebAssembly
+- Portable across operating systems
+- Modular architecture allows evolution
+- Open standards, no vendor lock-in
+
+ANTI-GOALS
+----------
+
+We explicitly reject:
+- Monolithic scripting system lock-in
+- Corporate capture and control
+- Feature bloat and kitchen sink mentality
+- Proprietary formats and protocols
+- GUI editors that hide the underlying system
+
+ENGINEERING VALUES
+------------------
+
+Transparency
+- Source code is the documentation
+- No magic or hidden complexity
+- Clear separation of concerns
+- Explicit over implicit
+
+Performance
+- Optimize for fast iteration
+- Efficient hot-reload mechanisms
+- Minimal runtime overhead
+- Respect system resources
+
+Modularity
+- Clean interfaces between components
+- Easy to extend and modify
+- Plugin architecture via WASM
+- Composable systems
+
+Community
+- Open governance model
+- Contributor-friendly codebase
+- Sustainable funding model
+- Knowledge sharing and mentorship
