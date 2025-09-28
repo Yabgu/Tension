@@ -1,19 +1,103 @@
-#![no_std]
+// Use no_std only when compiling for wasm32 target. Allow normal std builds for host
+// so the crate can be built as part of the workspace.
+#![cfg_attr(target_arch = "wasm32", no_std)]
 
 /// Entity Spawner WASM Module
 /// 
 /// This module demonstrates the WASM ↔ native API contract.
 /// It spawns entities dynamically based on user input and time.
 
-// Use wee_alloc for smaller binary size
-#[cfg(feature = "wee_alloc")]
+// Use wee_alloc for smaller binary size when building for WASM
+#[cfg(all(feature = "wee_alloc", target_arch = "wasm32"))]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-// Panic handler for no_std
+// Panic handler for no_std when targeting wasm
+#[cfg(target_arch = "wasm32")]
 #[panic_handler]
 fn panic(_info: &core::panic::PanicInfo) -> ! {
     loop {}
+}
+
+// When building for native host (non-wasm), provide fallbacks for the imported
+// functions so the crate compiles as part of the workspace and is usable for
+// host-side testing.
+#[cfg(not(target_arch = "wasm32"))]
+mod host_stubs {
+    use std::ffi::CStr;
+    use std::os::raw::{c_char, c_float, c_int, c_longlong};
+
+    #[no_mangle]
+    pub extern "C" fn create_entity() -> u64 { 1 }
+
+    #[no_mangle]
+    pub extern "C" fn destroy_entity(_entity_id: u64) -> i32 { 1 }
+
+    #[no_mangle]
+    pub extern "C" fn entity_exists(_entity_id: u64) -> i32 { 1 }
+
+    #[no_mangle]
+    pub extern "C" fn add_transform(_entity_id: u64, _x: c_float, _y: c_float, _z: c_float) -> i32 { 1 }
+
+    #[no_mangle]
+    pub extern "C" fn get_transform_position(_entity_id: u64, out_x: *mut c_float, out_y: *mut c_float, out_z: *mut c_float) -> i32 {
+        unsafe {
+            if !out_x.is_null() { *out_x = 0.0 }
+            if !out_y.is_null() { *out_y = 0.0 }
+            if !out_z.is_null() { *out_z = 0.0 }
+        }
+        1
+    }
+
+    #[no_mangle]
+    pub extern "C" fn add_render_component(_entity_id: u64, _mesh_ptr: *const u8, _mesh_len: i32) -> i32 { 1 }
+
+    #[no_mangle]
+    pub extern "C" fn is_key_pressed(_key_ptr: *const u8, _key_len: i32) -> i32 { 0 }
+
+    #[no_mangle]
+    pub extern "C" fn get_mouse_position(out_x: *mut c_float, out_y: *mut c_float) -> i32 {
+        unsafe {
+            if !out_x.is_null() { *out_x = 640.0 }
+            if !out_y.is_null() { *out_y = 360.0 }
+        }
+        1
+    }
+
+    #[no_mangle]
+    pub extern "C" fn random_f32() -> f32 { 0.5 }
+
+    #[no_mangle]
+    pub extern "C" fn random_range_i32(min: i32, _max: i32) -> i32 { min }
+
+    #[no_mangle]
+    pub extern "C" fn get_delta_time() -> f64 { 1.0 / 60.0 }
+
+    #[no_mangle]
+    pub extern "C" fn get_total_time() -> f64 { 0.0 }
+
+    #[no_mangle]
+    pub extern "C" fn get_frame_count() -> u64 { 0 }
+
+    #[no_mangle]
+    pub extern "C" fn log_info(ptr: *const u8, len: i32) {
+        unsafe {
+            if ptr.is_null() || len <= 0 { return }
+            let slice = std::slice::from_raw_parts(ptr, len as usize);
+            if let Ok(s) = std::str::from_utf8(slice) {
+                println!("[wasm-stub info] {}", s);
+            }
+        }
+    }
+
+    #[no_mangle]
+    pub extern "C" fn log_warn(_ptr: *const u8, _len: i32) {}
+
+    #[no_mangle]
+    pub extern "C" fn log_error(_ptr: *const u8, _len: i32) {}
+
+    #[no_mangle]
+    pub extern "C" fn query_entities_in_radius(_cx: f32, _cy: f32, _cz: f32, _r: f32, _out: *mut u64, _max: i32) -> i32 { 0 }
 }
 
 // External functions provided by the engine (imports)

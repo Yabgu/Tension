@@ -23,3 +23,7 @@ default = ["wee_alloc"]
 [profile.release]
 panic = "abort"
 lto = true
+
+# Ensure dev builds also use abort panic strategy (required for no_std)
+[profile.dev]
+panic = "abort"
