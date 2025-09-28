@@ -1,0 +1,11 @@
+[package]
+name = "basic-demo"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tension-core = { path = "../../src/core" }
+tension-renderer = { path = "../../src/renderer" }
+tension-runtime = { path = "../../src/runtime" }
+anyhow = { workspace = true }
+tracing = { workspace = true }

@@ -1,0 +1,28 @@
+Functional Names
+These names focus on the toolset's core purpose and design principles.
+
+Nexus Framework: Suggests a central hub or point of connection for different systems, emphasizing the modular and interconnected nature of the toolset.
+
+Wasm Forge: This name highlights the key technology, WebAssembly (WASM), and the idea of "forging" or crafting game systems, appealing to a hands-on, creator-focused audience.
+
+Core Logic: A direct and honest name that positions the toolset as the essential, fundamental layer for building game logic, rejecting bloat in favor of pure functionality.
+
+Architect Engine: This name conveys a focus on systems and structure, suggesting that the toolset is for developers who want to architect their games from the ground up, rather than using pre-packaged solutions.
+
+Philosophical Names
+These names lean into the project's manifesto, highlighting its philosophy of honesty and systems-first design.
+
+Axiom Engine: An axiom is a self-evident truth, suggesting the toolset is built on fundamental, unshakeable principles—a perfect fit for a systems-first design.
+
+Praxis: From the Greek word for "practice" or "action," this name represents the application of theoretical knowledge into practical, creative work, resonating with developers who want to build, not just configure.
+
+Crucible Framework: A crucible is a severe test or a place where elements are forged together, reflecting the project's 'brutal systems-first design' and its appeal to developers who 'crave risk.'
+
+Evocative Names
+These names are more metaphorical and aim to spark curiosity and convey a sense of innovation and possibility.
+
+Mesa: A mesa is a flat-topped hill with steep sides, symbolizing a stable, foundational platform for building something truly unique and elevated.
+
+Canto: Meaning "to sing" or a section of a long poem, this name suggests that developers use the toolset to create their own unique, expressive "song" or story without limitations.
+
+Tesseract: This name, from a four-dimensional cube, evokes a sense of complexity and boundless potential, hinting at the toolset's ability to enable truly "unbounded creations" while also being a nod to a complex mathematical object.

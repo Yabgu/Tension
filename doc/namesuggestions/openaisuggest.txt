@@ -1,0 +1,82 @@
+Here’s a structured set of name suggestions, split into three categories to reflect different angles: **Functional** (clear and direct), **Philosophical** (reflecting the manifesto), and **Evocative** (more abstract but memorable). I’ve been critical about avoiding clichés and names that feel like marketing fluff.
+
+---
+
+### **Functional – Directly Reflecting Purpose**
+
+These focus on the *architecture* and *systems-first* nature.
+
+1. **Weld**
+
+   * Suggests forging separate parts into a strong whole, perfectly fitting the idea of replaceable modules being fused at runtime.
+
+2. **Spine**
+
+   * Implies a core structure holding everything together, emphasizing the native core as the backbone of the system.
+
+3. **Lattice**
+
+   * Reflects a network of interconnected, swappable systems while being clean, minimal, and architectural.
+
+4. **Forge**
+
+   * A space for creating raw, dangerous, unbounded things; appeals to developers craving novelty and risk.
+
+5. **Axle**
+
+   * The central rotating component that other systems connect to, symbolizing the toolset as a hub rather than a monolith.
+
+---
+
+### **Philosophical – Manifesto-Driven**
+
+These emphasize **authenticity, risk, and brutal honesty**.
+
+6. **Bareframe**
+
+   * Communicates minimalism and rejection of bloat, like a stripped-down skeleton ready to be built upon.
+
+7. **Truthplay**
+
+   * Suggests games built with radical transparency, reflecting the toolset’s honesty-first philosophy.
+
+8. **Brutalwork**
+
+   * A nod to “brutalism” in architecture and software design — raw, functional, and unpretentious.
+
+9. **Sovereign**
+
+   * Implies independence and full control, appealing to developers who want to escape corporate ecosystems.
+
+---
+
+### **Evocative – Abstract but Memorable**
+
+These are more brand-like while staying grounded.
+
+10. **Kairo** *(from Greek καιρός, meaning “the right moment”)*
+
+    * Suggests precision and timeliness, ideal for a toolset built for the future and WASM-native development.
+
+11. **Fracton**
+
+    * Inspired by “fractals” and “fraction,” evoking modularity and endless complexity emerging from simple rules.
+
+12. **Nexus** *(but **risky**, as it’s common)*
+
+    * Represents a point of connection and interaction, aligning with the modular system concept — though it may be too generic.
+
+13. **Zyra** *(invented word)*
+
+    * Short, sharp, and unique while feeling technical and futuristic without becoming buzzword-y.
+
+---
+
+### **Top Recommendations**
+
+* **Weld** – Simple, direct, and modular.
+* **Lattice** – Best for conveying systems-driven architecture.
+* **Brutalwork** – Bold and manifesto-driven, very distinct.
+* **Fracton** – Evocative and fits procedural generation themes.
+
+Would you like me to **vet the top candidates for trademarks and domain availability** to ensure they’re safe to use?

@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "outDir": "./build",
+    "sourceMap": true,
+    "optimize": true,
+    "target": "wasm32",
+    "lib": ["wasi"],
+    "imports": {
+      "env": {
+        "memory": "memory",
+        "abort": "abort"
+      }
+    }
+  },
+  "include": [
+    "./**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "**/*.spec.ts"
+  ]
+}

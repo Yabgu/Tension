@@ -1,0 +1,25 @@
+EVALUATION (WASM / Tension Fork)
+
+- Strengths:
+  • Future-proof: aligned with WASM’s rise as universal runtime.
+  • Unique positioning: not another Unity/Unreal clone.
+  • Modding-first: hot-reloadable modules attract community.
+  • Safety: sandboxed execution reduces catastrophic crashes.
+
+- Weaknesses:
+  • Complexity: building both engine and runtime.
+  • Performance: WASM boundary crossings add overhead.
+  • Tooling: debugging, profiling, and ecosystem still immature.
+  • Adoption: developers may resist unfamiliar workflow.
+
+- Opportunities:
+  • Attract “forbidden lamp” devs craving novelty and risk.
+  • Build a platform, not just an engine.
+  • Enable cross-platform ubiquity with minimal friction.
+  • Position engine as the first serious WASM-native game framework.
+
+- Threats:
+  • WASM standards may shift, breaking assumptions.
+  • Performance gaps may limit adoption for high-end games.
+  • Ecosystem fragmentation (different runtimes, APIs).
+  • Burnout risk: ambition may outpace execution.

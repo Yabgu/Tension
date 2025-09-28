@@ -1,0 +1,12 @@
+[package]
+name = "tension-renderer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tension-core = { path = "../core" }
+sdl2 = { workspace = true }
+glam = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }

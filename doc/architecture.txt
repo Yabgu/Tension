@@ -1,0 +1,20 @@
+ARCHITECTURE (WASM / Tension Fork)
+
+- Native Core Responsibilities:
+  • Rendering (SDL2 baseline, Metal/Vulkan backends).
+  • Physics (Box2D or custom).
+  • Audio (FMOD or OpenAL).
+  • Memory management and scheduling.
+
+- WASM Module API Surface:
+  • Entity creation and manipulation.
+  • Input events.
+  • Procedural generation hooks.
+  • AI and gameplay logic.
+  • UI behaviors.
+
+- Determinism Guarantees:
+  • Fixed timestep loop.
+  • Seeded RNG exposed to WASM modules.
+  • Strict API boundaries: no direct system calls from WASM.
+  • Replay system: identical results from identical seeds.

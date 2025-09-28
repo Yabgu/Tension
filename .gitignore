@@ -1,0 +1,53 @@
+# Ignore build artifacts, editor metadata, and common generated files
+
+# macOS
+.DS_Store
+
+# Thumbnails
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Editor/IDE
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+*.swp
+*~
+
+# Rust/Cargo
+/target/
+**/target/
+
+# Node / frontend
+**/node_modules/
+**/dist/
+**/pkg/
+
+# AssemblyScript / WASM artifacts in subprojects (demo builds)
+demos/**/modules/
+modules/**/build/
+modules/**/target/
+demos/**/build/
+demos/**/assembly/build/
+assembly/build/
+
+# Generic wasm artifacts (build outputs) — scoped to build directories above where possible
+**/build/*.wasm
+**/build/*.wat
+**/build/*.map
+
+# Temp, env
+.env
+.env.local
+*.tmp
+*.bak
+
+# Ignore OS-specific files
+ehthumbs.db
+Icon?

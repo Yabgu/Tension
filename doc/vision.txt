@@ -1,0 +1,16 @@
+VISION (WASM / Tension Fork)
+
+- Core Philosophy:
+  The engine is not just code, but a runtime. Native core is skeletal; all gameplay logic lives in WebAssembly modules.
+  WASM is the universal runtime: portable, sandboxed, future-proof.
+
+- Long-Term Goal:
+  A hybrid engine where rendering, physics, and audio are native, but everything else (AI, gameplay, UI, procedural generation) is WASM-driven.
+  Hot-reloadable modules, modding-first design, and deterministic execution.
+
+- Values:
+  • Portability across desktop, mobile, and browser.
+  • Sandbox safety and deterministic behavior.
+  • Modularity: every system is replaceable.
+  • Future-proofing over short-term convenience.
+  • Brutal honesty: no fluff, no editor bloat, only systems that matter.
