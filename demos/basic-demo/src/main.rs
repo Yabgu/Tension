@@ -104,7 +104,7 @@ fn create_demo_world(world: &mut World) -> anyhow::Result<()> {
             
             let bg_object = world.create_entity();
             world.add_component(bg_object, Transform {
-                position: Vec3::new(x as f32 * 6.0, -1.0, z as f32 * 6.0),
+                position: Vec3::new(x as f32 * 3.0, -1.0, z as f32 * 3.0),
                 rotation: Quat::IDENTITY,
                 scale: Vec3::splat(0.5),
                 parent: None,

@@ -1,0 +1,14 @@
+{
+  "name": "tension-ts-wasm-demo",
+  "version": "0.1.0",
+  "description": "TypeScript WASM Demo for Tension Engine - Game logic in AssemblyScript compiled to WASM",
+  "scripts": {
+    "build": "npx asc assembly/index.ts --outFile modules/entity_spawner.wasm --optimize --runtime stub --noAssert",
+    "build:debug": "npx asc assembly/index.ts --outFile modules/entity_spawner.wasm --runtime stub --noAssert --debug",
+    "clean": "rm -rf modules/*.wasm build/*"
+  },
+  "devDependencies": {
+    "assemblyscript": "latest"
+  },
+  "dependencies": {}
+}

@@ -9,6 +9,7 @@ pub struct HostBindings;
 impl HostBindings {
     /// Bind all host functions to the linker
     pub fn add_host_functions(linker: &mut Linker<()>) -> anyhow::Result<()> {
+        Self::bind_runtime_functions(linker)?;
         Self::bind_entity_functions(linker)?;
         Self::bind_component_functions(linker)?;
         Self::bind_input_functions(linker)?;
@@ -16,6 +17,18 @@ impl HostBindings {
         Self::bind_time_functions(linker)?;
         Self::bind_logging_functions(linker)?;
         Self::bind_query_functions(linker)?;
+        Ok(())
+    }
+
+    /// Runtime functions needed by AssemblyScript
+    fn bind_runtime_functions(linker: &mut Linker<()>) -> anyhow::Result<()> {
+        // AssemblyScript abort function
+        linker.func_wrap("env", "abort",
+            |_caller: Caller<'_, ()>, msg: i32, file: i32, line: i32, column: i32| {
+                tracing::error!("WASM module aborted at {}:{} - message ptr: {}", line, column, msg);
+            }
+        )?;
+        
         Ok(())
     }
     

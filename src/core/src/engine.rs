@@ -67,9 +67,6 @@ impl Engine {
             self.seed_systems(self.config.master_seed);
         }
         
-        // Create test entities for demonstration
-        self.create_demo_entities();
-        
         while self.running {
             self.frame_count += 1;
             self.time_manager.start_frame();
@@ -149,44 +146,6 @@ impl Engine {
             self.input_manager.poll_events();
         }
         Ok(())
-    }
-    
-    /// Create demo entities for testing
-    fn create_demo_entities(&mut self) {
-        use crate::api::{Transform, RenderComponent};
-        use glam::Vec3;
-        
-        tracing::info!("Creating demo entities");
-        
-        // Create a few test entities
-        for i in 0..5 {
-            let entity = self.world.create_entity();
-            
-            let transform = Transform {
-                position: Vec3::new(i as f32 * 2.0 - 4.0, 0.0, 0.0),
-                rotation: glam::Quat::IDENTITY,
-                scale: Vec3::ONE,
-                parent: None,
-            };
-            
-            let render_component = RenderComponent {
-                mesh_id: if i % 2 == 0 { "cube".to_string() } else { "sphere".to_string() },
-                material_id: match i % 3 {
-                    0 => "red".to_string(),
-                    1 => "green".to_string(),
-                    _ => "blue".to_string(),
-                },
-                visible: true,
-                layer: 0,
-            };
-            
-            self.world.add_component(entity, transform);
-            self.world.add_component(entity, render_component);
-            
-            tracing::debug!("Created demo entity {:?} at position ({}, 0, 0)", entity, i as f32 * 2.0 - 4.0);
-        }
-        
-        tracing::info!("Created {} demo entities", 5);
     }
     
     /// Seed all deterministic systems

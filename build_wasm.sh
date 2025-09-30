@@ -13,11 +13,12 @@ fi
 
 # Build entity-spawner module
 echo "Building entity-spawner module..."
-cd modules/entity-spawner
+pushd modules/entity-spawner
 cargo build --target wasm32-unknown-unknown --release
 
 # Copy WASM file to demo directory
-cd ../..
+popd
+
 mkdir -p demos/basic-demo/modules
 cp target/wasm32-unknown-unknown/release/entity_spawner.wasm demos/basic-demo/modules/
 echo "✅ entity-spawner.wasm copied to demo directory"

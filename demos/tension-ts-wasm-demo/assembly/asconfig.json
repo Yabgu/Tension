@@ -1,0 +1,22 @@
+{
+  "targets": {
+    "release": {
+      "outFile": "modules/entity_spawner.wasm",
+      "textFile": "build/entity_spawner.wat",
+      "sourceMap": false,
+      "optimize": true,
+      "shrinkLevel": 2,
+      "converge": false,
+      "noAssert": true
+    },
+    "debug": {
+      "outFile": "modules/entity_spawner.wasm",
+      "textFile": "build/entity_spawner.wat",
+      "sourceMap": true,
+      "debug": true
+    }
+  },
+  "options": {
+    "runtime": "none"
+  }
+}

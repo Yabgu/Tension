@@ -22,7 +22,7 @@ fn main() -> anyhow::Result<()> {
 
     // Parse command-line arguments
     let args: Vec<String> = env::args().collect();
-    let demo_name = args.get(1).map(String::as_str).unwrap_or("basic-demo");
+    let demo_name = args.get(1).map(String::as_str).expect("Demo name argument required");
 
     // Engine configuration
     let mut engine_config = EngineConfig::default();

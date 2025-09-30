@@ -145,10 +145,12 @@ name = "basic-demo"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "glam",
  "tension-core",
  "tension-renderer",
  "tension-runtime",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

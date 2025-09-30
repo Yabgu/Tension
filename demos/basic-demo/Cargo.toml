@@ -9,3 +9,5 @@ tension-renderer = { path = "../../src/renderer" }
 tension-runtime = { path = "../../src/runtime" }
 anyhow = { workspace = true }
 tracing = { workspace = true }
+glam = { workspace = true }
+"tracing-subscriber" = { workspace = true }
