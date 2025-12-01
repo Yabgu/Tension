@@ -1,0 +1,17 @@
+[package]
+name = "frankenstein-runtime" 
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+frankenstein-core = { path = "../core" }
+wasmtime = { workspace = true }
+wasmtime-wasi = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+notify = { workspace = true }
+tokio = { workspace = true }
+glam = { workspace = true }

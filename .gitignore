@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target
+**/target
+# Node/wasm build artifacts
+/node_modules
+/dist
+/build
+# Editor files
+/.vscode
+/.idea
+# Logs and temporary files
+*.log
+*.tmp
+.DS_Store

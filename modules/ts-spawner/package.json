@@ -1,0 +1,11 @@
+{
+  "name": "ts-spawner",
+  "version": "0.1.0",
+  "description": "AssemblyScript (TypeScript) WASM module for Frankenstein Engine demo",
+  "scripts": {
+  "build": "npx asc assembly/index.ts -b build/ts_spawner.wasm --optimize --runtime none --noAssert"
+  },
+  "devDependencies": {
+    "assemblyscript": "latest"
+  }
+}

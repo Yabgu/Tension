@@ -1,0 +1,16 @@
+PHILOSOPHY (WASM / Frankenstein Fork)
+
+- Ethos:
+  Playing safe is the real trap. Risk is survival.
+  This engine exists to embrace the forbidden lamp: dangerous, alluring, future-proof.
+
+- Contrast with SDL2 Fork:
+  • SDL2 fork: control, tradition, legacy.
+  • WASM fork: modularity, portability, revolution.
+
+- Manifesto:
+  • No editor bloat, no hand-holding.
+  • Brutal systems-first design.
+  • Every module replaceable, every system sandboxed.
+  • Engine as platform, not product.
+  • Attract the devs who crave risk, novelty, and danger.

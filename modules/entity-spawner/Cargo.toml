@@ -1,0 +1,25 @@
+[package]
+name = "entity-spawner"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+# No external dependencies - pure WASM module
+# We'll define our own minimal API bindings
+libm = "0.2"
+
+[dependencies.wee_alloc]
+version = "0.4"
+optional = true
+
+# Use wee_alloc as the global allocator for smaller WASM binary
+[features]
+default = ["wee_alloc"]
+
+# Build for WASM target with no std
+[profile.release]
+panic = "abort"
+lto = true

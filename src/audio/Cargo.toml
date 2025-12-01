@@ -1,0 +1,10 @@
+[package]
+name = "frankenstein-audio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+frankenstein-core = { path = "../core" }
+rodio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

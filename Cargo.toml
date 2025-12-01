@@ -1,0 +1,77 @@
+[package]
+name = "frankenstein-engine"
+version = "0.1.0"
+edition = "2021"
+authors = ["Akagi Systems <forbidden@lamp.dev>"]
+description = "Hybrid game engine: Native core + WASM modules. Playing safe is the real trap."
+license = "MIT OR Apache-2.0"
+
+[workspace]
+members = [
+    "src/core",
+    "src/runtime", 
+    "src/renderer",
+    "src/physics",
+    "src/audio",
+    "modules/entity-spawner",
+    "demos/basic-demo"
+]
+resolver = "2"
+
+[dependencies]
+frankenstein-core = { path = "src/core" }
+frankenstein-runtime = { path = "src/runtime" }
+frankenstein-renderer = { path = "src/renderer" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+sdl2 = { workspace = true }
+
+[workspace.dependencies]
+# Core engine dependencies
+tokio = { version = "1.35", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
+
+# WASM runtime
+wasmtime = "15.0"
+wasmtime-wasi = "15.0"
+
+# Math and utilities
+glam = { version = "0.24", features = ["serde"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+dashmap = "5.5"
+
+# Rendering (SDL2 baseline)
+sdl2 = { version = "0.35" }
+
+# Physics (Box2D wrapper) - using available version
+box2d-rs = "0.0.4"
+
+# Audio
+rodio = "0.17"
+
+# Input handling
+winit = "0.28"
+
+# Hot reload utilities
+notify = "6.1"
+
+[profile.dev]
+opt-level = 1
+debug = true
+
+[profile.release]
+opt-level = 3
+debug = false
+lto = true
+codegen-units = 1
+panic = "abort"
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true

@@ -1,0 +1,24 @@
+{
+  "name": "frankenstein-ts-wasm-demo",
+  "version": "1.0.0",
+  "description": "AssemblyScript project for the Frankenstein engine demo in TypeScript.",
+  "main": "index.js",
+  "scripts": {
+    "build": "asc index.ts -b ../build/frankenstein.wasm -t ../build/frankenstein.wat",
+    "watch": "asc index.ts -b ../build/frankenstein.wasm -t ../build/frankenstein.wat --watch"
+  },
+  "dependencies": {
+    "assemblyscript": "^0.19.0"
+  },
+  "devDependencies": {
+    "typescript": "^4.0.0"
+  },
+  "keywords": [
+    "frankenstein",
+    "wasm",
+    "assemblyscript",
+    "typescript"
+  ],
+  "author": "",
+  "license": "MIT"
+}

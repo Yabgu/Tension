@@ -1,0 +1,23 @@
+I am looking for a name for a new game development toolset, not a traditional game engine. My project is a hybrid engine with a native core for rendering, physics, and audio (using SDL2, Metal/Vulkan, Box2D, FMOD/OpenAL), and a WebAssembly (WASM) runtime where all gameplay logic, AI, UI, and procedural generation live.
+
+The core philosophy is to reject 'editor bloat' and 'hand-holding' in favor of a 'brutal systems-first design.' Every system is sandboxed and every module is replaceable. The toolset is designed to be a 'platform, not a product,' and its purpose is to enable truly unique and 'unbounded' creations. My project is positioned as the first serious WASM-native game framework.
+
+I want a name that is the philosophical opposite of a bad corporate rebrand, like Facebook changing to Meta. I want to avoid names that are:
+
+Already taken: The name 'Unbounded' is a bad choice because it's a registered trademark of a major video game.
+
+Hollow or PR-driven: I want to avoid names that sound like an attempt to escape a bad reputation or are just a meaningless buzzword.
+
+Misleading: The name should reflect that this is a minimalist, systems-driven toolset, not a bloated, all-in-one game engine.
+
+The name should convey some of the following concepts:
+
+Modularity & Connection: The idea of connecting disparate parts into a cohesive whole.
+
+Future-Proofing & Innovation: A name that suggests it's on the cutting edge and built for the future.
+
+Systems & Architecture: A name that hints at its minimalist, systems-driven design.
+
+Authenticity & Honesty: A name that reflects the manifesto's 'brutal honesty' and appeals to developers who 'crave risk, novelty, and danger.'
+
+Please provide a list of 5-10 original name suggestions, organized by category (e.g., Functional, Philosophical, Evocative). For each name, provide a one-sentence explanation of why it fits the project's vision. Ensure the names are unique and not already widely used in the game development space.

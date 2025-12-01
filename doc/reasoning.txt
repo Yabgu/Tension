@@ -1,0 +1,24 @@
+REASONING (WASM / Frankenstein Fork)
+
+- Why WASM:
+  • Portability: runs everywhere (browser, desktop, mobile, embedded).
+  • Sandbox: safe execution, controlled API surface.
+  • Ecosystem: growing support beyond browsers (Wasmtime, Wasmer, WAMR).
+  • Future-proof: positioned as the universal bytecode.
+
+- Trade-offs:
+  • Performance overhead compared to native C++.
+  • Tooling is immature; debugging is harder.
+  • Integration complexity: bridging native core and WASM modules.
+  • Risk of overreach: scope creep if too much is pushed into WASM too soon.
+
+- Strategy:
+  1. Start with WASM scripting for gameplay logic.
+  2. Harden runtime: determinism, API boundaries, hot-reload.
+  3. Expand into full Frankenstein mode: native core minimal, WASM modules everywhere.
+
+- AI Role:
+  • Scaffold bindings and boilerplate.
+  • Generate module APIs and serialization helpers.
+  • Automate procedural generation algorithms.
+  • Leave architectural boundaries and determinism rules to human oversight.

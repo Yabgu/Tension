@@ -1,0 +1,11 @@
+[package]
+name = "frankenstein-physics"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+frankenstein-core = { path = "../core" }
+box2d-rs = { workspace = true }
+glam = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
