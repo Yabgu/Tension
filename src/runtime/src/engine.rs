@@ -374,7 +374,6 @@ impl tension_core::WasmRuntimeTrait for WasmEngine {
             
             // Check if the module has an update function
             if instance.has_export("update") {
-                tracing::debug!("Executing module {} with delta_time: {}", name, delta_time);
                 // Call the module's update using the ModuleInstance helper
                 let _ = instance.call_update(delta_time);
             } else {

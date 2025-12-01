@@ -1,3 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Build only: compile the AssemblyScript into WASM
+cd "$(dirname "$0")"
+
+echo "[demo] Building AssemblyScript WASM module..."
+npm run build
+
+echo "[demo] Build finished. Output: modules/entity_spawner.wasm"
 #!/bin/bash
 
 # Build script for TypeScript WASM Demo

@@ -58,6 +58,7 @@ export function init(): void {
 // Update function called each frame
 export function update(deltaTime: f64): void {
     spawnTimer += deltaTime;
+    logString(`update called at time ${spawnTimer}`);
 }
 
 // Handle input events
