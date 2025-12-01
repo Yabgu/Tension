@@ -5,6 +5,9 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 echo "[demo] Building AssemblyScript WASM module..."
+echo "[demo] Generating host bindings for AssemblyScript..."
+node generate_host_decls.js
+echo "[demo] Building AssemblyScript WASM module..."
 npm run build
 
 echo "[demo] Build finished. Output: modules/entity_spawner.wasm"
@@ -29,7 +32,8 @@ if [ ! -d "node_modules" ]; then
 fi
 
 # Build the WASM module
-echo "🔨 Compiling AssemblyScript to WASM..."
+echo "🔨 Generating host bindings and compiling AssemblyScript to WASM..."
+node generate_host_decls.js || { echo "Failed to generate host bindings"; exit 1; }
 npm run build
 
 # Check if the WASM file was created

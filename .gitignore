@@ -48,6 +48,10 @@ assembly/build/
 *.tmp
 *.bak
 
+# Generated host bindings (from cargo build or generator)
+demos/tension-ts-wasm-demo/host_bindings.json
+demos/tension-ts-wasm-demo/assembly/host.ts
+
 # Ignore OS-specific files
 ehthumbs.db
 Icon?

@@ -1,36 +1,10 @@
 // AssemblyScript WASM module for Tension Engine Demo
 // Based on the entity-spawner module but written in AssemblyScript
 
-// Import host functions provided by the Tension engine
-@external("env", "spawn_entity")
-declare function create_entity(): u64;
-
-@external("engine", "destroy_entity")
-declare function destroy_entity(entity_id: u64): i32;
-
-@external("engine", "entity_exists")
-declare function entity_exists(entity_id: u64): i32;
-
-@external("engine", "add_transform")
-declare function add_transform(entity_id: u64, pos_x: f32, pos_y: f32, pos_z: f32): i32;
-
-@external("engine", "add_render_component")
-declare function add_render_component(entity_id: u64, mesh_ptr: i32, mesh_len: i32): i32;
-
-@external("engine", "random_f32")
-declare function random_f32(): f32;
-
-@external("engine", "random_range_i32")
-declare function random_range_i32(min: i32, max: i32): i32;
-
-@external("engine", "get_delta_time")
-declare function get_delta_time(): f64;
-
-@external("engine", "get_total_time")
-declare function get_total_time(): f64;
-
-@external("engine", "log_info")
-declare function log_info(msg_ptr: i32, msg_len: i32): void;
+// Host bindings are generated automatically into `assembly/host.ts`
+// Run `node ../generate_host_decls.js` (or the demo `build.sh`) to regenerate.
+// The generated file provides ambient declarations and thin wrappers so
+// the rest of this module can call `create_entity()`, `add_transform()`, etc.
 
 // Module state
 let spawnTimer: f64 = 0.0;
