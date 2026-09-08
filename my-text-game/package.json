@@ -1,0 +1,16 @@
+{
+  "name": "my-text-game",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug"
+  },
+  "dependencies": {
+    "tension-framework": "file:../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}

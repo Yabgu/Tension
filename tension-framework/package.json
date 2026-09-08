@@ -1,0 +1,26 @@
+{
+  "name": "tension-framework",
+  "version": "0.1.0",
+  "description": "Guest SDK for TensionCore: std:tension/io ABI bindings and game abstractions (AssemblyScript + TypeScript)",
+  "type": "module",
+  "ascMain": "assembly/index.ts",
+  "main": "index.ts",
+  "types": "index.ts",
+  "exports": {
+    ".": {
+      "types": "./index.ts",
+      "default": "./index.ts"
+    }
+  },
+  "files": [
+    "assembly",
+    "index.ts"
+  ],
+  "keywords": [
+    "tension",
+    "wasm",
+    "assemblyscript",
+    "text-game"
+  ],
+  "license": "MIT"
+}
