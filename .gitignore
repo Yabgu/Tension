@@ -1,0 +1,21 @@
+.codewhale
+
+# Local scratch space (no /tmp — keep temp artifacts here)
+.tmp/
+
+# Rust
+target/
+Cargo.lock.orig
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Build output
+build/
+dist/
+*.wasm.map
+
+# Editor / OS
+*.swp
+.DS_Store
