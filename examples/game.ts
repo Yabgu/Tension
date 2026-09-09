@@ -1,4 +1,4 @@
-// my-text-game — first TensionCore demo.
+// examples/game.ts — first TensionCore demo.
 //
 // Compiled by `asc` (AssemblyScript) to a wasm module that imports the
 // std:tension/io ABI from the host. The game never touches the terminal; it
