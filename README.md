@@ -28,11 +28,9 @@ surface — one ABI, two languages to write the game in.
   imports, loads `game.wasm`, and calls its exported `_start_game()` (falling
   back to `_start`). Run: `tension-core <game.wasm> [args...]`.
 - **`tension-framework/`** — the guest SDK. `assembly/` holds the real
-  AssemblyScript bindings + `Room`/`GameNode`/`Engine` through which the game
-  imports `std:tension/io`. `index.ts` re-exports the same surface as typed
-  TypeScript.
-- **`my-text-game/`** — examples: `game.ts` (arguments + prints + read-line)
-  and `example-engine.ts` (a small world graph with rooms and exits).
+  AssemblyScript bindings through which the game imports `std:tension/io`.
+  `index.ts` re-exports the same surface as typed TypeScript.
+- **`examples/`** — example games: `game.ts` (arguments + prints + read-line).
 
 ## The `tension::io` ABI
 
@@ -55,8 +53,8 @@ The AssemblyScript `stub` runtime also imports `env.abort` to signal a trap
 cargo build --manifest-path tension-core/Cargo.toml
 
 # 2. compile the game (TypeScript -> wasm). The framework is linked into
-#    my-text-game/node_modules (see package.json / the `file:` dependency).
-cd my-text-game
+#    examples/node_modules (see package.json / the `file:` dependency).
+cd examples
 npx asc game.ts -o build/game.wasm --runtime stub --target release
 
 # 3. run it (args after the wasm are the game's arguments)
@@ -70,11 +68,19 @@ Or use the demo runner:
 ./demo.sh
 ```
 
+Or, from inside `examples/`, build and run via npm (assumes `tension-core` is
+built first):
+
+```sh
+cd examples
+npm start
+```
+
 ## Scope & notes
 
 - There is **no `tension-cli`** — compilation is plain `asc`; the "Tension API"
   is the `std:tension/io` ABI, not an npm CLI package. A package script in
-  `my-text-game/package.json` wraps the `asc` invocation.
+  `examples/package.json` wraps the `asc` invocation.
 - The ABI is **core wasm imports** (not the Component Model / WIT) for alpha
   reliability; a WIT adapter can be layered later without changing the contract
   shape.
@@ -86,7 +92,5 @@ Or use the demo runner:
 - `tension-core` builds and links the ABI; the guest imports exactly
   `tension::io.{print,arg_count,arg,read_line}` and exports `_start_game` +
   `memory`.
-- `my-text-game` round-trips args (including multi-word args) and read-line
+- `examples/game.ts` round-trips args (including multi-word args) and read-line
   through the ABI.
-- `example-engine` navigates rooms, rejects invalid exits without crashing, and
-  exits cleanly on EOF.

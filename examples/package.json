@@ -1,11 +1,12 @@
 {
-  "name": "my-text-game",
+  "name": "tension-examples",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug"
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug",
+    "start": "npm run build && ../tension-core/target/debug/tension-core build/game.wasm"
   },
   "dependencies": {
     "tension-framework": "file:../tension-framework"
