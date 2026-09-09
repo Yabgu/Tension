@@ -13,4 +13,3 @@
  */
 
 export { print, readLine, argCount, arg } from "./assembly/io";
-export { Room, GameNode, Engine } from "./assembly/engine";
