@@ -1,20 +1,19 @@
 {
   "name": "tension-framework",
   "version": "0.1.0",
-  "description": "Guest SDK for TensionCore: std:tension/io ABI bindings and game abstractions (AssemblyScript + TypeScript)",
+  "description": "Guest SDK for TensionCore: tension::io ABI bindings and game abstractions (AssemblyScript + TypeScript)",
   "type": "module",
   "ascMain": "assembly/index.ts",
-  "main": "index.ts",
-  "types": "index.ts",
+  "types": "index.d.ts",
   "exports": {
     ".": {
-      "types": "./index.ts",
-      "default": "./index.ts"
+      "types": "./index.d.ts"
     }
   },
   "files": [
     "assembly",
-    "index.ts"
+    "index.ts",
+    "index.d.ts"
   ],
   "keywords": [
     "tension",
