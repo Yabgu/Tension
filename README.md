@@ -1,9 +1,9 @@
 # TensionCore (alpha)
 
 A **command-line interpreter** for text games. `tension-core` loads a guest
-`game.wasm` into a Wasmtime VM and supplies the **`std:tension/io`** host ABI.
-The game authors logic in **TypeScript** (compiled to wasm with AssemblyScript's
-`asc`) and compiles *against* that ABI; the interpreter implements it.
+`game.wasm` into a Wasmtime VM and supplies the **`tension::io`** host ABI.
+The game authors logic in **AssemblyScript** (a TypeScript dialect, compiled
+to wasm with `asc`) and compiles *against* that ABI; the interpreter implements it.
 
 The split is the point: **the host owns the terminal, the game owns the world.**
 That makes `tension-core` a language runtime, not a linker.
@@ -11,37 +11,56 @@ That makes `tension-core` a language runtime, not a linker.
 ## Architecture
 
 ```
-[ BUILD ]  game (TypeScript)  --asc-->  build/game.wasm     (imports tension::io)
-[ RUN   ]  tension-core game.wasm [args...]                 (exports tension::io)
+[ BUILD ]  game (AssemblyScript)  --asc-->  build/game.wasm     (imports tension::io)
+[ RUN   ]  tension-core game.wasm [args...]                 (host: implements tension::io)
                  │
                  ▼
-            Wasmtime VM + std:tension/io host API
+            Wasmtime VM + tension::io host API
 ```
 
-Because strings cross wasm as raw bytes, the framework re-exports the same API
-from both an **AssemblyScript ("wasmscript")** surface and a **TypeScript**
-surface — one ABI, two languages to write the game in.
+Because strings cross wasm as raw bytes, games are written in
+**AssemblyScript** (a TypeScript dialect) and compiled by `asc`; the package
+ships `index.d.ts` so TS-aware tooling types game sources, while `index.ts`
+is the AssemblyScript barrel `asc` resolves as the package entry. There is no
+second, runnable surface.
 
 ## Components
 
 - **`tension-core/`** — the Rust host (wasmtime). Registers the `tension::io`
   imports, loads `game.wasm`, and calls its exported `_start_game()` (falling
   back to `_start`). Run: `tension-core <game.wasm> [args...]`.
-- **`tension-framework/`** — the guest SDK. `assembly/` holds the real
-  AssemblyScript bindings through which the game imports `std:tension/io`.
-  `index.ts` re-exports the same surface as typed TypeScript.
+- **`tension-framework/`** — the guest SDK. `assembly/` holds the
+  AssemblyScript bindings through which the game imports `tension::io`.
+  `index.d.ts` declares the same surface so TS-aware tooling can type game
+  sources.
 - **`examples/`** — example games: `game.ts` (arguments + prints + read-line).
 
 ## The `tension::io` ABI
+
+`tension::io` is a core-wasm import module name — the guest imports it, the
+host implements it; it is not a WIT/Component-Model interface id.
 
 Strings pass as UTF-8 bytes with an explicit pointer + length:
 
 | Import | Signature | Behavior |
 | --- | --- | --- |
-| `print` | `(ptr: i32, len: i32)` | write `len` bytes at `ptr` to stdout |
-| `read_line` | `(ptr: i32, cap: i32) -> i32` | read a line into the buffer, return byte count, `-1` on EOF |
+| `print` | `(ptr: i32, len: i32)` | write exactly `len` bytes at `ptr` to stdout (no newline appended) |
+| `read_line` | `(ptr: i32, cap: i32) -> i32` | read one line (terminator stripped); `cap <= 0` probes the length without consuming, `cap > 0` consumes the line, writes `min(cap, len)` bytes, and returns `len`; `-1` on EOF, `0` for an empty line |
 | `arg_count` | `() -> i32` | number of extra CLI args passed to the game |
 | `arg` | `(i: i32, ptr: i32, cap: i32) -> i32` | write arg `i` as UTF-8, return byte count (`-1` OOB); `cap == 0` probes size |
+
+The host's `print` is a byte sink; the SDK owns the line terminator —
+`print` appends it, `write` does not.
+
+`read_line` is the ABI's first stateful call: a `cap <= 0` probe parks the
+line in host-side `pending_line` and is idempotent until the line is
+consumed — repeated probes return the same length and never advance stdin.
+A probed-but-never-consumed line stays buffered for the store's lifetime
+(there is no discard API); future host designs (multi-guest, VM resume)
+must account for per-guest pending-line state. Because the framework probes
+the exact size before consuming, the guest never requests a partial line,
+so UTF-8 codepoint-boundary truncation cannot occur in the decode path — a
+consequence of the contract, not a separate fix.
 
 The AssemblyScript `stub` runtime also imports `env.abort` to signal a trap
 (panic); the host decodes and prints the AS message, then exits non-zero.
@@ -79,7 +98,7 @@ npm start
 ## Scope & notes
 
 - There is **no `tension-cli`** — compilation is plain `asc`; the "Tension API"
-  is the `std:tension/io` ABI, not an npm CLI package. A package script in
+  is the `tension::io` ABI, not an npm CLI package. A package script in
   `examples/package.json` wraps the `asc` invocation.
 - The ABI is **core wasm imports** (not the Component Model / WIT) for alpha
   reliability; a WIT adapter can be layered later without changing the contract

@@ -1,25 +1,40 @@
 //! TensionCore interpreter
 //!
 //! `tension-core` is a command-line *interpreter*: it loads a guest `game.wasm`
-//! and supplies the `std:tension/io` host ABI. The guest owns the game logic;
+//! and supplies the `tension::io` host ABI. The guest owns the game logic;
 //! the host owns the terminal. That split is what makes it a language runtime
 //! rather than a linker: the game compiles *against* the ABI, tension-core
 //! *implements* it.
 //!
 //! Host ABI (module `tension::io`):
-//!   print(ptr, len)          write `len` UTF-8 bytes at `ptr` to stdout
-//!   read_line(ptr, cap)      read one line -> UTF-8 bytes into buffer, return
-//!                            byte count (or -1 on EOF)
+//!   print(ptr, len)          write exactly `len` UTF-8 bytes at `ptr` to
+//!                            stdout (no newline appended — the SDK owns the
+//!                            line terminator)
+//!   read_line(ptr, cap)      read one line (terminator stripped):
+//!                            cap <= 0 probes the next line's byte length
+//!                            without consuming it; cap > 0 consumes the
+//!                            line, writes min(cap, len) bytes, and returns
+//!                            len. -1 on EOF, 0 for an empty line.
 //!   arg_count() -> i32       number of extra CLI args passed to the game
 //!   arg(i, ptr, cap) -> i32  write arg i as UTF-8 into buffer, return byte
 //!                            count (or -1 if out of range). cap==0 probes size.
+//!
+//! `read_line` is the ABI's first stateful call: a probe parks the pending
+//! line in `HostState::pending_line`. Probes are idempotent until the line
+//! is consumed (repeated probes return the same length and never advance
+//! stdin), and a probed-but-never-consumed line stays buffered for the
+//! store's lifetime — there is no discard API. Future host designs
+//! (multi-guest, VM resume) must account for per-guest pending-line state.
 
 use std::io::{self, BufRead, Write};
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
-/// State stored alongside the Wasm store: the game's CLI arguments.
+/// State stored alongside the Wasm store: the game's CLI arguments, plus the
+/// line parked by a `read_line` probe (`cap <= 0`) and not yet consumed.
+/// `read_line` is the ABI's only stateful call; see the doc header.
 struct HostState {
     args: Vec<String>,
+    pending_line: Option<Vec<u8>>,
 }
 
 /// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
@@ -64,10 +79,10 @@ fn main() -> anyhow::Result<()> {
     let engine = Engine::default();
     let module = Module::from_file(&engine, &wasm_path)?;
 
-    let mut store = Store::new(&engine, HostState { args });
+    let mut store = Store::new(&engine, HostState { args, pending_line: None });
     let mut linker: Linker<HostState> = Linker::new(&engine);
 
-    // std:tension/io ABI -----------------------------------------------------
+    // tension::io ABI -----------------------------------------------------
     // AS `stub` runtime traps through `env.abort`(msg_ptr, file_ptr, line, col).
     linker.func_wrap(
         "env",
@@ -103,16 +118,40 @@ fn main() -> anyhow::Result<()> {
         "tension::io",
         "read_line",
         |mut caller: Caller<'_, HostState>, ptr: i32, cap: i32| -> i32 {
-            let mut line = String::new();
-            let n = io::stdin().lock().read_line(&mut line).unwrap_or(0);
-            if n == 0 {
-                return -1; // EOF
+            // Ensure a line is pending: read from stdin if nothing is
+            // buffered. EOF with nothing pending means no line is available.
+            {
+                let state = caller.data_mut();
+                if state.pending_line.is_none() {
+                    let mut line = String::new();
+                    let n = io::stdin().lock().read_line(&mut line).unwrap_or(0);
+                    if n == 0 {
+                        return -1; // EOF, nothing pending
+                    }
+                    while line.ends_with('\n') || line.ends_with('\r') {
+                        line.pop();
+                    }
+                    state.pending_line = Some(line.into_bytes());
+                }
             }
-            while line.ends_with('\n') || line.ends_with('\r') {
-                line.pop();
+            // Probe (cap <= 0): return the pending line's length without
+            // consuming it. Probes are idempotent until a consuming call.
+            if cap <= 0 {
+                let state = caller.data();
+                return state
+                    .pending_line
+                    .as_ref()
+                    .expect("pending_line ensured above")
+                    .len() as i32;
             }
-            let bytes = line.as_bytes();
-            let to_write = (bytes.len() as i32).min(cap.max(0)) as usize;
+            // Consume (cap > 0): take the line, write min(cap, len) bytes
+            // (clamped to guest memory, same pattern as `arg`), return len.
+            let line = caller
+                .data_mut()
+                .pending_line
+                .take()
+                .expect("pending_line ensured above");
+            let to_write = line.len().min(cap as usize);
             if to_write > 0 {
                 let mem = caller
                     .get_export("memory")
@@ -122,9 +161,9 @@ fn main() -> anyhow::Result<()> {
                 let start = ptr as usize;
                 let start = start.min(data.len());
                 let end = (start + to_write).min(data.len());
-                data[start..end].copy_from_slice(&bytes[..(end - start)]);
+                data[start..end].copy_from_slice(&line[..(end - start)]);
             }
-            bytes.len() as i32
+            line.len() as i32
         },
     )?;
 

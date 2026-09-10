@@ -2,7 +2,7 @@
 name = "tension-core"
 version = "0.1.0"
 edition = "2021"
-description = "TensionCore interpreter: loads a guest game.wasm and supplies the std:tension/io host ABI"
+description = "TensionCore interpreter: loads a guest game.wasm and supplies the tension::io host ABI"
 
 [[bin]]
 name = "tension-core"
