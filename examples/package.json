@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug",
-    "start": "npm run build && ../tension-core/target/debug/tension-core build/game.wasm"
+    "build": "asc io/game.ts -o io/build/game.wasm --runtime stub --target release",
+    "build:debug": "asc io/game.ts -o io/build/game.wasm --runtime stub --target debug",
+    "build:audio": "asc audio/demo.ts -o audio/build/demo.wasm --runtime stub --target release",
+    "start": "npm run build && ../tension-core/target/debug/tension-core io/build/game.wasm",
+    "start:audio": "npm run build:audio && ../tension-core/target/debug/tension-core audio/build/demo.wasm"
   },
   "dependencies": {
     "tension-framework": "file:../tension-framework"
