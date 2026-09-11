@@ -13,9 +13,15 @@ if [ ! -x examples/node_modules/.bin/asc ]; then
   ( cd examples && npm install )
 fi
 
-echo "==> building examples/game.ts (game.wasm)"
-( cd examples && ./node_modules/.bin/asc game.ts -o build/game.wasm --runtime stub --target release )
+echo "==> building examples/io/game.ts (game.wasm)"
+( cd examples && ./node_modules/.bin/asc io/game.ts -o io/build/game.wasm --runtime stub --target release )
 
-echo "==> running the game"
+echo "==> running the io example"
 printf 'hello from the terminal\n' \
-  | "$HOST" examples/build/game.wasm alpha beta gamma
+  | "$HOST" examples/io/build/game.wasm alpha beta gamma
+
+echo "==> building examples/audio/demo.ts (demo.wasm)"
+( cd examples && ./node_modules/.bin/asc audio/demo.ts -o audio/build/demo.wasm --runtime stub --target release )
+
+echo "==> running the audio demo (stderr shows the [tension:audio] ABI trace)"
+"$HOST" examples/audio/build/demo.wasm

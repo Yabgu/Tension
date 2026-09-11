@@ -33,7 +33,9 @@ second, runnable surface.
   AssemblyScript bindings through which the game imports `tension::io`.
   `index.d.ts` declares the same surface so TS-aware tooling can type game
   sources.
-- **`examples/`** — example games: `game.ts` (arguments + prints + read-line).
+- **`examples/`** — one folder per example: `io/` (arguments + prints +
+  read-line, `game.ts`) and `audio/` (guest-synthesised PCM playback,
+  `demo.ts`).
 
 ## The `tension::io` ABI
 
@@ -71,14 +73,20 @@ The AssemblyScript `stub` runtime also imports `env.abort` to signal a trap
 # 1. build the interpreter
 cargo build --manifest-path tension-core/Cargo.toml
 
-# 2. compile the game (TypeScript -> wasm). The framework is linked into
-#    examples/node_modules (see package.json / the `file:` dependency).
+# 2. compile the game (AssemblyScript -> wasm). The framework is linked
+#    into examples/node_modules (see package.json / the `file:` dependency).
 cd examples
-npx asc game.ts -o build/game.wasm --runtime stub --target release
+npx asc io/game.ts -o io/build/game.wasm --runtime stub --target release
 
 # 3. run it (args after the wasm are the game's arguments)
 printf 'hello\n' \
-  | ../tension-core/target/debug/tension-core build/game.wasm alpha beta gamma
+  | ../tension-core/target/debug/tension-core io/build/game.wasm alpha beta gamma
+
+# 4. the audio demo (generates a sine + square in the guest and plays them
+#    through the system device; a `--no-default-features` build uses the
+#    headless adapter and renders the session to tension-audio.wav instead)
+npx asc audio/demo.ts -o audio/build/demo.wasm --runtime stub --target release
+../tension-core/target/debug/tension-core audio/build/demo.wasm
 ```
 
 Or use the demo runner:
@@ -92,7 +100,8 @@ built first):
 
 ```sh
 cd examples
-npm start
+npm start           # io example (build + run)
+npm run start:audio # audio example (build + run)
 ```
 
 ## Scope & notes
@@ -111,5 +120,6 @@ npm start
 - `tension-core` builds and links the ABI; the guest imports exactly
   `tension::io.{print,arg_count,arg,read_line}` and exports `_start_game` +
   `memory`.
-- `examples/game.ts` round-trips args (including multi-word args) and read-line
-  through the ABI.
+- `examples/io/game.ts` round-trips args (including multi-word args) and read-line
+  through the ABI; `examples/audio/demo.ts` synthesises sine + square PCM in
+  the guest and plays it through the system device (cpal).
