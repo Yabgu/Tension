@@ -29,12 +29,28 @@
 use std::io::{self, BufRead, Write};
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+mod audio;
+
+/// The adapter the CLI uses. The default build (feature `audio`) plays
+/// through the system device; `--no-default-features` falls back to the
+/// headless WAV adapter (the contract reference and test adapter).
+#[cfg(feature = "audio")]
+fn default_adapter() -> Box<dyn audio::AudioAdapter> {
+    Box::new(audio::real::RealAdapter::new())
+}
+
+#[cfg(not(feature = "audio"))]
+fn default_adapter() -> Box<dyn audio::AudioAdapter> {
+    Box::new(audio::headless::HeadlessAdapter::new())
+}
+
 /// State stored alongside the Wasm store: the game's CLI arguments, plus the
 /// line parked by a `read_line` probe (`cap <= 0`) and not yet consumed.
 /// `read_line` is the ABI's only stateful call; see the doc header.
 struct HostState {
     args: Vec<String>,
     pending_line: Option<Vec<u8>>,
+    audio: audio::AudioSession,
 }
 
 /// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
@@ -79,7 +95,14 @@ fn main() -> anyhow::Result<()> {
     let engine = Engine::default();
     let module = Module::from_file(&engine, &wasm_path)?;
 
-    let mut store = Store::new(&engine, HostState { args, pending_line: None });
+    let mut store = Store::new(
+        &engine,
+        HostState {
+            args,
+            pending_line: None,
+            audio: audio::AudioSession::new(default_adapter()),
+        },
+    );
     let mut linker: Linker<HostState> = Linker::new(&engine);
 
     // tension::io ABI -----------------------------------------------------
@@ -203,6 +226,9 @@ fn main() -> anyhow::Result<()> {
             need as i32
         },
     )?;
+
+    // tension::audio ABI --------------------------------------------------
+    audio::link_audio(&mut linker)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
 

@@ -16,6 +16,9 @@ build/
 dist/
 *.wasm.map
 
+# Headless audio adapter render output
+tension-audio.wav
+
 # Editor / OS
 *.swp
 .DS_Store
