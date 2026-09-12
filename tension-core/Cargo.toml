@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 description = "TensionCore interpreter: loads a guest game.wasm and supplies the tension::io host ABI"
 
+[features]
+default = ["audio"]
+audio = ["dep:cpal"]
+
 [[bin]]
 name = "tension-core"
 path = "src/main.rs"
@@ -11,3 +15,5 @@ path = "src/main.rs"
 [dependencies]
 wasmtime = "=24.0.13"
 anyhow = "1.0.104"
+cpal = { version = "0.18.2", optional = true }
+arc-swap = "1.7"
