@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-io",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: CLI arguments, printing and read-line over the tension::io ABI",
+  "scripts": {
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug",
+    "run": "printf 'hello from the terminal\\n' | ../../tension-core/target/debug/tension-core build/game.wasm alpha beta gamma",
+    "start": "npm run build && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}

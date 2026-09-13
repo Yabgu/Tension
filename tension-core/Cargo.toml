@@ -7,6 +7,9 @@ description = "TensionCore interpreter: loads a guest game.wasm and supplies the
 [features]
 default = ["audio"]
 audio = ["dep:cpal"]
+# In-process llama.cpp. NOT default: it turns on a ~2 min vendored C++ build
+# (needs cmake + g++). Without it, `ai` falls back to the deterministic stub.
+ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
 
 [[bin]]
 name = "tension-core"
@@ -17,3 +20,7 @@ wasmtime = "=24.0.13"
 anyhow = "1.0.104"
 cpal = { version = "0.18.2", optional = true }
 arc-swap = "1.7"
+llama-cpp-2 = { version = "0.1.156", optional = true }
+# `token_to_piece` takes an `encoding_rs::Decoder` and llama-cpp-2 does not
+# re-export it, so the real adapter needs it directly (behind `ai`).
+encoding_rs = { version = "0.8.35", optional = true }

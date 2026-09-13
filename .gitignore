@@ -16,6 +16,9 @@ build/
 dist/
 *.wasm.map
 
+# Model weights (examples expect these to be fetched/copied locally)
+*.gguf
+
 # Headless audio adapter render output
 tension-audio.wav
 
