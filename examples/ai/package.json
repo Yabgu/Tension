@@ -1,0 +1,21 @@
+{
+  "name": "tension-example-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: an interactive chat session over the tension::ai ABI",
+  "scripts": {
+    "build": "asc story.ts -o build/story.wasm --runtime stub --target release",
+    "build:debug": "asc story.ts -o build/story.wasm --runtime stub --target debug",
+    "fetch-model": "bash prepare.sh",
+    "postinstall": "bash prepare.sh",
+    "run": "bash prepare.sh && printf 'hello there\\n/quit\\n' | ../../tension-core/target/debug/tension-core build/story.wasm ${MODEL:-models/Phi-3-mini-4k-instruct-q4.gguf}",
+    "start": "npm run build && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
