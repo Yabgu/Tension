@@ -146,9 +146,15 @@ loading and how long it took, the ready session with its context size, refused
 configs, template fallbacks and generation errors. The per-call trace of every
 ABI verb is **off by default**, because a guest draining a reply polls
 `session_state` / `session_read` in a tight loop — millions of calls over a
-single generation — and tracing those buries the event lines (and llama.cpp's
-own model-loading output) under hundreds of megabytes. Set
-`TENSION_AI_TRACE=1` for the full per-call stream.
+single generation — and tracing those buries the event lines under hundreds of
+megabytes. Set `TENSION_AI_TRACE=1` for the full per-call stream.
+
+llama.cpp's own logging is **silenced at backend init**, so stderr carries this
+host's events and nothing else. One process-global callback serves the library
+and ggml alike (`llama_log_set` hands the same callback to `ggml_log_set`),
+which is why the model loader's per-tensor dump and its sampler warnings no
+longer land there. `TENSION_AI_LLAMA_LOG=1` turns them back on when a load
+misbehaves.
 
 ### v1 scope
 
@@ -256,3 +262,6 @@ cd examples/ai    && npm start  # ai example (fetches models/Phi-3-mini-4k-instr
   `session <n> ready (...; ctx=<n>)`. The per-call ABI trace is opt-in
   (`TENSION_AI_TRACE=1`), so by default a guest's poll loop cannot bury those
   lines.
+- llama.cpp's own logging is silenced at backend init, so a real session's
+  stderr carries only those `[tension:ai]` lines; `TENSION_AI_LLAMA_LOG=1`
+  brings the loader dump back when a model misbehaves.
