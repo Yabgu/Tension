@@ -53,13 +53,32 @@ fn role_name(role: i32) -> Option<&'static str> {
     }
 }
 
+/// Whether llama.cpp's own stderr logging stays on (`TENSION_AI_LLAMA_LOG`).
+/// Read at backend init, the only moment the hook can be installed.
+fn llama_logs_enabled() -> bool {
+    matches!(
+        std::env::var("TENSION_AI_LLAMA_LOG").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
 /// llama.cpp's backend is process-global and `init` fails if called twice, so
 /// it is initialized once and the *result* is cached (no panic on failure).
 fn backend() -> Result<&'static LlamaBackend, String> {
     static BACKEND: OnceLock<Result<LlamaBackend, String>> = OnceLock::new();
     BACKEND
         .get_or_init(|| {
-            LlamaBackend::init().map_err(|e| format!("llama backend init failed: {e}"))
+            let mut backend =
+                LlamaBackend::init().map_err(|e| format!("llama backend init failed: {e}"))?;
+            // llama.cpp logs through one process-global callback -- llama_log_set
+            // hands the same one to ggml_log_set -- so the library's own output
+            // (the loader's per-tensor dump, sampler warnings) would otherwise
+            // share stderr with this host's `[tension:ai]` event lines. Silence
+            // it here, the one moment the hook can be installed.
+            if !llama_logs_enabled() {
+                backend.void_logs();
+            }
+            Ok(backend)
         })
         .as_ref()
         .map_err(|e| e.clone())

@@ -9,7 +9,7 @@
     "build:debug": "asc story.ts -o build/story.wasm --runtime stub --target debug",
     "fetch-model": "bash prepare.sh",
     "postinstall": "bash prepare.sh",
-    "run": "bash prepare.sh && printf 'hello there\\n/quit\\n' | ../../tension-core/target/debug/tension-core build/story.wasm ${MODEL:-models/Phi-3-mini-4k-instruct-q4.gguf}",
+    "run": "bash prepare.sh && ../../tension-core/target/debug/tension-core build/story.wasm ${MODEL:-models/Phi-3-mini-4k-instruct-q4.gguf}",
     "start": "npm run build && npm run run"
   },
   "dependencies": {
