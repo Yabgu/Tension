@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-audio",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: guest-synthesised PCM playback over the tension::audio ABI",
+  "scripts": {
+    "build": "asc demo.ts -o build/demo.wasm --runtime stub --target release",
+    "build:debug": "asc demo.ts -o build/demo.wasm --runtime stub --target debug",
+    "run": "../../tension-core/target/debug/tension-core build/demo.wasm",
+    "start": "npm run build && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}

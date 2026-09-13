@@ -50,10 +50,16 @@ export function print(text: string): void {
 export function readLine(): string | null {
   const need = hostReadLine(0, 0); // probe: non-consuming size query
   if (need < 0) return null; // EOF
-  if (need == 0) return ""; // empty line
-  const buf = new ArrayBuffer(need);
-  const n = hostReadLine(changetype<usize>(buf), need);
-  return n < 0 ? null : String.UTF8.decodeUnsafe(changetype<usize>(buf), n);
+  // Always follow the probe with a *consuming* call. An empty line probes as
+  // 0, and the probe never consumes, so returning early here would leave the
+  // line parked in the host forever: every later readLine would see the same
+  // 0 and stdin would never advance. cap > 0 selects the consuming path, and
+  // for an empty line it writes min(cap, 0) == 0 bytes, so the 1-byte buffer
+  // below is only there to make the call a consuming one.
+  const buf = new ArrayBuffer(need > 0 ? need : 1);
+  const n = hostReadLine(changetype<usize>(buf), need > 0 ? need : 1);
+  if (n < 0) return null;
+  return n > 0 ? String.UTF8.decodeUnsafe(changetype<usize>(buf), n) : "";
 }
 
 /** Number of extra CLI arguments passed to the game. */
