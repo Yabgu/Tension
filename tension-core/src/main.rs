@@ -29,7 +29,21 @@
 use std::io::{self, BufRead, Write};
 use wasmtime::{Caller, Engine, Linker, Module, Store};
 
+mod ai;
 mod audio;
+
+/// The AI adapter the CLI uses. Feature `ai` selects the real in-process
+/// llama.cpp adapter; otherwise the deterministic headless stub (the
+/// contract reference and the test adapter).
+#[cfg(feature = "ai")]
+fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::llama::LlamaAdapter::new())
+}
+
+#[cfg(not(feature = "ai"))]
+fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::stub::StubAdapter::new())
+}
 
 /// The adapter the CLI uses. The default build (feature `audio`) plays
 /// through the system device; `--no-default-features` falls back to the
@@ -51,6 +65,7 @@ struct HostState {
     args: Vec<String>,
     pending_line: Option<Vec<u8>>,
     audio: audio::AudioSession,
+    ai: ai::AiSession,
 }
 
 /// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
@@ -101,6 +116,7 @@ fn main() -> anyhow::Result<()> {
             args,
             pending_line: None,
             audio: audio::AudioSession::new(default_adapter()),
+            ai: ai::AiSession::new(default_ai_adapter()),
         },
     );
     let mut linker: Linker<HostState> = Linker::new(&engine);
@@ -229,6 +245,9 @@ fn main() -> anyhow::Result<()> {
 
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
+
+    // tension::ai ABI -----------------------------------------------------
+    ai::link_ai(&mut linker)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
 
