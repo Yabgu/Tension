@@ -279,9 +279,9 @@ pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> AugmentResult {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
 
-    use super::source_map::{parse_mappings, parse_source_map, vlq};
+    use super::source_map::{parse_mappings, parse_source_map, vlq, B64};
     use super::wasm::{Layout, Reader, ValType};
     use super::*;
 
@@ -309,6 +309,31 @@ mod tests {
         len_prefixed(&mut body, name.as_bytes());
         body.extend_from_slice(payload);
         section(0, &body)
+    }
+
+    /// A `sourceMappingURL` custom section whose payload is a wasm string.
+    fn url_section(url: &str) -> Vec<u8> {
+        let mut payload = u(url.len() as u64);
+        payload.extend_from_slice(url.as_bytes());
+        custom("sourceMappingURL", &payload)
+    }
+
+    /// Base64 VLQ encoding, the inverse of `source_map::vlq`.
+    fn vlq_encode(v: i64) -> String {
+        let mut u = if v < 0 { ((-v) << 1) | 1 } else { v << 1 } as u64;
+        let mut s = String::new();
+        loop {
+            let mut d = (u & 31) as u8;
+            u >>= 5;
+            if u != 0 {
+                d |= 32;
+            }
+            s.push(B64[d as usize] as char);
+            if u == 0 {
+                break;
+            }
+        }
+        s
     }
 
     /// A module shaped like a guest: one import, one defined function, a name.
@@ -513,6 +538,156 @@ mod tests {
         wasm.extend(custom(".debug_info", &[0, 0, 0, 0]));
         wasm.extend(custom(".debug_line", &[0, 0, 0, 0]));
         assert!(has_debug_sections(&wasm), "both sections together fully describe the guest");
+    }
+
+    #[test]
+    fn augment_synthesizes_when_only_one_debug_section_exists() {
+        let dir = std::env::temp_dir().join(format!("tension-aug-partial-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut wasm = synthetic_guest();
+        wasm.extend(custom(".debug_line", &[0, 0, 0, 0])); // partial DWARF
+        wasm.extend(url_section("./partial.wasm.map"));
+        std::fs::write(dir.join("partial.wasm"), &wasm).unwrap();
+        std::fs::write(
+            dir.join("partial.wasm.map"),
+            r#"{"version":3,"sources":["game.ts"],"mappings":"AAAA"}"#,
+        )
+        .unwrap();
+        let out = augment(&dir.join("partial.wasm"), &[]);
+        assert!(
+            matches!(out, AugmentResult::Augmented(_)),
+            "a lone .debug_line must not skip synthesis"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn augment_leaves_a_fully_described_guest_alone() {
+        let dir = std::env::temp_dir().join(format!("tension-aug-full-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut wasm = synthetic_guest();
+        wasm.extend(custom(".debug_info", &[0, 0, 0, 0]));
+        wasm.extend(custom(".debug_line", &[0, 0, 0, 0]));
+        wasm.extend(url_section("./full.wasm.map"));
+        std::fs::write(dir.join("full.wasm"), &wasm).unwrap();
+        std::fs::write(
+            dir.join("full.wasm.map"),
+            r#"{"version":3,"sources":["game.ts"],"mappings":"AAAA"}"#,
+        )
+        .unwrap();
+        let out = augment(&dir.join("full.wasm"), &[]);
+        assert!(
+            matches!(
+                out,
+                AugmentResult::Unchanged("guest already carries DWARF; leaving it alone")
+            ),
+            ".debug_info + .debug_line must skip synthesis"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn source_map_addresses_outside_the_code_section_are_dropped() {
+        let wasm = synthetic_guest();
+        let layout = Layout::parse(&wasm).unwrap();
+        let start = layout.code_payload_start as i64;
+        // Two 4-field segments: payload-relative 2 (source line 5) inside the
+        // code section, and payload-relative 100 far beyond it. The second
+        // must be dropped, not remapped onto a bogus in-range address.
+        let mappings = format!(
+            "{}AIA,{}AAA",
+            vlq_encode(start + 2),
+            vlq_encode(100 - 2),
+        );
+        let map = parse_source_map(&format!(r#"{{"sources":["game.ts"],"mappings":"{mappings}"}}"#)).unwrap();
+        let (out, stats) = synthesize(&wasm, &map, &[], Path::new("game.wasm")).unwrap();
+        assert_eq!(stats.rows, 1, "only the in-range address becomes a line row");
+        assert_eq!(stats.dropped, 1, "the out-of-range address is dropped, not remapped");
+
+        // The line program records source line 5 at payload address 2:
+        // set_address 2, advance_line +4 (sleb), copy, end_sequence.
+        let line = custom_payload(&out, ".debug_line");
+        let seq = [0x00, 0x05, 0x02, 0x02, 0x00, 0x00, 0x00, 0x03, 0x04, 0x01, 0x00, 0x01, 0x01];
+        assert!(
+            line.windows(seq.len()).any(|w| w == seq.as_slice()),
+            "line program records source line 5 at payload address 2"
+        );
+        let bogus = [0x00, 0x05, 0x02, 0x64, 0x00, 0x00, 0x00]; // set_address 100
+        assert!(
+            !line.windows(bogus.len()).any(|w| w == bogus.as_slice()),
+            "no sequence starts at the dropped address"
+        );
+    }
+
+    #[test]
+    fn local_indices_are_not_offset_by_imported_functions() {
+        let mut wasm = vec![0x00, b'a', b's', b'm', 0x01, 0x00, 0x00, 0x00];
+
+        // `(i32) -> ()` as type 0.
+        let mut types = u(1);
+        types.push(0x60);
+        types.push(1);
+        types.push(0x7f);
+        types.push(0);
+        wasm.extend(section(1, &types));
+
+        // Two imported functions occupy indices 0 and 1.
+        let mut imports = u(2);
+        len_prefixed(&mut imports, b"env");
+        len_prefixed(&mut imports, b"abort");
+        imports.push(0x00);
+        imports.extend(u(0));
+        len_prefixed(&mut imports, b"env");
+        len_prefixed(&mut imports, b"trace");
+        imports.push(0x00);
+        imports.extend(u(0));
+        wasm.extend(section(2, &imports));
+
+        let mut funcs = u(1);
+        funcs.extend(u(0));
+        wasm.extend(section(3, &funcs));
+
+        // Body: one declared `i32` local, then `end`.
+        let mut body = u(1);
+        body.push(1);
+        body.push(0x7f);
+        body.push(0x0b);
+        let mut code = u(1);
+        code.extend(u(body.len() as u64));
+        code.extend_from_slice(&body);
+        wasm.extend(section(10, &code));
+
+        // The defined function is index 2; its locals are named by their own
+        // indices, which start at 0 regardless of the imports.
+        let mut fn_names = u(1);
+        fn_names.extend(u(2));
+        len_prefixed(&mut fn_names, b"game/f");
+        let mut loc_names = u(1);
+        loc_names.extend(u(2));
+        loc_names.push(2);
+        loc_names.extend(u(0));
+        len_prefixed(&mut loc_names, b"arg");
+        loc_names.extend(u(1));
+        len_prefixed(&mut loc_names, b"tmp");
+        let mut name_sec = u(4);
+        name_sec.extend_from_slice(b"name");
+        name_sec.push(1);
+        len_prefixed(&mut name_sec, &fn_names);
+        name_sec.push(2);
+        len_prefixed(&mut name_sec, &loc_names);
+        wasm.extend(section(0, &name_sec));
+
+        let layout = Layout::parse(&wasm).unwrap();
+        assert_eq!(layout.imported_funcs, 2);
+        assert_eq!(layout.name_for_body(0), Some("game/f"));
+        assert_eq!(
+            layout.locals_for_body(0),
+            vec![
+                ("arg".to_string(), 0, Some(ValType::I32)),
+                ("tmp".to_string(), 1, Some(ValType::I32)),
+            ],
+            "locals start at index 0, not at imported_funcs + index"
+        );
     }
 
     #[test]
