@@ -129,10 +129,40 @@ pub fn synthesize(
         .collect();
     let line = append_line(&comp_dir, &map.sources, &rows, &ranges);
     let info = append_info(module_name, &comp_dir, &functions, &locals);
+
+    // The compile unit's DW_AT_ranges. Entries are intervals between
+    // consecutive line rows (plus each body's leading and trailing edges),
+    // not whole bodies. Why: cranelift emits a function's natives in an
+    // order that is not monotonic in wasm addresses — constants are
+    // scheduled after their calls, loop bodies land after the exit path —
+    // so wasmtime's transform splits one body's address space into several
+    // internal ranges. Its range translation only sees the ranges active at
+    // the entry's start and end addresses; a whole-body entry hides any
+    // internal range that begins and ends strictly inside it, and the
+    // translated CU ranges come out with holes. lldb drops line rows whose
+    // address falls in such a hole (`unable to resolve a line table file
+    // address back to a compile unit`) and stepping degrades to assembly.
+    // Interval-sized entries keep every native instruction inside the entry
+    // carrying its own source offset, so the translated union is hole-free.
     let mut range_list = Vec::new();
-    for (lo, hi) in &ranges {
-        range_list.extend_from_slice(&lo.to_le_bytes());
-        range_list.extend_from_slice(&hi.to_le_bytes());
+    for (start, end) in &layout.bodies {
+        if end <= start {
+            continue;
+        }
+        let lo = (*start - layout.code_payload_start) as u32;
+        let hi = (*end - layout.code_payload_start) as u32;
+        let mut prev = lo;
+        for row in rows.iter().filter(|r| r.addr >= lo && r.addr < hi) {
+            if row.addr > prev {
+                range_list.extend_from_slice(&prev.to_le_bytes());
+                range_list.extend_from_slice(&row.addr.to_le_bytes());
+            }
+            prev = row.addr;
+        }
+        if hi > prev {
+            range_list.extend_from_slice(&prev.to_le_bytes());
+            range_list.extend_from_slice(&hi.to_le_bytes());
+        }
     }
     range_list.extend_from_slice(&[0u8; 8]); // end-of-list marker
 
@@ -617,6 +647,38 @@ mod tests {
             !line.windows(bogus.len()).any(|w| w == bogus.as_slice()),
             "no sequence starts at the dropped address"
         );
+    }
+
+    #[test]
+    fn cu_ranges_split_bodies_at_row_boundaries() {
+        let wasm = synthetic_guest();
+        let layout = Layout::parse(&wasm).unwrap();
+        let start = layout.code_payload_start as i64;
+        // Two rows inside the single body (payload-relative [2, 4)): addresses
+        // 2 and 3, source lines 5 and 6.
+        let mappings = format!("{}AIA,{}AIA", vlq_encode(start + 2), vlq_encode(1));
+        let map = parse_source_map(&format!(r#"{{"sources":["game.ts"],"mappings":"{mappings}"}}"#))
+            .unwrap();
+        let (out, stats) = synthesize(&wasm, &map, &[], Path::new("game.wasm")).unwrap();
+        assert_eq!(stats.rows, 2);
+
+        // The CU range list is one entry per row interval plus the end
+        // marker — never the whole-body [2, 4) entry. wasmtime's transform
+        // translates each entry by the address-map ranges visible at its
+        // start and end; with a whole-body entry, a non-monotonic native
+        // layout (scheduled constants, loop bodies after the exit path)
+        // leaves holes and lldb drops the rows inside them.
+        let ranges = custom_payload(&out, ".debug_ranges");
+        let entry = |a: u32, b: u32| {
+            let mut e = a.to_le_bytes().to_vec();
+            e.extend_from_slice(&b.to_le_bytes());
+            e
+        };
+        let mut expect = Vec::new();
+        expect.extend_from_slice(&entry(2, 3));
+        expect.extend_from_slice(&entry(3, 4));
+        expect.extend_from_slice(&[0u8; 8]);
+        assert_eq!(ranges, expect, "CU ranges are [2,3),[3,4), not [2,4)");
     }
 
     #[test]
