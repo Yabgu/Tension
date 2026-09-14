@@ -1,0 +1,45 @@
+{
+  // Debugging the AssemblyScript guest under tension-core — no Node, no
+  // re-implementation of the ABI. `tension-core` *is* the runtime; the thing
+  // being debugged is game.ts, exactly as a Python script is debugged without
+  // debugging the python binary.
+  //
+  // How it works: `asc` emits no DWARF (only `name` + `sourceMappingURL`), so
+  // `tension-core --debug` synthesizes DWARF for the guest from its source map
+  // before the module reaches wasmtime, and wasmtime registers the compiled
+  // guest with the debugger through the GDB JIT interface. That is what makes
+  // an ordinary source breakpoint resolve:
+  //
+  //     frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8
+  //
+  // `initCommands` below turns the GDB JIT loader on: without that hook lldb
+  // never sees the JIT image, and every guest breakpoint stays unresolved.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // The debug host: full Rust symbols are present, so you can step from
+      // game.ts into the host ABI implementation and back if you want to.
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (io example)",
+      "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/game.wasm",
+        "alpha",
+        "beta",
+        "gamma"
+      ],
+      "cwd": "${workspaceFolder}",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build:debug",
+      "stopOnEntry": false
+    }
+  ]
+}

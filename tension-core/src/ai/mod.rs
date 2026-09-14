@@ -587,9 +587,7 @@ fn read_blob(caller: &mut Caller<'_, HostState>, blob: &BlobRef) -> Option<Vec<u
     if blob.len == 0 {
         return None;
     }
-    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
-        return None;
-    };
+    let mem = caller.get_export("memory").and_then(|e| e.into_memory())?;
     let data = mem.data(&*caller);
     let start = blob.ptr as usize;
     let end = start.checked_add(blob.len as usize)?;

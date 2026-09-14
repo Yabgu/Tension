@@ -1,0 +1,17 @@
+{
+  // The `build:debug` pre-launch task: `asc` must emit the source map, because
+  // that map is the only thing that links a wasm instruction back to a
+  // `game.ts` line. A release build carries no map, so the host has nothing to
+  // synthesize DWARF from and source breakpoints cannot resolve.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:debug",
+      "type": "shell",
+      "command": "npm run build:debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    }
+  ]
+}

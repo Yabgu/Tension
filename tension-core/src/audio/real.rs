@@ -94,13 +94,11 @@ where
 
     for frame in data.chunks_mut(channels) {
         let mut mix = 0.0f32;
-        for i in 0..MAX_VOICES {
-            let slot = &shared.slots[i];
+        for (slot, p) in shared.slots.iter().zip(pb.iter_mut()) {
             let gen = slot.gen.load(Ordering::Acquire);
             if gen == 0 {
                 continue;
             }
-            let p = &mut pb[i];
             if p.gen != gen {
                 // A new voice started in this slot: reload its PCM once.
                 p.gen = gen;
@@ -196,7 +194,7 @@ fn choose(
                 continue;
             }
             if let Some(rank) = format_rank(r.sample_format()) {
-                if best.map_or(true, |(best_rank, _)| rank < best_rank) {
+                if best.is_none_or(|(best_rank, _)| rank < best_rank) {
                     best = Some((rank, r.sample_format()));
                 }
             }
@@ -360,7 +358,7 @@ impl RealAdapter {
     }
 
     fn next_gen(prev: u8) -> u8 {
-        if prev >= 255 {
+        if prev == 255 {
             1
         } else {
             prev + 1

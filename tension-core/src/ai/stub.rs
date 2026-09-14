@@ -282,9 +282,7 @@ mod tests {
         assert!(AiConfig::from_argmap(&entries).is_err());
 
         let mut s = session();
-        let mut bad = AiConfig::default();
-        bad.model_path = None;
-        bad.model_blob = None;
+        let bad = AiConfig { model_path: None, model_blob: None, ..Default::default() };
         assert_eq!(s.create(&bad, None), 0);
     }
 }
