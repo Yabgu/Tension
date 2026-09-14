@@ -6,7 +6,7 @@
   "description": "TensionCore example: CLI arguments, printing and read-line over the tension::io ABI",
   "scripts": {
     "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --target debug",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap",
     "run": "printf 'hello from the terminal\\n' | ../../tension-core/target/debug/tension-core build/game.wasm alpha beta gamma",
     "start": "npm run build && npm run run"
   },

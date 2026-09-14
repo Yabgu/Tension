@@ -25,12 +25,24 @@
 //! stdin), and a probed-but-never-consumed line stays buffered for the
 //! store's lifetime — there is no discard API. Future host designs
 //! (multi-guest, VM resume) must account for per-guest pending-line state.
+//!
+//! Command line:
+//!   tension-core [options] <game.wasm> [game args...]
+//!
+//! `--debug` turns on guest debug info (`Config::debug_info`) and reports what
+//! a debugger can see of the loaded guest; `--symbol-path <PATH>` (repeatable)
+//! says where the debugger should look for the guest's symbols and sources.
+//! See the `debug` module for why an AssemblyScript guest carries no source
+//! lines even with both.
 
 use std::io::{self, BufRead, Write};
-use wasmtime::{Caller, Engine, Linker, Module, Store};
+use std::path::PathBuf;
+use wasmtime::{Caller, Config, Engine, Linker, Module, Store};
 
 mod ai;
 mod audio;
+mod debug;
+mod dwarf;
 
 /// The AI adapter the CLI uses. Feature `ai` selects the real in-process
 /// llama.cpp adapter; otherwise the deterministic headless stub (the
@@ -98,22 +110,133 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
     s
 }
 
-fn main() -> anyhow::Result<()> {
-    let mut cli = std::env::args();
-    let _prog = cli.next();
-    let wasm_path = cli.next().unwrap_or_else(|| {
-        eprintln!("usage: tension-core <game.wasm> [args...]");
-        std::process::exit(2);
-    });
-    let args: Vec<String> = cli.collect();
+const USAGE: &str = r"usage: tension-core [options] <game.wasm> [game args...]
 
-    let engine = Engine::default();
-    let module = Module::from_file(&engine, &wasm_path)?;
+options:
+  --debug                turn on guest debug info (`Config::debug_info`) and report
+                         what a debugger can see of the loaded guest
+  --symbol-path <PATH>   where the debugger should look for the guest's symbols
+                         and sources; repeatable
+  -h, --help             print this help
+  -V, --version          print the version
+  --                     end options: the next argument is <game.wasm>
+
+Options must precede <game.wasm>; everything after it is passed to the game
+verbatim (that is what the guest's `tension::io arg()` hands back).";
+
+/// The parsed command line. See `USAGE` for the contract.
+struct Cli {
+    debug: bool,
+    symbol_paths: Vec<PathBuf>,
+    wasm_path: String,
+    args: Vec<String>,
+}
+
+/// Parse the arguments that follow the program name.
+///
+/// The first non-option argument is the guest; everything from there on belongs
+/// to the game, so a game argument that happens to read `--debug` is still the
+/// game's. Options are only recognised ahead of the guest path.
+fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
+    let mut debug = false;
+    let mut symbol_paths = Vec::new();
+    let mut wasm_path = None;
+    let mut rest = argv.into_iter();
+    while wasm_path.is_none() {
+        let Some(arg) = rest.next() else { break };
+        if let Some(value) = arg.strip_prefix("--symbol-path=") {
+            symbol_paths.push(PathBuf::from(value));
+            continue;
+        }
+        match arg.as_str() {
+            "--debug" => debug = true,
+            "--symbol-path" => {
+                let value = rest.next().ok_or("`--symbol-path` needs a path")?;
+                symbol_paths.push(PathBuf::from(value));
+            }
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("tension-core {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            "--" => wasm_path = rest.next(),
+            // A lone `-` is taken as a path; anything longer that starts with a
+            // dash is a typo, and must not be handed to the loader as a file.
+            other if other.len() > 1 && other.starts_with('-') => {
+                return Err(format!("unknown option `{other}`"));
+            }
+            other => wasm_path = Some(other.to_string()),
+        }
+    }
+    let wasm_path = wasm_path.ok_or("missing <game.wasm>")?;
+    Ok(Cli {
+        debug,
+        symbol_paths,
+        wasm_path,
+        args: rest.collect(),
+    })
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = match parse_cli(std::env::args().skip(1).collect()) {
+        Ok(cli) => cli,
+        Err(err) => {
+            eprintln!("tension-core: {err}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    // A path that does not exist is a typo the debugger would otherwise report
+    // only as a breakpoint that never resolves, so it fails here instead.
+    for path in &cli.symbol_paths {
+        if !path.exists() {
+            eprintln!(
+                "tension-core: --symbol-path {} does not exist\n\n{USAGE}",
+                path.display()
+            );
+            std::process::exit(2);
+        }
+    }
+    if !std::path::Path::new(&cli.wasm_path).exists() {
+        eprintln!(
+            "tension-core: {} does not exist\n\n{USAGE}",
+            cli.wasm_path
+        );
+        std::process::exit(2);
+    }
+
+    // `--debug` is the whole host-side switch; see `debug` for what it can and
+    // cannot buy. The report runs before the load so a guest that fails to load
+    // still shows what was being asked of it.
+    // Synthesized guest DWARF, when `--debug` managed to produce any. `None`
+    // means the module is loaded from disk exactly as it always was.
+    let mut augmented: Option<Vec<u8>> = None;
+    if cli.debug {
+        let guest = std::path::Path::new(&cli.wasm_path);
+        let info = debug::probe(guest);
+        debug::report(guest, &info, &cli.symbol_paths);
+        augmented = dwarf::augment(guest, &cli.symbol_paths);
+    }
+
+    // With this on, wasmtime keeps the guest's DWARF and registers the JIT'd
+    // code with the platform debugger through the GDB JIT interface — which is
+    // what lldb's `plugin.jit-loader.gdb.enable on` picks up. Registration
+    // happens as the module is compiled, before `_start_game` runs, so a
+    // debugger that launches this process can have breakpoints in place first.
+    let mut config = Config::new();
+    config.debug_info(cli.debug);
+    let engine = Engine::new(&config)?;
+    let module = match &augmented {
+        Some(bytes) => Module::new(&engine, bytes)?,
+        None => Module::from_file(&engine, &cli.wasm_path)?,
+    };
 
     let mut store = Store::new(
         &engine,
         HostState {
-            args,
+            args: cli.args,
             pending_line: None,
             audio: audio::AudioSession::new(default_adapter()),
             ai: ai::AiSession::new(default_ai_adapter()),
