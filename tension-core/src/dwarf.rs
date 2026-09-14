@@ -609,6 +609,15 @@ impl<'a> Json<'a> {
         Err("unterminated string".into())
     }
 
+    /// Read 4 hex digits following a consumed `\u` escape.
+    fn hex4(&mut self) -> Result<u32, String> {
+        let h = self.b.get(self.i..self.i + 4).ok_or("short u-escape")?;
+        let h = std::str::from_utf8(h).map_err(|_| "bad u-escape")?;
+        let n = u32::from_str_radix(h, 16).map_err(|_| "bad hex")?;
+        self.i += 4;
+        Ok(n)
+    }
+
     fn string(&mut self) -> Result<String, String> {
         self.ws();
         if self.b.get(self.i) != Some(&QUOTE) {
@@ -627,11 +636,30 @@ impl<'a> Json<'a> {
                     let e = *self.b.get(self.i).ok_or("truncated escape")?;
                     self.i += 1;
                     if e == 117 {
-                        let h = self.b.get(self.i..self.i + 4).ok_or("short u-escape")?;
-                        let h = std::str::from_utf8(h).map_err(|_| "bad u-escape")?;
-                        let n = u32::from_str_radix(h, 16).map_err(|_| "bad hex")?;
-                        self.i += 4;
-                        out.push(char::from_u32(n).unwrap_or('?'));
+                        // JSON escapes carry UTF-16 code units: a high
+                        // surrogate must be followed by a `\uXXXX` low
+                        // surrogate, and together they form one code point.
+                        let n = self.hex4()?;
+                        let c = if (0xD800..=0xDBFF).contains(&n) {
+                            if self.b.get(self.i..self.i + 2) == Some(&b"\\u"[..]) {
+                                self.i += 2;
+                                let lo = self.hex4()?;
+                                if !(0xDC00..=0xDFFF).contains(&lo) {
+                                    return Err(format!(
+                                        "high surrogate \\u{n:04x} not followed by a low surrogate"
+                                    ));
+                                }
+                                char::from_u32(0x10000 + ((n - 0xD800) << 10) + (lo - 0xDC00))
+                                    .expect("surrogate pair combines into a valid scalar")
+                            } else {
+                                return Err(format!("unpaired high surrogate \\u{n:04x}"));
+                            }
+                        } else if (0xDC00..=0xDFFF).contains(&n) {
+                            return Err(format!("unpaired low surrogate \\u{n:04x}"));
+                        } else {
+                            char::from_u32(n).expect("non-surrogate code unit is a valid scalar")
+                        };
+                        out.push(c);
                     } else {
                         out.push(match e {
                             110 => char::from(10u8),
@@ -1445,6 +1473,39 @@ mod tests {
         assert_eq!(vlq("D").unwrap(), vec![-1]);
         assert_eq!(vlq("2H").unwrap(), vec![123]);
         assert!(vlq("g").is_err(), "a group that never terminates is an error");
+    }
+
+    #[test]
+    fn json_strings_decode_bmp_escapes() {
+        let map = parse_source_map(r#"{"sources":["\u0041.ts"],"mappings":"AAAA"}"#).unwrap();
+        assert_eq!(map.sources, vec!["A.ts"]);
+    }
+
+    #[test]
+    fn json_strings_decode_surrogate_pairs() {
+        // U+1F600 GRINNING FACE as a UTF-16 surrogate pair.
+        let map = parse_source_map(r#"{"sources":["\ud83d\ude00.ts"],"mappings":"AAAA"}"#).unwrap();
+        assert_eq!(map.sources, vec!["\u{1F600}.ts"]);
+    }
+
+    #[test]
+    fn json_strings_reject_unpaired_surrogates() {
+        // A lone high surrogate, a high surrogate paired with a non-low
+        // surrogate, and a lone low surrogate: errors, never a panic or a
+        // silently substituted replacement character.
+        assert!(parse_source_map(r#"{"sources":["\ud83d.ts"],"mappings":"AAAA"}"#).is_err());
+        assert!(parse_source_map(r#"{"sources":["\ud83d\u0041"],"mappings":"AAAA"}"#).is_err());
+        assert!(parse_source_map(r#"{"sources":["\ude00.ts"],"mappings":"AAAA"}"#).is_err());
+    }
+
+    #[test]
+    fn json_strings_mix_escaped_and_unescaped_unicode() {
+        // `caf\u00e9` next to a literal é, plus a surrogate pair mid-word.
+        let map = parse_source_map(
+            "{\"sources\":[\"caf\\u00e9é\\ud83d\\ude00x.ts\"],\"mappings\":\"AAAA\"}",
+        )
+        .unwrap();
+        assert_eq!(map.sources, vec!["caféé\u{1F600}x.ts"]);
     }
 
     #[test]
