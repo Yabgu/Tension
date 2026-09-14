@@ -43,7 +43,7 @@ mod ai;
 mod audio;
 mod debug;
 mod dwarf;
-mod leb;
+pub(crate) mod leb;
 
 /// The AI adapter the CLI uses. Feature `ai` selects the real in-process
 /// llama.cpp adapter; otherwise the deterministic headless stub (the
