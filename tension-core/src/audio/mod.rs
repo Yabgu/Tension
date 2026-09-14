@@ -109,14 +109,11 @@ impl AudioSession {
     }
 
     pub fn play(&mut self, pcm: &[f32], rate: i32, gain: f32, loop_: bool) -> i32 {
-        let ret;
-        if !self.initialized {
-            ret = -1;
-        } else if rate <= 0 || pcm.is_empty() {
-            ret = -1;
+        let ret = if !self.initialized || rate <= 0 || pcm.is_empty() {
+            -1
         } else {
-            ret = self.adapter.do_play(pcm, rate, clamp_gain(gain), loop_);
-        }
+            self.adapter.do_play(pcm, rate, clamp_gain(gain), loop_)
+        };
         log(&format!(
             "audio_play(len={}, rate={rate}, gain={gain:.2}, loop={loop_}) -> {ret}",
             pcm.len()
