@@ -33,6 +33,8 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::leb::read_uleb;
+
 /// What a debugger can see of a guest, according to its custom sections.
 pub struct GuestDebugInfo {
     /// A `.debug_*` section is present: a source-level debugger can use it.
@@ -71,7 +73,7 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
     while p < bytes.len() {
         let id = bytes[p];
         p += 1;
-        let Some(size) = read_leb(&bytes, &mut p) else {
+        let Some(size) = read_uleb(&bytes, &mut p) else {
             break;
         };
         let Some(end) = p.checked_add(size).filter(|end| *end <= bytes.len()) else {
@@ -80,7 +82,7 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
         // Custom sections are the only ones a debugger's data lives in.
         if id == 0 {
             let mut q = p;
-            if let Some(name_len) = read_leb(&bytes, &mut q) {
+            if let Some(name_len) = read_uleb(&bytes, &mut q) {
                 if let Some(name_end) = q.checked_add(name_len).filter(|e| *e <= end) {
                     let name = &bytes[q..name_end];
                     if name.starts_with(b".debug_") {
@@ -91,7 +93,7 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
                         // The payload after the name is a wasm string: LEB
                         // length, then the URL's bytes.
                         let mut r = name_end;
-                        if let Some(len) = read_leb(&bytes, &mut r) {
+                        if let Some(len) = read_uleb(&bytes, &mut r) {
                             let stop = r.saturating_add(len).min(end);
                             if stop > r {
                                 info.source_map =
@@ -105,25 +107,6 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
         p = end;
     }
     info
-}
-
-/// Unsigned LEB128, advancing `*p` past the encoding. Over-long encodings are
-/// refused instead of silently wrapping.
-fn read_leb(bytes: &[u8], p: &mut usize) -> Option<usize> {
-    let mut result = 0usize;
-    let mut shift = 0;
-    loop {
-        let byte = *bytes.get(*p)?;
-        *p += 1;
-        result |= ((byte & 0x7f) as usize) << shift;
-        if byte & 0x80 == 0 {
-            return Some(result);
-        }
-        shift += 7;
-        if shift >= 35 {
-            return None;
-        }
-    }
 }
 
 /// The `--debug` startup report, on stderr like every other host event.

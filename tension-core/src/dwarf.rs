@@ -31,33 +31,7 @@
 
 use std::path::{Path, PathBuf};
 
-// --------------------------------------------------------------- LEB128 ---
-
-fn uleb(out: &mut Vec<u8>, mut v: u64) {
-    loop {
-        let mut b = (v & 0x7f) as u8;
-        v >>= 7;
-        if v != 0 {
-            b |= 0x80;
-        }
-        out.push(b);
-        if v == 0 {
-            break;
-        }
-    }
-}
-
-fn sleb(out: &mut Vec<u8>, mut v: i64) {
-    loop {
-        let b = (v & 0x7f) as u8;
-        v >>= 7;
-        let done = (v == 0 && b & 0x40 == 0) || (v == -1 && b & 0x40 != 0);
-        out.push(if done { b } else { b | 0x80 });
-        if done {
-            break;
-        }
-    }
-}
+use crate::leb;
 
 // ---------------------------------------------------------- wasm reader ---
 
@@ -78,18 +52,8 @@ impl<'a> Reader<'a> {
     }
 
     fn uleb(&mut self) -> Option<u64> {
-        let (mut r, mut s) = (0u64, 0u32);
-        loop {
-            let x = self.u8()?;
-            r |= ((x & 0x7f) as u64) << s;
-            if x & 0x80 == 0 {
-                return Some(r);
-            }
-            s += 7;
-            if s > 62 {
-                return None;
-            }
-        }
+        let v = leb::read_uleb(self.b, &mut self.i)?;
+        Some(v as u64)
     }
 
     fn name(&mut self) -> Option<String> {
@@ -819,8 +783,8 @@ const DW_OP_STACK_VALUE: u8 = 0x9f;
 const DWARF_VERSION: u16 = 4;
 
 fn attr(out: &mut Vec<u8>, name: u64, form: u64) {
-    uleb(out, name);
-    uleb(out, form);
+    leb::write_uleb(out, name);
+    leb::write_uleb(out, form);
 }
 
 /// Abbrev 1: compile unit. Abbrev 2: subprogram. Abbrev 3: subprogram with
@@ -828,9 +792,9 @@ fn attr(out: &mut Vec<u8>, name: u64, form: u64) {
 /// `.debug_str`; type references are `DW_FORM_ref4` within the unit.
 fn append_abbrev() -> Vec<u8> {
     let mut a = Vec::new();
-    uleb(&mut a, 1);
-    uleb(&mut a, DW_TAG_COMPILE_UNIT);
-    uleb(&mut a, 1); // has children
+    leb::write_uleb(&mut a, 1);
+    leb::write_uleb(&mut a, DW_TAG_COMPILE_UNIT);
+    leb::write_uleb(&mut a, 1); // has children
     attr(&mut a, DW_AT_NAME, DW_FORM_STRING);
     attr(&mut a, DW_AT_COMP_DIR, DW_FORM_STRING);
     attr(&mut a, DW_AT_STMT_LIST, DW_FORM_SEC_OFFSET);
@@ -840,47 +804,47 @@ fn append_abbrev() -> Vec<u8> {
     // covers no JIT code, and a debugger cannot map a line-table address back
     // to it.
     attr(&mut a, DW_AT_RANGES, DW_FORM_SEC_OFFSET);
-    uleb(&mut a, 0);
-    uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
 
-    uleb(&mut a, 2);
-    uleb(&mut a, DW_TAG_SUBPROGRAM);
-    uleb(&mut a, 0); // no children
+    leb::write_uleb(&mut a, 2);
+    leb::write_uleb(&mut a, DW_TAG_SUBPROGRAM);
+    leb::write_uleb(&mut a, 0); // no children
     attr(&mut a, DW_AT_NAME, DW_FORM_STRING);
     attr(&mut a, DW_AT_LOW_PC, DW_FORM_ADDR);
     attr(&mut a, DW_AT_HIGH_PC, DW_FORM_ADDR);
     attr(&mut a, DW_AT_EXTERNAL, DW_FORM_FLAG_PRESENT);
-    uleb(&mut a, 0);
-    uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
 
     // Same subprogram, but with children: the local variable DIEs hang off it.
-    uleb(&mut a, 3);
-    uleb(&mut a, DW_TAG_SUBPROGRAM);
-    uleb(&mut a, 1); // has children
+    leb::write_uleb(&mut a, 3);
+    leb::write_uleb(&mut a, DW_TAG_SUBPROGRAM);
+    leb::write_uleb(&mut a, 1); // has children
     attr(&mut a, DW_AT_NAME, DW_FORM_STRING);
     attr(&mut a, DW_AT_LOW_PC, DW_FORM_ADDR);
     attr(&mut a, DW_AT_HIGH_PC, DW_FORM_ADDR);
     attr(&mut a, DW_AT_EXTERNAL, DW_FORM_FLAG_PRESENT);
-    uleb(&mut a, 0);
-    uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
 
-    uleb(&mut a, 4);
-    uleb(&mut a, DW_TAG_BASE_TYPE);
-    uleb(&mut a, 0); // no children
+    leb::write_uleb(&mut a, 4);
+    leb::write_uleb(&mut a, DW_TAG_BASE_TYPE);
+    leb::write_uleb(&mut a, 0); // no children
     attr(&mut a, DW_AT_NAME, DW_FORM_STRING);
     attr(&mut a, DW_AT_ENCODING, DW_FORM_DATA1);
     attr(&mut a, DW_AT_BYTE_SIZE, DW_FORM_DATA1);
-    uleb(&mut a, 0);
-    uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
 
-    uleb(&mut a, 5);
-    uleb(&mut a, DW_TAG_VARIABLE);
-    uleb(&mut a, 0); // no children
+    leb::write_uleb(&mut a, 5);
+    leb::write_uleb(&mut a, DW_TAG_VARIABLE);
+    leb::write_uleb(&mut a, 0); // no children
     attr(&mut a, DW_AT_NAME, DW_FORM_STRING);
     attr(&mut a, DW_AT_TYPE, DW_FORM_REF4);
     attr(&mut a, DW_AT_LOCATION, DW_FORM_EXPRLOC);
-    uleb(&mut a, 0);
-    uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
+    leb::write_uleb(&mut a, 0);
     a.push(0);
     a
 }
@@ -923,9 +887,9 @@ fn append_line(comp_dir: &str, sources: &[String], rows: &[Seg], ranges: &[(u32,
     let root = Path::new(comp_dir);
     for s in sources {
         cstr(&mut prologue, &source_path(s, root));
-        uleb(&mut prologue, 1); // directory index
-        uleb(&mut prologue, 0); // mtime
-        uleb(&mut prologue, 0); // length
+        leb::write_uleb(&mut prologue, 1); // directory index
+        leb::write_uleb(&mut prologue, 0); // mtime
+        leb::write_uleb(&mut prologue, 0); // length
     }
     prologue.push(0); // end of file_names
 
@@ -953,22 +917,22 @@ fn append_line(comp_dir: &str, sources: &[String], rows: &[Seg], ranges: &[(u32,
         for r in seq {
             if r.addr != pc {
                 prog.push(2); // DW_LNS_advance_pc
-                uleb(&mut prog, (r.addr - pc) as u64);
+                leb::write_uleb(&mut prog, (r.addr - pc) as u64);
                 pc = r.addr;
             }
             if r.file + 1 != file {
                 prog.push(4); // DW_LNS_set_file
-                uleb(&mut prog, (r.file + 1) as u64);
+                leb::write_uleb(&mut prog, (r.file + 1) as u64);
                 file = r.file + 1;
             }
             if r.line != line {
                 prog.push(3); // DW_LNS_advance_line
-                sleb(&mut prog, r.line as i64 - line as i64);
+                leb::write_sleb(&mut prog, r.line as i64 - line as i64);
                 line = r.line;
             }
             if r.col != col {
                 prog.push(5); // DW_LNS_set_column
-                uleb(&mut prog, r.col as u64);
+                leb::write_uleb(&mut prog, r.col as u64);
                 col = r.col;
             }
             prog.push(1); // DW_LNS_copy
@@ -996,7 +960,7 @@ fn append_info(
     locals: &[Vec<(String, u32, ValType)>],
 ) -> Vec<u8> {
     let mut cu = Vec::new();
-    uleb(&mut cu, 1); // abbrev 1: compile unit
+    leb::write_uleb(&mut cu, 1); // abbrev 1: compile unit
     cstr(&mut cu, module_name);
     cstr(&mut cu, comp_dir);
     cu.extend_from_slice(&0u32.to_le_bytes()); // DW_AT_stmt_list
@@ -1014,7 +978,7 @@ fn append_info(
     for (i, ty) in base_order.iter().enumerate() {
         type_offsets[i] = offset;
         let mut die = Vec::new();
-        uleb(&mut die, 4); // abbrev 4: base type
+        leb::write_uleb(&mut die, 4); // abbrev 4: base type
         cstr(&mut die, ty.name());
         die.push(ty.encoding());
         die.push(ty.byte_size());
@@ -1024,12 +988,12 @@ fn append_info(
 
     for ((name, lo, hi), vars) in functions.iter().zip(locals) {
         if vars.is_empty() {
-            uleb(&mut children, 2); // abbrev 2: subprogram, no children
+            leb::write_uleb(&mut children, 2); // abbrev 2: subprogram, no children
             cstr(&mut children, name);
             children.extend_from_slice(&lo.to_le_bytes());
             children.extend_from_slice(&hi.to_le_bytes());
         } else {
-            uleb(&mut children, 3); // abbrev 3: subprogram with children
+            leb::write_uleb(&mut children, 3); // abbrev 3: subprogram with children
             cstr(&mut children, name);
             children.extend_from_slice(&lo.to_le_bytes());
             children.extend_from_slice(&hi.to_le_bytes());
@@ -1037,13 +1001,13 @@ fn append_info(
                 // `DW_OP_WASM_location 0x00 <local index> DW_OP_stack_value`:
                 // the value of wasm local `index`, wherever cranelift holds it.
                 let mut expr = vec![DW_OP_WASM_LOCATION, 0x00];
-                uleb(&mut expr, *index as u64);
+                leb::write_uleb(&mut expr, *index as u64);
                 expr.push(DW_OP_STACK_VALUE);
 
-                uleb(&mut children, 5); // abbrev 5: variable
+                leb::write_uleb(&mut children, 5); // abbrev 5: variable
                 cstr(&mut children, var_name);
                 children.extend_from_slice(&(type_offsets[type_index(*ty)] as u32).to_le_bytes());
-                uleb(&mut children, expr.len() as u64);
+                leb::write_uleb(&mut children, expr.len() as u64);
                 children.extend_from_slice(&expr);
             }
             children.push(0); // end of the subprogram's children
@@ -1076,11 +1040,11 @@ fn append_custom(out: &mut Vec<u8>, name: &str, payload: &[u8]) {
     // A wasm custom section is: id, size, name length, name, payload - where
     // `size` counts everything after itself.
     let mut sec = Vec::new();
-    uleb(&mut sec, name.len() as u64);
+    leb::write_uleb(&mut sec, name.len() as u64);
     sec.extend_from_slice(name.as_bytes());
     sec.extend_from_slice(payload);
     out.push(0); // custom section id
-    uleb(out, sec.len() as u64);
+    leb::write_uleb(out, sec.len() as u64);
     out.extend_from_slice(&sec);
 }
 
@@ -1326,7 +1290,7 @@ mod tests {
 
     fn u(v: u64) -> Vec<u8> {
         let mut b = Vec::new();
-        uleb(&mut b, v);
+        leb::write_uleb(&mut b, v);
         b
     }
 
