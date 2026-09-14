@@ -876,13 +876,14 @@ fn source_path(raw: &str, comp_dir: &Path) -> String {
 
 /// A DWARF v4 line program. `rows` must be sorted ascending by address.
 fn append_line(comp_dir: &str, sources: &[String], rows: &[Seg], ranges: &[(u32, u32)]) -> Vec<u8> {
-    let mut prologue = Vec::new();
-    prologue.push(1); // minimum_instruction_length
-    prologue.push(1); // maximum_operations_per_instruction
-    prologue.push(1); // default_is_stmt
-    prologue.push((-5i8) as u8); // line_base
-    prologue.push(14); // line_range
-    prologue.push(13); // opcode_base
+    let mut prologue = vec![
+        1,        // minimum_instruction_length
+        1,        // maximum_operations_per_instruction
+        1,        // default_is_stmt
+        (-5i8) as u8, // line_base
+        14,       // line_range
+        13,       // opcode_base
+    ];
     prologue.extend_from_slice(&[0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 0, 0]);
     cstr(&mut prologue, comp_dir);
     prologue.push(0); // end of include_directories
@@ -1490,7 +1491,7 @@ mod tests {
         }
         let wasm = std::fs::read(&wasm_path).unwrap();
         let map = parse_source_map(&std::fs::read_to_string(&map_path).unwrap()).unwrap();
-        let (out, stats) = synthesize(&wasm, &map, &[dir.clone()], &wasm_path).unwrap();
+        let (out, stats) = synthesize(&wasm, &map, std::slice::from_ref(&dir), &wasm_path).unwrap();
         assert!(stats.rows > 0, "the example maps some wasm offsets to lines");
         assert!(stats.functions > 0, "the name section names guest functions");
         assert!(stats.locals > 0, "a --debug build names the guest's locals");

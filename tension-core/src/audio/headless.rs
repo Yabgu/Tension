@@ -6,6 +6,12 @@
 //! directory, or the path given to `with_output`). It is the no-feature
 //! fallback and the test adapter. Like the real adapter it is a sink: it
 //! plays what the guest sends, it synthesises nothing.
+//!
+//! With the `audio` feature enabled the device adapter is the active one, but
+//! this module is still compiled for the test target (`cfg(test)`) where
+//! nothing constructs it — so its whole surface reads as dead code there. In
+//! the no-feature fallback build everything below is live.
+#![cfg_attr(all(test, feature = "audio"), allow(dead_code))]
 
 use std::fs::File;
 use std::io::Write;
@@ -222,7 +228,7 @@ fn render_session(session: &Session, end: f64) -> Vec<i16> {
     let mut active: Vec<Active> = Vec::new();
     let mut events = session.events.iter().peekable();
 
-    for fi in 0..frames {
+    for (fi, slot) in out.iter_mut().enumerate() {
         let t = fi as f64 / session.rate as f64;
         while let Some(e) = events.peek() {
             if e.t > t {
@@ -270,7 +276,7 @@ fn render_session(session: &Session, end: f64) -> Vec<i16> {
             let s1 = a.pcm[if idx + 1 < len { idx + 1 } else { idx }];
             mix += (s0 + (s1 - s0) * frac) * a.gain;
         }
-        out[fi] = mix.clamp(-1.0, 1.0);
+        *slot = mix.clamp(-1.0, 1.0);
     }
 
     out.iter().map(|&s| (s * 32767.0) as i16).collect()
