@@ -217,7 +217,17 @@ fn main() -> anyhow::Result<()> {
         let guest = std::path::Path::new(&cli.wasm_path);
         let info = debug::probe(guest);
         debug::report(guest, &info, &cli.symbol_paths);
-        augmented = dwarf::augment(guest, &cli.symbol_paths);
+        augmented = match dwarf::augment(guest, &cli.symbol_paths) {
+            dwarf::AugmentResult::Augmented(bytes) => Some(bytes),
+            dwarf::AugmentResult::Unchanged(reason) => {
+                eprintln!("[tension-core] debug: {reason}");
+                None
+            }
+            dwarf::AugmentResult::Failed(err) => {
+                eprintln!("[tension-core] debug: {err}; running the game unchanged");
+                None
+            }
+        };
     }
 
     // With this on, wasmtime keeps the guest's DWARF and registers the JIT'd

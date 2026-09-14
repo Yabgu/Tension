@@ -1210,11 +1210,19 @@ fn resolve_map_path(wasm_path: &Path, url: &str) -> PathBuf {
     base.join(url)
 }
 
-/// A producer that emitted `.debug_*` did the work; never second-guess it.
+/// Whether the guest is *fully described* by DWARF it already carries.
+///
+/// Policy: a producer that emitted both `.debug_info` and `.debug_line` did
+/// the work, and the host must never second-guess it. One section alone is
+/// not enough — `.debug_line` without `.debug_info` names no compilation
+/// unit, and `.debug_info` without `.debug_line` has no source addresses —
+/// so only the pair short-circuits synthesis. A module with a lone section
+/// still goes through the synthesizer.
 fn has_debug_sections(wasm: &[u8]) -> bool {
     if wasm.len() < 8 || wasm[0..4] != [0x00, b'a', b's', b'm'] {
         return false;
     }
+    let (mut info, mut line) = (false, false);
     let mut r = Reader::new(wasm, 8);
     while r.i < wasm.len() {
         let id = match r.u8() {
@@ -1233,65 +1241,69 @@ fn has_debug_sections(wasm: &[u8]) -> bool {
         if id == 0 {
             let mut c = Reader::new(wasm, payload);
             if let Some(name) = c.name() {
-                if name.starts_with(".debug_") {
-                    return true;
+                match name.as_str() {
+                    ".debug_info" => info = true,
+                    ".debug_line" => line = true,
+                    _ => {}
                 }
             }
         }
         r.i = end;
     }
-    false
+    info && line
 }
 
 /// Read the guest and its source map, and return the augmented module bytes.
 ///
-/// `None` means "load the file as it stands". Every failure below is a
-/// diagnostic inconvenience, never a reason to refuse to run the game.
-pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> Option<Vec<u8>> {
+/// `Unchanged` and `Failed` both mean "load the file as it stands": every
+/// shortfall here is a diagnostic inconvenience, never a reason to refuse to
+/// run the game. `main` prints the carried reason or error.
+pub enum AugmentResult {
+    /// Guest already had DWARF or no source map — load unchanged, not an error.
+    Unchanged(&'static str), // reason string for the diagnostic
+    /// Synthesis succeeded.
+    Augmented(Vec<u8>),
+    /// Synthesis was attempted but failed.
+    Failed(String),
+}
+
+pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> AugmentResult {
     let wasm = match std::fs::read(wasm_path) {
         Ok(b) => b,
         Err(e) => {
-            eprintln!(
-                "[tension-core] debug: cannot read {}: {e}",
+            return AugmentResult::Failed(format!(
+                "cannot read {}: {e}",
                 wasm_path.display()
-            );
-            return None;
+            ));
         }
     };
     if has_debug_sections(&wasm) {
-        eprintln!("[tension-core] debug: guest already carries DWARF; leaving it alone");
-        return None;
+        return AugmentResult::Unchanged("guest already carries DWARF; leaving it alone");
     }
     let info = crate::debug::probe(wasm_path);
     let url = match info.source_map {
         Some(u) => u,
         None => {
-            eprintln!(
-                "[tension-core] debug: guest has no sourceMappingURL, so there is no line table to synthesize\n\
-                 [tension-core] debug: build it with `--debug --sourceMap` (see examples/io `build:debug`)"
+            return AugmentResult::Unchanged(
+                "guest has no sourceMappingURL, so there is no line table to synthesize\n\
+                 [tension-core] debug: build it with `--debug --sourceMap` (see examples/io `build:debug`)",
             );
-            return None;
         }
     };
     let map_path = resolve_map_path(wasm_path, &url);
     let json = match std::fs::read_to_string(&map_path) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!(
-                "[tension-core] debug: cannot read source map {}: {e}",
+            return AugmentResult::Failed(format!(
+                "cannot read source map {}: {e}",
                 map_path.display()
-            );
-            return None;
+            ));
         }
     };
     let map = match parse_source_map(&json) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!(
-                "[tension-core] debug: source map {}: {e}",
-                map_path.display()
-            );
-            return None;
+            return AugmentResult::Failed(format!("source map {}: {e}", map_path.display()));
         }
     };
     match synthesize(&wasm, &map, symbol_roots, wasm_path) {
@@ -1300,12 +1312,9 @@ pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> Option<Vec<u8>> {
                 "[tension-core] debug: synthesized DWARF - {} files, {} line rows ({} outside the code section), {} functions, {} locals",
                 stats.files, stats.rows, stats.dropped, stats.functions, stats.locals
             );
-            Some(bytes)
+            AugmentResult::Augmented(bytes)
         }
-        Err(e) => {
-            eprintln!("[tension-core] debug: cannot synthesize DWARF: {e}");
-            None
-        }
+        Err(e) => AugmentResult::Failed(format!("cannot synthesize DWARF: {e}")),
     }
 }
 
@@ -1331,6 +1340,14 @@ mod tests {
     fn len_prefixed(out: &mut Vec<u8>, s: &[u8]) {
         out.extend(u(s.len() as u64));
         out.extend_from_slice(s);
+    }
+
+    /// A custom section: id 0, LEB size, LEB name length, name, payload.
+    fn custom(name: &str, payload: &[u8]) -> Vec<u8> {
+        let mut body = Vec::new();
+        len_prefixed(&mut body, name.as_bytes());
+        body.extend_from_slice(payload);
+        section(0, &body)
     }
 
     /// A module shaped like a guest: one import, one defined function, a name.
@@ -1516,6 +1533,25 @@ mod tests {
         assert_eq!(layout.name_for_body(0), Some("game/_start_game"));
         assert!(layout.code_payload_start > 8);
         assert!(layout.code_payload_size > 0);
+    }
+
+    #[test]
+    fn one_debug_section_is_not_enough_to_skip_synthesis() {
+        // Policy: only `.debug_info` *and* `.debug_line` together count as
+        // the guest fully describing itself; either one alone still goes
+        // through the synthesizer.
+        let mut wasm = synthetic_guest();
+        wasm.extend(custom(".debug_line", &[0, 0, 0, 0]));
+        assert!(!has_debug_sections(&wasm), "a lone .debug_line is not a full description");
+
+        let mut wasm = synthetic_guest();
+        wasm.extend(custom(".debug_info", &[0, 0, 0, 0]));
+        assert!(!has_debug_sections(&wasm), "a lone .debug_info is not a full description");
+
+        let mut wasm = synthetic_guest();
+        wasm.extend(custom(".debug_info", &[0, 0, 0, 0]));
+        wasm.extend(custom(".debug_line", &[0, 0, 0, 0]));
+        assert!(has_debug_sections(&wasm), "both sections together fully describe the guest");
     }
 
     #[test]
