@@ -506,10 +506,15 @@ fn vlq(s: &str) -> Result<Vec<i64>, String> {
 }
 
 /// Decode `mappings`. Generated columns are absolute wasm file offsets.
+///
+/// The source-map spec resets the generated column to 0 at each `;`-separated
+/// line group; source line, source column and file index keep accumulating
+/// across groups.
 pub fn parse_mappings(mappings: &str, source_count: usize) -> Result<Vec<Seg>, String> {
     let mut segs = Vec::new();
-    let (mut addr, mut file, mut line, mut col) = (0i64, 0i64, 0i64, 0i64);
+    let (mut file, mut line, mut col) = (0i64, 0i64, 0i64);
     for group in mappings.split(';') {
+        let mut addr = 0i64;
         for seg in group.split(',') {
             if seg.is_empty() {
                 continue;
@@ -1463,6 +1468,22 @@ mod tests {
         assert_eq!(map.segments[0].line, 1, "source-map lines are zero-based");
         assert_eq!(map.segments[1].addr, 4);
         assert_eq!(map.segments[1].line, 2);
+    }
+
+    #[test]
+    fn mappings_reset_the_generated_column_at_each_line_group() {
+        // `C` = +1. First group starts at generated column 1. The second
+        // group must start back at 0 — the spec resets the generated column
+        // per line — and its second segment is +1 relative to that reset.
+        let segs = parse_mappings("CAAA;AACA,CAAA", 1).unwrap();
+        assert_eq!(segs.len(), 3);
+        assert_eq!(segs[0].addr, 1);
+        assert_eq!(segs[1].addr, 0, "generated column resets at each `;` group");
+        assert_eq!(segs[2].addr, 1, "within a group the column is still relative");
+        // Source lines do not reset: group 2 starts one line further down.
+        assert_eq!(segs[0].line, 1);
+        assert_eq!(segs[1].line, 2);
+        assert_eq!(segs[2].line, 2);
     }
 
     #[test]
