@@ -434,3 +434,11 @@ diagnosis prints on stderr before any guest output.
   the guest's source map; `md5sum examples/io/build/game.wasm` is unchanged
   across a `--debug` run (`d789929c…`), and the guest's own stdout is
   byte-identical with and without the flag.
+
+## Licensing
+
+This project is MIT-licensed (see `LICENSE`). ECMA-208 specification material is
+not distributed with this project; `tension-res/spec/README.md` records the
+edition, how to obtain it, and its checksums. ECMA-208 references are for
+interoperability description only, and this project is not affiliated with or
+endorsed by Ecma International.

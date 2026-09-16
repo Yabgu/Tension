@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-res",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: an ECMA-208 (SIDF) resource pak read through the tension::res ABI",
+  "scripts": {
+    "build": "node ./node_modules/assemblyscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime stub --target release",
+    "pack": "./pack.sh",
+    "run": "./run.sh",
+    "start": "npm run build && npm run pack && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
