@@ -13,11 +13,20 @@ npm-debug.log*
 
 # Build output
 build/
+
+# The example's packed volume is a build product (pack.sh regenerates it), and
+# with the generated large asset inside it is far too big to commit.
+examples/res/*.tns
 dist/
 *.wasm.map
 
 # Model weights (examples expect these to be fetched/copied locally)
 *.gguf
+
+# Zig build artifacts
+tension-res/.zig-cache/
+tension-res/zig-out/
+
 
 # Headless audio adapter render output
 tension-audio.wav

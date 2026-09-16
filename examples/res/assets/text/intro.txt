@@ -1,0 +1,8 @@
+TensionCore resource demo
+==========================
+
+This text lives inside a pak: an ECMA-208 (SIDF) volume built by
+tension-pack and read by tension-core. Nothing here is a kernel file.
+
+Look around: text/, data/ and textures/ are Source directory Files,
+and every line of this file came out of a Data Stream.
