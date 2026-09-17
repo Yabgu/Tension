@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 1 in progress — see §5.**
+Status: **phase 2 complete — see §6.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -117,3 +117,35 @@ Known limitations (recorded, not hidden)
 Phase 1 delivers euler only: one backend, fixed-step, no adaptivity, no
 sources, no public ABI; the other six schema-declared methods are
 vocabulary, not code.
+
+## 6. The C shim (phase 2)
+
+Phase 2 is the shim: `tension-solver/src/tension_solver.c`, C99,
+implementing the header's public surface. The Fortran core is
+unchanged from §3; the shim sits between it and the caller.
+
+What the shim owns and the Fortran core does not: the handle/id table
+(1-based ids, 64 slots, `-EMFILE` on exhaustion), the hand-rolled JSON
+parser (flat object; rejects any structure outside the subset with
+`-EINVAL`; no allocation before the first `calloc` at the end of
+`create`, so a malformed config never touches the allocator), the
+compiled method/source/parameter rules (three static tables and two
+constants; cross-checked against schema.yaml by test T20), the plugin
+registry (32 slots, keyed by name; a name shadowing a built-in is
+`-EINVAL`; `kind` outside the six reserved names is `-EINVAL`;
+`deterministic` mismatching `kind` is `-EINVAL` per the header's
+registration table), and `bind_callbacks` (rejects rebind after any
+attempted step; rejects any non-NULL binding on `source: world`;
+accepts NULL/NULL as a no-op on `source: native`).
+
+Not implemented in phase 2: `source: world` returns `-ENOSYS` (P8
+resolves it), the six non-euler built-ins register and return
+`-ENOSYS` (P3, P6), the wasm-to-C bridge for `source: wasm` is P4
+(phase 2 tests the shim side with plain `extern "C"` callbacks).
+
+Known limitations (recorded, not hidden)
+
+The vtable's `state`/`set_state` slots are declared in the header for
+plugin backends but are not invoked by the shim in phase 2 — only
+`step` is. Plugin lifecycle (state/set_state/destroy dispatch through
+the vtable) lands in P5 alongside the Rust safe wrapper.

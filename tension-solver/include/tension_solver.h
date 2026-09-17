@@ -133,6 +133,10 @@ typedef int32_t (*tension_solver_validate_fn)(
  * `bundles_rhs: true` for the chosen method, and every built-in has
  * `bundles_rhs: false`. See `tension-solver/schema.yaml`.
  *
+ * The `state` and `set_state` slots implement the same operations as the
+ * public entry points of the same name: `t` is first-class on both, so a
+ * plugin can restore time alongside the state vector.
+ *
  * Determinism validation (registration time): the declared `kind` and
  * `deterministic` must agree.
  *
@@ -180,8 +184,8 @@ typedef struct tension_solver_backend_vtable {
     tension_solver_validate_fn   validate;   /* required when kind: stochastic */
 
     int32_t (*step)(int32_t id, double dt);   /* required; the integrator */
-    int32_t (*state)(int32_t id, double *out, int32_t cap);
-    int32_t (*set_state)(int32_t id, const double *in, int32_t len);
+    int32_t (*state)(int32_t id, double *t_out, double *y_out, int32_t y_cap);
+    int32_t (*set_state)(int32_t id, double t, const double *y, int32_t y_len);
     void    (*destroy)(int32_t id);
 } tension_solver_backend_vtable;
 
