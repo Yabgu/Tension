@@ -72,6 +72,7 @@ fn main() {
 
     println!("cargo:rerun-if-changed={}", solver_dir.join("build.sh").display());
     println!("cargo:rerun-if-changed={}", solver_dir.join("src").display());
+    println!("cargo:rerun-if-changed={}", solver_dir.join("include").display());
 
     check_gfortran_version();
 
