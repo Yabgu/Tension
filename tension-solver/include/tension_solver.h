@@ -26,9 +26,12 @@
  *   - every entry point is panic-free: any failure comes back as a negative
  *     errno value. 0 means success for the calls that report a status.
  *   - solver handles are 1-based; 0 is never a valid id.
- *   - `config_json` is UTF-8 JSON, validated against schema.yaml before any
- *     allocation. Malformed JSON is -EINVAL; an unknown `method` is -ENOENT;
- *     a `source` whose `requires` are unmet is -EINVAL.
+ *   - `config_json` is UTF-8 JSON, validated before any allocation.
+ *     Malformed JSON is -EINVAL; an unknown `method` is -ENOENT; a `source`
+ *     whose `requires` are unmet is -EINVAL. The rules the runtime enforces
+ *     are compiled in, not loaded from schema.yaml at runtime; a CI test
+ *     cross-checks the compiled rules against every backend and source
+ *     declared in schema.yaml, and drift fails the test.
  *   - the two callbacks (derivative, validate) are guest-supplied. For
  *     `source: wasm` the guest exports them from the wasm module; for
  *     `source: native` the plugin supplies them in its registered vtable.
@@ -73,6 +76,11 @@ extern "C" {
  * Called per integration stage. RK45 calls this seven times per accepted
  * step; RK23 calls it three times. This is a declaration of what the
  * physics *is*, not the integration loop.
+ *
+ * For determinism to hold, the guest's implementation must be a pure
+ * function of `(y, t)` — no RNG, no state outside `y`, no time-of-day or
+ * environment dependencies. The engine cannot enforce this; the
+ * composition theorem in DESIGN.md states it as a precondition.
  */
 typedef int32_t (*tension_solver_derivative_fn)(
     const double *y, int32_t len, double t, double *dy, int32_t dy_cap);
@@ -85,6 +93,10 @@ typedef int32_t (*tension_solver_derivative_fn)(
  * negative errno on failure. Classical backends do not call this; the
  * AI/hallucinator module (separate schema, `extends: tension-solver`) makes
  * it mandatory for its backends.
+ *
+ * Same purity requirement as `_derivative` for `source: world` and
+ * `source: native`. Stochastic backends are expected to be impure; their
+ * determinism flag is 0 and rollback is unavailable by construction.
  */
 typedef int32_t (*tension_solver_validate_fn)(
     const double *prev, int32_t prev_len,
@@ -115,6 +127,25 @@ typedef int32_t (*tension_solver_validate_fn)(
  * a plugin named e.g. `rk45_native` that supplies both `derivative` (the
  * guest's f) and `step` (a wrapper that calls the built-in rk45), and names
  * it in the config as `method: rk45_native, source: native`.
+ *
+ * The "builtin + native is invalid" row above is a consequence of the
+ * schema's `pairing_rules` block: `source: native` requires
+ * `bundles_rhs: true` for the chosen method, and every built-in has
+ * `bundles_rhs: false`. See `tension-solver/schema.yaml`.
+ *
+ * Determinism validation (registration time): the declared `kind` and
+ * `deterministic` must agree.
+ *
+ *   Declared `kind`                          Accepted `deterministic`   On mismatch
+ *   ───────────────────────────────────────  ─────────────────────────  ────────────
+ *   explicit_rk, symplectic, implicit,       1 only                     -EINVAL
+ *     variational_constraint
+ *   stochastic                               0 only                     -EINVAL
+ *   custom                                   0 or 1                     accepted
+ *
+ * At read time the field is authoritative — the engine reads it directly
+ * and does not re-derive. Shadow-refusal considers name only: a plugin
+ * named `rk45` is -EINVAL regardless of its declared `kind`.
  *
  * Unused slots are NULL. The struct's layout is fixed here so a plugin
  * compiled against one version of this header links against the same engine.
@@ -167,6 +198,24 @@ typedef struct tension_solver_backend_vtable {
 int32_t tension_solver_create(const char *config_json, size_t config_len);
 
 /*
+ * Bind the guest's callback pointers to a solver id. Used with
+ * `source: wasm` (the host obtains the function pointers from the wasm
+ * module's exports and calls this once after create) and optionally with
+ * `source: native` (the vtable already carries them; passing NULL for both
+ * is a no-op). For `source: world`, no callback crosses the boundary —
+ * passing a non-NULL pointer is -EINVAL.
+ *
+ * Call order: `create -> bind_callbacks -> step`. `step` before
+ * `bind_callbacks` for `source: wasm` is -EINVAL. `bind_callbacks` after
+ * the first `step` is -EINVAL (rebinding mid-run would corrupt the
+ * integration).
+ */
+int32_t tension_solver_bind_callbacks(
+    int32_t id,
+    tension_solver_derivative_fn derivative,
+    tension_solver_validate_fn   validate);
+
+/*
  * Advance the solver by `dt`. Returns 0 on success, a negative errno on
  * failure. Adaptive methods may take internal sub-steps smaller than `dt`;
  * there is no budget parameter and no sub-step cap — the engine runs to
@@ -175,19 +224,24 @@ int32_t tension_solver_create(const char *config_json, size_t config_len);
 int32_t tension_solver_step(int32_t id, double dt);
 
 /*
- * Copy the state vector into `out` (up to `cap` f64 slots). Returns the
- * number of slots written, or a negative errno. `cap < dim` is -EINVAL.
- * This is a copy out, not a view — the solver owns the state, the caller
- * receives a snapshot it can checkpoint.
+ * Copy the current time `t` and state vector `y` out of the solver. Writes
+ * `*t_out` and up to `y_cap` f64 slots of state into `y_out`. Returns the
+ * number of state slots written, or a negative errno. `y_cap < dim` is
+ * -EINVAL. A checkpoint is `{t, y}` — both must be saved and both restored,
+ * or the solver's internal time will diverge from the guest's.
+ * This is a copy out, not a view — the solver owns the state.
  */
-int32_t tension_solver_state(int32_t id, double *out, int32_t cap);
+int32_t tension_solver_state(int32_t id, double *t_out,
+                             double *y_out, int32_t y_cap);
 
 /*
- * Restore the state vector from `in` (`len` f64 slots; must equal `dim`).
- * Returns 0 on success, a negative errno. Used for rollback and checkpoint
- * restore; not part of the hot path.
+ * Restore time `t` and state vector `y` (`y_len` f64 slots; must equal
+ * `dim`). Returns 0 on success, a negative errno. Used for rollback and
+ * checkpoint restore; not part of the hot path. After this call, the next
+ * `step` advances from `t`, not from wherever the solver had reached.
  */
-int32_t tension_solver_set_state(int32_t id, const double *in, int32_t len);
+int32_t tension_solver_set_state(int32_t id, double t,
+                                 const double *y, int32_t y_len);
 
 /* Destroy a solver id. Idempotent for in-range ids. */
 void tension_solver_destroy(int32_t id);

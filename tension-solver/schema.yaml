@@ -46,9 +46,25 @@ sources:
   native:
     requires: [dim]
 
+# ── pairing_rules ────────────────────────────────────────────────────────
+#
+# Rules that constrain which (method, source) combinations are valid. These
+# are authoring-time checks: a validator reading only this schema can reject
+# a preset the runtime would reject, without needing the header.
+#
+# `source_native_requires_bundles_rhs: true` means a preset with
+# `source: native` is only valid if the chosen `method:` has
+# `bundles_rhs: true`. Every built-in has `bundles_rhs: false`, so
+# `method: rk45, source: native` is rejected at authoring time. A registered
+# native plugin that supplies its own `derivative` is treated as an implicit
+# `bundles_rhs: true` at registration (the header's vtable has no separate
+# field for it — the presence of a `derivative` slot is the signal).
+pairing_rules:
+  source_native_requires_bundles_rhs: true
+
 # ── callbacks ────────────────────────────────────────────────────────────
 #
-# Two guest callbacks cross the solver boundary. Signatures match
+# Two callbacks cross the solver boundary. Signatures match
 # tension_solver.h; they are reproduced here for reference only and the header
 # is authoritative.
 #
@@ -109,8 +125,10 @@ callbacks:
 # Determinism is a per-backend property, and it is derived, not declared:
 # `kind: stochastic` implies non-deterministic. Every other reserved kind is
 # deterministic by construction. `kind: custom` is the one exception — a
-# custom backend must declare `deterministic:` explicitly, because its nature
-# is unknowable from the string alone. (The engine reads this property; there
+# custom backend must declare `deterministic:` explicitly in its registered
+# vtable (see `tension_solver_backend_vtable.deterministic` in
+# `tension_solver.h`), because its nature is unknowable from the string alone.
+# (The engine reads this property; there
 # is no `tension_solver_is_deterministic()` ABI call, and there will not be
 # one — a runtime query for a static fact would be an invitation to put the
 # check in the wrong layer.)
@@ -123,6 +141,7 @@ callbacks:
 backends:
   - name: euler
     kind: explicit_rk
+    bundles_rhs: false
     order: 1
     stages: 1
     adaptive: false
@@ -130,6 +149,7 @@ backends:
 
   - name: heun
     kind: explicit_rk
+    bundles_rhs: false
     order: 2
     stages: 2
     adaptive: false
@@ -137,6 +157,7 @@ backends:
 
   - name: rk23
     kind: explicit_rk
+    bundles_rhs: false
     order: 3
     stages: 3
     adaptive: true
@@ -144,6 +165,7 @@ backends:
 
   - name: rk45
     kind: explicit_rk
+    bundles_rhs: false
     order: 5
     stages: 7
     adaptive: true
@@ -151,6 +173,7 @@ backends:
 
   - name: verlet
     kind: symplectic
+    bundles_rhs: false
     order: 2
     stages: null
     adaptive: false
@@ -158,6 +181,7 @@ backends:
 
   - name: implicit_euler
     kind: implicit
+    bundles_rhs: false
     order: 1
     stages: null
     adaptive: false
@@ -165,6 +189,7 @@ backends:
 
   - name: spook
     kind: variational_constraint
+    bundles_rhs: false
     order: null
     stages: null
     adaptive: false
@@ -228,5 +253,5 @@ defaults:
 # minimal so that change is additive, not corrective.
 preset_format:
   required: [method, source]
-  allowed:  [dim, parameters, callbacks, description, dt]
+  allowed:  [dim, parameters, description, dt]
   inheritance: none
