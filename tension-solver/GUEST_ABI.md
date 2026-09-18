@@ -218,6 +218,86 @@ comment). And `dim` is bounded by the fixed buffer size in this phase,
 `dim ≤ 8192` `f64` slots, until an allocator export generalizes it
 (§7).
 
+### 3.7 Working with raw pointers
+
+The ABI passes raw pointers — `usize` addresses into the guest's own
+linear memory — and the guest reads and writes through them. Three
+patterns, in increasing order of convenience. Patterns 1 and 2, where
+the toolchain has them, allocate nothing and belong in hot paths like
+`_derivative`; pattern 3 allocates and belongs on cold paths.
+
+**1. `load<f64>` / `store<f64>` — always works, no allocation.** The
+memory-arithmetic form, optionally wrapped in `@inline` helpers so the
+body reads as data:
+
+```ts
+// dy[i] = -y[i], raw:
+for (let i = 0; i < len; i++) {
+  store<f64>(dyPtr + (<usize>i << 3), -load<f64>(yPtr + (<usize>i << 3)));
+}
+
+// The same with the addressing named; @inline makes the helpers vanish
+// into the identical f64.load / f64.store pair:
+@inline function f64Get(ptr: usize, i: i32): f64 { return load<f64>(ptr + (<usize>i << 3)); }
+@inline function f64Set(ptr: usize, i: i32, v: f64): void { store<f64>(ptr + (<usize>i << 3), v); }
+for (let i = 0; i < len; i++) {
+  f64Set(dyPtr, i, -f64Get(yPtr, i));
+}
+```
+
+**2. `Float64Array.wrap(ptr, len)` — reads as data, no allocation — but
+not in this toolchain.** AssemblyScript 0.28.8's `wrap` takes an
+`ArrayBuffer`, not a pointer: `Float64Array.wrap(yPtr, len)` fails to
+compile (`TS2322: Type 'usize' is not assignable to type
+'~lib/arraybuffer/ArrayBuffer'`), and reinterpreting the data pointer as
+an `ArrayBuffer` with `changetype` compiles but is a lie — the emitted
+code then reads object-header fields out of the data (an `ArrayBuffer`'s
+length lives at negative offsets of its object). Verify in your own
+build before reaching for this shape; if a future AssemblyScript adds an
+external-pointer overload, it would be the readable no-allocation form:
+
+```ts
+// If (and only when) your toolchain's wrap accepts a raw pointer:
+const y = Float64Array.wrap(yPtr, len);
+const dy = Float64Array.wrap(dyPtr, len);
+for (let i = 0; i < len; i++) dy[i] = -y[i];
+```
+
+**3. `@unmanaged` struct + wrapper class — reads as the natural shape;
+but the wrapper allocates.** For fixed-layout data (fields at
+compile-time-known offsets), an `@unmanaged` class is just a layout: its
+field reads compile to plain loads at those offsets, and
+`changetype<T>(ptr)` views memory through it for free. A wrapper class
+with `@operator("[]")` indexes an array of them:
+
+```ts
+@unmanaged class Vec2 { x: f64; y: f64; }   // x at +0, y at +8
+
+class Vec2Array {
+  private ptr: usize;
+  private len: i32;
+  private constructor(ptr: usize, len: i32) { this.ptr = ptr; this.len = len; }
+  static wrap(ptr: usize, len: i32): Vec2Array { return new Vec2Array(ptr, len); }
+  @operator("[]") get(i: i32): Vec2 { return changetype<Vec2>(this.ptr + (<usize>i << 4)); }
+  get length(): i32 { return this.len; }
+}
+
+// dy = -y, per component:
+const y = Vec2Array.wrap(yPtr, len);
+const dy = Vec2Array.wrap(dyPtr, len);
+for (let i = 0; i < len; i++) { dy[i].x = -y[i].x; dy[i].y = -y[i].y; }
+```
+
+`Vec2Array.wrap(...)` is a real allocation — the wrapper object — while
+the `changetype` views are not; and the `[]` getter performs no bounds
+check, exactly like pattern 1's arithmetic. Use this form for setup,
+readback, and per-frame bookkeeping, not per-stage callbacks.
+
+The wire stays raw pointers. Wrappers are guest-side ergonomics and
+never cross the ABI: the host sees addresses, lengths, and errno, no
+matter which form a guest uses. The reference implementation of pattern
+1 is `examples/solver/game.ts`'s `_derivative`.
+
 ## 4. The `Solver` class
 
 The guest-side shape, in the res.ts register — declaration only; bodies

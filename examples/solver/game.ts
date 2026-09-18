@@ -25,11 +25,23 @@ export function deriv_buf_out(): i32 {
   return i32(BUF_OUT);
 }
 
+// f64 slot accessors for the raw pointers the ABI passes. @inline: they
+// vanish at compile time into the same f64.load / f64.store pair the
+// explicit form writes (GUEST_ABI.md §3.7, pattern 1).
+@inline
+function f64Get(ptr: usize, i: i32): f64 {
+  return load<f64>(ptr + (<usize>i << 3));
+}
+@inline
+function f64Set(ptr: usize, i: i32, v: f64): void {
+  store<f64>(ptr + (<usize>i << 3), v);
+}
+
 // f(t, y) = -y, elementwise. A pure function of (y, t): no RNG, no clocks,
 // no hidden state — that is what keeps the integration bit-reproducible.
 export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   for (let i = 0; i < len; i++) {
-    store<f64>(dyPtr + (<usize>i << 3), -load<f64>(yPtr + (<usize>i << 3)));
+    f64Set(dyPtr, i, -f64Get(yPtr, i));
   }
   return 0;
 }
