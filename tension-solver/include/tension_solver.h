@@ -189,6 +189,37 @@ typedef struct tension_solver_backend_vtable {
     void    (*destroy)(int32_t id);
 } tension_solver_backend_vtable;
 
+/* ── plugin accessors ───────────────────────────────────────────────── */
+
+/*
+ * A registered plugin's step function has signature
+ * `(int32_t id, double dt)`. It does not receive the state
+ * pointer, workspace pointer, parameters pointer, derivative
+ * function pointer, or current time directly — those belong to
+ * the shim and the plugin is expected to ask for them. These
+ * accessors are that ask.
+ *
+ * `tension_solver_get_dim` returns the solver's dimension, or
+ * a negative errno on a bad id.
+ *
+ * `tension_solver_get_time` returns the solver's current t, or
+ * a negative errno on a bad id.
+ *
+ * `tension_solver_get_derivative` returns the derivative
+ * function pointer that bind_callbacks (source: wasm) or the
+ * world compiler (source: world) installed on this solver, or
+ * NULL. For source: native the plugin supplies its own
+ * derivative and does not need this accessor.
+ *
+ * A plugin that only implements its own integrator and its own
+ * derivative does not call any of these. A plugin that wraps a
+ * built-in integrator (the header's `rk45_native` example) uses
+ * all three.
+ */
+int32_t tension_solver_get_dim(int32_t id);
+double  tension_solver_get_time(int32_t id);
+tension_solver_derivative_fn tension_solver_get_derivative(int32_t id);
+
 /* ── public API ──────────────────────────────────────────────────────── */
 
 /*

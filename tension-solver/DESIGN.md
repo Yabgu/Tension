@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 6 complete — see §10.**
+Status: **phase 7 in progress — see §11.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -472,3 +472,80 @@ reported, `iterations = 32` → 12 evals. At `h·L = 0.5` the decay over
 forward guards from earlier phases were updated to match the delivery:
 P2's T20 probe now uses dim 2 (verlet's `dim >= 2` floor) and P3's T12
 narrows to spook, asserting the two delivered methods create handles.
+
+---
+
+## 11. The plugin SDK (phase 7, in progress)
+
+Phase 7 opens the backend vtable into a real contract. The vtable has
+existed since fd8e4bd (name, kind, deterministic, derivative, validate,
+and the four lifecycle slots); until now the shim dispatched only `step`
+(§6 predicted the rest for P5 — they land here instead). From this phase
+all four slots are dispatched and three accessors let a plugin's `step`
+reach what a wrapper needs. Two pieces are deliberately not here yet —
+the state-pointer decision and the sample plugin — and this section
+records the contract as landed plus the fork the phase's review is for.
+
+**What a plugin author reads and writes.** Read: the header's
+register_backend comment block (the pairing table), the vtable
+declaration, and the accessor section. Write: a
+`tension_solver_backend_vtable` with `name`, `kind`, `deterministic`,
+`step` (required), and whichever of `derivative`, `validate`, `state`,
+`set_state`, `destroy` the backend needs — plus an init function that
+calls `tension_solver_register_backend`. Registration enforces what P2
+pinned: a name shadowing a built-in, a `kind` outside the reserved set,
+a `deterministic` that contradicts `kind`, or a missing `step` is
+`-EINVAL`. The vtable is stored by pointer — it must outlive the
+process.
+
+**The lifecycle, as the shim now dispatches it.** create names the
+plugin and the handle record points at it (the record's `plugin` field
+already existed; no new field was needed). `source: native` requires the
+plugin's `derivative` slot — the plugin bundles its f. step calls
+`vt->step(id, dt)`; on 0 the shim advances its `t` by `dt` (the
+built-ins' convention, unchanged), on nonzero it does not advance and
+the value propagates. state / set_state keep the public entry points'
+argument contracts and then dispatch to `vt->state` / `vt->set_state`;
+a successful plugin set_state also updates the shim's `t` mirror, so
+`get_time` stays coherent with "the next step advances from t". destroy
+calls `vt->destroy` first and then releases the handle's own storage.
+Guardrails: NULL `state`/`set_state` slots answer `-EINVAL` — a plugin
+that presents no copy-out is legitimate, it simply cannot be
+checkpointed through the public API — and a NULL `destroy` slot is a
+no-op.
+
+**The accessors.** `tension_solver_get_dim` returns dim;
+`tension_solver_get_time` returns the shim's t;
+`tension_solver_get_derivative` returns the pointer bind_callbacks
+installed (NULL when none). All three answer for any live id, built-in
+or plugin, and report a bad id as `-EBADF` (get_derivative answers NULL,
+the one documented ambiguity). A plugin that implements its own
+integrator and its own f needs none of them; a plugin wrapping a
+built-in needs all three — and one more thing they do not yet provide.
+
+**The open fork (reported, awaiting confirmation before Part D).** A
+wrapping plugin's step must read and write the shared state vector, and
+the three accessors do not expose it. (i) Add a fourth accessor,
+`double *tension_solver_get_state_ptr(int32_t id)`: the plugin mutates
+the shim's state in place exactly as the built-in step functions do,
+which makes the header's `rk45_native` example implementable literally;
+the vtable's state/set_state slots then serve plugins that do not expose
+a raw pointer (they present a copied view through the slot). (ii) Keep
+three accessors and require plugin-owned state entirely: cleaner as an
+abstraction, but a `source: wasm` wrapper would have to copy the guest's
+state through itself per stage and reimplement the integration loop,
+defeating the `rk45_native` example's purpose. The lean recorded with
+this phase's report is (i) — and a fourth declaration is exactly the
+case the phase brief's "if you find a fourth addition is needed, STOP
+and report rather than proceeding" rule names. A wrapper's workspace is
+the plugin's own allocation either way (it knows its method's size; the
+shim's workspace remains built-in plumbing). The sample plugin
+(`examples/plugins/midpoint`) and the P1/P4/P5 tests wait on that
+confirmation; the accessors and the lifecycle guardrails are already
+covered by `tests/solver_p7.rs` (P2 and P3's time half).
+
+**What phase 7 has not delivered yet:** the sample plugin and the
+end-to-end wrapping proof (the fork above); loading a plugin `.so` from
+disk (a host application loads its plugins and calls register_backend —
+the shim only accepts the call); plugin ABI versioning; introspection
+beyond the vtable's name.

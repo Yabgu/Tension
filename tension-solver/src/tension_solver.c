@@ -722,7 +722,10 @@ int32_t tension_solver_step(int32_t id, double dt)
 
     if (h->is_plugin) {
         h->stepped = 1;
-        return h->plugin->vt->step(id, dt);
+        rc = h->plugin->vt->step(id, dt);
+        if (rc == 0)
+            h->t += dt; /* the same convention as the built-ins */
+        return rc;
     }
 
     if (h->source == TS_SRC_WASM && h->bound_derivative == NULL)
@@ -775,8 +778,12 @@ int32_t tension_solver_state(int32_t id, double *t_out, double *y_out,
 
     if (h == NULL)
         return TS_EBADF;
+    if (h->is_plugin && h->plugin->vt->state == NULL)
+        return TS_EINVAL; /* the plugin presents no state copy-out slot */
     if (t_out == NULL || y_out == NULL || y_cap < h->dim)
         return TS_EINVAL;
+    if (h->is_plugin)
+        return h->plugin->vt->state(id, t_out, y_out, y_cap);
 
     *t_out = h->t;
     memcpy(y_out, h->y, (size_t)h->dim * sizeof(double));
@@ -787,11 +794,20 @@ int32_t tension_solver_set_state(int32_t id, double t, const double *y,
                                  int32_t y_len)
 {
     TsSolver *h = handle(id);
+    int32_t rc;
 
     if (h == NULL)
         return TS_EBADF;
+    if (h->is_plugin && h->plugin->vt->set_state == NULL)
+        return TS_EINVAL; /* the plugin presents no restore slot */
     if (y == NULL || y_len != h->dim)
         return TS_EINVAL;
+    if (h->is_plugin) {
+        rc = h->plugin->vt->set_state(id, t, y, y_len);
+        if (rc == 0)
+            h->t = t; /* keep get_time coherent with the restore */
+        return rc;
+    }
 
     memcpy(h->y, y, (size_t)h->dim * sizeof(double));
     h->t = t;
@@ -805,7 +821,46 @@ void tension_solver_destroy(int32_t id)
     if (h == NULL)
         return; /* never allocated, already destroyed, or out of range */
 
+    if (h->is_plugin && h->plugin->vt->destroy != NULL)
+        h->plugin->vt->destroy(id); /* NULL destroy: nothing to release */
+
     free(h->y);
     free(h->ws);
     memset(h, 0, sizeof *h);
+}
+
+/* ── plugin accessors ─────────────────────────────────────────────────── */
+/*
+ * The asks a plugin's step function may make of the shim (the header's
+ * accessor section). They answer for every live id, built-in or plugin:
+ * a wrapper plugin needs the wasm-bound derivative pointer, its dim and
+ * its current t; a self-contained plugin calls none of them. Bad ids are
+ * -EBADF (get_derivative answers NULL — the same shape a never-bound
+ * solver has, which is the documented ambiguity).
+ */
+int32_t tension_solver_get_dim(int32_t id)
+{
+    TsSolver *h = handle(id);
+
+    if (h == NULL)
+        return TS_EBADF;
+    return h->dim;
+}
+
+double tension_solver_get_time(int32_t id)
+{
+    TsSolver *h = handle(id);
+
+    if (h == NULL)
+        return (double)TS_EBADF;
+    return h->t;
+}
+
+tension_solver_derivative_fn tension_solver_get_derivative(int32_t id)
+{
+    TsSolver *h = handle(id);
+
+    if (h == NULL)
+        return NULL;
+    return h->bound_derivative;
 }

@@ -74,6 +74,24 @@ fn register_plugin(
     derivative: Option<DerivFn>,
     step: Option<StepFn>,
 ) -> i32 {
+    register_plugin_full(name, kind, deterministic, derivative, step, None, None, None)
+}
+
+/// As `register_plugin`, with the lifecycle slots spelled out. (P7 made
+/// the slots load-bearing: a plugin handle's public state/set_state now
+/// dispatch through them, so a plugin with visible state must present
+/// it — see T18's rework.)
+#[allow(clippy::too_many_arguments)]
+fn register_plugin_full(
+    name: &str,
+    kind: &str,
+    deterministic: u32,
+    derivative: Option<DerivFn>,
+    step: Option<StepFn>,
+    state: Option<StateFn>,
+    set_state: Option<SetStateFn>,
+    destroy: Option<DestroyFn>,
+) -> i32 {
     let vt = Box::leak(Box::new(Vtable {
         name: CString::new(name).unwrap().into_raw(),
         kind: CString::new(kind).unwrap().into_raw(),
@@ -81,9 +99,9 @@ fn register_plugin(
         derivative,
         validate: None,
         step,
-        state: None,
-        set_state: None,
-        destroy: None,
+        state,
+        set_state,
+        destroy,
     }));
     let name_c = CString::new(name).unwrap();
     unsafe { tension_solver_register_backend(name_c.as_ptr(), vt as *const Vtable) }
@@ -116,8 +134,33 @@ unsafe extern "C" fn step_count(_id: i32, _dt: f64) -> i32 {
     0
 }
 
-/// A plugin integrator that advances a dim-2 state by `dt` per component
-/// and its clock by `dt`, through the public state/set_state surface.
+/// T18's plugin: an integrator that owns its state (the Part D fork's
+/// option (ii) shape, which the P7 lifecycle dispatch requires of a
+/// plugin with visible state) and advances it by `dt` per component and
+/// its clock by `dt`, through the public state/set_state surface — which
+/// for a plugin handle dispatches back into the two slots below.
+static T18_STATE: Mutex<(f64, [f64; 2])> = Mutex::new((0.0, [0.0, 0.0]));
+
+unsafe extern "C" fn t18_state(_id: i32, t_out: *mut f64, y_out: *mut f64, y_cap: i32) -> i32 {
+    if t_out.is_null() || y_out.is_null() || y_cap < 2 {
+        return -22;
+    }
+    let s = T18_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    *t_out = s.0;
+    std::ptr::copy_nonoverlapping(s.1.as_ptr(), y_out, 2);
+    2
+}
+
+unsafe extern "C" fn t18_set_state(_id: i32, t: f64, y: *const f64, y_len: i32) -> i32 {
+    if y.is_null() || y_len != 2 {
+        return -22;
+    }
+    let mut s = T18_STATE.lock().unwrap_or_else(|p| p.into_inner());
+    s.0 = t;
+    std::ptr::copy_nonoverlapping(y, s.1.as_mut_ptr(), 2);
+    0
+}
+
 unsafe extern "C" fn step_slope1(id: i32, dt: f64) -> i32 {
     let mut t = 0.0f64;
     let mut y = [0.0f64; 2];
@@ -390,12 +433,27 @@ fn t17_state_round_trip() {
 }
 
 // ── T18: a plugin's step advances y and t ─────────────────────────────────
+//
+// P7 reworked this test's fixture. Until P7, a plugin handle's public
+// state/set_state used the shim's own y/t, so a plugin could advance the
+// visible state without owning it. Since P7 (DESIGN.md §11) those entry
+// points dispatch through the vtable for plugin handles — a plugin with
+// visible state must present it, as this fixture now does.
 
 #[test]
 fn t18_plugin_step_advances() {
     let _g = lock();
     assert_eq!(
-        register_plugin("p_t18", "custom", 0, Some(rhs_zero), Some(step_slope1)),
+        register_plugin_full(
+            "p_t18",
+            "custom",
+            0,
+            Some(rhs_zero),
+            Some(step_slope1),
+            Some(t18_state),
+            Some(t18_set_state),
+            None
+        ),
         0
     );
     let id = create(r#"{"method":"p_t18","source":"native","dim":2}"#);
