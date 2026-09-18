@@ -424,9 +424,20 @@ implicit Euler's A-stability where explicit Euler would fail; at
 `h·L = 10` it reports `-EIO` rather than diverging silently, which is
 the honest failure the contract asked for. True stiff robustness needs a
 Newton solve, and a Jacobian does not cross the derivative-only ABI. The
-phase brief's stiff-stability test is therefore split into the two
-truths: `-EIO` outside the window, monotone decay to the correct
-asymptote inside it.
+phase brief's test for stability beyond explicit Euler's bound is
+therefore split into the two truths: `-EIO` outside the window,
+monotone decay to the correct asymptote inside it.
+
+The fixed-point implementation of implicit Euler is not A-stable.
+Fixed-point iteration requires `h·L < 1` to converge, which is tighter
+than explicit Euler's stability bound `h·L ≤ 2` on the same problems.
+This means the current implementation is slower than explicit Euler on
+the same step sizes and offers no stiffness advantage in v1. A truly
+stiff-capable implicit Euler needs a Newton solve, which needs a
+Jacobian — a channel the frozen ABI does not carry. The method exists in
+v1 as the demonstration of the implicit family's shape and as the
+target for a Newton-capable variant when (and if) a Jacobian channel is
+added.
 
 **Spook is deferred, with its reason.** SPOOK is constraint-based
 position-based dynamics: constraints (distance, angle, joint, contact)
