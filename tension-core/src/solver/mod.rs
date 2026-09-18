@@ -427,6 +427,8 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 // with -EINVAL — the same errno the shim uses when a wasm
                 // bind carries no callbacks at all — and take the id back
                 // out of the table first (it is 64 slots, process-wide).
+                // No binding exists yet — the map insert happens only once
+                // resolution has succeeded — so none is left behind.
                 unsafe { tension_solver_destroy(id) };
                 return EINVAL;
             };
@@ -503,6 +505,9 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "tension::solver",
         "solver_destroy",
         |mut caller: Caller<'_, HostState>, id: i32| {
+            // The binding goes with the handle: the shim reuses ids after
+            // destroy (it hands out the first free slot), so an entry left
+            // here would outlive the store its function handles point into.
             caller.data_mut().solver.bound.remove(&id);
             unsafe { tension_solver_destroy(id) };
         },

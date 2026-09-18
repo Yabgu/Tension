@@ -351,7 +351,10 @@ guests in one tension-core process would share that table — and the
 host-side binding records are per store, so they would not follow — and any
 guest can destroy any handle by guessing its id. Not fixed in phase 5; when
 isolation matters, the table and the binding map must move behind an owner
-keyed by store identity. (The tests hit the unlocked table first: parallel
+keyed by store identity. The host-side bound map (shim id -> guest exports)
+is cleared on destroy and on the refused-create path; ids are reused by the
+shim after destroy, and a stale entry would misbind a new solver to a
+destroyed guest. (The tests hit the unlocked table first: parallel
 test threads race on slot allocation, so the P5 tests serialize on a mutex.
 The runtime itself is single-threaded per guest, which is why this is a
 harness concern now and a limitation only when guests multiply.)
