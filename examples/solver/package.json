@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: numerical integration over the tension::solver ABI (rk45 on y' = -y)",
   "scripts": {
-    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap",
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release --exportTable",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap --exportTable",
     "run": "../../tension-core/target/debug/tension-core build/game.wasm",
     "start": "npm run build && npm run run"
   },

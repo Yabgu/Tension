@@ -110,13 +110,21 @@ export declare class ResFile {
 // ---- tension::solver — the numerical solver coprocessor ------------------
 //
 // Five imports (GUEST_ABI.md): create, step, state, set_state, destroy. The
-// guest's `_derivative` / `deriv_buf_in` / `deriv_buf_out` exports are the
-// guest's own — the host resolves them under `source: "wasm"`. Errors are
-// null / -1, never exceptions. `state` writes `[t, y0, y1, ...]`; `setState`
-// takes `t` and `y` separately, because a checkpoint is `{t, y}`.
+// guest passes `_derivative` / `deriv_buf_in` / `deriv_buf_out` to `create`
+// in a `SolverCallbacks` object; under `source: "wasm"` the host resolves
+// them from the module's exported `table` (build with `asc --exportTable`).
+// Errors are null / -1, never exceptions. `state` writes `[t, y0, y1, ...]`;
+// `setState` takes `t` and `y` separately, because a checkpoint is `{t, y}`.
+
+/** The three callbacks a `source: "wasm"` solver uses; ignored otherwise. */
+export declare class SolverCallbacks {
+  derivative: (yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32) => i32;
+  bufIn: () => i32;
+  bufOut: () => i32;
+}
 
 export declare class Solver {
-  static create(configJson: string): Solver | null;
+  static create(configJson: string, callbacks: SolverCallbacks): Solver | null;
   step(dt: f64): i32;
   state(out: Float64Array): i32;
   setState(t: f64, y: Float64Array): i32;

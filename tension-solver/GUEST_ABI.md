@@ -43,7 +43,13 @@ use — the same shape `tension-framework/assembly/res.ts` uses for
 
 ```
 @external("tension::solver", "solver_create")
-declare function hostSolverCreate(configPtr: usize, configLen: i32): i32;
+declare function hostSolverCreate(
+  configPtr: usize,
+  configLen: i32,
+  derivativeIdx: i32,
+  bufInIdx: i32,
+  bufOutIdx: i32
+): i32;
 
 @external("tension::solver", "solver_step")
 declare function hostSolverStep(id: i32, dt: f64): i32;
@@ -60,12 +66,11 @@ declare function hostSolverDestroy(id: i32): void;
 
 The C ABI (`tension_solver.h`) declares six entry points. The guest
 ABI declares five. The sixth, `tension_solver_bind_callbacks`, is not
-a guest import: for `source: "wasm"` the host resolves the guest
-module's `_derivative`, `deriv_buf_in`, and `deriv_buf_out` exports
-itself and performs the binding at the C level during `create`. The
-guest declares nothing and calls nothing for it. The `@external`
-block above is the complete list of what the guest imports from
-`tension::solver`.
+a guest import: for `source: "wasm"` the host takes the three callbacks
+the guest passes to `create`, resolves them, and performs the binding
+at the C level itself. The guest declares nothing and calls nothing
+for it. The `@external` block above is the complete list of what the
+guest imports from `tension::solver`.
 
 Conventions, matching res.ts: pointers cross as `usize` (the guest's
 linear-memory address), lengths are `i32` byte or slot counts, ids are
@@ -75,11 +80,11 @@ failure is a negative errno (§5). Nothing throws.
 ## 3. Host function signatures
 
 One subsection per guest import (§3.1–§3.5), then the host-performed
-bind and the three exports the guest provides. The wasm-level type is
+bind and the three callbacks the guest passes. The wasm-level type is
 written the way schema.yaml writes callback signatures; `ptr` and
 `usize` both mean a 32-bit guest address at this boundary.
 
-### 3.1 `solver_create` — `i32(ptr u8 config_json, i32 config_len)`
+### 3.1 `solver_create` — `i32(ptr u8 config_json, i32 config_len, i32 derivative_idx, i32 buf_in_idx, i32 buf_out_idx)`
 
 Creates a solver from a UTF-8 JSON config: the bytes at `configPtr`,
 exactly `configLen` of them, no NUL terminator read (the `hostResOpen`
@@ -88,6 +93,16 @@ declares — `method` and `source` required, `dim` required for
 `source: "wasm"` and `source: "native"`, `parameters:` drawn from the
 nine global parameters — and this document does not restate the keys,
 their defaults, or their ranges.
+
+For `source: "wasm"`, the last three arguments are the callbacks the
+solver will use, in order: the derivative, `buf_in`, and `buf_out`.
+Each is an index into the module's function table, and the module must
+export that table as `table` — AssemblyScript produces the export with
+`asc --exportTable`. The host resolves the three indices at create and
+stores them per solver id; every one must name a function of the
+declared signature (§3.6), or create refuses with `-EINVAL`. Two
+solvers created with different derivatives therefore behave
+independently. For any other source the three indices are ignored.
 
 Returns a handle ≥ 1, or a negative errno. The mapping is the header's:
 `-EINVAL` for a malformed config or an unmet source requirement,
@@ -143,15 +158,15 @@ what turns `isOpen` false (§4).
 
 **A note on `tension_solver_bind_callbacks`.** The C ABI's sixth
 entry point is not a guest import. For `source: "wasm"` the host
-resolves the guest module's `_derivative`, `deriv_buf_in`, and
-`deriv_buf_out` exports itself and performs the binding at the C level
-during `create`; the guest declares nothing and calls nothing for it,
-and nothing in the guest module's import table corresponds to it. It
-is host-level only — the subject of this note, not of a subsection.
+resolves the three callbacks the guest passed to `create` and performs
+the binding at the C level; the guest declares nothing and calls
+nothing for it, and nothing in the guest module's import table
+corresponds to it. It is host-level only — the subject of this note,
+not of a subsection.
 
-### 3.6 The guest's exports (`_derivative`, `deriv_buf_in`, `deriv_buf_out`)
+### 3.6 The three callbacks the guest passes to `create` (`_derivative`, `deriv_buf_in`, `deriv_buf_out`)
 
-What the guest must provide is three exports from the module that
+What the guest must provide is three callbacks from the module that
 calls `create` — the convention phase 4 proved (DESIGN.md §8):
 
 - `_derivative(y_ptr, len, t, dy_ptr, dy_cap) -> i32` — f(t, y). The
@@ -165,6 +180,23 @@ calls `create` — the convention phase 4 proved (DESIGN.md §8):
   buffer.
 - `deriv_buf_out() -> i32` — returns the wasm address of the output
   buffer.
+
+The three functions' table indices are what `create` takes (§3.1). The
+module must export its function table as `table` — AssemblyScript
+produces that export with `asc --exportTable` — because the host
+resolves the indices through it; a module without the export cannot
+create a `source: "wasm"` solver. Exporting the three functions by
+name is not required (the example still does it; nothing reads the
+names).
+
+A note for guests that call the import directly instead of through the
+framework: AssemblyScript function references are not table indices. A
+function value points at the function's table-index word — that is the
+word AssemblyScript's own `call_indirect` sites load through — so the
+index is the i32 that pointer addresses, and the framework's
+`Solver.create` converts with exactly that dereference. A hand-rolled
+guest must convert the same way, or hand `create` something that does
+not name its callback.
 
 The two buffers are regions of the guest's own linear memory, not
 allocated by any function: guest and host agree by convention that two
@@ -193,6 +225,17 @@ are the implementation's, not this document's:
 
 ```
 /**
+ * The guest's three callbacks for a `source: "wasm"` solver: the
+ * derivative and the two functions returning the buffer addresses.
+ * For any other source they are ignored (§3.1).
+ */
+export class SolverCallbacks {
+  derivative: (yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32) => i32;
+  bufIn: () => i32;
+  bufOut: () => i32;
+}
+
+/**
  * A handle to one solver id. Errors are null / -1; nothing throws.
  * Destroy it when done — like ResFile.close, destroy is idempotent.
  */
@@ -201,12 +244,14 @@ export class Solver {
   private id: i32;
 
   /**
-   * Create a solver from a JSON config (schema.yaml's vocabulary).
-   * Returns null on any failure: malformed config, unknown method,
-   * unmet source requirement, unavailable method or source, allocation
-   * failure, or a full id table (§5).
+   * Create a solver from a JSON config (schema.yaml's vocabulary) and
+   * the three callbacks a `source: "wasm"` solver uses. Returns null on
+   * any failure: malformed config, unknown method, unmet source
+   * requirement, unavailable method or source, a callback index that
+   * does not name a function of the declared signature, or a full id
+   * table (§5).
    */
-  static create(configJson: string): Solver | null
+  static create(configJson: string, callbacks: SolverCallbacks): Solver | null
 
   /**
    * Advance by `dt`. Returns 0 on success, -1 on failure. Synchronous;
@@ -316,9 +361,13 @@ Pseudo-AssemblyScript for the guest-side loop — a sketch of the
 sequence, not compilable as shown:
 
 ```
-// `_derivative`, `deriv_buf_in`, `deriv_buf_out` are exports of this
-// module; the host resolves them at create — nothing to call by hand.
-const s = Solver.create('{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}');
+// `_derivative`, `deriv_buf_in`, `deriv_buf_out` are this module's; the
+// callback object rides with create and the host resolves it — nothing
+// to call by hand.
+const s = Solver.create(
+  '{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}',
+  { derivative: _derivative, bufIn: deriv_buf_in, bufOut: deriv_buf_out }
+);
 if (s == null) return;                // config rejected: null, never a throw
 const buf = new Float64Array(3);      // [t, y0, y1] — slot 0 is the time
 while (s.isOpen()) {

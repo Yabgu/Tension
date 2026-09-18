@@ -1,16 +1,19 @@
 // examples/solver/game.ts — end-to-end solver demo.
 //
-// The guest exports the three things the `source: "wasm"` convention names —
-// `_derivative`, `deriv_buf_in`, `deriv_buf_out` — and then uses the Solver
-// class. The host resolves the exports at create and calls `_derivative` per
-// integration stage; nothing here registers or binds anything by hand.
+// The guest defines the three callbacks the `source: "wasm"` convention
+// needs — `_derivative` (the right-hand side), `deriv_buf_in` and
+// `deriv_buf_out` (the two buffer addresses) — and passes them to
+// `Solver.create`; the host calls `_derivative` per integration stage. The
+// module is built with `asc --exportTable` (package.json) so the host can
+// resolve the callbacks by their indices in the exported function table;
+// nothing here registers or binds anything by hand.
 
 import { print, Solver } from "tension-framework";
 
-// The three-export convention: two non-overlapping regions of this module's
-// linear memory (at least 64 KiB each), and the derivative that reads y from
-// the input region and writes f(t, y) to the output region. The host copies
-// state through these regions; the guest never sees a host pointer.
+// The callbacks: two non-overlapping regions of this module's linear memory
+// (at least 64 KiB each), and the derivative that reads y from the input
+// region and writes f(t, y) to the output region. The host copies state
+// through these regions; the guest never sees a host pointer.
 const BUF_IN: usize = memory.data(65536, 8);
 const BUF_OUT: usize = memory.data(65536, 8);
 
@@ -35,6 +38,7 @@ export function _start_game(): void {
   print("=== TensionCore solver demo: rk45 on y' = -y ===");
   const s = Solver.create(
     '{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}',
+    { derivative: _derivative, bufIn: deriv_buf_in, bufOut: deriv_buf_out },
   );
   if (s == null) {
     print("solver create failed");

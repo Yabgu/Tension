@@ -10,11 +10,12 @@
 //!
 //! # The reentrancy bridge
 //!
-//! Under `source: "wasm"` the derivative lives in the guest module. At
-//! `solver_create` this module resolves the guest's `_derivative`,
-//! `deriv_buf_in` and `deriv_buf_out` exports, stores them keyed by the
-//! shim's solver id, and binds a [`derivative_trampoline`] through
-//! `tension_solver_bind_callbacks`. The Fortran step loop then calls the
+//! Under `source: "wasm"` the derivative lives in the guest module. The
+//! guest passes `solver_create` three function-table indices — derivative,
+//! `buf_in`, `buf_out`; this module resolves them from the module's exported
+//! `table`, stores the typed functions keyed by the shim's solver id, and
+//! binds a [`derivative_trampoline`] through `tension_solver_bind_callbacks`.
+//! The Fortran step loop then calls the
 //! trampoline per stage, believing it is any other C function; the
 //! trampoline performs P4's copy-in / call / copy-out dance against the
 //! guest's linear memory (DESIGN.md §8).
@@ -23,14 +24,14 @@
 //! argument — the ABI's derivative typedef has no user-data slot (a purity
 //! decision at fd8e4bd) — so it reaches its context through a thread-local
 //! that `solver_step` installs around the synchronous shim call: the guest's
-//! `Caller` and the bound exports for the id being stepped. `step` is
+//! `Caller` and the bound callbacks for the id being stepped. `step` is
 //! synchronous and runs on one thread, so the window cannot interleave;
 //! nested installs (a derivative that steps another solver) are saved and
 //! restored.
 //!
 //! # The one-guest assumption
 //!
-//! The shim's solver table is process-global while the bound-export records
+//! The shim's solver table is process-global while the bound-callback records
 //! here live per store. A second guest in the same process would share the
 //! id table but not the records — and any guest could destroy any handle by
 //! guessing its id. The interpreter runs one guest per process today;
@@ -40,7 +41,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_char;
 
-use wasmtime::{Caller, Linker, Memory, TypedFunc};
+use wasmtime::{Caller, Func, Linker, Memory, Ref, Table, TypedFunc};
 
 use crate::HostState;
 
@@ -71,9 +72,10 @@ type DerivFn = unsafe extern "C" fn(*const f64, i32, f64, *mut f64, i32) -> i32;
 type ValidateFn =
     unsafe extern "C" fn(*const f64, i32, *const f64, i32, f64, *mut u8, i32) -> i32;
 
-/// A guest's bound exports for one wasm-source solver, resolved once at
-/// create. The typed handles pin the signatures the convention declares, so
-/// a mis-shaped export fails create rather than the first stage.
+/// A guest's bound callbacks for one wasm-source solver, resolved once at
+/// create from the three table indices the guest passed. The typed handles
+/// pin the signatures the convention declares, so a mis-shaped table entry
+/// fails create rather than the first stage.
 #[derive(Clone)]
 struct GuestExports {
     derivative: TypedFunc<(i32, i32, f64, i32, i32), i32>,
@@ -189,20 +191,42 @@ unsafe extern "C" fn derivative_trampoline(
     rc
 }
 
-/// Resolve the three exports the `source: "wasm"` convention names, with the
-/// signatures the convention declares. Any missing or mis-shaped export is
-/// `None` — create refuses it.
-fn resolve_exports(caller: &mut Caller<'_, HostState>) -> Option<GuestExports> {
-    let derivative = caller.get_export("_derivative")?.into_func()?;
-    let buf_in = caller.get_export("deriv_buf_in")?.into_func()?;
-    let buf_out = caller.get_export("deriv_buf_out")?.into_func()?;
+/// Resolve the three callbacks the guest passed — table indices into the
+/// module's exported `table` — with the signatures the convention declares.
+/// Any entry that is missing, out of range, null, or mis-shaped is `None`:
+/// create refuses it. The module must export its function table as `table`
+/// (AssemblyScript produces that with `asc --exportTable`); without the
+/// export there is no way to reach an indirect function, and create refuses
+/// as it does for any other bad index.
+fn resolve_callbacks(
+    caller: &mut Caller<'_, HostState>,
+    derivative_idx: i32,
+    buf_in_idx: i32,
+    buf_out_idx: i32,
+) -> Option<GuestExports> {
+    let table = caller.get_export("table")?.into_table()?;
     let memory = caller.get_export("memory")?.into_memory()?;
+    let derivative = table_func(&table, caller, derivative_idx)?;
+    let buf_in = table_func(&table, caller, buf_in_idx)?;
+    let buf_out = table_func(&table, caller, buf_out_idx)?;
     Some(GuestExports {
         derivative: derivative.typed::<(i32, i32, f64, i32, i32), i32>(&*caller).ok()?,
         buf_in: buf_in.typed::<(), i32>(&*caller).ok()?,
         buf_out: buf_out.typed::<(), i32>(&*caller).ok()?,
         memory,
     })
+}
+
+/// The function at `index` in the guest's exported table: `None` for a
+/// negative or out-of-range index, or for a null table entry.
+fn table_func(table: &Table, caller: &mut Caller<'_, HostState>, index: i32) -> Option<Func> {
+    if index < 0 {
+        return None;
+    }
+    match table.get(&mut *caller, index as u32)? {
+        Ref::Func(Some(func)) => Some(func),
+        _ => None,
+    }
 }
 
 /// Does a shim-validated config declare `"source": "wasm"`?
@@ -407,7 +431,13 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
     linker.func_wrap(
         "tension::solver",
         "solver_create",
-        |mut caller: Caller<'_, HostState>, config_ptr: i32, config_len: i32| -> i32 {
+        |mut caller: Caller<'_, HostState>,
+         config_ptr: i32,
+         config_len: i32,
+         derivative_idx: i32,
+         buf_in_idx: i32,
+         buf_out_idx: i32|
+         -> i32 {
             let Some(config) = read_guest_bytes(&mut caller, config_ptr, config_len) else {
                 return EINVAL;
             };
@@ -416,19 +446,26 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 return id; // negative errno, unchanged
             }
             if !config_source_is_wasm(&config) {
+                // `world` and `native` sources have no callbacks to bind;
+                // the three indices are ignored (GUEST_ABI.md §3.1).
                 return id;
             }
-            // `source: "wasm"`: the host resolves the guest's exports and
-            // performs the bind on the guest's behalf (GUEST_ABI.md §3.6);
-            // the guest never calls bind_callbacks.
-            let Some(exports) = resolve_exports(&mut caller) else {
-                // The config asked for the wasm source; the module does not
-                // provide the three exports the convention requires. Refuse
-                // with -EINVAL — the same errno the shim uses when a wasm
-                // bind carries no callbacks at all — and take the id back
-                // out of the table first (it is 64 slots, process-wide).
-                // No binding exists yet — the map insert happens only once
-                // resolution has succeeded — so none is left behind.
+            // `source: "wasm"`: the guest passed the three callbacks' table
+            // indices; the host resolves them from the module's exported
+            // table and performs the bind on the guest's behalf
+            // (GUEST_ABI.md §3.6); the guest never calls bind_callbacks.
+            let Some(exports) =
+                resolve_callbacks(&mut caller, derivative_idx, buf_in_idx, buf_out_idx)
+            else {
+                // The config asked for the wasm source and one of the three
+                // indices does not name a function of the declared signature
+                // — or the module exports no table to resolve through.
+                // Refuse with -EINVAL — the same errno the shim uses when a
+                // wasm bind carries no callbacks at all — and take the id
+                // back out of the table first (it is 64 slots,
+                // process-wide). No binding exists yet — the map insert
+                // happens only once resolution has succeeded — so none is
+                // left behind.
                 unsafe { tension_solver_destroy(id) };
                 return EINVAL;
             };

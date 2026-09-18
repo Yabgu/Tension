@@ -314,17 +314,19 @@ imports five: `solver_create`, `solver_step`, `solver_state`,
 a guest import — a wasm module's import table is fixed at instantiation, and
 a function the guest never calls must not be a row in it. For
 `source: "wasm"` the host performs the bind itself at create; the guest's
-part of the contract is its three exports (`_derivative`, `deriv_buf_in`,
-`deriv_buf_out`), which the host resolves and calls.
+part of the contract is its three callbacks (`_derivative`, `deriv_buf_in`,
+`deriv_buf_out`), which it passes to `create` and the host resolves and
+calls.
 
 **The host-side reentrancy.** At `solver_create` the host import reads the
 config, calls the shim, and — when the config declares `source: "wasm"` —
-resolves the guest module's three exports (validating their signatures),
+resolves the three callbacks the guest passed, table indices into the
+module's exported `table` (validating their signatures),
 stores them in a per-store map keyed by the shim's solver id, and calls
 `tension_solver_bind_callbacks` with the trampoline. The trampoline cannot
 carry a context argument (the callback typedef has no user-data slot; that
 purity decision is §6's), so `solver_step` installs a thread-local bridge
-around the synchronous shim call — the caller and the bound exports for the
+around the synchronous shim call — the caller and the bound callbacks for the
 id being stepped — and the trampoline, running inside that window, performs
 P4's copy-in / call / copy-out dance (§8) against the guest's linear memory.
 Nested installs save and restore: a derivative that steps another solver
@@ -334,8 +336,20 @@ duration of the step, and the discipline that keeps it valid (installed and
 cleared inside one synchronous call, on one thread) is carried by the
 comment and the tests, not by a type.
 
+**The callbacks are per solver.** The guest ABI's create signature takes
+the guest's three callbacks as arguments (a `SolverCallbacks` object in the
+TS surface, three function-table indices at the ABI), which the host
+resolves from the module's exported `table` — the reason the guest build
+carries `asc --exportTable`. The earlier shape resolved `_derivative`,
+`deriv_buf_in`, `deriv_buf_out` by fixed symbol name at create time; that
+permitted only one derivative per guest module, since the derivative
+typedef carries no user-data argument. Passing the functions as arguments
+makes the callbacks per-solver and preserves the purity the ABI's design
+rests on.
+
 **The source probe.** The five-import shape means the host must know whether
-a create is `source: "wasm"` before deciding to resolve the exports. The
+a create is `source: "wasm"` before deciding to resolve the callbacks'
+indices. The
 frozen C surface exposes no source query, so the host import probes the
 shim-validated config bytes for the top-level `"source"` member — a cursor
 over the documented subset (short escapes, one nested `parameters` object),
@@ -365,14 +379,17 @@ async stepping or cancellation; guest-visible diagnostics beyond errno; and
 the plugin lifecycle through the vtable (only `step` is dispatched).
 
 **Observations from the phase tests** (`tension-core/src/solver/p5_tests.rs`,
-H1–H5, plus `examples/solver/`). A hand-written WAT guest that imports the
-five names and exports the three creates, steps (euler, one step of 0.1 on
-y′ = −y from y₀ = 2.0 → y = 1.8, bit-exact), steps (rk45, one step of 1.0
-from y₀ = 1.0 → 0.3678794419328082, 7.6e−10 from e⁻¹), is bit-identical
-across two runs, and is refused with `-EINVAL` when the exports are missing.
-The AssemblyScript example — ten 0.1-steps to t = 1.0 at relTol 1e−8 —
-lands 1.2e−9 from e⁻¹, the accumulation over the loop, with t at
-0.9999999999999999 for the same reason.
+H1–H5 and N1–N2, plus `examples/solver/`). A hand-written WAT guest that
+imports the five names and passes its three callbacks' table indices
+creates, steps (euler, one step of 0.1 on y′ = −y from y₀ = 2.0 → y = 1.8,
+bit-exact), steps (rk45, one step of 1.0 from y₀ = 1.0 →
+0.3678794419328082, 7.6e−10 from e⁻¹), is bit-identical across two runs,
+and is refused with `-EINVAL` when an index does not name a function of the
+declared signature; N1 (one module, two solvers, two derivatives) and N2 (a
+wrong-signature index) are the correction's evidence, and the example's
+numbers are unchanged after it. The AssemblyScript example — ten 0.1-steps
+to t = 1.0 at relTol 1e−8 — lands 1.2e−9 from e⁻¹, the accumulation over
+the loop, with t at 0.9999999999999999 for the same reason.
 
 ---
 
