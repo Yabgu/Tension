@@ -36,9 +36,10 @@ authoritative and this document reproduces them for the guest reader.
 
 The wasm import module is `tension::solver`, the sibling of
 `tension::res` and `tension::io`. The module's host functions are named
-`solver_*`, one per public entry point in tension_solver.h. The
-declarations below are the shape the guest bindings use — the same
-shape `tension-framework/assembly/res.ts` uses for `tension::res`:
+`solver_*`; the five below are every import the guest makes from
+`tension::solver`. The declarations are the shape the guest bindings
+use — the same shape `tension-framework/assembly/res.ts` uses for
+`tension::res`:
 
 ```
 @external("tension::solver", "solver_create")
@@ -55,28 +56,28 @@ declare function hostSolverSetState(id: i32, t: f64, yPtr: usize, yLen: i32): i3
 
 @external("tension::solver", "solver_destroy")
 declare function hostSolverDestroy(id: i32): void;
-
-// Host-performed under source: "wasm" — the guest never calls this (§3.6).
-@external("tension::solver", "solver_bind_callbacks")
-declare function hostSolverBindCallbacks(id: i32): i32;
 ```
+
+The C ABI (`tension_solver.h`) declares six entry points. The guest
+ABI declares five. The sixth, `tension_solver_bind_callbacks`, is not
+a guest import: for `source: "wasm"` the host resolves the guest
+module's `_derivative`, `deriv_buf_in`, and `deriv_buf_out` exports
+itself and performs the binding at the C level during `create`. The
+guest declares nothing and calls nothing for it. The `@external`
+block above is the complete list of what the guest imports from
+`tension::solver`.
 
 Conventions, matching res.ts: pointers cross as `usize` (the guest's
 linear-memory address), lengths are `i32` byte or slot counts, ids are
 `i32` (1-based; 0 is never valid), time and `dt` are `f64`, and every
 failure is a negative errno (§5). Nothing throws.
 
-`hostSolverBindCallbacks` is the one asymmetric entry: under
-`source: "wasm"` the host performs the bind on the guest's behalf
-(§3.6), so the bindings emit no import call for it. It is declared
-here so that the module's full surface — all six `solver_*` names —
-is named and signed in one place.
-
 ## 3. Host function signatures
 
-One subsection per entry point. The wasm-level type is written the way
-schema.yaml writes callback signatures; `ptr` and `usize` both mean a
-32-bit guest address at this boundary.
+One subsection per guest import (§3.1–§3.5), then the host-performed
+bind and the three exports the guest provides. The wasm-level type is
+written the way schema.yaml writes callback signatures; `ptr` and
+`usize` both mean a 32-bit guest address at this boundary.
 
 ### 3.1 `solver_create` — `i32(ptr u8 config_json, i32 config_len)`
 
@@ -105,7 +106,8 @@ runs to completion, and real-time constraints are guest policy.
 Errors the guest can see here: `-EBADF` for a destroyed or
 never-allocated id; `-EINVAL` for a `source: "wasm"` id whose callbacks
 are not bound — the call order is create → bind → step, and the host
-performs the bind itself (§3.6); `-EIO` when a callback returns a fatal
+performs the bind itself (the note following §3.5); `-EIO` when a
+callback returns a fatal
 error or an adaptive method cannot meet its tolerances within
 `minStep` (DESIGN.md §7).
 
@@ -139,23 +141,18 @@ ignored. There is no return value and no failure mode — the shape
 `res_close` uses. In the class, `destroy` sets the id to 0, which is
 what turns `isOpen` false (§4).
 
-### 3.6 `solver_bind_callbacks` — `i32(i32 id)`
+**A note on `tension_solver_bind_callbacks`.** The C ABI's sixth
+entry point is not a guest import. For `source: "wasm"` the host
+resolves the guest module's `_derivative`, `deriv_buf_in`, and
+`deriv_buf_out` exports itself and performs the binding at the C level
+during `create`; the guest declares nothing and calls nothing for it,
+and nothing in the guest module's import table corresponds to it. It
+is host-level only — the subject of this note, not of a subsection.
 
-**Design decision (phase 5): the guest does not call
-bind_callbacks.** The header's rule is that for `source: "wasm"` the
-host obtains the function pointers from the wasm module's exports and
-performs the bind itself, once, after `create`. There is no guest-side
-call: a wasm guest cannot pass host pointers across the boundary
-anyway, so an explicit guest call would only re-trigger a scan the host
-already performs. The declaration in §2 pins the entry's wasm-level
-shape for completeness and for a future phase that might expose
-explicit rebinding; the phase-5 bindings never emit it. (The reviewed
-alternative — the guest calls `solver_bind_callbacks(id)` with no
-arguments to trigger the bind — was not chosen: it adds a failure point
-without adding information.)
+### 3.6 The guest's exports (`_derivative`, `deriv_buf_in`, `deriv_buf_out`)
 
-What the guest must provide instead is three exports from the module
-that calls `create` — the convention phase 4 proved (DESIGN.md §8):
+What the guest must provide is three exports from the module that
+calls `create` — the convention phase 4 proved (DESIGN.md §8):
 
 - `_derivative(y_ptr, len, t, dy_ptr, dy_cap) -> i32` — f(t, y). The
   guest's function, wasm-level
