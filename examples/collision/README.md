@@ -14,16 +14,20 @@ supplies a derivative and six constants; the solver supplies everything else.
 ```sh
 cd examples/collision
 ./run.sh            # builds the guest, runs it, renders collision.gif
+npm start           # the same thing
 ```
 
 Two outputs appear next to this file (both gitignored):
 
 - `positions.dat` — one CSV row every 0.1 s of sim time, 81 rows:
   `t x0 y0 r0 x1 y1 r1`
-- `collision.gif` — the animation gnuplot renders from it
+- `collision.gif` — the animation gnuplot renders from it, one frame per row.
 
-`run.sh` needs [gnuplot](http://gnuplot.info) on `PATH` (or set
-`GNUPLOT=/path/to/gnuplot`); everything else it needs it installs itself.
+The one dependency the example does not carry itself is
+[gnuplot](http://gnuplot.info) (`sudo apt install gnuplot` on Debian/Ubuntu,
+`brew install gnuplot` on macOS). `run.sh` checks for it before doing
+anything else and says so if it is missing; set `GNUPLOT=/path/to/gnuplot` to
+pick a specific binary. Everything else `run.sh` needs, it installs itself.
 
 ## What to look at
 
@@ -32,6 +36,8 @@ Two outputs appear next to this file (both gitignored):
   model working, not a bug: contact is a *spring* whose force grows with
   penetration, so overlap is the contact state itself.
 - **The bounce off the walls**, and how each bounce is lower than the last.
+- **The clock.** One frame is one 0.1 s sample (`delay 10`), so the animation
+  plays at the sim's own speed: 81 frames ≈ 8 s of real time.
 - **The settle.** By the end both spheres rest on the floor (their centres sit
   at about y = −4.55: the wall spring supports them with `K_WALL · pen = m·g`,
   a penetration of just under 5 cm) and glide sideways until the side walls
@@ -59,6 +65,9 @@ The trajectory in this demo is deliberately bouncy at first and quiet at the
 end: `DAMPING = 2.0` is what makes a drop-and-bounce settle inside the 8 s the
 example runs. At a token damping the soft springs return almost all of a
 contact's energy and the spheres bounce for as long as you care to watch.
+`K_CC = 800` with mass 1 is what makes one collision worth a few frames of
+visible overlap; raise `K_CC` for a harder, shorter contact or `DAMPING` to
+stop the bouncing sooner.
 
 ## The files
 

@@ -202,7 +202,7 @@ export function _start_game(): void {
     bufOut: deriv_buf_out,
   });
   if (s == null) {
-    print("# solver create failed");
+    print("# ERROR: solver create failed");
     return;
   }
 
@@ -214,13 +214,13 @@ export function _start_game(): void {
   state[5] = 3.0;  state[6] = 1.0; state[7] = -4.0; state[8] = 0.0;
 
   if (s.setState(0.0, state.subarray(1)) != 0) {
-    print("# setState failed");
+    print("# ERROR: setState failed");
     s.destroy();
     return;
   }
 
   if (s.state(state) < 0) {
-    print("# state failed");
+    print("# ERROR: state failed");
     s.destroy();
     return;
   }
@@ -229,17 +229,17 @@ export function _start_game(): void {
   // 80 steps of 0.1 s: 81 rows, t = 0 through 8.0 inclusive.
   for (let i = 0; i < 80; i++) {
     if (s.step(0.1) != 0) {
-      print("# step failed at t = " + state[0].toString());
+      print("# ERROR: step failed at t = " + state[0].toString());
       s.destroy();
       return;
     }
     if (s.state(state) < 0) {
-      print("# state failed");
+      print("# ERROR: state failed");
       s.destroy();
       return;
     }
     if (!stateIsFinite(state)) {
-      print("# NaN detected at t = " + state[0].toString());
+      print("# ERROR: NaN at t = " + state[0].toString());
       s.destroy();
       return;
     }
