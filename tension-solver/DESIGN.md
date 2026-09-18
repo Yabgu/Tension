@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 7 complete — see §11.**
+Status: **phase 9b complete — see §12 (the configuration struct).**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts

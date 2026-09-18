@@ -10,7 +10,8 @@
 //! Fixture convention: each guest writes its observations into fixed guest
 //! memory addresses and the test reads them back, so the assertions live on
 //! the Rust side where the values can be printed. Addresses used below:
-//! 64 = config JSON, 400..416 = i32 results, 424 = `t`, 432 = `y`,
+//! 64 = the config wire (DESIGN.md §12), 400..416 = i32 results,
+//! 424 = `t`, 432 = `y`,
 //! 512 = `set_state` input, 1024 / 66560 = the `deriv_buf_*` regions.
 //!
 //! Callback convention: each guest exports its function table as `table`
@@ -19,7 +20,9 @@
 //! functions; only the table and the `_start_game` entry are exports,
 //! unless a fixture deliberately exports a decoy (N1).
 
-use super::{config_source_is_wasm, link_solver, SolverHost};
+use super::config::{decode_wire, ConfigError};
+use super::test_support::Wire;
+use super::{link_solver, SolverHost};
 use crate::ai::stub::StubAdapter;
 use crate::audio::headless::HeadlessAdapter;
 use crate::{ai, audio, HostState};
@@ -35,8 +38,24 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(|poison| poison.into_inner())
 }
 
-/// `{"method":"euler","source":"wasm","dim":1}` — 42 bytes at 64.
-const EULER_GUEST: &str = r#"
+/// The `source: "wasm"` config the fixture guests carry: euler over dim 1.
+fn euler_wire() -> Wire {
+    Wire::new("euler", "wasm").dim(1)
+}
+
+/// rk45 over dim 1 with the P3 tolerances stated.
+fn rk45_wire() -> Wire {
+    Wire::new("rk45", "wasm")
+        .dim(1)
+        .param("relTol", 1e-8)
+        .param("absTol", 1e-10)
+}
+
+/// The euler wire (`euler_wire`) in a data segment at 64; its length
+/// rides in the create call's second argument.
+fn euler_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_step" (func $step (param i32 f64) (result i32)))
@@ -46,7 +65,7 @@ const EULER_GUEST: &str = r#"
   (memory (export "memory") 3)
   (table (export "table") 4 funcref)
   (elem (i32.const 1) $derivative $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func $derivative
         (param $y i32) (param $len i32) (param $t f64) (param $dy i32) (param $cap i32)
         (result i32)
@@ -68,7 +87,7 @@ const EULER_GUEST: &str = r#"
     (local $id i32)
     ;; create(config, derivative = index 1, buf_in = 2, buf_out = 3)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (f64.store (i32.const 512) (f64.const 2.0))
     (i32.store (i32.const 404)
@@ -78,11 +97,16 @@ const EULER_GUEST: &str = r#"
     (i32.store (i32.const 412)
       (call $state (local.get $id) (i32.const 424) (i32.const 432) (i32.const 1)))
     (call $destroy (local.get $id))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
-/// `{"method":"rk45","source":"wasm","dim":1,"parameters":{"relTol":1e-8,"absTol":1e-10}}`
-/// — 85 bytes at 64.
-const RK45_GUEST: &str = r#"
+/// The rk45 wire (`rk45_wire`), same shape as `euler_guest`.
+fn rk45_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_step" (func $step (param i32 f64) (result i32)))
@@ -92,7 +116,7 @@ const RK45_GUEST: &str = r#"
   (memory (export "memory") 3)
   (table (export "table") 4 funcref)
   (elem (i32.const 1) $derivative $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"rk45\",\"source\":\"wasm\",\"dim\":1,\"parameters\":{\"relTol\":1e-8,\"absTol\":1e-10}}")
+  (data (i32.const 64) "{wire}")
   (func $derivative
         (param $y i32) (param $len i32) (param $t f64) (param $dy i32) (param $cap i32)
         (result i32)
@@ -113,7 +137,7 @@ const RK45_GUEST: &str = r#"
   (func (export "_start_game")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 85) (i32.const 1) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (f64.store (i32.const 512) (f64.const 1.0))
     (i32.store (i32.const 404)
@@ -123,35 +147,47 @@ const RK45_GUEST: &str = r#"
     (i32.store (i32.const 412)
       (call $state (local.get $id) (i32.const 424) (i32.const 432) (i32.const 1)))
     (call $destroy (local.get $id))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
 /// Imports `tension::solver` but exports no function table; a
 /// `source: "wasm"` create has nothing to resolve its indices through and
 /// must refuse with -EINVAL.
-const NO_TABLE_GUEST: &str = r#"
+fn no_table_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_destroy" (func $destroy (param i32)))
   (memory (export "memory") 1)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func (export "_start_game")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (call $destroy (local.get $id))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
 /// A valid table, but the create attempts pass indices that do not name a
 /// function: 0 (the table's null slot) and 99 (past the table's end).
-const BAD_INDEX_GUEST: &str = r#"
+fn bad_index_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_destroy" (func $destroy (param i32)))
   (memory (export "memory") 1)
   (table (export "table") 4 funcref)
   (elem (i32.const 1) $derivative $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func $derivative (param i32 i32 f64 i32 i32) (result i32) (i32.const 0))
   (func $buf_in (result i32) (i32.const 1024))
   (func $buf_out (result i32) (i32.const 66560))
@@ -159,27 +195,33 @@ const BAD_INDEX_GUEST: &str = r#"
     (local $id i32)
     ;; the derivative index is the null slot
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 0) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 0) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (call $destroy (local.get $id))
     ;; the derivative index is past the table's end
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 99) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 99) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 404) (local.get $id))
     (call $destroy (local.get $id))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
 /// A valid table whose entries are individually well-formed but wrong for
 /// the slots they are passed in: a zero-argument function as the derivative,
 /// and the derivative-shaped function as `buf_in`.
-const WRONG_SIGNATURE_GUEST: &str = r#"
+fn wrong_signature_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_destroy" (func $destroy (param i32)))
   (memory (export "memory") 1)
   (table (export "table") 6 funcref)
   (elem (i32.const 1) $deriv $buf_in $buf_out $no_args)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func $deriv (param i32 i32 f64 i32 i32) (result i32) (i32.const 0))
   (func $buf_in (result i32) (i32.const 1024))
   (func $buf_out (result i32) (i32.const 66560))
@@ -188,21 +230,27 @@ const WRONG_SIGNATURE_GUEST: &str = r#"
     (local $id i32)
     ;; the derivative slot holds a zero-argument function
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 4) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 4) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (call $destroy (local.get $id))
     ;; the buf_in slot holds the derivative-shaped function
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 1) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 1) (i32.const 3)))
     (i32.store (i32.const 404) (local.get $id))
     (call $destroy (local.get $id))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
-/// `EULER_GUEST`'s shape, but with the lifecycle split into explicit
+/// `&euler_guest(&euler_wire())`'s shape, but with the lifecycle split into explicit
 /// exports so a test can observe the bound map between phases: `make`
 /// creates and seeds the state, `run` takes one step and reads it back,
-/// `kill` destroys. Same euler config (42 bytes at 64); f(t, y) = -y.
-const EULER_KEEP_GUEST: &str = r#"
+/// `kill` destroys. The same euler wire (`euler_wire`); f(t, y) = -y.
+fn euler_keep_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_step" (func $step (param i32 f64) (result i32)))
@@ -212,7 +260,7 @@ const EULER_KEEP_GUEST: &str = r#"
   (memory (export "memory") 3)
   (table (export "table") 4 funcref)
   (elem (i32.const 1) $derivative $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func $derivative
         (param $y i32) (param $len i32) (param $t f64) (param $dy i32) (param $cap i32)
         (result i32)
@@ -233,7 +281,7 @@ const EULER_KEEP_GUEST: &str = r#"
   (func (export "make")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (f64.store (i32.const 512) (f64.const 2.0))
     (i32.store (i32.const 404)
@@ -245,12 +293,18 @@ const EULER_KEEP_GUEST: &str = r#"
       (call $state (i32.load (i32.const 400)) (i32.const 424) (i32.const 432) (i32.const 1))))
   (func (export "kill")
     (call $destroy (i32.load (i32.const 400)))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
-/// `EULER_KEEP_GUEST` with a deliberately different derivative: f(t, y) = +y.
+/// `&euler_keep_guest(&euler_wire())` with a deliberately different derivative: f(t, y) = +y.
 /// One euler step of 0.1 from y0 = 2.0 gives 2.2, not 1.8 — so a reused shim
 /// id that consulted stale callbacks would be caught by the answer.
-const GROW_KEEP_GUEST: &str = r#"
+fn grow_keep_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_step" (func $step (param i32 f64) (result i32)))
@@ -260,7 +314,7 @@ const GROW_KEEP_GUEST: &str = r#"
   (memory (export "memory") 3)
   (table (export "table") 4 funcref)
   (elem (i32.const 1) $derivative $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   (func $derivative
         (param $y i32) (param $len i32) (param $t f64) (param $dy i32) (param $cap i32)
         (result i32)
@@ -280,7 +334,7 @@ const GROW_KEEP_GUEST: &str = r#"
   (func (export "make")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 2) (i32.const 3)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 2) (i32.const 3)))
     (i32.store (i32.const 400) (local.get $id))
     (f64.store (i32.const 512) (f64.const 2.0))
     (i32.store (i32.const 404)
@@ -292,7 +346,11 @@ const GROW_KEEP_GUEST: &str = r#"
       (call $state (i32.load (i32.const 400)) (i32.const 424) (i32.const 432) (i32.const 1))))
   (func (export "kill")
     (call $destroy (i32.load (i32.const 400)))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
 /// N1's fixture: one module, one table, two derivatives — `$deriv_neg`
 /// (f = -y) and `$deriv_double` (f = -2y) — plus a decoy function exported
@@ -302,7 +360,9 @@ const GROW_KEEP_GUEST: &str = r#"
 ///
 /// Addresses: 400 id_a, 404 id_b, 408/412 set_state rcs, 420/428 step_a rc
 /// and state rc, 424/432 t_a/y_a, 440/448 b's, 456/464 b's t/y, 512 input.
-const TWO_DERIVS_GUEST: &str = r#"
+fn two_derivs_guest(wire: &Wire) -> String {
+    format!(
+        r#"
 (module
   (import "tension::solver" "solver_create" (func $create (param i32 i32 i32 i32 i32) (result i32)))
   (import "tension::solver" "solver_step" (func $step (param i32 f64) (result i32)))
@@ -312,7 +372,7 @@ const TWO_DERIVS_GUEST: &str = r#"
   (memory (export "memory") 3)
   (table (export "table") 6 funcref)
   (elem (i32.const 1) $deriv_neg $deriv_double $buf_in $buf_out)
-  (data (i32.const 64) "{\"method\":\"euler\",\"source\":\"wasm\",\"dim\":1}")
+  (data (i32.const 64) "{wire}")
   ;; the decoy: named like the old convention, never in the table
   (func (export "_derivative")
         (param $y i32) (param $len i32) (param $t f64) (param $dy i32) (param $cap i32)
@@ -355,7 +415,7 @@ const TWO_DERIVS_GUEST: &str = r#"
   (func (export "make_a")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 1) (i32.const 3) (i32.const 4)))
+      (i32.const 64) (i32.const {len}) (i32.const 1) (i32.const 3) (i32.const 4)))
     (i32.store (i32.const 400) (local.get $id))
     (f64.store (i32.const 512) (f64.const 1.0))
     (i32.store (i32.const 408)
@@ -363,7 +423,7 @@ const TWO_DERIVS_GUEST: &str = r#"
   (func (export "make_b")
     (local $id i32)
     (local.set $id (call $create
-      (i32.const 64) (i32.const 42) (i32.const 2) (i32.const 3) (i32.const 4)))
+      (i32.const 64) (i32.const {len}) (i32.const 2) (i32.const 3) (i32.const 4)))
     (i32.store (i32.const 404) (local.get $id))
     (f64.store (i32.const 512) (f64.const 1.0))
     (i32.store (i32.const 412)
@@ -382,7 +442,11 @@ const TWO_DERIVS_GUEST: &str = r#"
     (call $destroy (i32.load (i32.const 400))))
   (func (export "kill_b")
     (call $destroy (i32.load (i32.const 404)))))
-"#;
+"#,
+        wire = wire.wat(),
+        len = wire.len(),
+    )
+}
 
 /// A fresh store state: no CLI args, no paks, headless audio, stub AI.
 fn test_state() -> HostState {
@@ -477,7 +541,7 @@ impl Guest {
 #[test]
 fn h1_guest_imports_link_and_run() {
     let _g = lock();
-    let g = start(EULER_GUEST);
+    let g = start(&euler_guest(&euler_wire()));
     let id = g.i32_at(400);
     assert!(id >= 1, "create returned {id}");
     assert_eq!(g.i32_at(404), 0, "set_state rc");
@@ -489,7 +553,7 @@ fn h1_guest_imports_link_and_run() {
 #[test]
 fn h2_euler_one_step_matches_analytic() {
     let _g = lock();
-    let g = start(EULER_GUEST);
+    let g = start(&euler_guest(&euler_wire()));
     let t = g.f64_at(424);
     let y = g.f64_at(432);
     assert_eq!(t, 0.1, "t after one step");
@@ -502,7 +566,7 @@ fn h2_euler_one_step_matches_analytic() {
 #[test]
 fn h3_rk45_one_step_matches_analytic() {
     let _g = lock();
-    let g = start(RK45_GUEST);
+    let g = start(&rk45_guest(&rk45_wire()));
     let t = g.f64_at(424);
     let y = g.f64_at(432);
     assert_eq!(t, 1.0, "t after one step");
@@ -515,8 +579,8 @@ fn h3_rk45_one_step_matches_analytic() {
 #[test]
 fn h4_determinism_two_runs_bit_identical() {
     let _g = lock();
-    let a = start(RK45_GUEST);
-    let b = start(RK45_GUEST);
+    let a = start(&rk45_guest(&rk45_wire()));
+    let b = start(&rk45_guest(&rk45_wire()));
     let (ta, tb) = (a.bytes_at(424, 16), b.bytes_at(424, 16));
     assert_eq!(ta, tb, "t and y must be bit-identical across runs");
     println!("H4 two runs bit-identical over t,y = {ta:02x?}");
@@ -529,7 +593,7 @@ fn h5_bad_indices_refused_at_create() {
     // Indices that do not name a function: 0 (the table's null slot) and 99
     // (past the table's end). Both refuse with -EINVAL.
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, BAD_INDEX_GUEST);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &bad_index_guest(&euler_wire()));
     call_export(&mut store, &instance, "_start_game");
     assert_eq!(read_i32(&store, &mem, 400), -22, "index 0 is the null slot");
     assert_eq!(read_i32(&store, &mem, 404), -22, "index 99 is past the table");
@@ -541,7 +605,7 @@ fn h5_bad_indices_refused_at_create() {
 
     // A module that exports no table has nothing to resolve indices through.
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, NO_TABLE_GUEST);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &no_table_guest(&euler_wire()));
     call_export(&mut store, &instance, "_start_game");
     assert_eq!(
         read_i32(&store, &mem, 400),
@@ -557,7 +621,7 @@ fn h5_bad_indices_refused_at_create() {
 fn l1_destroy_clears_the_bound_map() {
     let _g = lock();
     let (mut store, mut linker) = new_guest_store();
-    let (instance, _mem) = instantiate(&mut store, &mut linker, EULER_KEEP_GUEST);
+    let (instance, _mem) = instantiate(&mut store, &mut linker, &euler_keep_guest(&euler_wire()));
 
     call_export(&mut store, &instance, "make");
     assert_eq!(
@@ -580,7 +644,7 @@ fn l2_reused_id_rebinds_to_the_current_guest() {
     let (mut store, mut linker) = new_guest_store();
 
     // Generation A: f(t, y) = -y. One euler step of 0.1 from 2.0 -> 1.8.
-    let (a, a_mem) = instantiate(&mut store, &mut linker, EULER_KEEP_GUEST);
+    let (a, a_mem) = instantiate(&mut store, &mut linker, &euler_keep_guest(&euler_wire()));
     call_export(&mut store, &a, "make");
     assert_eq!(store.data().solver.bound.len(), 1);
     call_export(&mut store, &a, "run");
@@ -596,7 +660,7 @@ fn l2_reused_id_rebinds_to_the_current_guest() {
     // Generation B: f(t, y) = +y, same config. Destroy freed the slot, so
     // the shim hands the next create the same id (its scan takes the first
     // free slot; P2's T7 premise).
-    let (b, b_mem) = instantiate(&mut store, &mut linker, GROW_KEEP_GUEST);
+    let (b, b_mem) = instantiate(&mut store, &mut linker, &grow_keep_guest(&euler_wire()));
     call_export(&mut store, &b, "make");
     let b_id = read_i32(&store, &b_mem, 400);
     assert_eq!(b_id, a_id, "the shim reuses the destroyed id");
@@ -624,7 +688,7 @@ fn l3_refused_create_leaves_no_binding() {
     // Baseline: a normal create/destroy cycle (the fixture destroys at the
     // end), so the table is clean and the refused create below takes the
     // same slot.
-    let (base, base_mem) = instantiate(&mut store, &mut linker, EULER_GUEST);
+    let (base, base_mem) = instantiate(&mut store, &mut linker, &euler_guest(&euler_wire()));
     call_export(&mut store, &base, "_start_game");
     let base_id = read_i32(&store, &base_mem, 400);
     assert_eq!(store.data().solver.bound.len(), 0);
@@ -632,7 +696,7 @@ fn l3_refused_create_leaves_no_binding() {
     // A refused create: the module exports no table, so the three indices
     // cannot resolve. The import refuses at create (-EINVAL) and destroys
     // the shim handle it had just made.
-    let (bad, bad_mem) = instantiate(&mut store, &mut linker, NO_TABLE_GUEST);
+    let (bad, bad_mem) = instantiate(&mut store, &mut linker, &no_table_guest(&euler_wire()));
     call_export(&mut store, &bad, "_start_game");
     assert_eq!(read_i32(&store, &bad_mem, 400), -22, "refused with -EINVAL");
     assert_eq!(
@@ -643,7 +707,7 @@ fn l3_refused_create_leaves_no_binding() {
 
     // The refused handle's slot was released: the next create lands on the
     // baseline's id again.
-    let (ok, ok_mem) = instantiate(&mut store, &mut linker, EULER_GUEST);
+    let (ok, ok_mem) = instantiate(&mut store, &mut linker, &euler_guest(&euler_wire()));
     call_export(&mut store, &ok, "_start_game");
     let id = read_i32(&store, &ok_mem, 400);
     assert_eq!(id, base_id, "the refused create's slot came back for reuse");
@@ -656,7 +720,7 @@ fn l3_refused_create_leaves_no_binding() {
 fn n1_two_solvers_two_derivatives() {
     let _g = lock();
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, TWO_DERIVS_GUEST);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &two_derivs_guest(&euler_wire()));
 
     call_export(&mut store, &instance, "make_a");
     call_export(&mut store, &instance, "make_b");
@@ -698,7 +762,7 @@ fn n1_two_solvers_two_derivatives() {
 fn n2_wrong_signature_index_refused() {
     let _g = lock();
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, WRONG_SIGNATURE_GUEST);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &wrong_signature_guest(&euler_wire()));
     call_export(&mut store, &instance, "_start_game");
     assert_eq!(
         read_i32(&store, &mem, 400),
@@ -713,32 +777,103 @@ fn n2_wrong_signature_index_refused() {
     assert_eq!(store.data().solver.bound.len(), 0, "refusals bind nothing");
 }
 
-// ── the config probe (the source-membership decision) ─────────────────
+// ── the host's reader: the §12 wire decoder ─────────────────────────────
+//
+// The old probe (`config_source_is_wasm`) walked the config text a second
+// time to decide whether to resolve callbacks; the wire carries the source as
+// a decoded field now, so what needs testing is the decoder's strictness —
+// the reader half of the format's contract.
 
 #[test]
-fn probe_reads_the_source_member() {
-    // accepts
-    assert!(config_source_is_wasm(
-        br#"{"method":"euler","source":"wasm","dim":1}"#
-    ));
-    assert!(config_source_is_wasm(br#"{ "source" : "wasm" }"#));
-    assert!(config_source_is_wasm(
-        br#"{"parameters":{"relTol":1e-6},"method":"rk45","source":"wasm","dim":3}"#
-    ));
-    assert!(config_source_is_wasm(
-        br#"{"description":"source: wasm","method":"euler","source":"wasm","dim":2,"dt":0.016}"#
-    ));
-    // refuses
-    assert!(!config_source_is_wasm(br#"{"source":"native","dim":1}"#));
-    assert!(!config_source_is_wasm(br#"{"method":"euler","dim":1}"#));
-    assert!(!config_source_is_wasm(br#"{"source":"wasmish"}"#));
-    assert!(!config_source_is_wasm(br#"{}"#));
-    assert!(!config_source_is_wasm(br#"not json at all"#));
-    // a decoy inside a free-text member must not fool it
-    assert!(!config_source_is_wasm(
-        br#"{"method":"euler","source":"native","dim":1,"description":"use \"source\":\"wasm\" here"}"#
-    ));
-    // \uXXXX is outside the shim's escape subset, so the probe refuses it
-    // too — a config the shim would reject anyway.
-    assert!(!config_source_is_wasm(br#"{"source":"wa\u0073m"}"#));
+fn wire_decoder_accepts_what_the_writer_emits() {
+    let wire = Wire::new("rk45", "wasm")
+        .dim(3)
+        .description("a solver")
+        .param("relTol", 1e-6)
+        .param("absTol", 1e-12)
+        .param("iterations", 25.0);
+    let decoded = decode_wire(&wire.bytes()).expect("a well-formed wire");
+    assert_eq!(decoded.method, "rk45");
+    assert_eq!(decoded.source, "wasm");
+    assert_eq!(decoded.description.as_deref(), Some("a solver"));
+    assert_eq!(decoded.dim, 3);
+    assert_eq!(decoded.rel_tol, Some(1e-6));
+    assert_eq!(decoded.abs_tol, Some(1e-12));
+    assert_eq!(decoded.iterations, Some(25));
+    assert_eq!(decoded.min_step, None, "an unstated parameter stays unstated");
+    assert_eq!(decoded.world, None);
+
+    // A world-source wire carries the YAML as text and states no dim.
+    let wire = Wire::new("euler", "world").world("version: 1\n");
+    let decoded = decode_wire(&wire.bytes()).expect("a well-formed world wire");
+    assert_eq!(decoded.world.as_deref(), Some("version: 1\n"));
+    assert_eq!(decoded.dim, 0);
+}
+
+#[test]
+fn wire_decoder_refuses_malformed_blobs() {
+    let good = rk45_wire().bytes();
+    let bad = |bytes: &[u8]| decode_wire(bytes).unwrap_err();
+
+    let mut m = good.clone();
+    m[0] = b'X';
+    assert_eq!(bad(&m), ConfigError::BadMagic);
+
+    let mut m = good.clone();
+    m[8] = 2;
+    assert_eq!(bad(&m), ConfigError::UnknownFormatVersion(2));
+
+    let mut m = good.clone();
+    m[10] = 7;
+    assert_eq!(bad(&m), ConfigError::UnknownSchemaVersion(7));
+
+    let mut m = good.clone();
+    m[60] = 1;
+    assert_eq!(bad(&m), ConfigError::ReservedNotZero);
+
+    let mut m = good.clone();
+    m[16] = 0; // method_len
+    assert_eq!(bad(&m), ConfigError::EmptyMethod);
+
+    let mut m = good.clone();
+    m[24] = 0; // source_len
+    assert_eq!(bad(&m), ConfigError::EmptySource);
+
+    // bit 9 of the bitmap (byte 1, bit 1) is reserved
+    let mut m = good.clone();
+    m[45] |= 0x02;
+    assert!(matches!(bad(&m), ConfigError::ReservedParameterBits(_)));
+
+    // a nonzero bitmap with parameters_off = 0
+    let mut m = good.clone();
+    m[40..44].copy_from_slice(&0u32.to_le_bytes());
+    assert!(matches!(bad(&m), ConfigError::BadParametersOffset(0)));
+
+    // a trailing byte
+    let mut m = good.clone();
+    m.push(0);
+    assert!(matches!(bad(&m), ConfigError::TrailingBytes { .. }));
+
+    // a truncated blob: the last string entry runs past the end
+    let m = &good[..good.len() - 1];
+    assert!(matches!(bad(m), ConfigError::BadStringEntry { .. }));
+
+    // the world-source rules
+    assert_eq!(
+        bad(&Wire::new("euler", "world").dim(2).world("x").bytes()),
+        ConfigError::WorldStatesDim(2)
+    );
+    assert_eq!(
+        bad(&Wire::new("euler", "world").bytes()),
+        ConfigError::WorldTextMissing
+    );
+    assert_eq!(
+        bad(&Wire::new("euler", "wasm").dim(1).world("x").bytes()),
+        ConfigError::WorldOnNonWorldSource
+    );
+
+    // the iterations slot's upper four bytes must be zero
+    let mut m = Wire::new("euler", "wasm").dim(1).param("iterations", 3.0).bytes();
+    m[68] = 1;
+    assert!(matches!(bad(&m), ConfigError::IterationsUpperBits { .. }));
 }

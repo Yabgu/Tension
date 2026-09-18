@@ -11,9 +11,11 @@
 //!
 //! Fixture convention: each guest writes its observations into fixed guest
 //! memory addresses — 400 id, 408+ rcs, 424+ `t`, 432+ `y`, 512 `y0`
-//! input, 1024/1536 the config JSON. No function table is exported: the
-//! world path must not need one.
+//! input, 1024/1536 the config wire (the §12 layout, built by
+//! `test_support::Wire`). No function table is exported: the world path must
+//! not need one.
 
+use super::test_support::Wire;
 use super::{link_solver, SolverHost};
 use crate::ai::stub::StubAdapter;
 use crate::audio::headless::HeadlessAdapter;
@@ -30,35 +32,11 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 
 // ── config construction ────────────────────────────────────────────────
 
-/// JSON-escape `text` for embedding in a config's `world` member.
-fn json_escape(text: &str) -> String {
-    let mut out = String::with_capacity(text.len() + 16);
-    for c in text.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
-            c => out.push(c),
-        }
-    }
-    out
-}
-
-/// A world-source config: `method` plus the YAML in the `world` member,
-/// with any extra members appended verbatim (e.g. a `parameters` object).
-fn world_config(method: &str, yaml: &str, extra: &str) -> String {
-    format!(
-        "{{\"method\":\"{method}\",\"source\":\"world\",\"world\":\"{}\"{extra}}}",
-        json_escape(yaml)
-    )
-}
-
-/// WAT-escape `text` for a data-string literal.
-fn wat_string(text: &str) -> String {
-    text.replace('\\', "\\\\").replace('"', "\\\"")
+/// A world-source wire: `method` plus the YAML in the `world` entry. `dim`
+/// is never stated — the host derives it (§12), and the decoder refuses a
+/// wire that states one.
+fn world_wire(method: &str, yaml: &str) -> Wire {
+    Wire::new(method, "world").world(yaml)
 }
 
 // ── fixture guests ─────────────────────────────────────────────────────
@@ -68,7 +46,7 @@ fn wat_string(text: &str) -> String {
 ///
 /// Observations: 400 id, 408 set_state rc, 412 last step rc, 416 state rc,
 /// 424 `t`, 432 `y` (dim slots).
-fn world_guest(config: &str, y0: &[f64], steps: i32, dt: f64) -> String {
+fn world_guest(wire: &Wire, y0: &[f64], steps: i32, dt: f64) -> String {
     let stores: String = y0
         .iter()
         .enumerate()
@@ -84,13 +62,13 @@ fn world_guest(config: &str, y0: &[f64], steps: i32, dt: f64) -> String {
   (import "tension::solver" "solver_set_state" (func $set_state (param i32 f64 i32 i32) (result i32)))
   (import "tension::solver" "solver_destroy" (func $destroy (param i32)))
   (memory (export "memory") 3)
-  (data (i32.const 1024) "{config}")
+  (data (i32.const 1024) "{wire_hex}")
   (func (export "_start_game")
     (local $id i32)
     (local $n i32)
     ;; the three callback indices are ignored for source: world
     (local.set $id (call $create
-      (i32.const 1024) (i32.const {len}) (i32.const 0) (i32.const 0) (i32.const 0)))
+      (i32.const 1024) (i32.const {wire_len}) (i32.const 0) (i32.const 0) (i32.const 0)))
     (i32.store (i32.const 400) (local.get $id))
 {stores}    (i32.store (i32.const 408)
       (call $set_state (local.get $id) (f64.const 0.0) (i32.const 512) (i32.const {dim})))
@@ -106,8 +84,8 @@ fn world_guest(config: &str, y0: &[f64], steps: i32, dt: f64) -> String {
       (call $state (local.get $id) (i32.const 424) (i32.const 432) (i32.const {dim})))
     (call $destroy (local.get $id))))
 "#,
-        config = wat_string(config),
-        len = config.len(),
+        wire_hex = wire.wat(),
+        wire_len = wire.len(),
         stores = stores,
         dim = dim,
         steps = steps,
@@ -122,7 +100,7 @@ fn world_guest(config: &str, y0: &[f64], steps: i32, dt: f64) -> String {
 /// Observations: 400/404 ids, 408/412 set_state rcs, 416/420 step rcs,
 /// 424/428 state rcs, 432/440 `t`/`y` (A, y through 471), 472/480 `t`/`y`
 /// (B, y through 511; the seed input at 512 abuts it).
-fn two_solver_guest(config_a: &str, config_b: &str) -> String {
+fn two_solver_guest(wire_a: &Wire, wire_b: &Wire) -> String {
     format!(
         r#"
 (module
@@ -132,8 +110,8 @@ fn two_solver_guest(config_a: &str, config_b: &str) -> String {
   (import "tension::solver" "solver_set_state" (func $set_state (param i32 f64 i32 i32) (result i32)))
   (import "tension::solver" "solver_destroy" (func $destroy (param i32)))
   (memory (export "memory") 3)
-  (data (i32.const 1024) "{a}")
-  (data (i32.const 1536) "{b}")
+  (data (i32.const 1024) "{a_hex}")
+  (data (i32.const 1536) "{b_hex}")
   (func $seed (param $id i32)
     (f64.store (i32.const 512) (f64.const 0.0))
     (f64.store (i32.const 520) (f64.const 0.0))
@@ -170,10 +148,10 @@ fn two_solver_guest(config_a: &str, config_b: &str) -> String {
   (func (export "kill_b")
     (call $destroy (i32.load (i32.const 404)))))
 "#,
-        a = wat_string(config_a),
-        alen = config_a.len(),
-        b = wat_string(config_b),
-        blen = config_b.len(),
+        a_hex = wire_a.wat(),
+        alen = wire_a.len(),
+        b_hex = wire_b.wat(),
+        blen = wire_b.len(),
     )
 }
 
@@ -314,8 +292,12 @@ connections:
 #[test]
 fn w1_world_source_creates_steps_and_reads_back() {
     let _g = lock();
-    let config = world_config("euler", FREE_PARTICLE, "");
-    let g = start(&world_guest(&config, &[0.0, 0.0, 1.0, 0.0], 1, 0.1));
+    let g = start(&world_guest(
+        &world_wire("euler", FREE_PARTICLE),
+        &[0.0, 0.0, 1.0, 0.0],
+        1,
+        0.1,
+    ));
     let id = g.i32_at(400);
     assert!(id >= 1, "create returned {id}");
     assert_eq!(g.i32_at(408), 0, "set_state rc");
@@ -334,8 +316,10 @@ fn w1_world_source_creates_steps_and_reads_back() {
 #[test]
 fn w2_rk45_oscillator_matches_analytic() {
     let _g = lock();
-    let config = world_config("rk45", OSCILLATOR, r#","parameters":{"relTol":1e-10,"absTol":1e-12}"#);
-    let g = start(&world_guest(&config, &[2.0, 0.0, 0.0, 0.0], 1, 1.0));
+    let wire = world_wire("rk45", OSCILLATOR)
+        .param("relTol", 1e-10)
+        .param("absTol", 1e-12);
+    let g = start(&world_guest(&wire, &[2.0, 0.0, 0.0, 0.0], 1, 1.0));
     let id = g.i32_at(400);
     assert!(id >= 1, "create returned {id}");
     assert_eq!(g.i32_at(412), 0, "step rc");
@@ -361,8 +345,7 @@ fn w2_rk45_oscillator_matches_analytic() {
 fn w3_compile_error_is_einval() {
     let _g = lock();
     let bad = "version: 1\ndimensions: 2\ncomponents:\n  - type: foo\n    name: c\nconnections: []\n";
-    let config = world_config("euler", bad, "");
-    let g = start(&world_guest(&config, &[], 0, 0.0));
+    let g = start(&world_guest(&world_wire("euler", bad), &[], 0, 0.0));
     assert_eq!(g.i32_at(400), -22, "a world that does not compile is -EINVAL");
 }
 
@@ -373,11 +356,8 @@ fn w3_compile_error_is_einval() {
 #[test]
 fn w4_stated_dim_is_einval() {
     let _g = lock();
-    let config = format!(
-        "{{\"method\":\"euler\",\"source\":\"world\",\"dim\":2,\"world\":\"{}\"}}",
-        json_escape(FREE_PARTICLE)
-    );
-    let g = start(&world_guest(&config, &[], 0, 0.0));
+    let wire = world_wire("euler", FREE_PARTICLE).dim(2);
+    let g = start(&world_guest(&wire, &[], 0, 0.0));
     assert_eq!(g.i32_at(400), -22, "dim on a world-source config is -EINVAL");
 }
 
@@ -387,12 +367,7 @@ fn w4_stated_dim_is_einval() {
 #[test]
 fn w5_missing_world_is_einval() {
     let _g = lock();
-    let g = start(&world_guest(
-        "{\"method\":\"euler\",\"source\":\"world\"}",
-        &[],
-        0,
-        0.0,
-    ));
+    let g = start(&world_guest(&world_wire("euler", ""), &[], 0, 0.0));
     assert_eq!(g.i32_at(400), -22, "no `world` field is -EINVAL");
 }
 
@@ -406,9 +381,9 @@ fn w5_missing_world_is_einval() {
 fn w6_two_solvers_two_worlds_are_independent() {
     let _g = lock();
     let (mut store, mut linker) = new_guest_store();
-    let config_a = world_config("euler", FREE_PARTICLE, "");
-    let config_b = world_config("euler", UNDER_GRAVITY, "");
-    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&config_a, &config_b));
+    let wire_a = world_wire("euler", FREE_PARTICLE);
+    let wire_b = world_wire("euler", UNDER_GRAVITY);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&wire_a, &wire_b));
 
     call_export(&mut store, &instance, "make_a");
     call_export(&mut store, &instance, "make_b");
@@ -442,9 +417,9 @@ fn w6_two_solvers_two_worlds_are_independent() {
 fn w7_destroy_clears_and_reuse_binds_the_new_world() {
     let _g = lock();
     let (mut store, mut linker) = new_guest_store();
-    let config_a = world_config("euler", FREE_PARTICLE, "");
-    let config_b = world_config("euler", UNDER_GRAVITY, "");
-    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&config_a, &config_b));
+    let wire_a = world_wire("euler", FREE_PARTICLE);
+    let wire_b = world_wire("euler", UNDER_GRAVITY);
+    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&wire_a, &wire_b));
 
     call_export(&mut store, &instance, "make_a");
     let id_a = read_i32(&store, &mem, 400);
@@ -475,9 +450,9 @@ fn w7_destroy_clears_and_reuse_binds_the_new_world() {
 #[test]
 fn w8_world_source_is_deterministic() {
     let _g = lock();
-    let config = world_config("rk45", OSCILLATOR, "");
-    let a = start(&world_guest(&config, &[2.0, 0.0, 0.0, 0.0], 5, 0.1));
-    let b = start(&world_guest(&config, &[2.0, 0.0, 0.0, 0.0], 5, 0.1));
+    let wire = world_wire("rk45", OSCILLATOR);
+    let a = start(&world_guest(&wire, &[2.0, 0.0, 0.0, 0.0], 5, 0.1));
+    let b = start(&world_guest(&wire, &[2.0, 0.0, 0.0, 0.0], 5, 0.1));
     let (ta, tb) = (a.f64_at(424), b.f64_at(424));
     assert_eq!(ta, tb, "t must match exactly");
     assert_eq!(a.y_at(432, 4), b.y_at(432, 4), "state must be bit-identical");
@@ -492,12 +467,12 @@ fn w8_world_source_is_deterministic() {
 #[test]
 fn w9_interleaved_solvers_match_isolated_runs() {
     let _g = lock();
-    let config_a = world_config("euler", FREE_PARTICLE, "");
-    let config_b = world_config("euler", UNDER_GRAVITY, "");
+    let wire_a = world_wire("euler", FREE_PARTICLE);
+    let wire_b = world_wire("euler", UNDER_GRAVITY);
 
     // Interleaved: A, B, A, B, ...
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&config_a, &config_b));
+    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&wire_a, &wire_b));
     call_export(&mut store, &instance, "make_a");
     call_export(&mut store, &instance, "make_b");
     for _ in 0..10 {
@@ -511,7 +486,7 @@ fn w9_interleaved_solvers_match_isolated_runs() {
 
     // Isolated: ten steps of A, then ten of B.
     let (mut store, mut linker) = new_guest_store();
-    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&config_a, &config_b));
+    let (instance, mem) = instantiate(&mut store, &mut linker, &two_solver_guest(&wire_a, &wire_b));
     call_export(&mut store, &instance, "make_a");
     call_export(&mut store, &instance, "make_b");
     for _ in 0..10 {
@@ -539,8 +514,12 @@ fn w9_interleaved_solvers_match_isolated_runs() {
 #[test]
 fn w10_bytes_stay_alive_across_many_steps() {
     let _g = lock();
-    let config = world_config("euler", FREE_PARTICLE, "");
-    let g = start(&world_guest(&config, &[0.0, 0.0, 1.0, 0.0], 100, 0.1));
+    let g = start(&world_guest(
+        &world_wire("euler", FREE_PARTICLE),
+        &[0.0, 0.0, 1.0, 0.0],
+        100,
+        0.1,
+    ));
     assert_eq!(g.i32_at(412), 0, "step rc");
     let want_t: f64 = (0..100).fold(0.0, |acc, _| acc + 0.1);
     let want_x: f64 = (0..100).fold(0.0, |acc, _| acc + 0.1);
@@ -557,8 +536,12 @@ fn w10_bytes_stay_alive_across_many_steps() {
 #[test]
 fn w_opt_world_source_ignores_callback_indices() {
     let _g = lock();
-    let config = world_config("euler", FREE_PARTICLE, "");
-    let g = start(&world_guest(&config, &[0.0, 0.0, 1.0, 0.0], 1, 0.1));
+    let g = start(&world_guest(
+        &world_wire("euler", FREE_PARTICLE),
+        &[0.0, 0.0, 1.0, 0.0],
+        1,
+        0.1,
+    ));
     let id = g.i32_at(400);
     assert!(id >= 1, "create with 0/0/0 indices returned {id}");
     assert_eq!(g.i32_at(412), 0, "step rc");
@@ -576,7 +559,7 @@ fn w_opt_world_source_ignores_callback_indices() {
 fn w_req_wasm_source_still_requires_real_indices() {
     let _g = lock();
     let g = start(&world_guest(
-        r#"{"method":"euler","source":"wasm","dim":4}"#,
+        &Wire::new("euler", "wasm").dim(4),
         &[],
         0,
         0.0,

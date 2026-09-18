@@ -1,10 +1,14 @@
 //! P2 integration tests for the tension-solver C ABI shim.
 //!
 //! The shim (`tension-solver/src/tension_solver.c`) owns the handle table,
-//! the config parser, the compiled validation rules and the method
+//! the config struct, the compiled validation rules and the method
 //! registry; the numerical core stays the P1 Fortran archive, linked through
 //! `tension-core/build.rs`. These tests drive the seven entry points
 //! directly — raw FFI, no Rust wrapper (that is P5).
+//!
+//! The config is a `tension_solver_config` (the header's struct, which P9b
+//! made `create`'s argument); `tests/support/config.rs` builds one from Rust
+//! values and owns the strings its pointers borrow.
 //!
 //! The "wasm source" here is exactly what it is at the shim level: plain
 //! `extern "C"` function pointers handed in through `bind_callbacks`. The
@@ -16,6 +20,11 @@
 use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+
+#[path = "support/config.rs"]
+mod support;
+
+use support::{tension_solver_create, Config};
 
 static SERIAL: Mutex<()> = Mutex::new(());
 static PLUGIN_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -42,7 +51,6 @@ struct Vtable {
 }
 
 extern "C" {
-    fn tension_solver_create(config_json: *const c_char, config_len: usize) -> i32;
     fn tension_solver_bind_callbacks(
         id: i32,
         derivative: Option<DerivFn>,
@@ -59,9 +67,14 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-fn create(json: &str) -> i32 {
-    let s = CString::new(json).unwrap();
-    unsafe { tension_solver_create(s.as_ptr(), s.as_bytes().len()) }
+/// Build a config, call `tension_solver_create`, drop the config.
+fn create(cfg: &Config) -> i32 {
+    cfg.create()
+}
+
+/// The degenerate call: a NULL config pointer.
+fn create_null() -> i32 {
+    unsafe { tension_solver_create(std::ptr::null()) }
 }
 
 /// Register a plugin. The vtable and its strings must outlive the
@@ -183,7 +196,7 @@ fn t1_create_destroy_lifecycle() {
         register_plugin("p_t1", "custom", 0, Some(rhs_zero), Some(step_count)),
         0
     );
-    let id = create(r#"{"method":"p_t1","source":"native","dim":2}"#);
+    let id = create(&Config::new("p_t1", "native").dim(2));
     assert!(id >= 1, "create returned {id}");
     unsafe { tension_solver_destroy(id) };
     unsafe { tension_solver_destroy(id) }; // idempotent, in-range
@@ -194,21 +207,51 @@ fn t1_create_destroy_lifecycle() {
 #[test]
 fn t2_unknown_method() {
     let _g = lock();
-    assert_eq!(create(r#"{"method":"nope","source":"wasm","dim":1}"#), -2);
+    assert_eq!(create(&Config::new("nope", "wasm").dim(1)), -2);
 }
 
-// ── T3: malformed JSON ────────────────────────────────────────────────────
+// ── T3: malformed structs ─────────────────────────────────────────────────
+//
+// The JSON era's malformed-text cases are structural now (P9b): the shim
+// reads a `tension_solver_config`, so "malformed" means a missing pointer, a
+// zero length, a reserved bitmap bit, or an out-of-range stated value — the
+// wire-level refusals belong to the host's decoder (the P5 tests).
 
 #[test]
-fn t3_malformed_json() {
+fn t3_malformed_struct() {
     let _g = lock();
-    assert_eq!(create("not json"), -22);
-    assert_eq!(create("{"), -22);
-    assert_eq!(create(r#"{"method":}"#), -22);
-    assert_eq!(create(r#"{"method":"euler" "source":"wasm"}"#), -22);
-    assert_eq!(create(r#"{"method":"euler","source":"wasm","dim":1} trailing"#), -22);
-    assert_eq!(create(r#"{"method":"euler","source":"wasm","dim":[1]}"#), -22);
-    assert_eq!(create(""), -22);
+    // A NULL config pointer.
+    assert_eq!(create_null(), -22);
+    // A NULL method pointer, and a non-NULL one with method_len == 0.
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).method_none()), -22);
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).method_empty()), -22);
+    // The same two shapes for the source.
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).source_none()), -22);
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).source_empty()), -22);
+    // The bitmap's reserved bits (9-31 must be zero) are refused in any
+    // combination with the nine named ones.
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).bits(1 << 9)), -22);
+    assert_eq!(create(&Config::new("euler", "wasm").dim(1).bits(1 << 31)), -22);
+    assert_eq!(
+        create(&Config::new("euler", "wasm").dim(1).rel_tol(1e-6).bits(1 << 20)),
+        -22
+    );
+    // Stated values keep the JSON era's range floor, now on the struct's
+    // fields: non-negative, finite, a non-empty step window, and an
+    // `iterations` that fits the core's int32_t.
+    assert_eq!(create(&Config::new("rk45", "wasm").dim(1).rel_tol(-1.0)), -22);
+    assert_eq!(create(&Config::new("rk45", "wasm").dim(1).rel_tol(f64::NAN)), -22);
+    assert_eq!(
+        create(&Config::new("rk45", "wasm").dim(1).max_step(f64::INFINITY)),
+        -22
+    );
+    assert_eq!(
+        create(&Config::new("rk45", "wasm").dim(1).min_step(1.0).max_step(0.5)),
+        -22
+    );
+    assert_eq!(create(&Config::new("rk45", "wasm").dim(1).iterations(-1)), -22);
+    // `dim` keeps the resource bound the JSON era's parser enforced.
+    assert_eq!(create(&Config::new("euler", "wasm").dim(10_000_001)), -22);
 }
 
 // ── T4: source requires ───────────────────────────────────────────────────
@@ -216,7 +259,7 @@ fn t3_malformed_json() {
 #[test]
 fn t4_wasm_requires_dim() {
     let _g = lock();
-    assert_eq!(create(r#"{"method":"euler","source":"wasm"}"#), -22);
+    assert_eq!(create(&Config::new("euler", "wasm")), -22);
 }
 
 // ── T5: pairing rule ──────────────────────────────────────────────────────
@@ -224,9 +267,9 @@ fn t4_wasm_requires_dim() {
 #[test]
 fn t5_builtin_native_pairing() {
     let _g = lock();
-    assert_eq!(create(r#"{"method":"rk45","source":"native","dim":1}"#), -22);
+    assert_eq!(create(&Config::new("rk45", "native").dim(1)), -22);
     // euler too: the rule is about built-ins, not about implementation.
-    assert_eq!(create(r#"{"method":"euler","source":"native","dim":1}"#), -22);
+    assert_eq!(create(&Config::new("euler", "native").dim(1)), -22);
 }
 
 // ── T6: world is wired (P8e) ──────────────────────────────────────────────
@@ -238,9 +281,9 @@ fn t6_world_is_accepted_with_dim() {
     // allocated without a dim: the host compiles the embedded world and
     // synthesizes it (P8e), and a config that arrives without one is
     // refused.
-    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -22);
+    assert_eq!(create(&Config::new("euler", "world")), -22);
 
-    let id = create(r#"{"method":"euler","source":"world","dim":2}"#);
+    let id = create(&Config::new("euler", "world").dim(2));
     assert!(id >= 1, "world+dim creates a handle: {id}");
     // No f is bound yet: the step refuses, exactly as for source: wasm.
     assert_eq!(unsafe { tension_solver_step(id, 0.5) }, -22);
@@ -255,7 +298,7 @@ fn t7_id_table_exhaustion() {
     let mut ids = Vec::new();
     let mut last = 0;
     for _ in 0..1000 {
-        last = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+        last = create(&Config::new("euler", "wasm").dim(1));
         if last == -24 {
             break;
         }
@@ -268,7 +311,7 @@ fn t7_id_table_exhaustion() {
         unsafe { tension_solver_destroy(id) };
     }
     // Destroyed slots are reusable.
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     unsafe { tension_solver_destroy(id) };
 }
@@ -278,7 +321,7 @@ fn t7_id_table_exhaustion() {
 #[test]
 fn t8_step_on_destroyed_id() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     unsafe { tension_solver_destroy(id) };
     assert_eq!(unsafe { tension_solver_step(id, 0.1) }, -9);
@@ -300,7 +343,7 @@ fn t9_plugin_step_dispatch() {
         0
     );
     PLUGIN_CALLS.store(0, Ordering::SeqCst);
-    let id = create(r#"{"method":"p_t9","source":"native","dim":1}"#);
+    let id = create(&Config::new("p_t9", "native").dim(1));
     assert!(id >= 1);
     assert_eq!(unsafe { tension_solver_step(id, 0.1) }, 0);
     assert_eq!(PLUGIN_CALLS.load(Ordering::SeqCst), 1, "plugin step ran");
@@ -360,7 +403,7 @@ fn t14_bind_native_null_noop() {
         register_plugin("p_t14", "custom", 0, Some(rhs_zero), Some(step_count)),
         0
     );
-    let id = create(r#"{"method":"p_t14","source":"native","dim":1}"#);
+    let id = create(&Config::new("p_t14", "native").dim(1));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, None, None) },
@@ -378,7 +421,7 @@ fn t14_bind_native_null_noop() {
 #[test]
 fn t15_world_binds_like_wasm() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"world","dim":1}"#);
+    let id = create(&Config::new("euler", "world").dim(1));
     assert!(id >= 1, "world+dim creates: {id}");
 
     // Nothing bound: the step refuses (there is no f to call).
@@ -401,7 +444,7 @@ fn t16_bind_call_order() {
     let _g = lock();
 
     // step before bind, source: wasm -> -EINVAL; bind then step -> fine.
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     assert_eq!(unsafe { tension_solver_step(id, 0.5) }, -22);
     assert_eq!(
@@ -417,7 +460,7 @@ fn t16_bind_call_order() {
     unsafe { tension_solver_destroy(id) };
 
     // bind with both NULL, source: wasm -> -EINVAL.
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     assert_eq!(unsafe { tension_solver_bind_callbacks(id, None, None) }, -22);
     unsafe { tension_solver_destroy(id) };
@@ -428,7 +471,7 @@ fn t16_bind_call_order() {
 #[test]
 fn t17_state_round_trip() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("euler", "wasm").dim(2));
     assert!(id >= 1);
 
     let y0 = [7.0f64, -1.5];
@@ -472,7 +515,7 @@ fn t18_plugin_step_advances() {
         ),
         0
     );
-    let id = create(r#"{"method":"p_t18","source":"native","dim":2}"#);
+    let id = create(&Config::new("p_t18", "native").dim(2));
     assert!(id >= 1);
     assert_eq!(unsafe { tension_solver_step(id, 0.25) }, 0);
     assert_eq!(unsafe { tension_solver_step(id, 0.25) }, 0);
@@ -490,7 +533,7 @@ fn t18_plugin_step_advances() {
 #[test]
 fn t19_euler_with_bound_derivative() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -628,8 +671,7 @@ fn t20_compiled_rules_match_schema() {
         // §10). Never -ENOENT, never -EINVAL. The probe uses dim 2 — a
         // dimension every method accepts (verlet requires even, dim >= 2;
         // its dim-1 floor is the method's own rule, pinned in V1/S1b).
-        let wasm_cfg = format!(r#"{{"method":"{name}","source":"wasm","dim":2}}"#);
-        let rc = create(&wasm_cfg);
+        let rc = create(&Config::new(name, "wasm").dim(2));
         assert!(rc != -2, "{name}: not registered (ENOENT)");
         assert!(rc != -22, "{name}: rejected as malformed");
         if rc >= 1 {
@@ -639,8 +681,11 @@ fn t20_compiled_rules_match_schema() {
         }
 
         // bundles_rhs: false + the pairing rule => native is refused.
-        let native_cfg = format!(r#"{{"method":"{name}","source":"native","dim":1}}"#);
-        assert_eq!(create(&native_cfg), -22, "{name}: pairing rule");
+        assert_eq!(
+            create(&Config::new(name, "native").dim(1)),
+            -22,
+            "{name}: pairing rule"
+        );
     }
 
     // ── sources: names and requires ──
@@ -655,32 +700,37 @@ fn t20_compiled_rules_match_schema() {
     }
 
     // Behavior matches the parsed requires.
-    assert_eq!(create(r#"{"method":"euler","source":"wasm"}"#), -22);
+    assert_eq!(create(&Config::new("euler", "wasm")), -22);
     assert_eq!(register_plugin("p_t20", "custom", 0, Some(rhs_zero), Some(step_count)), 0);
-    assert_eq!(create(r#"{"method":"p_t20","source":"native"}"#), -22);
-    let id = create(r#"{"method":"p_t20","source":"native","dim":1}"#);
+    assert_eq!(create(&Config::new("p_t20", "native")), -22);
+    let id = create(&Config::new("p_t20", "native").dim(1));
     assert!(id >= 1);
     unsafe { tension_solver_destroy(id) };
     // world declares no `requires`, but the shim cannot allocate without a
     // dim: the host synthesizes one (P8e), and a config that states no dim
     // is refused. With one, the source is accepted — no longer -ENOSYS.
-    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -22);
-    let world_id = create(r#"{"method":"euler","source":"world","dim":1}"#);
+    assert_eq!(create(&Config::new("euler", "world")), -22);
+    let world_id = create(&Config::new("euler", "world").dim(1));
     assert!(world_id >= 1, "world+dim is accepted: {world_id}");
     unsafe { tension_solver_destroy(world_id) };
     // A source outside the schema's three is refused.
-    assert_eq!(create(r#"{"method":"euler","source":"gpu","dim":1}"#), -22);
+    assert_eq!(create(&Config::new("euler", "gpu").dim(1)), -22);
 
-    // ── preset_format.allowed: the keys the shim accepts ──
-    let id = create(
-        r#"{"method":"euler","source":"wasm","dim":1,"description":"x","dt":0.016,"parameters":{"relTol":1e-6}}"#,
-    );
-    assert!(id >= 1, "allowed keys accepted");
+    // ── preset_format.allowed: the struct's vocabulary ──
+    //
+    // Everything the JSON era's `allowed` list named is a struct field now
+    // (`dim`, `description`, and `parameters` as the bitmap plus values), so
+    // there is no text left to put an unknown key into: the fields *are* the
+    // vocabulary, and the wire's decoder refuses a blob that does not match
+    // it (the P5 tests). What survives as behavior is the discipline: unused
+    // knobs are warned about, not rejected, and a stated parameter keeps its
+    // range floor.
+    let id = create(&Config::new("euler", "wasm").dim(1).description("x").rel_tol(1e-6));
+    assert!(id >= 1, "description and a stated parameter are accepted");
     unsafe { tension_solver_destroy(id) };
-    assert_eq!(create(r#"{"method":"euler","source":"wasm","dim":1,"callbacks":{}}"#), -22);
-    assert_eq!(create(r#"{"method":"euler","source":"wasm","dim":1,"bogus":1}"#), -22);
-    assert_eq!(
-        create(r#"{"method":"euler","source":"wasm","dim":1,"parameters":{"nope":1}}"#),
-        -22
-    );
+    // euler reads relTol and absTol only; relaxation is ignored, with a
+    // warning on stderr (schema.yaml: "warned, not errored").
+    let id = create(&Config::new("euler", "wasm").dim(1).relaxation(0.5));
+    assert!(id >= 1, "a parameter euler does not read is ignored, not refused");
+    unsafe { tension_solver_destroy(id) };
 }

@@ -77,6 +77,14 @@ linear-memory address), lengths are `i32` byte or slot counts, ids are
 `i32` (1-based; 0 is never valid), time and `dt` are `f64`, and every
 failure is a negative errno (§5). Nothing throws.
 
+One convention carries a format rather than a string: `solver_create`'s
+first two arguments are the *config wire* — the binary layout of
+`solver/DESIGN.md §12` (a 64-byte header, a parameters block, a string
+table), not text. The framework's `SolverConfig` encodes it
+(`tension-framework/assembly/solver.ts`), the host decodes and validates
+it strictly, and the shim behind the host reads a resolved struct. The
+sections below say "the config" and mean that layout.
+
 ## 3. Host function signatures
 
 One subsection per guest import (§3.1–§3.5), then the host-performed
@@ -84,15 +92,17 @@ bind and the three callbacks the guest passes. The wasm-level type is
 written the way schema.yaml writes callback signatures; `ptr` and
 `usize` both mean a 32-bit guest address at this boundary.
 
-### 3.1 `solver_create` — `i32(ptr u8 config_json, i32 config_len, i32 derivative_idx, i32 buf_in_idx, i32 buf_out_idx)`
+### 3.1 `solver_create` — `i32(ptr u8 configPtr, i32 configLen, i32 derivativeIdx, i32 bufInIdx, i32 bufOutIdx)`
 
-Creates a solver from a UTF-8 JSON config: the bytes at `configPtr`,
-exactly `configLen` of them, no NUL terminator read (the `hostResOpen`
-path convention). The config's vocabulary is exactly what schema.yaml
-declares — `method` and `source` required, `dim` required for
-`source: "wasm"` and `source: "native"`, `parameters:` drawn from the
-nine global parameters — and this document does not restate the keys,
-their defaults, or their ranges.
+Creates a solver from the config wire: the bytes at `configPtr`,
+exactly `configLen` of them, the binary layout of `solver/DESIGN.md §12` (the
+same `(ptr, len)` convention as `hostResOpen`, but the bytes are not
+text). The config's vocabulary is exactly what schema.yaml declares —
+`method` and `source` required, `dim` required for `source: "wasm"` and
+`source: "native"`, the nine global parameters optionally stated — and
+this document does not restate the keys, their defaults, or their
+ranges; §12 does, at the byte level. A wire that does not match §12 is
+refused with `-EINVAL` (the host logs why; §5).
 
 For `source: "wasm"`, the last three arguments are the callbacks the
 solver will use, in order: the derivative, `buf_in`, and `buf_out`.
@@ -104,10 +114,11 @@ declared signature (§3.6), or create refuses with `-EINVAL`. Two
 solvers created with different derivatives therefore behave
 independently. For any other source the three indices are ignored.
 
-For `source: "world"` the config carries the world's YAML in a `world`
-field and does not state `dim` (the host derives it from the compiled
-world — stating it is `-EINVAL`); the host compiles the YAML and binds
-the resulting evaluator exactly as it does the wasm callbacks, and the
+For `source: "world"` the config carries the world's YAML in the wire's
+`world` entry and does not state `dim` (the host derives it from the
+compiled world — stating it is `-EINVAL`); the host compiles the YAML
+and binds the resulting evaluator exactly as it does the wasm callbacks,
+and the
 three index arguments are ignored.
 
 Returns a handle ≥ 1, or a negative errno. The mapping is the header's:
@@ -329,6 +340,37 @@ export class SolverCallbacks {
 }
 
 /**
+ * A solver configuration in the schema.yaml vocabulary: the object form
+ * of the §12 wire. `method` and `source` are required; `dim` is required
+ * by the wasm and native sources and must stay 0 for `source: "world"`
+ * (the host derives it); `world` carries the YAML text for
+ * `source: "world"`.
+ *
+ * A parameter left at its "absent" value is not written to the wire at
+ * all and the schema's default applies. The absent values are sentinels,
+ * not nulls, because AssemblyScript 0.28.8 has no nullable value types
+ * (`f64 | null` is `AS204`): NaN for the eight f64 parameters, -1 for
+ * `iterations`, and null for the two string fields (`description`,
+ * `world` — references, where null is legal).
+ */
+export class SolverConfig {
+  method: string;
+  source: string;
+  dim: i32;                    // 0 unless the source requires it
+  description: string | null;  // null = absent
+  relTol: f64;                 // NaN = absent; same for the next four
+  absTol: f64;
+  minStep: f64;
+  maxStep: f64;
+  fixedStep: f64;
+  iterations: i32;             // -1 = absent
+  convergenceTol: f64;         // NaN = absent; same for the next two
+  compliance: f64;
+  relaxation: f64;
+  world: string | null;        // the YAML text; null = absent
+}
+
+/**
  * A handle to one solver id. Errors are null / -1; nothing throws.
  * Destroy it when done — like ResFile.close, destroy is idempotent.
  */
@@ -337,16 +379,18 @@ export class Solver {
   private id: i32;
 
   /**
-   * Create a solver from a JSON config (schema.yaml's vocabulary) and,
-   * for `source: "wasm"`, the three callbacks that solver uses.
+   * Create a solver from a `SolverConfig` and, for `source: "wasm"`,
+   * the three callbacks that solver uses. The framework encodes the
+   * object to the §12 wire and passes its bytes to `solver_create`.
    * Callbacks are optional — world-source and native-source solvers have
    * none — and default to null, which the framework passes as 0/0/0.
-   * Returns null on any failure: malformed config, unknown method,
-   * unmet source requirement, unavailable method or source, a callback
+   * Returns null on any failure: a wire the host refuses (unset method or
+   * source, a source's requirements unmet, a world that does not
+   * compile), unknown method, unavailable method or source, a callback
    * index that does not name a function of the declared signature, or a
    * full id table (§5).
    */
-  static create(configJson: string, callbacks: SolverCallbacks | null = null): Solver | null
+  static create(config: SolverConfig, callbacks: SolverCallbacks | null = null): Solver | null
 
   /**
    * Advance by `dt`. Returns 0 on success, -1 on failure. Synchronous;
@@ -407,9 +451,10 @@ list is for the guest reader):
   failure (e.g. `minStep` exhaustion, DESIGN.md §7).
 - `-9 EBADF` — destroyed or never-allocated solver id.
 - `-12 ENOMEM` — allocation failure (create only).
-- `-22 EINVAL` — malformed config, unmet source requirement, bad
-  argument; `step` on a `source: "wasm"` solver before its callbacks
-  are bound.
+- `-22 EINVAL` — a config the host refuses (a wire that does not match
+  DESIGN.md §12, an empty method or source, an unmet source requirement,
+  an out-of-range parameter) or a bad argument; `step` on a
+  `source: "wasm"` solver before its callbacks are bound.
 - `-24 EMFILE` — solver-id table full (create only).
 - `-38 ENOSYS` — `method` named in the config but not available in this
   build (verlet / implicit_euler / spook — §7).
@@ -469,8 +514,13 @@ sequence, not compilable as shown:
 // `_derivative`, `deriv_buf_in`, `deriv_buf_out` are this module's; the
 // callback object rides with create and the host resolves it — nothing
 // to call by hand.
-const s = Solver.create(
-  '{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}',
+const config = new SolverConfig();
+config.method = "rk45";
+config.source = "wasm";
+config.dim = 2;
+config.relTol = 1e-8;                 // a parameter left NaN is absent
+config.absTol = 1e-10;
+const s = Solver.create(config,
   { derivative: _derivative, bufIn: deriv_buf_in, bufOut: deriv_buf_out }
 );
 if (s == null) return;                // config rejected: null, never a throw

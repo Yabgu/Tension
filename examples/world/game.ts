@@ -6,7 +6,7 @@
 // evaluator in tension-core supplies f(t, y). The callbacks argument is
 // omitted — a world-source solver has none.
 
-import { print, Solver } from "tension-framework";
+import { print, Solver, SolverConfig } from "tension-framework";
 
 // The same YAML bytes as oscillator.yaml. Guests cannot read files: a real
 // build would embed this with a packer; here the two copies are kept
@@ -32,29 +32,20 @@ connections:
     rest_length: 1.0
 `;
 
-// JSON-escape a string for embedding (the config below is built by hand:
-// AssemblyScript has no global `JSON`). Backslashes first, then quotes and
-// control characters.
-function jsonEscape(text: string): string {
-  return text
-    .replaceAll("\\", "\\\\")
-    .replaceAll('"', '\\"')
-    .replaceAll("\n", "\\n")
-    .replaceAll("\r", "\\r")
-    .replaceAll("\t", "\\t");
-}
-
 // source: "world" — the config carries the YAML itself and states no dim
-// (the host derives it). The callbacks argument is omitted at create below.
-const configJson =
-  '{"method":"rk45","source":"world","world":"' +
-  jsonEscape(worldYaml) +
-  '","parameters":{"relTol":1e-10,"absTol":1e-12}}';
+// (the host derives it from the compiled world). The callbacks argument is
+// omitted at create below: a world-source solver has none.
+const config = new SolverConfig();
+config.method = "rk45";
+config.source = "world";
+config.world = worldYaml;
+config.relTol = 1e-10;
+config.absTol = 1e-12;
 
 export function _start_game(): void {
   print("=== TensionCore world demo: a YAML spring, integrated by rk45 ===");
 
-  const s = Solver.create(configJson); // no callbacks: the world is the f
+  const s = Solver.create(config); // no callbacks: the world is the f
   if (s == null) {
     print("solver create failed");
     return;

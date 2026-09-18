@@ -8,8 +8,12 @@
 //! The shim has one process-global table, so the tests take turns
 //! through `SERIAL`.
 
-use std::ffi::{c_char, CString};
 use std::sync::Mutex;
+
+#[path = "support/config.rs"]
+mod support;
+
+use support::Config;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -18,7 +22,6 @@ type Rhs = unsafe extern "C" fn(*const f64, i32, f64, *mut f64, i32) -> i32;
 type ValidateFn = unsafe extern "C" fn(*const f64, i32, *const f64, i32, f64, *mut u8, i32) -> i32;
 
 extern "C" {
-    fn tension_solver_create(config_json: *const c_char, config_len: usize) -> i32;
     fn tension_solver_bind_callbacks(
         id: i32,
         derivative: Option<Rhs>,
@@ -34,9 +37,8 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-fn create(json: &str) -> i32 {
-    let s = CString::new(json).unwrap();
-    unsafe { tension_solver_create(s.as_ptr(), s.as_bytes().len()) }
+fn create(cfg: &Config) -> i32 {
+    cfg.create()
 }
 
 /// Harmonic oscillator for the verlet convention: dy = [v, a], a = -q.
@@ -74,7 +76,7 @@ fn read_state(id: i32, y: &mut [f64]) -> (f64, i32) {
 #[test]
 fn s1_verlet_through_shim() {
     let _g = lock();
-    let id = create(r#"{"method":"verlet","source":"wasm","dim":4}"#);
+    let id = create(&Config::new("verlet", "wasm").dim(4));
     assert!(id >= 1, "create returned {id}");
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_harmonic), None) },
@@ -108,7 +110,7 @@ fn s1b_verlet_odd_dim_refused_at_step() {
     let _g = lock();
     // create does not pre-validate evenness (the compiled rules are
     // method-agnostic); the step is where the method's convention bites.
-    let id = create(r#"{"method":"verlet","source":"wasm","dim":3}"#);
+    let id = create(&Config::new("verlet", "wasm").dim(3));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_harmonic), None) },
@@ -123,7 +125,7 @@ fn s1b_verlet_odd_dim_refused_at_step() {
 #[test]
 fn s2_implicit_euler_through_shim() {
     let _g = lock();
-    let id = create(r#"{"method":"implicit_euler","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("implicit_euler", "wasm").dim(2));
     assert!(id >= 1, "create returned {id}");
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -157,6 +159,6 @@ fn s2_implicit_euler_through_shim() {
 #[test]
 fn s3_spook_is_still_enosys() {
     let _g = lock();
-    let id = create(r#"{"method":"spook","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("spook", "wasm").dim(2));
     assert_eq!(id, -38, "spook must remain -ENOSYS (DESIGN.md §10)");
 }

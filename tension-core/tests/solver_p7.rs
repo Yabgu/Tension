@@ -13,6 +13,11 @@
 use std::ffi::{c_char, c_void, CString};
 use std::sync::Mutex;
 
+#[path = "support/config.rs"]
+mod support;
+
+use support::Config;
+
 static SERIAL: Mutex<()> = Mutex::new(());
 
 /// The RHS shape of the header's `tension_solver_derivative_fn`.
@@ -38,7 +43,6 @@ struct Vtable {
 }
 
 extern "C" {
-    fn tension_solver_create(config_json: *const c_char, config_len: usize) -> i32;
     fn tension_solver_bind_callbacks(
         id: i32,
         derivative: Option<DerivFn>,
@@ -104,9 +108,8 @@ fn ensure_midpoint() {
     });
 }
 
-fn create(json: &str) -> i32 {
-    let s = CString::new(json).unwrap();
-    unsafe { tension_solver_create(s.as_ptr(), s.as_bytes().len()) }
+fn create(cfg: &Config) -> i32 {
+    cfg.create()
 }
 
 /// Register a plugin whose vtable and strings outlive the process (the
@@ -218,7 +221,7 @@ unsafe extern "C" fn rk45_wrap_step(id: i32, dt: f64) -> i32 {
 #[test]
 fn p0_accessors_answer_for_a_bound_builtin() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"wasm","dim":3}"#);
+    let id = create(&Config::new("euler", "wasm").dim(3));
     assert!(id >= 1, "create returned {id}");
 
     assert_eq!(unsafe { tension_solver_get_dim(id) }, 3);
@@ -255,7 +258,7 @@ fn p1_midpoint_plugin_end_to_end() {
     let _g = lock();
     ensure_midpoint();
 
-    let id = create(r#"{"method":"midpoint","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("midpoint", "wasm").dim(2));
     assert!(id >= 1, "create returned {id}");
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -304,7 +307,7 @@ fn p4_euler_wrapper_matches_direct() {
 
     let y0 = [1.0f64, 2.0];
     // Through the wrapper.
-    let id = create(r#"{"method":"euler_wrap","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("euler_wrap", "wasm").dim(2));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -317,7 +320,7 @@ fn p4_euler_wrapper_matches_direct() {
     assert_eq!(unsafe { tension_solver_state(id, &mut tw, yw.as_mut_ptr(), 2) }, 2);
 
     // The same thing directly.
-    let id2 = create(r#"{"method":"euler","source":"wasm","dim":2}"#);
+    let id2 = create(&Config::new("euler", "wasm").dim(2));
     assert!(id2 >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id2, Some(rhs_decay), None) },
@@ -365,11 +368,8 @@ fn p5_rk45_wrapper_matches_direct() {
         0
     );
 
-    let cfg_params = r#","parameters":{"relTol":1e-8,"absTol":1e-10}"#;
     let y0 = [1.0f64, 2.0];
-    let id = create(&format!(
-        r#"{{"method":"rk45_wrap","source":"wasm","dim":2{cfg_params}}}"#
-    ));
+    let id = create(&Config::new("rk45_wrap", "wasm").dim(2).rel_tol(1e-8).abs_tol(1e-10));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -381,9 +381,7 @@ fn p5_rk45_wrapper_matches_direct() {
     let mut yw = [0.0f64; 2];
     assert_eq!(unsafe { tension_solver_state(id, &mut tw, yw.as_mut_ptr(), 2) }, 2);
 
-    let id2 = create(&format!(
-        r#"{{"method":"rk45","source":"wasm","dim":2{cfg_params}}}"#
-    ));
+    let id2 = create(&Config::new("rk45", "wasm").dim(2).rel_tol(1e-8).abs_tol(1e-10));
     assert!(id2 >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id2, Some(rhs_decay), None) },
@@ -426,7 +424,7 @@ fn p6_null_state_slots_use_shim_default() {
 
     // The sample plugin leaves state/set_state/destroy NULL: the public
     // entry points must fall back to the shim's own y/t, not refuse.
-    let id = create(r#"{"method":"midpoint","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("midpoint", "wasm").dim(1));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
@@ -466,7 +464,7 @@ fn p7_failing_plugin_step_does_not_advance_time() {
         ),
         0
     );
-    let id = create(r#"{"method":"p7_failstep","source":"native","dim":1}"#);
+    let id = create(&Config::new("p7_failstep", "native").dim(1));
     assert!(id >= 1);
 
     assert_eq!(

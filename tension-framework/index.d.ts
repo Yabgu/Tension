@@ -115,6 +115,10 @@ export declare class ResFile {
 // them from the module's exported `table` (build with `asc --exportTable`).
 // Errors are null / -1, never exceptions. `state` writes `[t, y0, y1, ...]`;
 // `setState` takes `t` and `y` separately, because a checkpoint is `{t, y}`.
+//
+// The config is a `SolverConfig` object; the framework encodes it to the
+// binary layout of tension-solver/DESIGN.md §12 (the host is its strict
+// reader). A parameter left `null` is absent — the schema's default applies.
 
 /** The three callbacks a `source: "wasm"` solver uses; ignored otherwise. */
 export declare class SolverCallbacks {
@@ -123,8 +127,32 @@ export declare class SolverCallbacks {
   bufOut: () => i32;
 }
 
+/**
+ * A solver configuration in the schema.yaml vocabulary. `method` and
+ * `source` are required; `dim` is required by the wasm and native sources
+ * and must stay 0 for `source: "world"` (the host derives it from the
+ * compiled world); `world` carries the YAML text for `source: "world"`.
+ * The nine parameters are optional — `null` means absent.
+ */
+export declare class SolverConfig {
+  method: string;
+  source: string;
+  dim: i32;
+  description: string | null;
+  relTol: f64 | null;
+  absTol: f64 | null;
+  minStep: f64 | null;
+  maxStep: f64 | null;
+  fixedStep: f64 | null;
+  iterations: i32 | null;
+  convergenceTol: f64 | null;
+  compliance: f64 | null;
+  relaxation: f64 | null;
+  world: string | null;
+}
+
 export declare class Solver {
-  static create(configJson: string, callbacks?: SolverCallbacks | null): Solver | null;
+  static create(config: SolverConfig, callbacks?: SolverCallbacks | null): Solver | null;
   step(dt: f64): i32;
   state(out: Float64Array): i32;
   setState(t: f64, y: Float64Array): i32;

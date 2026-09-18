@@ -20,9 +20,13 @@
 //! convention, 64 KiB buffers, documented in the fixture itself).
 
 use std::cell::RefCell;
-use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+
+#[path = "support/config.rs"]
+mod support;
+
+use support::Config;
 
 use wasmtime::{Engine, Instance, Memory, Module, Store, TypedFunc};
 
@@ -33,7 +37,6 @@ type DerivFn = unsafe extern "C" fn(*const f64, i32, f64, *mut f64, i32) -> i32;
 type ValidateFn = unsafe extern "C" fn(*const f64, i32, *const f64, i32, f64, *mut u8, i32) -> i32;
 
 extern "C" {
-    fn tension_solver_create(config_json: *const c_char, config_len: usize) -> i32;
     fn tension_solver_bind_callbacks(
         id: i32,
         derivative: Option<DerivFn>,
@@ -157,9 +160,8 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-fn create(json: &str) -> i32 {
-    let s = CString::new(json).unwrap();
-    unsafe { tension_solver_create(s.as_ptr(), s.as_bytes().len()) }
+fn create(cfg: &Config) -> i32 {
+    cfg.create()
 }
 
 fn as_bytes(s: &[f64]) -> &[u8] {
@@ -244,7 +246,7 @@ fn t3_euler_step_through_wasm() {
     let _g = lock();
     let mut ctx = Some(load_wasm());
 
-    let id = create(r#"{"method":"euler","source":"wasm","dim":2}"#);
+    let id = create(&Config::new("euler", "wasm").dim(2));
     assert!(id >= 1);
     assert_eq!(
         unsafe { tension_solver_bind_callbacks(id, Some(derivative_trampoline), None) },
@@ -268,8 +270,9 @@ fn t3_euler_step_through_wasm() {
 
 // ── T4: rk45 through wasm matches the direct solve ───────────────────────
 
-const RK45_CFG: &str =
-    r#"{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}"#;
+fn rk45_cfg() -> Config {
+    Config::new("rk45", "wasm").dim(2).rel_tol(1e-8).abs_tol(1e-10)
+}
 
 /// Solve y' = -y, y0 = [1, 2], one dt = 1.0 step through the shim, using
 /// either the wasm trampoline or a plain Rust RHS.
@@ -278,7 +281,7 @@ fn rk45_solve(
     use_wasm: bool,
     calls_out: &mut usize,
 ) -> ([f64; 2], f64, i32) {
-    let id = create(RK45_CFG);
+    let id = create(&rk45_cfg());
     assert!(id >= 1);
     // Annotated so both fn items coerce to the same pointer type.
     let rhs: Option<DerivFn> = if use_wasm {
@@ -370,11 +373,11 @@ fn t6_interleaved_no_leak() {
     let _g = lock();
     let mut ctx = Some(load_wasm());
 
-    let cfg_a = r#"{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-7,"absTol":1e-10}}"#;
-    let cfg_b = r#"{"method":"rk45","source":"wasm","dim":3,"parameters":{"relTol":1e-5,"absTol":1e-8}}"#;
+    let cfg_a = Config::new("rk45", "wasm").dim(2).rel_tol(1e-7).abs_tol(1e-10);
+    let cfg_b = Config::new("rk45", "wasm").dim(3).rel_tol(1e-5).abs_tol(1e-8);
 
-    let mk = |json: &str, y0: &[f64]| -> i32 {
-        let id = create(json);
+    let mk = |cfg: &Config, y0: &[f64]| -> i32 {
+        let id = create(cfg);
         assert!(id >= 1);
         assert_eq!(
             unsafe { tension_solver_bind_callbacks(id, Some(derivative_trampoline), None) },
@@ -387,7 +390,7 @@ fn t6_interleaved_no_leak() {
     // Isolated runs.
     let y0a = [1.0f64, -2.5];
     let y0b = [0.5f64, 1.0, -0.25];
-    let ida = mk(cfg_a, &y0a);
+    let ida = mk(&cfg_a, &y0a);
     for k in 0..3 {
         let rc = with_wasm(&mut ctx, || unsafe { tension_solver_step(ida, 0.25 * k as f64 + 0.25) });
         assert_eq!(rc, 0);
@@ -397,7 +400,7 @@ fn t6_interleaved_no_leak() {
     assert_eq!(n, 2);
     unsafe { tension_solver_destroy(ida) };
 
-    let idb = mk(cfg_b, &y0b);
+    let idb = mk(&cfg_b, &y0b);
     for k in 0..2 {
         let rc = with_wasm(&mut ctx, || unsafe { tension_solver_step(idb, 0.5 + 0.5 * k as f64) });
         assert_eq!(rc, 0);
@@ -408,8 +411,8 @@ fn t6_interleaved_no_leak() {
     unsafe { tension_solver_destroy(idb) };
 
     // Interleaved: A step, B step, A step, ...
-    let ida = mk(cfg_a, &y0a);
-    let idb = mk(cfg_b, &y0b);
+    let ida = mk(&cfg_a, &y0a);
+    let idb = mk(&cfg_b, &y0b);
     for k in 0..3 {
         let rc = with_wasm(&mut ctx, || unsafe { tension_solver_step(ida, 0.25 * k as f64 + 0.25) });
         assert_eq!(rc, 0);
@@ -441,7 +444,7 @@ fn t6_interleaved_no_leak() {
 #[test]
 fn t7_wasm_null_bind_still_einval() {
     let _g = lock();
-    let id = create(r#"{"method":"euler","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("euler", "wasm").dim(1));
     assert!(id >= 1);
     assert_eq!(unsafe { tension_solver_bind_callbacks(id, None, None) }, -22);
     unsafe { tension_solver_destroy(id) };

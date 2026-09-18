@@ -2,9 +2,12 @@
  * tension_solver — the C ABI shim: handles, config, registry, dispatch.
  *
  * The numerical core lives in Fortran (tension_solver_erk.f90). This file
- * is the plumbing the plan put in C: JSON parse + validation, the handle
+ * is the plumbing the plan put in C: config-struct validation, the handle
  * table, the method registry, errno mapping. It implements exactly the
- * surface declared in include/tension_solver.h and nothing else.
+ * surface declared in include/tension_solver.h and nothing else. It does
+ * not parse text: the guest's config crosses the wasm boundary in the
+ * binary layout of DESIGN.md §12, and the host (tension-core) decodes that
+ * into the `tension_solver_config` this level validates.
  *
  * The validation rules are compiled in, never loaded from schema.yaml at
  * runtime (the header says so; tests/solver_p2.rs cross-checks every rule
@@ -14,8 +17,11 @@
  *   - `bundles_rhs: false` for every built-in, and the pairing rule
  *     `source: native` requires `bundles_rhs: true` — so a built-in with
  *     `source: native` is rejected
- *   - the allowed top-level config keys (preset_format.allowed plus the
- *     required method/source pair) and the global parameter vocabulary
+ *   - the allowed top-level config members (preset_format.allowed plus the
+ *     required method/source pair) and the global parameter vocabulary, with
+ *     each method's declared parameter subset
+ *   - the nine-parameter bitmap's meaning: bit order = schema declaration
+ *     order, bits 9-31 reserved
  *
  * `source: world` is wired as of P8e: the RHS reaches the shim as a bound
  * derivative exactly like `source: wasm`'s, and this file never sees YAML —
@@ -28,6 +34,7 @@
 #include "solver_params.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -75,12 +82,31 @@ static const int TS_SOURCE_REQUIRES_DIM[TS_SOURCE_COUNT] = {0, 1, 1};
  * implicit `bundles_rhs: true`. */
 #define TS_SOURCE_NATIVE_REQUIRES_BUNDLES_RHS 1
 
-/* parameters[] — the global vocabulary, numeric. */
+/* parameters[] — the global vocabulary, numeric. The order is schema.yaml's
+ * declaration order and is load-bearing twice over: it is the bit order of
+ * `parameters_bitmap` (DESIGN.md §12) and the bit order of the per-method
+ * masks below. */
 static const char *const TS_PARAMETERS[] = {
     "relTol",    "absTol",  "minStep",        "maxStep",     "fixedStep",
     "iterations", "convergenceTol", "compliance", "relaxation",
 };
 #define TS_PARAMETER_COUNT ((int)(sizeof TS_PARAMETERS / sizeof TS_PARAMETERS[0]))
+#define TS_PARAMETER_MASK_ALL 0x1FFu /* the nine named bits; 9-31 reserved */
+
+/* backends[*].parameters as bitmasks over TS_PARAMETERS order (bit 0 =
+ * relTol … bit 8 = relaxation): the subset of the vocabulary each method
+ * reads, mirroring schema.yaml. A parameter outside the mask is warned
+ * about, never refused (schema.yaml: "warned, not errored"). A plugin has
+ * no declared list here — nothing is warned for it. */
+static const uint32_t TS_METHOD_PARAMETERS[] = {
+    0x003u, /* euler          relTol, absTol */
+    0x003u, /* heun           relTol, absTol */
+    0x00Fu, /* rk23           relTol, absTol, minStep, maxStep */
+    0x00Fu, /* rk45           relTol, absTol, minStep, maxStep */
+    0x010u, /* verlet         fixedStep */
+    0x060u, /* implicit_euler iterations, convergenceTol */
+    0x1A0u, /* spook          iterations, compliance, relaxation */
+};
 
 /* ── the Fortran core's dispatch targets ─────────────────────────────── */
 /*
@@ -179,62 +205,60 @@ static TsSolver *handle(int32_t id)
     return g_solvers[id - 1].used ? &g_solvers[id - 1] : NULL;
 }
 
-static int find_builtin(const char *name)
+static int find_builtin_n(const char *name, size_t len)
 {
     int i;
     for (i = 0; i < TS_BUILTIN_COUNT; i++)
-        if (strcmp(name, TS_BUILTINS[i]) == 0)
+        if (strlen(TS_BUILTINS[i]) == len && memcmp(TS_BUILTINS[i], name, len) == 0)
             return i;
     return -1;
 }
 
-static TsPlugin *find_plugin(const char *name)
+static int find_builtin(const char *name)
+{
+    return name == NULL ? -1 : find_builtin_n(name, strlen(name));
+}
+
+static TsPlugin *find_plugin_n(const char *name, size_t len)
 {
     int i;
     for (i = 0; i < TS_MAX_PLUGINS; i++)
-        if (g_plugins[i].used && strcmp(g_plugins[i].name, name) == 0)
+        if (g_plugins[i].used && strlen(g_plugins[i].name) == len &&
+            memcmp(g_plugins[i].name, name, len) == 0)
             return &g_plugins[i];
     return NULL;
 }
 
-static int find_source(const char *name)
+static TsPlugin *find_plugin(const char *name)
+{
+    return name == NULL ? NULL : find_plugin_n(name, strlen(name));
+}
+
+static int find_source_n(const char *name, size_t len)
 {
     int i;
     for (i = 0; i < TS_SOURCE_COUNT; i++)
-        if (strcmp(name, TS_SOURCES[i]) == 0)
+        if (strlen(TS_SOURCES[i]) == len && memcmp(TS_SOURCES[i], name, len) == 0)
             return i;
     return -1;
 }
 
-static int find_parameter(const char *name)
-{
-    int i;
-    for (i = 0; i < TS_PARAMETER_COUNT; i++)
-        if (strcmp(name, TS_PARAMETERS[i]) == 0)
-            return i;
-    return -1;
-}
-
-/* ── config parsing (the documented subset) ──────────────────────────── */
+/* ── the configuration struct ────────────────────────────────────────── */
 /*
- * Accepted input: one flat JSON object; keys are the strings below; values
- * are string / number per key. `parameters` is the one nested object: its
- * keys are the global parameter names, its values numbers. Everything
- * else — arrays, null, booleans, nested objects beyond `parameters`,
- * duplicate keys, escapes beyond the standard short set, trailing bytes —
- * is -EINVAL. The parser allocates nothing.
+ * tension_solver_create takes the `tension_solver_config` the host decoded
+ * from the guest wire (DESIGN.md §12). Nothing here scans text: the struct's
+ * strings carry explicit lengths, so every name lookup is a (pointer,
+ * length) comparison against the compiled tables, and the parameter values
+ * arrive pre-typed — `iterations` as u32, which this level checks against
+ * the int32_t the numerical core reads.
+ *
+ * `parameters_bitmap` names which of the nine schema parameters the config
+ * states (bit order = schema declaration order). A clear bit means the
+ * schema's declared default applies and the field is not read. A stated
+ * parameter the chosen method does not read is warned about, not refused
+ * (schema.yaml's `parameters:` note: "warned, not errored — the parameter
+ * is ignored; the warning names the parameter and the backend").
  */
-
-typedef struct {
-    char method[TS_NAME_MAX];
-    char source[16];
-    int has_method;
-    int has_source;
-    int has_dim;
-    int32_t dim;
-    tension_solver_params params; /* schema defaults, overwritten by the
-                                     `parameters` object when present */
-} TsConfig;
 
 /* The schema's declared defaults (schema.yaml `parameters` defaults). */
 static tension_solver_params params_defaults(void)
@@ -252,12 +276,15 @@ static tension_solver_params params_defaults(void)
     return p;
 }
 
-/* Range checks after parsing: the schema's declared ranges ([0, inf] for
- * the five step/tolerance knobs) are advisory there; here they are a
- * floor that catches obviously wrong configs (a negative tolerance).
- * `iterations` has no declared range; negative counts are still a config
- * error. The step-size window must be non-empty — max_step < min_step
- * admits no admissible h, and a zero window admits no progress at all. */
+/* Range checks after the struct's fields are collected: the schema's
+ * declared ranges ([0, inf] for the five step/tolerance knobs) are advisory
+ * there; here they are a floor that catches obviously wrong configs (a
+ * negative tolerance). `dim`'s upper bound is TS_MAX_DIM, the same resource
+ * bound the JSON era's parser enforced. `iterations` has no declared range
+ * beyond its type; a value that does not fit the core's int32_t is refused
+ * where it is read. The step-size window must be non-empty — max_step <
+ * min_step admits no admissible h, and a zero window admits no progress at
+ * all. */
 static int32_t params_validate(const tension_solver_params *p)
 {
     if (p->rel_tol < 0.0 || p->abs_tol < 0.0 || p->min_step < 0.0 ||
@@ -270,235 +297,83 @@ static int32_t params_validate(const tension_solver_params *p)
     return 0;
 }
 
-static const char *skip_ws(const char *s, const char *end)
+/* Fill `out` from the struct: the schema defaults, then every field whose
+ * bit is set in the bitmap. A stated value must be finite — the JSON-era
+ * number scanner refused inf and NaN, and a struct field can carry them;
+ * the *unstated* ones keep the defaults, one of which (`max_step`) is +inf
+ * by design. Returns -EINVAL for an out-of-range or non-finite value. */
+static int32_t params_from_config(const tension_solver_config *cfg,
+                                  tension_solver_params *out)
 {
-    while (s < end && (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r'))
-        s++;
-    return s;
-}
+    uint32_t bits = cfg->parameters_bitmap;
 
-/* Parse a JSON string; returns the position past the closing quote, or
- * NULL. Short escapes only (`\uXXXX` is outside the P2 subset). */
-static const char *parse_string(const char *s, const char *end, char *out,
-                                size_t cap)
-{
-    size_t n = 0;
-    if (s >= end || *s != '"')
-        return NULL;
-    s++;
-    while (s < end && *s != '"') {
-        unsigned char c = (unsigned char)*s;
-        if (c < 0x20)
-            return NULL;
-        if (c == '\\') {
-            s++;
-            if (s >= end)
-                return NULL;
-            switch (*s) {
-            case '"': c = '"'; break;
-            case '\\': c = '\\'; break;
-            case '/': c = '/'; break;
-            case 'b': c = '\b'; break;
-            case 'f': c = '\f'; break;
-            case 'n': c = '\n'; break;
-            case 'r': c = '\r'; break;
-            case 't': c = '\t'; break;
-            default: return NULL;
-            }
-        }
-        if (n + 1 >= cap)
-            return NULL;
-        out[n++] = (char)c;
-        s++;
-    }
-    if (s >= end)
-        return NULL;
-    out[n] = '\0';
-    return s + 1;
-}
-
-/* Parse a JSON number; returns the position after it, or NULL. */
-static const char *parse_number(const char *s, const char *end, double *out)
-{
-    char buf[32];
-    size_t n = 0;
-    char *stop = NULL;
-    const char *p = s;
-    while (p < end && n < sizeof buf - 1 &&
-           ((*p >= '0' && *p <= '9') || *p == '-' || *p == '+' ||
-            *p == '.' || *p == 'e' || *p == 'E'))
-        buf[n++] = *p++;
-    if (n == 0)
-        return NULL;
-    buf[n] = '\0';
-    *out = strtod(buf, &stop);
-    if (stop == NULL || *stop != '\0' || !isfinite(*out))
-        return NULL;
-    return p;
-}
-
-/* parameters: { <known-name>: <number>, ... } — values are stored into
- * `out`, which starts from the schema defaults. */
-static const char *parse_parameters(const char *s, const char *end,
-                                    tension_solver_params *out)
-{
-    const char *p = s;
-    unsigned seen = 0;
-    if (p >= end || *p != '{')
-        return NULL;
-    p = skip_ws(p + 1, end);
-    if (p < end && *p == '}') {
-        p++;
-        return p;
-    }
-    for (;;) {
-        char key[TS_NAME_MAX];
-        double v;
-        int idx;
-        p = skip_ws(p, end);
-        p = parse_string(p, end, key, sizeof key);
-        if (p == NULL)
-            return NULL;
-        idx = find_parameter(key);
-        if (idx < 0)
-            return NULL;
-        if (seen & (1u << idx))
-            return NULL;
-        seen |= 1u << idx;
-        p = skip_ws(p, end);
-        if (p >= end || *p != ':')
-            return NULL;
-        p = skip_ws(p + 1, end);
-        p = parse_number(p, end, &v);
-        if (p == NULL)
-            return NULL;
-        switch (idx) {
-        case 0: out->rel_tol = v; break;
-        case 1: out->abs_tol = v; break;
-        case 2: out->min_step = v; break;
-        case 3: out->max_step = v; break;
-        case 4: out->fixed_step = v; break;
-        case 5:
-            /* the one integer field: integer-valued and non-negative */
-            if (v < 0.0 || v > 2147483647.0 || v != (double)(int32_t)v)
-                return NULL;
-            out->iterations = (int32_t)v;
-            break;
-        case 6: out->convergence_tol = v; break;
-        case 7: out->compliance = v; break;
-        case 8: out->relaxation = v; break;
-        default: return NULL; /* unreachable: find_parameter bounds idx */
-        }
-        p = skip_ws(p, end);
-        if (p < end && *p == ',') {
-            p++;
-            continue;
-        }
-        if (p < end && *p == '}') {
-            p++;
-            return p;
-        }
-        return NULL;
-    }
-}
-
-static int32_t parse_config(const char *s, size_t len, TsConfig *cfg)
-{
-    const char *end = s + len;
-    const char *p = skip_ws(s, end);
-    unsigned seen = 0;
-
-    memset(cfg, 0, sizeof *cfg);
-    cfg->params = params_defaults();
-    if (p >= end || *p != '{')
-        return TS_EINVAL;
-    p = skip_ws(p + 1, end);
-    if (p < end && *p == '}') {
-        p++;
-    } else {
-        for (;;) {
-            char key[TS_NAME_MAX];
-            p = skip_ws(p, end);
-            p = parse_string(p, end, key, sizeof key);
-            if (p == NULL)
-                return TS_EINVAL;
-            p = skip_ws(p, end);
-            if (p >= end || *p != ':')
-                return TS_EINVAL;
-            p = skip_ws(p + 1, end);
-
-            if (strcmp(key, "method") == 0) {
-                if (seen & 1u)
-                    return TS_EINVAL;
-                seen |= 1u;
-                p = parse_string(p, end, cfg->method, sizeof cfg->method);
-                if (p == NULL)
-                    return TS_EINVAL;
-                cfg->has_method = 1;
-            } else if (strcmp(key, "source") == 0) {
-                if (seen & 2u)
-                    return TS_EINVAL;
-                seen |= 2u;
-                p = parse_string(p, end, cfg->source, sizeof cfg->source);
-                if (p == NULL)
-                    return TS_EINVAL;
-                cfg->has_source = 1;
-            } else if (strcmp(key, "dim") == 0) {
-                double d;
-                if (seen & 4u)
-                    return TS_EINVAL;
-                seen |= 4u;
-                p = parse_number(p, end, &d);
-                if (p == NULL)
-                    return TS_EINVAL;
-                if (d < 1.0 || d > (double)TS_MAX_DIM || d != (double)(int32_t)d)
-                    return TS_EINVAL;
-                cfg->dim = (int32_t)d;
-                cfg->has_dim = 1;
-            } else if (strcmp(key, "dt") == 0) {
-                /* preset_format.allowed; the runtime takes dt per step() */
-                double d;
-                if (seen & 8u)
-                    return TS_EINVAL;
-                seen |= 8u;
-                p = parse_number(p, end, &d);
-                if (p == NULL)
-                    return TS_EINVAL;
-            } else if (strcmp(key, "description") == 0) {
-                char tmp[256];
-                if (seen & 16u)
-                    return TS_EINVAL;
-                seen |= 16u;
-                p = parse_string(p, end, tmp, sizeof tmp);
-                if (p == NULL)
-                    return TS_EINVAL;
-            } else if (strcmp(key, "parameters") == 0) {
-                if (seen & 32u)
-                    return TS_EINVAL;
-                seen |= 32u;
-                p = parse_parameters(p, end, &cfg->params);
-                if (p == NULL)
-                    return TS_EINVAL;
-            } else {
-                return TS_EINVAL; /* key outside preset_format.allowed */
-            }
-
-            p = skip_ws(p, end);
-            if (p < end && *p == ',') {
-                p++;
-                continue;
-            }
-            if (p < end && *p == '}') {
-                p++;
-                break;
-            }
+    *out = params_defaults();
+    if (bits & (1u << 0)) {
+        if (!isfinite(cfg->rel_tol))
             return TS_EINVAL;
-        }
+        out->rel_tol = cfg->rel_tol;
     }
-    p = skip_ws(p, end);
-    if (p != end)
-        return TS_EINVAL; /* trailing bytes */
-    return 0;
+    if (bits & (1u << 1)) {
+        if (!isfinite(cfg->abs_tol))
+            return TS_EINVAL;
+        out->abs_tol = cfg->abs_tol;
+    }
+    if (bits & (1u << 2)) {
+        if (!isfinite(cfg->min_step))
+            return TS_EINVAL;
+        out->min_step = cfg->min_step;
+    }
+    if (bits & (1u << 3)) {
+        if (!isfinite(cfg->max_step))
+            return TS_EINVAL;
+        out->max_step = cfg->max_step;
+    }
+    if (bits & (1u << 4)) {
+        if (!isfinite(cfg->fixed_step))
+            return TS_EINVAL;
+        out->fixed_step = cfg->fixed_step;
+    }
+    if (bits & (1u << 5)) {
+        /* the one integer field: u32 on the wire, `>= 0` and int32_t in the
+         * core (solver_params.h) */
+        if (cfg->iterations > 2147483647u)
+            return TS_EINVAL;
+        out->iterations = (int32_t)cfg->iterations;
+    }
+    if (bits & (1u << 6)) {
+        if (!isfinite(cfg->convergence_tol))
+            return TS_EINVAL;
+        out->convergence_tol = cfg->convergence_tol;
+    }
+    if (bits & (1u << 7)) {
+        if (!isfinite(cfg->compliance))
+            return TS_EINVAL;
+        out->compliance = cfg->compliance;
+    }
+    if (bits & (1u << 8)) {
+        if (!isfinite(cfg->relaxation))
+            return TS_EINVAL;
+        out->relaxation = cfg->relaxation;
+    }
+    return params_validate(out);
+}
+
+/* A stated parameter the method does not read: warn, do not refuse. The
+ * plugin case (`builtin < 0`) has no declared list, so nothing is warned. */
+static void warn_ignored_parameters(int builtin, uint32_t bits)
+{
+    uint32_t read;
+    int i;
+
+    if (bits == 0 || builtin < 0)
+        return;
+    read = TS_METHOD_PARAMETERS[builtin];
+    for (i = 0; i < TS_PARAMETER_COUNT; i++)
+        if ((bits & (1u << i)) != 0 && (read & (1u << i)) == 0)
+            fprintf(stderr,
+                    "[tension-solver] parameter '%s' is not read by method "
+                    "'%s'; ignored\n",
+                    TS_PARAMETERS[i], TS_BUILTINS[builtin]);
 }
 
 /* ── registration ────────────────────────────────────────────────────── */
@@ -584,9 +459,9 @@ int32_t tension_solver_register_backend(
 
 /* ── public API ──────────────────────────────────────────────────────── */
 
-int32_t tension_solver_create(const char *config_json, size_t config_len)
+int32_t tension_solver_create(const tension_solver_config *config)
 {
-    TsConfig cfg;
+    tension_solver_params params;
     int builtin = -1;
     TsPlugin *plugin = NULL;
     int src;
@@ -594,43 +469,48 @@ int32_t tension_solver_create(const char *config_json, size_t config_len)
     TsSolver *h;
     int32_t rc;
 
-    if (config_json == NULL || config_len == 0)
+    if (config == NULL)
         return TS_EINVAL;
+    if (config->method == NULL || config->method_len == 0)
+        return TS_EINVAL;
+    if (config->source == NULL || config->source_len == 0)
+        return TS_EINVAL;
+    if (config->parameters_bitmap & ~TS_PARAMETER_MASK_ALL)
+        return TS_EINVAL; /* bits 9-31 are reserved and must be zero */
+    if (config->dim > (uint32_t)TS_MAX_DIM)
+        return TS_EINVAL; /* the resource bound the JSON era's dim had */
 
-    /* Parse and validate before any allocation (the header's rule). */
-    rc = parse_config(config_json, config_len, &cfg);
+    /* Validate before any allocation (the header's rule). */
+    rc = params_from_config(config, &params);
     if (rc != 0)
         return rc;
-    if (!cfg.has_method || !cfg.has_source)
-        return TS_EINVAL;
-    rc = params_validate(&cfg.params);
-    if (rc != 0)
-        return rc;
 
-    builtin = find_builtin(cfg.method);
+    builtin = find_builtin_n(config->method, config->method_len);
     if (builtin < 0) {
-        plugin = find_plugin(cfg.method);
+        plugin = find_plugin_n(config->method, config->method_len);
         if (plugin == NULL)
             return TS_ENOENT; /* unknown method */
     }
 
-    src = find_source(cfg.source);
+    src = find_source_n(config->source, config->source_len);
     if (src < 0)
         return TS_EINVAL;
 
-    if (TS_SOURCE_REQUIRES_DIM[src] && !cfg.has_dim)
+    if (TS_SOURCE_REQUIRES_DIM[src] && config->dim == 0)
         return TS_EINVAL; /* the source's `requires` are unmet */
 
     if (builtin >= 0 && src == TS_SRC_NATIVE &&
         TS_SOURCE_NATIVE_REQUIRES_BUNDLES_RHS)
         return TS_EINVAL; /* built-ins have bundles_rhs: false */
 
-    if (src == TS_SRC_WORLD && !cfg.has_dim) {
+    if (src == TS_SRC_WORLD && config->dim == 0) {
         /* World-sourced configs declare no `requires` (schema.yaml), but no
          * handle can be allocated without a dim. The host compiles the
          * embedded world, derives dim from the compiled header, and
-         * synthesizes it into the config before calling here (P8e); a config
-         * that arrives without one did not come from that path. */
+         * synthesizes it into the struct before calling here (P8e); a config
+         * that arrives without one did not come from that path. The wire's
+         * own rule is the mirror image: a world-source config states no dim
+         * (DESIGN.md §12), so a nonzero one is refused there. */
         return TS_EINVAL;
     }
 
@@ -640,6 +520,8 @@ int32_t tension_solver_create(const char *config_json, size_t config_len)
     if (plugin != NULL && src == TS_SRC_NATIVE && plugin->vt->derivative == NULL)
         return TS_EINVAL; /* the plugin's f is missing for source: native */
 
+    warn_ignored_parameters(builtin, config->parameters_bitmap);
+
     for (slot = 0; slot < TS_MAX_SOLVERS; slot++)
         if (!g_solvers[slot].used)
             break;
@@ -648,12 +530,12 @@ int32_t tension_solver_create(const char *config_json, size_t config_len)
 
     h = &g_solvers[slot];
     memset(h, 0, sizeof *h);
-    h->dim = cfg.dim;
+    h->dim = (int32_t)config->dim;
     h->source = src;
     h->is_plugin = (builtin < 0);
     h->builtin = builtin;
     h->plugin = plugin;
-    h->params = cfg.params;
+    h->params = params;
 
     h->y = (double *)calloc((size_t)h->dim, sizeof(double));
     if (h->y == NULL)

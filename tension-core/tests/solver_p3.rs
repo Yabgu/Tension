@@ -9,8 +9,13 @@
 //! The shim has one process-global table, so the shim tests take turns
 //! through `SERIAL`; the direct tests touch no global state at all.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::c_void;
 use std::sync::Mutex;
+
+#[path = "support/config.rs"]
+mod support;
+
+use support::Config;
 
 static SERIAL: Mutex<()> = Mutex::new(());
 
@@ -91,7 +96,6 @@ extern "C" {
     ) -> i32;
 
     // ── the C shim (as in P2) ──
-    fn tension_solver_create(config_json: *const c_char, config_len: usize) -> i32;
     fn tension_solver_bind_callbacks(
         id: i32,
         derivative: Option<Rhs>,
@@ -107,9 +111,8 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
     SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
 }
 
-fn create(json: &str) -> i32 {
-    let s = CString::new(json).unwrap();
-    unsafe { tension_solver_create(s.as_ptr(), s.as_bytes().len()) }
+fn create(cfg: &Config) -> i32 {
+    cfg.create()
 }
 
 // ── RHS fixtures ──────────────────────────────────────────────────────────
@@ -564,9 +567,7 @@ fn t8_heun_ignores_params() {
 #[test]
 fn t9_shim_rk45_end_to_end() {
     let _g = lock();
-    let id = create(
-        r#"{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}"#,
-    );
+    let id = create(&Config::new("rk45", "wasm").dim(2).rel_tol(1e-8).abs_tol(1e-10));
     assert!(id >= 1, "create rk45 returned {id}");
     assert_eq!(unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) }, 0);
 
@@ -597,7 +598,7 @@ fn t10_shim_heun_and_rk23_end_to_end() {
 
     // heun: fixed-step trapezoid on y' = -y, y0 = 1, dt = 0.5:
     // y1 = y0·(1 - h + h²/2) = 0.625 exactly (hand-computed).
-    let id = create(r#"{"method":"heun","source":"wasm","dim":1}"#);
+    let id = create(&Config::new("heun", "wasm").dim(1));
     assert!(id >= 1, "create heun returned {id}");
     assert_eq!(unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) }, 0);
     let y0 = [1.0f64];
@@ -611,9 +612,7 @@ fn t10_shim_heun_and_rk23_end_to_end() {
     unsafe { tension_solver_destroy(id) };
 
     // rk23: adaptive 3(2), dt = 0.5, loose-ish tolerance.
-    let id = create(
-        r#"{"method":"rk23","source":"wasm","dim":1,"parameters":{"relTol":1e-6,"absTol":1e-9}}"#,
-    );
+    let id = create(&Config::new("rk23", "wasm").dim(1).rel_tol(1e-6).abs_tol(1e-9));
     assert!(id >= 1, "create rk23 returned {id}");
     assert_eq!(unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) }, 0);
     assert_eq!(unsafe { tension_solver_set_state(id, 0.0, y0.as_ptr(), 1) }, 0);
@@ -637,14 +636,12 @@ fn t10_shim_heun_and_rk23_end_to_end() {
 fn t11_out_of_range_parameter() {
     let _g = lock();
     assert_eq!(
-        create(r#"{"method":"rk45","source":"wasm","dim":1,"parameters":{"relTol":-1.0}}"#),
+        create(&Config::new("rk45", "wasm").dim(1).rel_tol(-1.0)),
         -22
     );
     // And a max_step below min_step (an empty window) is the same shape.
     assert_eq!(
-        create(
-            r#"{"method":"rk45","source":"wasm","dim":1,"parameters":{"minStep":0.5,"maxStep":0.25}}"#
-        ),
+        create(&Config::new("rk45", "wasm").dim(1).min_step(0.5).max_step(0.25)),
         -22
     );
 }
@@ -658,10 +655,10 @@ fn t12_unimplemented_methods_still_say_so() {
     // to spook: registered, not compiled — its method is constraint-based
     // position-based dynamics and the frozen ABI has no constraint channel
     // (DESIGN.md §10).
-    assert_eq!(create(r#"{"method":"spook","source":"wasm","dim":1}"#), -38);
+    assert_eq!(create(&Config::new("spook", "wasm").dim(1)), -38);
     // The two delivered methods create a handle now.
     for method in ["verlet", "implicit_euler"] {
-        let id = create(&format!(r#"{{"method":"{method}","source":"wasm","dim":2}}"#));
+        let id = create(&Config::new(method, "wasm").dim(2));
         assert!(id >= 1, "{method}: must create after P6");
         unsafe { tension_solver_destroy(id) };
     }

@@ -26,12 +26,14 @@
  *   - every entry point is panic-free: any failure comes back as a negative
  *     errno value. 0 means success for the calls that report a status.
  *   - solver handles are 1-based; 0 is never a valid id.
- *   - `config_json` is UTF-8 JSON, validated before any allocation.
- *     Malformed JSON is -EINVAL; an unknown `method` is -ENOENT; a `source`
- *     whose `requires` are unmet is -EINVAL. The rules the runtime enforces
- *     are compiled in, not loaded from schema.yaml at runtime; a CI test
- *     cross-checks the compiled rules against every backend and source
- *     declared in schema.yaml, and drift fails the test.
+ *   - the config is a struct (`tension_solver_config` below), validated
+ *     before any allocation. A malformed struct is -EINVAL; an unknown
+ *     `method` is -ENOENT; a `source` whose `requires` are unmet is
+ *     -EINVAL. The rules the runtime enforces are compiled in, not loaded
+ *     from schema.yaml at runtime; a CI test cross-checks the compiled
+ *     rules against every backend and source declared in schema.yaml, and
+ *     drift fails the test. The guest-facing wire layout the host decodes
+ *     this struct from is DESIGN.md §12; the shim never sees the wire.
  *   - the two callbacks (derivative, validate) are guest-supplied. For
  *     `source: wasm` the guest exports them from the wasm module; for
  *     `source: native` the plugin supplies them in its registered vtable.
@@ -244,17 +246,68 @@ double *tension_solver_get_state_ptr(int32_t id);
  */
 const void *tension_solver_get_params(int32_t id);
 
+/* ── configuration ───────────────────────────────────────────────────── */
+
+/*
+ * The configuration object tension_solver_create takes. It is the host's
+ * translation of the wire format declared in DESIGN.md §12; the C shim does
+ * not parse the wire.
+ *
+ * Lifetime: every pointer is borrowed. The struct and the strings it points
+ * at need only be valid for the duration of the tension_solver_create call —
+ * the shim copies what it needs (method/source are resolved to tags;
+ * parameters are copied into the handle).
+ *
+ * Strings are UTF-8 bytes with explicit lengths (no NUL terminator).
+ * `description` may be NULL with description_len == 0.
+ *
+ * `parameters_bitmap` has one bit per schema parameter, in schema
+ * declaration order: bit 0 relTol, bit 1 absTol, bit 2 minStep, bit 3
+ * maxStep, bit 4 fixedStep, bit 5 iterations, bit 6 convergenceTol, bit 7
+ * compliance, bit 8 relaxation. Bits 9-31 must be zero. Only fields whose
+ * bit is set are read; unset fields are ignored and the schema's default
+ * applies.
+ *
+ * `dim` is 0 when the source does not require it (the wire's §12 rule); the
+ * shim validates against the source's `requires`.
+ */
+typedef struct tension_solver_config {
+    const char *method;
+    uint32_t    method_len;
+    const char *source;
+    uint32_t    source_len;
+    const char *description;    /* NULL when absent */
+    uint32_t    description_len;
+    uint32_t    dim;
+    uint32_t    parameters_bitmap;
+
+    /* Schema-declared parameters. Meaningful only for fields whose bit is
+       set in parameters_bitmap. All are f64 except `iterations`, the one
+       schema-declared u32 (solver_params.h's int32_t, `>= 0`). */
+    double      rel_tol;
+    double      abs_tol;
+    double      min_step;
+    double      max_step;
+    double      fixed_step;
+    uint32_t    iterations;
+    double      convergence_tol;
+    double      compliance;
+    double      relaxation;
+} tension_solver_config;
+
 /* ── public API ──────────────────────────────────────────────────────── */
 
 /*
- * Create a solver from a JSON config. On success returns a handle >= 1; on
- * failure returns a negative errno: -EINVAL for malformed config or an
- * unmet source requirement, -ENOENT for an unknown method, -ENOSYS for a
- * method not compiled into this build, -ENOMEM for allocation failure,
+ * Create a solver from a configuration struct. On success returns a handle
+ * >= 1; on failure returns a negative errno: -EINVAL for a malformed struct
+ * or an unmet source requirement, -ENOENT for an unknown method, -ENOSYS
+ * for a method not compiled into this build, -ENOMEM for allocation failure,
  * -EMFILE for a full solver-id table. The config is validated against
  * schema.yaml before any allocation.
+ *
+ * The struct is borrowed for the duration of the call only.
  */
-int32_t tension_solver_create(const char *config_json, size_t config_len);
+int32_t tension_solver_create(const tension_solver_config *config);
 
 /*
  * Bind the guest's callback pointers to a solver id. Used with

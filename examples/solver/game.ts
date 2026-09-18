@@ -6,7 +6,7 @@
 //   deriv_buf_in/out — guest-owned flat f64 regions; the host writes and
 //                      reads through guest addresses, no host memory crosses
 
-import { print, Solver } from "tension-framework";
+import { print, Solver, SolverConfig } from "tension-framework";
 
 // Two non-overlapping 64 KiB regions in linear memory, aligned to f64.
 // Host writes y into BUF_IN before each _derivative call,
@@ -30,10 +30,18 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
 export function _start_game(): void {
   print("=== TensionCore solver demo: rk45 on y' = -y ===");
 
-  const s = Solver.create(
-    '{"method":"rk45","source":"wasm","dim":2,"parameters":{"relTol":1e-8,"absTol":1e-10}}',
-    { derivative: _derivative, bufIn: deriv_buf_in, bufOut: deriv_buf_out },
-  );
+  const config = new SolverConfig();
+  config.method = "rk45";
+  config.source = "wasm";
+  config.dim = 2;
+  config.relTol = 1e-8;
+  config.absTol = 1e-10;
+
+  const s = Solver.create(config, {
+    derivative: _derivative,
+    bufIn: deriv_buf_in,
+    bufOut: deriv_buf_out,
+  });
   if (s == null) {
     print("solver create failed");
     return;
