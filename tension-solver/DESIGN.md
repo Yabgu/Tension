@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 4 complete — see §8.**
+Status: **phase 5 complete — see §9.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -296,3 +296,77 @@ allocator export (fixed 64 KiB buffers; P5 can generalize); the safe
 Rust wrapper (P5); the YAML world compiler (P8). No change was made to
 `tension_solver.c`, `tension_solver_erk.f90`, `tension_solver.h` or
 schema.yaml — the bridge needed none.
+
+---
+
+## 9. The guest surface (phase 5)
+
+Phase 5 connects the two halves: the guest contract (`GUEST_ABI.md`, the
+third artifact of record), its guest-side implementation
+(`tension-framework/assembly/solver.ts`), its host-side implementation
+(`tension-core/src/solver/mod.rs`), and the example that exercises the whole
+chain (`examples/solver/`). The Fortran core, the C shim, the header and the
+schema are unchanged from §6–§7; phase 5 is a pure adapter layer above them.
+
+**The five-name surface.** The C ABI declares six entry points; the guest
+imports five: `solver_create`, `solver_step`, `solver_state`,
+`solver_set_state`, `solver_destroy`. `tension_solver_bind_callbacks` is not
+a guest import — a wasm module's import table is fixed at instantiation, and
+a function the guest never calls must not be a row in it. For
+`source: "wasm"` the host performs the bind itself at create; the guest's
+part of the contract is its three exports (`_derivative`, `deriv_buf_in`,
+`deriv_buf_out`), which the host resolves and calls.
+
+**The host-side reentrancy.** At `solver_create` the host import reads the
+config, calls the shim, and — when the config declares `source: "wasm"` —
+resolves the guest module's three exports (validating their signatures),
+stores them in a per-store map keyed by the shim's solver id, and calls
+`tension_solver_bind_callbacks` with the trampoline. The trampoline cannot
+carry a context argument (the callback typedef has no user-data slot; that
+purity decision is §6's), so `solver_step` installs a thread-local bridge
+around the synchronous shim call — the caller and the bound exports for the
+id being stepped — and the trampoline, running inside that window, performs
+P4's copy-in / call / copy-out dance (§8) against the guest's linear memory.
+Nested installs save and restore: a derivative that steps another solver
+nests correctly. The bridge is the solver stack's one soundness-relevant
+`unsafe` block — the `Caller` is lifetime-erased to a raw pointer for the
+duration of the step, and the discipline that keeps it valid (installed and
+cleared inside one synchronous call, on one thread) is carried by the
+comment and the tests, not by a type.
+
+**The source probe.** The five-import shape means the host must know whether
+a create is `source: "wasm"` before deciding to resolve the exports. The
+frozen C surface exposes no source query, so the host import probes the
+shim-validated config bytes for the top-level `"source"` member — a cursor
+over the documented subset (short escapes, one nested `parameters` object),
+not a second validator. Unknown shapes answer "not wasm", which skips the
+binding and surfaces as the shim's own `-EINVAL` on the first step. The
+probe is unit-tested against the cases that matter, including a decoy
+`"source":"wasm"` inside a free-text `description` member.
+
+**Known limitation (recorded, not hidden): one guest per process.** The C
+shim's 64-slot solver table is process-global and carries no internal
+locking; it is built for the runtime's one-guest, one-thread model. Multiple
+guests in one tension-core process would share that table — and the
+host-side binding records are per store, so they would not follow — and any
+guest can destroy any handle by guessing its id. Not fixed in phase 5; when
+isolation matters, the table and the binding map must move behind an owner
+keyed by store identity. (The tests hit the unlocked table first: parallel
+test threads race on slot allocation, so the P5 tests serialize on a mutex.
+The runtime itself is single-threaded per guest, which is why this is a
+harness concern now and a limitation only when guests multiply.)
+
+**What phase 5 does not deliver:** the YAML world compiler (`source:
+"world"` remains `-ENOSYS`, P8); verlet, implicit_euler and spook (P6);
+async stepping or cancellation; guest-visible diagnostics beyond errno; and
+the plugin lifecycle through the vtable (only `step` is dispatched).
+
+**Observations from the phase tests** (`tension-core/src/solver/p5_tests.rs`,
+H1–H5, plus `examples/solver/`). A hand-written WAT guest that imports the
+five names and exports the three creates, steps (euler, one step of 0.1 on
+y′ = −y from y₀ = 2.0 → y = 1.8, bit-exact), steps (rk45, one step of 1.0
+from y₀ = 1.0 → 0.3678794419328082, 7.6e−10 from e⁻¹), is bit-identical
+across two runs, and is refused with `-EINVAL` when the exports are missing.
+The AssemblyScript example — ten 0.1-steps to t = 1.0 at relTol 1e−8 —
+lands 1.2e−9 from e⁻¹, the accumulation over the loop, with t at
+0.9999999999999999 for the same reason.
