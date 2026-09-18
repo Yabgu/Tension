@@ -24,3 +24,7 @@ llama-cpp-2 = { version = "0.1.156", optional = true }
 # `token_to_piece` takes an `encoding_rs::Decoder` and llama-cpp-2 does not
 # re-export it, so the real adapter needs it directly (behind `ai`).
 encoding_rs = { version = "0.8.35", optional = true }
+# World compiler (P8c). Author-facing input warrants a mature parser: a
+# hand-rolled YAML subset would turn our bugs into rejections of valid
+# author files. MIT OR Apache-2.0; pinned like wasmtime.
+yaml-rust2 = "=0.13.0"

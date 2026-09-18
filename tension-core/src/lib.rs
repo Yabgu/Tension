@@ -5,6 +5,8 @@
 //! code the runtime links against, rather than a copy of it.
 //!
 //! `res` is the safe wrapper over the tension-res C ABI; it is the only module
-//! here that contains `unsafe`.
+//! here that contains `unsafe`. `world` is the P8c compiler — the author's
+//! YAML in, world bytes out — with no FFI at all.
 
 pub mod res;
+pub mod world;
