@@ -106,3 +106,20 @@ export declare class ResFile {
   size(): i32;
   close(): void;
 }
+
+// ---- tension::solver — the numerical solver coprocessor ------------------
+//
+// Five imports (GUEST_ABI.md): create, step, state, set_state, destroy. The
+// guest's `_derivative` / `deriv_buf_in` / `deriv_buf_out` exports are the
+// guest's own — the host resolves them under `source: "wasm"`. Errors are
+// null / -1, never exceptions. `state` writes `[t, y0, y1, ...]`; `setState`
+// takes `t` and `y` separately, because a checkpoint is `{t, y}`.
+
+export declare class Solver {
+  static create(configJson: string): Solver | null;
+  step(dt: f64): i32;
+  state(out: Float64Array): i32;
+  setState(t: f64, y: Float64Array): i32;
+  destroy(): void;
+  isOpen(): bool;
+}
