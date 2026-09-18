@@ -1,0 +1,264 @@
+# tension-world — the vocabulary a game author writes for a simulated world.
+#
+# The binary format lives in DESIGN.md (P8b); this file declares the
+# vocabulary an author writes. The compiler (P8c) accepts exactly this
+# vocabulary and rejects everything else; the evaluator (P8d) reads the
+# compiled bytes and must understand every component and connection type
+# declared here. Nothing else in the engine grows a second opinion about
+# what a "spring" is.
+#
+# The world is DATA, not code. A compiled world is canonical bytes in the
+# guest's linear memory: components, connections, dimensions, version —
+# no behavior, no scripts, no method. What the bytes say is what the
+# engine simulates; what a game *does* with the simulation lives in the
+# guest, not here.
+#
+# Status: v0 draft — tension-world/DESIGN.md (planned, P8b) will carry the
+# binary format and the compiler/evaluator reasoning.
+# Standalone: no `role:` and no extension mechanism in v1 — a future
+# version may add `extends`, but v1 is one file. Nothing here references
+# tension-solver/schema.yaml: a world is method-agnostic, and the preset
+# that integrates it picks the method.
+#
+# Tension project — MIT. See LICENSE at repo root.
+
+schema_version: 1
+subsystem: tension-world
+subsystem_version: 0.1.0
+
+# ── the top-level shape ──────────────────────────────────────────────────
+#
+# A world file is one YAML mapping with these keys:
+#
+#   version:     1        the schema version this file targets (integer;
+#                         must equal schema_version above)
+#   dimensions:  2 or 3   the world's spatial dimensionality (integer)
+#   components:  [ ... ]  the named components (see §component types)
+#   connections: [ ... ]  the typed connections (see §connection types)
+#   templates:   [ ... ]  optional, compile-time only (see §templates)
+#
+# Unknown keys are compile errors — a typo must fail loudly, not be
+# silently ignored.
+#
+# Names are unique within the file: every component carries a required
+# `name:`; a connection may carry one (optional, for diagnostics). A
+# duplicate is a compile error. Connections reference components by name —
+# never by index, never positionally.
+#
+# Ordering is meaningful in exactly one place: the order components
+# appear in `components:` determines the order of state-vector slots
+# (§dimensions and the derivation of dim). The connections list has no
+# ordering semantics.
+#
+# A compiled world has no template nodes, no name references, and no
+# strings the evaluator must resolve: by the time the evaluator sees it,
+# it is typed data (P8b fixes the exact encoding).
+
+# ── dimensions and the derivation of dim ─────────────────────────────────
+#
+# `dimensions` is declared once per world: 2 or 3. A world is planar or
+# spatial, never mixed — every vector field in the file is a list of
+# exactly `dimensions` f64 values, and a vector of the wrong length is a
+# compile error. A world that mixes 2D and 3D (including by omitting
+# `dimensions` while using 3-component vectors) does not compile.
+#
+# dim is the length of the state vector the solver integrates. It is the
+# sum, over components in declaration order, of each component's
+# contribution:
+#
+#   point_mass   contributes 2 × dimensions   (position, then velocity)
+#   kinematic    contributes 2 × dimensions   (position, then velocity)
+#   anchor       contributes 0
+#
+# Within a state-carrying component the slots are ordered position first
+# (dimensions f64) then velocity (dimensions f64); components occupy the
+# state vector in the order they appear in `components:`. For a world
+# with N components:
+#
+#   dim = Σ contribution(component_i),  i = 1..N in declaration order
+#
+# with contribution taken from the table above. This is the arithmetic
+# `source: "world"` runs at create time; the compiler (P8c), the
+# evaluator (P8d) and everything else that reads the bytes must agree on
+# it, which is why the slot order is fixed here and not left to each
+# reader.
+#
+# A world whose components contribute nothing (all anchors, or an empty
+# components list) derives dim = 0. That is legal data and an unusable
+# simulation: `source: "world"` refuses to build a solver over dim < 1.
+# The schema lets the compiler accept such a world rather than inventing
+# a prohibition the solver, not the world, owns.
+
+# ── component types ──────────────────────────────────────────────────────
+#
+# The engine's fixed catalog. Authors compose with these types; they do
+# not invent new ones in YAML — a `type:` outside this catalog (and
+# outside the reserved table) is a compile error. Field types and
+# constraints are normative; required fields have no default.
+#
+# An author entry has `type:` and `name:` plus the type's fields, e.g.:
+#
+#   - type: point_mass
+#     name: ball
+#     mass: 2.0
+#     position: [0.0, 1.0]     # optional: defaults to all zeros
+#     velocity: [0.0, 0.0]     # optional: defaults to all zeros
+#
+component_types:
+  - name: point_mass
+    # A particle: the integrator's unit. The evaluator computes its
+    # acceleration as (sum of the forces on it) / mass; its position and
+    # velocity live in the state vector (and are what `_derivative`
+    # returns for these slots under `source: world`).
+    fields:
+      mass:     { type: f64, constraint: "> 0", required: true }
+      position: { type: "vec f64[dimensions]", default: zeros }
+      velocity: { type: "vec f64[dimensions]", default: zeros }
+
+  - name: kinematic
+    # A point the engine does NOT integrate. Its trajectory is supplied
+    # from outside the simulation — an authored velocity, a template, or
+    # the guest driving it. Its position and velocity occupy state slots
+    # exactly like point_mass's: the slots exist whether or not anything
+    # integrates them, so the state layout does not depend on intent.
+    fields:
+      position: { type: "vec f64[dimensions]", default: zeros }
+      velocity: { type: "vec f64[dimensions]", default: zeros }
+
+  - name: anchor
+    # A fixed point. It cannot move and contributes no state; it exists
+    # to be the other end of a connection (a spring's or pin's `from:` /
+    # `to:`), which is how a pendulum gets its pivot.
+    fields:
+      position: { type: "vec f64[dimensions]", default: zeros }
+
+# ── connection types ─────────────────────────────────────────────────────
+#
+# Connections relate components to each other or to the world. Every
+# entry has `type:` plus the type's fields. Arity is part of the type:
+#
+#   spring, pin   binary — `from:` and `to:` are required and must name
+#                 two DIFFERENT components (both must exist)
+#   gravity       world-directed — no endpoints at all; it appears in
+#                 the connections list with only its own fields
+#
+# Endpoints may name any component type; whether the physics makes sense
+# with, say, two anchors is the author's problem, not the compiler's.
+connection_types:
+  - name: spring
+    # A Hooke's-law spring between two components: a restoring force
+    # along the axis proportional to (‖Δ‖ − rest_length) · stiffness,
+    # plus a damping force on the relative radial velocity. The exact
+    # force arithmetic is the evaluator's (P8d); this file owns the
+    # vocabulary and its constraints.
+    fields:
+      from:        { type: component-name, required: true }
+      to:          { type: component-name, required: true, note: "must differ from `from`" }
+      stiffness:   { type: f64, constraint: "> 0", required: true }
+      rest_length: { type: f64, constraint: ">= 0", required: true }
+      damping:     { type: f64, constraint: ">= 0", default: 0 }
+
+  - name: pin
+    # A rigid pin holding two components at a fixed offset: the vector
+    # from `from`'s position to `to`'s position is constrained to equal
+    # `offset`. Whether "constrained" is a hard projection or a stiff
+    # correction is the evaluator's mechanism (P8d), not vocabulary.
+    fields:
+      from:   { type: component-name, required: true }
+      to:     { type: component-name, required: true, note: "must differ from `from`" }
+      offset: { type: "vec f64[dimensions]", required: true }
+
+  - name: gravity
+    # A global acceleration applied to every point_mass component. It is
+    # a connection TO THE WORLD, not between two components — hence the
+    # zero-arity shape above. At most one gravity entry per world; a
+    # second is a compile error (the world has one gravitational field;
+    # a version that wants several adds a named field type, not by
+    # summing duplicates here).
+    fields:
+      acceleration: { type: "vec f64[dimensions]", required: true }
+
+# ── templates ────────────────────────────────────────────────────────────
+#
+# Templates are reusable patterns that expand into components and
+# connections at compile time. They are a macro facility, not a runtime
+# feature: a compiled world contains no template nodes, and everything a
+# template produces is subject to exactly the validation a hand-written
+# component or connection gets.
+#
+# The declaration shape this file owns:
+#
+#   templates:
+#     - name: pendulum
+#       parameters: [pivot, bob]      # the names the body refers to
+#       components: [ ... ]           # full component entries, with
+#       connections: [ ... ]          # `$parameter` where a literal
+#                                     # name would go
+#
+# The invocation syntax and the expansion algorithm are the compiler's
+# (P8c). The guarantees this file fixes are:
+#
+#   - expansion happens at compile time and only at compile time;
+#   - every name produced by expansion is unique in the final world —
+#     expanding a template twice with clashing names is a compile error,
+#     not a silent rename;
+#   - the expansion's components take the place of the point where it
+#     was invoked, and dim follows the derivation above over the final,
+#     expanded component list;
+#   - a template body may reference only its declared parameters —
+#     nothing ambient from the enclosing file (no globals, no
+#     references to components declared outside it).
+
+# ── reserved types (declared, not implemented in v1) ─────────────────────
+#
+# These names are reserved now so they are not later claimed by
+# something else. A world that uses one is a compile error whose message
+# must name the type and say v1 does not implement it — never "unknown
+# type": the name is known, its implementation is not. (This is the
+# reserved-kind discipline of tension-solver/schema.yaml, applied to
+# world vocabulary.)
+#
+# The `kind` column says where each type is expected to land; it is
+# provisional, and a future version may land a name differently behind a
+# schema_version bump.
+reserved_types:
+  - name: collider
+    kind: component
+    note: "a collision shape attached to a body; contact semantics are the evaluator's"
+  - name: motor
+    kind: connection
+    note: "drives relative motion between two components"
+  - name: joint_angle
+    kind: connection
+    note: "constrains the angle between two components"
+  - name: contact
+    kind: connection
+    note: "a transient constraint between two colliders; likely discovered at runtime, not authored"
+
+# ── what this schema forbids ─────────────────────────────────────────────
+#
+# Not allowed, each for a reason:
+#
+#   - user-defined component or connection types — the catalog is the
+#     engine's, not the author's; a simulation that needs a new kind of
+#     thing is asking the engine to grow a type, not the YAML;
+#   - dynamic component creation — a compiled world is static data; a
+#     game that spawns things does so in the guest, and a future version
+#     may add a pool type to declare capacity up front;
+#   - scripts, expressions, conditionals or loops in YAML — the world is
+#     data, and data that can compute is code with worse tooling;
+#   - integration methods, solver names, tolerances, or anything else
+#     from tension-solver — a world is method-agnostic; the preset that
+#     integrates it picks the method, and this file never references
+#     solver vocabulary;
+#   - rendering, audio, input, or any other non-simulation feature —
+#     the world is what the engine simulates; a game adds behavior and
+#     presentation in the guest;
+#   - unknown keys or fields anywhere, in the file or on any entry — a
+#     typo must fail the compile, not be ignored;
+#   - mixing dimensions within a world, or any vector whose length is
+#     not `dimensions`;
+#   - references to components that do not exist, duplicate names, a
+#     spring or pin whose `from:` equals its `to:`, more than one
+#     gravity entry, and a `version:` that does not equal the schema
+#     version above.
