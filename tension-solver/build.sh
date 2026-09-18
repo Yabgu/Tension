@@ -38,7 +38,12 @@ fi
 # -fPIC: the Rust host links a PIE; an absolute 32-bit relocation from a
 # non-PIC archive cannot be linked into one (tension-res/DESIGN.md §9.2,
 # fact 1 — the same lesson for a different toolchain).
-FFLAGS="-O2 -fno-fast-math -fPIC"
+# -std=f2023 pins the dialect: gfortran's default `gnu` dialect silently
+# accepts non-standard extensions, and a pin that errors on them is the
+# same discipline as -fno-fast-math. If a future phase needs a construct
+# gfortran's F2023 mode does not yet accept, drop to -std=f2018 for that
+# file and record why in this comment.
+FFLAGS="-O2 -fno-fast-math -fPIC -std=f2023 -Wall -Wextra"
 CFLAGS="-std=c99 -O2 -fno-fast-math -fPIC"
 
 mkdir -p "$out"
@@ -47,7 +52,7 @@ mkdir -p "$out"
 # otherwise — which is whatever directory the caller happened to be in
 # (cargo's, when build.rs runs this). Pin it next to the archive: build
 # output must not leak into the tree.
-gfortran $FFLAGS -J "$out" -I "$out" -c "$here/src/fortran/tension_solver_erk.f90" \
+gfortran $FFLAGS -J "$out" -I "$out" -c "$here/src/tension_solver_erk.f90" \
     -o "$out/tension_solver_erk.o"
 # The shim includes the public header; -I points at it explicitly.
 cc $CFLAGS -I "$here/include" -c "$here/src/tension_solver.c" \

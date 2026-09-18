@@ -23,8 +23,8 @@ static PLUGIN_CALLS: AtomicUsize = AtomicUsize::new(0);
 type DerivFn = unsafe extern "C" fn(*const f64, i32, f64, *mut f64, i32) -> i32;
 type ValidFn = unsafe extern "C" fn(*const f64, i32, *const f64, i32, f64, *mut u8, i32) -> i32;
 type StepFn = unsafe extern "C" fn(i32, f64) -> i32;
-type StateFn = unsafe extern "C" fn(i32, *mut f64, i32) -> i32;
-type SetStateFn = unsafe extern "C" fn(i32, *const f64, i32) -> i32;
+type StateFn = unsafe extern "C" fn(i32, *mut f64, *mut f64, i32) -> i32;
+type SetStateFn = unsafe extern "C" fn(i32, f64, *const f64, i32) -> i32;
 type DestroyFn = unsafe extern "C" fn(i32);
 
 /// The header's `tension_solver_backend_vtable`, field for field.
