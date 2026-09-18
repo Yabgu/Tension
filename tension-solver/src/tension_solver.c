@@ -778,13 +778,13 @@ int32_t tension_solver_state(int32_t id, double *t_out, double *y_out,
 
     if (h == NULL)
         return TS_EBADF;
-    if (h->is_plugin && h->plugin->vt->state == NULL)
-        return TS_EINVAL; /* the plugin presents no state copy-out slot */
     if (t_out == NULL || y_out == NULL || y_cap < h->dim)
         return TS_EINVAL;
-    if (h->is_plugin)
+    if (h->is_plugin && h->plugin->vt->state != NULL)
         return h->plugin->vt->state(id, t_out, y_out, y_cap);
 
+    /* Default handling (and every built-in): the shim's own t and y.
+     * A NULL vtable slot is an override that is not there, not an error. */
     *t_out = h->t;
     memcpy(y_out, h->y, (size_t)h->dim * sizeof(double));
     return h->dim;
@@ -798,17 +798,16 @@ int32_t tension_solver_set_state(int32_t id, double t, const double *y,
 
     if (h == NULL)
         return TS_EBADF;
-    if (h->is_plugin && h->plugin->vt->set_state == NULL)
-        return TS_EINVAL; /* the plugin presents no restore slot */
     if (y == NULL || y_len != h->dim)
         return TS_EINVAL;
-    if (h->is_plugin) {
+    if (h->is_plugin && h->plugin->vt->set_state != NULL) {
         rc = h->plugin->vt->set_state(id, t, y, y_len);
         if (rc == 0)
             h->t = t; /* keep get_time coherent with the restore */
         return rc;
     }
 
+    /* Default handling (and every built-in): the shim's own y and t. */
     memcpy(h->y, y, (size_t)h->dim * sizeof(double));
     h->t = t;
     return 0;
@@ -832,11 +831,12 @@ void tension_solver_destroy(int32_t id)
 /* ── plugin accessors ─────────────────────────────────────────────────── */
 /*
  * The asks a plugin's step function may make of the shim (the header's
- * accessor section). They answer for every live id, built-in or plugin:
- * a wrapper plugin needs the wasm-bound derivative pointer, its dim and
- * its current t; a self-contained plugin calls none of them. Bad ids are
- * -EBADF (get_derivative answers NULL — the same shape a never-bound
- * solver has, which is the documented ambiguity).
+ * accessor section): dim, time, derivative, the state pointer, and the
+ * opaque params pointer. The state pointer is the wrapping pattern's
+ * heart — the shim owns one y vector per handle, and a plugin mutates it
+ * in place, so a wrapper can hand a built-in step the same pointers the
+ * shim would have used. Bad ids: -EBADF for get_dim/get_time, NULL for
+ * get_derivative/get_state_ptr/get_params.
  */
 int32_t tension_solver_get_dim(int32_t id)
 {
@@ -863,4 +863,22 @@ tension_solver_derivative_fn tension_solver_get_derivative(int32_t id)
     if (h == NULL)
         return NULL;
     return h->bound_derivative;
+}
+
+double *tension_solver_get_state_ptr(int32_t id)
+{
+    TsSolver *h = handle(id);
+
+    if (h == NULL)
+        return NULL;
+    return h->y;
+}
+
+const void *tension_solver_get_params(int32_t id)
+{
+    TsSolver *h = handle(id);
+
+    if (h == NULL)
+        return NULL;
+    return &h->params;
 }

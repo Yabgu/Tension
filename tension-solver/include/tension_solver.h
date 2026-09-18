@@ -137,6 +137,11 @@ typedef int32_t (*tension_solver_validate_fn)(
  * public entry points of the same name: `t` is first-class on both, so a
  * plugin can restore time alongside the state vector.
  *
+ * A plugin's state/set_state/destroy slots are optional overrides.
+ * A NULL slot means the shim's default handling applies: state and
+ * set_state read/write the shim's own y vector; destroy is a no-op
+ * the shim then frees.
+ *
  * Determinism validation (registration time): the declared `kind` and
  * `deterministic` must agree.
  *
@@ -214,11 +219,30 @@ typedef struct tension_solver_backend_vtable {
  * A plugin that only implements its own integrator and its own
  * derivative does not call any of these. A plugin that wraps a
  * built-in integrator (the header's `rk45_native` example) uses
- * all three.
+ * all of these.
  */
 int32_t tension_solver_get_dim(int32_t id);
 double  tension_solver_get_time(int32_t id);
 tension_solver_derivative_fn tension_solver_get_derivative(int32_t id);
+
+/*
+ * The state pointer. The shim owns one y vector per handle,
+ * built-in or plugin. A plugin's step mutates it in place; the
+ * public tension_solver_state and tension_solver_set_state entry
+ * points read and write this same vector by default, unless the
+ * plugin supplies its own vtable state/set_state slots.
+ *
+ * Returns NULL for a bad id.
+ */
+double *tension_solver_get_state_ptr(int32_t id);
+
+/*
+ * The params pointer. Opaque to the plugin: the plugin never
+ * dereferences it, only passes it back into a built-in step
+ * function's `params` argument when it wraps one. Returns NULL
+ * for a bad id.
+ */
+const void *tension_solver_get_params(int32_t id);
 
 /* ── public API ──────────────────────────────────────────────────────── */
 

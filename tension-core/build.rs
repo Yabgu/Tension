@@ -109,6 +109,45 @@ fn main() {
     println!("cargo:rustc-link-arg-tests=-ltension_solver");
     println!("cargo:rustc-link-arg-tests=-lgfortran");
     println!("cargo:rustc-link-arg-tests=-lm");
+
+    // ── the P7 sample plugin ──────────────────────────────────────────────
+    //
+    // The shim has no plugin load-from-disk (DESIGN.md §11), so the P7
+    // tests exercise the real example source by compiling it straight into
+    // the test binaries: one canonical midpoint.c, built twice — once here
+    // for the tests, once by the example's own Makefile for its .so.
+    let plugin_src = manifest
+        .parent()
+        .expect("tension-core lives next to examples")
+        .join("examples")
+        .join("plugins")
+        .join("midpoint")
+        .join("midpoint.c");
+    println!("cargo:rerun-if-changed={}", plugin_src.display());
+    let plugin_include = manifest
+        .parent()
+        .expect("tension-core lives next to tension-solver")
+        .join("tension-solver")
+        .join("include");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    let plugin_obj = out_dir.join("tension_plugin_midpoint.o");
+    let status = Command::new("cc")
+        .args(["-std=c99", "-O2", "-fno-fast-math", "-fPIC"])
+        .arg("-I")
+        .arg(&plugin_include)
+        .arg("-c")
+        .arg(&plugin_src)
+        .arg("-o")
+        .arg(&plugin_obj)
+        .status();
+    match status {
+        Ok(s) if s.success() => {}
+        Ok(s) => panic!("compiling {} failed with {s}", plugin_src.display()),
+        Err(e) => panic!(
+            "could not run `cc` ({e}) — the P7 sample plugin is compiled into the test link"
+        ),
+    }
+    println!("cargo:rustc-link-arg-tests={}", plugin_obj.display());
 }
 
 fn check_zig_version() {
