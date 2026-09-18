@@ -43,7 +43,26 @@ fi
 # same discipline as -fno-fast-math. If a future phase needs a construct
 # gfortran's F2023 mode does not yet accept, drop to -std=f2018 for that
 # file and record why in this comment.
-FFLAGS="-O2 -fno-fast-math -fPIC -std=f2023 -Wall -Wextra"
+#
+# Two warnings are silenced because phase 1 introduced deliberate
+# constructs that trigger them. Both are documented in the module
+# header; gfortran does not read comments.
+#
+# -Wno-compare-reals: the zero-step `dt == 0.0` no-op in
+# tension_solver_erk.f90 is an exact comparison on purpose. `dt` is
+# either exactly zero or it takes the normal path; there is no
+# "close enough to zero". This silences equality comparisons on
+# reals module-wide, which is a small loss — none of the RK step
+# control in later phases uses `==` on reals, so nothing that
+# matters is silenced.
+#
+# -Wno-unused-dummy-argument: `rhs_ctx` and `params` are reserved
+# ABI slots threaded through from phase 1 so the calling convention
+# does not change when later phases read them (`params` in P3).
+# `rhs_ctx` may never be read. Re-enable this warning — and fix
+# whatever it then reports — when both slots are either used or
+# removed from the signature.
+FFLAGS="-O2 -fno-fast-math -fPIC -std=f2023 -Wall -Wextra -Wno-compare-reals -Wno-unused-dummy-argument"
 CFLAGS="-std=c99 -O2 -fno-fast-math -fPIC"
 
 mkdir -p "$out"
