@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 2 complete — see §6.**
+Status: **phase 3 complete — see §7.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -149,3 +149,77 @@ The vtable's `state`/`set_state` slots are declared in the header for
 plugin backends but are not invoked by the shim in phase 2 — only
 `step` is. Plugin lifecycle (state/set_state/destroy dispatch through
 the vtable) lands in P5 alongside the Rust safe wrapper.
+
+## 7. The RK family (phase 3)
+
+Phase 3 completes the explicit-RK family — heun, rk23, rk45 — behind the
+same nine-argument step shape euler has used since phase 1: `(state, dim,
+t, dt, workspace, rhs_fn, rhs_ctx, params, status)`. What differs per
+method is behavior, not the ABI.
+
+**The parameter block.** `params` now points at a real `bind(C)` struct:
+`tension_solver_params` in the Fortran module, mirrored by the shim's
+private `src/solver_params.h` — one field per schema parameter
+(`rel_tol`, `abs_tol`, `min_step`, `max_step`, `fixed_step`, `iterations`,
+`convergence_tol`, `compliance`, `relaxation`). Each method reads its
+subset and ignores the rest (rk23/rk45 read the four step-control fields;
+euler and heun read none — fixed-step), so P6 adds methods without
+touching the ABI. The two declarations must stay in lockstep: the C
+mirror carries a 72-byte size assertion, and both `sizeof` and gfortran's
+`storage_size` were probed at 72 when it was written.
+
+**Step semantics.** euler and heun take exactly one step of size `dt`
+(heun: the explicit trapezoid, two evaluations, no error control — it
+ignores `params` entirely, which T8 pins); the shared trial loop
+(`erk_trial`) was generalized from phase 1's fixed-step `erk_step`, and
+euler's arithmetic is unchanged. rk23 and rk45 advance exactly `dt`
+through as many internal substeps of adaptive size as the tolerances
+demand; `status` reports the total RHS evaluations.
+
+**Butcher tables** (compile-time PARAMETER data, `tension_solver_erk.f90`):
+rk23 is Bogacki & Shampine, "A 3(2) pair of Runge-Kutta formulas",
+Applied Mathematics Letters 2(4), 321–325, 1989 (MATLAB ode23); rk45 is
+Dormand & Prince, "A family of embedded Runge-Kutta formulae", Journal of
+Computational and Applied Mathematics 6(1), 19–26, 1980 (MATLAB ode45).
+Both carry an FSAL stage — the last stage evaluates f at the trial
+solution — which the controller carries into the next substep's first
+stage, saving one evaluation per accepted substep.
+
+**The adaptive controller** (`erk_adaptive`, private). The trial size
+starts at `min(max_step, |remaining|)`; after each trial the scaled RMS
+error over per-component `|y_main − y_hat| / (abs_tol + rel_tol·max(|y|,
+|y_new|))` drives `h_new = |h| · ERK_SAFETY · err^(−1/(p+1))` with
+`ERK_SAFETY = 0.9` (a ~10 % margin, standard practice; p is the main
+order — 3 for rk23, 5 for rk45), clamped to `[min_step, max_step]`. A
+rejection recomputes from the unchanged state (the trial never writes
+`y`; k1 stays valid), an acceptance commits the trial output and carries
+the FSAL stage. `err > 1` with `h_new < min_step` is `-EIO`: the
+tolerances cannot be met inside the step-size window, and the
+alternatives — loosening the tolerance silently, or overshooting `dt` —
+would betray the caller's contract.
+
+**Workspace arithmetic.** The generic `erk_workspace_slots(s, dim)` =
+`s·dim` plus one `dim` scratch when `s > 1` is what every method uses:
+euler 1·dim, heun 3·dim, rk23 5·dim, rk45 8·dim. The phase-3 brief listed
+2·dim for heun and 3·dim+dim for rk23; those numbers leave no room for
+the stage-state scratch the shared trial loop requires (and rk23's count
+omits its FSAL stage). The brief's own instruction — confirm against the
+generic formula and reuse it exactly — is what this follows.
+
+**Not delivered in phase 3:** verlet, implicit_euler and spook still
+register and answer `-ENOSYS` (P6); the wasm-to-C bridge is P4; the YAML
+world compiler is P8; the vtable's state/set_state/destroy slots are
+still not dispatched through (P5).
+
+**Observations from the phase tests** (`tests/solver_p3.rs`). Observed
+orders on y′ = −y over [0, 1] (nominal → observed, errors at n and 2n):
+euler 1 → 1.01 (5.82e−3 / 2.89e−3), heun 2 → 2.03 (2.51e−4 / 6.13e−5),
+rk23 3 → 3.07 (3.31e−5 / 3.93e−6), rk45 5 → 5.15 (3.84e−9 / 1.08e−10).
+rk45 on one dt = 1.0 step of y′ = −y: relTol = 1e−3 costs 19 evaluations
+and lands 1.7e−4 from e^(−1); relTol = 1e−10 costs 181 evaluations and
+lands 7.1e−12 away. The minStep-exhaustion test needed y′ = −1e5·y, not
+the brief's y′ = −100·y: with λ = 100 the tolerance-required step
+(≈ 9.4e−5, the DP5(4) local-error balance) still exceeds a 1e−6
+minStep, so that example would converge rather than exhaust; at λ = 1e5
+the required step (≈ 9.4e−8) is below minStep, and the step reports
+`-EIO` with the state untouched.
