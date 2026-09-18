@@ -548,8 +548,10 @@ fn t20_compiled_rules_match_schema() {
             "{name}: schema does not declare bundles_rhs: false"
         );
 
-        // Every declared name is registered: euler runs, the rest answer
-        // -ENOSYS (never -ENOENT, never -EINVAL).
+        // Every declared name is registered: euler, heun, rk23 and rk45
+        // dispatch for real (heun/rk23/rk45 were wired in P3); verlet,
+        // implicit_euler and spook still answer -ENOSYS. Never -ENOENT,
+        // never -EINVAL.
         let wasm_cfg = format!(r#"{{"method":"{name}","source":"wasm","dim":1}}"#);
         let rc = create(&wasm_cfg);
         assert!(rc != -2, "{name}: not registered (ENOENT)");
