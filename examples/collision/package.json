@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-collision",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: two soft spheres in a square wall (rk45, source: \"wasm\") with a gnuplot animation",
+  "scripts": {
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release --exportTable",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap --exportTable",
+    "run": "../../tension-core/target/debug/tension-core build/game.wasm",
+    "start": "npm run build && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
