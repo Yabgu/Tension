@@ -66,14 +66,22 @@ FFLAGS="-O2 -fno-fast-math -fPIC -std=f2023 -Wall -Wextra -Wno-compare-reals -Wn
 CFLAGS="-std=c99 -O2 -fno-fast-math -fPIC"
 
 mkdir -p "$out"
-# -J / -I: gfortran writes the module interface file
-# (tension_solver_erk.mod) to the current working directory unless told
-# otherwise — which is whatever directory the caller happened to be in
-# (cargo's, when build.rs runs this). Pin it next to the archive: build
-# output must not leak into the tree.
+# -J / -I: gfortran writes the module interface files
+# (tension_solver_erk.mod and the family modules that import its params
+# struct) to the current working directory unless told otherwise — which
+# is whatever directory the caller happened to be in (cargo's, when
+# build.rs runs this). Pin it next to the archive: build output must not
+# leak into the tree. Compile order matters: the family modules `use`
+# the ERK module's params type, so it goes first.
 gfortran $FFLAGS -J "$out" -I "$out" -c "$here/src/tension_solver_erk.f90" \
     -o "$out/tension_solver_erk.o"
+gfortran $FFLAGS -J "$out" -I "$out" -c "$here/src/tension_solver_symplectic.f90" \
+    -o "$out/tension_solver_symplectic.o"
+gfortran $FFLAGS -J "$out" -I "$out" -c "$here/src/tension_solver_implicit.f90" \
+    -o "$out/tension_solver_implicit.o"
 # The shim includes the public header; -I points at it explicitly.
 cc $CFLAGS -I "$here/include" -c "$here/src/tension_solver.c" \
     -o "$out/tension_solver.o"
-ar rcs "$out/libtension_solver.a" "$out/tension_solver_erk.o" "$out/tension_solver.o"
+ar rcs "$out/libtension_solver.a" "$out/tension_solver_erk.o" \
+    "$out/tension_solver_symplectic.o" "$out/tension_solver_implicit.o" \
+    "$out/tension_solver.o"

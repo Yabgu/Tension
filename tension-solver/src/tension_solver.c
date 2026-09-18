@@ -57,6 +57,11 @@ static const char *const TS_BUILTINS[] = {
 #define TS_HEUN_INDEX 1
 #define TS_RK23_INDEX 2
 #define TS_RK45_INDEX 3
+#define TS_VERLET_INDEX 4
+#define TS_IMPLICIT_INDEX 5
+/* TS_BUILTINS[6] is "spook": registered, not compiled — its method is
+ * constraint-based position-based dynamics, and the frozen ABI has no
+ * constraint channel (DESIGN.md §10). */
 
 /* sources: names and per-source `requires` (1 = requires `dim`). */
 static const char *const TS_SOURCES[] = {"world", "wasm", "native"};
@@ -80,7 +85,8 @@ static const char *const TS_PARAMETERS[] = {
 /*
  * Internal backend symbols, not part of the public ABI: the header's
  * naming convention, satisfied by the bind(C) procedures in
- * tension_solver_erk.f90 (the shape the shim and plugins share).
+ * tension_solver_erk.f90, tension_solver_symplectic.f90 and
+ * tension_solver_implicit.f90 (the shape the shim and plugins share).
  * `params` points at the solver_params.h struct — a real parameter
  * block since P3, never NULL from this shim.
  */
@@ -108,6 +114,17 @@ extern int32_t tension_solver_rk45_step(double *state, int32_t dim, double t,
                                         tension_solver_derivative_fn rhs_fn,
                                         void *rhs_ctx, const void *params,
                                         int32_t *status);
+extern int32_t tension_solver_verlet_workspace_size(int32_t dim);
+extern int32_t tension_solver_verlet_step(double *state, int32_t dim, double t,
+                                          double dt, double *workspace,
+                                          tension_solver_derivative_fn rhs_fn,
+                                          void *rhs_ctx, const void *params,
+                                          int32_t *status);
+extern int32_t tension_solver_implicit_euler_workspace_size(int32_t dim);
+extern int32_t tension_solver_implicit_euler_step(
+    double *state, int32_t dim, double t, double dt, double *workspace,
+    tension_solver_derivative_fn rhs_fn, void *rhs_ctx, const void *params,
+    int32_t *status);
 
 /* The method's workspace requirement, asked of the Fortran side rather
  * than hard-coded: the workspace formula lives with the numerics. -1 for
@@ -120,6 +137,8 @@ static int32_t builtin_workspace_size(int builtin, int32_t dim)
     case TS_HEUN_INDEX: return tension_solver_heun_workspace_size(dim);
     case TS_RK23_INDEX: return tension_solver_rk23_workspace_size(dim);
     case TS_RK45_INDEX: return tension_solver_rk45_workspace_size(dim);
+    case TS_VERLET_INDEX: return tension_solver_verlet_workspace_size(dim);
+    case TS_IMPLICIT_INDEX: return tension_solver_implicit_euler_workspace_size(dim);
     default: return -1;
     }
 }
@@ -612,8 +631,8 @@ int32_t tension_solver_create(const char *config_json, size_t config_len)
         return TS_ENOSYS;
     }
 
-    if (builtin >= 0 && builtin > TS_RK45_INDEX)
-        return TS_ENOSYS; /* registered, not compiled into this build */
+    if (builtin >= 0 && builtin > TS_IMPLICIT_INDEX)
+        return TS_ENOSYS; /* spook: constraint channel pending (DESIGN.md §10) */
 
     if (plugin != NULL && src == TS_SRC_NATIVE && plugin->vt->derivative == NULL)
         return TS_EINVAL; /* the plugin's f is missing for source: native */
@@ -731,8 +750,18 @@ int32_t tension_solver_step(int32_t id, double dt)
                                       h->bound_derivative, NULL, &h->params,
                                       &status);
         break;
+    case TS_VERLET_INDEX:
+        rc = tension_solver_verlet_step(h->y, h->dim, h->t, dt, h->ws,
+                                        h->bound_derivative, NULL, &h->params,
+                                        &status);
+        break;
+    case TS_IMPLICIT_INDEX:
+        rc = tension_solver_implicit_euler_step(h->y, h->dim, h->t, dt, h->ws,
+                                                h->bound_derivative, NULL,
+                                                &h->params, &status);
+        break;
     default:
-        return TS_ENOSYS; /* verlet/implicit_euler/spook: P6 */
+        return TS_ENOSYS; /* spook: constraint channel pending (DESIGN.md §10) */
     }
     if (rc == 0)
         h->t += dt;

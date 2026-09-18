@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 5 complete — see §9.**
+Status: **phase 6 complete — see §10.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -373,3 +373,91 @@ across two runs, and is refused with `-EINVAL` when the exports are missing.
 The AssemblyScript example — ten 0.1-steps to t = 1.0 at relTol 1e−8 —
 lands 1.2e−9 from e⁻¹, the accumulation over the loop, with t at
 0.9999999999999999 for the same reason.
+
+---
+
+## 10. The symplectic and implicit families (phase 6)
+
+Phase 6 adds verlet and implicit_euler, each as its own family module per
+§3: `tension_solver_symplectic.f90` and `tension_solver_implicit.f90`.
+The rule applies as it did for the ERK module — whatever a family's
+members share lives once in that family's file — and the two new modules
+import the params struct from the ERK module rather than copying it (the
+ABI's schema block must have exactly one Fortran declaration; the C
+mirror in solver_params.h carries the size assertion). The RHS interface
+is redeclared privately in each new module: an interface carries no
+layout, so the duplication is structural, not a second source of truth.
+`build.sh` compiles the two files after the ERK module (their `use`
+needs its `.mod`) and archives all three objects together; the shim's
+dispatch learned the two workspace sizes and the two step symbols.
+
+**Verlet's conventions, which the guest agrees to by supplying an RHS.**
+The state vector is `[q, v]`: the first `dim/2` slots are positions, the
+last `dim/2` are velocities; `dim` must be even (odd dim is `-EINVAL`
+from the step; `workspace_size` returns 0 for `dim < 2`). The derivative
+returns `[q', v'] = [v, a]` — the standard first-order-isation of a
+second-order mechanical system `q'' = a` — and that agreement holds for
+the whole symplectic family, not just this member. One step is velocity
+Verlet of size `dt` (the call's argument), two RHS evaluations, `status
+= 2`; the middle evaluation uses the updated positions and the old
+velocities, which is what preserves the symplectic property. Verlet is
+fixed-step: `fixedStep` is read as its declared parameter but does not
+retime the step (the ABI's step carries the advance), and the tolerance
+parameters are ignored without complaint. Failure semantics are stated
+rather than implied: a first-evaluation failure leaves the state
+untouched; a second-evaluation failure leaves the positions advanced
+and the velocities old — a partial step, not rolled back, because 2·dim
+of workspace holds the stage state and not a pristine copy of the old
+state. Both behaviors are pinned by tests.
+
+**Implicit Euler by fixed-point iteration.** Solve
+`y_{n+1} = y_n + h·f(t_{n+1}, y_{n+1})` with the explicit-Euler first
+guess, then `y_new = y_n + h·f(t+h, y_iter)` until
+`||y_new − y_iter||_inf < convergenceTol`; `iterations` caps the tries.
+Not converged → `-EIO`, state untouched; `status` counts the RHS
+evaluations (one for the guess plus one per iteration) on success and 0
+on failure. The convergence window is `h·L < 1` (L = the local
+Lipschitz constant), and — recorded because it is a boundary of this
+ABI, not a bug — that window lies *inside* explicit Euler's stability
+region (`h·L ≤ 2`). This implementation therefore cannot demonstrate
+implicit Euler's A-stability where explicit Euler would fail; at
+`h·L = 10` it reports `-EIO` rather than diverging silently, which is
+the honest failure the contract asked for. True stiff robustness needs a
+Newton solve, and a Jacobian does not cross the derivative-only ABI. The
+phase brief's stiff-stability test is therefore split into the two
+truths: `-EIO` outside the window, monotone decay to the correct
+asymptote inside it.
+
+**Spook is deferred, with its reason.** SPOOK is constraint-based
+position-based dynamics: constraints (distance, angle, joint, contact)
+are what the method integrates, and the frozen ABI has a derivative
+channel and nothing else — no place for a guest to describe a
+constraint. A "spook" that ignores constraints would be a different
+method wearing SPOOK's name, which is worse than not shipping it. The
+natural home is after the world compiler (P8), or a phase that adds a
+constraint-definition channel to the guest ABI; either is a design
+decision, not a phase-planning one, and neither belongs to P6.
+`create({method: "spook", ...})` returns `-ENOSYS`, unchanged from P3,
+and the shim's registry entry carries the reason.
+
+**What phase 6 does not deliver:** spook; the YAML world compiler (P8);
+async stepping or cancellation; constraint channels; any change to the
+header or the schema.
+
+**Observations from the phase tests** (`tests/solver_p6_verlet.rs`,
+`tests/solver_p6_implicit.rs`, `tests/solver_p6_shim.rs`). Verlet order
+on the harmonic oscillator, measured at t = π/2: e(64) = 3.94e−5,
+e(128) = 9.86e−6, observed order 2.00. (Measured at t = 2π the same
+test reads 4.00 — the cosine's extremum hides the O(h²) phase error to
+first order; a coincidence of the endpoint, not the method's order, and
+the test says so where it stands.) Energy over 100 periods at dt = 0.01:
+E₀ = 0.5, E_end = 0.49999999979, deviations in [−2.5e−5, −1.1e−15] — a
+bounded band, no drift, which is the symplectic property the method is
+for. Implicit Euler order on y′ = −y over [0, 1]: e(64) = 2.86e−3,
+e(128) = 1.43e−3, observed 0.995. Evaluation counts: tolerance 1e−6 →
+7 evals, 1e−9 → 9 evals; `iterations = 2` at tol 1e−12 → `-EIO` with 0
+reported, `iterations = 32` → 12 evals. At `h·L = 0.5` the decay over
+200 steps reaches 7.1e−28, monotone, first-step cost 27 evals. Two
+forward guards from earlier phases were updated to match the delivery:
+P2's T20 probe now uses dim 2 (verlet's `dim >= 2` floor) and P3's T12
+narrows to spook, asserting the two delivered methods create handles.

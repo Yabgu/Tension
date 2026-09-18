@@ -652,9 +652,17 @@ fn t11_out_of_range_parameter() {
 // ── T12: unimplemented methods still say so ───────────────────────────────
 
 #[test]
-fn t12_verlet_still_enosys() {
+fn t12_unimplemented_methods_still_say_so() {
     let _g = lock();
-    assert_eq!(create(r#"{"method":"verlet","source":"wasm","dim":1}"#), -38);
-    assert_eq!(create(r#"{"method":"implicit_euler","source":"wasm","dim":1}"#), -38);
+    // P6 delivered verlet and implicit_euler, so the forward guard narrows
+    // to spook: registered, not compiled — its method is constraint-based
+    // position-based dynamics and the frozen ABI has no constraint channel
+    // (DESIGN.md §10).
     assert_eq!(create(r#"{"method":"spook","source":"wasm","dim":1}"#), -38);
+    // The two delivered methods create a handle now.
+    for method in ["verlet", "implicit_euler"] {
+        let id = create(&format!(r#"{{"method":"{method}","source":"wasm","dim":2}}"#));
+        assert!(id >= 1, "{method}: must create after P6");
+        unsafe { tension_solver_destroy(id) };
+    }
 }

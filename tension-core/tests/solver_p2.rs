@@ -13,7 +13,7 @@
 //! The shim has one process-global table and registry, so the tests take
 //! turns through `SERIAL`, and every test cleans up what it creates.
 
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, CString};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
@@ -548,11 +548,13 @@ fn t20_compiled_rules_match_schema() {
             "{name}: schema does not declare bundles_rhs: false"
         );
 
-        // Every declared name is registered: euler, heun, rk23 and rk45
-        // dispatch for real (heun/rk23/rk45 were wired in P3); verlet,
-        // implicit_euler and spook still answer -ENOSYS. Never -ENOENT,
-        // never -EINVAL.
-        let wasm_cfg = format!(r#"{{"method":"{name}","source":"wasm","dim":1}}"#);
+        // Every declared name is registered. All six compiled methods
+        // create a handle (verlet and implicit_euler since P6); spook is
+        // registered but not compiled and answers -ENOSYS (DESIGN.md
+        // §10). Never -ENOENT, never -EINVAL. The probe uses dim 2 — a
+        // dimension every method accepts (verlet requires even, dim >= 2;
+        // its dim-1 floor is the method's own rule, pinned in V1/S1b).
+        let wasm_cfg = format!(r#"{{"method":"{name}","source":"wasm","dim":2}}"#);
         let rc = create(&wasm_cfg);
         assert!(rc != -2, "{name}: not registered (ENOENT)");
         assert!(rc != -22, "{name}: rejected as malformed");
