@@ -12,7 +12,7 @@ Tension project — MIT. See LICENSE at repo root.
 
 ---
 
-## §1 Scope
+## 1 Scope
 
 A world binary is the canonical encoded form of the data described by
 `tension-world/schema.yaml`: components, connections, dimensions, and
@@ -28,7 +28,7 @@ bytes (that is P8c), not how `f` is evaluated (that is P8d). The design
 point is the resource format's: a compiled form that reads in O(1) per
 access, position-independent, placed in memory once and never parsed.
 
-## §2 The file extension and the magic
+## 2 The file extension and the magic
 
 World files use the extension **`.tnw`** (Tension World), the sibling of
 the resource pack's `.tns`. Like `.tns`, the extension is a **naming
@@ -50,7 +50,7 @@ magic — it is a separate `format_version` u16 immediately after (§4) —
 so the magic stays byte-stable across format versions and a decoder can
 read version and magic independently.
 
-## §3 Endianness, alignment, word size
+## 3 Endianness, alignment, word size
 
 Commitments, stated once and not repeated per field:
 
@@ -75,7 +75,7 @@ integers, LE), `f64` (IEEE-754 binary64, LE), and `bytes` (raw, no
 terminator, no encoding implied except where stated). `u64` is declared
 for completeness; format_version 1 does not use it.
 
-## §4 Top-level layout
+## 4 Top-level layout
 
 The file is, in order: the header, the component table, the connection
 table, the name table. The tables follow immediately, each starting on
@@ -114,7 +114,7 @@ table offset that is not 8-byte aligned or that overlaps another
 section; and counts that cannot fit inside their tables. Refusal is at
 load time — the file is never half-read.
 
-## §5 Component table
+## 5 Component table
 
 `component_count` entries, back to back, in declaration order. Entry
 order **is** state-slot order: the evaluator derives each component's
@@ -173,7 +173,7 @@ entries' order naturally. A table-of-offsets layout is what you pick
 when you intend to append to a file later; nothing in this design
 appends.
 
-## §6 Connection table
+## 6 Connection table
 
 `connection_count` entries, back to back, in declaration order (the
 connection list has no state-slot meaning; order is just stable
@@ -227,7 +227,7 @@ force is cached, no accumulator is stored — `f(t, y)` is a pure
 function of the binary and the current `y`, which is what the solver's
 determinism contract (§5 of the solver's design note) rests on.
 
-## §7 Names and diagnostics
+## 7 Names and diagnostics
 
 Component and connection names **are** in the binary; they exist for
 diagnostics and host introspection, never for evaluation: the evaluator
@@ -253,7 +253,7 @@ The cost of including names is a few hundred bytes per world; the payoff
 is a runtime that can say *which* component held a NaN position instead
 of "index 3". The evaluator never pays it on the hot path.
 
-## §8 Templates — zero footprint
+## 8 Templates — zero footprint
 
 Templates are a compile-time expansion (schema §templates) and leave no
 trace in the binary: there are no template nodes, no template table, no
@@ -262,7 +262,7 @@ and connection entry above arrived from either a plain declaration or
 an expansion, and the format does not distinguish them — a compiled
 world is exactly the set of things that exist.
 
-## §9 Versioning
+## 9 Versioning
 
 Two version fields with two different jobs, deliberately not moving
 together:
@@ -286,7 +286,7 @@ landing, say) bumps `schema_version` alone. The two fields are the
 breaking-change signal and the authoring-context signal, and neither is
 inferred from the other.
 
-## §10 What this document is not
+## 10 What this document is not
 
 - **Not the schema.** The vocabulary an author writes is
   `tension-world/schema.yaml` (P8a); this document only says what that
@@ -305,7 +305,7 @@ inferred from the other.
   It is a byte layout, defined without reference to any implementation
   language, and any language can read it.
 
-## §11 Known limitations (recorded, not hidden)
+## 11 Known limitations (recorded, not hidden)
 
 - **No compression.** A world binary is small (tens of components,
   kilobytes), and decompressing at load would add a runtime step for a
