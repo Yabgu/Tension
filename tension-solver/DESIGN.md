@@ -616,3 +616,130 @@ version; a version field arrives with the first breaking change, if one
 is ever justified); introspection beyond the vtable's name; per-plugin
 isolation — a registered plugin runs in the host's address space, which
 is what "native backend" means.
+
+---
+
+## 12. The configuration struct (phase 9a)
+
+**What it is, and what it is not.** This is the byte
+layout a guest writes and the host reads — the replacement for the JSON
+config text that phases 2 through 8 carried across the wasm boundary. It
+is not a file: it has no extension, is never stored, and lives only in
+the guest's linear memory, passed as `(ptr, len)`. And it is not a
+serialization of a C struct or a Fortran type: it is bytes with the
+layout this section declares, readable by any language, resolved by the
+host into whatever in-memory form the shim's ABI wants.
+
+**Endianness, alignment, word size.** Little-endian throughout, like
+every other format in this repo. The struct's start is 8-byte aligned;
+the writer lays every field out at an offset that is a multiple of the
+field's size; the reader tolerates unaligned access — it reads with
+byte-wise primitives — but never relies on it. Both commitments are
+real: the writer aligns, the reader tolerates. The types: `u8`, `u16`,
+`u32`, `u64` (unsigned, LE; `u64` is declared for completeness —
+format_version 1 uses none), `f64` (IEEE-754 binary64, LE). Offsets are
+`u32` byte offsets from byte 0 of the blob — file-absolute, never
+relative to an inner table (the rule that kept the world format honest;
+tension-world/DESIGN.md §3).
+
+**The header — 64 bytes at offset 0.**
+
+| off | size | field | notes |
+| --- | --- | --- | --- |
+| 0 | 8 | `magic` | ASCII `TNSCONF1` = `54 4E 53 43 4F 4E 46 31`; the trailing `1` hints at the version even though `format_version` exists |
+| 8 | 2 | `format_version` u16 | 1 |
+| 10 | 2 | `schema_version` u16 | the `schema.yaml` version the config targets (1) |
+| 12 | 4 | `method_ptr` u32 | into the string table — an entry's length prefix |
+| 16 | 4 | `method_len` u32 | UTF-8 bytes; never 0 |
+| 20 | 4 | `source_ptr` u32 | into the string table |
+| 24 | 4 | `source_len` u32 | UTF-8 bytes; never 0 |
+| 28 | 4 | `description_ptr` u32 | 0,0 when absent |
+| 32 | 4 | `description_len` u32 | 0 means absent, whatever `description_ptr` says |
+| 36 | 4 | `dim` u32 | 0 when the source does not require one; the per-source `requires` rule governs |
+| 40 | 4 | `parameters_off` u32 | offset of the parameters block; 0 iff `parameters_bitmap` is 0 |
+| 44 | 4 | `parameters_bitmap` u32 | one bit per schema parameter, declaration order; bits 9–31 reserved, must be zero |
+| 48 | 4 | `world_ptr` u32 | into the string table; 0,0 unless `source: "world"` |
+| 52 | 4 | `world_len` u32 | the YAML text, UTF-8 |
+| 56 | 8 | `reserved` | must be zero; pads the header to 64 |
+
+The layout is fixed, so the derived positions are not optional: when
+`parameters_bitmap` is nonzero, `parameters_off` must be 64; the string
+table follows the parameters block (or the header). An offset that
+disagrees with where its section must be is refused, not followed.
+
+**The parameters block.** Present exactly when `parameters_bitmap` is
+nonzero; `popcount(bitmap) × 8` bytes, one 8-byte slot per set bit, in
+bit order (bit 0 — `relTol` — first). The slot's interpretation follows
+the schema's declared type for that parameter: f64 (LE) for the eight
+f64 parameters, and for `iterations` (schema type u32) a u32 in the
+slot's low four bytes with the upper four bytes zero — the same 4-byte
+width the C mirror gives it (`solver_params.h`'s `int32_t`, with its
+`>= 0` rule). The uniform 8-byte stride means a slot's address is
+`64 + 8k` for the k-th set bit — no table walk. Parameters whose bits are
+clear take the schema's declared defaults. The block is *not* the
+72-byte `tension_solver_params` struct and does not mirror its layout:
+this is the wire shape; resolving it into the struct is the host's job.
+
+**The string table.** A concatenation of length-prefixed UTF-8 entries —
+the same shape as the world format's name table: `u32 byte_length`, then
+exactly that many bytes, no terminator, no padding
+(tension-world/DESIGN.md §7). It begins after the parameters block, on
+an 8-byte boundary, and runs to the end of the blob: a walk from its
+start must land exactly on the last byte. `method_ptr`, `source_ptr`,
+`description_ptr` and `world_ptr` point at an entry's length prefix;
+`description_len == 0` is the canonical absence (the framework writes
+0,0) and means absent regardless of the pointer.
+
+**Total size.** `64` (header) `+ 8·popcount(bitmap)` (parameters)
+`+ Σ(4 + len)` over the present string entries (the table) — nothing
+else. A blob longer or shorter than the derivation is refused: no
+trailing byte, no end padding, no trailer.
+
+**Refusal rules — the reader's contract.** A strict reader refuses at
+load and never half-reads:
+
+- wrong magic → refuse
+- unknown `format_version` → refuse
+- nonzero `reserved`, or bits 9–31 set in `parameters_bitmap` → refuse
+- `method_len == 0` or `source_len == 0` → refuse
+- any offset + length that falls outside the blob, or that overlaps
+  another field → refuse
+- a `parameters_off` that is neither 0 nor 64, or 0 with a nonzero
+  bitmap, or 64 with a zero bitmap → refuse
+- a string pointer that does not point at an entry's length prefix, or
+  an entry whose bytes run past the blob → refuse
+- the `iterations` slot with a nonzero upper four bytes → refuse
+- a string-table walk that does not land exactly on the end of the blob
+  → refuse (gaps and trailing bytes alike)
+
+And the semantic refusals, against the schema's compiled rules — the
+same rules the JSON parser enforced (the shim's tables, cross-checked
+by test T20):
+
+- unknown `method` → `-ENOENT`
+- unknown `source` → `-EINVAL`
+- a source whose `requires` are unmet → `-EINVAL`
+- the pairing rule violated (a built-in with `source: "native"`) →
+  `-EINVAL`
+- `source: "world"` with a nonzero `dim` → `-EINVAL` (the host derives
+  `dim` from the compiled world and refuses a stated one; the framework
+  writes 0)
+- `source: "world"` with `world_len == 0` → `-EINVAL` (a world source
+  with no world text)
+- a parameter present that the method does not read → warn, do not
+  error (the config-object-not-enum discipline)
+
+**The layering rule.** The framework is the writer and owns the format on
+the guest side; the host is a strict reader: it validates what it reads
+against this document and refuses what does not match. It does not
+guess, correct, or be lenient. If the framework and the host ever
+disagree, the framework is what changes. This is the same relationship
+`tension-res` has with `.tns` — one format, one writer, one reader, no
+negotiation.
+
+**Not implemented in this phase.** This section declares the layout
+only. `tension_solver_create` still takes the JSON text; the framework
+still writes JSON; the shim still carries its parser; `GUEST_ABI.md`
+still describes the JSON form. P9b implements the struct end to end —
+the framework as writer, the host as strict reader, the shim's resolved
+input — and removes the JSON parser; P9c audits the result.
