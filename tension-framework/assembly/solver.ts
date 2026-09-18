@@ -76,21 +76,32 @@ export class Solver {
   }
 
   /**
-   * Create a solver from a JSON config (schema.yaml's vocabulary) and the
-   * three callbacks a `source: "wasm"` solver uses. Returns `null` on any
-   * failure: malformed config, unknown method, unmet source requirement, a
-   * method or source not available in this build, a full id table, or — for
-   * `source: "wasm"` — a callback whose table index does not name a function
-   * of the declared signature.
+   * Create a solver from a JSON config (schema.yaml's vocabulary) and, for
+   * `source: "wasm"`, the three callbacks that solver uses. Callbacks are
+   * optional: `source: "world"` and `source: "native"` have none, and the
+   * framework passes 0/0/0 for the three indices (the host ignores them for
+   * non-wasm sources). Returns `null` on any failure: malformed config,
+   * unknown method, unmet source requirement, a method or source not
+   * available in this build, a full id table, or — for `source: "wasm"` — a
+   * callback whose table index does not name a function of the declared
+   * signature.
    */
-  static create(configJson: string, callbacks: SolverCallbacks): Solver | null {
+  static create(configJson: string, callbacks: SolverCallbacks | null = null): Solver | null {
     const bytes = String.UTF8.encode(configJson);
+    let derivativeIdx = 0;
+    let bufInIdx = 0;
+    let bufOutIdx = 0;
+    if (callbacks != null) {
+      derivativeIdx = callbackIndex(changetype<usize>(callbacks.derivative));
+      bufInIdx = callbackIndex(changetype<usize>(callbacks.bufIn));
+      bufOutIdx = callbackIndex(changetype<usize>(callbacks.bufOut));
+    }
     const id = hostSolverCreate(
       changetype<usize>(bytes),
       i32(bytes.byteLength),
-      callbackIndex(changetype<usize>(callbacks.derivative)),
-      callbackIndex(changetype<usize>(callbacks.bufIn)),
-      callbackIndex(changetype<usize>(callbacks.bufOut)),
+      derivativeIdx,
+      bufInIdx,
+      bufOutIdx,
     );
     if (id < 1) return null;
     return new Solver(id);

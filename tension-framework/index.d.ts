@@ -124,7 +124,7 @@ export declare class SolverCallbacks {
 }
 
 export declare class Solver {
-  static create(configJson: string, callbacks: SolverCallbacks): Solver | null;
+  static create(configJson: string, callbacks?: SolverCallbacks | null): Solver | null;
   step(dt: f64): i32;
   state(out: Float64Array): i32;
   setState(t: f64, y: Float64Array): i32;

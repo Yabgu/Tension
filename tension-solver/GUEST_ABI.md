@@ -337,14 +337,16 @@ export class Solver {
   private id: i32;
 
   /**
-   * Create a solver from a JSON config (schema.yaml's vocabulary) and
-   * the three callbacks a `source: "wasm"` solver uses. Returns null on
-   * any failure: malformed config, unknown method, unmet source
-   * requirement, unavailable method or source, a callback index that
-   * does not name a function of the declared signature, or a full id
-   * table (§5).
+   * Create a solver from a JSON config (schema.yaml's vocabulary) and,
+   * for `source: "wasm"`, the three callbacks that solver uses.
+   * Callbacks are optional — world-source and native-source solvers have
+   * none — and default to null, which the framework passes as 0/0/0.
+   * Returns null on any failure: malformed config, unknown method,
+   * unmet source requirement, unavailable method or source, a callback
+   * index that does not name a function of the declared signature, or a
+   * full id table (§5).
    */
-  static create(configJson: string, callbacks: SolverCallbacks): Solver | null
+  static create(configJson: string, callbacks: SolverCallbacks | null = null): Solver | null
 
   /**
    * Advance by `dt`. Returns 0 on success, -1 on failure. Synchronous;
@@ -380,6 +382,13 @@ one import call, translated per §5. A checkpoint is the `state` buffer
 itself: `setState(buf[0], buf.subarray(1))` restores exactly what
 `state(buf)` saved — `subarray` is a view into the same buffer, where
 `slice` would copy it.
+
+Callbacks are optional because they are a property of the source, not the
+solver: `source: "wasm"` needs the three callback functions, while
+`source: "world"` (the evaluator is host-side; the world *is* the f) and
+`source: "native"` (the registered vtable carries them) need none. Calling
+`create` with the config alone passes 0/0/0 for the three indices, and the
+host ignores them for every non-wasm source (§3.1).
 
 ## 5. Error convention
 

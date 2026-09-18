@@ -547,3 +547,39 @@ fn w10_bytes_stay_alive_across_many_steps() {
     assert_eq!(g.f64_at(424), want_t, "t accumulates exactly as the adds do");
     assert_eq!(g.y_at(432, 4), vec![want_x, 0.0, 1.0, 0.0]);
 }
+
+// ═══ W-OPT ══════════════════════════════════════════════════════════════
+// The optional-callbacks TS surface (`Solver.create(configJson)`) passes
+// 0/0/0 for the three indices, and the host ignores them for non-wasm
+// sources (P8e) — so a complete create/step/state cycle runs with no
+// callbacks at all. `examples/world/` relies on exactly this.
+
+#[test]
+fn w_opt_world_source_ignores_callback_indices() {
+    let _g = lock();
+    let config = world_config("euler", FREE_PARTICLE, "");
+    let g = start(&world_guest(&config, &[0.0, 0.0, 1.0, 0.0], 1, 0.1));
+    let id = g.i32_at(400);
+    assert!(id >= 1, "create with 0/0/0 indices returned {id}");
+    assert_eq!(g.i32_at(412), 0, "step rc");
+    assert_eq!(g.i32_at(416), 4, "state wrote dim slots");
+    assert_eq!(g.y_at(432, 4), vec![0.1, 0.0, 1.0, 0.0]);
+}
+
+// ═══ W-REQ ══════════════════════════════════════════════════════════════
+// 0/0/0 is only legal for sources that have no callbacks: a wasm-source
+// config still resolves the three indices, so the same shape refuses here
+// (this fixture exports no `table` at all; P5b's H5/N2 cover a bad index
+// inside a real table).
+
+#[test]
+fn w_req_wasm_source_still_requires_real_indices() {
+    let _g = lock();
+    let g = start(&world_guest(
+        r#"{"method":"euler","source":"wasm","dim":4}"#,
+        &[],
+        0,
+        0.0,
+    ));
+    assert_eq!(g.i32_at(400), -22, "wasm-source create with 0/0/0 is refused");
+}
