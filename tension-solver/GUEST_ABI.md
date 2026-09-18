@@ -104,10 +104,16 @@ declared signature (§3.6), or create refuses with `-EINVAL`. Two
 solvers created with different derivatives therefore behave
 independently. For any other source the three indices are ignored.
 
+For `source: "world"` the config carries the world's YAML in a `world`
+field and does not state `dim` (the host derives it from the compiled
+world — stating it is `-EINVAL`); the host compiles the YAML and binds
+the resulting evaluator exactly as it does the wasm callbacks, and the
+three index arguments are ignored.
+
 Returns a handle ≥ 1, or a negative errno. The mapping is the header's:
 `-EINVAL` for a malformed config or an unmet source requirement,
-`-ENOENT` for an unknown `method`, `-ENOSYS` for a method or source not
-available in this build (`source: "world"` in this phase; §7),
+`-ENOENT` for an unknown `method`, `-ENOSYS` for a `method` not
+available in this build (§7),
 `-ENOMEM` on allocation failure, `-EMFILE` when the solver-id table is
 full. Handles are 1-based; 0 is never valid.
 
@@ -227,17 +233,24 @@ the toolchain has them, allocate nothing and belong in hot paths like
 `_derivative`; pattern 3 allocates and belongs on cold paths.
 
 **1. `load<f64>` / `store<f64>` — always works, no allocation.** The
-memory-arithmetic form, optionally wrapped in `@inline` helpers so the
-body reads as data:
+memory-arithmetic form, in two spellings that compile to the same code:
+
+**1a — inline raw.** Fewest moving parts; the loop body shows the
+addressing directly. The shipped example (`examples/solver/game.ts`) is
+this form:
 
 ```ts
-// dy[i] = -y[i], raw:
+// dy[i] = -y[i]:
 for (let i = 0; i < len; i++) {
   store<f64>(dyPtr + (<usize>i << 3), -load<f64>(yPtr + (<usize>i << 3)));
 }
+```
 
-// The same with the addressing named; @inline makes the helpers vanish
-// into the identical f64.load / f64.store pair:
+**1b — named addressing.** Same generated code — the `@inline` helpers
+vanish into the identical `f64.load` / `f64.store` pair — for when you
+would rather read `f64Get`/`f64Set` than `<usize>i << 3`:
+
+```ts
 @inline function f64Get(ptr: usize, i: i32): f64 { return load<f64>(ptr + (<usize>i << 3)); }
 @inline function f64Set(ptr: usize, i: i32, v: f64): void { store<f64>(ptr + (<usize>i << 3), v); }
 for (let i = 0; i < len; i++) {
@@ -296,7 +309,7 @@ readback, and per-frame bookkeeping, not per-stage callbacks.
 The wire stays raw pointers. Wrappers are guest-side ergonomics and
 never cross the ABI: the host sees addresses, lengths, and errno, no
 matter which form a guest uses. The reference implementation of pattern
-1 is `examples/solver/game.ts`'s `_derivative`.
+1a is `examples/solver/game.ts`'s `_derivative`.
 
 ## 4. The `Solver` class
 
@@ -364,8 +377,9 @@ export class Solver {
 The class holds one field, the id. It caches no `dim`, keeps no state
 copies, and carries no error text — every method is a thin crossing of
 one import call, translated per §5. A checkpoint is the `state` buffer
-itself: `setState(buf[0], buf.slice(1))` restores exactly what
-`state(buf)` saved.
+itself: `setState(buf[0], buf.subarray(1))` restores exactly what
+`state(buf)` saved — `subarray` is a view into the same buffer, where
+`slice` would copy it.
 
 ## 5. Error convention
 
@@ -388,9 +402,8 @@ list is for the guest reader):
   argument; `step` on a `source: "wasm"` solver before its callbacks
   are bound.
 - `-24 EMFILE` — solver-id table full (create only).
-- `-38 ENOSYS` — method or source named in the config but not available
-  in this build (`source: "world"`; verlet / implicit_euler / spook —
-  §7).
+- `-38 ENOSYS` — `method` named in the config but not available in this
+  build (verlet / implicit_euler / spook — §7).
 
 ## 6. Threading and interleaving
 
@@ -415,8 +428,11 @@ beyond that is implied.
 
 ## 7. What is not delivered in phase 5
 
-- **No YAML world compiler (P8).** `source: "world"` returns `-ENOSYS`
-  from create; nothing derives `dim` or f from a scene description yet.
+- **No error channel for world-source compile failures.** A world
+  config that does not compile is `-EINVAL`, with the compiler's
+  line/column message on the debug channel (`[tension-core]`-prefixed
+  stderr) — not across the wasm boundary, because create has no err
+  buffer (solver/DESIGN.md §9).
 - **No verlet, implicit_euler, spook (P6).** Those `method` names
   return `-ENOSYS` from create. The explicit-RK family (euler, heun,
   rk23, rk45) is the whole delivered set.
