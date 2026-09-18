@@ -1,6 +1,6 @@
 # Tension world format — design note
 
-Status: **phase 8b complete — this document.**
+Status: **phase 8d complete — this document.**
 Siblings: **tension-world/schema.yaml** (the vocabulary an author
 writes, P8a) and **tension-solver/include/tension_solver.h** (the ABI a
 world-sourced solver plugs into). This note declares the byte layout
@@ -294,9 +294,9 @@ inferred from the other.
 - **Not the compiler.** How YAML becomes these bytes — the parser
   subset, template expansion, validation order, error messages — is
   P8c.
-- **Not the evaluator.** What `f(t, y)` computes from these bytes —
-  force arithmetic, constraint handling, `kinematic` treatment — is
-  P8d.
+- **Not the evaluator.** The evaluator's contract — force arithmetic,
+  constraint handling, `kinematic` treatment — is §12; the layout
+  sections above declare the bytes it reads.
 - **Not the memory placement.** The host loads the bytes; wasm reads
   them from the same linear memory. The layout is position-independent
   (every offset is from file start), so placement is the loader's
@@ -322,3 +322,85 @@ inferred from the other.
   the structural refusal rules (§4) and by bounds-checked table walks,
   not by a hash; the format does not detect a plausible-looking
   corruption that happens to satisfy every structural rule.
+
+---
+
+## 12 The evaluator (phase 8d)
+
+Phase 8d reads these bytes: `tension-core/src/world/eval.rs`, a Rust library
+next to the compiler. `World::load(&bytes)` validates the file — every §4
+refusal, with one addition named below — and returns a borrowed view that
+owns nothing and allocates nothing; `World::dim()` is the state vector's
+length; `World::dimensions()` is 2 or 3; `World::eval(t, y, out)` writes
+`f(t, y)`. The bytes stay owned by the caller, and every later read is an
+offset into them.
+
+**What f is, per component** — the §5 walk made arithmetic. For a
+`point_mass`: its position slots in f are its velocity slots in y (a
+position's derivative is the velocity), and its velocity slots are the
+total force on it divided by its mass. For a `kinematic`: position slots
+are velocity, velocity slots are zero — nothing in v1 drives a kinematic
+body, which is what makes it the engine's "do not integrate this" type.
+For an `anchor`: nothing, in either vector. `dim` is the sum of the
+components' slot counts in declaration order, so f's layout is y's
+layout, and anchors shift component indices without shifting slots.
+
+**The force convention.** Springs carry the whole force vocabulary in v1.
+For a spring's entry, `dir` is the unit vector from the `from` component's
+current position to the `to` component's — orientation is part of the
+entry, and the force flips sign with the end being evaluated — and the
+scalar magnitude is `-k·(dist − rest_length) − c·(v_rel · dir)`, with
+`v_rel` the to-side velocity minus the from-side. The force on the `to`
+end is `magnitude · dir`; on the `from` end, its negation. So a stretched
+spring pulls its ends together, a compressed one pushes them apart, and
+damping opposes radial motion — and damping acts even at zero
+displacement, because it is a term of its own. A spring whose endpoints
+coincide has no axis to pull along; v1 contributes no force rather than a
+NaN direction. Gravity is an **acceleration**, not a force: it adds
+`mass · a` to every `point_mass` — equivalent to adding `a` to the body's
+acceleration, but the force form is what the accumulator holds — and it
+touches neither kinematic bodies nor anchors. An anchor's position comes
+from its entry, not from y (anchors have no state slots, §5), and its
+velocity is zero by construction. `t` is accepted as the solver's calling
+convention and currently unread: no v1 connection makes f depend on time.
+
+**The pin decision.** `pin` is a rigid constraint, and the evaluator
+refuses a world that carries one: `f(t, y)` receives neither a solver nor
+`dt`, and a rigid constraint needs an iterative position solve or a
+Lagrange-multiplier formulation that depends on the step. Refusing is
+deliberate and visible — the error names the connection and says v1 does
+not implement it — and it follows the solver's spook precedent: the
+vocabulary is declared, the implementation is deferred, and nothing
+pretends. The compiler still accepts `pin` (P8c), so a future phase that
+gives evaluation a `dt`-aware channel revives it without touching the
+compiler or these bytes.
+
+**One refusal beyond §4's list.** `load` refuses a connection whose
+endpoints do not name component-table entries (`from`/`to` in range,
+gravity's sentinel endpoints on both ends, a binary connection's ends
+distinct) — §4's "refusal is at load time; the file is never half-read"
+applied to references. Without it, a dangling endpoint would evaluate as
+if its connection were absent, which is the kind of silent wrong answer
+§4 exists to prevent. Everything else semantic stays the compiler's:
+a spring's stiffness, a mass — the loader does not re-litigate them, and
+evaluation assumes them (a hand-built binary that breaks one gets IEEE
+arithmetic, not an error).
+
+**No allocation, because determinism.** `eval` allocates nothing: the
+per-component force accumulator is a `[f64; 3]` on the stack, and the
+component gather walks the connection table in place — component count
+times connection count, tens of entries, no index built. A test proves it
+with a counting allocator (T13 in
+`tests/world_p8d.rs`). Purity is the other half: no globals, no interior
+mutability, no time — same `(t, y)`, bit-identical `out` — which is what
+the solver's determinism contract (§5 of the solver's note) composes
+with.
+
+**What phase 8d does not deliver.** No integration: the evaluator computes
+a derivative, the solver takes steps; that split is the coprocessor's
+whole point. No constraint solver: `joint_angle`, `contact`, and `pin`
+await a `dt`-aware evaluation channel. No `source: "world"` wiring: the
+shim still answers `-ENOSYS`, and accepting a world's derivative on the C
+side is P8e. And no scene loading: `World::load` reads bytes the caller
+already has (P8c's compiler produced them; P8e will decide where a game's
+bytes live).

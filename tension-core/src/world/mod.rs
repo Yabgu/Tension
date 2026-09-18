@@ -1,5 +1,6 @@
-//! The world compiler (P8c): the author's YAML in, the binary layout in
-//! `tension-world/DESIGN.md` out.
+//! The world module: the compiler (P8c) that turns the author's YAML into
+//! the compiled bytes, and the evaluator (P8d) that reads those bytes and
+//! computes f(t, y).
 //!
 //! `compile` is the whole surface that produces bytes:
 //!
@@ -16,14 +17,22 @@
 //! drift test (W13 in `tests/world_p8c.rs`) crosses the two, the same
 //! discipline the solver's compiled rules use. Nothing here is FFI, and
 //! nothing here reads a file: the compiler takes text and returns bytes.
+//!
+//! [`World`] is the other half: `World::load` validates a compiled file
+//! against `tension-world/DESIGN.md`'s structural rules and borrows it;
+//! `World::eval` computes f(t, y) — pure, allocation-free, no integration
+//! (that is the solver's job). The evaluator's force conventions are §12
+//! of the format note.
 
 mod compiler;
+mod eval;
 mod errors;
 
 pub use compiler::{
     compile, FieldShape, FieldSpec, ReservedKind, ReservedSpec, TypeSpec, SCHEMA_VERSION,
 };
 pub use errors::{CompileError, Span};
+pub use eval::{World, WorldError};
 
 /// The compiled-in component catalog, in schema order.
 #[must_use]
