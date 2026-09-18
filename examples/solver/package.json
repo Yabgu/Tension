@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-solver",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: numerical integration over the tension::solver ABI (rk45 on y' = -y)",
+  "scripts": {
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap",
+    "run": "../../tension-core/target/debug/tension-core build/game.wasm",
+    "start": "npm run build && npm run run"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
