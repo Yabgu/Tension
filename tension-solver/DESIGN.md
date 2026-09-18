@@ -105,12 +105,24 @@ comment) for built-ins, and the registered vtable's `deterministic` field
 for plugins; euler is deterministic by construction. Factors 2 and 3 are
 the callbacks' contract, stated on the two typedefs in tension_solver.h (a
 pure function of `(y, t)`; the engine cannot enforce it). Factor 4 belongs
-to the source: world compilation (tension-scene) and the wasm trampoline
+to the source: world compilation (tension-world) and the wasm trampoline
 each have to keep their side of it. The theorem rests on two ambient
 assumptions, both pinned in the build recipe: the compiler series (§2
 fact 4) and the flags (§2 fact 2). Phase 1 proves factor 1 on this machine
 — two identical runs are bit-identical (T3), and interleaved solvers do
 not interfere (T4) — in `tension-core/tests/solver_p1.rs`.
+
+For `source: "wasm"`, source determinism depends on the wasm runtime as
+well as the guest's code. Wasmtime is pinned (`=24.0.13`) precisely because
+a runtime version change is a potential determinism event: the JIT can
+produce different machine code from identical bytecode, and the wasm
+specification permits implementations to differ in some FP edge cases (NaN
+bit patterns being the classic example). The promise is: for a fixed
+wasmtime version and a fixed guest module, results are bit-identical run to
+run. A wasmtime upgrade is a determinism review event — compare outputs
+across the upgrade before accepting it. `source: "world"` does not have
+this concern: the evaluator is host-side Rust, and the same binary produces
+the same output.
 
 Known limitations (recorded, not hidden)
 
@@ -135,12 +147,15 @@ registry (32 slots, keyed by name; a name shadowing a built-in is
 `-EINVAL`; `kind` outside the six reserved names is `-EINVAL`;
 `deterministic` mismatching `kind` is `-EINVAL` per the header's
 registration table), and `bind_callbacks` (rejects rebind after any
-attempted step; rejects any non-NULL binding on `source: world`;
-accepts NULL/NULL as a no-op on `source: native`).
+attempted step; world and wasm bind identically — the host's world
+evaluator arrives as a plain derivative function pointer (P8e); accepts
+NULL/NULL as a no-op on `source: native`).
 
-Not implemented in phase 2: `source: world` returns `-ENOSYS` (P8
-resolves it), the six non-euler built-ins register and return
-`-ENOSYS` (P3, P6), the wasm-to-C bridge for `source: wasm` is P4
+Not implemented in phase 2: `source: world` (wired in P8e — the host
+compiles the embedded world and synthesizes the `dim` the shim needs; a
+world config that states no dim is `-EINVAL`), the six non-euler built-ins
+register and return `-ENOSYS` (P3, P6), the wasm-to-C bridge for
+`source: wasm` is P4
 (phase 2 tests the shim side with plain `extern "C"` callbacks).
 
 Known limitations (recorded, not hidden)
@@ -365,16 +380,37 @@ guests in one tension-core process would share that table — and the
 host-side binding records are per store, so they would not follow — and any
 guest can destroy any handle by guessing its id. Not fixed in phase 5; when
 isolation matters, the table and the binding map must move behind an owner
-keyed by store identity. The host-side bound map (shim id -> guest exports)
-is cleared on destroy and on the refused-create path; ids are reused by the
+keyed by store identity. The host-side bindings (shim id -> guest exports,
+and shim id -> compiled world bytes) are cleared on destroy and on the
+refused-create path; ids are reused by the
 shim after destroy, and a stale entry would misbind a new solver to a
 destroyed guest. (The tests hit the unlocked table first: parallel
-test threads race on slot allocation, so the P5 tests serialize on a mutex.
+test threads race on slot allocation, so the P5 and P8e tests serialize on
+one mutex.
 The runtime itself is single-threaded per guest, which is why this is a
 harness concern now and a limitation only when guests multiply.)
 
-**What phase 5 does not deliver:** the YAML world compiler (`source:
-"world"` remains `-ENOSYS`, P8); verlet, implicit_euler and spook (P6);
+**The world source (P8e).** A world-source config carries the world's YAML
+in a `world` field and does not state `dim` (schema.yaml puts that on the
+host). The host compiles the YAML (P8c), derives `dim` from the compiled
+header (P8d's loader), rewrites the config with a synthesized `dim` for the
+shim, keeps the bytes alive per solver id, and binds the evaluator through
+the same `bind_callbacks` call the wasm source uses — the shim never sees
+YAML and does not know what a world is. A config that states `dim`, or
+lacks `world`, is `-EINVAL` from the host; a world that does not compile,
+or derives dim 0, is also `-EINVAL`.
+
+**Known limitation (recorded, not hidden): world compile errors are logged,
+not returned.** World-source compile errors carry line/column information
+from the YAML parser; that information is logged to the debug channel
+(`[tension-core]`-prefixed, stderr) but not returned across the wasm
+boundary, because the create entry point has no err buffer (unlike the
+resource loader's `tension_res_load`). Adding an err buffer is a future
+change if the diagnostic quality becomes important.
+
+**What phase 5 does not deliver:** the YAML world compiler (P8; `source:
+"world"` answered `-ENOSYS` until P8e wired it); verlet, implicit_euler and
+spook (P6);
 async stepping or cancellation; guest-visible diagnostics beyond errno; and
 the plugin lifecycle through the vtable (only `step` is dispatched).
 

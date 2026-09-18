@@ -5,8 +5,8 @@
 //! (`tension-solver/src/tension_solver.c`), which owns the handle table, the
 //! config parser, the compiled validation rules, and the dispatch into the
 //! Fortran core — none of which is repeated here. What this module adds is
-//! the one thing the shim cannot do itself: the wasm side of
-//! `source: "wasm"`.
+//! the two things the shim cannot do itself: the wasm side of
+//! `source: "wasm"` and the host side of `source: "world"`.
 //!
 //! # The reentrancy bridge
 //!
@@ -29,6 +29,16 @@
 //! nested installs (a derivative that steps another solver) are saved and
 //! restored.
 //!
+//! # `source: "world"`
+//!
+//! The config carries the world's YAML in a `world` field (and must not
+//! state `dim` — schema.yaml puts that on the host). This module compiles
+//! it, derives `dim` from the compiled header, hands the shim a rewritten
+//! config with a synthesized `dim`, keeps the bytes in a per-id map, and
+//! binds a [`world_trampoline`] that runs the P8d evaluator. From the
+//! shim's side that is indistinguishable from `source: "wasm"`: a
+//! function pointer arrived, and step calls it per stage.
+//!
 //! # The one-guest assumption
 //!
 //! The shim's solver table is process-global while the bound-callback records
@@ -40,7 +50,9 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::ffi::c_char;
+use std::sync::Arc;
 
+use tension_core::world::{self, World};
 use wasmtime::{Caller, Func, Linker, Memory, Ref, Table, TypedFunc};
 
 use crate::HostState;
@@ -84,11 +96,16 @@ struct GuestExports {
     memory: Memory,
 }
 
-/// `tension::solver` host state: the wasm-source bindings, keyed by the
-/// shim's solver id.
+/// `tension::solver` host state, keyed by the shim's solver id: the
+/// wasm-source bindings and the world-source bytes.
 #[derive(Default)]
 pub struct SolverHost {
     bound: HashMap<i32, GuestExports>,
+    /// Compiled world bytes for `source: "world"` handles. An `Arc` so a
+    /// step can hold them across the trampoline without copying — the map
+    /// owns one reference, the bridge a clone for the duration of the step.
+    /// Lives exactly as long as the handle: create inserts, destroy removes.
+    worlds: HashMap<i32, Arc<[u8]>>,
 }
 
 /// The trampoline's context for one synchronous `solver_step` call. The
@@ -98,6 +115,7 @@ pub struct SolverHost {
 struct Bridge {
     caller: Caller<'static, HostState>,
     exports: Option<GuestExports>,
+    world: Option<Arc<[u8]>>,
 }
 
 thread_local! {
@@ -108,12 +126,14 @@ thread_local! {
     static BRIDGE: Cell<*mut Bridge> = const { Cell::new(std::ptr::null_mut()) };
 }
 
-/// Run `f` with the trampoline bridge installed. Nested installs are saved
-/// and restored: a guest derivative that calls back into `solver_step` nests,
-/// and the outer bridge comes back when the inner call returns.
+/// Run `f` with the trampoline bridge installed — the wasm callbacks
+/// and/or the world bytes for the solver being stepped. Nested installs are
+/// saved and restored: a guest derivative that calls back into `solver_step`
+/// nests, and the outer bridge comes back when the inner call returns.
 fn with_bridge<T>(
     caller: Caller<'_, HostState>,
     exports: Option<GuestExports>,
+    world: Option<Arc<[u8]>>,
     f: impl FnOnce() -> T,
 ) -> T {
     // SAFETY: the erased lifetime is only a name. `bridge` lives on this
@@ -122,7 +142,7 @@ fn with_bridge<T>(
     // calls the derivative on this thread).
     let caller: Caller<'static, HostState> =
         unsafe { std::mem::transmute::<Caller<'_, HostState>, Caller<'static, HostState>>(caller) };
-    let mut bridge = Bridge { caller, exports };
+    let mut bridge = Bridge { caller, exports, world };
     let prev = BRIDGE.with(|slot| slot.replace(std::ptr::addr_of_mut!(bridge)));
     let out = f();
     BRIDGE.with(|slot| slot.set(prev));
@@ -153,7 +173,7 @@ unsafe extern "C" fn derivative_trampoline(
     let bridge = unsafe { &mut *ptr };
     // Split the borrows: the exports come from the bridge, the caller is
     // reborrowed for the guest calls — two disjoint fields.
-    let Bridge { caller, exports } = bridge;
+    let Bridge { caller, exports, .. } = bridge;
     let Some(exports) = exports.as_ref() else {
         return EINVAL;
     };
@@ -189,6 +209,45 @@ unsafe extern "C" fn derivative_trampoline(
         return EIO;
     }
     rc
+}
+
+/// The derivative the shim stores for a `source: "world"` solver: the P8d
+/// evaluator behind the ABI's callback signature. Reached through the same
+/// thread-local bridge as [`derivative_trampoline`]; the bridge carries the
+/// compiled bytes (not the evaluator, which borrows them), so each stage
+/// loads a fresh view — a bounds-checked walk over tens of entries.
+unsafe extern "C" fn world_trampoline(
+    y: *const f64,
+    len: i32,
+    t: f64,
+    dy: *mut f64,
+    dy_cap: i32,
+) -> i32 {
+    if y.is_null() || dy.is_null() || len < 0 || dy_cap < len {
+        return EINVAL;
+    }
+    let ptr = BRIDGE.with(|slot| slot.get());
+    if ptr.is_null() {
+        return EINVAL; // no step in flight on this thread
+    }
+    // SAFETY: as in `derivative_trampoline` — installed by `with_bridge` on
+    // this thread for the duration of one synchronous shim call.
+    let bridge = unsafe { &mut *ptr };
+    let Some(bytes) = bridge.world.as_ref() else {
+        return EINVAL;
+    };
+    let Ok(world) = World::load(bytes) else {
+        return EIO; // the bytes loaded at create; defence, not a live path
+    };
+    let n = len as usize;
+    // SAFETY: the shim passes `y`/`dy` as guest-visible f64 buffers with
+    // `len == dy_cap == dim` (the header's derivative contract).
+    let y_slice = unsafe { std::slice::from_raw_parts(y, n) };
+    let dy_slice = unsafe { std::slice::from_raw_parts_mut(dy, n) };
+    match world.eval(t, y_slice, dy_slice) {
+        Ok(()) => 0,
+        Err(_) => EIO,
+    }
 }
 
 /// Resolve the three callbacks the guest passed — table indices into the
@@ -368,6 +427,192 @@ impl Probe<'_> {
     }
 }
 
+// ── source: "world" ───────────────────────────────────────────────────────
+//
+// A world-source config carries the YAML itself:
+//
+//   {"method": "...", "source": "world", "world": "<yaml text>"}
+//
+// `dim` is *not* stated by the caller (schema.yaml: world-sourced configs
+// never state it). The host compiles the YAML, derives dim from the compiled
+// header, and hands the shim a rewritten config with a synthesized `dim`;
+// the shim never sees YAML. Every other top-level member crosses verbatim,
+// so `parameters`, `dt`, and the rest keep their values — and their
+// validation stays exactly where it was, in the shim.
+
+/// A `source: "world"` create request, split out of the config bytes.
+struct WorldRequest {
+    /// The decoded YAML text (the `world` member's JSON string).
+    yaml: Vec<u8>,
+    /// Every top-level member except `world`, verbatim. A stated `dim` never
+    /// appears here: such a config is refused before this is built.
+    members: Vec<Vec<u8>>,
+}
+
+/// One top-level member of the config object.
+struct Member {
+    key: Vec<u8>,
+    /// The member's raw bytes — `"key":value`, interior whitespace kept.
+    text: Vec<u8>,
+    /// Where the value starts, for a second look at it.
+    value_start: usize,
+}
+
+/// Split the top-level members of a config object; `None` when the bytes
+/// are not the documented flat-object subset. Order is preserved.
+fn top_level_members(bytes: &[u8]) -> Option<Vec<Member>> {
+    let mut p = Probe { b: bytes, i: 0 };
+    p.ws();
+    if !p.eat(b'{') {
+        return None;
+    }
+    let mut out = Vec::new();
+    p.ws();
+    if p.eat(b'}') {
+        return Some(out);
+    }
+    loop {
+        p.ws();
+        let start = p.i;
+        let key = p.string()?;
+        p.ws();
+        if !p.eat(b':') {
+            return None;
+        }
+        p.ws();
+        let value_start = p.i;
+        p.skip_value()?;
+        out.push(Member { key, text: bytes[start..p.i].to_vec(), value_start });
+        p.ws();
+        if p.eat(b',') {
+            continue;
+        }
+        return p.eat(b'}').then_some(out);
+    }
+}
+
+/// Decode the JSON string that starts at `at`.
+fn decode_string_at(bytes: &[u8], at: usize) -> Option<Vec<u8>> {
+    let mut p = Probe { b: bytes, i: at };
+    p.string()
+}
+
+/// Split a config that declares `source: "world"`.
+///
+/// `Ok(None)`: not a world config (or not the documented subset) — the
+/// caller proceeds with the existing path, and the shim owns the refusal.
+/// `Ok(Some(request))`: a well-formed world config. `Err(())`: it declares
+/// the world source but is malformed for it — a stated `dim`, which the
+/// schema puts on the host and never on the caller, or no `world` member.
+fn split_world_config(config: &[u8]) -> Result<Option<WorldRequest>, ()> {
+    let Some(members) = top_level_members(config) else {
+        return Ok(None);
+    };
+    let source = members
+        .iter()
+        .find(|m| m.key.as_slice() == b"source")
+        .and_then(|m| decode_string_at(config, m.value_start));
+    if source.as_deref() != Some(b"world".as_slice()) {
+        return Ok(None);
+    }
+    if members.iter().any(|m| m.key.as_slice() == b"dim") {
+        eprintln!("[tension-core] world-source config: `dim` must not be stated (the host derives it)");
+        return Err(());
+    }
+    let Some(yaml) = members
+        .iter()
+        .find(|m| m.key.as_slice() == b"world")
+        .and_then(|m| decode_string_at(config, m.value_start))
+    else {
+        eprintln!("[tension-core] world-source config: missing the `world` field");
+        return Err(());
+    };
+    let kept = members
+        .into_iter()
+        .filter(|m| m.key.as_slice() != b"world")
+        .map(|m| m.text)
+        .collect();
+    Ok(Some(WorldRequest { yaml, members: kept }))
+}
+
+/// The config the shim sees: the caller's members verbatim, plus the
+/// synthesized `dim`.
+fn rewrite_world_config(members: &[Vec<u8>], dim: u32) -> Vec<u8> {
+    let mut out = Vec::with_capacity(64);
+    out.push(b'{');
+    let mut first = true;
+    for member in members {
+        if !first {
+            out.push(b',');
+        }
+        first = false;
+        out.extend_from_slice(member);
+    }
+    if !first {
+        out.push(b',');
+    }
+    out.extend_from_slice(format!("\"dim\":{dim}").as_bytes());
+    out.push(b'}');
+    out
+}
+
+/// Create a `source: "world"` solver: compile the embedded world, derive
+/// its dim, rewrite the config, create through the shim, and bind the
+/// evaluator. Every failure is `-EINVAL`, with the reason on the debug
+/// channel (the wasm boundary has no err channel; solver/DESIGN.md §9).
+fn create_world_solver(caller: &mut Caller<'_, HostState>, request: WorldRequest) -> i32 {
+    let yaml = match std::str::from_utf8(&request.yaml) {
+        Ok(yaml) => yaml,
+        Err(_) => {
+            eprintln!("[tension-core] world-source config: the `world` field is not UTF-8");
+            return EINVAL;
+        }
+    };
+    let compiled = match world::compile(yaml) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            // Line and column ride in the Display form; the log is where
+            // they surface.
+            eprintln!("[tension-core] world compile failed: {e}");
+            return EINVAL;
+        }
+    };
+    let dim = match World::load(&compiled) {
+        Ok(world) => world.dim(),
+        Err(e) => {
+            // Unreachable for bytes the compiler just produced; logged
+            // rather than swallowed if it ever is not.
+            eprintln!("[tension-core] compiled world failed to load: {e}");
+            return EINVAL;
+        }
+    };
+    if dim == 0 {
+        // schema.yaml: a world that contributes no state is legal data, and
+        // the source refuses to build a solver over it.
+        eprintln!("[tension-core] world derives dim 0; the solver builds over dim >= 1");
+        return EINVAL;
+    }
+    let config = rewrite_world_config(&request.members, dim);
+    let id = unsafe { tension_solver_create(config.as_ptr().cast(), config.len()) };
+    if id < 1 {
+        return id;
+    }
+    // Keep the bytes alive for the solver's lifetime; the trampoline borrows
+    // them through the bridge per step.
+    caller
+        .data_mut()
+        .solver
+        .worlds
+        .insert(id, Arc::from(compiled.into_boxed_slice()));
+    let rc = unsafe { tension_solver_bind_callbacks(id, Some(world_trampoline), None) };
+    if rc != 0 {
+        caller.data_mut().solver.worlds.remove(&id);
+        unsafe { tension_solver_destroy(id) };
+        return rc;
+    }
+    id
+}
+
 /// Read `len` bytes at `ptr` out of guest memory; `None` when the range is
 /// out of bounds (or the module exports no memory).
 fn read_guest_bytes(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<Vec<u8>> {
@@ -441,6 +686,13 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let Some(config) = read_guest_bytes(&mut caller, config_ptr, config_len) else {
                 return EINVAL;
             };
+            // `source: "world"` is the host's path: the YAML is compiled and
+            // `dim` synthesized before the shim ever sees a config (P8e).
+            match split_world_config(&config) {
+                Ok(None) => {}
+                Ok(Some(request)) => return create_world_solver(&mut caller, request),
+                Err(()) => return EINVAL, // the reason is on the debug channel
+            }
             let id = unsafe { tension_solver_create(config.as_ptr().cast(), config.len()) };
             if id < 1 {
                 return id; // negative errno, unchanged
@@ -487,7 +739,8 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "solver_step",
         |caller: Caller<'_, HostState>, id: i32, dt: f64| -> i32 {
             let exports = caller.data().solver.bound.get(&id).cloned();
-            with_bridge(caller, exports, || unsafe { tension_solver_step(id, dt) })
+            let world = caller.data().solver.worlds.get(&id).cloned();
+            with_bridge(caller, exports, world, || unsafe { tension_solver_step(id, dt) })
         },
     )?;
 
@@ -542,10 +795,12 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "tension::solver",
         "solver_destroy",
         |mut caller: Caller<'_, HostState>, id: i32| {
-            // The binding goes with the handle: the shim reuses ids after
+            // Both bindings go with the handle: the shim reuses ids after
             // destroy (it hands out the first free slot), so an entry left
-            // here would outlive the store its function handles point into.
+            // here would outlive the store its function handles point into —
+            // or feed the next solver a stale world.
             caller.data_mut().solver.bound.remove(&id);
+            caller.data_mut().solver.worlds.remove(&id);
             unsafe { tension_solver_destroy(id) };
         },
     )?;
@@ -553,5 +808,13 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The shim's solver table is process-global and carries no internal
+/// locking; every test that touches it — whichever test module — serializes
+/// on this one lock (the P5 tests and the P8e tests share the table).
+#[cfg(test)]
+pub(crate) static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod p5_tests;
+#[cfg(test)]
+mod p8e_tests;

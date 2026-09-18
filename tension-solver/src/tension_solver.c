@@ -17,9 +17,10 @@
  *   - the allowed top-level config keys (preset_format.allowed plus the
  *     required method/source pair) and the global parameter vocabulary
  *
- * `source: world` cannot be built yet: the RHS comes from the YAML world
- * compiler (tension-scene, phase 8), which does not exist. create answers
- * -ENOSYS — "not compiled into this build" — until P8 resolves it.
+ * `source: world` is wired as of P8e: the RHS reaches the shim as a bound
+ * derivative exactly like `source: wasm`'s, and this file never sees YAML —
+ * the host compiles the embedded world, derives dim from it, and
+ * synthesizes the `dim` this level requires (tension-world/, phase 8).
  *
  * SPDX-License-Identifier: MIT
  */
@@ -624,11 +625,13 @@ int32_t tension_solver_create(const char *config_json, size_t config_len)
         TS_SOURCE_NATIVE_REQUIRES_BUNDLES_RHS)
         return TS_EINVAL; /* built-ins have bundles_rhs: false */
 
-    if (src == TS_SRC_WORLD) {
-        /* The RHS comes from the YAML world compiler (tension-scene), which
-         * does not exist yet; P8 resolves source: world. Until then no
-         * world-sourced config can be built. */
-        return TS_ENOSYS;
+    if (src == TS_SRC_WORLD && !cfg.has_dim) {
+        /* World-sourced configs declare no `requires` (schema.yaml), but no
+         * handle can be allocated without a dim. The host compiles the
+         * embedded world, derives dim from the compiled header, and
+         * synthesizes it into the config before calling here (P8e); a config
+         * that arrives without one did not come from that path. */
+        return TS_EINVAL;
     }
 
     if (builtin >= 0 && builtin > TS_IMPLICIT_INDEX)
@@ -689,16 +692,13 @@ int32_t tension_solver_bind_callbacks(int32_t id,
     if (h->stepped)
         return TS_EINVAL; /* rebinding mid-run would corrupt the integration */
 
-    if (h->source == TS_SRC_WORLD) {
-        /* No callback crosses the boundary; the guard stays for P8, when
-         * world-sourced handles can exist. */
-        if (derivative != NULL || validate != NULL)
-            return TS_EINVAL;
-        return 0;
-    }
-    if (h->source == TS_SRC_WASM) {
+    if (h->source == TS_SRC_WORLD || h->source == TS_SRC_WASM) {
+        /* The two sources bind the same way: the RHS crosses as a function
+         * pointer and the shim never learns where it came from (the wasm
+         * trampoline or the host's world evaluator). A bind with nothing in
+         * it would leave the step without an f. */
         if (derivative == NULL && validate == NULL)
-            return TS_EINVAL; /* nothing bound; the step would have no f */
+            return TS_EINVAL;
         h->bound_derivative = derivative;
         h->bound_validate = validate;
         return 0;
@@ -728,8 +728,9 @@ int32_t tension_solver_step(int32_t id, double dt)
         return rc;
     }
 
-    if (h->source == TS_SRC_WASM && h->bound_derivative == NULL)
-        return TS_EINVAL; /* step before bind_callbacks */
+    if ((h->source == TS_SRC_WASM || h->source == TS_SRC_WORLD) &&
+        h->bound_derivative == NULL)
+        return TS_EINVAL; /* step before bind_callbacks: no f to call */
 
     h->stepped = 1;
     switch (h->builtin) {

@@ -229,12 +229,22 @@ fn t5_builtin_native_pairing() {
     assert_eq!(create(r#"{"method":"euler","source":"native","dim":1}"#), -22);
 }
 
-// ── T6: world needs P8 ────────────────────────────────────────────────────
+// ── T6: world is wired (P8e) ──────────────────────────────────────────────
 
 #[test]
-fn t6_world_is_enosys() {
+fn t6_world_is_accepted_with_dim() {
     let _g = lock();
-    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -38);
+    // World declares no `requires` (schema.yaml), but no handle can be
+    // allocated without a dim: the host compiles the embedded world and
+    // synthesizes it (P8e), and a config that arrives without one is
+    // refused.
+    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -22);
+
+    let id = create(r#"{"method":"euler","source":"world","dim":2}"#);
+    assert!(id >= 1, "world+dim creates a handle: {id}");
+    // No f is bound yet: the step refuses, exactly as for source: wasm.
+    assert_eq!(unsafe { tension_solver_step(id, 0.5) }, -22);
+    unsafe { tension_solver_destroy(id) };
 }
 
 // ── T7: id-table exhaustion ───────────────────────────────────────────────
@@ -359,23 +369,29 @@ fn t14_bind_native_null_noop() {
     unsafe { tension_solver_destroy(id) };
 }
 
-// ── T15: the world bind rule — unreachable in P2 (see the note) ───────────
+// ── T15: the world bind rule (reachable since P8e) ────────────────────────
 //
-// DEVIATION, reported: the spec's T15 ("bind_callbacks on `source: world`
-// with non-NULL -> -EINVAL") cannot be exercised this phase, because create
-// for `source: world` is -ENOSYS until the YAML compiler (P8) exists — no
-// world handle can be made to bind against. The guard is implemented in the
-// shim for P8; this test records the reachable boundary instead of guessing
-// a weaker assertion.
+// P8e wired `source: "world"`: the host compiles the embedded world and
+// binds its evaluator as the derivative, so world and wasm bind identically
+// — the shim never learns which source a function pointer came from.
 
 #[test]
-fn t15_world_bind_rule_unreachable_in_p2() {
+fn t15_world_binds_like_wasm() {
     let _g = lock();
+    let id = create(r#"{"method":"euler","source":"world","dim":1}"#);
+    assert!(id >= 1, "world+dim creates: {id}");
+
+    // Nothing bound: the step refuses (there is no f to call).
+    assert_eq!(unsafe { tension_solver_step(id, 0.5) }, -22);
+    // An empty bind is refused.
+    assert_eq!(unsafe { tension_solver_bind_callbacks(id, None, None) }, -22);
+    // A derivative binds, and the step then reaches it.
     assert_eq!(
-        create(r#"{"method":"euler","source":"world"}"#),
-        -38,
-        "world-source create is -ENOSYS until P8; bind's world rule waits behind it"
+        unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
+        0
     );
+    assert_eq!(unsafe { tension_solver_step(id, 0.5) }, 0);
+    unsafe { tension_solver_destroy(id) };
 }
 
 // ── T16: step/bind call order ─────────────────────────────────────────────
@@ -645,8 +661,13 @@ fn t20_compiled_rules_match_schema() {
     let id = create(r#"{"method":"p_t20","source":"native","dim":1}"#);
     assert!(id >= 1);
     unsafe { tension_solver_destroy(id) };
-    // world requires nothing; with no dim it reaches -ENOSYS, not -EINVAL.
-    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -38);
+    // world declares no `requires`, but the shim cannot allocate without a
+    // dim: the host synthesizes one (P8e), and a config that states no dim
+    // is refused. With one, the source is accepted — no longer -ENOSYS.
+    assert_eq!(create(r#"{"method":"euler","source":"world"}"#), -22);
+    let world_id = create(r#"{"method":"euler","source":"world","dim":1}"#);
+    assert!(world_id >= 1, "world+dim is accepted: {world_id}");
+    unsafe { tension_solver_destroy(world_id) };
     // A source outside the schema's three is refused.
     assert_eq!(create(r#"{"method":"euler","source":"gpu","dim":1}"#), -22);
 

@@ -23,17 +23,16 @@ use super::{config_source_is_wasm, link_solver, SolverHost};
 use crate::ai::stub::StubAdapter;
 use crate::audio::headless::HeadlessAdapter;
 use crate::{ai, audio, HostState};
-use std::sync::Mutex;
 use wasmtime::{Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// The C shim's solver table is process-global and carries no internal
 /// locking — it is built for the runtime's one-guest, one-thread model
-/// (DESIGN.md §9). Tests share one process, so they serialize here rather
-/// than racing each other on the id table.
-static SERIAL: Mutex<()> = Mutex::new(());
-
+/// (DESIGN.md §9). Tests share one process, so they serialize — across
+/// test modules too, on the one lock in `mod.rs`.
 fn lock() -> std::sync::MutexGuard<'static, ()> {
-    SERIAL.lock().unwrap_or_else(|poison| poison.into_inner())
+    super::TEST_LOCK
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
 }
 
 /// `{"method":"euler","source":"wasm","dim":1}` — 42 bytes at 64.
