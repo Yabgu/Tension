@@ -1,6 +1,6 @@
 # Tension solver — design note
 
-Status: **phase 3 complete — see §7.**
+Status: **phase 4 complete — see §8.**
 Siblings: **tension-solver/schema.yaml** (configuration vocabulary) and
 **tension-solver/include/tension_solver.h** (the C ABI, committed at
 cd88b85, extended at fd8e4bd). This note records what those two artifacts
@@ -223,3 +223,76 @@ the brief's y′ = −100·y: with λ = 100 the tolerance-required step
 minStep, so that example would converge rather than exhaust; at λ = 1e5
 the required step (≈ 9.4e−8) is below minStep, and the step reports
 `-EIO` with the state untouched.
+
+---
+
+## 8. The wasm bridge (phase 4)
+
+Phase 4 makes `source: "wasm"` real: the guest's `_derivative`, exported
+from a wasm module, is called by the Fortran step loop once per stage,
+and the state round-trips through the module's linear memory. Neither
+the shim nor the Fortran core changed for this — both are source-agnostic,
+and phase 4's tests confirm that by construction.
+
+**Where the bridge lives.** In Rust, in `tension-core/tests/solver_p4.rs`
+— the phase's proving ground, not a library module. The test loads the
+fixture with wasmtime, wraps its export in a plain `extern "C"` function,
+and passes that function's pointer to `tension_solver_bind_callbacks`;
+the shim stores the pointer like any other; the Fortran step loop calls
+it per stage with no knowledge that wasm is on the other side. P5 will
+make this ergonomic with a safe wrapper; P4 proves the mechanism with
+raw FFI.
+
+**Why the thread-local.** The ABI's `_derivative` typedef has no
+user-data slot (the purity decision at fd8e4bd: a derivative is f(t, y),
+and a context pointer is state the contract does not see). A wasm call
+needs its store and memory, so the trampoline reaches them through a
+`thread_local!` holding the wasm context, set before each `step` and
+cleared after. `step` is synchronous, so the set/call/clear window
+cannot interleave with another step on the same thread; the interleaving
+test (T6) is the proof that the swap does not leak across solvers. This
+is P4's shape, not the final one: P5 may replace the manual set/clear
+with a scoped-context API if ergonomics warrant.
+
+**The three-export convention.** The fixture
+(`tension-core/tests/fixtures/simple_deriv.wat`) exports:
+
+- `_derivative(y_ptr, len, t, dy_ptr, dy_cap) -> i32` — computes
+  f(t, y) = −y elementwise;
+- `deriv_buf_in() -> i32` — the wasm address of the input buffer;
+- `deriv_buf_out() -> i32` — the wasm address of the output buffer.
+
+The two buffers are not allocated by any function: module and host agree
+by convention that the regions exist (64 KiB each, at 1024 and 66560).
+The trampoline copies host `y` in, calls `_derivative` with the two wasm
+addresses, and copies the output back out; the module never sees a host
+pointer. This is the standard shim-and-copy pattern, and its cost is
+exactly that: one copy in and one copy out per stage evaluation, which
+the phase's rk45 runs price at 79 trampoline calls for one dt = 1.0
+step. P5 can generalize to arbitrary `dim` via an allocator export if
+needed; P4 does not.
+
+(A fixture note: the brief said the module needs 2 pages = 128 KiB, but
+its own suggested buffer addresses — 1024 and 66560, 64 KiB each — need
+132 096 bytes, so 2 pages fall 1024 bytes short of the layout the brief
+also specifies. The fixture declares 3 pages; the deviation is recorded
+in the fixture's own comment.)
+
+**What the tests pin** (`tests/solver_p4.rs`, T1–T7). The fixture's
+three exports are present and callable; the trampoline without a context
+returns −EINVAL, and set-then-clear restores that; one euler step
+through shim + wasm matches y₀·(1 − dt) within 1e−12; one rk45 step of
+dt = 1.0 through wasm matches the analytic e^(−1) within 1e−5, and
+matches the same solve with a plain Rust RHS within 1e−12 — in fact
+bit-identically (`0.3678794419310959` both ways, 79 trampoline calls),
+because the underlying arithmetic is the same and the copy through wasm
+memory moves the same bits; two wasm runs are bit-identical with equal
+eval counts; two interleaved solvers match their isolated runs; and
+P2's rule that `source: "wasm"` rejects a NULL/NULL bind is unchanged.
+
+**Not delivered in phase 4:** zero-copy (the copy-in / copy-out pattern
+above is deliberate — the mechanism, not the optimization); a general
+allocator export (fixed 64 KiB buffers; P5 can generalize); the safe
+Rust wrapper (P5); the YAML world compiler (P8). No change was made to
+`tension_solver.c`, `tension_solver_erk.f90`, `tension_solver.h` or
+schema.yaml — the bridge needed none.
