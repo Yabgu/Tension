@@ -1,4 +1,4 @@
-// examples/collision/game.ts — two soft spheres in a square wall.
+// examples/solver/collision/game.ts — two soft spheres in a square wall.
 //
 // The physics is a *soft-spring* contact model: circles push each other apart
 // with a spring whose force grows with penetration (K_CC), and the wall does
@@ -83,7 +83,7 @@ function propMass(i: i32): f64 { return load<f64>(propsAt(i) + 8); }
 // f(t, y): pure — the only state it reads is the state vector (plus the
 // static props, which never change during a run). Address arithmetic is the
 // raw inline form of GUEST_ABI.md §3.7 (pattern 1a), like the shipped
-// examples/solver/game.ts: one f64 load or store per slot.
+// examples/solver/wasm/game.ts: one f64 load or store per slot.
 export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   if (len < 8 || dyCap < len) return -22;
   const bodies: i32 = len >> 2; // 4 f64 slots per body

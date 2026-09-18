@@ -247,7 +247,7 @@ the toolchain has them, allocate nothing and belong in hot paths like
 memory-arithmetic form, in two spellings that compile to the same code:
 
 **1a — inline raw.** Fewest moving parts; the loop body shows the
-addressing directly. The shipped example (`examples/solver/game.ts`) is
+addressing directly. The shipped example (`examples/solver/wasm/game.ts`) is
 this form:
 
 ```ts
@@ -320,7 +320,7 @@ readback, and per-frame bookkeeping, not per-stage callbacks.
 The wire stays raw pointers. Wrappers are guest-side ergonomics and
 never cross the ABI: the host sees addresses, lengths, and errno, no
 matter which form a guest uses. The reference implementation of pattern
-1a is `examples/solver/game.ts`'s `_derivative`.
+1a is `examples/solver/wasm/game.ts`'s `_derivative`.
 
 ## 4. The `Solver` class
 

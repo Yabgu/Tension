@@ -5,7 +5,7 @@
 //! live: `link_solver` registers over `Linker<HostState>`, and integration
 //! tests under `tests/` link only the library crate. The fixtures are
 //! hand-written WAT — the AssemblyScript end-to-end guest, which also
-//! exercises this same path, is `examples/solver/`.
+//! exercises this same path, is `examples/solver/wasm/`.
 //!
 //! Fixture convention: each guest writes its observations into fixed guest
 //! memory addresses and the test reads them back, so the assertions live on

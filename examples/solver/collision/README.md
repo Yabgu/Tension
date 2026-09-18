@@ -12,7 +12,7 @@ supplies a derivative and six constants; the solver supplies everything else.
 ## Run it
 
 ```sh
-cd examples/collision
+cd examples/solver/collision
 ./run.sh            # builds the guest, runs it, renders collision.gif
 npm start           # the same thing
 ```
@@ -83,7 +83,7 @@ collision.gif      the animation (generated)
 
 - `tension-solver/GUEST_ABI.md` — the guest-side contract: the five imports,
   the config, the callbacks, the error convention.
-- `examples/solver/game.ts` — the smallest `source: "wasm"` guest (rk45 on
+- `examples/solver/wasm/game.ts` — the smallest `source: "wasm"` guest (rk45 on
   y' = −y); this example is that one with real physics attached.
 - `tension-solver/DESIGN.md` — why the solver is built the way it is
   (§5 determinism, §10 the constraint channel, §12 the config wire).

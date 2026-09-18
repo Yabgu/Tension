@@ -320,7 +320,7 @@ Phase 5 connects the two halves: the guest contract (`GUEST_ABI.md`, the
 third artifact of record), its guest-side implementation
 (`tension-framework/assembly/solver.ts`), its host-side implementation
 (`tension-core/src/solver/mod.rs`), and the example that exercises the whole
-chain (`examples/solver/`). The Fortran core, the C shim, the header and the
+chain (`examples/solver/wasm/`). The Fortran core, the C shim, the header and the
 schema are unchanged from §6–§7; phase 5 is a pure adapter layer above them.
 
 **The five-name surface.** The C ABI declares six entry points; the guest
@@ -415,7 +415,7 @@ async stepping or cancellation; guest-visible diagnostics beyond errno; and
 the plugin lifecycle through the vtable (only `step` is dispatched).
 
 **Observations from the phase tests** (`tension-core/src/solver/p5_tests.rs`,
-H1–H5 and N1–N2, plus `examples/solver/`). A hand-written WAT guest that
+H1–H5 and N1–N2, plus `examples/solver/wasm/`). A hand-written WAT guest that
 imports the five names and passes its three callbacks' table indices
 creates, steps (euler, one step of 0.1 on y′ = −y from y₀ = 2.0 → y = 1.8,
 bit-exact), steps (rk45, one step of 1.0 from y₀ = 1.0 →

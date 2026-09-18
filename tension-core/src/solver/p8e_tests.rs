@@ -531,7 +531,7 @@ fn w10_bytes_stay_alive_across_many_steps() {
 // The optional-callbacks TS surface (`Solver.create(configJson)`) passes
 // 0/0/0 for the three indices, and the host ignores them for non-wasm
 // sources (P8e) — so a complete create/step/state cycle runs with no
-// callbacks at all. `examples/world/` relies on exactly this.
+// callbacks at all. `examples/solver/world/` relies on exactly this.
 
 #[test]
 fn w_opt_world_source_ignores_callback_indices() {

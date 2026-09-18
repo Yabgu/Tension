@@ -9,8 +9,9 @@
 //! and pass `(ptr, len)` to the host.
 //!
 //! It is a *second* writer on purpose: these tests check the host's strict
-//! reading of the spec, and the examples (`examples/solver/`,
-//! `examples/world/`) are what prove the framework's encoder agrees with it.
+//! reading of the spec, and the examples (`examples/solver/wasm/`,
+//! `examples/solver/world/`) are what prove the framework's encoder agrees
+//! with it.
 
 const HEADER_LEN: usize = 64;
 

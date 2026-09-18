@@ -1,4 +1,4 @@
-// examples/world/game.ts — a world-source demo: the scene is DATA.
+// examples/solver/world/game.ts — a world-source demo: the scene is DATA.
 //
 // The guest embeds a world (oscillator.yaml, the canonical authored form)
 // as a YAML string, hands it to Solver.create with source: "world", and

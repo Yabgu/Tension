@@ -1,6 +1,6 @@
 //! P10: the collision demo's physics as a plain Rust RHS.
 //!
-//! `examples/collision/` runs these same equations inside a wasm guest; this
+//! `examples/solver/collision/` runs these same equations inside a wasm guest; this
 //! test runs them through the shim directly, with no wasm in the loop, as a
 //! smoke check on the *physics* rather than on the bridge (the bridge is P4's
 //! and P5's business). It is not a trajectory check — the exact path is the
@@ -16,7 +16,7 @@
 //!     and both end up below y = 0, on the floor, where the wall spring
 //!     carries their weight.
 //!
-//! `collision_rhs` mirrors `examples/collision/game.ts` line for line; the
+//! `collision_rhs` mirrors `examples/solver/collision/game.ts` line for line; the
 //! constants are that file's constants.
 
 use std::sync::Mutex;
@@ -45,7 +45,7 @@ extern "C" {
 /// serialize (the convention every solver test file follows).
 static SERIAL: Mutex<()> = Mutex::new(());
 
-// ── the model (examples/collision/game.ts) ────────────────────────────────
+// ── the model (examples/solver/collision/game.ts) ────────────────────────
 
 const GRAVITY: f64 = -9.81;
 const K_WALL: f64 = 200.0;

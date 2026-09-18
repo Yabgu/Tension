@@ -1,4 +1,4 @@
-// examples/solver/game.ts — RK45 demo: y' = -y, y(0) = [1, 2]
+// examples/solver/wasm/game.ts — RK45 demo: y' = -y, y(0) = [1, 2]
 //
 // The host drives all RK45 staging (6 evaluations per adapted step,
 // Dormand-Prince tableau, PI step-size control). The guest supplies:

@@ -10,7 +10,7 @@
 # GNUPLOT=/path/to/gnuplot picks a specific gnuplot binary.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-core="${TENSION_CORE:-$here/../../tension-core/target/debug/tension-core}"
+core="${TENSION_CORE:-$here/../../../tension-core/target/debug/tension-core}"
 gnuplot_bin="${GNUPLOT:-gnuplot}"
 
 # 1. The one dependency this example does not carry itself. Checked first:

@@ -1,4 +1,4 @@
-# examples/world — a scene authored as YAML, run through `source: "world"`
+# examples/solver/world — a scene authored as YAML, run through `source: "world"`
 
 This example demonstrates the world path end to end: a scene written in
 the vocabulary of `tension-world/schema.yaml`, compiled to the binary
