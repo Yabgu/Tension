@@ -228,6 +228,13 @@ Or use the demo runner:
 ./demo.sh
 ```
 
+It builds the interpreter and runs every example, the ai demo included. When
+the gguf file exists and cmake + a C++ compiler are available it links
+llama.cpp (`--features ai`, a one-time ~2 min build) and the ai demo answers
+from the model; otherwise it says so and runs the ai demo on the headless
+adapter. It never downloads the ~2.3 GB weights by itself — `npm install`
+inside `examples/ai` does that.
+
 Or, from inside any example, build and run with npm (assumes `tension-core`
 is built first):
 
