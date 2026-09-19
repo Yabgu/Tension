@@ -1,0 +1,257 @@
+# tension-solver — configuration vocabulary for the numerical solver coprocessor.
+#
+# ABI signatures live in tension_solver.h; this file declares configuration
+# vocabulary only. The schema names methods, parameters, sources and their
+# requirements; the header names the C entry points and the dispatcher that
+# resolves a `method: "rk45"` string to an implementation.
+#
+# Status: v0 draft — tension-solver/DESIGN.md (planned) will carry the reasoning.
+# Role: base — extension schemas (e.g. tension-hallucinator/schema.yaml) declare
+#   `extends: tension-solver` and add vocabulary this file deliberately does not
+#   own (validation thresholds, async cadence, fallback policy). The base stays
+#   purely numerical: no stochastic-only fields, no RK-shaped fields on non-RK
+#   methods, no AI vocabulary.
+#
+# Tension project — MIT. See LICENSE at repo root.
+
+schema_version: 1
+subsystem: tension-solver
+subsystem_version: 0.1.0
+role: base
+
+# ── sources ──────────────────────────────────────────────────────────────
+#
+# `source` names where the RHS function f(t, y) comes from. It is orthogonal
+# to `method`, which names the integrator that consumes f. A preset picks one
+# of each: `method: rk45, source: wasm` is valid, and so is `method: euler,
+# source: world`.
+#
+# Each source declares its own required config fields under `requires:`. A
+# preset is valid only if every name in `requires` for its chosen source
+# appears in the preset itself. (Preset validation is the union of
+# `preset_format.required` and `sources[<chosen>].requires`.)
+#
+# `dim` (the state vector length) is a source-level requirement, not a
+# top-level default: for `source: world` the YAML compiler derives `dim` from
+# the declared components and the preset must not state it; for `source: wasm`
+# and `source: native` the host must know the vector size to allocate before
+# any callback fires, so the preset must state it. This is the general
+# mechanism — a future source may declare more requirements (a native plugin's
+# library path, a registration name, etc.) without changing this file's shape.
+sources:
+  world:
+    requires: []
+  wasm:
+    requires: [dim]
+  native:
+    requires: [dim]
+
+# ── pairing_rules ────────────────────────────────────────────────────────
+#
+# Rules that constrain which (method, source) combinations are valid. These
+# are authoring-time checks: a validator reading only this schema can reject
+# a preset the runtime would reject, without needing the header.
+#
+# `source_native_requires_bundles_rhs: true` means a preset with
+# `source: native` is only valid if the chosen `method:` has
+# `bundles_rhs: true`. Every built-in has `bundles_rhs: false`, so
+# `method: rk45, source: native` is rejected at authoring time. A registered
+# native plugin that supplies its own `derivative` is treated as an implicit
+# `bundles_rhs: true` at registration (the header's vtable has no separate
+# field for it — the presence of a `derivative` slot is the signal).
+pairing_rules:
+  source_native_requires_bundles_rhs: true
+
+# ── callbacks ────────────────────────────────────────────────────────────
+#
+# Two callbacks cross the solver boundary. Signatures match
+# tension_solver.h; they are reproduced here for reference only and the header
+# is authoritative.
+#
+#   _derivative  RHS f(t, y). Called by the solver per integration stage.
+#                RK45 calls it seven times per accepted step; RK23 three.
+#                This is a declaration of what the physics *is*, not the
+#                integration loop — the guest declares f, the solver owns how
+#                to step it. Same shape as a shader: the CPU writes the
+#                fragment function, the GPU owns the pipeline.
+#
+#   _validate    Acceptance function for stochastic backends. Not an observer,
+#                not a collector, not an event hook — it returns whether a
+#                proposed step is accepted, and the engine acts on that.
+#                Fixed-width output: {margin f64, reason_code u32, flags u32}.
+#                Classical backends do not use it; the AI/hallucinator module
+#                (separate schema, `extends: tension-solver`) makes it
+#                mandatory for its backends. The output_schema below is
+#                declared here so extension schemas can extend `flags` bits
+#                without redefining the struct.
+#
+# What is NOT a callback: event emission after an accepted step. That is an
+# engine concern delivered through the existing event bus (an EVENT_SOLVER_STEP
+# or equivalent), not through a solver callback.
+callbacks:
+  _derivative:
+    signature: "i32(ptr const f64 y, i32 len, f64 t, ptr f64 dy, i32 dy_cap)"
+    required_when:
+      source: [wasm, native]   # `world` compiles f internally, no boundary crossing
+  _validate:
+    signature: "i32(ptr const f64 prev, i32 prev_len, ptr const f64 next, i32 next_len, f64 dt, ptr u8 out, i32 out_cap)"
+    optional_when:
+      source: [wasm, native]   # classical backends accept every step by policy
+    required_when:
+      kind: [stochastic]       # declared by extension schemas, not this one
+    output_schema:
+      margin:      f64   # signed: > 0 accept, <= 0 reject; magnitude = confidence
+      reason_code: u32   # backend-defined; 0 = accepted, non-zero = backend reason
+      flags:       u32   # bits 0-15 reserved base; bits 16-31 for extensions
+
+# ── backends ─────────────────────────────────────────────────────────────
+#
+# `kind` is a free string with a reserved vocabulary documented below. Tooling
+# may branch on the reserved set; extension schemas may declare new kinds and
+# this file will not reject them. Do NOT close the vocabulary — a new method
+# class must not require a schema version bump.
+#
+# Reserved kinds and their semantics:
+#   explicit_rk            explicit Runge-Kutta; `order` and `stages` meaningful
+#   symplectic             symplectic/energy-conserving; `order` meaningful, `stages` not
+#   implicit               implicit; `order` meaningful, `stages` may be null
+#                          (iteration count is a parameter)
+#   variational_constraint constraint-based, position-based dynamics family
+#                          (SPOOK); `order` and `stages` both null
+#   stochastic             non-deterministic (AI, sampling); extension schemas own these
+#   custom                 user-registered via tension_solver_register_backend;
+#                          everything method-specific is unknown
+#
+# Determinism is a per-backend property, and it is derived, not declared:
+# `kind: stochastic` implies non-deterministic. Every other reserved kind is
+# deterministic by construction. `kind: custom` is the one exception — a
+# custom backend must declare `deterministic:` explicitly in its registered
+# vtable (see `tension_solver_backend_vtable.deterministic` in
+# `tension_solver.h`), because its nature is unknowable from the string alone.
+# (The engine reads this property; there
+# is no `tension_solver_is_deterministic()` ABI call, and there will not be
+# one — a runtime query for a static fact would be an invitation to put the
+# check in the wrong layer.)
+#
+# `parameters:` lists the subset of the global parameter vocabulary this
+# backend reads. A preset that supplies a parameter not in this list is
+# warned, not errored (the parameter is ignored; the warning names the
+# parameter and the backend). This is the "config object, not enum" discipline:
+# unused knobs are tolerated, not rejected.
+backends:
+  - name: euler
+    kind: explicit_rk
+    bundles_rhs: false
+    order: 1
+    stages: 1
+    adaptive: false
+    parameters: [relTol, absTol]
+
+  - name: heun
+    kind: explicit_rk
+    bundles_rhs: false
+    order: 2
+    stages: 2
+    adaptive: false
+    parameters: [relTol, absTol]
+
+  - name: rk23
+    kind: explicit_rk
+    bundles_rhs: false
+    order: 3
+    stages: 3
+    adaptive: true
+    parameters: [relTol, absTol, minStep, maxStep]
+
+  - name: rk45
+    kind: explicit_rk
+    bundles_rhs: false
+    order: 5
+    stages: 7
+    adaptive: true
+    parameters: [relTol, absTol, minStep, maxStep]
+
+  - name: verlet
+    kind: symplectic
+    bundles_rhs: false
+    order: 2
+    stages: null
+    adaptive: false
+    parameters: [fixedStep]
+
+  - name: implicit_euler
+    kind: implicit
+    bundles_rhs: false
+    order: 1
+    stages: null
+    adaptive: false
+    parameters: [iterations, convergenceTol]
+
+  - name: spook
+    kind: variational_constraint
+    bundles_rhs: false
+    order: null
+    stages: null
+    adaptive: false
+    parameters: [iterations, compliance, relaxation]
+
+# ── parameters ───────────────────────────────────────────────────────────
+#
+# Global vocabulary. Small on purpose: if two backends want `relTol` with
+# different meanings, one of them should be renamed, not namespaced —
+# namespacing makes presets non-portable.
+#
+# `range` is advisory: the engine clamps or warns, backends decide. `default`
+# is the value used when a preset does not supply the parameter.
+parameters:
+  relTol:         { type: f64, default: 1.0e-6,  range: [0.0, .inf] }
+  absTol:         { type: f64, default: 1.0e-9,  range: [0.0, .inf] }
+  minStep:        { type: f64, default: 1.0e-12, range: [0.0, .inf] }
+  maxStep:        { type: f64, default: .inf,    range: [0.0, .inf] }
+  fixedStep:      { type: f64, default: 1.0e-2,  range: [0.0, .inf] }
+  iterations:     { type: u32, default: 10 }
+  convergenceTol: { type: f64, default: 1.0e-8 }
+  compliance:     { type: f64, default: 0.0 }
+  relaxation:     { type: f64, default: 1.0 }
+
+# ── defaults ─────────────────────────────────────────────────────────────
+#
+# Values a preset inherits when it does not state them. Presets declare
+# deltas, not full configs — the AI-authorable path is five lines, not fifty.
+#
+# Hard rule: `defaults` MUST NOT contain any name listed in
+# `preset_format.required`. The required names (`method` and `source`) are
+# the preset's identity and must appear in every preset; defaults supply the
+# boring structural knobs only.
+# `dim` is NOT here — it is a source-level requirement, declared per source
+# under `sources:`, so a world-sourced preset never mentions it and a
+# wasm-sourced preset always does.
+#
+# `dt` is not a budget parameter and there is no budget parameter. `dt` is the
+# nominal step the guest requests from `step(id, dt)`; a backend may take
+# smaller internal steps (adaptive RK does) and the engine runs to completion.
+# Real-time constraints, substep caps, and time budgets are guest policy, not
+# engine primitives.
+defaults:
+  dt: 0.016
+
+# ── preset_format ────────────────────────────────────────────────────────
+#
+# Presets are separate files (preset-classic.yaml, preset-matlab.yaml,
+# preset-spook.yaml, preset-ai.yaml). This schema declares only their shape.
+#
+# A preset is valid iff:
+#   1. every name in `required` appears in the preset itself, and
+#   2. every name in `sources[preset.source].requires` appears in the preset
+#      itself, and
+#   3. every parameter the preset supplies is either in the chosen backend's
+#      `parameters:` list or is a known global parameter that the backend
+#      ignores (the latter warns, does not error).
+#
+# v1 presets are flat: no preset-extends-preset. A future schema version may
+# add `preset_extends` as a breaking change; the v1 format is deliberately
+# minimal so that change is additive, not corrective.
+preset_format:
+  required: [method, source]
+  allowed:  [dim, parameters, description, dt]
+  inheritance: none

@@ -1,0 +1,7 @@
+# Build output and the guest's dependencies (as in every example).
+build/
+node_modules/
+
+# The demo's outputs: run.sh regenerates both.
+positions.dat
+collision.gif

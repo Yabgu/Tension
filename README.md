@@ -39,6 +39,10 @@ second, runnable surface.
 - **`examples/`** — one folder per example: `io/` (arguments + prints +
   read-line, `game.ts`), `audio/` (guest-synthesised PCM playback, `demo.ts`)
   and `ai/` (an interactive chat session over the model host, `story.ts`).
+  `solver/` is a subtree of three guests written against the solver's ABI —
+  `wasm/` (rk45 on y' = -y), `world/` (a YAML scene through
+  `source: "world"`) and `collision/` (two soft spheres in a square wall,
+  rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and
