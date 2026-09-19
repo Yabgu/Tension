@@ -109,8 +109,18 @@ void render_main() {
 
         s.backend = make_backend(s.config);
         if (s.backend == nullptr) {
-            fail(TENSION_OGRE_STAGE_PLUGIN, -ENOSYS,
-                 "no backend for the requested renderer (this build has no OGRE-Next)");
+            // Two ways to have no backend, and the guest deserves to know which:
+            // a renderer this build's enum has but its plugins do not, or a
+            // build with no OGRE at all.
+            const bool named_renderer = s.config.renderer == TENSION_OGRE_RENDERER_METAL ||
+                                        s.config.renderer == TENSION_OGRE_RENDERER_VULKAN;
+            char line[200];
+            std::snprintf(line, sizeof(line),
+                          "no backend for renderer %u: %s", s.config.renderer,
+                          named_renderer
+                              ? "metal and vulkan are not in this build's plugins"
+                              : "this build has no OGRE-Next; only renderer=null is available");
+            fail(TENSION_OGRE_STAGE_PLUGIN, -ENOSYS, line);
             finish_thread();
             return;
         }
@@ -133,7 +143,8 @@ void render_main() {
         const std::chrono::milliseconds period(1000 / hz);
         while (!s.stop_requested.load()) {
             const int32_t framed = s.backend->frame(s.status);
-            if (framed != 0) {
+            if (framed > 0) break; // the renderer ended normally (window closed)
+            if (framed < 0) {
                 fail(TENSION_OGRE_STAGE_FRAME, framed, "a frame failed");
                 break;
             }
@@ -374,6 +385,9 @@ void adapter_destroy(void *) {
 }
 
 } // namespace
+
+/// The backends' log sink, declared in backend.h.
+void backend_log(const std::string &message) { log_line(1, message); }
 
 AdapterState &adapter_state() {
     static AdapterState state;

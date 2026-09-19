@@ -391,6 +391,19 @@ The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
 
+**The capability's import surface, as registered so far.** Three verbs —
+`ogre::init`, `ogre::shutdown`, `ogre::last_error` — and the four the SDK
+declares but this chunk does not implement (`queue_mesh_load`,
+`queue_texture_load`, `job_state`, `job_release`) are *not* registered. That is
+safe because of a measurement rather than an assumption: Binaryen drops an
+`@external` import a module declares and never calls (seven declared, one
+called, one import in the compiled module — the module was 98 bytes), so a
+guest compiled against the full SDK instantiates against an adapter that
+registers only what it implements, provided it does not *call* the rest. A
+guest that calls one gets wasmtime's unknown-import refusal at instantiation,
+which names the verb. The four refusals with their real implementations land in
+the submission sub-chunk.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -935,11 +948,16 @@ chunk 1 work, and each is additive:
   a capability with its own regions needs either a schema bump or an allocator,
   and the required-regions check (§7.2) is the seam it would attach to.
 
-- **The unused-import fixture (round 2b depends on it).** Does Binaryen keep an
-  `ogre::*` import that a guest declares but never calls? If it does, a guest
-  compiled against the full SDK cannot instantiate against an adapter that
-  registers only the verbs its sub-chunk implements, and the fixture that
-  measures this decides whether the SDK needs a build-time import filter.
+- **The unused-import fixture — measured, answered.** Binaryen drops an
+  `@external` import a module declares and never calls: seven declared, one
+  called, one import in the compiled module (98 bytes). The SDK therefore needs
+  no build-time import filter, and the adapter registers only the verbs it
+  implements (see §5.1).
+- **The render thread is exercised end to end.** Round 2b's guest-window
+  fixture drives start → ready → post → pace → stop for the first time against
+  the real NULL render system, and — manually — against GL3+. Before that round
+  the path compiled but had never executed, which is the distinction this line
+  exists to record.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.

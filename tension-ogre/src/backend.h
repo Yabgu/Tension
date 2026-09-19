@@ -18,11 +18,21 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 
 #include "config.h"
 #include "status.h"
 
 namespace tension_ogre {
+
+/// `frame` returned this: the renderer ended normally (the window was closed),
+/// as distinct from a negative errno, which is a failure. Positive values are
+/// reserved for "stop cleanly", so the adapter can tell the two apart.
+constexpr int32_t kBackendStopRequested = 1;
+
+/// One `[tension:session]`-prefixed line, implemented by the adapter, which
+/// owns the API table. Backends format diagnostics; they do not own the log.
+void backend_log(const std::string &message);
 
 class Backend {
   public:

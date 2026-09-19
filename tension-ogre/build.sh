@@ -15,10 +15,11 @@
 # Modes: --print-pin, --check, --clean, or the build itself.
 #
 # Environment:
-#   TENSION_OGRE_BACKEND=ogre|none  (default: none)
-#       `none` compiles the no-OGRE backend and links no OGRE library at all;
-#       `ogre` links OGRE-Next and needs src/backend_ogre.cpp, which lands in
-#       round 2b. The default flips to `ogre` in that round.
+#   TENSION_OGRE_BACKEND=ogre|none  (default: ogre)
+#       `ogre` links OGRE-Next and drives a real render system (NULL for the
+#       headless gate, GL3+ for a window). `none` is the explicit opt-in for a
+#       machine without OGRE-Next: no OGRE headers, no OGRE libraries, and the
+#       only renderer it can satisfy is `renderer=null`.
 #   TENSION_OGRE_PREFIX=<prefix>    a hand-built OGRE-Next install, instead of
 #                                   the one pkg-config knows about.
 #   CXX=<compiler>
@@ -26,7 +27,7 @@ set -eu
 
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out="$here/build"
-backend=${TENSION_OGRE_BACKEND:-none}
+backend=${TENSION_OGRE_BACKEND:-ogre}
 pin='v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)'
 
 case "${1:-}" in
@@ -42,7 +43,7 @@ case "${1:-}" in
             echo "tension-ogre: OGRE-Next not found via pkg-config"
         fi
         echo "tension-ogre: pinned against $pin"
-        echo "tension-ogre: backend=$backend (default none until backend_ogre.cpp lands)"
+        echo "tension-ogre: backend=$backend (default; `none` opts out of OGRE)"
         exit 0
         ;;
     --clean)
@@ -88,17 +89,14 @@ if [ "$backend" = ogre ]; then
         exit 1
     fi
 
-    if [ ! -f "$here/src/backend_ogre.cpp" ]; then
-        echo "tension-ogre: backend=ogre links OGRE-Next, but src/backend_ogre.cpp" >&2
-        echo "  does not exist yet — it lands in round 2b. Build with" >&2
-        echo "  TENSION_OGRE_BACKEND=none (the default) for now." >&2
-        exit 1
-    fi
 fi
 
-sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
+# Exactly one backend file: each defines `make_backend`, so compiling both is a
+# duplicate symbol, and the choice is the build's to make (B.2b.2).
 if [ "$backend" = ogre ]; then
-    sources="$sources $here/src/backend_ogre.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
+else
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
 fi
 
 # -std=c++17: the adapter uses <thread>, <condition_variable> and structured
@@ -111,6 +109,7 @@ mkdir -p "$out"
 "${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \
     -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $ogre_include \
     ${plugin_dir:+-DTENSION_OGRE_PLUGIN_DIR="\"$plugin_dir\""} \
+    -DTENSION_OGRE_BACKEND="${backend}" \
     $sources \
     -shared -o "$out/libtension_ogre.so" \
     $ogre_lib -lpthread
