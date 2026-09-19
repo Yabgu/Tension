@@ -175,15 +175,17 @@ without any ABI change. In-memory `model.blob` loading is deferred for the same
 kind of reason: the key is typed, encoded and decoded, but only the stub
 adapter honours it today, because the pinned crate ships no in-memory loader.
 
-The `ai` cargo feature is **off by default**. `--features ai` links llama.cpp
-in-process (a long vendored C++ build; needs `cmake` + `g++`). Without it,
-`tension::ai` is served by a deterministic headless adapter — the same one the
-tests use — so the SDK and the example run with no GGUF file at all.
+The `ai` cargo feature is **on by default**: a plain `cargo build` links
+llama.cpp in-process (a long vendored C++ build; needs `cmake` + `g++`). Build
+with `--no-default-features --features audio` and `tension::ai` is served by a
+deterministic headless adapter instead — the same one the tests use — so the
+SDK and the example run with no GGUF file at all.
 
 ## Build & run
 
 ```sh
-# 1. build the interpreter
+# 1. build the interpreter. `ai` is a default feature: this links llama.cpp
+#    (needs cmake + a C++ compiler; a one-time ~2 min build).
 cargo build --manifest-path tension-core/Cargo.toml
 
 # 2. compile the game (AssemblyScript -> wasm), from the example's own folder.
@@ -205,10 +207,12 @@ npm install
 npm run build
 ../../tension-core/target/debug/tension-core build/demo.wasm
 
-# 5. the AI demo: an interactive chat session over tension::ai. With the
-#    default build the host answers from its deterministic headless adapter,
-#    so any model path works and no GGUF file is needed; rebuild tension-core
-#    with `--features ai` to link llama.cpp in-process and use a real model.
+# 5. the AI demo: an interactive chat session over tension::ai. The default
+#    build from step 1 links llama.cpp in-process, and the demo answers from
+#    the model named below — without the weights the host refuses the config.
+#    For the deterministic headless adapter (any model path works, no GGUF
+#    file, no cmake/C++ compiler needed), rebuild tension-core with
+#    `--no-default-features --features audio`.
 #    `npm install` runs prepare.sh, which downloads the ~2.3 GB q4 weights
 #    into models/ -- a no-op once they are there, and never committed
 #    (.gitignore has *.gguf). Install offline with TENSION_SKIP_MODEL_FETCH=1
@@ -226,6 +230,21 @@ Or use the demo runner:
 
 ```sh
 ./demo.sh
+```
+
+It builds the interpreter and runs every example, the ai demo included. `ai`
+is a default feature, so when the gguf file exists and cmake + a C++ compiler
+are available the ai demo answers from the model (linking llama.cpp is a
+one-time ~2 min build); otherwise the script builds with
+`--no-default-features --features audio`, says so, and runs the ai demo on the
+headless adapter. It never downloads the ~2.3 GB weights by itself —
+`npm install` inside `examples/ai` does that.
+
+Or just build everything — interpreter, guest API, and every example —
+without running it:
+
+```sh
+./build.sh
 ```
 
 Or, from inside any example, build and run with npm (assumes `tension-core`
