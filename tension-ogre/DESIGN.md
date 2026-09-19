@@ -1,0 +1,1209 @@
+# tension-ogre — design note
+
+Status: **round 5 — the chunk-1 contract is frozen; no code written yet.**
+Siblings: **tension-core/include/tension_adapter.h** (the core ↔ adapter C ABI;
+specified in Appendix A, not yet committed), **tension-ogre/include/tension_ogre.h**
+(the capability's own guest-facing C ABI; chunk 2), and
+**tension-framework/assembly/{session,ogre}/** (the guest SDK; chunk 1, phase A3).
+
+Tension project — MIT. See LICENSE at repo root.
+
+---
+
+## 0. Decisions
+
+The calls this document makes, in the order a reader will want them. Everything
+else in the note is elaboration.
+
+- **Errno for a missing memory import: `-EINVAL`.** A guest that imports
+  `session::*` but declares no memory import is refused, and so is a session
+  guest in the verb-level defence. `-EPROTO` was considered and deliberately
+  **not** introduced: the information lives in the named diagnostic on the
+  `[tension:session]` channel, and the repo's discipline is one small declared
+  errno table per capability rather than a new code per failure.
+- **Re-entrancy: `-EBUSY` for `session_wait` and `session_drain` called from
+  inside a callback; `queue_*` verbs defer instead.** A deferred submission is
+  *copied* at the moment of the call and applied after the batch, so a callback
+  that submits work is legal and cannot lose data.
+- **`FAULTED → READY` is refused with `-EBUSY`.** The guest must call
+  `session_close` first. A session that faulted has half-published state;
+  forcing a close makes reopening an explicit act rather than a silent reset.
+- **Events are advisory, status tables are truth.** A dropped event is
+  reconciled from the `JOB` / `RESOURCE` tables. That is what makes batching
+  safe, and it is why event rings have soft capacity (drop and count) while
+  status tables have hard capacity (refuse with `-ENOSPC`).
+- **Region kinds are frozen at twelve for chunk 1; `kind == index`; region
+  sizes are compile-time constants.** `arena_size` selects how much of the
+  fixed layout is *live*; `ring_capacity_<class>` resizes sub-rings *inside*
+  the fixed `EVENT_TABLE`. Nothing at `session_open` moves a region's offset.
+- **Canaries are detection, not prevention.** They make the common
+  `memoryBase` drift loud and fast; they do not make overlap impossible, and
+  the hard guarantee is the build pipeline that derives the flags and the
+  constants from one file.
+- **The memory is session-provided (Model A).** Address 0 is the arena, the
+  guest's heap begins at `memoryBase`, and there is no pointer handshake.
+- **Verified by probe (both green, §13):** one `Memory` can be defined under
+  two import names with shared state, and a module's declared memory import
+  type is readable before instantiation. The two questions that gated the
+  contract are answered; nothing in the wire format had to change.
+
+---
+
+## 1. The design in one paragraph
+
+> **tension-ogre** exposes the OGRE-Next rendering engine to a Tension guest as
+> the wasm import module `ogre`, through a capability adapter loaded by
+> `tension-core`. Tension is a broker and not an abstraction layer: the adapter
+> carries OGRE's own contract faithfully, the core carries none of it, and this
+> document describes the boundary between them rather than a rendering API of
+> Tension's invention. Delivery is not the capability's business. Every
+> capability adapter — OGRE today, others later — posts events, tagged by class,
+> to the **session**: a core-owned coprocessor that owns the shared arena, the
+> per-class host-side queues, the subscriptions and delivery modes, the
+> scheduler that decides when delivery happens, and deferred submission. The
+> arena is a staging area with a rendezvous at each host call: the guest writes
+> into it, calls a session or capability verb, and the session reads and
+> publishes inside that call on the guest thread. Adapter background and render
+> threads never call the guest and never touch guest linear memory; they post,
+> and the session delivers — batched by class where volume demands it, one
+> callback per event where urgency does. The arena itself is session-provided:
+> the session creates and owns the memory before instantiation, the guest
+> imports it, address 0 is the arena, and the guest's heap begins at `memoryBase`
+> above the reserved band — no pointer handshake, no guest-supplied layout.
+> Status tables are the truth and events are advisory: a dropped event is
+> reconciled from the table, which is what makes a million loads a scheduling
+> problem rather than a delivery problem, and is also why the in-flight window
+> is bounded by table capacity and must be sized deliberately. Chunk 1 delivers
+> the contracts and the loader — the wire catalogue, the session, the adapter
+> ABI, and the OGRE header — and contains no OGRE code at all; the version pin
+> is a build-time concern that the wire format does not depend on.
+
+## 2. Scope and the broker rule
+
+`tension-ogre` is the first capability that is not a built-in service.
+`tension::io`, `tension::audio`, `tension::ai`, `tension::res` and
+`tension::solver` are Tension's own; the `tension::` prefix is reserved for
+them. A capability's wasm module name is its own — `ogre` — and its C symbols
+are prefixed `tension_ogre_`; the module name and the symbol prefix are
+different namespaces and may coincide.
+
+Three rules follow from the broker decision and constrain everything below:
+
+1. **The core knows nothing about OGRE.** Every OGRE-shaped fact lives in the
+   adapter. The core knows how to load a shared object, validate signatures,
+   hand out guest memory, resolve callbacks, post and deliver events, and
+   nothing else.
+2. **No cross-capability assumptions.** An adapter may not assume another
+   adapter is loaded, may not read another capability's records, and may not
+   register an import another adapter already claimed (the second registration
+   is refused deterministically, not first-wins).
+3. **No magic names in the guest.** `_start_game` is the only guest export the
+   host looks up by name; every host → guest call is through a function-table
+   index the guest registers in the `Callbacks` record.
+
+The wasm module `session` is core-owned and reserved: an adapter that registers
+an import there is refused at load.
+
+## 3. The session
+
+### 3.1 Ownership
+
+The session is a first-class component owned by `tension-core`, not a
+per-capability helper. It owns:
+
+- the shared memory and the arena's protocol-level layout (control block,
+  region table, manifest, canary lattice);
+- one host-side MPSC queue per event class;
+- subscriptions (per-class delivery mode), with class defaults;
+- the scheduler that decides when delivery happens — the **epoch**;
+- deferred submission: the pending list, and the copied records it holds.
+
+### 3.2 Event classes and delivery modes
+
+Ten classes in chunk 1. The id is both the subscription key and the delivery
+priority: an urgent class needs a low id, because invocation follows class id
+order within an epoch.
+
+| id | class | default mode | ring capacity (default) |
+| --- | --- | --- | --- |
+| 0 | `DEVICE_LOST` | DIRECT | 1 |
+| 1 | `JOB_FAILED` | DIRECT | 256 |
+| 2 | `RESOURCE_FAILED` | DIRECT | 256 |
+| 3 | `SUBMISSION_REJECTED` | DIRECT, always delivered | 64 |
+| 4 | `JOB_DONE` | BATCHED | 4096 |
+| 5 | `RESOURCE_READY` | BATCHED | 4096 |
+| 6 | `INPUT_KEY` | BATCHED | 256 |
+| 7 | `INPUT_MOUSE` | BATCHED | 64 |
+| 8 | `LOG` | BATCHED | 1024 |
+| 9 | `FRAME` | POLLED | 256 |
+
+**The code is normative, this table is descriptive.** The authoritative class
+list is `tension-core/src/session/arena.rs`'s `CLASSES` (ids and names) with
+`DEFAULT_CLASS_MODES` beside it; the table above is how the design explains the
+order. Where they disagree, the code wins — and one place they did:
+`SUBMISSION_REJECTED` is **class 3**, not the last class. Round 3 introduced it
+last; the urgent-first ordering the same round adopted places it third, and
+every consumer (the frozen capacities, the modes, the AS runtime's constants)
+follows the code. Read §3.3's prose about classes as *categories* — "the
+failures", "the completions" — rather than as a second statement of ids.
+
+Two notes on this table. `SUBMISSION_REJECTED` is an addition to the class list
+as it stood at round 3: a deferred submission has a second failure mode — it is
+*accepted* inside a callback and can *fail* when applied later, when the guest
+is not inside a call that could receive an errno — and without this class that
+failure would be invisible. It is always delivered, not opt-in. And the list is
+ordered urgent-first, which renumbers `JOB_DONE` and the classes after it
+relative to the round-3 listing; the rule "class id doubles as delivery
+priority" was stated in round 3 and this is the ordering it implies.
+
+Four delivery modes: `DIRECT` (1) one callback per event, for rare and urgent
+classes; `BATCHED` (2) accumulate, one callback per class per epoch, records
+landing contiguously in the class's sub-ring; `RING` (3) the adapter's records
+land in the guest ring with no callback, the guest reads at its own pace —
+**reserved and stubbed in chunk 1**; `POLLED` (4) no automatic delivery, the
+guest calls `session_drain`. `DIRECT` and `BATCHED` are required in chunk 1.
+
+### 3.3 Delivery: the epoch
+
+`session_wait(timeout_ms)` blocks until any class queue is non-empty, a fault
+or shutdown is signalled, or the timeout expires; `session_drain(class)` is the
+same epoch restricted to one class and never blocks. An epoch is three phases:
+
+1. **Publish.** Freeze the delivery set. The session writes the control-block
+   fault fields and `FrameState`, then appends to each non-empty class's
+   sub-ring (compacting on wrap, counting drops), then calls each loaded
+   adapter's `publish` hook once, in registration order, so it can write its
+   own host → guest regions. Guest memory is acquired per call and never held
+   across a callback.
+2. **Invoke.** For class in ascending id, for each class with deliveries:
+   `BATCHED` ⇒ one `onBatch(class, table_ptr, count)`; `DIRECT` ⇒ one
+   `onEvent(class, ptr)` per record, ascending `seq`. Publishing for the whole
+   epoch completes before the first invocation, which is what keeps an exempt
+   accessor called from inside a callback consistent.
+3. **Apply.** Deferred submissions are applied through each adapter's `apply`,
+   with depth reset to 0. A failure becomes a `SUBMISSION_REJECTED` delivery in
+   the next epoch.
+
+Ordering guarantees: within a class, `seq` ascending; across classes, class id
+ascending, and cross-class temporal order is available only by comparing `seq`,
+which the session assigns globally at post time.
+
+Two contracts make batch pointers free. The `(ptr, count)` a callback receives
+is valid **for the duration of that call only** — a guest that wants to keep
+records copies them. And the guest's `tail` is **space reclaim, not an
+acknowledgement**: the session keeps its own host-side delivery watermark, so a
+guest that never advances the tail cannot cause duplicate callbacks or an
+unbounded loop — it simply fills its ring, and then records are dropped and
+counted.
+
+**A capability whose work completes only in `publish` cannot be relied upon with
+an unbounded `session_wait`.** (No loader thread, no render thread: the work
+happens because a publish phase runs, and a publish phase runs because a verb
+asked for an epoch.) A guest that blocks in `wait(-1)` *before* any event
+exists is therefore waiting for work that only the blocked verb could have
+advanced — a cycle, and the wait holds it. Such a capability is driven by
+polling (`wait(0)`, `drain`) or by giving the capability asynchronous
+completion of its own. A loader thread or a render thread lifts the
+limitation entirely: that work finishes off-thread, `post_event`s, and the
+post wakes a blocked wait exactly as the first sentence of this section
+promises. The measured case is the OGRE stub adapter, whose publish hook is
+what completes a job — `tension-framework/tests/guest-ogre.ts` polls `wait(0)`
+for that reason, with the reasoning in the fixture.
+
+### 3.4 The EventTable: per-class sub-rings
+
+One `EVENT_TABLE` region holding, for each class in ascending id, a 32-byte
+table header followed by `capacity × 32` bytes of `EventRecord`s; each sub-ring
+16-byte aligned. Two alternatives were considered and rejected:
+
+- **A single shared ring with class tags.** Simpler, and it fails on the
+  signature: `onBatch(class, table_ptr, count)` promises a contiguous run of
+  one class's records, and classes interleave as events arrive, so a shared
+  ring cannot produce that run without a per-class compaction copy — the same
+  memory as sub-rings, plus a copy, plus a second place for the layout to be
+  wrong.
+- **A guest-visible single tail.** Correct only if delivery is exactly-once per
+  tail advance; the session's own watermark (above) is what keeps a slow guest
+  from turning the ring into a callback loop.
+
+Per-class sub-rings give per-class backpressure, per-class overflow counters,
+storage matching the modes, and make `session_drain(class)` natural.
+
+**Where the counters live.** The authoritative `dropped` and `delivered`
+counters are host-side, on each class's `ClassQueue` in the posting face
+(`dropped()`, `delivered()`, `note_flushed()`): that is where a drop actually
+happens — a full queue refuses a post, a full ring refuses an append — and it is
+the only copy the session's own bookkeeping reads. Each epoch's publish phase
+**mirrors** the current values into the class's `TableHeader` fields at offsets
+20 (`dropped`) and 24 (`delivered`), so the guest can see a per-class count
+without asking; `FrameState.droppedEvents` is the cross-class rollup. The arena
+copy is a *report*: a guest that writes it changes nothing the session believes,
+and the next publish overwrites it with the host's number.
+
+### 3.5 Deferred submission
+
+A `queue_*` verb called from inside a batch or event callback is legal: the
+session **copies** the record at that moment and appends it to the pending list,
+and the guest sees the submission take effect as of the next wait. Copying is
+the load-bearing detail — a deferred `(verb, guest_ptr)` pair would be re-read
+after arbitrary guest code had run — and it is also what makes the list safe
+across a trap (R7): the pending list survives a callback trap, is applied at
+the next wait, and each apply that fails becomes a `SUBMISSION_REJECTED`
+delivery. The list is bounded per callback; a `queue_*` that would exceed the
+bound returns `-ENOSPC` to the guest synchronously, inside the callback.
+
+`session_wait` and `session_drain` from inside a callback are refused with
+`-EBUSY`, as is any other verb that would re-enter the pump. Exempt accessors
+(the capability's read-only state verbs) run normally: they neither pump nor
+block.
+
+## 4. Model A — the memory model
+
+The session creates the `Memory` at store setup, **before**
+`linker.instantiate`, and the guest imports it. Sizes are not host-chosen
+numbers: the host mirrors the module's declared import type and caps it.
+
+- `initial_pages = declared_min_pages` (provide at least; never less)
+- `max_pages = min(declared_max_pages, host_cap_pages)`, or `host_cap_pages`
+  when the module declares no maximum.
+- `guest_initial_heap_slack` and `guest_max_heap` are **build-side** concepts —
+  they are already inside what `asc` declares — not host-side inputs.
+
+### 4.1 The four numbers and the consistency relation
+
+The design speaks of four numbers: `arena_size` (the live arena),
+`max_arena_size` (the reserved ceiling, and the guest's `--memoryBase`),
+`--memoryBase` (where the guest's emitted segments begin), and
+`--maximumMemory` (the guest's declared maximum). One identity and one
+relation tie them: `memoryBase == max_arena_size` and
+`arena_size ≤ max_arena_size`. Everything else is derived — page counts come
+from the module (§4 above), not from a tuning exercise.
+
+Four constraints are checked at `session_open`, in this order:
+
+- **C1** `arena_size ≤ max_arena_size`, both nonzero, both 16-byte aligned,
+  `arena_size ≥` the layout floor.
+- **C2** `max_arena_size ≤ declared_min_pages × 64 KiB − guest_footprint_floor`.
+  The witness is the *module's* declared minimum, which encodes the build's
+  `memoryBase` — not anything the guest says at runtime. This is the drift
+  detector, and it is why there is **no `memory_base` key in the TLV**: the
+  wasm binary is a better witness than a runtime claim.
+- **C3** import match: `declared.min ≤ provided.min` and
+  `provided.max ≤ declared.max`. Probe-confirmed in both directions (§13): a
+  provided memory with a smaller minimum, a larger maximum, or no maximum at
+  all is refused at instantiation. wasmtime's own message is generic
+  (``incompatible import type for `env::memory` ``), which is why the session
+  pre-checks and names the offending page counts itself.
+- **C4** layout fit: header page plus the aligned region sizes ≤ `arena_size`;
+  each region at its declared alignment; ring capacities ≥ 1 and each class's
+  sub-ring inside its slice of `EVENT_TABLE`; the `STRING` region ≥ 32 B plus
+  two usable halves.
+
+### 4.2 F1 — the import module name
+
+AssemblyScript 0.28.8 hardcodes the memory import module to `env`: the pinned
+toolchain's own option table describes `--importMemory` as *"Imports the memory
+from 'env.memory'."*, and the compiler emits
+`addMemoryImport(DefaultMemory, DefaultNamespace, Memory, …)` with
+`DefaultNamespace = "env"`. So `(import "session" "memory")` is not expressible
+in AssemblyScript without rewriting the emitted module.
+
+The session therefore defines **one** `Memory` under both `("env","memory")`
+(for AssemblyScript guests, unmodified) and `("session","memory")` (for
+hand-written WAT guests, non-AssemblyScript guests, and Tension's documented ABI
+name). A build-time rewrite of the import module name was rejected: the repo has
+the machinery (`src/dwarf/wasm.rs`, `src/leb.rs`) but it buys nothing semantic.
+The residue is documented rather than hidden — for an AssemblyScript guest the
+`session` spelling is aspirational, `env` is what actually appears in the
+binary, and both names resolve to the same object.
+
+### 4.3 F2 — `--noExportMemory` is forbidden
+
+`--importMemory` alone still *exports* memory as `"memory"`; only
+`--noExportMemory` suppresses it (`setExportMemory(T, !r.noExportMemory)`), and
+a module may re-export an imported memory. Because the existing services reach
+guest memory through `caller.get_export("memory")` — `main.rs`'s
+`guest_path`/`write_guest`/`read_as_string`/`print`/`read_line`/`arg`,
+`audio::read_pcm`, `ai`'s helpers, `solver::resolve_callbacks` — suppressing
+the export would break all of them, and the failure would surface as a panic
+inside `print`'s `expect("game must export a memory named 'memory'")`.
+
+Two measures: the build pipeline forbids `--noExportMemory`, and the session
+refuses at load a module that imports a memory but does not export one named
+`memory` (§11).
+
+## 5. The arena
+
+### 5.1 Header page and fixed offsets
+
+```
+0x000  ArenaControl          256 B   session-written
+0x100  SessionInfo           128 B   session-written
+0x180  reserved              128 B   zeroed
+0x200  RegionDesc[12]        288 B   session-written, kind == index
+0x320  manifest               72 B   session-written, read-only to the guest
+...    zero padding
+0x1000 regions, in kind order
+```
+
+**What `layoutHash` covers.** Not just each record's size and alignment: the
+**byte offset of every field a guest reads directly** is folded in too, by
+(field name, offset) pairs. A field *reorder* inside a record is now a hash
+change, which is the point — a guest compiled against one order would otherwise
+read another order's bytes and call it data. The records covered are
+`EventRecord`, `TableHeader`, `RegionDesc`, `ArenaControl`, `SessionInfo`,
+`Callbacks`, `StringHalf`, `Subscription` and `FrameState`. (The round that
+introduced this listed eight of those; `FrameState` joins them under the same
+principle, and its field offsets are defined in `arena.rs` with the rest.)
+
+**The shape did not move; the fingerprint widened.** No offset in the arena
+changed, so `FORMAT_VERSION` and `SCHEMA_VERSION` stay 1 — the sentence above
+about `schemaVersion` is about adding a *manifest entry*, which does move the
+bytes after it. The hash value did change, so a guest built before this round is
+refused at `session_open` with the field and both values named. That refusal is
+the intended effect, not a regression: there is no such guest yet — the SDK is
+A3 — and folding the fields in now is what makes the first compiled guest's hash
+mean what it says.
+
+The first 4 KiB is the header page. With twelve regions and nine manifest
+entries the header occupies about 900 bytes, leaving room for both tables to
+grow without moving a region. Each region starts at its declared alignment and
+its size is padded to 16 bytes.
+
+**The manifest holds the protocol types whose sizes this design fixes** —
+currently nine entries: `ArenaControl`, `SessionInfo`, `RegionDesc`, the
+manifest entry itself, the ring header (`TableHeader`), `StringHalf`,
+`Callbacks`, `Subscription` and `EventRecord`. The capability records — the
+OGRE catalogue's math types, staging records and job records — are **deferred
+until the version pin**, because their field sets are the thing this note
+deliberately leaves to the adapter; the manifest is extended then. Since the
+layout hash covers the catalogue, adding an entry is a schema change: it moves
+the hash, bumps `schemaVersion`, and requires the guest SDK to be regenerated
+from the same table.
+
+`ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
+`TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
+`flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
+`regionTableOff u32@28`, `manifestOff u32@32`, `manifestLen u32@36`, reserved to
+160, then the session-owned tail: `state u32@160`, `faultCode i32@164`,
+`faultDetail u32@168`, `sessionNonce u64@176`.
+
+`SessionInfo` (128 B) is not merely reserved — it publishes the session's
+constants so a guest can cross-check its build at startup: `magic u64`,
+`abiVersion u16`, `schemaVersion u16`, `flags u32`, `arenaSize`,
+`maxArenaSize`, `memoryBase`, `initialPages`, `maxPages`, `layoutHash`,
+`regionCount`, `classCount`, `classCapacity[10]`, `openNonce u64`, reserved.
+
+### 5.2 Region kinds — the twelve, frozen
+
+| kind | region | default size | writes |
+| --- | --- | --- | --- |
+| 0 | `CONTROL` | 256 B | session, once |
+| 1 | `SESSION_INFO` | 128 B | session, once |
+| 2 | `FRAME_STATE` | 4 KiB | session |
+| 3 | `JOB` | 48 KiB | session |
+| 4 | `RESOURCE` | 48 KiB | session |
+| 5 | `EVENT_TABLE` | 384 KiB | session |
+| 6 | `STRING` | 1 MiB + 32 B | both halves |
+| 7 | `RESOURCE_REQ` | 48 KiB | guest |
+| 8 | `SCENE` | 256 KiB | guest |
+| 9 | `MATERIAL` | 64 KiB | guest |
+| 10 | `RENDERABLE` | 128 KiB | guest |
+| 11 | `BUFFER_POOL` | 4 MiB | guest |
+
+Default reserved total: 4 KiB header page + 6100 KiB of regions ≈ 5.96 MiB,
+inside an 8 MiB `max_arena_size`.
+
+**Chunk 1's region table is fixed-layout.** A capability adapter cannot add,
+move, or resize a region; `region_lookup` returns `-ENOENT` for any kind
+outside the twelve. A future capability that needs its own region requires
+either a **schema bump** (a shape change: `layoutHash` and `schemaVersion`
+both move, and every capability recompiles) or a **dynamic region allocation
+mechanism** (an `allocate_region` verb and a directory, which forfeits the O(1)
+`kind == index` lookup and forfeits compile-time offsets for `region_lookup` at
+link time). Chunk 1 takes neither, deliberately.
+
+### 5.3 `RegionDesc` and the guest's O(1) lookup
+
+Entry, 24 B: `kind u32@0`, `flags u32@4`, `offset u32@8`, `size u32@12`,
+`align u32@16`, `reserved u32@20`. Direction bits in `flags`: `RD_GUEST_WRITES`
+(1), `RD_SESSION_WRITES` (2), `RD_WRITES_ONCE` (4), `RD_BYTES` (8).
+
+**Kind == index.** The session writes entries in ascending kind order at
+`0x200 + kind*24`, so the guest's lookup is arithmetic, not a search:
+`changetype<RegionDesc>(0x200 + kind * 24)`. The `kind` field is an assertion
+the SDK can verify once at startup. There is no `session_get_region` and no
+`session_request_region` verb.
+
+Every session verb entry re-reads `magic`, `layoutHash` and `regionCount` and
+(re)checksums the region table against the copy in `SessionInfo`, so a guest
+that writes into the header page produces `FAULTED` and `-EIO` rather than
+being followed into the weeds.
+
+### 5.4 Canaries — what they detect, and what they do not
+
+The reserved gap `[layout_end, memory_base)` is guarded by a sparse canary
+lattice: a 16-byte block every 4 KiB, carrying `(offset ^ magic)` and its
+complement, so a shifted write is not accidentally correct. A mismatch at any
+check means `FAULTED`, `faultState = FAULT_GUEST_OVERLAP`, a named
+`[tension:session]` diagnostic, and `-EIO`. The lattice **does not cover the
+always-arena range**: the session writes the header page itself and publishes
+into the region band later, so a lattice there would report the session's own
+work as corruption.
+
+The always-arena range `[0, layout_end)` is protected by two other mechanisms,
+and it is worth being precise about which case each one covers:
+
+- **The control-block triple** — `magic`, `layoutHash`, `regionCount`, re-read
+  at every verb and epoch entry — detects a guest that overwrites the arena's
+  own metadata, at any point in the session's life. It is the *runtime*
+  detector for the header page.
+- **The pre-`_start_game` full-band zero sweep** — the session zeroes the whole
+  band the module claims *before* instantiation, and verifies that
+  `[header_page, layout_end)` is still all zero after instantiation and before
+  the guest's first instruction. That is a *complete* test for the startup
+  case: a data segment landing anywhere in the region band leaves a nonzero
+  byte, and the zero baseline is what makes the negative check meaningful.
+
+So the startup case for the always-arena range is deterministic (the sweep) and
+its runtime case is sampled (the triple); the gap's startup *and* runtime case
+are the lattice, which samples rather than proves.
+
+Cost at the default ceiling: the gap is 2,138,080 bytes, so the lattice is 521
+blocks — 8,336 bytes of arena — with 521 comparisons at startup and sixteen
+loads per later entry. (The region band's sweep is cheaper *and* complete, which
+is why it, not a lattice, guards that range.)
+
+The honest limitation, which belongs in the header rather than in a footnote: a
+wild pointer that writes outside every canary block between two checks is not
+detected until it lands on one. Canaries make the common `memoryBase` drift and
+the common bump-pointer march loud and fast; they do not make overlap
+impossible. The hard guarantee is the build pipeline (§10), and the real fix —
+a second wasm memory for the arena, so isolation is structural — is blocked by
+the guest toolchain rather than by the runtime: wasmtime 24.0.13 enables the
+multi-memory proposal by default (probe-confirmed, §13), while AssemblyScript
+0.28.8 emits and addresses one linear memory.
+
+## 6. `session_open`
+
+### 6.1 The TLV
+
+Flat little-endian key/value stream with **`u32` keys**: the entry count as a
+`u32`, then per entry a `u32` key, a `u8` tag, and the payload. Every value is
+carried by tag 2 (an `i64`, little-endian) whose **upper four bytes must be
+zero**, so a value that does not fit a `u32` is refused rather than truncated.
+`abi_version` must be the **first entry in the byte stream** — the decoder
+enforces it before parsing anything else, which is what buys early refusal of a
+future-version guest.
+
+| key | value | semantics |
+| --- | --- | --- |
+| 1 | `abi_version` | must match; first entry |
+| 2 | `layout_hash` | compared to the session's; a mismatch refuses with the field and both values |
+| 3 | `arena_size` | live arena bytes; nonzero, 16-aligned, ≥ layout floor |
+| 4 | `max_arena_size` | reserved ceiling; also the guest's `--memoryBase` |
+| 5 | `callbacks_ptr` | guest-heap address of the `Callbacks` record; ≥ `max_arena_size`, 4-aligned |
+| 6 | `callbacks_len` | 64 (the manifest's `Callbacks` size), or **0** for "no record": then `callbacks_ptr` must be 0 too |
+| `0x0100 + class` | `ring_capacity_<class>` | optional, one per class 0-9; absent ⇒ the class default |
+
+**An absent callbacks record is legal.** `callbacks_len = 0` with
+`callbacks_ptr = 0` means the guest registers nothing at all — the limit case of
+§8's "every slot is optional", and the shape a guest that will poll
+(`session_drain`) or read the rings itself actually wants. A zero length with a
+non-zero pointer is refused, as is a non-zero length with a null pointer: a
+half-stated record is the writer and the reader disagreeing, and this boundary
+refuses a disagreement rather than guessing which half was meant.
+
+The whole `0x0100..=0x01FF` range is the ring namespace, so `ring_capacity_12`
+is a *named* refusal rather than an ignored key. An unknown key number outside
+that range is ignored (the argmap precedent), and a key that appears twice
+takes its last value.
+
+**What a hash mismatch can and cannot say.** The diagnostic names the field
+(`layout_hash`) and both values. It does **not** name the offending type: one
+shape hash cannot say which entry differs, and the config carries no manifest to
+diff against. Future work, not chunk 1: a `manifest` blob key — the guest's own
+`{typeId, size, align}` table, which its SDK computes from `offsetof` anyway —
+would let the session walk the two catalogues and name the first type that
+differs. Until then the honest message is the one above.
+
+**The decoder in `tension-core/src/session/config.rs` is authoritative for this
+format.** This table describes it; the module's tests pin it; and until the
+guest SDK's encoder exists (A3) there is no other writer to disagree with. Once
+it does, the repo's usual asymmetry applies — the SDK is the writer and the
+decoder is its strict reader, so the encoder is what changes if the two ever
+differ.
+
+### 6.2 Check order
+
+Fixed, so diagnostics are deterministic: `abi_version` → `layout_hash` →
+C1 → memory import match (C2/C3) → required regions (§7.2) → layout fit (C4) →
+ring capacities → callbacks resolution. The first failure is the one reported;
+later checks are not attempted. A second `session_open` with identical
+parameters returns 0; with different parameters it returns `-EBUSY`.
+
+C4's guarantee — the live arena holds everything the session and the loaded
+capabilities need — arrives in two parts, and the *specific* part is asked
+first. The required-region check can name the capability and the region —
+*the capability `echo` needs the JOB region, which ends at 57344 (0xE000), and
+arena_size is 4096 (0x1000)* — where the frozen-floor check can only name two
+numbers. Both refuse with `-EINVAL`, and every one of the frozen twelve ends at
+or below `LAYOUT_FLOOR`, so the reordering accepts nothing the floor would have
+refused — it only changes which message is printed, and only in the case where
+a loaded capability can say something better.
+
+### 6.3 The state machine
+
+```
+0 UNINIT   memory exists; structural arena written; nothing validated
+1 READY    session_open succeeded
+2 FAULTED  terminal until closed: callback trap, adapter fault, or arena tamper
+3 CLOSED   session_close completed
+4..7       reserved
+```
+
+Transitions: `UNINIT → READY` (valid open); `UNINIT → CLOSED` and
+`READY → CLOSED` and `FAULTED → CLOSED` (`session_close`, idempotent, returns
+0 from every state); `READY → FAULTED` (session-detected only); `CLOSED → READY`
+(a fresh open; the arena is rewritten); **`FAULTED → READY` is refused with
+`-EBUSY`** — close first.
+
+**Instantiation order, and `__start`.** The host does five things, in this
+order: `linker.instantiate`; `verify_post_instantiate` (the control block's
+triple, the region band's zeros, the gap's lattice); call the module's exported
+`__start` **if it has one**; open the session if the run asked the host to
+(`--session-open`, an A1 test convenience); call `_start_game` (or `_start`).
+`__start` is the toolchain's runtime initializer and the position is the point:
+it runs guest code, so it must run *after* the arena has been verified and
+*before* anything the game wrote. It is part of the host–guest contract, not an
+AssemblyScript detail: a hand-written `.wat` that exports no `__start` is
+unaffected, and a toolchain that would otherwise emit a `start` section should
+offer the same door rather than a section the host refuses.
+
+**Every verb except `session_open` and `session_close` returns `-EBADF` when
+state ≠ READY.** A verb that detects a fault during its own entry returns
+`-EIO` *and* moves the machine to `FAULTED`. The arena's `state` field is the
+report; the authoritative machine is host-side, never in guest-writable memory.
+
+## 7. Adapter protocol
+
+### 7.1 The vtable
+
+`init`, `link`, `publish`, `apply`, `shutdown`, `destroy`, with `abi_version`,
+`name` and `flags`. `publish` and `apply` may be NULL ("nothing to do"); a
+`publish` that is NULL means the adapter has no host → guest regions of its
+own. `init` may block (device/window creation) but must not enter a loop.
+`link` is pure registration with no I/O. `shutdown` is idempotent and joins any
+background thread **on that thread's own terms** — the render thread tears
+down its OGRE objects before exiting, because OGRE's render systems are not
+thread-safe. `destroy` frees the adapter's storage.
+
+### 7.2 What an adapter registers and calls
+
+At `link`: `register_source`, `register_import` (module, name, return type,
+parameter types, arity, function pointer, context, verb id, flags), and its
+**required region kinds**. `TENSION_IMPORT_DEFERRABLE` marks a verb that may be
+called from inside a callback (the `queue_*` verbs); the session copies the
+record and applies it later. `TENSION_IMPORT_REENTRANT_READONLY` marks an
+exempt accessor — this bit is how the session learns which of a capability's
+verbs may run inside a callback, which the earlier rounds required but never
+specified. `region_lookup(kind, &offset, &size)` is called at `link` time, which
+is safe **only because region offsets are compile-time constants** (§5.2): it
+consults the session's authoritative host-side table, works before the arena
+exists, and the adapter caches the offsets and uses them in `publish`.
+
+`post_event` is the only core function an adapter may call from a non-guest
+thread. It never touches guest memory, never blocks, and returns `-ENOSPC` when
+a class queue is full so a producer that can throttle will.
+
+**The publish budget, and what `-ENOSPC` means there.** A `publish` hook draws
+on a per-adapter, per-epoch byte budget (1 MiB in chunk 1, enforced by the
+session's `guest_write`). `-ENOSPC` from `guest_write` *during publish* means
+"this epoch is over budget": the adapter should stop writing and let the next
+epoch's publish finish the work, not retry in a loop. Hitting it leaves regions
+partly written, which is the honest signal that the hook is doing more in one
+epoch than the session will pay for — the budget is a backstop, not a target,
+and the session logs every exceedance with the adapter's name.
+
+If a `session_open` `arena_size` would leave a required region absent, the open
+is refused with `-EINVAL` naming the region and the adapter. Without that check
+a smaller arena could silently truncate a region whose offset an adapter had
+already cached at link time.
+
+**How a region is declared, and what the check refuses.** There is no separate
+declaration call: *asking* `region_lookup` about a kind during `link` **is** the
+declaration. The registry records every kind asked about, per adapter, and the
+set travels with the loaded adapter; `session_open` checks each entry against
+the arena the config declares, and refuses in two cases — a kind this layout
+does not define (the adapter was told `-ENOENT` at link time and has no offset
+to write to), and a region whose end lies past `arena_size`. The check runs
+before C4 (§6.2) so a truncation that a loaded capability can explain is
+described in the capability's terms. With no adapters loaded the set is empty
+and the check is a no-op, which is the state every A1 test but the loading ones
+runs in.
+
+**The log channel's prefix names the module.** The `log` slot writes one stderr
+line on `[tension:session]` because it is the *session* that implements the
+slot — the prefix identifies the service, not the caller. An adapter's messages
+are its own to identify, and the reference adapter does (`echo: init`, then
+`echo: two imports registered`); a v2 additive field for a structured source id
+is listed in §12's future work.
+
+### 7.3 What an adapter must not do
+
+Never call the guest — not from the render thread, not from any thread. Never
+touch guest memory outside `publish`, `apply`, or an import call, and never hold
+a memory view across anything. Never write a guest → host region, or a region it
+did not declare. Never block in `publish`. Never interpret another capability's
+records. Never register an import in the reserved `session` module. Never
+require a symbol from the host executable — every service arrives through the
+core API table, which is what makes `dlopen` safe with no `-rdynamic`. Never
+assume it is the only event source.
+
+## 8. Callbacks and the trap policy
+
+`Callbacks` is 64 bytes: `abiVersion u16@0`, `slotCount u16@2` (2 in chunk 1;
+a larger value is refused), `flags u32@4`, `onBatch u32@8`, `onEvent u32@12`,
+reserved `u32[12]@16`. Both slots are optional (`0` = absent), hold indices into
+the guest's exported function table, are resolved once at `session_open`, and
+are refused eagerly with `-EINVAL` on a missing, out-of-range, null, or
+mis-shaped entry. `onBatch(class, table_ptr, count) -> i32` and
+`onEvent(class, ptr) -> i32`, both `i32` at the wasm boundary.
+
+The record itself is optional too (§6.1): `callbacks_len = 0` with
+`callbacks_ptr = 0` is a guest that registers nothing, and the session resolves
+it to the same empty `ResolvedCallbacks` a zeroed record does — no table,
+no exemption list, no delivery.
+
+A negative return is advisory (logged, batch still consumed). A **trap**
+disables that slot permanently for the session's lifetime, publishes `FAULTED`
+with `faultCode = -EIO`, `faultState = FAULT_CALLBACK_TRAP`,
+`lastError = <slot index>`, abandons the batch (remaining deliveries stay
+queued), and makes the entry point that pumped return `-EIO` even if the verb
+itself succeeded — the verb's own result is already published in the arena and
+remains valid. Later epochs skip the disabled slot and deliver the others.
+
+**Two cases that used to be conflated.** (a) The verb that *discovers* a
+callback trap returns `-EIO`: the operation the guest was attempting hit a
+trapping callback, and that is the errno for "the callback failed". (b) Every
+*subsequent* verb returns `-EBADF`: the session is FAULTED, and FAULTED is not a
+state any operation runs in (§6.3) — a guest that wants to use the session
+again closes it and opens a new one. The "-EIO until `session_close`" sentence
+below belongs to **fatal adapter faults only**, which are a different class:
+there the session is still coherent and still has work to refuse. A callback
+trap is a guest-side bug; a fatal fault is the adapter's.
+
+**A trap does not clear the pending queue.** R7 (§3.5): deferred submissions
+were copied before the callback ran, so they are the session's, not the
+callback's, and they are applied at the guest's next epoch — after the
+close/re-open cycle (b) requires, since FAULTED refuses the wait that would
+otherwise do it immediately.
+
+A *fatal* adapter fault (device lost, OOM, render-thread death) is not a
+callback trap: the session publishes `FAULTED` with the reason, sweeps every
+in-flight job to `FAILED` with `-EIO` in the same publish phase, delivers the
+fault and job callbacks once, and thereafter refuses non-exempt verbs with
+`-EIO` until `session_close`.
+
+## 9. The seven verbs
+
+```
+session_open(cfg_ptr, cfg_len)  -> i32
+session_close()                 -> i32
+session_wait(timeout_ms)        -> i32   > 0 deliveries, 0 clean timeout
+session_drain(class)            -> i32
+session_subscribe(sub_ptr)      -> i32
+session_unsubscribe(class)      -> i32
+session_pending()               -> i32   deferred submissions outstanding
+```
+
+`session_subscribe` takes a transient 16-byte `Subscription` record
+(`class u32@0`, `mode u32@4`, `flags u32@8`, `reserved u32@12`) that may live
+anywhere in guest memory, not only in the arena. A `Subscription` carries no
+capacity: ring geometry is fixed at `session_open`, and subscription changes
+delivery mode only. `session_wait` uses a larger drain cap than a verb's
+pre-pump; a cap that is hit leaves the rest published in the rings for the next
+epoch.
+
+## 10. Build pipeline
+
+One source of truth per project (`session.json`), from which a small
+repo-provided generator emits both the `asc` flags and a generated
+`build/session.config.ts` holding the arena constants the guest sends in the
+TLV. Values cannot drift because they are derived, and the generator fails the
+build (non-zero, nothing emitted, the offending number named) when a request
+violates the relation.
+
+Flag rules: `--importMemory`, `--memoryBase = max_arena_size`, page counts for
+`--initialMemory` / `--maximumMemory`, `--exportTable`, `--runtime stub`, and
+**`--exportStart __start`** — the last one learned by building. AssemblyScript
+0.28 emits a `start` *section* by default, and the load-time check refuses a
+module that has one, because a start section runs guest code at instantiation,
+before the session has verified the arena. `--exportStart` makes the runtime's
+initializer an export instead, and the host calls it at the safe point: see
+§6.3, where that is now part of the instantiation contract rather than an
+AssemblyScript workaround.
+**`--noExportMemory` is forbidden** (F2). `--lowMemoryLimit` is forbidden (it
+errors above its limit, and a multi-MiB base always would).
+**`--zeroFilledMemory` stays unset in chunk 1.** Its safety condition is the
+invariant "the session never writes above `memoryBase`", which `zero_band` and
+`verify_post_instantiate` enforce — the band the session zeroes is
+`[0, min(declared pages, memory_base))`, and the lattice covers the gap above
+it — but no test states the invariant in those words, and a flag whose
+precondition is unnamed is a flag waiting to be wrong. When
+`test_session_writes_nothing_above_memory_base` exists (§12), opting in becomes
+a one-word change to the generated asconfig.
+
+## 11. Error surface: a wrong `memoryBase`
+
+Three cases, and only one of them is inherently silent.
+
+- **The generated constants and the flags disagree** (a hand edit). Impossible
+  when both are generated; caught anyway by the guest's own startup assertion
+  against `SessionInfo.maxArenaSize`.
+- **The guest's build used a smaller `memoryBase` than the session's
+  `max_arena_size`.** Caught at `session_open` by C2, because the module's
+  declared minimum pages encode the build's `memoryBase`. `-EINVAL` with a
+  named diagnostic.
+- **A hand-built module that overlaps anyway.** This is the silent case, and it
+  gets the canaries (§5.4) plus the sequencing below.
+
+Load time, before instantiation, three checks that read only the module: a
+module importing `session::*` without a memory import is refused; a module
+importing a memory without exporting one named `memory` is refused (F2); a
+module with a wasm `start` section is refused, because a start section runs
+guest code during instantiation, before the session can validate the arena.
+All three are `anyhow::bail!`, the precedent being `main.rs`'s
+`"game.wasm did not export \`_start_game\` or \`_start\`"`.
+
+**These three are step 12's wiring and are not implemented yet.** The middle one
+is the urgent one: a module that imports the arena memory without re-exporting it
+named `memory` leaves every existing service's lookup —
+`caller.get_export("memory").expect(...)` in `tension::io`, `tension::audio`,
+`tension::ai` and `tension::solver` — panicking, so the run must be refused with a
+`bail!` naming the fix (`do not build with --noExportMemory`) rather than dying
+inside `print`. Until that wiring lands, the build pipeline's ban on
+`--noExportMemory` (§4.3) is the only thing keeping the case out of a session
+build.
+
+Three more refusals belong to the same moment but are the session's rather than
+the loader's, and they come back as a named `SessionError`: a memory import
+under a name the session does not define; a module declaring two memories; and
+a *shared* memory import. **The shared-memory refusal is implemented but
+untested** — constructing a valid shared-memory module needs the threads
+feature enabled, and nothing in this chunk depends on the answer, because the
+arena is not shared (the guest is single-stack and adapter threads never touch
+guest memory). It exists to keep the boundary honest rather than to serve a
+case, and it will be pinned when threads become relevant.
+
+The canary sequencing, which corrects an earlier round's claim: the moment
+"after AS's `_start` and before guest code" does not exist, because
+`session_open` is called *from* `_start_game`. The real sequence is —
+
+1. **Before instantiation.** Create the memory from the module's declared
+   import type, define it under both names, then **zero the entire band the
+   module claims** (`[0, declared_min_pages × 64 KiB)`), and only then write
+   the header page's structures — control block, `SessionInfo` skeleton, region
+   table, manifest — and lay the canary lattice over the reserved gap. The
+   order is load-bearing: zeroing after the writes would erase them, and the
+   zero baseline is what makes step 2's negative check meaningful.
+2. **After `linker.instantiate`, before `_start_game`.** Three checks, cheapest
+   first: the control-block triple (magic, layout hash, region count); that the
+   region band `[header_page, layout_end)` is **still all zero** — a *complete*
+   test for a data segment landing inside the live arena, because nothing else
+   writes there before the guest runs; and the gap's lattice, which names the
+   block that was overwritten if a rogue segment landed in the gap rather than
+   in the band.
+3. **`session_open` entry.** Re-verify the triple and resample the lattice;
+   then write the real `SessionInfo` and the ring headers, bind callbacks, and
+   set `READY`. (The gap holds a lattice from step 1 onward, so the gap's
+   startup check is step 2's lattice verification rather than a zero sweep;
+   §5.4 says which mechanism covers which case.)
+4. **Every later verb and epoch entry.** Rotating lattice sample plus the
+   control-block triple.
+
+## 12. What chunk 1 does not deliver
+
+No OGRE-Next code of any kind: no C++ wrapper, no shader compilation, no HLMS
+integration, no render thread. No AssemblyScript beyond the SDK skeleton. No
+dynamic region allocation. No `RING` delivery mode (reserved, stubbed). No
+second wasm memory. No multi-guest support: the session, like the rest of
+`tension-core`, assumes one guest per process. And no OGRE version pin — the
+renderer and headless choice are config keys, and the pin is a build-time
+concern that the wire format does not depend on.
+
+### Future work
+
+Recorded here so the seams are named rather than rediscovered. None of these is
+chunk 1 work, and each is additive:
+
+- **`SUBMISSION_REJECTED` is class 3, not the last class.** The round that
+  introduced deferred submission numbered it last (`9`); the urgent-first
+  ordering that same round adopted puts it at `3` (§3.2), and the frozen
+  catalogue — not the prose in that round's brief — is what the code uses.
+  Recorded here because the two disagree and the code is right.
+- **`class_info`'s flags byte gets named constants at v2.** Today it carries one
+  bit, `CLASS_FLAG_SUBSCRIBED`, defined host-side in `arena.rs` because the
+  frozen header documents the parameter ("so a producer can skip generating
+  events nobody subscribed to") but names no constant for it. A v2 header would
+  name that bit and the ones that follow; a producer that reads the byte today
+  sees one documented bit and must ignore the rest.
+- **R7's fault recovery needs an SDK-side helper, and now has one.** The raw
+  contract is correct but user-hostile: after a callback trap the session is
+  FAULTED, every verb refuses with `-EBADF`, and the guest must close and open
+  again before anything works — including the epoch that would apply the
+  submissions it deferred (R7). Nothing is lost by doing that, but a game author
+  should not have to know it. `tension-framework/assembly/runtime/index.ts`
+  exports `Session.recover(cfg, callbacks)`, which is close-then-open with the
+  config the caller already has, plus `isFaulted()`; the docstring there states
+  what survives (the pending queue, the disabled slot). A2's `--session-open`
+  note below is the same shape of problem, solved the same way.
+- **`test_session_writes_nothing_above_memory_base`, and then
+  `--zeroFilledMemory`.** The invariant is enforced from both ends today —
+  `Session::prepare_arena` zeroes only up to `memory_base`, and
+  `verify_post_instantiate` requires the band below it to still be zero and the
+  gap's lattice to be intact — but a *test* that says "the session writes
+  nothing above `memoryBase`" is what would let a build opt into
+  `--zeroFilledMemory` (a faster startup for multi-MiB memories) without
+  trusting a comment. Chunk 2 work, not chunk 1.
+- **The framework's layout-hash cross-check reads `layout.ts`.** Not a separate
+  stamp file: the file the Rust test parses is the file `asc` compiles, so the
+  check cannot pass while the guest is built against something else, and there
+  is no generated artifact to go stale. Its second leg compares the same value
+  against `session.json`, so all three copies — guest, manifest, host — are
+  tied together in one test that runs in `cargo test`.
+- **`--session-open` goes away when the SDK lands.** It is A1's convenience and
+  nothing else: A1 has no guest SDK, so the smoke fixture cannot send the config
+  TLV a real guest sends, and the host performs the open instead. A real guest
+  calls `session_open` itself — that is the design — so the flag is removed as
+  soon as a guest can, and the fixture goes back to opening its own session.
+
+- **A log source identifier (v2, additive).** The `log` slot carries a level, a
+  pointer and a length (§7.2); which capability is speaking has to be spelled
+  into the message. An added field (`source_id`, the id `register_source`
+  already returns) would let an operator filter without parsing text.
+- **An `adapter_ctx` slot in the vtable — required, not a nicety, for
+  concurrent adapters in one process.** The frozen header has no context
+  accessor, so the core calls every slot with `ctx == NULL` and an adapter keeps
+  its state in file-scope statics. `dlopen` on the same path twice hands back the
+  same image, so two instances of one adapter share those statics — **measured**,
+  not theorised: A2c's epoch tests loaded the reference adapter from two
+  harnesses at once, and one test's `g_core` was overwritten by the other's,
+  which segfaulted on a caller belonging to a different store. The tests work
+  around it by loading a private copy of the `.so` per harness; the fix is a
+  `void *(*context)(void)` slot, or a per-instance handle threaded through
+  `init`, and until it exists one process is one instance per adapter.
+- **A `manifest` blob key in the config.** Today `layout_hash` can only say
+  *that* the guest and the session disagree (§6.1). A guest-supplied
+  `{typeId, size, align}` table would let the session name the first type that
+  differs. It is also the mechanism a second protocol type catalogue would need
+  when capability records join the manifest (§5.1).
+- **Dynamic region allocation.** Chunk 1's region table is fixed-layout (§5.2);
+  a capability with its own regions needs either a schema bump or an allocator,
+  and the required-regions check (§7.2) is the seam it would attach to.
+
+## 13. Verified and unverified
+
+The two probe-first questions were answered against `wasmtime = 24.0.13` and
+the pinned AssemblyScript toolchain, as unit tests in
+`tension-core/src/session/mod.rs` (a stub that A1 replaces; the two tests stay
+as regression tests):
+
+```
+cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+    --bin tension-core probes -- --nocapture
+```
+
+**F1 — one memory, two import names: confirmed.** A single `Memory` handle
+defined on one linker as both `env::memory` and `session::memory` serves guests
+importing either spelling, and each guest observes the other's writes through
+it — the two names resolve to one object. The stronger form was confirmed too:
+a single module importing *both* names parses and instantiates under the
+default configuration, and a write through the implicit memory is visible
+through the second one. **Multi-memory is enabled by default in
+wasmtime 24.0.13**, so no configuration is needed; the
+`Config::wasm_multi_memory(true)` variant is equivalent here. No workaround was
+required, and §4.2's dual definition stands as the shipped mechanism.
+
+**F3 — the declared import type: confirmed.** The accessor chain is
+`Module::imports()`, yielding `ImportType`, with `.module()` / `.name()` for the
+pair and `.ty()` returning `ExternType`; a memory import matches
+`ExternType::Memory(MemoryType)`, whose `.minimum() -> u64` and
+`.maximum() -> Option<u64>` give the declared page counts (`.is_shared()` gives
+the sharing flag). A module declaring `(memory 4 256)` reads back as
+`min=4, max=Some(256), shared=false`.
+
+**The matching direction, confirmed both ways.** Against a declared
+`(4, 256)`: provided `(4, 256)` matches; `(8, 128)` matches (more initial
+memory, smaller maximum); `(2, 256)` is refused; `(4, 512)` is refused; and an
+unbounded provider `(4, None)` is refused. That is exactly C3 (§4.1), and it
+means the session's mirror-the-declared-type policy always satisfies it. All
+three refusals carry wasmtime's single generic message,
+``incompatible import type for `env::memory` `` — which is the reason the
+session pre-checks and reports the offending page counts itself.
+
+Still unverified, and honest about it:
+
+- The canary lattice's coverage *between* checks (§5.4) is a matter of degree
+  rather than a yes/no, and `--zeroFilledMemory`'s precondition (the session
+  never writes above `memoryBase`) belongs in a test rather than a comment.
+### The smoke fixture's boundary case
+
+`tests/fixtures/session_guest.wat` declares `(memory 128 512)` — exactly the
+default `max_arena_size`. Its `memoryBase` therefore lands on the memory's end,
+and the module owns no byte of its own. That is deliberate: it is the boundary
+case of §4.1's relation (declared size == ceiling) and the smallest memory the
+design can be asked to work in, so a fixture that runs there has exercised the
+tightest configuration a guest can have.
+
+The cost is that the fixture's two scratch buffers (`0x9000`, `0x9010`) sit
+inside the region band, because there is nowhere else for them. Nothing in
+chunk 1 refuses that — region *direction* is a table entry today, not an
+enforcement — but it is **not** a pattern to copy: a real guest declares
+`memoryBase` plus a heap and keeps its own bytes above the boundary, which is
+what the flag being a flag (rather than the run path) leaves room for.
+
+- The `asc` half of §4.1. The memory flags and their descriptions were read
+  from the pinned toolchain's own option table (`--importMemory` — *"Imports
+  the memory from 'env.memory'."*, `--memoryBase`, `--initialMemory`,
+  `--maximumMemory`, `--noExportMemory`, `--zeroFilledMemory`,
+  `--lowMemoryLimit`), but the compiler's initial-memory computation was not
+  read end to end, so "the module's declared minimum already encodes
+  `memoryBase`" is a design commitment rather than a measured fact. The first
+  build of a session guest measures it.
+
+---
+
+# Appendix A — tension_adapter.h specification
+
+The content specification for `tension-core/include/tension_adapter.h`. Prose
+per section; whoever writes the header has every field, constant and rule here.
+
+## A.0 File form
+
+Guard `TENSION_ADAPTER_H`; `#include <stddef.h>` and `<stdint.h>`;
+`extern "C"` wrapper; SPDX MIT line; the repo's banner style (purpose, who
+includes it, what it is *not*). One sentence of orientation: this header is the
+C ABI between `tension-core` (the session) and a capability adapter loaded as a
+shared object, and it defines no capability's wasm surface.
+
+## A.1 The rules block
+
+Twelve numbered prose rules, in the repo's convention style:
+
+1. Every entry point is panic-free; any failure comes back as a negative POSIX
+   errno; 0 means success for calls that report a status.
+2. Ids and handles are 1-based; 0 is never valid.
+3. All integers are fixed-width; all lengths are bytes; no `size_t` at this
+   boundary (the repo is inconsistent here — `tension_res.h` uses `size_t`,
+   `tension_solver.h` uses `uint32_t`; the new header takes `uint32_t` and says
+   so).
+4. The session calls `init`, `link`, `publish`, `apply`, `shutdown`, `destroy`
+   on the interpreter thread. `publish` and `apply` run only while the guest is
+   inside a `session::*` call.
+5. Adapters never call the guest, from any thread, ever. Callback invocation is
+   the session's, exposed only through `call_callback`, which is
+   guest-thread-only.
+6. Guest memory is reached only through `guest_read` / `guest_write` /
+   `guest_size`, and only from the guest thread inside a guest-initiated call.
+   Called outside that window they return `-EBUSY`; they never fault and never
+   block. Adapters never cache a pointer and never hold a slice across a call.
+7. `post_event` is the only function here that may be called from a non-guest
+   thread. It never touches guest memory and never blocks.
+8. An adapter must not require any symbol from the host executable; every
+   service arrives through `tension_core_api`.
+9. The wasm module name `session` is reserved to `tension-core`; an adapter
+   that registers an import there is refused at load.
+10. Adapters must not assume another adapter is loaded, must not read or
+    interpret another capability's records or ids, and must not assume they are
+    the only event source.
+11. `tension_core_api` and `tension_adapter` are append-only within an ABI
+    version; changing the meaning of an existing field requires a new
+    entry-point symbol.
+12. Deferred submissions are **copied** by the session before they are queued;
+    an adapter's `apply` receives bytes, never a guest address.
+
+## A.2 Constants
+
+`TENSION_ADAPTER_ABI_VERSION` = 1. `TENSION_ADAPTER_MAX_PARAMS` = 8 (a
+registered import takes at most eight scalar parameters).
+`TENSION_ADAPTER_MAX_IMPORTS` = 64 per adapter. `TENSION_ADAPTER_MAX_SOURCES`
+= 8 event sources per adapter. The twelve session region-kind constants
+(A.9), so no adapter hardcodes a magic number.
+
+## A.3 Value types and import shape
+
+`tension_value_type` enum: `TENSION_VT_VOID` = 0, `TENSION_VT_I32`,
+`TENSION_VT_I64`, `TENSION_VT_F32`, `TENSION_VT_F64` — a closed set; no v128,
+no funcref, documented as closed. `tension_value` union of `int32_t`,
+`int64_t`, `float`, `double`. The import function pointer type takes an opaque
+`void *ctx`, `const tension_value *args`, `uint32_t nargs`, and
+`tension_value *ret`, returning `int32_t` status. Two import flag bits:
+`TENSION_IMPORT_DEFERRABLE` (1) and `TENSION_IMPORT_REENTRANT_READONLY` (2),
+with the prose from §7.2 about what each obliges and permits.
+
+## A.4 The core API struct
+
+Every field, in declaration order, with signature, thread rule, return, and
+semantics:
+
+- `abi_version` (`uint32_t`) — filled by the session; the adapter checks it in
+  `init` and refuses on mismatch.
+- `user` (`void *`) — opaque session context, stable for the adapter's
+  lifetime. It is **not** a per-call pointer: validity of memory access is a
+  function of thread and phase, not of this handle.
+- `guest_read(user, ptr, dst, len)` → `int32_t` — copies out of the session's
+  memory; guest-thread only; `-EBUSY` outside a call, `-EINVAL` on a null
+  destination or an out-of-range span. Never partially copies without
+  reporting.
+- `guest_write(user, ptr, src, len)` → `int32_t` — the mirror; the only write
+  path an adapter has.
+- `guest_size(user)` → `uint32_t` — the memory's current size in bytes, for
+  bounds checking; safe outside a call.
+- `resolve_callback(user, table_index, ret_type, param_types, nparams, out_fn)`
+  → `int32_t` — resolves once against the guest's exported table and pins the
+  signature; `-EINVAL` for a missing export, out-of-range index, null entry, or
+  mis-shaped function; `-ENOSPC` if the budget is exhausted.
+- `call_callback(user, fn, args, nargs, ret)` → `int32_t` — guest-thread only,
+  inside `publish` or `apply`; `-EBUSY` elsewhere. A trap is reported as
+  `-EIO`, with the slot already disabled and the fault already published.
+- `release_callback(user, fn)` → `int32_t` — idempotent; the session owns the
+  storage.
+- `log(user, level, msg, len)` → `void` — one stderr line prefixed
+  `[tension:session]`; never blocks, never fails; any thread.
+- `register_import(user, module, name, ret_type, param_types, nparams, fn,
+  ctx, verb_id, flags)` → `int32_t` — valid only during `link`. Refuses an
+  unknown value type, more than eight parameters, a duplicate `(module, name)`,
+  a name in the reserved `session` module, a duplicate `verb_id` within the
+  adapter, or a registration after `link` returned.
+- `register_source(user, name, hint, out_source_id)` → `int32_t` — valid only
+  during `link`; one per adapter.
+- `post_event(user, source_id, class_id, flags, a, b, f0, f1, out_seq)` →
+  `int32_t` — any thread. The session builds the record; the adapter posts
+  fields. `out_seq` may be NULL. `-ENOSPC` when the class queue is full (a
+  hint, not a status update), `-EINVAL` for an unknown class or source.
+- `class_info(user, class_id, out_mode, out_capacity, out_flags)` → `int32_t`
+  — lets a producer skip generating events nobody subscribes to; `-ENOENT` for
+  an unknown class; any thread.
+- `region_lookup(user, kind, out_offset, out_size)` → `int32_t` — host-side
+  lookup in the frozen layout; no guest access; valid **before**
+  `session_open`; `-ENOENT` for a kind not in chunk 1's twelve. The prose says:
+  cache at `link`, use in `publish`, offsets are stable for the session's
+  lifetime, and individual region sizes are not configurable in chunk 1.
+
+## A.5 The adapter vtable
+
+`abi_version`, `name` (the capability's wasm module name, NUL-terminated
+ASCII), `flags`, then: `init(ctx, core)` — checks the ABI version, may block
+bounded, no guest memory; `link(ctx, core)` — pure registration, declares
+imports and required region kinds, no I/O; `publish(ctx, core)` — once per
+epoch, guest thread, bounded work, no blocking, no callback invocation, NULL
+means "nothing to publish"; `apply(ctx, verb_id, record, len)` — deferred
+submission from copied bytes, depth reset to 0, a non-zero return becomes a
+`SUBMISSION_REJECTED` delivery, NULL means no deferrable verbs and is refused if
+any import was registered deferrable; `shutdown(ctx)` — idempotent, joins
+background threads, no guest memory; `destroy(ctx)` — frees the adapter's
+storage, once, after `shutdown`.
+
+## A.6 The entry point
+
+One symbol, `const tension_adapter *tension_adapter_v1(void)`, the only name
+the session looks up. The version is in the symbol name so a future
+`tension_adapter_v2` can coexist in one object, and a missing symbol is a named
+load failure rather than a crash.
+
+## A.7 Error codes at this boundary
+
+A small declared table: 0 success; `-EINVAL` malformed argument or unsupported
+shape; `-ENOENT` unknown region kind or class; `-EBUSY` wrong thread or phase,
+or a re-entrant call refused; `-EIO` guest callback trapped or fatal adapter
+fault; `-ENOSPC` queue full or callback budget exhausted; `-EBADF` session not
+READY; `-ENOMEM` allocation failure; `-ENOSYS` a required slot was left NULL.
+
+## A.8 "An adapter must not"
+
+The numbered list from §7.3, verbatim, as the header's closing contract.
+
+## A.9 The twelve region kinds
+
+Values, names, direction, owner, and default sizes (documentation only — sizes
+are constants elsewhere; the header documents them so an adapter author can
+reason about capacity). Plus the explicit statement from §5.2: chunk 1's region
+table is fixed-layout, `kind == index`, and an addition requires a schema bump
+or a dynamic-allocation mechanism that chunk 1 does not have.
+
+## A.10 Closing note
+
+This header is frozen at `abi_version` 1; additive fields are appended; the
+version check in `init` is mandatory rather than advisory.
+
+---
+
+# Appendix B — A1 execution sequence
+
+Ordered by dependency: probes gate the contract, the contract gates
+everything, pure code precedes FFI, FFI precedes wiring, wiring precedes
+end-to-end assertions. Thirteen steps over the eleven files.
+
+1. **Run both probes as unit tests** in a stub `src/session/mod.rs`. Nothing
+   else is written until they answer, because both can change the header's
+   prose (F1, §4.2) and the memory-creation path (F3, §4.1). If the second
+   probe fails, the fallback is chosen *here*, before the header text is fixed.
+2. **`include/tension_adapter.h`** — per Appendix A. The first real artifact;
+   every Rust file, the C fixture, and the loader compile or link against it.
+3. **`src/session/arena.rs`** — the twelve kinds, offsets, default sizes,
+   `layout_hash`, the control-block / `SessionInfo` / `RegionDesc` / manifest
+   writers, and the zeroing and canary helpers as pure functions over a byte
+   buffer. No store, no wasmtime; unit-testable, and its tests pin the offsets
+   that Rust, C and the wat fixtures all assume.
+4. **`src/session/config.rs`** — the TLV key table, the first-key rule, the
+   strict decoder, the fixed check order (C1–C4), and the required-region
+   truncation check. Mirrors `solver/config.rs`; depends only on step 3.
+5. **`src/session/mod.rs`** (real) — memory creation from the declared import
+   type, the dual `env`/`session` definition, the pre-instantiation structural
+   write and zeroing, the post-instantiation verification hook,
+   `session_open` / `session_close`, the state machine, and the permanent home
+   for the first probe as a regression test. Depends on 2, 3, 4.
+6. **`src/adapter/signatures.rs`** — the closed value-type set, arity and type
+   validation, the argument-packing rule, and the import table's bounds. Pure
+   Rust, no wasmtime: the cheapest file in the set and independent of
+   everything except the header's enum values.
+7. **`src/adapter/ffi.rs`** — the `#[repr(C)]` mirrors of A.3–A.5,
+   `dlopen`/`dlsym`/`dlclose`, the version check, and the closure factory that
+   turns a registered `tension_import_fn` into a linker import. Depends on 2
+   and 6.
+8. **`src/adapter/mod.rs`** — the registry: load by path, resolve
+   `tension_adapter_v1`, drive `init`/`link`, refuse duplicate imports and
+   reserved-`session` registrations, collect declared required regions, and
+   expose one `link_adapters` call. Depends on 5, 6, 7.
+9. **`tests/support/echo_adapter.c`** — the reference adapter: one arithmetic
+   import, one that round-trips bytes through `guest_write`/`guest_read`, one
+   `log` line, `publish` and `apply` left NULL, and `region_lookup` called in
+   `link` to prove the pre-open query works. Compiles against the header alone,
+   with no host symbols. May be written in parallel with 3–8.
+10. **`build.rs`** — compile the echo adapter into `OUT_DIR`, plus a second
+    build of the same source with `-DECHO_BAD_ABI_VERSION` into a second `.so`
+    (this is how the version-refusal path is proven without adding a twelfth
+    file), and export both paths via `cargo:rustc-env`. Depends on 9.
+11. **`tests/fixtures/session_guest.wat`** and
+    **`tests/fixtures/bad_memory_guest.wat`** — the first imports
+    `("session","memory")`, re-exports it as `"memory"`, exports
+    `_start_game`, calls `session_open`, reads `ArenaControl.magic` at offset 0
+    and asserts `SessionInfo.maxArenaSize`, calls the echo imports, prints. The
+    second declares a memory type that cannot match the provided one. Their
+    constants come from step 3.
+12. **`src/main.rs`** — the wiring and the three load-time checks (§11), memory
+    creation before `linker.instantiate`, `session::link_session`,
+    `adapter::link_adapters`, the post-instantiation structural verification,
+    and only then `_start_game`. Depends on everything above.
+13. **`tests/session_smoke.rs`** — the end-to-end assertions: happy path;
+    `-EBADF` from every verb before `session_open`; missing-memory-import
+    refusal; missing-memory-export refusal; `bad_memory_guest` refused with the
+    C3 diagnostic; bad-ABI-version adapter refused at load; duplicate-import
+    adapter refused. Last, because it exercises all of the above.
+
+**A1 is complete when** `cargo test` for `tension-core` is green including step
+13, the probes are permanent regression tests rather than scratch, no
+AssemblyScript has been compiled, no line of OGRE exists in the tree, and the
+memory relation has been exercised in both the matching and mismatching
+directions at least once.
