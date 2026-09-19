@@ -1,0 +1,23 @@
+# The canonical authored form of the scene examples/world/game.ts embeds.
+# This file is not build input: a guest cannot read files, so the guest
+# carries the same YAML as a template literal (see README.md).
+version: 1
+dimensions: 2
+components:
+  - name: pivot
+    type: anchor
+    position: [0.0, 0.0]
+  - name: bob
+    type: point_mass
+    mass: 1.0
+    # One unit beyond the spring's rest length (x = 2, rest = 1): the
+    # displacement amplitude, so x(t) = 1 + cos(t), v(t) = -sin(t).
+    position: [2.0, 0.0]
+    velocity: [0.0, 0.0]
+connections:
+  - name: spring_1
+    type: spring
+    from: pivot
+    to: bob
+    stiffness: 1.0
+    rest_length: 1.0

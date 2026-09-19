@@ -61,6 +61,7 @@ mod audio;
 mod debug;
 mod dwarf;
 pub(crate) mod leb;
+mod solver;
 
 /// The AI adapter the CLI uses. Feature `ai` selects the real in-process
 /// llama.cpp adapter; otherwise the deterministic headless stub (the
@@ -99,6 +100,9 @@ struct HostState {
     res: Vec<ResourceSet<'static>>,
     audio: audio::AudioSession,
     ai: ai::AiSession,
+    /// The `tension::solver` host side: wasm-source bindings keyed by the
+    /// shim's solver id (solver/mod.rs). Per store, like everything here.
+    solver: solver::SolverHost,
 }
 
 /// Guest fds are `(pak index << 16) | that pak's fd`, so a guest handle stays
@@ -394,6 +398,7 @@ fn main() -> anyhow::Result<()> {
             res: resource_sets,
             audio: audio::AudioSession::new(default_adapter()),
             ai: ai::AiSession::new(default_ai_adapter()),
+            solver: solver::SolverHost::default(),
         },
     );
     let mut linker: Linker<HostState> = Linker::new(&engine);
@@ -719,6 +724,12 @@ fn main() -> anyhow::Result<()> {
 
     // tension::ai ABI -----------------------------------------------------
     ai::link_ai(&mut linker)?;
+
+    // tension::solver ABI -------------------------------------------------
+    // The five guest imports (GUEST_ABI.md), plus the wasm-source binding
+    // path: the host resolves the guest's `_derivative` / `deriv_buf_in` /
+    // `deriv_buf_out` exports at create and performs the bind itself.
+    solver::link_solver(&mut linker)?;
 
     let instance = linker.instantiate(&mut store, &module)?;
 
