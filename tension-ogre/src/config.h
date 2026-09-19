@@ -6,11 +6,13 @@
 //   u32 entry_count, then per entry
 //     u32 key, u8 tag (2 = i64), i64 value (little-endian, upper four bytes zero)
 //
-// Strict, and stricter than the session's decoder in one place on purpose: a
-// key this build does not define is refused here, where the session ignores
-// one. The session's argmap is an open namespace the guest grows; this is a
-// capability's own ABI-1 surface, and a guest that asks for a key the adapter
-// has never heard of is asking for a feature it does not have.
+// Strict about the wire, permissive about the key space — the same policy as
+// the session's decoder (tension-core/src/session/config.rs): a key this build
+// does not define is *ignored*, not refused, because both decoders read the
+// same argmap and the argmap is a namespace a newer SDK may grow. The entry is
+// still structurally validated (tag, width, and the entry count), so an
+// unknown key cannot desynchronise the stream; a *missing* required key is
+// still a refusal, because that is a config the adapter cannot run.
 //
 // This file includes no OGRE header: the decoder is testable on its own, and
 // the adapter's OGRE-facing code lives behind it.
@@ -30,7 +32,6 @@ enum class ConfigError {
     Truncated,          ///< the stream ends inside an entry
     AbiVersionNotFirst, ///< the first entry is not `abi_version`
     AbiVersion,         ///< `abi_version` is not the version this build speaks
-    UnknownKey,         ///< a key this build does not define
     MalformedTag,       ///< a value tag that is not 2
     ValueOverflow,      ///< an i64 whose upper four bytes are not zero
     TrailingBytes,      ///< the entries end before the buffer does

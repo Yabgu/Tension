@@ -71,7 +71,6 @@ const char *config_error_name(ConfigError error) {
         case ConfigError::Truncated: return "truncated";
         case ConfigError::AbiVersionNotFirst: return "abi-version-not-first";
         case ConfigError::AbiVersion: return "abi-version";
-        case ConfigError::UnknownKey: return "unknown-key";
         case ConfigError::MalformedTag: return "malformed-tag";
         case ConfigError::ValueOverflow: return "value-overflow";
         case ConfigError::TrailingBytes: return "trailing-bytes";
@@ -204,12 +203,14 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len) {
                 break;
             }
 
-            default: {
-                char line[112];
-                std::snprintf(line, sizeof(line),
-                              "config refused: key %u is not one this adapter knows", key);
-                return refuse(ConfigError::UnknownKey, key, line);
-            }
+            default:
+                // An unknown key is ignored, the way the session's decoder
+                // ignores one: the argmap is a namespace a newer SDK may grow,
+                // and the entry has already been validated structurally above
+                // (key, tag, width, length), so ignoring it cannot
+                // desynchronise the stream. Nothing downstream reads it, and
+                // a build that understands the key will.
+                break;
         }
     }
 

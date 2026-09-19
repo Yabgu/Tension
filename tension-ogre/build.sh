@@ -1,0 +1,121 @@
+#!/bin/sh
+# tension-ogre build recipe — the capability adapter, and the OGRE-Next
+# discovery behind it.
+#
+# Produces: tension-ogre/build/libtension_ogre.so, the shared object
+# tension-core dlopens for `--capability`.
+#
+# OGRE_NEXT_REF = v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)
+#   https://github.com/OGRECave/ogre-next
+#   Verified against the Arch package ogre-next 3.0.0-2. The build checks the
+#   version with `pkg-config --atleast-version=3.0.0 OGRE-Next`; the SHA is
+#   documentation and the source-build recipe's checkout ref — no wire format
+#   reads it (DESIGN.md §5.1).
+#
+# Modes: --print-pin, --check, --clean, or the build itself.
+#
+# Environment:
+#   TENSION_OGRE_BACKEND=ogre|none  (default: none)
+#       `none` compiles the no-OGRE backend and links no OGRE library at all;
+#       `ogre` links OGRE-Next and needs src/backend_ogre.cpp, which lands in
+#       round 2b. The default flips to `ogre` in that round.
+#   TENSION_OGRE_PREFIX=<prefix>    a hand-built OGRE-Next install, instead of
+#                                   the one pkg-config knows about.
+#   CXX=<compiler>
+set -eu
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+out="$here/build"
+backend=${TENSION_OGRE_BACKEND:-none}
+pin='v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)'
+
+case "${1:-}" in
+    --print-pin)
+        echo "OGRE-Next $pin"
+        exit 0
+        ;;
+    --check)
+        if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists OGRE-Next; then
+            echo "tension-ogre: OGRE-Next $(pkg-config --modversion OGRE-Next) via pkg-config"
+            echo "  plugin dir: $(pkg-config --variable=plugindir OGRE-Next 2>/dev/null || echo '-')"
+        else
+            echo "tension-ogre: OGRE-Next not found via pkg-config"
+        fi
+        echo "tension-ogre: pinned against $pin"
+        echo "tension-ogre: backend=$backend (default none until backend_ogre.cpp lands)"
+        exit 0
+        ;;
+    --clean)
+        rm -rf "$out"
+        echo "tension-ogre: removed $out"
+        exit 0
+        ;;
+esac
+
+if [ "$backend" != ogre ] && [ "$backend" != none ]; then
+    echo "tension-ogre: TENSION_OGRE_BACKEND=$backend is not a backend." >&2
+    echo "  Use ogre (link OGRE-Next) or none (build without it)." >&2
+    exit 1
+fi
+
+if ! command -v "${CXX:-c++}" >/dev/null 2>&1; then
+    echo "tension-ogre: ${CXX:-c++} not found on PATH." >&2
+    echo "  Install a C++ compiler (package: gcc or clang) and retry; the" >&2
+    echo "  adapter is C++17 (src/*.cpp)." >&2
+    exit 1
+fi
+
+ogre_include=
+ogre_lib=
+plugin_dir=
+if [ "$backend" = ogre ]; then
+    if [ -n "${TENSION_OGRE_PREFIX:-}" ]; then
+        ogre_include="-isystem $TENSION_OGRE_PREFIX/include -isystem $TENSION_OGRE_PREFIX/include/OGRE-Next"
+        ogre_lib="-L$TENSION_OGRE_PREFIX/lib -lOgreNextMain"
+        plugin_dir="$TENSION_OGRE_PREFIX/lib/OGRE-Next"
+    elif command -v pkg-config >/dev/null 2>&1 && pkg-config --atleast-version=3.0.0 OGRE-Next; then
+        # -isystem, not -I: OGRE's headers are not warning-clean, and its
+        # warnings are not ours to answer for.
+        ogre_include=$(pkg-config --cflags OGRE-Next | sed 's/-I/-isystem /g')
+        ogre_lib=$(pkg-config --libs OGRE-Next)
+        plugin_dir=$(pkg-config --variable=plugindir OGRE-Next 2>/dev/null || true)
+    else
+        echo "tension-ogre: OGRE-Next >= 3.0.0 not found via pkg-config." >&2
+        echo "  Remedies, in order of preference:" >&2
+        echo "    install the package            (Arch: pacman -S ogre-next)" >&2
+        echo "    point at a prefix you built    TENSION_OGRE_PREFIX=<prefix>" >&2
+        echo "    build without OGRE at all      TENSION_OGRE_BACKEND=none" >&2
+        exit 1
+    fi
+
+    if [ ! -f "$here/src/backend_ogre.cpp" ]; then
+        echo "tension-ogre: backend=ogre links OGRE-Next, but src/backend_ogre.cpp" >&2
+        echo "  does not exist yet — it lands in round 2b. Build with" >&2
+        echo "  TENSION_OGRE_BACKEND=none (the default) for now." >&2
+        exit 1
+    fi
+fi
+
+sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
+if [ "$backend" = ogre ]; then
+    sources="$sources $here/src/backend_ogre.cpp"
+fi
+
+# -std=c++17: the adapter uses <thread>, <condition_variable> and structured
+#   declarations of the standard library's types.
+# -fPIC: the object is dlopen'd, not linked into a PIE.
+# -Wall -Wextra: warnings are the point of a build recipe that a reviewer reads.
+# -lpthread is not optional: the render thread and its condvar need it.
+mkdir -p "$out"
+# shellcheck disable=SC2086  # the flag lists are deliberate word splits
+"${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \
+    -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $ogre_include \
+    ${plugin_dir:+-DTENSION_OGRE_PLUGIN_DIR="\"$plugin_dir\""} \
+    $sources \
+    -shared -o "$out/libtension_ogre.so" \
+    $ogre_lib -lpthread
+
+echo "tension-ogre: $out/libtension_ogre.so (backend $backend)"
+if [ "$backend" = ogre ]; then
+    echo "tension-ogre: linked against OGRE-Next; plugins from ${plugin_dir:-<pkg-config>}"
+fi

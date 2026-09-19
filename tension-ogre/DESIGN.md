@@ -381,6 +381,16 @@ layout hash covers the catalogue, adding an entry is a schema change: it moves
 the hash, bumps `schemaVersion`, and requires the guest SDK to be regenerated
 from the same table.
 
+**The pin (chunk 2).** OGRE-Next **v3.0.0**, commit
+`75643c3997f5b6d2aa1d7bd8400b9be6736d9908`
+(<https://github.com/OGRECave/ogre-next>). Verified against the Arch package
+`ogre-next 3.0.0-2`; the build checks the version with
+`pkg-config --atleast-version=3.0.0 OGRE-Next`, and the SHA is documentation
+and the source-build recipe's checkout ref — the wire format never reads it.
+The condition this section named is therefore satisfied: the submission
+sub-chunk may write the capability catalogue that
+`assembly/ogre/wire.ts` already implements.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -705,6 +715,29 @@ in-flight job to `FAILED` with `-EIO` in the same publish phase, delivers the
 fault and job callbacks once, and thereafter refuses non-exempt verbs with
 `-EIO` until `session_close`.
 
+### 8.1 Render thread obligations
+
+The session calls an adapter's `init`, `link`, `publish`, `apply`, `shutdown`
+and `destroy` on the interpreter thread, but a capability's render thread is
+its own: nothing in the session watches it, and nothing outside it can save it.
+Two rules follow, and the first is a process-lifetime rule rather than a style
+note.
+
+**Catch, always.** Every startup checkpoint and every frame runs inside a
+`catch` for `Ogre::Exception`, for every other C++ exception, and for `...`. An
+exception that escapes the thread is not an error the adapter can report: it
+calls `std::terminate`, and the process dies. Measured, not theorised: a probe
+running `RenderSystem_GL3Plus` with `DISPLAY` unset hit
+`RenderingAPIException: Couldn't open X display` from
+`GLXGLSupport::getGLDisplay` and exited 134, because nothing caught it.
+
+**Report, never crash.** A caught failure becomes the adapter's normal failure
+surface: a `DEVICE_LOST` event with the stage code in `a` and the errno in `b`,
+the same errno and message in the renderer's `RESOURCE` record, one
+`[tension:ogre]` line, and a stopped frame loop. The guest learns which stage
+failed and why, the interpreter keeps running, and a capability that cannot
+render is a capability whose start failed — not a process that vanished.
+
 ## 9. The seven verbs
 
 ```
@@ -902,6 +935,15 @@ chunk 1 work, and each is additive:
   a capability with its own regions needs either a schema bump or an allocator,
   and the required-regions check (§7.2) is the seam it would attach to.
 
+- **The unused-import fixture (round 2b depends on it).** Does Binaryen keep an
+  `ogre::*` import that a guest declares but never calls? If it does, a guest
+  compiled against the full SDK cannot instantiate against an adapter that
+  registers only the verbs its sub-chunk implements, and the fixture that
+  measures this decides whether the SDK needs a build-time import filter.
+- **CI configuration.** The repo has no `.github/` today: every gate in §14 is
+  a script a developer runs by hand. Wiring them into CI is future work, and
+  the layers below are ordered so the cheapest ones run first.
+
 ## 13. Verified and unverified
 
 The two probe-first questions were answered against `wasmtime = 24.0.13` and
@@ -973,6 +1015,56 @@ what the flag being a flag (rather than the run path) leaves room for.
   build of a session guest measures it.
 
 ---
+
+## 14. Testing strategy
+
+Five layers, from the contract outward. Each exists because the one before it
+cannot see what it sees, and each names its substrate: a test that needs a GPU
+is a test that cannot run where the contract tests run.
+
+**Structural tests — substrate: nothing.** Events, jobs, the session verbs, the
+adapter ABI, the wire layout: assertions about the contract with no renderer
+involved. These are `cargo test` today — the WAT guests, the echo and ogre-stub
+adapters, the layout cross-check, the adapter surface test.
+
+**Smoke render — substrate: `RenderSystem_NULL`.** The window opens, the frame
+loop runs, `shutdown` joins cleanly. The probe measured that this plugin
+creates a window and returns true from `renderOneFrame()` with no display at
+all, so this layer runs where the structural tests run: the real render system,
+minus the pixels.
+
+**Visual property tests — substrate: llvmpipe (Mesa software rasterizer) +
+`RenderSystem_GL3Plus` under Xvfb.** The vertex and pixel pipeline produces the
+right *kind* of output: a centroid inside the expected region, a colour
+dominant in the top half, more than N non-background pixels. Properties, never
+baseline images, because a software rasterizer's exact pixels are a property of
+the rasterizer. Budget 5–30 s per test. Lands with the first triangle.
+
+**Visual regression — exact pixels against a stored baseline.** The strongest
+statement and the most brittle: it asserts *this* output rather than *this kind*
+of output. It lands when rendering is stable enough that a moved baseline
+means a bug, and it is skipped wherever the driver is not the one the baseline
+was recorded on.
+
+**AI vision — supplementary, non-gating.** A model looking at a frame can
+answer "is there a lit sphere in this scene", which no property assertion
+answers. It is not deterministic enough to gate CI: it fails loudly in a report
+and never by blocking a merge. Lands when scenes have semantic content.
+
+**The acid test.** One AssemblyScript guest that exercises the whole stack in a
+single session and asserts its own results, printing a pass/fail summary line —
+`ACID 8/8 passed`. It grows with the chunks:
+
+- *first triangle*: render one triangle and assert its centroid lands where the
+  transform says it should;
+- *multiple objects*: N objects at distinct transforms, with the camera
+  asserting what the scene holds;
+- *solver integration*: a solver-driven transform asserted at frame 30, a
+  skinned mesh asserted at frame 60;
+- *full stack*: a small controllable game with input, a light and a shadow.
+
+The cumulative acid test is the milestone gate at each chunk end: a chunk is
+done when the guest can say so itself.
 
 # Appendix A — tension_adapter.h specification
 

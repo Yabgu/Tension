@@ -33,10 +33,11 @@ extern "C" {
 /*
  * The wasm-facing surface, module name "ogre". The guest declares these with
  * `@external("ogre", ...)`; the adapter registers them through
- * `tension_core_api.register_import`, handing over the address of the function
- * it defines for each, and the session builds the wasm wrapper from the
- * declared types. The C prototypes below are what the adapter's definitions
- * must match, and what the guest sees after the boundary erases the C naming.
+ * `tension_core_api.register_import`, in `link` (registration is refused
+ * outside it), handing over one `tension_import_fn` shim per verb. The shims
+ * unpack the `tension_value` arguments and match these prototypes after the
+ * boundary erases the C naming — the declarations below are the wasm-level
+ * signature, which is what the guest compiles against.
  *
  * Everything here is `i32` at the wasm boundary. Guest pointers are `u32`
  * offsets into the guest's own memory — the adapter reaches that memory only
@@ -144,9 +145,30 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
 #define TENSION_OGRE_STAGE_WINDOW 2u        /* create the window */
 #define TENSION_OGRE_STAGE_INITIALISE 3u    /* render system initialisation */
 #define TENSION_OGRE_STAGE_FRAME 4u         /* rendering a frame */
+#define TENSION_OGRE_STAGE_COMPLETE 5u      /* startup finished; frames are running */
+
+/** The session's class ids this adapter posts to. */
+#define TENSION_OGRE_CLASS_DEVICE_LOST 0u
+#define TENSION_OGRE_CLASS_RESOURCE_READY 5u
 
 /** The renderer's own resource id; the RESOURCE region's first slot. */
 #define TENSION_OGRE_RESOURCE_RENDERER 1u
+
+/**
+ * The renderer's `kind` in its RESOURCE record. The catalogue's own kinds
+ * (mesh, texture, shader, font) keep their numbering; the renderer is not a
+ * loadable resource, so its slot carries this sentinel — named here rather
+ * than borrowing a catalogue kind it does not mean.
+ */
+#define TENSION_OGRE_RES_KIND_RENDERER 0xFFFFFFFFu
+
+/**
+ * One `Resource` record, as the catalogue lays it out
+ * (`assembly/ogre/wire.ts`): id@0, kind@4, state@8, flags@12, size@16,
+ * nameOffset@20, nameLength@24, error@28, refs@32, pad0@36, seq@64-bit@40.
+ * The frame counter lands in `seq` so a guest can see the loop is alive.
+ */
+#define TENSION_OGRE_RESOURCE_RECORD_BYTES 48u
 
 /*
  * The renderer's record in the RESOURCE region carries these states, matching

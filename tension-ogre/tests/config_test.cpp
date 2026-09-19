@@ -137,6 +137,22 @@ void test_golden_bytes() {
     check_eq(result.config.frame_hz, 30, "golden frame_hz");
 }
 
+/// A key this build does not know is ignored, not refused: the same argmap
+/// policy the session's decoder follows, so a newer SDK can add a key that an
+/// older adapter simply does not read.
+void test_unknown_key_ignored() {
+    std::printf("test_unknown_key_ignored\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
+        .entry(8, 1234)
+        .entry(0x0200, 7)
+        .entry(TENSION_OGRE_KEY_FRAME_HZ, 30);
+    const auto result = decode(b.done());
+    check(result.ok, "unknown keys do not refuse the config");
+    check_eq(result.config.abi_version, 1, "known keys before them still decode");
+    check_eq(result.config.frame_hz, 30, "known keys after them still decode");
+}
+
 /// A repeated key takes its last value, the way both decoders read the argmap.
 void test_duplicate_key_takes_last() {
     std::printf("test_duplicate_key_takes_last\n");
@@ -181,10 +197,6 @@ void test_refusals() {
     wrong_abi.entry(TENSION_OGRE_KEY_ABI_VERSION, 2);
     expect_refusal(wrong_abi.done(), ConfigError::AbiVersion, TENSION_OGRE_KEY_ABI_VERSION,
                    "abi_version 2 is not this build's");
-
-    Builder unknown;
-    unknown.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(8, 1);
-    expect_refusal(unknown.done(), ConfigError::UnknownKey, 8, "unknown key");
 
     Builder bad_tag;
     bad_tag.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(TENSION_OGRE_KEY_VSYNC, 1, 3);
@@ -239,7 +251,7 @@ void test_key_names() {
     check(std::string(tension_ogre::config_key_name(TENSION_OGRE_KEY_RENDERER)) == "renderer",
           "key 2 is `renderer`");
     check(std::string(tension_ogre::config_key_name(99)) == "<unknown>", "unknown key names itself");
-    check(std::string(tension_ogre::config_error_name(ConfigError::UnknownKey)) == "unknown-key",
+    check(std::string(tension_ogre::config_error_name(ConfigError::MissingKey)) == "missing-key",
           "the error token");
 }
 
@@ -249,6 +261,7 @@ int main() {
     test_full_round_trip();
     test_defaults_for_absent_keys();
     test_golden_bytes();
+    test_unknown_key_ignored();
     test_duplicate_key_takes_last();
     test_refusals();
     test_key_names();
