@@ -21,6 +21,7 @@
 
 #include <OgreDataStream.h>
 #include <OgreException.h>
+#include <OgreImage2.h>
 #include <OgreLogManager.h>
 #include <OgreMesh.h>
 #include <OgreMesh2.h>
@@ -65,11 +66,15 @@ std::vector<uint8_t> read_file(const std::string &path) {
 int main(int argc, char **argv) {
     std::setvbuf(stdout, nullptr, _IONBF, 0); // a crash must not eat the findings
     const std::string plugin_dir = argc > 1 ? argv[1] : "/usr/lib/OGRE-Next";
-    const bool with_texture = !(argc > 2 && std::string(argv[2]) == "--no-texture");
+    bool with_texture = !(argc > 2 && std::string(argv[2]) == "--no-texture");
+    bool use_gl3plus = false;
+    for (int i = 2; i < argc; ++i) {
+        if (std::string(argv[i]) == "--gl3plus") { use_gl3plus = true; with_texture = true; }
+    }
     {
         std::ofstream cfg("probe_loader_plugins.cfg");
         cfg << "PluginFolder=" << plugin_dir << "\n"
-            << "Plugin=RenderSystem_NULL\n";
+            << (use_gl3plus ? "Plugin=RenderSystem_GL3Plus\n" : "Plugin=RenderSystem_NULL\n");
     }
     // OGRE's chatter would drown the findings.
     Ogre::LogManager *logs = new Ogre::LogManager();
@@ -77,11 +82,14 @@ int main(int argc, char **argv) {
 
     Ogre::Root root(nullptr, "probe_loader_plugins.cfg", "probe_loader.cfg",
                     "probe_loader.log", "probe-loader");
-    Ogre::RenderSystem *rs = root.getRenderSystemByName("NULL Rendering Subsystem");
+    const char *rs_name =
+        use_gl3plus ? "OpenGL 3+ Rendering Subsystem" : "NULL Rendering Subsystem";
+    Ogre::RenderSystem *rs = root.getRenderSystemByName(rs_name);
     if (!rs) {
-        std::printf("PROBE: no NULL render system; nothing to measure\n");
+        std::printf("PROBE: no render system named %s\n", rs_name);
         return 2;
     }
+    std::printf("PROBE: render system '%s'\n", rs_name);
     root.setRenderSystem(rs);
     root.initialise(false);
     Ogre::Window *window = root.createRenderWindow("probe-loader", 320, 240, false, nullptr);
@@ -158,19 +166,35 @@ int main(int argc, char **argv) {
     // in TextureGpuManager::_update and dies destroying an exception).
     step = 6;
     Ogre::TextureGpu *texture = nullptr;
+    Ogre::Image2 image;
     if (!with_texture) {
         ok("texture steps skipped (--no-texture): the mesh path is measured on its own");
     } else
     try {
         Ogre::TextureGpuManager *textures = rs->getTextureGpuManager();
-        // The documented idiom (OGRE-Next docs, "Create a TextureGpu based on
-        // a file"): the file name as the name, no alias, an autodetect group,
-        // and the file-loading flag.
-        texture = textures->createOrRetrieveTexture(
-            "BeachStones.jpg", Ogre::GpuPageOutStrategy::Discard,
-            Ogre::TextureFlags::PrefersLoadingFromFileAsSRGB, Ogre::TextureTypes::Type2D,
-            Ogre::ResourceGroupManager::AUTODETECT_RESOURCE_GROUP_NAME,
-            Ogre::TextureFilter::TypeGenerateDefaultMipmaps);
+        // The memory route, which is what the adapter needs: the loader reads
+        // bytes, so the render thread must be able to turn bytes into a
+        // texture without a file on disk.
+        const std::vector<uint8_t> tex_bytes =
+            read_file(std::string(kMedia) + "/materials/textures/ASCII.dds");
+        if (tex_bytes.empty()) throw std::runtime_error("ASCII.dds could not be read");
+        Ogre::DataStreamPtr stream(
+            new Ogre::MemoryDataStream(const_cast<uint8_t *>(tex_bytes.data()), tex_bytes.size(),
+                                       false, true));
+        image.load(stream, "dds");
+        texture = textures->createTexture("probe-tex", Ogre::GpuPageOutStrategy::Discard,
+                                          Ogre::TextureFlags::ManualTexture,
+                                          Ogre::TextureTypes::Type2D,
+                                          Ogre::ResourceGroupManager::DEFAULT_RESOURCE_GROUP_NAME);
+        // The "manually fill" settings, taken from the image we are about to
+        // hand it: format, type, mip count and resolution are the texture's
+        // own until the schedule carries the data in.
+        texture->setPixelFormat(image.getPixelFormat());
+        texture->setTextureType(image.getTextureType());
+        texture->setNumMipmaps(image.getNumMipmaps());
+        texture->setResolution(image.getWidth(), image.getHeight());
+        ok("Image2 from memory: " + std::to_string(image.getWidth()) + "x" +
+           std::to_string(image.getHeight()));
         ok("createOrRetrieveTexture returned '" + texture->getNameStr() + "' (not scheduled yet)");
     } catch (const std::exception &e) {
         failed("createOrRetrieveTexture", e.what());
@@ -180,19 +204,17 @@ int main(int argc, char **argv) {
     step = 7;
     if (with_texture)
     try {
-        texture->scheduleTransitionTo(Ogre::GpuResidency::Resident);
-        texture->waitForMetadata(); // documented safe point for width/height
+        texture->scheduleTransitionTo(Ogre::GpuResidency::Resident, &image, false);
+        texture->waitForMetadata();
+        for (int frame = 0; frame < 6; ++frame) root.renderOneFrame();
         const std::string verdict = (texture->getWidth() > 2 && texture->getHeight() > 2)
                                         ? "real image"
-                                        : "PLACEHOLDER (the lookup or the decode failed)";
-        ok("after waitForMetadata(): '" + texture->getNameStr() + "' " +
-           std::to_string(texture->getWidth()) + "x" + std::to_string(texture->getHeight()) +
-           " — " + verdict);
-        for (int frame = 0; frame < 6; ++frame) root.renderOneFrame();
-        ok("after 6 frames: dataReady=" + std::to_string(static_cast<int>(texture->isDataReady())) +
-           " (polling is the alternative if blocking is unsafe)");
+                                        : "PLACEHOLDER";
+        ok("texture '" + texture->getNameStr() + "' " + std::to_string(texture->getWidth()) + "x" +
+           std::to_string(texture->getHeight()) + " dataReady=" +
+           std::to_string(static_cast<int>(texture->isDataReady())) + " — " + verdict);
     } catch (const std::exception &e) {
-        failed("async texture load", e.what());
+        failed("texture from memory", e.what());
         return 8;
     }
 

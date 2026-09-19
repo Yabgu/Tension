@@ -58,22 +58,37 @@ void put_u64(uint8_t *at, size_t offset, uint64_t value) {
     for (size_t i = 0; i < 8; ++i) at[offset + i] = static_cast<uint8_t>(value >> (8 * i));
 }
 
-/// True when the first bytes look like the kind of file the job asked for.
-/// A texture may be PNG, DDS or JPEG — the three formats the shipped media
-/// uses — and the check is a magic number, not a decode: decoding is the
-/// render thread's problem, and this is only "did the worker read the right
-/// kind of thing".
+/// Whether `needle` appears in the first `limit` bytes.
+bool contains_near_start(const std::vector<uint8_t> &bytes, const void *needle, size_t needle_len,
+                         size_t limit) {
+    if (bytes.size() < needle_len) return false;
+    const size_t end = std::min(limit, bytes.size() - needle_len);
+    for (size_t at = 0; at <= end; ++at) {
+        if (std::memcmp(bytes.data() + at, needle, needle_len) == 0) return true;
+    }
+    return false;
+}
+
+/// True when the bytes look like the kind of file the job asked for.
+///
+/// A *search*, not a prefix test, and the difference is measured: this
+/// install's shipped meshes carry two bytes of their own before
+/// "[MeshSerializer" (the probe's first print hid them — control characters
+/// are invisible in a terminal), and OGRE's parser accepts them. The check is
+/// "did the worker read the right kind of thing", so the tag may be where the
+/// file puts it; decoding is the render thread's problem either way.
 bool magic_ok(uint32_t kind, const std::vector<uint8_t> &bytes) {
     if (bytes.size() < 4) return false;
     if (kind == TENSION_OGRE_RES_KIND_MESH) {
         const char *tag = "[MeshSerializer";
-        return std::memcmp(bytes.data(), tag, std::strlen(tag)) == 0;
+        return contains_near_start(bytes, tag, std::strlen(tag), 512);
     }
     const uint8_t png[4] = {0x89, 'P', 'N', 'G'};
     const char dds[4] = {'D', 'D', 'S', ' '};
     const uint8_t jpeg[3] = {0xFF, 0xD8, 0xFF};
-    return std::memcmp(bytes.data(), png, 4) == 0 || std::memcmp(bytes.data(), dds, 4) == 0 ||
-           std::memcmp(bytes.data(), jpeg, 3) == 0;
+    return contains_near_start(bytes, png, sizeof(png), 64) ||
+           contains_near_start(bytes, dds, sizeof(dds), 64) ||
+           contains_near_start(bytes, jpeg, sizeof(jpeg), 64);
 }
 
 /// Read a whole file. `-ENOENT` when it is not there, `-EIO` when it is there
@@ -141,7 +156,7 @@ int32_t Loader::queue(uint32_t kind, const std::string &name, uint32_t name_offs
     slot.free = false;
     slot.in_flight = true;
     slot.dirty = true;
-    slot.job_id = next_job_id_++;
+    slot.job_id = index + 1; // the id *is* the slot: see loader.h
     slot.state = TENSION_OGRE_JOB_PENDING;
     slot.kind = kind;
     slot.priority = priority;
@@ -439,6 +454,9 @@ void Loader::worker_main() {
 
         {
             std::lock_guard<std::mutex> lock(mutex_);
+            std::string head;
+            for (size_t i = 0; i < 16 && i < bytes.size(); ++i) head.push_back(
+                (bytes[i] >= 32 && bytes[i] < 127) ? static_cast<char>(bytes[i]) : '.');
             LoadCompletion completion;
             completion.job_id = jobs_[index].job_id;
             completion.bytes = std::move(bytes);

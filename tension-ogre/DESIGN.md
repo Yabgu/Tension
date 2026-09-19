@@ -391,6 +391,24 @@ The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
 
+**Textures, and the abort that was not about the render system.** Round 3a-i's
+probe aborted inside `Ogre::Exception::~Exception` → `ObjCmdBuffer::clear()` when
+a texture was scheduled to Resident, and the first conclusion — "GPU textures
+are not possible under `RenderSystem_NULL`" — was **wrong**. The abort was
+*invalid texture settings*: an `Image2` scheduled onto a `TextureGpu` whose
+pixel format, texture type, mip count and resolution had never been set from
+that image. With the settings taken from the image (the "manually fill"
+sequence in OGRE's own docs) the same call works under **both** render systems:
+round 3a-ii loads a 16×16 DDS under NULL and under GL3+ and renders frames with
+it resident. The lesson is worth more than the limitation it replaced: an
+exception thrown on OGRE's command-buffer path does not unwind — it aborts, so
+the *first* failure a new call can produce is the one worth instrumenting.
+
+What remains install-specific is the **codec**: this OGRE build registers DDS
+and OITD and nothing else — no PNG, JPEG or TGA — so a PNG texture fails as a
+*named job failure* (`Unable to identify codec`), not as a crash, and the
+fixtures use DDS.
+
 **How resources load.** OGRE-Next 3.0 ships its meshes in the *v1* format
 (`[MeshSerializer_v1.8]`, 35 of them in `Media/models`), so a load uses two
 managers: `v1::MeshSerializer::importMesh` parses the bytes into a v1 mesh, and
@@ -398,7 +416,10 @@ managers: `v1::MeshSerializer::importMesh` parses the bytes into a v1 mesh, and
 engine wants. The conversion is deferred — a freshly converted `Mesh2` has no
 submeshes until `load()` is called (measured: 0 then 1) — which is convenient
 here, because it puts a clean boundary between "parse these bytes" and "make
-GPU buffers". Textures are already asynchronous inside OGRE: `TextureGpuManager`
+GPU buffers". One more measured detail: the shipped meshes carry two bytes of
+their own before the `[MeshSerializer` tag, so the loader's kind check *scans*
+the file's opening rather than testing offset zero — a prefix test is wrong
+about a file OGRE itself parses happily. Textures are already asynchronous inside OGRE: `TextureGpuManager`
 runs its own documented background thread, so this adapter does not spawn a
 second one for texture IO.
 
@@ -974,6 +995,15 @@ chunk 1 work, and each is additive:
   `{typeId, size, align}` table would let the session name the first type that
   differs. It is also the mechanism a second protocol type catalogue would need
   when capability records join the manifest (§5.1).
+- **A `resource_release` verb.** `job_release` frees a *job* slot; nothing yet
+  frees a realised *resource*. A guest that cycles jobs can fill the RESOURCE
+  table (1024 records) and start failing jobs with `-ENOSPC`, which is a
+  ceiling, not a policy. The submission sub-chunk is where a guest will have
+  resources worth keeping, so the release verb belongs with it.
+- **A media search path config key.** The adapter's lookup paths come from the
+  build (`TENSION_OGRE_MEDIA_DIR`, derived from OGRE's prefix) with an
+  environment override, because the SDK's key space is fixed at 1–7. When that
+  space opens past 7, a `media_paths` key is the natural home for it.
 - **Dynamic region allocation.** Chunk 1's region table is fixed-layout (§5.2);
   a capability with its own regions needs either a schema bump or an allocator,
   and the required-regions check (§7.2) is the seam it would attach to.

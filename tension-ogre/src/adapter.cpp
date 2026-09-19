@@ -447,7 +447,12 @@ int32_t adapter_link(void *, const tension_core_api *core) {
 /// `Resource` record. This is the only place this adapter writes guest memory.
 int32_t adapter_publish(void *, const tension_core_api *core) {
     AdapterState &s = adapter_state();
-    if (!s.status.dirty()) return 0; // nothing to say: no API needed, no budget spent
+    // Two independent sources of dirt: the renderer's own status and the job
+    // table. Either one alone must be enough to run the hook — the job records
+    // are what the guest's `jobState()` reads, and the renderer's slot is quiet
+    // most epochs (which is exactly when a job would have been missed).
+    const bool jobs_dirty = s.loader.has_dirty();
+    if (!jobs_dirty && !s.status.dirty()) return 0; // no API needed, no budget spent
     if (core == nullptr || core->guest_write == nullptr) return -EINVAL;
     if (s.resource_size < TENSION_OGRE_RESOURCE_RECORD_BYTES) {
         log_line(3, "ogre: publish: the RESOURCE region is smaller than one record");
@@ -457,7 +462,7 @@ int32_t adapter_publish(void *, const tension_core_api *core) {
     // Jobs and resources first: they are the records the guest's own
     // `jobState()` reads straight out of the region, so they matter more than
     // the renderer's own slot.
-    if (s.loader.has_dirty()) {
+    if (jobs_dirty) {
         const Loader::GuestWrite write = [core](uint32_t ptr, const void *src, uint32_t len) {
             return core->guest_write(core->user, ptr, src, len);
         };

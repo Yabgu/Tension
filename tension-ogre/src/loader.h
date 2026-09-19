@@ -44,6 +44,11 @@ struct LoadCompletion {
 };
 
 /// One job's host-side state, mirroring the 64-byte `Job` record.
+///
+/// A job's id is its slot index plus one — not a separate counter — because the
+/// guest SDK addresses the region that way: `jobRecord(jobId)` is
+/// `(jobId - 1) * 64`, so if ids and slots diverged, `jobState()` would read
+/// somebody else's record. Releasing a slot frees its id for reuse.
 struct JobSlot {
     uint32_t job_id = 0;
     uint32_t state = 0;
@@ -168,7 +173,6 @@ class Loader {
     std::deque<LoadCompletion> completions_;
     std::vector<std::string> search_paths_;
     LoaderSink sink_;
-    uint32_t next_job_id_ = 1;
     uint32_t next_resource_id_ = 1;
     bool stopping_ = false;
     bool worker_busy_ = false; ///< true while the worker is inside a read

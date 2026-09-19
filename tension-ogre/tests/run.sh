@@ -51,6 +51,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-window.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-window.wasm" >/dev/null ||
     fail "guest-window.ts did not compile"
+"$asc" "$here/guest-jobs.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-jobs.wasm" >/dev/null ||
+    fail "guest-jobs.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -86,6 +89,19 @@ grep -q "Couldn.t open X display\|window" "$out/no-display.err" ||
 echo "== no-display: ok — $stdout"
 
 case_run vulkan "^FAIL 0 -38" "" --renderer=vulkan --expect-fail
+
+# The 3a acid test: jobs, resources, release and reuse — the guest asserts its
+# own results and prints one summary line.
+jobs_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-jobs.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -q "^ACID 5/5 passed" ||
+        fail "$name: no 'ACID 5/5 passed' (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | tail -1)"
+}
+jobs_case jobs --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -94,6 +110,9 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     else
         case_run windowed "^OK " "created (OpenGL 3+ Rendering Subsystem)" \
             --renderer=gl3plus --frames=5
+        # The real texture path: GL3+ creates a TextureGpu; the null case above
+        # goes through the same code with the NULL render system.
+        jobs_case jobs-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

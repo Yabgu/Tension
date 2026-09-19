@@ -15,9 +15,16 @@
 #include <OgreColourValue.h>
 #include <OgreCommon.h>
 #include <OgreException.h>
+#include <OgreImage2.h>
+#include <OgreMesh.h>
+#include <OgreMesh2.h>
+#include <OgreMeshManager.h>
+#include <OgreMeshManager2.h>
+#include <OgreMeshSerializer.h>
 #include <OgreLogManager.h>
 #include <OgreRoot.h>
 #include <OgreSceneManager.h>
+#include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
 
 #include <Compositor/OgreCompositorManager2.h>
@@ -42,6 +49,11 @@
 namespace tension_ogre {
 namespace {
 
+/// Realised resources live in the default group: nothing is loaded from a
+/// resource location (the bytes arrive from the loader), but OGRE's managers
+/// key by (name, group) and require one.
+constexpr const char *kResourceGroup = "General";
+
 /// Where the render system plugins live: the build's answer, unless the
 /// environment disagrees (an install that moved, or a second copy for a test).
 std::string plugin_dir() {
@@ -59,8 +71,10 @@ class BackendOgre final : public Backend {
 
     int32_t start(const Config &config, StatusWriter &status) override {
         config_ = config;
+        status_for_messages_ = &status;
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
+            is_null_rs_ = null_rs;
             plugin_name_ = null_rs ? "RenderSystem_NULL" : "RenderSystem_GL3Plus";
             render_system_name_ =
                 null_rs ? "NULL Rendering Subsystem" : "OpenGL 3+ Rendering Subsystem";
@@ -236,6 +250,11 @@ class BackendOgre final : public Backend {
         (void)status;
         try {
             // Everything OGRE made is unmade here, on the thread that made it.
+            // Resources first: a texture outliving its render system is how a
+            // teardown turns into a crash.
+            for (ResourceHandle handle = 1; handle <= resources_.size(); ++handle) {
+                discard_resource(handle);
+            }
             if (root_ != nullptr && window_ != nullptr && render_system_ != nullptr) {
                 render_system_->destroyRenderWindow(window_);
             }
@@ -265,23 +284,124 @@ class BackendOgre final : public Backend {
 
     const char *name() const override { return name_.empty() ? "ogre" : name_.c_str(); }
 
-    // Round 3a-ii. The mesh path is measured (probe_loader: importMesh into a
-    // v1 mesh, createByImportingV1, submeshes 0 -> 1 after load); the texture
-    // path is not: under RenderSystem_NULL, scheduleTransitionTo aborts inside
-    // OGRE's own exception handling (probe_loader with texture steps). Until
-    // that is understood, realisation refuses by name rather than crashing.
-    int32_t realise_mesh(const uint8_t *, size_t, ResourceHandle *) override {
-        return not_yet("realise_mesh");
+    /// One realised resource. Handles are indices into this table, 1-based, so
+    /// that 0 stays "no handle".
+    struct ResourceEntry {
+        uint32_t kind = 0;
+        std::string name;
+        Ogre::v1::MeshPtr v1_mesh; ///< kept: the Mesh2 reloads from it
+        Ogre::MeshPtr mesh;
+        Ogre::TextureGpu *texture = nullptr;
+        bool live = false;
+    };
+
+    int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) override {
+        try {
+            const uint32_t handle = next_resource_++;
+            const Ogre::String name = "tension-mesh-" + std::to_string(handle);
+
+            // The probe's verified sequence: bytes -> v1 mesh -> Mesh2 -> load.
+            // The v1 -> v2 conversion is deferred, so `load()` is what makes
+            // the submeshes (and the buffers) real.
+            Ogre::DataStreamPtr stream(new Ogre::MemoryDataStream(
+                const_cast<uint8_t *>(bytes), len, false, /* readOnly */ true));
+            Ogre::v1::MeshPtr v1 =
+                Ogre::v1::MeshManager::getSingleton().createManual(name + "-v1", kResourceGroup);
+            Ogre::v1::MeshSerializer serializer;
+            serializer.importMesh(stream, v1.get());
+            Ogre::MeshPtr mesh = Ogre::MeshManager::getSingleton().createByImportingV1(
+                name, kResourceGroup, v1.get(), false, false, false);
+            mesh->load();
+
+            ResourceEntry entry;
+            entry.kind = TENSION_OGRE_RES_KIND_MESH;
+            entry.name = name;
+            entry.v1_mesh = v1;
+            entry.mesh = mesh;
+            entry.live = true;
+            resources_.push_back(entry);
+            *out = handle;
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        } catch (...) {
+            return realisation_failed("an exception of unknown type escaped the mesh loader");
+        }
     }
-    int32_t realise_texture(const uint8_t *, size_t, ResourceHandle *) override {
-        return not_yet("realise_texture");
+
+    int32_t realise_texture(const uint8_t *bytes, size_t len, ResourceHandle *out) override {
+        try {
+            const uint32_t handle = next_resource_++;
+            const Ogre::String name = "tension-texture-" + std::to_string(handle);
+
+            // Bytes -> Image2 (the codec comes from the file's own magic) ->
+            // a texture whose settings come from the image -> resident. The
+            // settings are load-bearing: scheduling an image onto a texture
+            // whose format and resolution do not match it fails, and that
+            // failure is what aborted this process in round 3a-i's probe.
+            Ogre::DataStreamPtr stream(new Ogre::MemoryDataStream(
+                const_cast<uint8_t *>(bytes), len, false, /* readOnly */ true));
+            image_.load(stream);
+
+            Ogre::TextureGpuManager *textures = render_system_->getTextureGpuManager();
+            Ogre::TextureGpu *texture = textures->createTexture(
+                name, Ogre::GpuPageOutStrategy::Discard, Ogre::TextureFlags::ManualTexture,
+                Ogre::TextureTypes::Type2D, kResourceGroup);
+            texture->setPixelFormat(image_.getPixelFormat());
+            texture->setTextureType(image_.getTextureType());
+            texture->setNumMipmaps(image_.getNumMipmaps());
+            texture->setResolution(image_.getWidth(), image_.getHeight());
+            texture->scheduleTransitionTo(Ogre::GpuResidency::Resident, &image_, false);
+            texture->waitForMetadata();
+
+            ResourceEntry entry;
+            entry.kind = TENSION_OGRE_RES_KIND_TEXTURE;
+            entry.name = name;
+            entry.texture = texture;
+            entry.live = true;
+            resources_.push_back(entry);
+            *out = handle;
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        } catch (...) {
+            return realisation_failed("an exception of unknown type escaped the texture loader");
+        }
     }
-    int32_t discard_resource(ResourceHandle) override { return 0; }
+
+    int32_t discard_resource(ResourceHandle handle) override {
+        if (handle == kNoResourceHandle || handle > resources_.size()) return -ENOENT;
+        ResourceEntry &entry = resources_[handle - 1];
+        if (!entry.live) return -ENOENT;
+        try {
+            if (entry.texture != nullptr) {
+                render_system_->getTextureGpuManager()->destroyTexture(entry.texture);
+            }
+            if (entry.mesh) entry.mesh->unload();
+            if (entry.v1_mesh) entry.v1_mesh->unload();
+        } catch (const std::exception &e) {
+            backend_log(std::string("ogre: discarding a resource reported: ") + e.what());
+        }
+        entry.live = false;
+        entry.texture = nullptr;
+        entry.mesh.reset();
+        entry.v1_mesh.reset();
+        return 0;
+    }
 
   private:
-    int32_t not_yet(const char *what) {
-        backend_log(std::string("ogre: ") + what + " lands in 3a-ii");
-        return -ENOSYS;
+    /// A realisation that failed: the errno fails the job, and the prose goes
+    /// to the mirror's message (not its state — a resource that would not load
+    /// is not a renderer that died) so `last_error()` can name it.
+    int32_t realisation_failed(const std::string &why) {
+        const std::string line = "ogre: resource refused: " + why;
+        backend_log(line);
+        status_for_messages_->note_message(line);
+        return -EIO;
     }
 
     /// Try a render system option, and say so when the option is not there.
@@ -314,6 +434,11 @@ class BackendOgre final : public Backend {
     }
 
     uint32_t renderer_ = TENSION_OGRE_RENDERER_NULL;
+    bool is_null_rs_ = true;
+    Ogre::Image2 image_;
+    StatusWriter *status_for_messages_ = nullptr;
+    std::vector<ResourceEntry> resources_; ///< index 0 unused: handles are 1-based
+    uint32_t next_resource_ = 1;
     Config config_;
     std::string name_;
     std::string plugin_name_;

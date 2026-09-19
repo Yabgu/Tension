@@ -185,7 +185,7 @@ void test_job_release_returns_slot_to_free_list() {
              static_cast<uint64_t>(-ENOENT), "releasing twice is -ENOENT");
 
     const int32_t second = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
-    check_eq(second, first + 1, "the id is fresh");
+    check_eq(second, first, "the freed id is handed straight back");
     check_eq(loader->slot_of(static_cast<uint32_t>(second)), slot_before_release,
              "the freed slot was reused");
     const JobSlot slot = loader->job_at(loader->slot_of(static_cast<uint32_t>(second)));
