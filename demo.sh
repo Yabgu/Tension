@@ -2,12 +2,14 @@
 # Build the interpreter + each example and run them against a few arguments.
 #
 # The ai example is the one piece that depends on more than the repo: it needs
-# a GGUF model and an interpreter built with `--features ai` (which links
-# vendored llama.cpp — a one-time ~2 minute C++ build needing cmake + a C++
-# compiler). This script links it when both are present and otherwise runs the
-# ai demo on the host's deterministic headless adapter, saying so — a plain
-# `cargo build` leaves an interpreter that can never answer from a model, and
-# that silent downgrade is exactly how "the ai example does not reply".
+# a GGUF model, and `ai` is a default cargo feature — a plain `cargo build`
+# links vendored llama.cpp (a one-time ~2 minute C++ build needing cmake + a
+# C++ compiler), and with the model absent the ai demo cannot answer from it.
+# This script builds with the defaults when the model and the toolchain are
+# both present, and otherwise builds with `--no-default-features --features
+# audio` so the ai demo runs on the host's deterministic headless adapter,
+# saying so — an ai-enabled interpreter with no model is exactly how "the ai
+# example does not reply".
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -28,7 +30,9 @@ build_example() {
 }
 
 # The ai example runs on the real model only when the gguf file exists AND the
-# toolchain can link llama.cpp; anything less keeps the headless adapter.
+# toolchain can link llama.cpp (`ai` is a default feature, so the plain build
+# links it); anything less builds without the default features so the demo
+# keeps the deterministic headless adapter.
 AI_FEATURE=0
 if [ -f "$MODEL" ] \
   && command -v cmake >/dev/null 2>&1 \
@@ -38,11 +42,12 @@ fi
 
 echo "==> building tension-core"
 if [ "$AI_FEATURE" = 1 ]; then
-  echo "    (--features ai: linking vendored llama.cpp; one-time ~2 min)"
-  cargo build --manifest-path tension-core/Cargo.toml --features ai
+  echo "    (default features: `ai` links vendored llama.cpp; one-time ~2 min)"
+  cargo build --manifest-path tension-core/Cargo.toml
 else
   echo "    (headless ai adapter: no $MODEL, or no cmake/C++ compiler)"
-  cargo build --manifest-path tension-core/Cargo.toml
+  cargo build --manifest-path tension-core/Cargo.toml \
+    --no-default-features --features audio
 fi
 
 build_example io

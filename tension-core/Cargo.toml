@@ -5,10 +5,11 @@ edition = "2021"
 description = "TensionCore interpreter: loads a guest game.wasm and supplies the tension::io host ABI"
 
 [features]
-default = ["audio"]
+default = ["audio", "ai"]
 audio = ["dep:cpal"]
-# In-process llama.cpp. NOT default: it turns on a ~2 min vendored C++ build
-# (needs cmake + g++). Without it, `ai` falls back to the deterministic stub.
+# In-process llama.cpp. Default: it turns on a ~2 min vendored C++ build
+# (needs cmake + g++). Build with `--no-default-features --features audio`
+# and `ai` falls back to the deterministic stub.
 ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
 
 [[bin]]
