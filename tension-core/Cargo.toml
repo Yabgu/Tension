@@ -29,3 +29,7 @@ encoding_rs = { version = "0.8.35", optional = true }
 # hand-rolled YAML subset would turn our bugs into rejections of valid
 # author files. MIT OR Apache-2.0; pinned like wasmtime.
 yaml-rust2 = "=0.13.0"
+# The adapter loader calls dlopen/dlsym/dlclose directly rather than pulling in a
+# loading crate. libc is already in the tree through wasmtime; naming it makes
+# the dependency honest rather than implicit.
+libc = "0.2"
