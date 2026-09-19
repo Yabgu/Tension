@@ -83,6 +83,7 @@ const TENSION_ADAPTER_ABI_VERSION: u32 = 1;
 const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;
+const TENSION_REGION_JOB: u32 = 3;
 
 // ── what the adapter registers, as it registers it ───────────────────────
 
@@ -288,14 +289,46 @@ fn test_ogre_adapter_surface() {
             verb_id: 3,
             flags: TENSION_IMPORT_REENTRANT_READONLY,
         },
+        Registered {
+            module: "ogre".into(),
+            name: "queue_mesh_load".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 3,
+            verb_id: 4,
+            flags: 0,
+        },
+        Registered {
+            module: "ogre".into(),
+            name: "queue_texture_load".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 3,
+            verb_id: 5,
+            flags: 0,
+        },
+        Registered {
+            module: "ogre".into(),
+            name: "job_state".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 2,
+            verb_id: 6,
+            flags: TENSION_IMPORT_REENTRANT_READONLY,
+        },
+        Registered {
+            module: "ogre".into(),
+            name: "job_release".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 1,
+            verb_id: 7,
+            flags: 0,
+        },
     ];
-    assert_eq!(imports, expected, "the three imports of this sub-chunk, and their flags");
+    assert_eq!(imports, expected, "the seven imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(
         regions,
-        vec![TENSION_REGION_RESOURCE],
-        "the RESOURCE region is the one this sub-chunk declares"
+        vec![TENSION_REGION_RESOURCE, TENSION_REGION_JOB],
+        "the two regions this adapter writes: RESOURCE, then JOB"
     );
 
     // ── publish with nothing to say ──────────────────────────────────────

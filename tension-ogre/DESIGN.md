@@ -391,6 +391,17 @@ The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
 
+**How resources load.** OGRE-Next 3.0 ships its meshes in the *v1* format
+(`[MeshSerializer_v1.8]`, 35 of them in `Media/models`), so a load uses two
+managers: `v1::MeshSerializer::importMesh` parses the bytes into a v1 mesh, and
+`MeshManager::createByImportingV1` converts it into the `Mesh2` the rest of the
+engine wants. The conversion is deferred — a freshly converted `Mesh2` has no
+submeshes until `load()` is called (measured: 0 then 1) — which is convenient
+here, because it puts a clean boundary between "parse these bytes" and "make
+GPU buffers". Textures are already asynchronous inside OGRE: `TextureGpuManager`
+runs its own documented background thread, so this adapter does not spawn a
+second one for texture IO.
+
 **The capability's import surface, as registered so far.** Three verbs —
 `ogre::init`, `ogre::shutdown`, `ogre::last_error` — and the four the SDK
 declares but this chunk does not implement (`queue_mesh_load`,
@@ -672,6 +683,14 @@ are its own to identify, and the reference adapter does (`echo: init`, then
 `echo: two imports registered`); a v2 additive field for a structured source id
 is listed in §12's future work.
 
+**The `JOB` region is what the guest reads.** The SDK's `jobState()`,
+`jobResult()` and `jobError()` do not call `job_state` — they range-check and
+read the 64-byte record straight out of the region, so an adapter's *publish*
+mirror is the load-bearing path and the `job_state` verb is a convenience for a
+guest that wants a copy at an address. The same asymmetry as everywhere else in
+this design: events are advisory, the status table is the truth, and a dropped
+`JOB_DONE` costs a guest nothing it cannot read from the record.
+
 ### 7.3 What an adapter must not do
 
 Never call the guest — not from the render thread, not from any thread. Never
@@ -750,6 +769,17 @@ the same errno and message in the renderer's `RESOURCE` record, one
 `[tension:ogre]` line, and a stopped frame loop. The guest learns which stage
 failed and why, the interpreter keeps running, and a capability that cannot
 render is a capability whose start failed — not a process that vanished.
+
+**The loader's boundary is bytes versus OGRE.** Resource loading splits at the
+one place that needs no thread-safety argument: a worker thread resolves the
+path, reads the bytes, checks the file's magic number and reports an errno —
+and calls *no OGRE function at all*. Every OGRE call (parse, convert, create)
+happens on the render thread, in `drain_completions`, which runs once per frame.
+This removes the "is OGRE thread-safe" question by never asking it: the plan
+does not depend on an answer nobody can verify from headers, and the worker is
+testable with no renderer at all. The alternative OGRE offers — `MeshManager`'s
+`prepare()`/`load()` split, where the IO is documented to happen in advance — is
+recorded as the fallback if parsing from a memory stream ever proves awkward.
 
 ## 9. The seven verbs
 

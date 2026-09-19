@@ -46,6 +46,20 @@ case "${1:-}" in
         echo "tension-ogre: backend=$backend (default; `none` opts out of OGRE)"
         exit 0
         ;;
+    --test)
+        # The unit tests need no OGRE: the loader's worker reads bytes and the
+        # backend is a mock, the config decoder is pure parsing.
+        mkdir -p "$out/tests"
+        "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
+            "$here/src/config.cpp" "$here/tests/config_test.cpp" \
+            -o "$out/tests/config_test" || exit 1
+        "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
+            "$here/src/loader.cpp" "$here/tests/loader_test.cpp" \
+            -o "$out/tests/loader_test" -lpthread || exit 1
+        "$out/tests/config_test" || exit 1
+        "$out/tests/loader_test" || exit 1
+        exit 0
+        ;;
     --clean)
         rm -rf "$out"
         echo "tension-ogre: removed $out"
@@ -80,6 +94,7 @@ if [ "$backend" = ogre ]; then
         ogre_include=$(pkg-config --cflags OGRE-Next | sed 's/-I/-isystem /g')
         ogre_lib=$(pkg-config --libs OGRE-Next)
         plugin_dir=$(pkg-config --variable=plugindir OGRE-Next 2>/dev/null || true)
+        media_dir="$(pkg-config --variable=prefix OGRE-Next 2>/dev/null)/share/OGRE-Next/Media"
     else
         echo "tension-ogre: OGRE-Next >= 3.0.0 not found via pkg-config." >&2
         echo "  Remedies, in order of preference:" >&2
@@ -94,9 +109,9 @@ fi
 # Exactly one backend file: each defines `make_backend`, so compiling both is a
 # duplicate symbol, and the choice is the build's to make (B.2b.2).
 if [ "$backend" = ogre ]; then
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/loader.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
 else
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/loader.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
 fi
 
 # -std=c++17: the adapter uses <thread>, <condition_variable> and structured
@@ -109,6 +124,7 @@ mkdir -p "$out"
 "${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \
     -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $ogre_include \
     ${plugin_dir:+-DTENSION_OGRE_PLUGIN_DIR="\"$plugin_dir\""} \
+    ${media_dir:+-DTENSION_OGRE_MEDIA_DIR="\"$media_dir\""} \
     -DTENSION_OGRE_BACKEND="${backend}" \
     $sources \
     -shared -o "$out/libtension_ogre.so" \

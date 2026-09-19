@@ -8,6 +8,8 @@
 
 #include "backend.h"
 
+#include <cerrno>
+
 #include "../include/tension_ogre.h"
 
 namespace tension_ogre {
@@ -36,6 +38,22 @@ class BackendNone final : public Backend {
     }
 
     const char *name() const override { return "none"; }
+
+    int32_t refuse(const char *what) {
+        backend_log(std::string("ogre: this build has no OGRE-Next; ") + what + " is not available");
+        return -ENOSYS;
+    }
+
+    // A build without OGRE can read and validate bytes — the loader does that
+    // on its own thread — but it has no render system to create a resource in,
+    // so realisation is refused by name rather than pretended.
+    int32_t realise_mesh(const uint8_t *, size_t, ResourceHandle *) override {
+        return refuse("realise_mesh");
+    }
+    int32_t realise_texture(const uint8_t *, size_t, ResourceHandle *) override {
+        return refuse("realise_texture");
+    }
+    int32_t discard_resource(ResourceHandle) override { return 0; }
 };
 
 } // namespace

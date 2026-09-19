@@ -19,6 +19,7 @@
 #include "tension_adapter.h" // tension-core/include — the ABI header, not ours
 #include "backend.h"
 #include "config.h"
+#include "loader.h"
 #include "status.h"
 
 namespace tension_ogre {
@@ -28,6 +29,9 @@ struct AdapterState {
     const tension_core_api *api = nullptr;
     /// This adapter's event source id, from `register_source` in `link`.
     uint32_t source_id = 0;
+    /// The `JOB` region, from `region_lookup` in `link`: the job table's mirror.
+    uint32_t job_offset = 0;
+    uint32_t job_size = 0;
     /// The `RESOURCE` region, from `region_lookup` in `link`. The renderer's
     /// record lives at `resource_offset + (TENSION_OGRE_RESOURCE_RENDERER - 1)
     /// * TENSION_OGRE_RESOURCE_RECORD_BYTES`.
@@ -36,6 +40,9 @@ struct AdapterState {
 
     Config config;
     StatusWriter status;
+    /// Jobs, bytes and the worker thread. Alive for the adapter's lifetime —
+    /// its worker idles on a condition variable when there is no work.
+    Loader loader;
 
     /// Owned by the render thread once it starts; destroyed by that thread
     /// after `stop`. Null whenever no thread is running.

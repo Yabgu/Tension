@@ -14,12 +14,14 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <exception>
 #include <string>
 
 #include "../include/tension_ogre.h"
 #include "backend.h"
+#include "loader.h"
 
 namespace tension_ogre {
 namespace {
@@ -29,6 +31,13 @@ namespace {
 constexpr uint32_t kVerbInit = 1;
 constexpr uint32_t kVerbShutdown = 2;
 constexpr uint32_t kVerbLastError = 3;
+constexpr uint32_t kVerbQueueMesh = 4;
+constexpr uint32_t kVerbQueueTexture = 5;
+constexpr uint32_t kVerbJobState = 6;
+constexpr uint32_t kVerbJobRelease = 7;
+
+/// The longest resource name this adapter will copy out of guest memory.
+constexpr uint32_t kMaxNameBytes = 4096;
 
 /// A config larger than this is not a config.
 constexpr uint32_t kMaxConfigBytes = 512;
@@ -142,6 +151,9 @@ void render_main() {
         const uint32_t hz = s.config.frame_hz == 0 ? 60u : s.config.frame_hz;
         const std::chrono::milliseconds period(1000 / hz);
         while (!s.stop_requested.load()) {
+            // Realise whatever the worker finished, on this thread — the only
+            // one allowed to touch OGRE.
+            s.loader.drain_completions(*s.backend);
             const int32_t framed = s.backend->frame(s.status);
             if (framed > 0) break; // the renderer ended normally (window closed)
             if (framed < 0) {
@@ -153,6 +165,9 @@ void render_main() {
             // idle loop does not spin.
             s.cv.wait_for(lock, period, [&s] { return s.stop_requested.load(); });
         }
+        // Whatever was still being read when the loop ended never gets
+        // realised: the renderer it was meant for is about to be torn down.
+        s.loader.sweep_failed(-EIO);
         s.backend->stop(s.status);
     } catch (const std::exception &e) {
         fail(s.status.snapshot().stage, -EIO, std::string("unhandled exception: ") + e.what());
@@ -253,6 +268,74 @@ int32_t shim_last_error(void *, const tension_value *args, uint32_t nargs, tensi
     return 0;
 }
 
+/// Copy a name out of guest memory. It must be copied here — the ABI forbids
+/// holding a guest pointer, and the worker thread may not touch guest memory
+/// at all — which is also why the loader stores the string itself.
+bool read_guest_name(const tension_core_api *api, uint32_t ptr, uint32_t len, std::string &out) {
+    if (api == nullptr || api->guest_read == nullptr) return false;
+    if (len == 0 || len > kMaxNameBytes) return false;
+    out.resize(len);
+    if (api->guest_read(api->user, ptr, out.data(), len) != 0) return false;
+    return true;
+}
+
+int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension_value *ret,
+                   uint32_t kind) {
+    (void)ctx;
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
+
+    const uint32_t name_ptr = static_cast<uint32_t>(args[0].i32);
+    const uint32_t name_len = static_cast<uint32_t>(args[1].i32);
+    const int32_t priority = args[2].i32;
+
+    std::string name;
+    if (!read_guest_name(s.api, name_ptr, name_len, name)) {
+        log_line(3, "ogre: queue refused: the name is unreadable or too long");
+        return -EINVAL;
+    }
+
+    const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
+    if (job < 0) return job; // -ENOSPC: the table is full, and said so in the log
+    ret->i32 = job;
+    return 0;
+}
+
+int32_t shim_queue_mesh(void *ctx, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    return shim_queue(ctx, args, nargs, ret, TENSION_OGRE_RES_KIND_MESH);
+}
+
+int32_t shim_queue_texture(void *ctx, const tension_value *args, uint32_t nargs,
+                           tension_value *ret) {
+    return shim_queue(ctx, args, nargs, ret, TENSION_OGRE_RES_KIND_TEXTURE);
+}
+
+int32_t shim_job_state(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    const uint32_t job_id = static_cast<uint32_t>(args[0].i32);
+    const uint32_t out_ptr = static_cast<uint32_t>(args[1].i32);
+
+    uint8_t record[TENSION_OGRE_JOB_RECORD_BYTES] = {};
+    const int32_t found = s.loader.job_state(job_id, record);
+    if (found != 0) return found; // -ENOENT
+    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (s.api->guest_write(s.api->user, out_ptr, record, TENSION_OGRE_JOB_RECORD_BYTES) != 0) {
+        return -EINVAL;
+    }
+    ret->i32 = 0;
+    return 0;
+}
+
+int32_t shim_job_release(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    const int32_t released = s.loader.job_release(static_cast<uint32_t>(args[0].i32));
+    if (released != 0) return released;
+    ret->i32 = 0;
+    return 0;
+}
+
 // ── the vtable ───────────────────────────────────────────────────────────
 
 int32_t adapter_init(void *, const tension_core_api *core) {
@@ -269,7 +352,9 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     if (core == nullptr) return -EINVAL;
 
     const uint32_t i32 = TENSION_VT_I32;
+    const uint32_t one_i32[1] = {i32};
     const uint32_t two_i32[2] = {i32, i32};
+    const uint32_t three_i32[3] = {i32, i32, i32};
 
     struct Registration {
         const char *name;
@@ -284,6 +369,12 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"shutdown", nullptr, 0, shim_shutdown, kVerbShutdown, 0},
         {"last_error", two_i32, 2, shim_last_error, kVerbLastError,
          TENSION_IMPORT_REENTRANT_READONLY},
+        {"queue_mesh_load", three_i32, 3, shim_queue_mesh, kVerbQueueMesh, 0},
+        {"queue_texture_load", three_i32, 3, shim_queue_texture, kVerbQueueTexture, 0},
+        // Reading a job record is the exempt-accessor case: no pump, no block.
+        {"job_state", two_i32, 2, shim_job_state, kVerbJobState,
+         TENSION_IMPORT_REENTRANT_READONLY},
+        {"job_release", one_i32, 1, shim_job_release, kVerbJobRelease, 0},
     };
 
     for (const Registration &registration : registrations) {
@@ -314,6 +405,41 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         log_line(3, "ogre: link: the RESOURCE region is not in this layout");
         return found;
     }
+    const int32_t job_region =
+        core->region_lookup(core->user, TENSION_REGION_JOB, &s.job_offset, &s.job_size);
+    if (job_region != 0) {
+        log_line(3, "ogre: link: the JOB region is not in this layout");
+        return job_region;
+    }
+
+    // What the loader needs from the session, without knowing the session
+    // exists: a way to post an event and a way to say something.
+    LoaderSink sink;
+    sink.post_event = [](uint32_t class_id, uint32_t a, uint32_t b) { post_event(class_id, a, b); };
+    sink.log = [](int32_t level, const std::string &message) { log_line(level, message); };
+    s.loader.set_sink(std::move(sink));
+
+    // Where resource names are looked up: the media directory the build baked
+    // in, unless the environment names another one (a path list, ':').
+    std::vector<std::string> paths;
+    if (const char *from_env = std::getenv("TENSION_OGRE_MEDIA_DIR")) {
+        std::string list = from_env;
+        size_t start = 0;
+        while (start <= list.size()) {
+            const size_t colon = list.find(':', start);
+            const std::string piece = list.substr(start, colon - start);
+            if (!piece.empty()) paths.push_back(piece);
+            if (colon == std::string::npos) break;
+            start = colon + 1;
+        }
+    } else {
+#ifdef TENSION_OGRE_MEDIA_DIR
+        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/models");
+        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/materials/textures");
+        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/packs");
+#endif
+    }
+    s.loader.set_search_paths(std::move(paths));
     return 0;
 }
 
@@ -326,6 +452,16 @@ int32_t adapter_publish(void *, const tension_core_api *core) {
     if (s.resource_size < TENSION_OGRE_RESOURCE_RECORD_BYTES) {
         log_line(3, "ogre: publish: the RESOURCE region is smaller than one record");
         return -ENOENT;
+    }
+
+    // Jobs and resources first: they are the records the guest's own
+    // `jobState()` reads straight out of the region, so they matter more than
+    // the renderer's own slot.
+    if (s.loader.has_dirty()) {
+        const Loader::GuestWrite write = [core](uint32_t ptr, const void *src, uint32_t len) {
+            return core->guest_write(core->user, ptr, src, len);
+        };
+        s.loader.mirror_to_region(write, s.job_offset, s.resource_offset);
     }
 
     const StatusWriter::Snapshot snap = s.status.snapshot();

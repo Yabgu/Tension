@@ -162,6 +162,31 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
  */
 #define TENSION_OGRE_RES_KIND_RENDERER 0xFFFFFFFFu
 
+/* ── the job lifecycle, as the catalogue declares it ─────────────────── */
+
+/*
+ * States of the 64-byte `Job` record (`assembly/ogre/wire.ts`): jobId@0,
+ * state@4, kind@8, flags@12, priority@16, resourceId@20, progress@24 (f32),
+ * error@28, nameOffset@32, nameLength@36, seq@40, reserved@48, reserved2@56.
+ */
+#define TENSION_OGRE_JOB_PENDING 0u
+#define TENSION_OGRE_JOB_LOADING 1u
+#define TENSION_OGRE_JOB_DONE 2u
+#define TENSION_OGRE_JOB_FAILED 3u
+#define TENSION_OGRE_JOB_CANCELLED 4u
+/** Not one of the five states: the marker `job_release` leaves behind. */
+#define TENSION_OGRE_JOB_RELEASED 5u
+
+#define TENSION_OGRE_JOB_RECORD_BYTES 64u
+
+/** The two resource kinds this sub-chunk loads. */
+#define TENSION_OGRE_RES_KIND_MESH 0u
+#define TENSION_OGRE_RES_KIND_TEXTURE 1u
+
+/** The two classes a finished job is announced with. */
+#define TENSION_OGRE_CLASS_JOB_FAILED 1u
+#define TENSION_OGRE_CLASS_JOB_DONE 4u
+
 /**
  * One `Resource` record, as the catalogue lays it out
  * (`assembly/ogre/wire.ts`): id@0, kind@4, state@8, flags@12, size@16,

@@ -34,6 +34,13 @@ constexpr int32_t kBackendStopRequested = 1;
 /// owns the API table. Backends format diagnostics; they do not own the log.
 void backend_log(const std::string &message);
 
+/// A resource the backend has realised, as the loader sees it: an opaque
+/// number. The backend keeps the mapping to its own objects (`Ogre::MeshPtr`,
+/// `TextureGpu *`), because the guest never dereferences a handle — it passes
+/// the *resource id* back in submit verbs and this adapter looks it up.
+using ResourceHandle = uint64_t;
+constexpr ResourceHandle kNoResourceHandle = 0;
+
 class Backend {
   public:
     virtual ~Backend() = default;
@@ -48,6 +55,19 @@ class Backend {
 
     /// Tear down everything `start` created, on this thread, before it exits.
     virtual int32_t stop(StatusWriter &status) = 0;
+
+    // ── realisation: the render-thread half of a load ────────────────────
+    //
+    // Called by `Loader::drain_completions`, on the render thread, with bytes
+    // the worker read. Parsing and creation are the only OGRE work in the load
+    // path, and it happens here so that every OGRE call in this adapter is made
+    // by one thread. A negative return fails the job with that errno.
+
+    virtual int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
+    virtual int32_t realise_texture(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
+    /// Release a realised resource. Until the guest has a release verb of its
+    /// own, this is called at session teardown.
+    virtual int32_t discard_resource(ResourceHandle handle) = 0;
 
     /// The backend's name, for `[tension:ogre]` diagnostics.
     virtual const char *name() const = 0;

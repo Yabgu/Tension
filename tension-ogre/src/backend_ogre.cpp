@@ -265,7 +265,25 @@ class BackendOgre final : public Backend {
 
     const char *name() const override { return name_.empty() ? "ogre" : name_.c_str(); }
 
+    // Round 3a-ii. The mesh path is measured (probe_loader: importMesh into a
+    // v1 mesh, createByImportingV1, submeshes 0 -> 1 after load); the texture
+    // path is not: under RenderSystem_NULL, scheduleTransitionTo aborts inside
+    // OGRE's own exception handling (probe_loader with texture steps). Until
+    // that is understood, realisation refuses by name rather than crashing.
+    int32_t realise_mesh(const uint8_t *, size_t, ResourceHandle *) override {
+        return not_yet("realise_mesh");
+    }
+    int32_t realise_texture(const uint8_t *, size_t, ResourceHandle *) override {
+        return not_yet("realise_texture");
+    }
+    int32_t discard_resource(ResourceHandle) override { return 0; }
+
   private:
+    int32_t not_yet(const char *what) {
+        backend_log(std::string("ogre: ") + what + " lands in 3a-ii");
+        return -ENOSYS;
+    }
+
     /// Try a render system option, and say so when the option is not there.
     void set_option_quietly(const std::string &option, const std::string &value) {
         try {
