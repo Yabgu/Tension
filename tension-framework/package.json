@@ -6,7 +6,9 @@
   "ascMain": "assembly/index.ts",
   "types": "index.d.ts",
   "scripts": {
-    "build": "asc index.ts -o build/index.wasm --runtime stub --target release"
+    "build": "asc index.ts -o build/index.wasm --runtime stub --target release",
+    "test": "bash tests/run.sh",
+    "build:fixture": "bash tests/run.sh"
   },
   "exports": {
     ".": {
