@@ -23,6 +23,7 @@
 #include <OgreMeshManager2.h>
 #include <OgreMeshSerializer.h>
 #include <OgreArchiveManager.h>
+#include <OgreConfigFile.h>
 #include <OgreHlmsManager.h>
 #include <OgreHlmsDatablock.h>
 #include <OgreItem.h>
@@ -298,13 +299,11 @@ class BackendOgre final : public Backend {
                 root_->getHlmsManager()->registerHlms(hlms_pbs_);
 
                 // A rigged mesh's *skeleton* is a separate file the v1 -> v2
-                // conversion resolves by name, so the folder the meshes live in
-                // has to be an archive OGRE can read from. Without this the
-                // conversion reports the mesh unrigged and nothing says why.
-                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
-                    root + "/models", "FileSystem", kResourceGroup, false);
-                log_line("ogre: models resource location " + root + "/models (group " +
-                         kResourceGroup + ")");
+                // conversion resolves by name, so the folders meshes and their
+                // skeletons live in have to be archives OGRE can read from.
+                // Without them the conversion reports the mesh unrigged and
+                // nothing says why.
+                add_resource_locations(root);
             }
             // No framebuffer to download under the NULL render system.
             supports_readback_ = !is_null_rs_;
@@ -406,6 +405,86 @@ class BackendOgre final : public Backend {
 
     /// One realised resource. Handles are indices into this table, 1-based, so
     /// that 0 stays "no handle".
+    /// Where OGRE's `resources2.cfg` is, relative to the media directory.
+    ///
+    /// This install puts the config **beside** `Media/`, not inside it
+    /// (`/usr/share/OGRE-Next/resources2.cfg`), while OGRE's own samples keep
+    /// theirs in the folder they call the resource path. Both are tried, in
+    /// that order, and the answer is logged — a silent "not found" here would
+    /// fall back to the one hard-coded location and quietly lose the rest of
+    /// the list, which is the whole failure this round is about.
+    static std::string find_resources_config(const std::string &root) {
+        const std::string beside =
+            std::filesystem::path(root).parent_path().string() + "/resources2.cfg";
+        if (std::filesystem::exists(beside)) return beside;
+        return root + "/resources2.cfg";
+    }
+
+    /// Add every resource location OGRE's own `resources2.cfg` names.
+    ///
+    /// The list is **read, not repeated**. It used to be one hand-written line
+    /// (`root + "/models"`), which is a subset of what the file says and a
+    /// standing invitation to the failure this round exists to prevent: a
+    /// hand-written list omits whatever nobody has needed yet, silently, and
+    /// the omission only shows up as a resource that cannot be found. The Hlms
+    /// folders taught that lesson one chunk ago — a missing
+    /// `Hlms/Pbs/Any/Main` cost a whole round and produced no diagnostic at all.
+    ///
+    /// Two deliberate departures from OGRE's sample framework, which reads the
+    /// same file:
+    ///
+    ///   * every location goes into `kResourceGroup`, not into the section name
+    ///     the config uses as a group. This adapter creates its meshes in one
+    ///     group, and the v1 -> v2 conversion resolves a skeleton by name within
+    ///     it; putting `Media/models` in the config's "Popular" would leave a
+    ///     rigged mesh's skeleton in a group its mesh is not in.
+    ///   * the `Hlms` section is skipped, as it is by OGRE itself: its one entry
+    ///     is the *template* folder and the file says so (`DoNotUseAsResource`).
+    ///     The templates are archives handed to the Hlms constructors instead.
+    ///
+    /// A path that is not on this install is skipped with a count rather than
+    /// thrown on, so a media tree that ships without an optional pack still
+    /// starts — and says how many it skipped.
+    void add_resource_locations(const std::string &root) {
+        const std::string cfg_path = find_resources_config(root);
+        if (!std::filesystem::exists(cfg_path)) {
+            // No config to read: fall back to the one location the renderer
+            // cannot do without, and say that the fallback is what happened.
+            log_line("ogre: " + cfg_path + " is not there; adding " + root +
+                     "/models only");
+            Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                root + "/models", "FileSystem", kResourceGroup, false);
+            return;
+        }
+        Ogre::ConfigFile config;
+        try {
+            config.load(cfg_path);
+        } catch (const std::exception &e) {
+            log_line(std::string("ogre: ") + cfg_path + " could not be read: " + e.what());
+            return;
+        }
+        uint32_t added = 0, skipped = 0;
+        Ogre::ConfigFile::SectionIterator section = config.getSectionIterator();
+        while (section.hasMoreElements()) {
+            const Ogre::String section_name = section.peekNextKey();
+            Ogre::ConfigFile::SettingsMultiMap *settings = section.getNext();
+            if (section_name == "Hlms") continue;
+            for (const auto &setting : *settings) {
+                const Ogre::String &type = setting.first;
+                const Ogre::String &path = setting.second;
+                if (!std::filesystem::exists(path.c_str())) {
+                    ++skipped;
+                    continue;
+                }
+                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                    path, type, kResourceGroup, false);
+                ++added;
+            }
+        }
+        log_line("ogre: resource locations from " + cfg_path + ": " + std::to_string(added) +
+                 " added, " + std::to_string(skipped) + " skipped, group " + kResourceGroup);
+    }
+
     struct ResourceEntry {
         uint32_t kind = 0;
         std::string name;

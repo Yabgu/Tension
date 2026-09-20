@@ -1331,6 +1331,28 @@ chunk 1 work, and each is additive:
   entry's estimate held up there too: what the adapter pays is one integer
   compare per frame, a validation pass over the batch, and 2.2-2.9 µs when the
   rig actually moves.
+- **Hand-written lists that can silently omit a member.** Chunk 5b's finding,
+  and the reason this entry exists rather than a one-line fix. Every Hlms
+  archive folder list is hand-written, and a hand-written list omits whatever
+  nobody has needed yet — silently. `HlmsPbs`'s list stopped one folder short
+  of `Hlms/Pbs/Any/Main`, where the vertex shader lives; a PBS datablock then
+  created, bound, reported hlms `"pbs"`, and drew **nothing at all**, with no
+  exception, no log line and no failed compile. The Unlit list happened to be
+  complete, which is why the omission stayed hidden for two chunks.
+
+  The rule for the next one: **read `getDefaultPaths()` (or the equivalent)
+  from the pinned OGRE-Next source whenever a new Hlms is added, and prefer
+  fetching the list programmatically over hard-coding it.** The pin is
+  `75643c3997f5b6d2aa1d7bd8400b9be6736d9908`; a list copied from it is a
+  snapshot, and the commit that moves the pin is the commit that re-checks
+  every list taken from it. Resource locations follow the same rule against
+  OGRE's own `resources2.cfg` — the adapter reads that file now instead of
+  naming `<media>/models` and hoping it was the only entry that mattered.
+
+  This is also what the render tripwire (`tests/guest-render-check.ts`) is
+  for: one control mesh, one distinct colour per material kind, and a pixel
+  assertion per kind. A material path that stops drawing is loud there, where
+  in a skinned test it would only look like a rig that did not move.
 - **More cameras, and split-screen.** 3b activates the first camera it is
   given and leaves the others created but unattached; viewports per camera are
   a compositor-workspace question for later.

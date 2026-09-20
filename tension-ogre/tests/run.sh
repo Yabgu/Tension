@@ -66,6 +66,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-skinning.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-skinning.wasm" >/dev/null ||
     fail "guest-skinning.ts did not compile"
+"$asc" "$here/guest-render-check.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-render-check.wasm" >/dev/null ||
+    fail "guest-render-check.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -176,6 +179,22 @@ skinning_case() {
     echo "$stdout" | grep -E '^(baseline|final|report):' | sed 's/^/== '"$name"': /' || true
 }
 skinning_case skinning --renderer=null
+
+# The render tripwire (post-chunk-5 audit): every material kind must still put
+# pixels on the screen, in its own colour. A material path that stops drawing
+# is loud here — in a skinned test it would only look like a rig that did not
+# move, which is exactly how a missing Hlms folder hid for two chunks.
+render_check_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-render-check.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|6/6 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^(unlit|pbs):' | sed 's/^/== '"$name"': /' || true
+}
+render_check_case render-check --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -197,6 +216,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         hierarchy_case hierarchy-gl3plus --renderer=gl3plus
         # Chunk 5b: the rig, not the object.
         skinning_case skinning-gl3plus --renderer=gl3plus
+        # And the tripwire, on the same window: both material kinds, in colour.
+        render_check_case render-check-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

@@ -561,12 +561,28 @@ int main(int argc, char **argv) {
             Ogre::SceneNode *cube_node =
                 scene->getRootSceneNode(Ogre::SCENE_DYNAMIC)->createChildSceneNode(Ogre::SCENE_DYNAMIC);
             cube_node->setPosition(1.5f, 0.5f, 0.0f);
-            cube_node->setScale(0.3f, 0.3f, 0.3f);
             cube_node->attachObject(cube);
-            for (int settle = 0; settle < 3; ++settle) root.renderOneFrame();
-            Frame cube_frame;
-            if (grab(&root, downloader, cube_frame)) {
-                report_blob(cube_frame, "control: cube.mesh+pbs");
+            // The control cube's size is *not* guessable from its name — the
+            // shipped `cube.mesh` is 2110 bytes and rendered nothing at scale
+            // 0.3 — so the arm sweeps scales and reports what it finds, which
+            // is what the tripwire fixture needs to place it.
+            const Ogre::Aabb cube_bounds = cube->getWorldAabb();
+            const Ogre::Vector3 clo = cube_bounds.getMinimum(), chi = cube_bounds.getMaximum();
+            std::printf("SKIN: cube.mesh bounds %.3f,%.3f,%.3f .. %.3f,%.3f,%.3f (size %.3f)\n",
+                        static_cast<double>(clo.x), static_cast<double>(clo.y),
+                        static_cast<double>(clo.z), static_cast<double>(chi.x),
+                        static_cast<double>(chi.y), static_cast<double>(chi.z),
+                        static_cast<double>(chi.x - clo.x));
+            for (float cube_scale : {0.02f, 0.2f, 1.0f, 20.0f}) {
+                cube_node->setScale(cube_scale, cube_scale, cube_scale);
+                for (int settle = 0; settle < 3; ++settle) root.renderOneFrame();
+                Frame cube_frame;
+                if (grab(&root, downloader, cube_frame)) {
+                    char label[64];
+                    std::snprintf(label, sizeof(label), "control cube at scale %.2f",
+                                  static_cast<double>(cube_scale));
+                    report_blob(cube_frame, label);
+                }
             }
             cube_node->detachObject(cube);
             scene->destroyItem(cube);

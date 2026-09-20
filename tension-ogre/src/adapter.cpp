@@ -450,12 +450,17 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             rc = s.scene.upsert_material(id, decoded);
             break;
         }
-        default: {
+        // Explicit, not a `default`: a kind this adapter does not know must be
+        // refused, and a `default` that decodes a renderable would turn the
+        // next kind added to the wire into a silently misrouted record. The
+        // remove switch below already refuses by name for the same reason.
+        case kSubmitRenderable: {
             RenderableRecord decoded;
             if (!SceneMirror::decode_renderable_at(record, decoded)) return -EINVAL;
             rc = s.scene.upsert_renderable(id, decoded);
             break;
         }
+        default: return -EINVAL;
     }
     if (rc != 0) return rc;
     ret->i32 = 0;
@@ -734,6 +739,16 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         if (found_region != 0) {
             log_line(3, std::string("ogre: link: the ") + region.name + " region is not in this layout");
             return found_region;
+        }
+        // `region_lookup` succeeding is not the same as the table being
+        // complete: a region the table forgot is never asked for, and the shim
+        // then reads address 0 as guest memory. Offset 0 is the arena's control
+        // block, never a region, so this is the cheap start-time check that the
+        // list above covers every region this adapter addresses.
+        if (*region.offset == 0 || *region.size == 0) {
+            log_line(3, std::string("ogre: link: the ") + region.name +
+                            " region resolved to zero; the table is incomplete");
+            return -EINVAL;
         }
     }
 
