@@ -111,6 +111,43 @@ PixelStats scan(const Ogre::TextureBox &box) {
     return stats;
 }
 
+// ── the readback, with the retry it turned out to need ───────────────────
+//
+// The window's download is a pull: arm it, render a frame, read what came back.
+// **One frame is not always enough.** The first version of this probe pulled
+// once per case and read 0 non-background pixels in roughly one run in four —
+// on a different format each time, which is what said the flake was in the
+// readback rather than in any vertex format: a frame can be downloaded before
+// the item that was just created is in it. So the pull is repeated, with a few
+// frames in between, until pixels arrive or the budget runs out, and the number
+// of attempts is printed next to the count — a 0 after the budget is a real 0.
+constexpr int kGrabAttempts = 20;
+
+bool grab_once(Ogre::Root *root, Ogre::Window *window, PixelStats *out) {
+    window->setWantsToDownload(true);
+    window->setManualSwapRelease(true);
+    root->renderOneFrame();
+    if (!window->canDownloadData()) {
+        window->performManualRelease();
+        return false;
+    }
+    Ogre::Image2 image;
+    image.convertFromTexture(window->getTexture(), 0u, window->getTexture()->getNumMipmaps() - 1u);
+    *out = scan(image.getData(0));
+    window->performManualRelease();
+    return true;
+}
+
+/// The pull, repeated until the scene is in the frame. Returns the attempt that
+/// worked, or 0 when the budget ran out.
+int grab_non_empty(Ogre::Root *root, Ogre::Window *window, PixelStats *out) {
+    for (int attempt = 1; attempt <= kGrabAttempts; ++attempt) {
+        if (grab_once(root, window, out) && out->non_background > 0) return attempt;
+        for (int frame = 0; frame < 3; ++frame) root->renderOneFrame();
+    }
+    return 0;
+}
+
 // ── the mesh, built by hand ──────────────────────────────────────────────
 //
 // One triangle, three vertices. `normals`/`uvs` add elements to the
@@ -392,19 +429,14 @@ int main(int argc, char **argv) {
                                   "under NULL)");
             } else {
                 for (int frame = 0; frame < 5; ++frame) root.renderOneFrame();
-                window->setWantsToDownload(true);
-                window->setManualSwapRelease(true);
-                root.renderOneFrame();
-                if (!window->canDownloadData()) throw std::runtime_error("canDownloadData() stayed false");
-                Ogre::Image2 image;
-                image.convertFromTexture(window->getTexture(), 0u,
-                                         window->getTexture()->getNumMipmaps() - 1u);
-                const PixelStats stats = scan(image.getData(0));
+                PixelStats stats;
+                const int attempts = grab_non_empty(&root, window, &stats);
                 std::printf("PROCEDURAL Q3: format %-19s -> %zu non-background pixels, mean rgb "
-                            "%.1f/%.1f/%.1f\n",
+                            "%.1f/%.1f/%.1f (%s)\n",
                             format.label, stats.non_background, stats.mean_r, stats.mean_g,
-                            stats.mean_b);
-                window->performManualRelease();
+                            stats.mean_b,
+                            attempts == 0 ? "no pixels after the whole budget"
+                                          : ("attempt " + std::to_string(attempts)).c_str());
             }
             scene->destroyItem(item);
             Ogre::v1::MeshManager::getSingleton().remove(mesh->getName());
@@ -431,17 +463,11 @@ int main(int argc, char **argv) {
                                         ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
             node->attachObject(item);
             for (int frame = 0; frame < 5; ++frame) root.renderOneFrame();
-            window->setWantsToDownload(true);
-            window->setManualSwapRelease(true);
-            root.renderOneFrame();
-            if (!window->canDownloadData()) throw std::runtime_error("canDownloadData() stayed false");
-            Ogre::Image2 image;
-            image.convertFromTexture(window->getTexture(), 0u, window->getTexture()->getNumMipmaps() - 1u);
-            const PixelStats stats = scan(image.getData(0));
+            PixelStats stats;
+            const int attempts = grab_non_empty(&root, window, &stats);
             std::printf("PROCEDURAL Q4: procedural triangle -> %zu non-background pixels, mean rgb "
-                        "%.1f/%.1f/%.1f, at 320x240 with the camera at z=4\n",
-                        stats.non_background, stats.mean_r, stats.mean_g, stats.mean_b);
-            window->performManualRelease();
+                        "%.1f/%.1f/%.1f, at 320x240 with the camera at z=4 (attempt %d)\n",
+                        stats.non_background, stats.mean_r, stats.mean_g, stats.mean_b, attempts);
             scene->destroyItem(item);
         } catch (const std::exception &e) {
             failed(6, "procedural triangle render", e.what());
@@ -456,19 +482,14 @@ int main(int argc, char **argv) {
                                         ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
             node->attachObject(item);
             for (int frame = 0; frame < 5; ++frame) root.renderOneFrame();
-            window->setWantsToDownload(true);
-            window->setManualSwapRelease(true);
-            root.renderOneFrame();
-            if (!window->canDownloadData()) throw std::runtime_error("canDownloadData() stayed false");
-            Ogre::Image2 image;
-            image.convertFromTexture(window->getTexture(), 0u, window->getTexture()->getNumMipmaps() - 1u);
-            const PixelStats stats = scan(image.getData(0));
+            PixelStats stats;
+            const int attempts = grab_non_empty(&root, window, &stats);
             std::printf("PROCEDURAL Q4: control without _setBounds -> %zu non-background pixels "
-                        "(%s)\n",
+                        "(%s, attempt %d)\n",
                         stats.non_background,
                         stats.non_background == 0 ? "culled: the call is required"
-                                                  : "rendered anyway: the call is belt-and-braces");
-            window->performManualRelease();
+                                                  : "rendered anyway: the call is belt-and-braces",
+                        attempts);
             scene->destroyItem(item);
         } catch (const std::exception &e) {
             failed(7, "control without _setBounds", e.what());

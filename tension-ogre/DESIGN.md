@@ -775,10 +775,21 @@ stride is derivable rather than a second parameter (12 B per vertex, plus 12 for
 a normal and 8 for a uv). What an Unlit datablock *needs* was measured rather
 than assumed: a constant-colour Unlit draw renders identically with position
 alone, position+normal, and position+normal+uv — **10,368 pixels, mean rgb
-229/51/51, all three** (probe, 320x240, camera at z=4, 5 frames). `VF_POSITION`
-is therefore the only element required and the other two are the guest's
-business; a textured datablock is where `VF_UV` would start to matter. Normals
-are carried because a lit path needs them, not because this one does.
+229/51/51, all three** (probe, 320x240, camera at z=4). `VF_POSITION` is
+therefore the only element required and the other two are the guest's business;
+a textured datablock is where `VF_UV` would start to matter. Normals are carried
+because a lit path needs them, not because this one does.
+
+**The probe's first readback was the flaky part, and it looked like a format.**
+Those three numbers come from a pull that repeats until the scene is in the
+frame, because the single-frame pull the probe started with read 0 px in about
+one measurement in fifteen — **on a different format each time**, which is what
+identified the race rather than a requirement: a frame can be downloaded before
+the item that was just created is in it. It is the same family as the
+`screenshot` note below, one step earlier in the sequence. The probe now retries
+(bounded, three frames between attempts) and **prints the attempt that worked**,
+so a 0 after the whole budget is a real 0 rather than a slow frame; five
+consecutive runs since have read every number on the first attempt.
 
 **The construction sequence is the probe's, and one call in it is
 load-bearing.** `v1::MeshManager::createManual(name, group)` takes no arrays —
