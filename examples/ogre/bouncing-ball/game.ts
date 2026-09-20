@@ -5,8 +5,8 @@
 // per frame rather than one per body, because the transforms travel through
 // shared memory instead of through a verb each.
 //
-//   ./run.sh                             headless: no window, same physics
-//   TENSION_OGRE_WINDOW_TEST=1 ./run.sh  a real window, and a bouncing ball
+//   ./run.sh                             a window, and a bouncing ball
+//   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import {

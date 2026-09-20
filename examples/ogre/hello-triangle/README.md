@@ -28,10 +28,11 @@ opposite default: CI has no display, and headless is the shape CI needs.)
 and needs `tension-core` already built — it says so if it is missing.
 
 Windowed prints one line: the frames it rendered, and the pixels the mesh
-actually put on screen.
+actually put on screen. It waits for ~340 frames before reading the frame back,
+so the window stays up for about six seconds — long enough to look at.
 
 ```
-rendered 35 frames, 288 non-background pixels, mean rgb 229/51/51
+rendered 341 frames, 288 non-background pixels, mean rgb 229/51/51
 ```
 
 Headless prints one line too, and says the same thing about the scene:

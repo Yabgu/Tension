@@ -24,7 +24,9 @@ default: CI has no display.)
 `./run.sh` builds what it can (the OGRE adapter, the guest, its dependencies)
 and needs `tension-core` already built — it says so if it is missing.
 
-Both modes print a line every thirty frames and a summary at the end:
+Both modes print a line every thirty frames and a summary at the end. The
+numbers below are one run's: the loop is paced by the frames that actually
+elapsed, so the apex heights wobble in the last digits from run to run.
 
 ```
 frame 30  height 1.8541375  speed -4.7415

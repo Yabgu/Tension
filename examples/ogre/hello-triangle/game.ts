@@ -4,8 +4,8 @@
 // adapter owns the renderer; this file owns the world. Nothing here draws — it
 // submits records, and the renderer reads them on its own thread.
 //
-//   ./run.sh                             headless: everything but the pixels
-//   TENSION_OGRE_WINDOW_TEST=1 ./run.sh  a real window, and a screenshot
+//   ./run.sh                             a window, a screenshot, a summary
+//   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
@@ -79,9 +79,9 @@ export function _start_game(): void {
   // The frame counter is the renderer's own progress, so waiting on it is
   // waiting on something real. A screenshot is probe/consume: ask, wait, read.
   const from = ogre.frameCount();
-  while (ogre.frameCount() < from + 30) RuntimeSession.wait(16);
+  while (ogre.frameCount() < from + 300) RuntimeSession.wait(16);
   ogre.screenshot(0, 0);
-  while (ogre.frameCount() < from + 34) RuntimeSession.wait(16);
+  while (ogre.frameCount() < from + 340) RuntimeSession.wait(16);
   const bytes = ogre.screenshot(0, 0);
   if (bytes <= 0) fail("no frame was downloaded");
   const frame = new ArrayBuffer(bytes);
