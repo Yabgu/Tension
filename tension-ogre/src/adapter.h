@@ -47,6 +47,10 @@ struct AdapterState {
     /// * TENSION_OGRE_RESOURCE_RECORD_BYTES`.
     uint32_t resource_offset = 0;
     uint32_t resource_size = 0;
+    /// The `BUFFER_POOL` region, from `region_lookup` in `link`: where the
+    /// guest writes the motion table `ogre::submit_motion` names (chunk 4).
+    uint32_t motion_offset = 0;
+    uint32_t motion_size = 0;
 
     Config config;
     StatusWriter status;

@@ -397,6 +397,20 @@ sub-chunk may write the capability catalogue that
 `Item::setDatablock`, and attached with `node->attachObject(item)`. Measured,
 after a guess in the other direction cost a probe.
 
+**A capability record's fields are scalars, because a class field is a
+pointer.** The wire catalogue's rule, stated here as the general one it is: in
+an `@unmanaged` record, a field whose type is a class holds a *reference* — four
+bytes pointing at the object — not an inline struct, so `position: Vec3f` is not
+twelve bytes of position and a record written that way does not mean what it
+says. Nested structures are therefore expressed as flat scalar fields at
+explicit offsets, with the padding spelled out. The placement rule that goes
+with it: a 16-byte type (`Vec4f`, `Quatf`, `Colourf`, `Mat4f`) must sit at a
+16-byte offset, or the record carries explicit pad fields to put it there —
+which is why `MotionUpdate` has flat `positionX/Y/Z`, `rotationX/Y/Z/W`,
+`scaleX/Y/Z` with a `pad0 u64` in front rather than `Transformf`-shaped fields.
+The offsets are pinned by `checkOgreWireOffsets` and by `checkOgreMotionOffsets`,
+which a guest can assert on its own.
+
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
 sub-items name the material `RustyBarrel`, OGRE routes an unknown material name
@@ -572,6 +586,28 @@ writes nothing to guest memory, so the epoch's byte budget is untouched.
 `SceneMirror::apply_motion` checks liveness only — the mesh and material were
 validated when the renderable was submitted, and re-validating them sixty times
 a second would be work for nobody.
+
+**A motion entry is a whole transform, and the SDK's convenience must say so.**
+The record carries position, rotation and scale, so an entry *replaces* the
+renderable's transform: a guest that submitted a body at scale 0.02 and then
+moved it through a helper that writes a unit scale silently resizes the body.
+That is not hypothetical — it is the first thing the chunk-4 fixture did, and
+it presents as a barrel filling the window rather than as a refusal, because the
+protocol was obeyed and the guest lied. `MotionBatch.set` therefore takes the
+scale explicitly (`scale: f32 = 1.0`), and a future rotation setter arrives the
+same way: the value the guest does not name is the identity, never "whatever it
+was before".
+
+**A screenshot answers with the last *downloaded* frame, so a second read needs
+a wait.** `ogre::screenshot` is probe/consume over the frame the render thread
+last downloaded — not over "the frame right now". A guest that reads twice in a
+row without letting the renderer advance gets the first read's pixels again,
+which looks exactly like a scene that did not change: chunk 4's first visual run
+reported a centroid delta of 0.0 px for a body the solver had moved, and the
+frame it measured was the baseline. The rule for a guest that needs two frames:
+arm the readback, wait for `frameCount()` to advance (three frames is
+comfortable), then read. Recorded because the failure is silent and the
+symptom is indistinguishable from a rendering bug.
 
 **Measured: moving items every frame is cheap, so the batch removes calls rather
 than work.** `tests/probe_motion.cpp`, GL3+ on this install: the per-frame
@@ -1335,7 +1371,20 @@ single session and asserts its own results, printing a pass/fail summary line �
   the tolerance rests on is measured, not derived: `probe_motion --calibrate`
   puts the barrel at x = 0, +0.25, +0.5 and reads the centroid back — **72.09
   px/unit measured against 72.4 analytic, 0.4% off**, i.e. 0.01387 units/px at
-  the fixture's camera;
+  the fixture's camera. The fixture's floor is the prediction minus the band, so
+  the coarse clause and the tight one cannot disagree.
+
+  **The frame-rate clause is a tripwire, not a proof.** At N = 1024 the probe
+  measured a 12 µs transform pass and a `renderOneFrame()` that was not slower
+  in the moving phase than in a static one, so "≥ 30 fps at N = 64" passes
+  without exercising anything — its job is to catch a regression that makes the
+  path an order of magnitude worse, not to establish a budget. What the
+  throughput case is *for* is the report it prints beside the clause: entries
+  per frame, batches, frames advanced, the wait iterations they took, the
+  estimated frame rate, and the pixel delta with its prediction. A drift that a
+  single boolean cannot see shows up in those numbers in the CI log. Measured
+  this round at N = 64: 64 entries/frame, 30 batches, 30 frames over 31 waits,
+  ~60.5 fps estimated, delta 18.04 px against 18.02 predicted.
 - *skinned mesh*: asserted at frame 60, and the chunk that makes hierarchy
   necessary;
 - *full stack*: a small controllable game with input, a light and a shadow.

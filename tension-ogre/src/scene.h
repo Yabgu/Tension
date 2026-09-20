@@ -36,6 +36,14 @@ constexpr uint32_t kLightRecordBytes = 96;
 constexpr uint32_t kMaterialRecordBytes = 208;
 constexpr uint32_t kRenderableRecordBytes = 64;
 
+/// One motion-table entry: `wire.ts`'s `MotionUpdate`, whose transform sits at
+/// the same offsets `Renderable`'s inline one does (16/32/48).
+constexpr uint32_t kMotionRecordBytes = 64;
+/// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
+/// min(2048, 65536) = 2048: the renderable table is the smaller bound, and the
+/// arithmetic is asserted where the region is declared.
+constexpr uint32_t kMotionCapacity = kRenderableCapacity;
+
 /// SCENE's internal split: nodes, then cameras, then lights, end to end.
 constexpr uint32_t kCameraTableOffset = kNodeCapacity * kNodeRecordBytes;
 constexpr uint32_t kLightTableOffset = kCameraTableOffset + kCameraCapacity * kCameraRecordBytes;
@@ -130,6 +138,8 @@ class SceneMirror {
                                 MaterialRecord &out);
     static bool decode_renderable(const uint8_t *region, size_t len, uint32_t id,
                                   RenderableRecord &out);
+    /// One motion-table entry, out of the table the guest wrote in `BUFFER_POOL`.
+    static bool decode_motion_at(const uint8_t *record, MotionUpdate &out);
 
     /// The same decoders for one record already in host memory (the submit
     /// verb copies a single record out of the region before decoding it).

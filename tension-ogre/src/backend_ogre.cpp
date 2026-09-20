@@ -953,7 +953,17 @@ class BackendOgre final : public Backend {
                                       " has no datablock yet");
                     continue;
                 }
-                item->setDatablock(datablock);
+                // Rebinding the same datablock is work OGRE does not need:
+                // the motion path re-applies a renderable sixty times a
+                // second with nothing about its material changed. `Item` does
+                // not expose its datablock — `OgreRenderable.h`'s `getDatablock`
+                // belongs to the legacy v1 `Renderable`, and `Item` derives
+                // from `MovableObject` — so this backend remembers what it
+                // bound, which it must do either way.
+                if (item_datablocks_[id - 1] != datablock) {
+                    item->setDatablock(datablock);
+                    item_datablocks_[id - 1] = datablock;
+                }
                 node->setPosition(record->px, record->py, record->pz);
                 node->setOrientation(
                     Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
@@ -976,6 +986,7 @@ class BackendOgre final : public Backend {
         }
         scene_->destroyItem(item);
         items_[id - 1] = nullptr;
+        item_datablocks_[id - 1] = nullptr;
     }
 
     // ── the readback ─────────────────────────────────────────────────────
@@ -1025,8 +1036,6 @@ class BackendOgre final : public Backend {
             }
             readback_requested_.store(false);
             window_->setWantsToDownload(false);
-            log_line("ogre: screenshot: " + std::to_string(width) + "x" + std::to_string(height) +
-                     " RGBA8 downloaded");
         } catch (const std::exception &e) {
             readback_requested_.store(false);
             log_line(std::string("ogre: screenshot: the download reported: ") + e.what());
@@ -1053,6 +1062,10 @@ class BackendOgre final : public Backend {
     std::vector<Ogre::Item *> items_ = std::vector<Ogre::Item *>(kRenderableCapacity, nullptr);
     std::vector<Ogre::SceneNode *> renderable_nodes_ =
         std::vector<Ogre::SceneNode *>(kRenderableCapacity, nullptr);
+    /// What each item is currently bound to, so a per-frame transform update
+    /// never re-binds a datablock that has not changed.
+    std::vector<Ogre::HlmsDatablock *> item_datablocks_ =
+        std::vector<Ogre::HlmsDatablock *>(kRenderableCapacity, nullptr);
     Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
     Ogre::HlmsPbs *hlms_pbs_ = nullptr;
     Ogre::Camera *active_camera_ = nullptr;

@@ -282,6 +282,18 @@ bool SceneMirror::decode_renderable_at(const uint8_t *r, RenderableRecord &out) 
     return true;
 }
 
+bool SceneMirror::decode_motion_at(const uint8_t *r, MotionUpdate &out) {
+    if (r == nullptr) return false;
+    out = MotionUpdate{};
+    out.renderable_id = u32(r, 0);
+    out.flags = u32(r, 4);
+    // The same three offsets a Renderable's inline transform uses, which is the
+    // point of the record's shape: one reading of a transform for both.
+    read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+                   out.sy, out.sz);
+    return true;
+}
+
 bool SceneMirror::decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNodeRecord &out) {
     if (region == nullptr || id == 0 || id > kNodeCapacity) return false;
     const uint32_t at = (id - 1) * kNodeRecordBytes;

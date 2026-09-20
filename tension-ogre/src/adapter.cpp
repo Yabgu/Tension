@@ -37,6 +37,7 @@ constexpr uint32_t kVerbJobState = 6;
 constexpr uint32_t kVerbJobRelease = 7;
 constexpr uint32_t kVerbSubmit = 8;
 constexpr uint32_t kVerbScreenshot = 9;
+constexpr uint32_t kVerbSubmitMotion = 10;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -460,6 +461,72 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     return 0;
 }
 
+/// `ogre::submit_motion(count)` — the motion table, read in one call (chunk 4).
+///
+/// The guest writes `count` 64-byte `MotionUpdate` records at the start of
+/// `BUFFER_POOL` and names them here: one wasm→host transition per frame
+/// instead of one per body. The batch is **all-or-nothing** — an entry naming a
+/// renderable the mirror does not hold live refuses the whole call with
+/// `-ENOENT` and a line naming the entry — because a half-applied frame is
+/// worse than a refused one, and the guest can say what it did wrong.
+///
+/// This is the only guest memory the motion path touches, and it is touched in
+/// one of the three phases the ABI permits (an import call, on the guest
+/// thread). `publish` is not engaged: motion writes nothing to guest memory, so
+/// the epoch's byte budget is untouched.
+int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    const int32_t count = args[0].i32;
+    if (count <= 0 || count > static_cast<int32_t>(kMotionCapacity)) {
+        char line[160];
+        std::snprintf(line, sizeof(line), "ogre: submit_motion refused: %d entries is not in 1..%u",
+                      count, kMotionCapacity);
+        log_line(3, line);
+        return -EINVAL;
+    }
+    const size_t bytes = static_cast<size_t>(count) * kMotionRecordBytes;
+    if (s.motion_size < bytes) {
+        log_line(3, "ogre: submit_motion refused: the BUFFER_POOL region is smaller than "
+                    "this batch");
+        return -EINVAL;
+    }
+    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+
+    // One read for the whole table: this is the call the batch exists to make
+    // cheap, and the copy is what makes the batch safe to validate first.
+    std::vector<uint8_t> table(bytes);
+    if (s.api->guest_read(s.api->user, s.motion_offset, table.data(),
+                          static_cast<uint32_t>(bytes)) != 0) {
+        return -EINVAL;
+    }
+
+    std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
+    std::vector<MotionUpdate> batch(static_cast<size_t>(count));
+    for (int32_t i = 0; i < count; ++i) {
+        const uint8_t *entry = table.data() + static_cast<size_t>(i) * kMotionRecordBytes;
+        if (!SceneMirror::decode_motion_at(entry, batch[static_cast<size_t>(i)])) return -EINVAL;
+        const uint32_t id = batch[static_cast<size_t>(i)].renderable_id;
+        if (id == 0 || id > kRenderableCapacity || !s.scene.renderable_live(id)) {
+            char line[200];
+            std::snprintf(line, sizeof(line),
+                          "ogre: submit_motion refused: entry %d names renderable %u, which is "
+                          "not live",
+                          i, id);
+            log_line(3, line);
+            return -ENOENT;
+        }
+    }
+    for (int32_t i = 0; i < count; ++i) {
+        // Cannot fail here: liveness was checked under this same lock, and the
+        // batch is applied in one go so no epoch can see half of it.
+        s.scene.apply_motion(batch[static_cast<size_t>(i)].renderable_id,
+                             batch[static_cast<size_t>(i)]);
+    }
+    ret->i32 = count;
+    return 0;
+}
+
 /// `ogre::screenshot(ptr, cap)` — probe/consume over the last downloaded frame,
 /// and a request for the next one. `cap <= 0` asks the length; `cap > 0` copies
 /// `min(cap, len)` bytes and consumes them. `-1` means no frame is available.
@@ -546,6 +613,8 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"submit", three_i32, 3, shim_submit, kVerbSubmit, 0},
         {"screenshot", two_i32, 2, shim_screenshot, kVerbScreenshot,
          TENSION_IMPORT_REENTRANT_READONLY},
+        // The batch path: one call per frame for N moving bodies (chunk 4).
+        {"submit_motion", one_i32, 1, shim_submit_motion, kVerbSubmitMotion, 0},
     };
 
     for (const Registration &registration : registrations) {
@@ -583,8 +652,9 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         return job_region;
     }
 
-    // The three guest-written submission regions. Asking for them at link is
-    // the declaration (DESIGN.md §7.2).
+    // The guest-written regions this adapter reads. Asking for them at link is
+    // the declaration (DESIGN.md §7.2), and the set is what `session_open`
+    // checks the arena against.
     struct Region {
         uint32_t kind;
         uint32_t *offset;
@@ -595,6 +665,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {TENSION_REGION_SCENE, &s.scene_offset, &s.scene_size, "SCENE"},
         {TENSION_REGION_MATERIAL, &s.material_offset, &s.material_size, "MATERIAL"},
         {TENSION_REGION_RENDERABLE, &s.renderable_offset, &s.renderable_size, "RENDERABLE"},
+        {TENSION_REGION_BUFFER_POOL, &s.motion_offset, &s.motion_size, "BUFFER_POOL"},
     };
     for (const Region &region : submission_regions) {
         const int32_t found_region =
