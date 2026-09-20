@@ -38,6 +38,10 @@ struct AdapterState {
     uint32_t renderable_offset = 0, renderable_size = 0;
     /// What the guest has submitted, host-side (the render thread applies it).
     SceneMirror scene;
+    /// Guards `scene`: the guest thread writes it (the `submit` verb), the
+    /// render thread reads it once a frame. Held briefly by both; never held
+    /// while the render thread waits on `cv`.
+    std::mutex scene_mutex;
     /// The `RESOURCE` region, from `region_lookup` in `link`. The renderer's
     /// record lives at `resource_offset + (TENSION_OGRE_RESOURCE_RENDERER - 1)
     /// * TENSION_OGRE_RESOURCE_RECORD_BYTES`.

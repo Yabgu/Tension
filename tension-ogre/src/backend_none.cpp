@@ -68,10 +68,11 @@ class BackendNone final : public Backend {
         backend_log("ogre: screenshot is not available in a build without OGRE-Next");
         return -ENOSYS;
     }
-    int32_t readback(uint8_t **out_ptr, size_t *out_len) override {
-        if (out_ptr) *out_ptr = nullptr;
+    int32_t readback(uint8_t *out, size_t cap, size_t *out_len) override {
+        (void)out;
+        (void)cap;
         if (out_len) *out_len = 0;
-        return -ENOSYS;
+        return refuse("readback");
     }
 
   private:

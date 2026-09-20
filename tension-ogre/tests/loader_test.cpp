@@ -77,8 +77,9 @@ class MockBackend final : public Backend {
     }
     int32_t apply_submissions(const SceneMirror &) override { return 0; }
     int32_t request_readback() override { return -ENOSYS; }
-    int32_t readback(uint8_t **out_ptr, size_t *out_len) override {
-        if (out_ptr) *out_ptr = nullptr;
+    int32_t readback(uint8_t *out, size_t cap, size_t *out_len) override {
+        (void)out;
+        (void)cap;
         if (out_len) *out_len = 0;
         return -ENOENT;
     }

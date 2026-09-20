@@ -472,18 +472,67 @@ about a file OGRE itself parses happily. Textures are already asynchronous insid
 runs its own documented background thread, so this adapter does not spawn a
 second one for texture IO.
 
-**The capability's import surface, as registered so far.** Three verbs —
-`ogre::init`, `ogre::shutdown`, `ogre::last_error` — and the four the SDK
-declares but this chunk does not implement (`queue_mesh_load`,
-`queue_texture_load`, `job_state`, `job_release`) are *not* registered. That is
-safe because of a measurement rather than an assumption: Binaryen drops an
-`@external` import a module declares and never calls (seven declared, one
-called, one import in the compiled module — the module was 98 bytes), so a
-guest compiled against the full SDK instantiates against an adapter that
-registers only what it implements, provided it does not *call* the rest. A
-guest that calls one gets wasmtime's unknown-import refusal at instantiation,
-which names the verb. The four refusals with their real implementations land in
-the submission sub-chunk.
+**The capability's import surface, as registered.** Nine verbs: `ogre::init`,
+`ogre::shutdown`, `ogre::last_error`, `queue_mesh_load`, `queue_texture_load`,
+`job_state`, `job_release`, `submit` (id 8) and `screenshot` (id 9, the
+reentrant-readonly flag, as `last_error` and `job_state` carry). Registering a
+verb the SDK declares but a guest never calls is harmless, and Binaryen drops
+an unused import anyway (measured in 3b-i: seven declared, one called, one
+import in the compiled module) — the registration is what lets a guest that
+*does* call one link and instantiate.
+
+**`ogre::screenshot(ptr, cap)` is probe/consume, like `last_error`.** `cap <= 0`
+answers the byte count without copying; `cap > 0` copies `min(cap, len)` bytes
+into the guest and consumes them. `-1` means no frame has been downloaded yet —
+the normal answer for the first call or two. The image is tightly packed RGBA8,
+top-left origin, at the window's own resolution. **A request asks for the next
+frame's download and answers with the last one's**, so a guest asks at least one
+frame ahead of the frame it wants to read.
+
+**The download is an asynchronous ticket, and the swap is not a safe place to
+read it.** `OgreWindow.h` documents two ways to take a picture. The obvious one
+(`setWantsToDownload` + `setManualSwapRelease` + `renderOneFrame` +
+`convertFromTexture` + `performManualRelease`) is what the scene probe used,
+and it is racy inside a frame loop: measured over six runs of an idle session,
+one run in five downloaded an all-black image, because the conversion reads the
+window's texture while other frames are being drawn and swapped into it. The
+header's documented alternative is the reliable one and is what the adapter
+does: `setWantsToDownload(true)`, then convert inside a `FrameListener`'s
+`frameRenderingQueued` — after the compositor has drawn the frame, before the
+window swaps it away — checking `canDownloadData()` and leaving the request
+pending for the next frame when the ticket is not ready. Six runs of the same
+idle session under that path: six correct frames.
+
+**`SceneMirror`'s removes are dirty-with-`live == false`.** One dirty list per
+kind carries both "this record changed" and "this record is gone"; the `live`
+flag distinguishes them, so `submit(kind, id, 1)` returns as soon as the mirror
+has recorded the removal and the OGRE object is destroyed on the render
+thread's *next* frame. The mirror is written by the guest thread (`submit`) and
+read once a frame by the render thread, so the adapter holds a mutex across the
+pair; the mirror itself stays lock-free, which is what lets its unit tests
+drive it from one thread.
+
+**A per-entry apply failure is logged and skipped, not fatal.** A record whose
+OGRE call throws — a renderable naming a resource that is not a realised mesh,
+a material whose Hlms was never registered — leaves the render loop running and
+the frame drawing. The entry stays live in the mirror, so re-submitting the
+same id is what retries it; there is no automatic retry, because a
+deterministic failure would then re-log every frame.
+
+**A shim's record buffer is sized by the *wire* record, not the decoder
+struct.** The decoder structs are narrower than the records they decode —
+`MaterialRecord` carries the fields this adapter reads through slot 0 and is 88
+bytes, while the `MATERIAL` region's record is 208 — so a buffer sized from the
+struct overflows by 56 bytes. That is not hypothetical: it presented as
+`*** stack smashing detected ***` on the first `submitMaterial` the fixture
+made.
+
+**A renderable's mesh and a material's texture name resource ids, and only the
+adapter knows both names.** The guest addresses a resource by the id the
+`RESOURCE` region gave it; the backend realises it under a handle of its own
+(`ResourceHandle`, 1-based, index 0 unused). `Backend::set_resource_lookup` is
+that mapping, wired once at link time from the loader's table, and it is the
+only reason `apply_submissions` can bind an `Item` to a `MeshPtr`.
 
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
@@ -1173,12 +1222,25 @@ creates a window and returns true from `renderOneFrame()` with no display at
 all, so this layer runs where the structural tests run: the real render system,
 minus the pixels.
 
-**Visual property tests — substrate: llvmpipe (Mesa software rasterizer) +
-`RenderSystem_GL3Plus` under Xvfb.** The vertex and pixel pipeline produces the
-right *kind* of output: a centroid inside the expected region, a colour
-dominant in the top half, more than N non-background pixels. Properties, never
-baseline images, because a software rasterizer's exact pixels are a property of
-the rasterizer. Budget 5–30 s per test. Lands with the first triangle.
+**Visual property tests — substrate: `RenderSystem_GL3Plus` with a display.**
+The vertex and pixel pipeline produces the right *kind* of output: a corner
+pixel that is the clear colour, more than N non-background pixels, and a mean
+colour that is the material's. Properties, never baseline images, because a
+rasterizer's exact pixels are a property of the rasterizer. Budget 5–30 s per
+test.
+
+**This tier is live, and `tests/guest-triangle.ts` is its canonical example.**
+It loads `Barrel.mesh` through the 3a job path, submits an Unlit material, a
+camera and a renderable, and asserts the three properties above against
+measured numbers rather than invented ones: corner 25/25/25 (the workspace's
+clear colour), 72 non-background pixels (the barrel at the probe's scale and
+field of view), mean 229/51/51 (the material's 0.9/0.2/0.2). Later visual
+tests follow the same shape — measure first, then assert the measurement with
+tolerance. The tier needs a display: Xvfb is not installed here and llvmpipe
+(`LIBGL_ALWAYS_SOFTWARE=1`) runs the GL3+ render system on this Mesa, so the
+case is opt-in behind `TENSION_OGRE_WINDOW_TEST=1` in both `run.sh` and
+`cargo test`, and the headless gate runs the same fixture's five structural
+clauses instead.
 
 **Visual regression — exact pixels against a stored baseline.** The strongest
 statement and the most brittle: it asserts *this* output rather than *this kind*

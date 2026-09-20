@@ -136,6 +136,13 @@ void render_main() {
             return;
         }
 
+        // How the scene apply path turns a guest-visible resource id into one
+        // of this backend's handles: the loader's RESOURCE table is the only
+        // thing that knows both numbers.
+        s.backend->set_resource_lookup([](uint32_t resource_id) -> ResourceHandle {
+            return adapter_state().loader.resource_at(resource_id).handle;
+        });
+
         const int32_t started = s.backend->start(s.config, s.status);
         if (started != 0) {
             // stop() even after a failed start: it unwinds whatever start
@@ -156,10 +163,15 @@ void render_main() {
             // Realise whatever the worker finished, on this thread — the only
             // one allowed to touch OGRE.
             s.loader.drain_completions(*s.backend);
-            // 3b-ii's scene apply slot: the mirror's dirty lists become OGRE
-            // objects, on this thread, before the frame that draws them.
-            s.backend->apply_submissions(s.scene);
-            s.scene.clear_dirty();
+            // The mirror's dirty lists become OGRE objects, on this thread,
+            // before the frame that draws them. The lock is the guest
+            // thread's: a `submit` that lands mid-apply waits for the next
+            // frame rather than racing the record it writes.
+            {
+                std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
+                s.backend->apply_submissions(s.scene);
+                s.scene.clear_dirty();
+            }
             const int32_t framed = s.backend->frame(s.status);
             if (framed > 0) break; // the renderer ended normally (window closed)
             if (framed < 0) {
@@ -352,6 +364,9 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     const uint32_t id = static_cast<uint32_t>(args[1].i32);
     const uint32_t op = static_cast<uint32_t>(args[2].i32);
     if (op != kSubmitUpsert && op != kSubmitRemove) return -EINVAL;
+    // The mirror is read by the render thread each frame; this is the one
+    // writer, and the lock is what keeps the two from overlapping.
+    std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
 
     if (op == kSubmitRemove) {
         int32_t rc = 0;
@@ -397,7 +412,13 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     if (id == 0 || id > capacity) return -EINVAL;
     if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
 
-    uint8_t record[sizeof(MaterialRecord) + 64] = {};
+    // Sized by the *wire* record, not by the decoder struct: `MaterialRecord`
+    // decodes the fields this adapter reads (through slot 0) and is 88 bytes,
+    // while the region's record is 208. Reading a wire record into a buffer
+    // sized from the struct is a stack overflow — measured, in this shim's
+    // first run, as `*** stack smashing detected ***`.
+    constexpr size_t kMaxRecordBytes = kMaterialRecordBytes;
+    uint8_t record[kMaxRecordBytes] = {};
     const uint32_t at = base + table_offset + (id - 1) * record_bytes;
     if (s.api->guest_read(s.api->user, at, record, record_bytes) != 0) return -EINVAL;
 
@@ -451,9 +472,12 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
 
     if (s.backend) s.backend->request_readback();
 
-    uint8_t *pixels = nullptr;
+    if (!s.backend) {
+        ret->i32 = -1;
+        return 0;
+    }
     size_t length = 0;
-    if (!s.backend || s.backend->readback(&pixels, &length) != 0 || pixels == nullptr) {
+    if (s.backend->readback(nullptr, 0, &length) <= 0 || length == 0) {
         ret->i32 = -1;
         return 0;
     }
@@ -463,12 +487,20 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
         ret->i32 = static_cast<int32_t>(length);
         return 0;
     }
-    const size_t take = std::min(static_cast<size_t>(cap), length);
     if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
-    if (s.api->guest_write(s.api->user, ptr, pixels, static_cast<uint32_t>(take)) != 0) {
+    // The copy is the backend's, under its own lock: the render thread owns
+    // the frame buffer and must not be holding it while the guest reads.
+    const size_t take = std::min(static_cast<size_t>(cap), length);
+    std::vector<uint8_t> pixels(take);
+    size_t copied = 0;
+    if (s.backend->readback(pixels.data(), take, &copied) <= 0 || copied == 0) {
+        ret->i32 = -1;
+        return 0;
+    }
+    if (s.api->guest_write(s.api->user, ptr, pixels.data(), static_cast<uint32_t>(copied)) != 0) {
         return -EINVAL;
     }
-    ret->i32 = static_cast<int32_t>(take);
+    ret->i32 = static_cast<int32_t>(copied);
     return 0;
 }
 

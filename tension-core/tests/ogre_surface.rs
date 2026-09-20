@@ -332,8 +332,16 @@ fn test_ogre_adapter_surface() {
             verb_id: 8,
             flags: 0,
         },
+        Registered {
+            module: "ogre".into(),
+            name: "screenshot".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 2,
+            verb_id: 9,
+            flags: TENSION_IMPORT_REENTRANT_READONLY,
+        },
     ];
-    assert_eq!(imports, expected, "the eight imports of the SDK, and their flags");
+    assert_eq!(imports, expected, "the nine imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(

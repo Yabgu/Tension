@@ -17,6 +17,7 @@
 #define TENSION_OGRE_BACKEND_H
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -76,8 +77,18 @@ class Backend {
     virtual int32_t request_readback() = 0;
 
     /// The last downloaded frame, tightly packed RGBA8, top-left origin, at
-    /// window resolution. Null until a readback has happened.
-    virtual int32_t readback(uint8_t **out_ptr, size_t *out_len) = 0;
+    /// window resolution. Returns the frame's byte count (0 when nothing has
+    /// been downloaded yet), or a negative errno.
+    ///
+    /// `out == nullptr` probes: nothing is copied and `*out_len` gets the
+    /// count. Otherwise `min(cap, count)` bytes are copied into `out` and
+    /// `*out_len` gets the bytes copied.
+    ///
+    /// This is a copy, not a borrowed pointer, and deliberately so: the render
+    /// thread replaces the frame buffer at swap time, so a guest-held pointer
+    /// into it would be a use-after-free. The copy happens under the backend's
+    /// own lock.
+    virtual int32_t readback(uint8_t *out, size_t cap, size_t *out_len) = 0;
 
     /// Release a realised resource. Until the guest has a release verb of its
     /// own, this is called at session teardown.
@@ -85,6 +96,18 @@ class Backend {
 
     /// The backend's name, for `[tension:ogre]` diagnostics.
     virtual const char *name() const = 0;
+
+    // ── how the scene apply path finds a resource ────────────────────────
+    //
+    // A guest names resources by the id the RESOURCE region gave it; a backend
+    // realises them under a handle of its own choosing. The adapter owns both
+    // tables, so it answers, once, at link time.
+
+    using ResourceLookup = std::function<ResourceHandle(uint32_t resource_id)>;
+    void set_resource_lookup(ResourceLookup lookup) { resource_lookup_ = std::move(lookup); }
+
+  protected:
+    ResourceLookup resource_lookup_;
 };
 
 /// The backend this build can provide for `config.renderer`, or `nullptr` when

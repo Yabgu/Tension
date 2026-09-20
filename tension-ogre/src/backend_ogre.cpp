@@ -15,6 +15,7 @@
 #include <OgreColourValue.h>
 #include <OgreCommon.h>
 #include <OgreException.h>
+#include <OgreFrameListener.h>
 #include <OgreImage2.h>
 #include <OgreMesh.h>
 #include <OgreMesh2.h>
@@ -23,27 +24,36 @@
 #include <OgreMeshSerializer.h>
 #include <OgreArchiveManager.h>
 #include <OgreHlmsManager.h>
+#include <OgreHlmsDatablock.h>
+#include <OgreItem.h>
 #include <OgreLight.h>
 #include <OgreLogManager.h>
 #include <OgreQuaternion.h>
 #include <OgreRoot.h>
 #include <OgreSceneManager.h>
+#include <OgreSceneNode.h>
+#include <OgreTextureBox.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
 
 #include <Compositor/OgreCompositorManager2.h>
 #include <Hlms/Pbs/OgreHlmsPbs.h>
+#include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
 #include <Hlms/Unlit/OgreHlmsUnlitDatablock.h>
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
 
+#include <atomic>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
+#include <vector>
 
 #include "../include/tension_ogre.h"
 
@@ -75,6 +85,31 @@ std::string plugin_dir() {
 /// The one line the smoke test asserts on, and the only proof-by-log this
 /// milestone has that a real window came up.
 void log_line(const std::string &message) { backend_log(message); }
+
+class BackendOgre;
+
+/// The frame listener that takes the picture. OGRE-Next downloads a window's
+/// pixels through an asynchronous ticket, and `OgreWindow.h` documents two
+/// ways to use it; this is the one it recommends as the reliable alternative
+/// to the manual swap release:
+///
+///     To do that use FrameListener::frameRenderingQueued, *but* you still
+///     have to call setWantsToDownload(true) and check canDownloadData()
+///     returns true.
+///
+/// `frameRenderingQueued` runs after the compositor has drawn the frame and
+/// before the window swaps it away, so the texture being converted is the
+/// frame that was just rendered — measured: the manual-release path raced the
+/// swap and produced an all-black image about one run in five, and this one
+/// does not.
+class ScreenshotListener : public Ogre::FrameListener {
+  public:
+    explicit ScreenshotListener(BackendOgre *owner) : owner_(owner) {}
+    bool frameRenderingQueued(const Ogre::FrameEvent &evt) override;
+
+  private:
+    BackendOgre *owner_;
+};
 
 class BackendOgre final : public Backend {
   public:
@@ -202,6 +237,12 @@ class BackendOgre final : public Backend {
                 log_line("ogre: the NULL render system presents nothing; "
                          "running without a compositor workspace");
             } else {
+                // The definition is made here; the workspace itself waits for
+                // the guest's first camera. A workspace created for a
+                // placeholder camera and then destroyed and re-created
+                // mid-loop renders nothing afterwards (measured, 3b-ii): the
+                // swap is only good before the first frame, and the probe
+                // proves the first frame is enough.
                 Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
                 compositors->createBasicWorkspaceDef("tension-basic",
                                                      Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
@@ -234,6 +275,10 @@ class BackendOgre final : public Backend {
             }
             // No framebuffer to download under the NULL render system.
             supports_readback_ = !is_null_rs_;
+            if (supports_readback_) {
+                screenshot_listener_ = std::make_unique<ScreenshotListener>(this);
+                root_->addFrameListener(screenshot_listener_.get());
+            }
 
             // ── STAGE_FRAME: prove the pipeline runs before saying ready ──
             status.set_stage(TENSION_OGRE_STAGE_FRAME);
@@ -268,6 +313,8 @@ class BackendOgre final : public Backend {
                 return kBackendStopRequested;
             }
             status.note_frame();
+            // A screenshot is taken from the frame listener, between the
+            // compositor's draw and the swap (see ScreenshotListener).
             return 0;
         } catch (const Ogre::Exception &e) {
             return refuse(status, TENSION_OGRE_STAGE_FRAME, -EIO, e.getFullDescription());
@@ -283,8 +330,11 @@ class BackendOgre final : public Backend {
         (void)status;
         try {
             // Everything OGRE made is unmade here, on the thread that made it.
-            // Resources first: a texture outliving its render system is how a
-            // teardown turns into a crash.
+            // The scene goes first: an Item holds its mesh's vertex buffers,
+            // so a mesh unloaded under a live item is what "Vertex Buffer has
+            // already been destroyed" means (measured, at teardown, before
+            // this order was fixed). Then the resources, then the root.
+            clear_scene();
             for (ResourceHandle handle = 1; handle <= resources_.size(); ++handle) {
                 discard_resource(handle);
             }
@@ -296,9 +346,13 @@ class BackendOgre final : public Backend {
             camera_ = nullptr;
             scene_ = nullptr;
             if (root_ != nullptr) {
+                if (screenshot_listener_ != nullptr) {
+                    root_->removeFrameListener(screenshot_listener_.get());
+                }
                 root_->shutdown();
                 root_.reset();
             }
+            screenshot_listener_.reset();
             render_system_ = nullptr;
             if (!temp_dir_.empty()) {
                 std::error_code ignored;
@@ -406,29 +460,69 @@ class BackendOgre final : public Backend {
         }
     }
 
-    // 3b-ii: the OGRE object graph from the mirror's dirty lists, and the
-    // framebuffer readback the probe proved (convertFromTexture plus the
-    // manual-release dance). Both refuse by name until then.
-    /// 3b-ii's object graph is not written yet: the mirror collects the
-    /// submissions and the render thread drains job completions, but turning
-    /// records into OGRE objects is the next step, and it refuses by name
-    /// rather than half-working.
-    int32_t apply_submissions(const SceneMirror &) override {
-        backend_log("ogre: the scene apply path is not written yet (3b-ii)");
-        return -ENOSYS;
+    // ── the scene apply path ────────────────────────────────────────────
+    //
+    // The mirror's dirty lists become OGRE objects here, on the render thread,
+    // once per frame before the frame is drawn. tests/probe_scene.cpp is the
+    // source of truth for every OGRE call below: createItem + setDatablock +
+    // node->attachObject (there is no Item::attachToNode in 3.0), the
+    // removeWorkspace/addWorkspace swap for the first camera, and datablocks
+    // from the Hlms managers `start` already registered.
+    //
+    // Order is by dependency: nodes before the cameras and lights that hang
+    // from them, materials before the renderables that bind them. Removals and
+    // upserts share one pass per kind, because the mirror marks a removed
+    // entry dirty with `live == false` rather than keeping a second list.
+    //
+    // A per-entry failure is logged and the entry skipped: a bad record is not
+    // a dead renderer, and the loop keeps drawing. The entry stays live in the
+    // mirror, so a later re-submission of the same id is what retries it.
+    int32_t apply_submissions(const SceneMirror &mirror) override {
+        if (scene_ == nullptr) return 0;
+        int32_t refused = 0;
+        try {
+            refused += apply_nodes(mirror);
+            refused += apply_cameras(mirror);
+            refused += apply_lights(mirror);
+            refused += apply_materials(mirror);
+            refused += apply_renderables(mirror);
+        } catch (const Ogre::Exception &e) {
+            log_line("ogre: apply_submissions: " + e.getFullDescription());
+            return -EIO;
+        } catch (const std::exception &e) {
+            log_line(std::string("ogre: apply_submissions: ") + e.what());
+            return -EIO;
+        } catch (...) {
+            log_line("ogre: apply_submissions: an exception of unknown type escaped");
+            return -EIO;
+        }
+        return refused == 0 ? 0 : -EIO;
     }
 
-    /// The readback itself is proven (the scene probe downloads a frame and
-    /// reads its pixels); wiring it to the verb is part of the same step.
+    /// Ask for the next frame to be downloaded. The probe proved the sequence
+    /// (setWantsToDownload + setManualSwapRelease, then convertFromTexture);
+    /// the NULL render system has no framebuffer, and says so rather than
+    /// pretending a frame came back.
     int32_t request_readback() override {
-        backend_log("ogre: the screenshot path is not wired yet (3b-ii)");
-        return -ENOSYS;
+        if (!supports_readback_ || is_null_rs_) {
+            backend_log("ogre: screenshot refused: the NULL render system has no framebuffer");
+            return -ENOSYS;
+        }
+        // The download itself happens in `capture_if_ready`, on the render
+        // thread, at the one moment the window's texture holds the frame that
+        // was just drawn.
+        window_->setWantsToDownload(true);
+        readback_requested_.store(true);
+        return 0;
     }
 
-    int32_t readback(uint8_t **out_ptr, size_t *out_len) override {
-        if (out_ptr) *out_ptr = nullptr;
-        if (out_len) *out_len = 0;
-        return -ENOENT;
+    int32_t readback(uint8_t *out, size_t cap, size_t *out_len) override {
+        std::lock_guard<std::mutex> lock(readback_mutex_);
+        const size_t count = last_frame_.size();
+        const size_t take = out == nullptr ? 0 : std::min(cap, count);
+        if (out != nullptr && take > 0) std::memcpy(out, last_frame_.data(), take);
+        if (out_len != nullptr) *out_len = out == nullptr ? count : take;
+        return static_cast<int32_t>(count);
     }
 
     int32_t discard_resource(ResourceHandle handle) override {
@@ -491,6 +585,457 @@ class BackendOgre final : public Backend {
         return -EIO;
     }
 
+    // ── the scene apply path's helpers, one per kind (DESIGN.md §5.1) ────
+
+    /// The handle behind a guest-visible resource id. The adapter owns both
+    /// tables and wires this at link time; a renderable names a resource by
+    /// id, and only this backend knows which of its handles that became.
+    ResourceHandle resolve(uint32_t resource_id) {
+        if (resource_id == 0 || !resource_lookup_) return kNoResourceHandle;
+        return resource_lookup_(resource_id);
+    }
+
+    Ogre::MeshPtr mesh_for(uint32_t resource_id) {
+        const ResourceHandle handle = resolve(resource_id);
+        if (handle == kNoResourceHandle || handle > resources_.size()) return Ogre::MeshPtr();
+        const ResourceEntry &entry = resources_[handle - 1];
+        if (!entry.live || entry.kind != TENSION_OGRE_RES_KIND_MESH) return Ogre::MeshPtr();
+        return entry.mesh;
+    }
+
+    /// The name of the texture a slot names, or empty when it names nothing
+    /// this backend realised. A datablock binds textures by name, so the name
+    /// is the whole mapping.
+    Ogre::String texture_name_for(uint32_t resource_id) {
+        const ResourceHandle handle = resolve(resource_id);
+        if (handle == kNoResourceHandle || handle > resources_.size()) return Ogre::String();
+        const ResourceEntry &entry = resources_[handle - 1];
+        if (!entry.live || entry.kind != TENSION_OGRE_RES_KIND_TEXTURE) return Ogre::String();
+        return entry.name;
+    }
+
+    void refused_entry(const char *kind, uint32_t id, const std::string &why) {
+        log_line(std::string("ogre: ") + kind + " " + std::to_string(id) +
+                 " was refused: " + why);
+    }
+
+    // ── nodes ────────────────────────────────────────────────────────────
+
+    int32_t apply_nodes(const SceneMirror &mirror) {
+        int32_t refused = 0;
+        for (uint32_t id : mirror.dirty_nodes()) {
+            if (id == 0 || id > kNodeCapacity) continue;
+            if (!mirror.node_live(id)) {
+                destroy_node(id);
+                continue;
+            }
+            const SceneNodeRecord *record = mirror.node(id);
+            if (record == nullptr) continue;
+            try {
+                Ogre::SceneNode *node = nodes_[id - 1];
+                if (node == nullptr) {
+                    // The probe's parenting call: a child of the root, so the
+                    // node is in the graph. Hierarchy (`parentId`) is not in
+                    // 3b — the mirror refuses a non-zero one before this runs.
+                    node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
+                               ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+                    nodes_[id - 1] = node;
+                }
+                node->setPosition(record->px, record->py, record->pz);
+                node->setOrientation(
+                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
+                node->setScale(record->sx, record->sy, record->sz);
+            } catch (const std::exception &e) {
+                refused += 1;
+                refused_entry("node", id, e.what());
+            }
+        }
+        return refused;
+    }
+
+    void destroy_node(uint32_t id) {
+        Ogre::SceneNode *node = nodes_[id - 1];
+        if (node == nullptr) return;
+        // What a node still carries goes before the node does.
+        while (node->numAttachedObjects() > 0) node->detachObject(node->getAttachedObject(0));
+        scene_->destroySceneNode(node);
+        nodes_[id - 1] = nullptr;
+    }
+
+    // ── cameras ──────────────────────────────────────────────────────────
+
+    int32_t apply_cameras(const SceneMirror &mirror) {
+        int32_t refused = 0;
+        for (uint32_t id : mirror.dirty_cameras()) {
+            if (id == 0 || id > kCameraCapacity) continue;
+            if (!mirror.camera_live(id)) {
+                destroy_camera(id);
+                continue;
+            }
+            const CameraRecord *record = mirror.camera(id);
+            if (record == nullptr) continue;
+            try {
+                Ogre::Camera *camera = cameras_[id - 1];
+                if (camera == nullptr) {
+                    camera = scene_->createCamera("tension-camera-" + std::to_string(id));
+                    cameras_[id - 1] = camera;
+                }
+                camera->setProjectionType(Ogre::PT_PERSPECTIVE);
+                if (record->fov_y > 0.0f) camera->setFOVy(Ogre::Radian(record->fov_y));
+                if (record->near_clip > 0.0f) camera->setNearClipDistance(record->near_clip);
+                if (record->far_clip > 0.0f) camera->setFarClipDistance(record->far_clip);
+                // An aspect of zero means "take the window's", which is what
+                // the adapter's own placeholder camera does.
+                if (record->aspect > 0.0f) {
+                    camera->setAutoAspectRatio(false);
+                    camera->setAspectRatio(record->aspect);
+                } else {
+                    camera->setAutoAspectRatio(true);
+                }
+                camera->setPosition(record->px, record->py, record->pz);
+                camera->setOrientation(
+                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
+                // The first live camera is the one the workspace renders
+                // through; a later one is created and stays off screen (§12's
+                // split-screen item is what would change that).
+                if (active_camera_ == nullptr || active_camera_ == camera) {
+                    activate_camera(camera, id);
+                }
+            } catch (const std::exception &e) {
+                refused += 1;
+                refused_entry("camera", id, e.what());
+            }
+        }
+        return refused;
+    }
+
+    /// Point the workspace at this camera: the probe's removeWorkspace +
+    /// addWorkspace pair, and under the NULL render system only the
+    /// bookkeeping, because that start made no workspace to point.
+    void activate_camera(Ogre::Camera *camera, uint32_t id) {
+        if (active_camera_ == camera) return;
+        if (is_null_rs_ || root_ == nullptr || window_ == nullptr) {
+            active_camera_ = camera;
+            return;
+        }
+        try {
+            Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
+            if (compositors == nullptr) return;
+            if (workspace_ != nullptr) {
+                compositors->removeWorkspace(workspace_);
+                workspace_ = nullptr;
+            }
+            workspace_ = compositors->addWorkspace(scene_, window_->getTexture(), camera,
+                                                   "tension-basic", true);
+            active_camera_ = camera;
+            log_line("ogre: the workspace now renders through camera " + std::to_string(id));
+        } catch (const std::exception &e) {
+            refused_entry("camera", id, std::string("the workspace swap reported: ") + e.what());
+        }
+    }
+
+    void destroy_camera(uint32_t id) {
+        Ogre::Camera *camera = cameras_[id - 1];
+        if (camera == nullptr) return;
+        if (camera == active_camera_) {
+            // The workspace must stop pointing at a camera before it dies.
+            if (!is_null_rs_ && workspace_ != nullptr && root_ != nullptr) {
+                if (Ogre::CompositorManager2 *compositors = root_->getCompositorManager2()) {
+                    compositors->removeWorkspace(workspace_);
+                }
+                workspace_ = nullptr;
+            }
+            active_camera_ = nullptr;
+            dirty_active_camera_ = true;
+        }
+        scene_->destroyCamera(camera);
+        cameras_[id - 1] = nullptr;
+    }
+
+    // ── lights ───────────────────────────────────────────────────────────
+
+    int32_t apply_lights(const SceneMirror &mirror) {
+        int32_t refused = 0;
+        for (uint32_t id : mirror.dirty_lights()) {
+            if (id == 0 || id > kLightCapacity) continue;
+            if (!mirror.light_live(id)) {
+                destroy_light(id);
+                continue;
+            }
+            const LightRecord *record = mirror.light(id);
+            if (record == nullptr) continue;
+            try {
+                Ogre::Light *light = lights_[id - 1];
+                if (light == nullptr) {
+                    light = scene_->createLight();
+                    lights_[id - 1] = light;
+                }
+                switch (record->kind) {
+                    case 0: light->setType(Ogre::Light::LT_DIRECTIONAL); break;
+                    case 1: light->setType(Ogre::Light::LT_POINT); break;
+                    case 2: light->setType(Ogre::Light::LT_SPOTLIGHT); break;
+                    default: break;
+                }
+                const Ogre::ColourValue colour(record->r, record->g, record->b, record->a);
+                light->setDiffuseColour(colour);
+                light->setSpecularColour(colour);
+                if (record->intensity > 0.0f) light->setPowerScale(record->intensity);
+                if (record->kind != 0 && record->range > 0.0f) {
+                    light->setAttenuationBasedOnRadius(record->range, 0.01f);
+                }
+                // A light needs a node for its place in the world; a
+                // directional one only for its direction, which is why that
+                // is the one thing set on the light rather than the node.
+                Ogre::SceneNode *node = light_nodes_[id - 1];
+                if (node == nullptr) {
+                    node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
+                               ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+                    light_nodes_[id - 1] = node;
+                    node->attachObject(light);
+                }
+                node->setPosition(record->px, record->py, record->pz);
+                if (record->kind == 0) {
+                    light->setDirection(Ogre::Vector3(record->dx, record->dy, record->dz));
+                }
+            } catch (const std::exception &e) {
+                refused += 1;
+                refused_entry("light", id, e.what());
+            }
+        }
+        return refused;
+    }
+
+    void destroy_light(uint32_t id) {
+        Ogre::Light *light = lights_[id - 1];
+        if (light == nullptr) return;
+        if (Ogre::SceneNode *node = light_nodes_[id - 1]) {
+            node->detachObject(light);
+            scene_->destroySceneNode(node);
+            light_nodes_[id - 1] = nullptr;
+        }
+        scene_->destroyLight(light);
+        lights_[id - 1] = nullptr;
+    }
+
+    // ── materials ────────────────────────────────────────────────────────
+
+    int32_t apply_materials(const SceneMirror &mirror) {
+        int32_t refused = 0;
+        for (uint32_t id : mirror.dirty_materials()) {
+            if (id == 0 || id > kMaterialCapacity) continue;
+            if (!mirror.material_live(id)) {
+                destroy_material(id);
+                continue;
+            }
+            const MaterialRecord *record = mirror.material(id);
+            if (record == nullptr) continue;
+            if (record->kind == TENSION_OGRE_MAT_HLMS_CUSTOM) {
+                refused += 1;
+                refused_entry("material", id, "a custom Hlms is not in this chunk");
+                continue;
+            }
+            try {
+                // A datablock belongs to the Hlms that made it, so a record
+                // that changes kind is remade rather than reinterpreted.
+                if (datablocks_[id - 1] != nullptr && datablock_kinds_[id - 1] != record->kind) {
+                    destroy_material(id);
+                }
+                if (datablocks_[id - 1] == nullptr) {
+                    Ogre::Hlms *owner = record->kind == TENSION_OGRE_MAT_HLMS_PBS
+                                            ? static_cast<Ogre::Hlms *>(hlms_pbs_)
+                                            : static_cast<Ogre::Hlms *>(hlms_unlit_);
+                    if (owner == nullptr) {
+                        refused += 1;
+                        refused_entry("material", id, "the Hlms manager was never registered");
+                        continue;
+                    }
+                    // The probe's exact construction: default macroblock,
+                    // blendblock and params, and the datablock named after
+                    // the id so removal can find it again.
+                    const Ogre::String name = "tension-mat-" + std::to_string(id);
+                    Ogre::HlmsMacroblock macroblock;
+                    Ogre::HlmsBlendblock blendblock;
+                    Ogre::HlmsParamVec params;
+                    datablocks_[id - 1] =
+                        owner->createDatablock(name, name, macroblock, blendblock, params);
+                    datablock_names_[id - 1] = name;
+                    datablock_kinds_[id - 1] = record->kind;
+                }
+                apply_material_values(datablocks_[id - 1], *record);
+            } catch (const std::exception &e) {
+                refused += 1;
+                refused_entry("material", id, e.what());
+            }
+        }
+        return refused;
+    }
+
+    /// The values a material record carries. Unlit is the 3b path
+    /// (DESIGN.md §5.1): `setUseColour` + `setColour` is the pair the probe
+    /// verified, and a texture only when slot 0 names one. PBS is creatable
+    /// and unasserted — without a light rig it draws black.
+    void apply_material_values(Ogre::HlmsDatablock *datablock, const MaterialRecord &record) {
+        const Ogre::ColourValue diffuse(record.dr, record.dg, record.db, record.da);
+        if (record.kind == TENSION_OGRE_MAT_HLMS_PBS) {
+            // PBS takes linear colours as vectors, and its own defaults stand
+            // where the record says nothing.
+            auto *pbs = static_cast<Ogre::HlmsPbsDatablock *>(datablock);
+            pbs->setDiffuse(Ogre::Vector3(record.dr, record.dg, record.db));
+            if (record.roughness > 0.0f) pbs->setRoughness(record.roughness);
+            if (record.metalness > 0.0f) pbs->setMetalness(record.metalness);
+            if (record.slot0_resource != 0) {
+                const Ogre::String texture = texture_name_for(record.slot0_resource);
+                if (!texture.empty()) pbs->setTexture(Ogre::PBSM_DIFFUSE, texture);
+            }
+            return;
+        }
+        auto *unlit = static_cast<Ogre::HlmsUnlitDatablock *>(datablock);
+        unlit->setUseColour(true);
+        unlit->setColour(diffuse);
+        if (record.slot0_resource != 0) {
+            const Ogre::String texture = texture_name_for(record.slot0_resource);
+            if (!texture.empty()) unlit->setTexture(0, texture);
+        }
+    }
+
+    void destroy_material(uint32_t id) {
+        Ogre::HlmsDatablock *datablock = datablocks_[id - 1];
+        if (datablock == nullptr) return;
+        Ogre::Hlms *owner = datablock_kinds_[id - 1] == TENSION_OGRE_MAT_HLMS_PBS
+                                ? static_cast<Ogre::Hlms *>(hlms_pbs_)
+                                : static_cast<Ogre::Hlms *>(hlms_unlit_);
+        if (owner != nullptr && !datablock_names_[id - 1].empty()) {
+            owner->destroyDatablock(datablock_names_[id - 1]);
+        }
+        datablocks_[id - 1] = nullptr;
+        datablock_names_[id - 1].clear();
+        datablock_kinds_[id - 1] = 0;
+    }
+
+    // ── renderables ──────────────────────────────────────────────────────
+
+    int32_t apply_renderables(const SceneMirror &mirror) {
+        int32_t refused = 0;
+        for (uint32_t id : mirror.dirty_renderables()) {
+            if (id == 0 || id > kRenderableCapacity) continue;
+            if (!mirror.renderable_live(id)) {
+                destroy_renderable(id);
+                continue;
+            }
+            const RenderableRecord *record = mirror.renderable(id);
+            if (record == nullptr) continue;
+            try {
+                Ogre::Item *item = items_[id - 1];
+                Ogre::SceneNode *node = renderable_nodes_[id - 1];
+                if (item == nullptr) {
+                    const Ogre::MeshPtr mesh = mesh_for(record->mesh_resource_id);
+                    if (!mesh) {
+                        refused += 1;
+                        refused_entry("renderable", id,
+                                      "mesh resource " + std::to_string(record->mesh_resource_id) +
+                                          " is not a realised mesh");
+                        continue;
+                    }
+                    item = scene_->createItem(mesh, Ogre::SCENE_DYNAMIC);
+                    items_[id - 1] = item;
+                    node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
+                               ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+                    renderable_nodes_[id - 1] = node;
+                    node->attachObject(item);
+                }
+                Ogre::HlmsDatablock *datablock = nullptr;
+                if (record->material_id >= 1 && record->material_id <= kMaterialCapacity) {
+                    datablock = datablocks_[record->material_id - 1];
+                }
+                if (datablock == nullptr) {
+                    refused += 1;
+                    refused_entry("renderable", id,
+                                  "material " + std::to_string(record->material_id) +
+                                      " has no datablock yet");
+                    continue;
+                }
+                item->setDatablock(datablock);
+                node->setPosition(record->px, record->py, record->pz);
+                node->setOrientation(
+                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
+                node->setScale(record->sx, record->sy, record->sz);
+            } catch (const std::exception &e) {
+                refused += 1;
+                refused_entry("renderable", id, e.what());
+            }
+        }
+        return refused;
+    }
+
+    void destroy_renderable(uint32_t id) {
+        Ogre::Item *item = items_[id - 1];
+        if (item == nullptr) return;
+        if (Ogre::SceneNode *node = renderable_nodes_[id - 1]) {
+            node->detachObject(item);
+            scene_->destroySceneNode(node);
+            renderable_nodes_[id - 1] = nullptr;
+        }
+        scene_->destroyItem(item);
+        items_[id - 1] = nullptr;
+    }
+
+    // ── the readback ─────────────────────────────────────────────────────
+
+    /// Everything the apply path made, unmade in the order that keeps a
+    /// reference from outliving its target: renderables (and their items),
+    /// then the lights, the cameras, the nodes and the datablocks.
+    void clear_scene() {
+        if (scene_ == nullptr) return;
+        for (uint32_t id = 1; id <= kRenderableCapacity; ++id) destroy_renderable(id);
+        for (uint32_t id = 1; id <= kLightCapacity; ++id) destroy_light(id);
+        for (uint32_t id = 1; id <= kCameraCapacity; ++id) destroy_camera(id);
+        for (uint32_t id = 1; id <= kNodeCapacity; ++id) destroy_node(id);
+        for (uint32_t id = 1; id <= kMaterialCapacity; ++id) destroy_material(id);
+        active_camera_ = nullptr;
+    }
+
+    /// Take the picture, if one was asked for and the window's download
+    /// ticket can be read. Called by the frame listener on the render thread,
+    /// after the frame is drawn and before it is swapped away; `true` keeps
+    /// rendering, which is always what this returns.
+    ///
+    /// A ticket that is not ready yet is not an error: the request stays
+    /// pending and the next frame tries again. That is why the guest's
+    /// probe/consume loop sees -1 for a frame or two before the bytes arrive.
+  public:
+    bool capture_if_ready() {
+        if (!readback_requested_.load()) return true;
+        try {
+            if (window_ == nullptr) return true;
+            if (!window_->canDownloadData()) return true; // not yet: next frame
+            Ogre::Image2 frame;
+            Ogre::TextureGpu *backbuffer = window_->getTexture();
+            frame.convertFromTexture(backbuffer, 0u, backbuffer->getNumMipmaps() - 1u);
+            const Ogre::TextureBox box = frame.getData(0);
+            const size_t width = box.width, height = box.height, bpp = box.bytesPerPixel;
+            {
+                std::lock_guard<std::mutex> lock(readback_mutex_);
+                last_frame_.assign(width * height * bpp, 0);
+                // Row by row: a TextureBox's rows are padded, a frame the guest
+                // parses is not.
+                for (size_t y = 0; y < height; ++y) {
+                    const uint8_t *row =
+                        static_cast<const uint8_t *>(box.data) + y * box.bytesPerRow;
+                    std::memcpy(last_frame_.data() + y * width * bpp, row, width * bpp);
+                }
+            }
+            readback_requested_.store(false);
+            window_->setWantsToDownload(false);
+            log_line("ogre: screenshot: " + std::to_string(width) + "x" + std::to_string(height) +
+                     " RGBA8 downloaded");
+        } catch (const std::exception &e) {
+            readback_requested_.store(false);
+            log_line(std::string("ogre: screenshot: the download reported: ") + e.what());
+        }
+        return true;
+    }
+
+  private:
     uint32_t renderer_ = TENSION_OGRE_RENDERER_NULL;
     bool is_null_rs_ = true;
     Ogre::Image2 image_;
@@ -505,6 +1050,7 @@ class BackendOgre final : public Backend {
     std::vector<Ogre::HlmsDatablock *> datablocks_ =
         std::vector<Ogre::HlmsDatablock *>(kMaterialCapacity, nullptr);
     std::vector<Ogre::String> datablock_names_ = std::vector<Ogre::String>(kMaterialCapacity);
+    std::vector<uint32_t> datablock_kinds_ = std::vector<uint32_t>(kMaterialCapacity);
     std::vector<Ogre::Item *> items_ = std::vector<Ogre::Item *>(kRenderableCapacity, nullptr);
     std::vector<Ogre::SceneNode *> renderable_nodes_ =
         std::vector<Ogre::SceneNode *>(kRenderableCapacity, nullptr);
@@ -514,10 +1060,13 @@ class BackendOgre final : public Backend {
     bool dirty_active_camera_ = false;
 
     /// Screenshot state: one request gives the next frame's pixels, which stay
-    /// until the next request (probe/consume, like `last_error`).
-    bool readback_requested_ = false;
+    /// until the guest has copied them out (probe/consume, like `last_error`).
+    /// The flag is written by the guest thread and read by the render thread;
+    /// the pixels themselves are copied under `readback_mutex_`.
+    std::atomic<bool> readback_requested_{false};
     bool supports_readback_ = false;
     std::vector<uint8_t> last_frame_;
+    std::mutex readback_mutex_;
     Ogre::ArchiveVec library_;
     std::vector<ResourceEntry> resources_; ///< index 0 unused: handles are 1-based
     uint32_t next_resource_ = 1;
@@ -527,6 +1076,7 @@ class BackendOgre final : public Backend {
     std::string render_system_name_;
     std::filesystem::path temp_dir_;
 
+    std::unique_ptr<ScreenshotListener> screenshot_listener_;
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;
@@ -536,6 +1086,10 @@ class BackendOgre final : public Backend {
 };
 
 } // namespace
+
+bool ScreenshotListener::frameRenderingQueued(const Ogre::FrameEvent &) {
+    return owner_->capture_if_ready();
+}
 
 std::unique_ptr<Backend> make_backend(const Config &config) {
     // The two render systems this build can bring up. Metal and Vulkan are in
