@@ -1,6 +1,17 @@
-// The OGRE capability's guest SDK: the nine verbs a guest may call, and the
+// The OGRE capability's guest SDK: the ten verbs a guest may call, and the
 // conveniences that make them usable (a config builder, a last-error reader,
-// and the record writers the submission verbs address).
+// the record writers the submission verbs address, and the frame counter).
+//
+// **Records and factories.** The wire records in `wire.ts` are dumb structs:
+// their field order *is* the wire order, nothing about them is clever, and the
+// offsets are pinned by a check a guest can run. The ergonomic layer lives on
+// them as small static factories — `CameraRecord.perspective`,
+// `Material.unlit`, `Renderable.at`, `SceneNode.at`,
+// `LightRecord.directional`/`.point` — each of which fills the fields a reader
+// would otherwise write out by hand and leaves the rest at the defaults the
+// catalogue already defines. A factory allocates one record and sets its
+// fields: it changes no layout, adds no verb, and is meant for setup, not for
+// a per-frame path.
 //
 // The split this module lives in (`DESIGN.md` §2, §7): the adapter owns the
 // renderer, the session owns delivery, and the guest owns the world. Nothing

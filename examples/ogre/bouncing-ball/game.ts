@@ -72,24 +72,20 @@ export function _start_game(): void {
   }
   if (ogre.jobState(job) != ogre.JOB_DONE) fail("Barrel.mesh did not load");
   const mesh = ogre.jobResult(job);
-  const material = new ogre.Material();
+  // The factories fill the records; the ids are the guest's own handles.
+  const material = ogre.Material.unlit(0.9, 0.6, 0.2);
   material.materialId = 1;
-  material.kind = ogre.MAT_HLMS_UNLIT;
-  material.diffuseR = 0.9; material.diffuseG = 0.6; material.diffuseB = 0.2;
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+
   // Eight units back, so every bounce stays in frame.
-  const camera = new ogre.CameraRecord();
+  const camera = ogre.CameraRecord.perspective(
+    45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 8.0);
   camera.cameraId = 1;
-  camera.fovY = 45.0 * (3.14159265358979 / 180.0);
-  camera.aspect = <f32>640 / <f32>480;
-  camera.nearClip = 0.1; camera.farClip = 100.0;
-  camera.positionZ = 8.0; camera.rotationW = 1.0;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
+
   // The ball starts where the solver starts it: three metres up, at rest.
-  const renderable = new ogre.Renderable();
-  renderable.renderableId = BALL; renderable.materialId = 1; renderable.meshResourceId = mesh;
-  renderable.positionY = 3.0; renderable.rotationW = 1.0;
-  renderable.scaleX = SCALE; renderable.scaleY = SCALE; renderable.scaleZ = SCALE;
+  const renderable = ogre.Renderable.at(mesh, 1, 0.0, 3.0, 0.0, SCALE);
+  renderable.renderableId = BALL;
   if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
   // The solver: the guest owns the derivative, the solver owns the integration.
   const solver_config = new SolverConfig();

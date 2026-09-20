@@ -153,6 +153,18 @@ export class SceneNode {
   scaleZ: f32 = 1;
   scalePad: f32 = 0;
   reserved: u64 = 0;
+
+  /// A node at a place, with the identity rotation and unit scale the fields
+  /// already default to. `parentId` stays 0: hierarchy is refused in this
+  /// chunk, and a factory that quietly set a parent would be the wrong kind of
+  /// helpful.
+  static at(x: f32 = 0, y: f32 = 0, z: f32 = 0): SceneNode {
+    const node = new SceneNode();
+    node.transformX = x;
+    node.transformY = y;
+    node.transformZ = z;
+    return node;
+  }
 }
 
 /** A light, 96 bytes. */
@@ -181,6 +193,38 @@ export class LightRecord {
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
   reserved: u64 = 0;
+
+  /// A directional light: a colour, an intensity, and the direction the light
+  /// travels in. No position — a directional light is everywhere.
+  static directional(r: f32, g: f32, b: f32, intensity: f32, dx: f32, dy: f32,
+                     dz: f32): LightRecord {
+    const light = new LightRecord();
+    light.kind = LIGHT_DIRECTIONAL;
+    light.colourR = r;
+    light.colourG = g;
+    light.colourB = b;
+    light.intensity = intensity;
+    light.directionX = dx;
+    light.directionY = dy;
+    light.directionZ = dz;
+    return light;
+  }
+
+  /// A point light at a place. `range` of 0 is no attenuation.
+  static point(r: f32, g: f32, b: f32, intensity: f32, x: f32, y: f32, z: f32,
+               range: f32 = 0): LightRecord {
+    const light = new LightRecord();
+    light.kind = LIGHT_POINT;
+    light.colourR = r;
+    light.colourG = g;
+    light.colourB = b;
+    light.intensity = intensity;
+    light.positionX = x;
+    light.positionY = y;
+    light.positionZ = z;
+    light.range = range;
+    return light;
+  }
 }
 
 /** A camera, 80 bytes. */
@@ -204,6 +248,22 @@ export class CameraRecord {
   viewportHeight: u32 = 0;
   reserved: u64 = 0;
   reserved2: u64 = 0;
+
+  /// A perspective camera looking down its own -Z (an OGRE camera's default),
+  /// which is why the rotation is left at the identity the field defaults to.
+  /// The viewport stays 0 x 0, which means the window's whole size.
+  static perspective(fovY: f32, aspect: f32, near: f32, far: f32, x: f32 = 0,
+                     y: f32 = 0, z: f32 = 0): CameraRecord {
+    const camera = new CameraRecord();
+    camera.fovY = fovY;
+    camera.aspect = aspect;
+    camera.nearClip = near;
+    camera.farClip = far;
+    camera.positionX = x;
+    camera.positionY = y;
+    camera.positionZ = z;
+    return camera;
+  }
 }
 
 /** One texture unit of a material, 16 bytes. */
@@ -247,6 +307,36 @@ export class Material {
   slot5Resource: u32 = 0; slot5Sampler: u32 = 0; slot5Flags: u32 = 0; slot5Uv: u32 = 0;
   slot6Resource: u32 = 0; slot6Sampler: u32 = 0; slot6Flags: u32 = 0; slot6Uv: u32 = 0;
   slot7Resource: u32 = 0; slot7Sampler: u32 = 0; slot7Flags: u32 = 0; slot7Uv: u32 = 0;
+
+  /// An Unlit material: a diffuse colour and nothing else, which is the
+  /// simplest thing a mesh can be drawn with — no lights, no texture slots.
+  static unlit(r: f32, g: f32, b: f32, a: f32 = 1.0): Material {
+    const material = new Material();
+    material.kind = MAT_HLMS_UNLIT;
+    material.diffuseR = r;
+    material.diffuseG = g;
+    material.diffuseB = b;
+    material.diffuseA = a;
+    material.opacity = a;
+    return material;
+  }
+
+  /// A PBS material: physically based, and *black* until the scene has a light
+  /// rig, which is why the examples use `unlit`. Here so the surface is
+  /// complete rather than half-documented.
+  static pbs(r: f32, g: f32, b: f32, roughness: f32 = 0.5, metalness: f32 = 0.0,
+             a: f32 = 1.0): Material {
+    const material = new Material();
+    material.kind = MAT_HLMS_PBS;
+    material.diffuseR = r;
+    material.diffuseG = g;
+    material.diffuseB = b;
+    material.diffuseA = a;
+    material.roughness = roughness;
+    material.metalness = metalness;
+    material.opacity = a;
+    return material;
+  }
 }
 
 /** A shader, 40 bytes: source bytes live in the `STRING` region. */
@@ -326,6 +416,24 @@ export class Renderable {
   scaleY: f32 = 1;
   scaleZ: f32 = 1;
   scalePad: f32 = 0;
+
+  /// A drawable: a mesh, a material, and a place in the world — the inline
+  /// transform this record carries, with the identity rotation it defaults to.
+  /// The id is yours to set; it is the guest's own handle, not part of the
+  /// shape.
+  static at(meshResourceId: u32, materialId: u32, x: f32 = 0, y: f32 = 0,
+            z: f32 = 0, scale: f32 = 1.0): Renderable {
+    const renderable = new Renderable();
+    renderable.meshResourceId = meshResourceId;
+    renderable.materialId = materialId;
+    renderable.positionX = x;
+    renderable.positionY = y;
+    renderable.positionZ = z;
+    renderable.scaleX = scale;
+    renderable.scaleY = scale;
+    renderable.scaleZ = scale;
+    return renderable;
+  }
 }
 
 /**

@@ -47,27 +47,24 @@ export function _start_game(): void {
   }
   if (ogre.jobState(job) != ogre.JOB_DONE) fail("Barrel.mesh did not load");
   const mesh = ogre.jobResult(job);
-  // Unlit is the simplest material: a colour, and no lights required.
-  const material = new ogre.Material();
+  // Unlit is the simplest material: a colour, and no lights required. The
+  // factories fill the shape; the ids are yours, because they are the guest's
+  // own handles.
+  const material = ogre.Material.unlit(0.9, 0.2, 0.2);
   material.materialId = 1;
-  material.kind = ogre.MAT_HLMS_UNLIT;
-  material.diffuseR = 0.9; material.diffuseG = 0.2; material.diffuseB = 0.2;
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+
   // Four units back on +Z. An OGRE camera looks down its own -Z, so an identity
   // rotation looks at the origin.
-  const camera = new ogre.CameraRecord();
+  const camera = ogre.CameraRecord.perspective(
+    45.0 * (3.14159265358979 / 180.0), <f32>320 / <f32>240, 0.1, 100.0, 0.0, 0.0, 4.0);
   camera.cameraId = 1;
-  camera.fovY = 45.0 * (3.14159265358979 / 180.0);
-  camera.aspect = <f32>320 / <f32>240;
-  camera.nearClip = 0.1; camera.farClip = 100.0;
-  camera.positionZ = 4.0; camera.rotationW = 1.0;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
+
   // A renderable is a mesh, a material and a place in the world; the barrel is
   // about five units across, so 0.02 fits it in the frame.
-  const renderable = new ogre.Renderable();
-  renderable.renderableId = 1; renderable.materialId = 1; renderable.meshResourceId = mesh;
-  renderable.rotationW = 1.0;
-  renderable.scaleX = 0.02; renderable.scaleY = 0.02; renderable.scaleZ = 0.02;
+  const renderable = ogre.Renderable.at(mesh, 1, 0.0, 0.0, 0.0, 0.02);
+  renderable.renderableId = 1;
   if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
 
   if (!windowed) {

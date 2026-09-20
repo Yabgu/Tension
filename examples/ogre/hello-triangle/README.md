@@ -37,5 +37,6 @@ rendered 34 frames, 72 non-background pixels, mean rgb 229/51/51
 `tension-framework/assembly/ogre/index.ts` — the verbs, the wrappers, and the
 record types each one takes; `tension-framework/assembly/ogre/wire.ts` — the
 exact byte layout of every record, with the offsets pinned by a check the guest
-can run (`assertOgreWireOffsets`). `tension-ogre/DESIGN.md` is the design
-record behind both.
+can run (`assertOgreWireOffsets`), and the factories this example builds its
+records with (`CameraRecord.perspective`, `Material.unlit`, `Renderable.at`).
+`tension-ogre/DESIGN.md` is the design record behind both.
