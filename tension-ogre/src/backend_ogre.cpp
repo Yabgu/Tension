@@ -237,12 +237,11 @@ class BackendOgre final : public Backend {
                 log_line("ogre: the NULL render system presents nothing; "
                          "running without a compositor workspace");
             } else {
-                // The definition is made here; the workspace itself waits for
-                // the guest's first camera. A workspace created for a
-                // placeholder camera and then destroyed and re-created
-                // mid-loop renders nothing afterwards (measured, 3b-ii): the
-                // swap is only good before the first frame, and the probe
-                // proves the first frame is enough.
+                // A workspace from the first frame, so the window is cleared
+                // and lit before the guest has said anything — the placeholder
+                // camera stands in until a submitted one replaces it, which is
+                // the probe's proven removeWorkspace + addWorkspace pair in
+                // `activate_camera`.
                 Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
                 compositors->createBasicWorkspaceDef("tension-basic",
                                                      Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
