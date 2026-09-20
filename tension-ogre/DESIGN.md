@@ -391,6 +391,30 @@ The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
 
+**`SCENE` owns three sub-tables by convention.** The region is 256 KiB and
+holds them end to end from its offset: 1024 × `SceneNode` (80 B), then 512 ×
+`CameraRecord` (80 B), then 1024 × `LightRecord` (96 B) — 216 KiB of the 256,
+with 40 KiB spare. The constants live in `assembly/ogre/wire.ts` and in
+`tension_ogre.h`, because the guest has to know them to write a camera into the
+right place. **This convention is not part of `layoutHash`**: the hash covers
+the protocol's shape, and `SCENE`'s internal split is the capability's own
+business. Adding a *region* would move the hash, bump `schemaVersion` and force
+every guest to be rebuilt; this does none of that, which is the point.
+
+**A `Renderable` is a self-placed leaf.** Its 64 bytes carry an inline
+transform — position @16, rotation @32, scale @48 — and **no `nodeId`**. So a
+renderable is placed by its own transform, and `SceneNode` exists for cameras,
+lights and (later) hierarchy. The guest composes transforms before writing the
+record; the adapter does not resolve a parent chain for a drawable.
+
+**Materials for the first triangle are Unlit.** `MAT_HLMS_UNLIT` with
+`setUseColour(true)` + `setColour(rgba)` is the milestone's path, and the
+reason is physical rather than stylistic: **a PBS datablock with no light
+renders black**, so a pixel assertion about "the material's colour" would need
+a light rig that 3b does not have. PBS datablocks are creatable — the Hlms is
+constructed and registered all the same — but nothing asserts how they look
+until there is a light to see them by.
+
 **Textures, and the abort that was not about the render system.** Round 3a-i's
 probe aborted inside `Ogre::Exception::~Exception` → `ObjCmdBuffer::clear()` when
 a texture was scheduled to Resident, and the first conclusion — "GPU textures
@@ -995,6 +1019,16 @@ chunk 1 work, and each is additive:
   `{typeId, size, align}` table would let the session name the first type that
   differs. It is also the mechanism a second protocol type catalogue would need
   when capability records join the manifest (§5.1).
+- **Scene hierarchy.** `parentId` composition: the solver-integrated animation
+  chunk is the first thing that needs a parent chain, and world transforms
+  composed from parents are exactly where a subtle bug hides. Flat nodes in 3b
+  are a deferral, not a design statement.
+- **More cameras, and split-screen.** 3b activates the first camera it is
+  given and leaves the others created but unattached; viewports per camera are
+  a compositor-workspace question for later.
+- **An Hlms template directory config key.** The templates' location is derived
+  from OGRE's prefix today; when the SDK key space opens past 7, it belongs in
+  the config beside the media search paths.
 - **A `resource_release` verb.** `job_release` frees a *job* slot; nothing yet
   frees a realised *resource*. A guest that cycles jobs can fill the RESOURCE
   table (1024 records) and start failing jobs with `-ENOSPC`, which is a
