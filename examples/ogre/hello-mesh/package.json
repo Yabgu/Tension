@@ -1,9 +1,9 @@
 {
-  "name": "tension-example-hello-triangle",
+  "name": "tension-example-hello-mesh",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TensionCore example: a triangle built out of guest memory with MeshBuilder, over the OGRE capability",
+  "description": "TensionCore example: a mesh, a material, a camera and a screenshot over the OGRE capability",
   "scripts": {
     "build": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
     "build:debug": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",

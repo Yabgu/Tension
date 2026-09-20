@@ -43,9 +43,11 @@ second, runnable surface.
   `wasm/` (rk45 on y' = -y), `world/` (a YAML scene through
   `source: "world"`) and `collision/` (two soft spheres in a square wall,
   rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
-  `ogre/` is the renderer's front door, two guests that print rather than
-  assert: `hello-triangle/` (one mesh, one material, one camera, a screenshot)
-  and `bouncing-ball/` (a solver-driven bounce through the motion table).
+  `ogre/` is the renderer's front door, three guests that print rather than
+  assert: `hello-triangle/` (a triangle built out of the guest's own memory with
+  `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded off disk
+  through the job queue) and `bouncing-ball/` (a solver-driven bounce through
+  the motion table).
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and

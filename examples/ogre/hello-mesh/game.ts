@@ -1,14 +1,13 @@
-// A triangle on screen, built out of nothing: no file, no loader, nine numbers.
-//
-// This is the smallest mesh a Tension game can make — `MeshBuilder.triangle`
-// writes three positions into the guest's own memory and `ogre::create_mesh`
-// turns them into a resource the renderer can draw, exactly as if a `.mesh`
-// file had been loaded. Its sibling `hello-mesh` takes the other road: a barrel
-// off disk through the job queue.
+// A barrel on screen: a mesh from a file, drawn and read back.
 //
 // The session runtime owns the loop, the arena and the events; a capability
 // adapter owns the renderer; this file owns the world. Nothing here draws — it
 // submits records, and the renderer reads them on its own thread.
+//
+// The mesh is the *loaded* kind: `Barrel.mesh` comes off disk through the job
+// queue and the resource id that comes back is what the renderable names. Its
+// sibling `hello-triangle` builds a mesh out of nothing but the guest's own
+// memory instead (`MeshBuilder`), which is the other way a mesh arrives.
 //
 //   ./run.sh                             a window, a screenshot, a summary
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
@@ -20,7 +19,7 @@ import * as ogre from "tension-framework/assembly/ogre";
 
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
-  print("hello-triangle: " + what);
+  print("hello-mesh: " + what);
   assert(false, what);
 }
 
@@ -40,42 +39,38 @@ export function _start_game(): void {
   }
   const config = new ogre.ConfigBuilder()
     .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
+    // 640x480 rather than something smaller: a window a human is looking at
+    // should be readable at a glance.
     .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
   const started = ogre.init(config);
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
 
-  // Nine numbers and three indices: a triangle in the XY plane, one unit either
-  // way from the origin. This is the whole mesh — no file, no job, no bytes to
-  // read.
-  const mesh = ogre.MeshBuilder.triangle(-1.0, -1.0, 0.0, 1.0, -1.0, 0.0, 0.0, 1.0, 0.0);
-  if (mesh <= 0) fail("MeshBuilder.triangle refused (" + mesh.toString() + ")");
-
-  // The id comes back *before* the mesh exists: only the render thread may make
-  // an OGRE object, so it is built on that thread's next pass and the resource
-  // record is where a guest learns it happened. Submitting a renderable against
-  // a resource that is not READY yet is refused and skipped, so wait for the
-  // record exactly as a loader's job is waited for.
-  while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
-    if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the mesh was never built");
-    RuntimeSession.wait(5);
+  // Loads are asynchronous: the job id is a handle you resolve when the result
+  // arrives. The worker reads the bytes; the render thread makes the mesh.
+  const job = ogre.queueMeshLoad("Barrel.mesh", 0);
+  if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
+  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
+    RuntimeSession.wait(10);
   }
-
-  // Unlit is the simplest material: a colour, and no lights required.
+  if (ogre.jobState(job) != ogre.JOB_DONE) fail("Barrel.mesh did not load");
+  const mesh = ogre.jobResult(job);
+  // Unlit is the simplest material: a colour, and no lights required. The
+  // factories fill the shape; the ids are yours, because they are the guest's
+  // own handles.
   const material = ogre.Material.unlit(0.9, 0.2, 0.2);
   material.materialId = 1;
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
 
   // Four units back on +Z. An OGRE camera looks down its own -Z, so an identity
-  // rotation looks at the origin — and at z=0 this camera's 45° frustum shows
-  // about ±1.65 units, which is why a triangle of ±1 fills the middle of it.
+  // rotation looks at the origin.
   const camera = ogre.CameraRecord.perspective(
-    45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
+    45.0 * (3.14159265358979 / 180.0), <f32>320 / <f32>240, 0.1, 100.0, 0.0, 0.0, 4.0);
   camera.cameraId = 1;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
-  // A renderable is a mesh, a material and a place in the world. Scale 1.0: the
-  // triangle is already the size this camera shows.
-  const renderable = ogre.Renderable.at(mesh, 1, 0.0, 0.0, 0.0, 1.0);
+  // A renderable is a mesh, a material and a place in the world; the barrel is
+  // about five units across, so 0.02 fits it in the frame.
+  const renderable = ogre.Renderable.at(mesh, 1, 0.0, 0.0, 0.0, 0.02);
   renderable.renderableId = 1;
   if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
 
