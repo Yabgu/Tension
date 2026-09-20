@@ -328,6 +328,38 @@ export class Renderable {
   scalePad: f32 = 0;
 }
 
+/**
+ * One entry of the motion table, 64 bytes (chunk 4): a renderable's whole
+ * transform and nothing else. The table lives at the start of `BUFFER_POOL`,
+ * the guest writes it, and `ogre::submit_motion(count)` names how much of it is
+ * live — one call per frame instead of one per body.
+ *
+ * **Flat fields, like every other record here.** An AssemblyScript field whose
+ * type is a class is a *reference*: `position: Vec3f` would be a 4-byte pointer
+ * and this record would not be 64 bytes. The `Transformf` layout is written out
+ * instead, at the offsets `Renderable`'s inline transform already uses
+ * (16/32/48), so the two read the same way — and `pad0` is what puts them
+ * there, because a record holding a `Quatf` aligns that `Quatf` to 16.
+ */
+@unmanaged
+export class MotionUpdate {
+  renderableId: u32 = 0;
+  flags: u32 = 0;
+  pad0: u64 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  pad1: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  pad2: f32 = 0;
+}
+
 /** One job, 64 bytes: what the session reports into `JOB`. */
 @unmanaged
 export class Job {
@@ -425,6 +457,19 @@ export const MATERIAL_SIZE: u32 = 208;
 export const RENDERABLE_COUNT: u32 = 2048;
 export const RENDERABLE_SIZE: u32 = 64;
 
+// --- the motion table (chunk 4) ---------------------------------------------
+//
+// One `MotionUpdate` per moving body, written by the guest at the start of
+// `BUFFER_POOL` and named in full to `ogre::submit_motion(count)`. The
+// capacity is the smaller of what the renderable table can hold and what the
+// region has room for: min(2048, 4 MiB / 64).
+
+/** One `MotionUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
+export const MOTION_SIZE: u32 = 64;
+
+/** How many entries the table can hold. */
+export const MOTION_CAPACITY: u32 = 2048;
+
 // --- the offset check ------------------------------------------------------
 
 /**
@@ -479,6 +524,14 @@ function ogreWireOffsetsProblem(): string | null {
   if (offsetof<Buffer>("reserved") + 8 != 48) return "Buffer size";
   if (offsetof<Renderable>("positionX") != 16) return "Renderable.positionX";
   if (offsetof<Renderable>("scalePad") + 4 != 64) return "Renderable size";
+  // The motion table's record: the id pair, then the transform at the offsets
+  // Renderable's inline one uses. `pad0` is what makes the transform land on
+  // 16, and the record end at 64.
+  if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
+  if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
+  if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
+  if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
+  if (offsetof<MotionUpdate>("pad2") + 4 != 64) return "MotionUpdate size";
   if (offsetof<Job>("priority") != 16) return "Job.priority";
   if (offsetof<Job>("progress") != 24) return "Job.progress";
   if (offsetof<Job>("seq") != 40) return "Job.seq";

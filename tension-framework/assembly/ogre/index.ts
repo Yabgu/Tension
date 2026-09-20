@@ -38,8 +38,16 @@ import {
   MATERIAL_COUNT,
   RENDERABLE_SIZE,
   RENDERABLE_COUNT,
+  MOTION_SIZE,
+  MOTION_CAPACITY,
 } from "./wire";
-import { REGION_JOB, REGION_SCENE, REGION_MATERIAL, REGION_RENDERABLE } from "../runtime/wire";
+import {
+  REGION_JOB,
+  REGION_SCENE,
+  REGION_MATERIAL,
+  REGION_RENDERABLE,
+  REGION_BUFFER_POOL,
+} from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
 import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
 
@@ -353,8 +361,18 @@ export function checkSubmissionRegions(): bool {
   return (
     regionSize(REGION_SCENE) >= SCENE_TABLE_BYTES &&
     regionSize(REGION_MATERIAL) >= MATERIAL_COUNT * MATERIAL_SIZE &&
-    regionSize(REGION_RENDERABLE) >= RENDERABLE_COUNT * RENDERABLE_SIZE
+    regionSize(REGION_RENDERABLE) >= RENDERABLE_COUNT * RENDERABLE_SIZE &&
+    regionSize(REGION_BUFFER_POOL) >= MOTION_SIZE * MOTION_CAPACITY
   );
+}
+
+/**
+ * Where the motion table starts: the first byte of `BUFFER_POOL`. Read from the
+ * layout at runtime, never baked — the region's offset is the arena's business,
+ * and this SDK only addresses it.
+ */
+export function getMotionBase(): usize {
+  return regionOffset(REGION_BUFFER_POOL);
 }
 
 /** `checkSubmissionRegions`, as an assertion that names what is short. */

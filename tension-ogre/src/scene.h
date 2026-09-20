@@ -74,6 +74,16 @@ struct RenderableRecord {
     float px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, rw = 1, sx = 1, sy = 1, sz = 1;
 };
 
+/// One entry of the motion table (`wire.ts`'s `MotionUpdate`, 64 bytes) — a
+/// renderable's whole transform and nothing else (chunk 4). The transform sits
+/// at the same offsets `Renderable`'s inline one does, so the two read alike.
+struct MotionUpdate {
+    uint32_t renderable_id = 0, flags = 0;
+    float px = 0, py = 0, pz = 0;
+    float rx = 0, ry = 0, rz = 0, rw = 1;
+    float sx = 1, sy = 1, sz = 1;
+};
+
 /// The five submission verbs' `kind` argument and the two `op`s.
 constexpr uint32_t kSubmitNode = 0;
 constexpr uint32_t kSubmitCamera = 1;
@@ -103,6 +113,14 @@ class SceneMirror {
     int32_t remove_material(uint32_t id);
     int32_t upsert_renderable(uint32_t id, const RenderableRecord &record);
     int32_t remove_renderable(uint32_t id);
+
+    /// Apply one motion-table entry (chunk 4): copy the transform into the
+    /// renderable's record and mark it dirty. Liveness is the only check — the
+    /// mesh and material were validated when the renderable was submitted, and
+    /// a live entry's references are already known good, so re-validating them
+    /// every frame would be work for nobody. `-EINVAL` for an id outside the
+    /// table, `-ENOENT` for one that is not live (there is nothing to move).
+    int32_t apply_motion(uint32_t id, const MotionUpdate &update);
 
     // ── decoders: a record out of a guest-written region (no OGRE) ───────
     static bool decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNodeRecord &out);

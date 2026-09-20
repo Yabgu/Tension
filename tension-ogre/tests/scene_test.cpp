@@ -131,6 +131,139 @@ void test_remove_material_in_use_refused() {
     check(!mirror.material_live(1), "it is gone");
 }
 
+// ── chunk 4: the motion table ───────────────────────────────────────────
+
+/// A mirror holding one live renderable (id 1) that uses material 1 and mesh
+/// resource 42, which is all a motion test needs to be true.
+SceneMirror mirror_with_one_renderable() {
+    SceneMirror mirror;
+    MaterialRecord material;
+    material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
+    mirror.upsert_material(1, material);
+    mirror.set_resource_check([](uint32_t id, uint32_t kind) {
+        return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
+    });
+    mirror.upsert_renderable(1, renderable_using(1, 42));
+    mirror.clear_dirty();
+    return mirror;
+}
+
+MotionUpdate motion_at(float x, float y, float z) {
+    MotionUpdate update;
+    update.px = x;
+    update.py = y;
+    update.pz = z;
+    update.rw = 1.0f;
+    update.sx = update.sy = update.sz = 1.0f;
+    return update;
+}
+
+void test_apply_motion_updates_transform_and_marks_dirty() {
+    std::printf("test_apply_motion_updates_transform_and_marks_dirty\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    check_eq(mirror.apply_motion(1, motion_at(0.25f, -0.5f, 0.0f)), 0, "a live renderable moves");
+    check(listed(mirror.dirty_renderables(), 1), "and is marked dirty for the render thread");
+    const RenderableRecord *record = mirror.renderable(1);
+    check(record != nullptr, "the record is still there");
+    if (record != nullptr) {
+        check(record->px > 0.249f && record->px < 0.251f, "x landed in the record");
+        check(record->py > -0.501f && record->py < -0.499f, "y landed in the record");
+        check(record->pz > -0.001f && record->pz < 0.001f, "z landed in the record");
+    }
+    // A second motion in the same epoch must not double-list the id: the dirty
+    // list is what the render thread walks, and a guest stepping at 60 Hz is
+    // the normal case, not the exception.
+    check_eq(mirror.apply_motion(1, motion_at(0.5f, 0.0f, 0.0f)), 0, "a second motion applies");
+    size_t occurrences = 0;
+    for (uint32_t id : mirror.dirty_renderables()) {
+        if (id == 1) ++occurrences;
+    }
+    check_eq(static_cast<int64_t>(occurrences), 1, "the id is listed once, not once per motion");
+}
+
+void test_apply_motion_unknown_id_returns_enoent() {
+    std::printf("test_apply_motion_unknown_id_returns_enoent\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    check_eq(mirror.apply_motion(2, motion_at(1.0f, 0.0f, 0.0f)), -ENOENT,
+             "a renderable that was never submitted cannot be moved");
+    check(!listed(mirror.dirty_renderables(), 2), "and lists nothing");
+    mirror.remove_renderable(1);
+    check_eq(mirror.apply_motion(1, motion_at(1.0f, 0.0f, 0.0f)), -ENOENT,
+             "nor can a removed one");
+    check_eq(mirror.apply_motion(0, motion_at(1.0f, 0.0f, 0.0f)), -EINVAL, "id 0 is never valid");
+    check_eq(mirror.apply_motion(kRenderableCapacity + 1, motion_at(1.0f, 0.0f, 0.0f)), -EINVAL,
+             "nor is an id past the table");
+}
+
+void test_apply_motion_leaves_material_and_mesh_untouched() {
+    std::printf("test_apply_motion_leaves_material_and_mesh_untouched\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    MotionUpdate update = motion_at(-1.5f, 2.5f, 0.25f);
+    update.rx = 0.0f;
+    update.ry = 0.7071068f;
+    update.rz = 0.0f;
+    update.rw = 0.7071068f;
+    update.sx = update.sy = update.sz = 0.5f;
+    check_eq(mirror.apply_motion(1, update), 0, "the motion applies");
+    const RenderableRecord *record = mirror.renderable(1);
+    check(record != nullptr, "the record is there");
+    if (record != nullptr) {
+        // The three fields a motion must never disturb: a solver that moved a
+        // body must not repoint it at another mesh or material.
+        check_eq(record->material_id, 1, "the material reference is untouched");
+        check_eq(record->mesh_resource_id, 42, "the mesh resource is untouched");
+        check_eq(record->renderable_id, 1, "and the id is untouched");
+        check(record->ry > 0.707f && record->ry < 0.708f, "the rotation landed");
+        check(record->sx > 0.499f && record->sx < 0.501f, "the scale landed");
+    }
+    check(mirror.material_live(1), "the material is still live");
+    check(mirror.renderable_live(1), "and so is the renderable");
+}
+
+void test_apply_motion_multiple_bodies() {
+    std::printf("test_apply_motion_multiple_bodies\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    const uint32_t bodies = 8;
+    for (uint32_t id = 1; id <= bodies; ++id) {
+        check_eq(mirror.upsert_renderable(id, renderable_using(1, 42)), 0, "a body is submitted");
+    }
+    mirror.clear_dirty();
+    for (uint32_t id = 1; id <= bodies; ++id) {
+        check_eq(mirror.apply_motion(id, motion_at(static_cast<float>(id) * 0.25f, 0.0f, 0.0f)), 0,
+                 "each body moves");
+    }
+    check_eq(static_cast<int64_t>(mirror.dirty_renderables().size()), static_cast<int64_t>(bodies),
+             "every body is dirty once");
+    for (uint32_t id = 1; id <= bodies; ++id) {
+        const RenderableRecord *record = mirror.renderable(id);
+        const float want = static_cast<float>(id) * 0.25f;
+        check(record != nullptr && record->px > want - 0.001f && record->px < want + 0.001f,
+              "each body landed at its own x");
+    }
+}
+
+void test_apply_motion_sequence_of_frames() {
+    std::printf("test_apply_motion_sequence_of_frames\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    // Sixty frames of one body moving +X at 0.5 units/s in 1/60 s steps: the
+    // shape the chunk-4 acid test drives, at the mirror's level.
+    const float dt = 1.0f / 60.0f;
+    const float velocity = 0.5f;
+    for (int frame = 0; frame < 60; ++frame) {
+        const float x = velocity * dt * static_cast<float>(frame);
+        check_eq(mirror.apply_motion(1, motion_at(x, 0.0f, 0.0f)), 0, "the frame's motion applies");
+        check(listed(mirror.dirty_renderables(), 1), "the frame is dirty");
+        const RenderableRecord *record = mirror.renderable(1);
+        check(record != nullptr && record->px > x - 0.0001f && record->px < x + 0.0001f,
+              "this frame's x landed");
+        mirror.clear_dirty();
+        check(mirror.dirty_renderables().empty(), "and the list is clear for the next frame");
+    }
+    const RenderableRecord *record = mirror.renderable(1);
+    check(record != nullptr && record->px > 0.4916f && record->px < 0.4917f,
+          "after sixty frames the body is where 59 steps of the solver put it");
+}
+
 void test_decode_node_bounds_check() {
     std::printf("test_decode_node_bounds_check\n");
     std::vector<uint8_t> region(kNodeRecordBytes * 2, 0);
@@ -183,6 +316,11 @@ int main() {
     test_upsert_renderable_validates_material_live();
     test_upsert_renderable_validates_mesh_resource_kind();
     test_remove_material_in_use_refused();
+    test_apply_motion_updates_transform_and_marks_dirty();
+    test_apply_motion_unknown_id_returns_enoent();
+    test_apply_motion_leaves_material_and_mesh_untouched();
+    test_apply_motion_multiple_bodies();
+    test_apply_motion_sequence_of_frames();
     test_decode_node_bounds_check();
     test_decode_record_fields_land_where_wire_says();
     std::printf("%d checks, %d failures\n", checks, failures);

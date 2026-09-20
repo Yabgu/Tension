@@ -397,6 +397,14 @@ sub-chunk may write the capability catalogue that
 `Item::setDatablock`, and attached with `node->attachObject(item)`. Measured,
 after a guess in the other direction cost a probe.
 
+**`createItem` needs both Hlms registered, not just the one its datablock
+comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
+sub-items name the material `RustyBarrel`, OGRE routes an unknown material name
+to the PBS Hlms, and with only `HlmsUnlit` registered `createItem` **segfaults**
+inside `Hlms::getDefaultDatablock` — it does not refuse. The adapter registers
+both for that reason; anything that builds an OGRE scene from these meshes must
+too.
+
 **The Hlms is built from archives, and links separately.** `HlmsUnlit` and
 `HlmsPbs` take an `Archive*` (their language folder, `Media/Hlms/<Hlms>/GLSL`)
 and an `ArchiveVec*` of library folders, with the sources first and the library
@@ -534,6 +542,46 @@ adapter knows both names.** The guest addresses a resource by the id the
 (`ResourceHandle`, 1-based, index 0 unused). `Backend::set_resource_lookup` is
 that mapping, wired once at link time from the loader's table, and it is the
 only reason `apply_submissions` can bind an `Item` to a `MeshPtr`.
+
+**The motion table is chunk 4's batch path for transforms.** A table of 64-byte
+`MotionUpdate` records sits at the start of `BUFFER_POOL` — a region that
+existed, guest-written and 4 MiB, and that nothing had declared until now — and
+one verb, `ogre::submit_motion(count)` (id 10, flags 0), names how much of it is
+live. The guest writes N entries and makes **one** call per frame; the adapter
+reads the whole table during that call. That removes N wasm→host transitions
+per frame and leaves the one O(N) that cannot be amortized: N transforms must
+reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`,
+`pad0 u64@8`, then the transform at **16/32/48** — the same offsets
+`Renderable`'s inline transform uses, with `pad0` being what puts a `Quatf` on a
+16-byte boundary. Capacity is `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
+2048. **The batch is all-or-nothing**: an entry naming a renderable the mirror
+does not hold live refuses the whole call with `-ENOENT` and a log line naming
+the index, because a half-applied frame is worse than a refused one.
+
+**Motion targets renderables, not cameras or lights.** A camera driven by a
+solver is a distinct feature with its own assertion — a follow-cam changes what
+"the object moved" means — and chunk 4 does not have one.
+
+**The motion read happens inside the import call, on the interpreter thread.**
+The guest thread writes the table and calls `submit_motion`; the shim takes
+`scene_mutex`, does **one** `guest_read` of `count × 64` bytes into host memory,
+decodes, and applies each entry to the mirror. That is the only guest-memory
+touch in the path, and it is in one of the three phases the ABI permits it
+(`publish`, `apply`, an import call). Publish is not engaged at all: motion
+writes nothing to guest memory, so the epoch's byte budget is untouched.
+`SceneMirror::apply_motion` checks liveness only — the mesh and material were
+validated when the renderable was submitted, and re-validating them sixty times
+a second would be work for nobody.
+
+**Measured: moving items every frame is cheap, so the batch removes calls rather
+than work.** `tests/probe_motion.cpp`, GL3+ on this install: the per-frame
+transform pass costs **1.6 µs at 64 items, 4.4 µs at 256, 12.2 µs at 1024**
+(~12 ns per node), while `renderOneFrame()` costs 205–337 µs and is *not*
+measurably slower in the moving phase than in a static one (256 items: 331 µs
+moving against 344 µs static). Nothing is re-created — the scene holds 1024
+children before and after — and the world AABB moves by exactly the transform's
+delta. Chunk 4's ceiling is therefore the mirror walk and the guest's own loop,
+not OGRE.
 
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
@@ -1097,10 +1145,15 @@ chunk 1 work, and each is additive:
 - **An Hlms template directory key.** The templates' location is derived from
   OGRE's prefix today (`Media/Hlms/...`); an install with a non-standard media
   path should be targetable by config or environment rather than by a rebuild.
-- **Scene hierarchy.** `parentId` composition: the solver-integrated animation
-  chunk is the first thing that needs a parent chain, and world transforms
-  composed from parents are exactly where a subtle bug hides. Flat nodes in 3b
-  are a deferral, not a design statement.
+- **Scene hierarchy.** `parentId` composition, deferred out of chunk 4 by
+  decision rather than by accident. The wire's `Renderable` is self-placed with
+  a *world* transform and solver output is world positions, so a parent chain
+  buys nothing for a rigid body; the guest composes world transforms itself
+  until a clause needs one. What it will cost when it lands: a parent table,
+  cycle detection, depth ordering, cached world transforms invalidated when a
+  parent's changes, and a removal rule for a parent with live children (today
+  `remove_node` refuses with `-EBUSY`). The trigger is the skinned mesh, where
+  bones are a chain because skinning is one.
 - **More cameras, and split-screen.** 3b activates the first camera it is
   given and leaves the others created but unattached; viewports per camera are
   a compositor-workspace question for later.
@@ -1266,8 +1319,25 @@ single session and asserts its own results, printing a pass/fail summary line �
   transform says it should;
 - *multiple objects*: N objects at distinct transforms, with the camera
   asserting what the scene holds;
-- *solver integration*: a solver-driven transform asserted at frame 30, a
-  skinned mesh asserted at frame 60;
+- *solver integration (chunk 4)*: a solver steps once per renderer frame and
+  drives 64 bodies through **one** `submit_motion` call per frame. Structural:
+  the mesh loads, material/camera/renderable submit, the solver is created
+  (`rk45`, `dim = 2`), a batch of 64 is accepted in one call, the frame counter
+  advances. Visual: a baseline centroid at frame F; after 30 renderer frames the
+  non-background pixel count is within ±30% of the baseline; the centroid moved
+  **+X** by at least 18 px; the centroid delta equals the solver's own Δx over
+  the measured units-per-pixel within **±4 px**; frame rate ≥ 30 fps at N = 64.
+  Two choices make that deterministic rather than flaky: **constant velocity**,
+  because the screenshot's request→download latency is a constant offset that
+  cancels in a delta — an oscillator, the natural demo, would bias it — and
+  **one solver step per renderer frame**, because the comparison is pixels
+  against the solver's own state and never against a clock. The pixels-per-unit
+  the tolerance rests on is measured, not derived: `probe_motion --calibrate`
+  puts the barrel at x = 0, +0.25, +0.5 and reads the centroid back — **72.09
+  px/unit measured against 72.4 analytic, 0.4% off**, i.e. 0.01387 units/px at
+  the fixture's camera;
+- *skinned mesh*: asserted at frame 60, and the chunk that makes hierarchy
+  necessary;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is

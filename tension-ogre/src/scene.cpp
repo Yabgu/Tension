@@ -157,6 +157,27 @@ int32_t SceneMirror::remove_renderable(uint32_t id) {
     return 0;
 }
 
+int32_t SceneMirror::apply_motion(uint32_t id, const MotionUpdate &update) {
+    if (id == 0 || id > kRenderableCapacity) return -EINVAL;
+    RenderableEntry &entry = renderables_[id - 1];
+    // Not live means nothing was submitted at this id, so there is no OGRE
+    // object to move and no record to move it for. The mesh and material
+    // references a live entry holds were validated at submit time.
+    if (!entry.live) return -ENOENT;
+    entry.rec.px = update.px;
+    entry.rec.py = update.py;
+    entry.rec.pz = update.pz;
+    entry.rec.rx = update.rx;
+    entry.rec.ry = update.ry;
+    entry.rec.rz = update.rz;
+    entry.rec.rw = update.rw;
+    entry.rec.sx = update.sx;
+    entry.rec.sy = update.sy;
+    entry.rec.sz = update.sz;
+    mark(dirty_renderables_, id);
+    return 0;
+}
+
 // ── decoders ────────────────────────────────────────────────────────────
 //
 // Two forms of each: `_at` decodes one record already in host memory (what the
