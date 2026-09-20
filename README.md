@@ -43,6 +43,9 @@ second, runnable surface.
   `wasm/` (rk45 on y' = -y), `world/` (a YAML scene through
   `source: "world"`) and `collision/` (two soft spheres in a square wall,
   rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
+  `ogre/` is the renderer's front door, two guests that print rather than
+  assert: `hello-triangle/` (one mesh, one material, one camera, a screenshot)
+  and `bouncing-ball/` (a solver-driven bounce through the motion table).
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and
@@ -254,6 +257,16 @@ is built first):
 cd examples/io    && npm start  # io example (build + run)
 cd examples/audio && npm start  # audio example (build + run)
 cd examples/ai    && npm start  # ai example (fetches models/Phi-3-mini-4k-instruct-q4.gguf on first run; MODEL=... to override)
+```
+
+The two renderer examples run through their own script, because a guest that
+uses a capability needs the adapter built and the framework's generated layout:
+
+```sh
+cd examples/ogre/hello-triangle && ./run.sh                             # headless
+cd examples/ogre/hello-triangle && TENSION_OGRE_WINDOW_TEST=1 ./run.sh  # a real window
+cd examples/ogre/bouncing-ball  && ./run.sh                             # headless
+cd examples/ogre/bouncing-ball  && TENSION_OGRE_WINDOW_TEST=1 ./run.sh  # a real window
 ```
 
 ## Debugging
