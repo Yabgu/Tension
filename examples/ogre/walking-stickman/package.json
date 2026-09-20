@@ -1,0 +1,19 @@
+{
+  "name": "tension-example-walking-stickman",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: a rigged stickman walking, driven by a solver and posed through the bone table",
+  "scripts": {
+    "build": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
+    "build:debug": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
+    "run": "../../../tension-core/target/debug/tension-core --capability ../../../tension-ogre/build/libtension_ogre.so build/game.wasm --renderer=null",
+    "start": "./run.sh"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
