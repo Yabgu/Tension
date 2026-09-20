@@ -180,9 +180,15 @@ int main(int argc, char **argv) {
         Ogre::ArchiveVec library;
         library.push_back(archives.load(std::string(kMedia) + "/Hlms/Common/GLSL", "FileSystem", true));
         library.push_back(archives.load(std::string(kMedia) + "/Hlms/Common/Any", "FileSystem", true));
+        // The per-Hlms language-independent pieces: these are what the GLSL
+        // folders' shaders @insertpiece(...) from, and without them the
+        // composed source is missing whole fragments.
+        library.push_back(archives.load(std::string(kMedia) + "/Hlms/Unlit/Any", "FileSystem", true));
+        library.push_back(archives.load(std::string(kMedia) + "/Hlms/Pbs/Any", "FileSystem", true));
 
         unlit = new Ogre::HlmsUnlit(unlit_glsl, &library);
         pbs = new Ogre::HlmsPbs(pbs_glsl, &library);
+        unlit->setDebugOutputPath(true, false, "shader_dump");
         root.getHlmsManager()->registerHlms(unlit);
         root.getHlmsManager()->registerHlms(pbs);
         ok("HlmsUnlit + HlmsPbs constructed from archives; registerHlms accepted both");
