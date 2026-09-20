@@ -50,16 +50,22 @@ void check_eq(uint64_t got, uint64_t want, const std::string &what) {
 /// can be told to refuse.
 class MockBackend final : public Backend {
   public:
+    /// What `realise_mesh` reports as the mesh's rig size.
+    uint32_t bones = 0;
     int32_t start(const Config &, StatusWriter &) override { return 0; }
     int32_t frame(StatusWriter &) override { return 0; }
     int32_t stop(StatusWriter &) override { return 0; }
     const char *name() const override { return "mock"; }
 
-    int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) override {
+    int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
+                         uint32_t *out_bones) override {
         meshes += 1;
         last_mesh_bytes = len;
         last_mesh_magic_ok = len > 0 && bytes[0] == '[';
         if (refuse) return -EIO;
+        // A rigged mesh's bone count is what the loader records for the mirror
+        // and the guest; this mock claims one so a test can watch it travel.
+        if (out_bones != nullptr) *out_bones = bones;
         *out = next_handle++;
         return 0;
     }
@@ -256,11 +262,17 @@ void test_worker_reads_bytes_and_completes() {
     const uint32_t at = loader->slot_of(static_cast<uint32_t>(job));
     const JobSlot slot = loader->job_at(at);
     check_eq(slot.state, TENSION_OGRE_JOB_DONE, "the job is DONE");
-    check_eq(slot.resource_id, 1, "and has resource id 1");
+    // Resource ids are 1-based over the RESOURCE region, and slot 1 is the
+    // renderer's own record — so the first resource the loader hands out is the
+    // one after it. The two records collided before chunk 5b made a guest read
+    // a resource's fields (a rigged mesh reported itself unrigged, because the
+    // record the guest read was the renderer's).
+    check_eq(slot.resource_id, TENSION_OGRE_RESOURCE_RENDERER + 1,
+             "and has the first resource id past the renderer's slot");
     check_eq(slot.job_id, static_cast<uint64_t>(job), "under the id it was given");
     check_eq(recorder.count(TENSION_OGRE_CLASS_JOB_DONE), 1, "one JOB_DONE posted");
 
-    const ResourceSlot resource = loader->resource_at(1);
+    const ResourceSlot resource = loader->resource_at(TENSION_OGRE_RESOURCE_RENDERER + 1);
     check_eq(resource.state, TENSION_OGRE_RES_STATE_READY, "the resource record is READY");
     check_eq(resource.kind, TENSION_OGRE_RES_KIND_MESH, "and knows it is a mesh");
 
@@ -273,7 +285,8 @@ void test_worker_reads_bytes_and_completes() {
     check_eq(copied_state, TENSION_OGRE_JOB_DONE, "and the copy says DONE");
     const uint32_t copied_resource = static_cast<uint32_t>(record[20]) |
                                      (static_cast<uint32_t>(record[21]) << 8);
-    check_eq(copied_resource, 1, "and carries the resource id");
+    check_eq(copied_resource, TENSION_OGRE_RESOURCE_RENDERER + 1,
+             "and carries the resource id");
 }
 
 void test_worker_reports_enoent_for_missing_file() {

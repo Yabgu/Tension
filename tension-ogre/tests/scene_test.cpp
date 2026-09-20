@@ -430,6 +430,114 @@ void test_apply_motion_sequence_of_frames() {
           "after sixty frames the body is where 59 steps of the solver put it");
 }
 
+// ── chunk 5b: the bone table ────────────────────────────────────────────
+
+/// The same mirror, plus the loader's answer about rigs: mesh resource 42
+/// carries 19 bones — `Stickman.mesh`'s count, which the probe measured — and
+/// nothing else is rigged.
+SceneMirror mirror_with_one_rigged_renderable() {
+    SceneMirror mirror = mirror_with_one_renderable();
+    mirror.set_bone_count([](uint32_t resource_id) -> uint32_t {
+        return resource_id == 42 ? 19u : 0u;
+    });
+    return mirror;
+}
+
+BoneUpdate bone_at(uint32_t renderable_id, uint32_t bone_index, float rx) {
+    BoneUpdate update;
+    update.renderable_id = renderable_id;
+    update.bone_index = bone_index;
+    update.rx = rx;
+    update.rw = 1.0f;
+    update.sx = update.sy = update.sz = 1.0f;
+    return update;
+}
+
+void test_apply_bones_accepts_valid_batch() {
+    std::printf("test_apply_bones_accepts_valid_batch\n");
+    SceneMirror mirror = mirror_with_one_rigged_renderable();
+    const uint32_t before = mirror.bone_generation();
+    const std::vector<BoneUpdate> batch{bone_at(1, 0, 0.5f), bone_at(1, 6, 0.25f)};
+
+    check_eq(mirror.apply_bones(batch.data(), static_cast<uint32_t>(batch.size())), 0,
+             "a valid batch is accepted");
+    check_eq(mirror.bone_update_count(), 2, "both entries landed");
+    check_eq(mirror.bone_updates()[1].bone_index, 6, "the second entry is the one sent");
+    check(mirror.bone_updates()[1].rx > 0.24f && mirror.bone_updates()[1].rx < 0.26f,
+          "with its own transform");
+    check(mirror.bone_generation() > before, "and the generation advanced");
+}
+
+void test_apply_bones_refuses_unknown_renderable() {
+    std::printf("test_apply_bones_refuses_unknown_renderable\n");
+    SceneMirror mirror = mirror_with_one_rigged_renderable();
+    const uint32_t before = mirror.bone_generation();
+    const BoneUpdate update = bone_at(7, 0, 0.5f);
+
+    check_eq(mirror.apply_bones(&update, 1), -ENOENT, "an id with nothing at it is -ENOENT");
+    check_eq(mirror.bone_update_count(), 0, "and nothing was recorded");
+    check_eq(mirror.bone_generation(), before, "and the generation did not move");
+
+    const BoneUpdate outside = bone_at(kRenderableCapacity + 1, 0, 0.5f);
+    check_eq(mirror.apply_bones(&outside, 1), -EINVAL, "an id past the table is -EINVAL");
+}
+
+void test_apply_bones_refuses_non_rigged_renderable() {
+    std::printf("test_apply_bones_refuses_non_rigged_renderable\n");
+    // The renderable is live and its mesh is live; the mesh simply has no
+    // skeleton, which is the loader's answer and not something the mirror can
+    // see for itself.
+    SceneMirror mirror = mirror_with_one_renderable();
+    const BoneUpdate update = bone_at(1, 0, 0.5f);
+
+    check_eq(mirror.apply_bones(&update, 1), -EINVAL, "a static mesh has no bones to pose");
+    check_eq(mirror.bone_update_count(), 0, "and nothing was recorded");
+}
+
+void test_apply_bones_refuses_bone_index_out_of_range() {
+    std::printf("test_apply_bones_refuses_bone_index_out_of_range\n");
+    SceneMirror mirror = mirror_with_one_rigged_renderable();
+    const BoneUpdate last = bone_at(1, 18, 0.5f);
+    const BoneUpdate past = bone_at(1, 19, 0.5f);
+
+    check_eq(mirror.apply_bones(&last, 1), 0, "bone 18 of 19 is inside the rig");
+    check_eq(mirror.apply_bones(&past, 1), -EINVAL, "bone 19 of 19 is past it");
+    check_eq(mirror.bone_update_count(), 1, "and the refusal left the last good batch alone");
+}
+
+void test_apply_bones_all_or_nothing() {
+    std::printf("test_apply_bones_all_or_nothing\n");
+    SceneMirror mirror = mirror_with_one_rigged_renderable();
+    const std::vector<BoneUpdate> first{bone_at(1, 6, 0.1f)};
+    check_eq(mirror.apply_bones(first.data(), 1), 0, "a good batch lands");
+
+    // The second entry is bad. The first one is good, and it must not land:
+    // a batch is one frame's pose, and half of one is a shape nobody asked for.
+    const std::vector<BoneUpdate> mixed{bone_at(1, 7, 0.9f), bone_at(1, 99, 0.9f)};
+    check_eq(mirror.apply_bones(mixed.data(), static_cast<uint32_t>(mixed.size())), -EINVAL,
+             "one bad entry refuses the batch");
+    check_eq(mirror.bone_update_count(), 1, "the batch's length is unchanged");
+    check(mirror.bone_updates()[0].bone_index == 6 && mirror.bone_updates()[0].rx < 0.11f,
+          "and the entry that was already there is what is still there");
+}
+
+void test_apply_bones_advances_generation() {
+    std::printf("test_apply_bones_advances_generation\n");
+    SceneMirror mirror = mirror_with_one_rigged_renderable();
+    const std::vector<BoneUpdate> batch{bone_at(1, 6, 0.5f)};
+
+    check_eq(mirror.apply_bones(batch.data(), 1), 0, "the first batch lands");
+    const uint32_t first = mirror.bone_generation();
+    // The same pose again, to the byte. The mirror still counts it as a new
+    // snapshot: only the render thread knows whether re-applying is worth it.
+    check_eq(mirror.apply_bones(batch.data(), 1), 0, "the same batch lands again");
+    check(mirror.bone_generation() > first, "and the generation advances anyway");
+
+    const BoneUpdate empty = bone_at(1, 6, 0.5f);
+    check_eq(mirror.apply_bones(&empty, 0), -EINVAL, "an empty batch is refused");
+    check_eq(mirror.apply_bones(nullptr, 1), -EINVAL, "a null batch is refused");
+}
+
 void test_decode_node_bounds_check() {
     std::printf("test_decode_node_bounds_check\n");
     std::vector<uint8_t> region(kNodeRecordBytes * 2, 0);
@@ -497,6 +605,12 @@ int main() {
     test_apply_motion_leaves_material_and_mesh_untouched();
     test_apply_motion_multiple_bodies();
     test_apply_motion_sequence_of_frames();
+    test_apply_bones_accepts_valid_batch();
+    test_apply_bones_refuses_unknown_renderable();
+    test_apply_bones_refuses_non_rigged_renderable();
+    test_apply_bones_refuses_bone_index_out_of_range();
+    test_apply_bones_all_or_nothing();
+    test_apply_bones_advances_generation();
     test_decode_node_bounds_check();
     test_decode_record_fields_land_where_wire_says();
     std::printf("%d checks, %d failures\n", checks, failures);

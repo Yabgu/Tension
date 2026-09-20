@@ -65,7 +65,13 @@ class Backend {
     // path, and it happens here so that every OGRE call in this adapter is made
     // by one thread. A negative return fails the job with that errno.
 
-    virtual int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
+    /// `out_bones` receives the mesh's bone count — 0 for a static mesh, the
+    /// rig's size for a rigged one. It is an out-parameter rather than a
+    /// separate query because realisation is the moment the answer exists, and
+    /// three things need it: the mirror's bone-batch validation, the guest's
+    /// `isRigged`, and the backend's own skeleton bookkeeping.
+    virtual int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
+                                 uint32_t *out_bones) = 0;
     virtual int32_t realise_texture(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
     /// Apply the guest's scene submissions on this thread: create, update and
     /// destroy the renderer's objects from the mirror's dirty lists. 3b-ii.

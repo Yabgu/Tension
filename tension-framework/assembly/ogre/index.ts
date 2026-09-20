@@ -51,7 +51,11 @@ import {
   RENDERABLE_COUNT,
   MOTION_SIZE,
   MOTION_CAPACITY,
+  RESOURCE_SIZE,
   RESOURCE_SEQ_OFFSET,
+  RESOURCE_FLAGS_OFFSET,
+  RESOURCE_SIZE_OFFSET,
+  RES_RIGGED,
 } from "./wire";
 import {
   REGION_JOB,
@@ -66,6 +70,7 @@ import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/string
 
 export * from "./wire";
 export * from "./motion";
+export * from "./bones";
 
 /** `ogre::init(cfg)`: 0, or the errno the adapter refused with. */
 @external("ogre", "init")
@@ -396,6 +401,35 @@ export function getResourceBase(): usize {
 
 export function frameCount(): u64 {
   return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
+}
+
+/**
+ * Whether a mesh resource carries a skeleton.
+ *
+ * The loader records what it saw when it realised the mesh — the v1 -> v2
+ * conversion is what knows whether a rig survived, and nothing on the guest
+ * side can look inside the file. A rigged mesh also puts its **bone count** in
+ * the record's `size`, where other resources put bytes.
+ *
+ * The same read that makes `frameCount()` cheap: the record is the truth, and
+ * no verb is needed to ask about it.
+ */
+export function isRigged(resourceId: u32): bool {
+  return (resourceFlags(resourceId) & RES_RIGGED) != 0;
+}
+
+/** How many bones a rigged mesh has, or 0 for anything that is not one. */
+export function boneCount(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  if ((load<u32>(record + RESOURCE_FLAGS_OFFSET) & RES_RIGGED) == 0) return 0;
+  return load<u32>(record + RESOURCE_SIZE_OFFSET);
+}
+
+function resourceFlags(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_FLAGS_OFFSET);
 }
 
 /** `checkSubmissionRegions`, as an assertion that names what is short. */

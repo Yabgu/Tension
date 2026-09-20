@@ -77,6 +77,12 @@ struct ResourceSlot {
     uint32_t name_offset = 0;
     uint32_t name_length = 0;
     ResourceHandle handle = kNoResourceHandle;
+    /// A rigged mesh's bone count, as the backend reported it when it realised
+    /// the mesh; 0 for everything else. The guest sees it in the record's `size`
+    /// field with bit 0 of `flags` set, and the mirror asks for it here — the
+    /// render thread owns the backend, so this is the only copy the guest
+    /// thread may read.
+    uint32_t bone_count = 0;
     bool dirty = false;
 };
 
@@ -149,6 +155,12 @@ class Loader {
     /// timeout expires. Returns true when it went idle.
     bool wait_for_idle(uint32_t timeout_ms);
     ResourceSlot resource_at(uint32_t resource_id) const;
+
+    /// The bone count the backend reported for `resource_id`, or 0 when the
+    /// resource is not a rigged mesh. Safe to call from the guest thread: it
+    /// takes the loader's own lock, and the number was recorded at realisation
+    /// and never changes for a live resource.
+    uint32_t resource_bone_count(uint32_t resource_id) const;
     JobSlot job_at(uint32_t slot_index) const;
     /// The slot a job currently occupies, or `kCapacity` when it has none.
     uint32_t slot_of(uint32_t job_id) const;
@@ -157,7 +169,7 @@ class Loader {
     void worker_main();
     void slot_state_for_worker(uint32_t slot_index);
     void fail_slot(uint32_t slot_index, int32_t error, const LoaderSink &sink);
-    uint32_t allocate_resource(JobSlot &job, ResourceHandle handle);
+    uint32_t allocate_resource(JobSlot &job, ResourceHandle handle, uint32_t bone_count);
     JobSlot *slot_for(uint32_t job_id);
     const JobSlot *slot_for(uint32_t job_id) const;
     size_t in_flight_or_zero() const;
@@ -173,7 +185,16 @@ class Loader {
     std::deque<LoadCompletion> completions_;
     std::vector<std::string> search_paths_;
     LoaderSink sink_;
-    uint32_t next_resource_id_ = 1;
+    /// Resource ids are 1-based over the RESOURCE region, and **slot 1 belongs
+    /// to the renderer**: `TENSION_OGRE_RESOURCE_RENDERER` is 1, and the adapter
+    /// writes the renderer's own record there every publish. The loader
+    /// therefore starts at 2 — an id of 1 would put the first resource in the
+    /// renderer's slot, and the two records would overwrite each other. Nothing
+    /// noticed while a resource id was only ever an opaque handle; it surfaced
+    /// the moment the guest read a field of a resource's record (chunk 5b's
+    /// `isRigged`, whose first read came back saying the rigged mesh was not
+    /// rigged, because the record it read was the renderer's).
+    uint32_t next_resource_id_ = 2;
     bool stopping_ = false;
     bool worker_busy_ = false; ///< true while the worker is inside a read
     std::thread worker_;

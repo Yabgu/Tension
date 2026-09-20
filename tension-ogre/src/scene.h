@@ -51,6 +51,13 @@ constexpr uint32_t kMotionRecordBytes = 64;
 /// arithmetic is asserted where the region is declared.
 constexpr uint32_t kMotionCapacity = kRenderableCapacity;
 
+/// One bone-table entry: `wire.ts`'s `BoneUpdate`, the motion record's layout
+/// with `boneIndex` where `flags` was. It lives in `BUFFER_POOL` past the motion
+/// table, so `kBoneTableOffset` is an offset within the region.
+constexpr uint32_t kBoneRecordBytes = 64;
+constexpr uint32_t kBoneTableOffset = kMotionRecordBytes * kMotionCapacity;
+constexpr uint32_t kBoneCapacity = kRenderableCapacity;
+
 /// SCENE's internal split: nodes, then cameras, then lights, end to end.
 constexpr uint32_t kCameraTableOffset = kNodeCapacity * kNodeRecordBytes;
 constexpr uint32_t kLightTableOffset = kCameraTableOffset + kCameraCapacity * kCameraRecordBytes;
@@ -102,6 +109,17 @@ struct MotionUpdate {
     float sx = 1, sy = 1, sz = 1;
 };
 
+/// One entry of the bone table (`wire.ts`'s `BoneUpdate`, 64 bytes) — which
+/// bone of which renderable, and its local transform (chunk 5b). A rig is not
+/// a scene node and this is not a motion update: the entry names a bone inside
+/// a renderable, and the transform is the bone's own.
+struct BoneUpdate {
+    uint32_t renderable_id = 0, bone_index = 0;
+    float px = 0, py = 0, pz = 0;
+    float rx = 0, ry = 0, rz = 0, rw = 1;
+    float sx = 1, sy = 1, sz = 1;
+};
+
 /// The five submission verbs' `kind` argument and the two `op`s.
 constexpr uint32_t kSubmitNode = 0;
 constexpr uint32_t kSubmitCamera = 1;
@@ -119,6 +137,15 @@ class SceneMirror {
     using ResourceKindFn = std::function<bool(uint32_t resource_id, uint32_t kind)>;
 
     void set_resource_check(ResourceKindFn check) { resource_check_ = std::move(check); }
+
+    /// "How many bones does this mesh resource's rig have?" — 0 when the
+    /// resource has no skeleton, is not a mesh, or is not live. Asked of the
+    /// loader, which is the only thing that has looked inside the mesh file; the
+    /// mirror keeps no shadow copy of a fact it cannot verify. A bone batch is
+    /// refused against this, so a pose sent to a static mesh is an error the
+    /// guest hears about rather than a silent no-op.
+    using BoneCountFn = std::function<uint32_t(uint32_t resource_id)>;
+    void set_bone_count(BoneCountFn check) { bone_count_fn_ = std::move(check); }
 
     /// Where the mirror says why it refused. Optional, and deliberately the
     /// same shape as the loader's sink: a unit test that never sets it gets the
@@ -147,6 +174,24 @@ class SceneMirror {
     /// table, `-ENOENT` for one that is not live (there is nothing to move).
     int32_t apply_motion(uint32_t id, const MotionUpdate &update);
 
+    /// Apply a whole bone batch at once (chunk 5b). Every entry is validated
+    /// against the mirror's own tables and the loader's rig knowledge before any
+    /// of it lands, because a batch is one frame's pose: a half-applied pose
+    /// would be a rig bent to a shape nobody asked for. `-EINVAL` or `-ENOENT`
+    /// naming the index and the field on the first bad entry, nothing applied;
+    /// `0` on success, with the batch copied and the generation bumped. The
+    /// generation advances even when the batch repeats the previous one — the
+    /// caller decides whether to re-apply, the mirror only records that a new
+    /// snapshot arrived.
+    int32_t apply_bones(const BoneUpdate *updates, uint32_t count);
+
+    /// The pose snapshot, and a counter that changes when a new one lands. The
+    /// render thread compares the counter against what it has already applied,
+    /// so a still rig costs nothing.
+    const BoneUpdate *bone_updates() const { return bones_.data(); }
+    uint32_t bone_update_count() const { return bone_count_; }
+    uint32_t bone_generation() const { return bone_generation_; }
+
     // ── decoders: a record out of a guest-written region (no OGRE) ───────
     static bool decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNodeRecord &out);
     static bool decode_camera(const uint8_t *region, size_t len, uint32_t id, CameraRecord &out);
@@ -157,6 +202,8 @@ class SceneMirror {
                                   RenderableRecord &out);
     /// One motion-table entry, out of the table the guest wrote in `BUFFER_POOL`.
     static bool decode_motion_at(const uint8_t *record, MotionUpdate &out);
+    /// One bone-table entry, out of the table past the motion table.
+    static bool decode_bone_at(const uint8_t *record, BoneUpdate &out);
 
     /// The same decoders for one record already in host memory (the submit
     /// verb copies a single record out of the region before decoding it).
@@ -223,6 +270,10 @@ class SceneMirror {
     std::vector<uint32_t> dirty_nodes_, dirty_cameras_, dirty_lights_, dirty_materials_,
         dirty_renderables_;
     ResourceKindFn resource_check_;
+    BoneCountFn bone_count_fn_;
+    std::vector<BoneUpdate> bones_{kBoneCapacity};
+    uint32_t bone_count_ = 0;
+    uint32_t bone_generation_ = 0;
 };
 
 } // namespace tension_ogre

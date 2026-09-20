@@ -630,6 +630,48 @@ reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`,
 does not hold live refuses the whole call with `-ENOENT` and a log line naming
 the index, because a half-applied frame is worse than a refused one.
 
+**The bone table is chunk 5b's batch path for a rig.** A second table of
+64-byte `BoneUpdate` records sits in `BUFFER_POOL` past the motion table
+(`BONE_TABLE_OFFSET` = 128 KiB, so motion is the first 128 KiB and bones the
+next), and one verb, `ogre::submit_bones(count)` (id 11, flags 0), names how
+much of it is live. Same shape as motion, for the same reason: a rig poses many
+bones per frame and wasm→host transitions are the part that does not have to be
+O(N). The record is `renderableId u32@0`, `boneIndex u32@4`, `pad0 u64@8`, then
+the transform at **16/32/48** — motion's layout with a bone index where `flags`
+was. Capacity 2048. The batch is **all-or-nothing**, and validation asks the
+loader rather than keeping its own copy of an answer only the loader has:
+`renderableId` must be live, that renderable's mesh must be **rigged**, and
+`boneIndex` must be inside that rig — `-ENOENT` and `-EINVAL`, naming the index
+and the field, with nothing applied.
+
+**A bone is not a scene node.** Bones are OGRE's own `SkeletonInstance::Bone`
+— the rig `createItem` builds out of a rigged mesh's skeleton — and
+deliberately not `SceneNode`s: a rig in the scene graph would be walked,
+frustum-culled and destroyed like a scene object, which is the wrong layer for
+something the guest addresses by index. OGRE-Next 3.0 has no
+`Item::setSkeletonInstance` and needs none; `item->getSkeletonInstance()` is the
+pointer the bone pass poses, and it is null for a static mesh.
+
+**A rig costs one integer compare per frame.** The mirror holds the batch, its
+count, and a **generation**; the render thread applies the table only when the
+generation differs from the one it last applied, so a still rig is free. A
+repeated batch still bumps it — the mirror records that a snapshot arrived, and
+whether re-applying is worth anything is the render thread's question, not the
+mirror's. What applying costs when it does happen: **2.2-2.9 µs per frame** for
+a 19-bone rig (probe, 300 frames), against ~1.2 ms for a Forward+ frame.
+
+**The rigged-resource flag, and the collision it exposed.** A mesh resource says
+it is rigged in its `Resource` record's `flags` (bit 0, `RES_RIGGED`) and puts
+its **bone count** in `size`, where other resources put bytes — that is
+`isRigged` / `boneCount` for the guest, with no verb and no event. Writing those
+fields exposed a latent bug worth recording here: resource ids are 1-based over
+the `RESOURCE` region and **slot 1 is the renderer's own record**
+(`TENSION_OGRE_RESOURCE_RENDERER` = 1), so the loader now allocates from 2 and
+slot 1 keeps its meaning. The collision was invisible for four chunks because a
+resource id was only ever an opaque handle; the first guest to read a resource
+*field* read the renderer's record instead and was told the rigged mesh had no
+rig.
+
 **Hierarchy is the wire's `parentId`, and the composition is OGRE's.** Chunk 5
 lifts 3b's refusal. The adapter does **not** compose world transforms: it maps
 `SceneNode.parentId` onto `Ogre::SceneNode` parenting (`addChild`,
@@ -1284,8 +1326,11 @@ chunk 1 work, and each is additive:
   used to predict — "cached world transforms invalidated when a parent's
   changes" — was over-estimated: that cache is the renderer's, and what the
   adapter actually pays is validation, the removal rules, and on-demand parent
-  creation. What remains deferred is *skeleton* hierarchy, which is OGRE's own
-  `SkeletonInstance` and a separate mechanism (chunk 5b).
+  creation. Skeleton hierarchy landed in 5b as the bone table, and it is OGRE's
+  own `SkeletonInstance` rather than a second scene graph (see §5.1). The same
+  entry's estimate held up there too: what the adapter pays is one integer
+  compare per frame, a validation pass over the batch, and 2.2-2.9 µs when the
+  rig actually moves.
 - **More cameras, and split-screen.** 3b activates the first camera it is
   given and leaves the others created but unattached; viewports per camera are
   a compositor-workspace question for later.

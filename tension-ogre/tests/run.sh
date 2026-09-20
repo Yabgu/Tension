@@ -63,6 +63,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-hierarchy.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-hierarchy.wasm" >/dev/null ||
     fail "guest-hierarchy.ts did not compile"
+"$asc" "$here/guest-skinning.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-skinning.wasm" >/dev/null ||
+    fail "guest-skinning.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -158,6 +161,21 @@ hierarchy_case() {
     echo "$stdout" | grep -E '^(baseline|after):' | sed 's/^/== '"$name"': /' || true
 }
 hierarchy_case hierarchy --renderer=null
+
+# Chunk 5b: a rigged mesh deforms because its bone was posed. Nothing in the
+# fixture submits motion — that is the clause that makes the pixels a claim
+# about skinning rather than about a moving object.
+skinning_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-skinning.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (6/6 passed \(structural, renderer=null\)|10/10 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^(baseline|final|report):' | sed 's/^/== '"$name"': /' || true
+}
+skinning_case skinning --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -177,6 +195,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         motion_case motion-throughput --renderer=gl3plus --bodies=64
         # Chunk 5a: the child's world position is the parent's to decide.
         hierarchy_case hierarchy-gl3plus --renderer=gl3plus
+        # Chunk 5b: the rig, not the object.
+        skinning_case skinning-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

@@ -291,6 +291,57 @@ int32_t SceneMirror::apply_motion(uint32_t id, const MotionUpdate &update) {
     return 0;
 }
 
+int32_t SceneMirror::apply_bones(const BoneUpdate *updates, uint32_t count) {
+    if (updates == nullptr) return -EINVAL;
+    if (count == 0 || count > kBoneCapacity) {
+        note("bones: a batch of " + std::to_string(count) + " does not fit a table of " +
+             std::to_string(kBoneCapacity));
+        return -EINVAL;
+    }
+    // Validation first, over the whole batch, because validation and application
+    // interleaved is how a batch ends up half-applied: the first bad entry would
+    // arrive after some poses had already landed, and a rig bent to a shape
+    // nobody asked for is worse than a refused frame.
+    for (uint32_t i = 0; i < count; ++i) {
+        const BoneUpdate &update = updates[i];
+        if (update.renderable_id == 0 || update.renderable_id > kRenderableCapacity) {
+            note("bones[" + std::to_string(i) + "]: renderableId " +
+                 std::to_string(update.renderable_id) + " is outside the renderable table");
+            return -EINVAL;
+        }
+        const RenderableEntry &entry = renderables_[update.renderable_id - 1];
+        if (!entry.live) {
+            note("bones[" + std::to_string(i) + "]: renderableId " +
+                 std::to_string(update.renderable_id) + " is not live");
+            return -ENOENT;
+        }
+        // The rig question belongs to the loader — it is the only thing that has
+        // looked inside the mesh — and 0 bones is the honest answer for a static
+        // mesh, an unloaded one, and a resource that is not a mesh at all.
+        const uint32_t bones = bone_count_fn_ ? bone_count_fn_(entry.rec.mesh_resource_id) : 0;
+        if (bones == 0) {
+            note("bones[" + std::to_string(i) + "]: renderableId " +
+                 std::to_string(update.renderable_id) + " names mesh resource " +
+                 std::to_string(entry.rec.mesh_resource_id) + ", which has no skeleton");
+            return -EINVAL;
+        }
+        if (update.bone_index >= bones) {
+            note("bones[" + std::to_string(i) + "]: boneIndex " +
+                 std::to_string(update.bone_index) + " is past the " + std::to_string(bones) +
+                 " bones of mesh resource " + std::to_string(entry.rec.mesh_resource_id));
+            return -EINVAL;
+        }
+    }
+    for (uint32_t i = 0; i < count; ++i) bones_[i] = updates[i];
+    bone_count_ = count;
+    // The generation advances even when the batch repeats the last one. The
+    // mirror records that a snapshot arrived; whether it is worth re-applying is
+    // the render thread's question, and answering it here would mean the mirror
+    // comparing batches it has no reason to keep.
+    ++bone_generation_;
+    return 0;
+}
+
 // ── decoders ────────────────────────────────────────────────────────────
 //
 // Two forms of each: `_at` decodes one record already in host memory (what the
@@ -404,6 +455,18 @@ bool SceneMirror::decode_motion_at(const uint8_t *r, MotionUpdate &out) {
     out.flags = u32(r, 4);
     // The same three offsets a Renderable's inline transform uses, which is the
     // point of the record's shape: one reading of a transform for both.
+    read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+                   out.sy, out.sz);
+    return true;
+}
+
+bool SceneMirror::decode_bone_at(const uint8_t *r, BoneUpdate &out) {
+    if (r == nullptr) return false;
+    out = BoneUpdate{};
+    out.renderable_id = u32(r, 0);
+    out.bone_index = u32(r, 4);
+    // The motion record's transform offsets, for the motion record's reason: one
+    // reading of a transform serves every record that carries one.
     read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;

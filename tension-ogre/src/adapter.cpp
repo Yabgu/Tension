@@ -38,6 +38,7 @@ constexpr uint32_t kVerbJobRelease = 7;
 constexpr uint32_t kVerbSubmit = 8;
 constexpr uint32_t kVerbScreenshot = 9;
 constexpr uint32_t kVerbSubmitMotion = 10;
+constexpr uint32_t kVerbSubmitBones = 11;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -527,6 +528,64 @@ int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, te
     return 0;
 }
 
+/// `ogre::submit_bones(count)` — the bone table, read in one call (chunk 5b).
+///
+/// The same shape as `submit_motion`, one table further into `BUFFER_POOL`: the
+/// guest writes `count` 64-byte `BoneUpdate` records at `BONE_TABLE_OFFSET` and
+/// names them here. The batch is all-or-nothing for the same reason motion's is
+/// — a half-applied pose is a rig bent to a shape nobody asked for — and for one
+/// more: validation asks the loader for the target's bone count, so a batch that
+/// is refused is refused before any bone moves.
+///
+/// Like motion, this touches guest memory once (the one `guest_read`), on the
+/// guest thread, inside an import call. `publish` is not engaged.
+int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    const int32_t count = args[0].i32;
+    if (count <= 0 || count > static_cast<int32_t>(kBoneCapacity)) {
+        char line[160];
+        std::snprintf(line, sizeof(line), "ogre: submit_bones refused: %d entries is not in 1..%u",
+                      count, kBoneCapacity);
+        log_line(3, line);
+        return -EINVAL;
+    }
+    const size_t bytes = static_cast<size_t>(count) * kBoneRecordBytes;
+    if (s.motion_size < kBoneTableOffset + bytes) {
+        log_line(3, "ogre: submit_bones refused: the BUFFER_POOL region is smaller than "
+                    "the bone table");
+        return -EINVAL;
+    }
+    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+
+    std::vector<uint8_t> table(bytes);
+    if (s.api->guest_read(s.api->user, s.motion_offset + kBoneTableOffset, table.data(),
+                          static_cast<uint32_t>(bytes)) != 0) {
+        return -EINVAL;
+    }
+
+    std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
+    std::vector<BoneUpdate> batch(static_cast<size_t>(count));
+    for (int32_t i = 0; i < count; ++i) {
+        const uint8_t *entry = table.data() + static_cast<size_t>(i) * kBoneRecordBytes;
+        if (!SceneMirror::decode_bone_at(entry, batch[static_cast<size_t>(i)])) return -EINVAL;
+    }
+    // The mirror owns the liveness and rig checks, and owns the message that
+    // names the entry that failed: it is the only thing holding both tables and
+    // the loader's rig knowledge at once.
+    const int32_t applied = s.scene.apply_bones(batch.data(), static_cast<uint32_t>(count));
+    if (applied != 0) {
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "ogre: submit_bones refused a batch of %d (errno %d); nothing applied",
+                      count, applied);
+        log_line(3, line);
+        return applied;
+    }
+    ret->i32 = count;
+    return 0;
+}
+
 /// `ogre::screenshot(ptr, cap)` — probe/consume over the last downloaded frame,
 /// and a request for the next one. `cap <= 0` asks the length; `cap > 0` copies
 /// `min(cap, len)` bytes and consumes them. `-1` means no frame is available.
@@ -615,6 +674,8 @@ int32_t adapter_link(void *, const tension_core_api *core) {
          TENSION_IMPORT_REENTRANT_READONLY},
         // The batch path: one call per frame for N moving bodies (chunk 4).
         {"submit_motion", one_i32, 1, shim_submit_motion, kVerbSubmitMotion, 0},
+        // And one per frame for a whole rig's pose (chunk 5b).
+        {"submit_bones", one_i32, 1, shim_submit_bones, kVerbSubmitBones, 0},
     };
 
     for (const Registration &registration : registrations) {
@@ -687,6 +748,12 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     // the depth it measured, the child holding a node open. The adapter owns
     // the log, so the mirror only formats.
     s.scene.set_log([](const std::string &message) { log_line(3, "ogre: " + message); });
+
+    // And whether a mesh can be posed at all. The loader records a rigged
+    // mesh's bone count when the backend realises it; the mirror asks here so
+    // that a bone batch aimed at a static mesh is refused rather than ignored.
+    s.scene.set_bone_count(
+        [](uint32_t resource_id) { return adapter_state().loader.resource_bone_count(resource_id); });
 
     // What the loader needs from the session, without knowing the session
     // exists: a way to post an event and a way to say something.

@@ -474,6 +474,33 @@ export class MotionUpdate {
   pad2: f32 = 0;
 }
 
+/** One bone pose, 64 bytes — one entry of the bone table (DESIGN.md §5.1,
+ * chunk 5b). Same layout as `MotionUpdate`, with `boneIndex` where the motion
+ * record carries `flags`: a rig is posed by naming a renderable *and* a bone
+ * inside it, and the transform that follows is the bone's local transform.
+ *
+ * The table lives in `BUFFER_POOL` after the motion table, so `BONE_TABLE_OFFSET`
+ * is an offset *within the region*, not a region.
+ */
+@unmanaged
+export class BoneUpdate {
+  renderableId: u32 = 0;
+  boneIndex: u32 = 0;
+  pad0: u64 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  pad1: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  pad2: f32 = 0;
+}
+
 /** One job, 64 bytes: what the session reports into `JOB`. */
 @unmanaged
 export class Job {
@@ -507,6 +534,11 @@ export const RES_MESH: u32 = 0;
 export const RES_TEXTURE: u32 = 1;
 export const RES_SHADER: u32 = 2;
 export const RES_FONT: u32 = 3;
+
+/** A mesh resource that carries a skeleton, in the `Resource` record's `flags`
+ * (DESIGN.md §5.1). The resource's `size` carries the *bone count* for these,
+ * where other resources carry bytes. */
+export const RES_RIGGED: u32 = 1;
 
 export const RES_STATE_REQUESTED: u32 = 0;
 export const RES_STATE_LOADING: u32 = 1;
@@ -547,6 +579,11 @@ export const RESOURCE_SIZE: u32 = 48;
 
 /** A `Resource` record's `seq`, in bytes from the record's start. */
 export const RESOURCE_SEQ_OFFSET: u32 = 40;
+
+/** Its `flags` (bit 0 is `RES_RIGGED`) and its `size` (a rigged mesh's bone
+ * count), in bytes from the record's start. */
+export const RESOURCE_FLAGS_OFFSET: u32 = 12;
+export const RESOURCE_SIZE_OFFSET: u32 = 16;
 
 /** One `Job`, in bytes — the stride of the `JOB` region's table. */
 export const JOB_SIZE: u32 = 64;
@@ -592,6 +629,21 @@ export const MOTION_SIZE: u32 = 64;
 /** How many entries the table can hold. */
 export const MOTION_CAPACITY: u32 = 2048;
 
+// --- the bone table (chunk 5b) ----------------------------------------------
+//
+// A second table of the same stride, past the motion table's 128 KiB:
+// `BONE_TABLE_OFFSET` + `BONE_SIZE * BONE_CAPACITY` must fit inside the region
+// alongside the motion table, and the arithmetic below is what says so.
+
+/** One `BoneUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
+export const BONE_SIZE: u32 = 64;
+
+/** How many entries the bone table can hold. */
+export const BONE_CAPACITY: u32 = 2048;
+
+/** Where the bone table starts, in bytes from `BUFFER_POOL`'s first byte. */
+export const BONE_TABLE_OFFSET: u32 = MOTION_SIZE * MOTION_CAPACITY;
+
 // --- the offset check ------------------------------------------------------
 
 /**
@@ -633,6 +685,35 @@ export function assertOgreMotionOffsets(): void {
   }
 }
 
+/**
+ * The bone record's offsets, on their own.
+ *
+ * The motion record's layout with `boneIndex` where `flags` was, checked
+ * separately for the same reason: a guest that poses a rig depends on these
+ * fields by name, and the record's size is the table's stride.
+ */
+function ogreBoneOffsetsProblem(): string | null {
+  if (offsetof<BoneUpdate>("pad0") != 8) return "BoneUpdate.pad0";
+  if (offsetof<BoneUpdate>("positionX") != 16) return "BoneUpdate.positionX";
+  if (offsetof<BoneUpdate>("rotationX") != 32) return "BoneUpdate.rotationX";
+  if (offsetof<BoneUpdate>("scaleX") != 48) return "BoneUpdate.scaleX";
+  if (offsetof<BoneUpdate>("pad2") + 4 != BONE_SIZE) return "BoneUpdate size";
+  return null;
+}
+
+/** Whether this build's `BoneUpdate` matches the catalogue. */
+export function checkOgreBoneOffsets(): bool {
+  return ogreBoneOffsetsProblem() == null;
+}
+
+/** `checkOgreBoneOffsets`, as an assertion that names the field that moved. */
+export function assertOgreBoneOffsets(): void {
+  const problem = ogreBoneOffsetsProblem();
+  if (problem != null) {
+    assert(false, "the bone record's offsets do not match the catalogue: " + problem);
+  }
+}
+
 function ogreWireOffsetsProblem(): string | null {
   // Math: the small ones are pure width, and the two padded ones carry their
   // pad as a field so the container arithmetic below stays honest.
@@ -652,6 +733,13 @@ function ogreWireOffsetsProblem(): string | null {
   // Refs.
   if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
   if (offsetof<BufferRef>("length") != 4 || offsetof<BufferRef>("length") + 4 != 8) return "BufferRef";
+
+  // The two moving tables. Checked here as well as by their own assertions so a
+  // build that forgets to call them still catches a moved field.
+  const motion = ogreMotionOffsetsProblem();
+  if (motion != null) return motion;
+  const bone = ogreBoneOffsetsProblem();
+  if (bone != null) return bone;
 
   // Records.
   if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";

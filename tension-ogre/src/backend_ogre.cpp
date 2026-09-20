@@ -29,6 +29,7 @@
 #include <OgreLight.h>
 #include <OgreLogManager.h>
 #include <OgreQuaternion.h>
+#include <OgreResourceGroupManager.h>
 #include <OgreRoot.h>
 #include <OgreSceneManager.h>
 #include <OgreSceneNode.h>
@@ -37,6 +38,9 @@
 #include <OgreWindow.h>
 
 #include <Compositor/OgreCompositorManager2.h>
+#include <Animation/OgreBone.h>
+#include <Animation/OgreSkeletonDef.h>
+#include <Animation/OgreSkeletonInstance.h>
 #include <Hlms/Pbs/OgreHlmsPbs.h>
 #include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
@@ -45,6 +49,7 @@
 
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -221,6 +226,13 @@ class BackendOgre final : public Backend {
             // clear colour *is* the background colour.
             status.set_stage(TENSION_OGRE_STAGE_INITIALISE);
             scene_ = root_->createSceneManager(Ogre::ST_GENERIC, 1u, "tension-scene");
+            // PBS renders through a Forward+ light setup, and the setup has to
+            // exist before the Hlms generates a PBS shader. Without it a PBS
+            // datablock is created, binds, and draws nothing at all — the
+            // failure the probe first read as "PBS draws black" (DESIGN.md §5.1
+            // measured it: 0 non-background pixels, for a plain cube as much as
+            // for a rigged mesh).
+            scene_->setForwardClustered(true, 16u, 8u, 24u, 96u, 2u, 0u, 0.0f, 100000.0f);
             camera_ = scene_->createCamera("tension-camera");
             camera_->setPosition(0.0f, 0.0f, 10.0f);
             camera_->lookAt(0.0f, 0.0f, 0.0f);
@@ -253,24 +265,46 @@ class BackendOgre final : public Backend {
                 }
             }
 
-            // The Hlms: archives (sources + library, with each Hlms's own Any
-            // folder — its absence is a shader that fails to compile), then
-            // registration. Without this the first frame cannot build a shader.
+            // The Hlms: archives (sources + library), then registration. The
+            // library folders come from each Hlms's own `getDefaultPaths()`
+            // rather than from a hand-written list, because the list is not
+            // guessable: `HlmsPbs`'s returns five folders and the last,
+            // `Hlms/Pbs/Any/Main`, holds the vertex-shader piece. Stopping at
+            // `Hlms/Pbs/Any` — the folder the Unlit path needs — leaves PBS with
+            // no vertex shader at all, silently (DESIGN.md §5.1).
             {
                 const char *media = std::getenv("TENSION_OGRE_MEDIA_DIR");
                 const std::string root = media ? std::string(media) : std::string(TENSION_OGRE_MEDIA_DIR);
+                media_root_ = root;
                 Ogre::ArchiveManager &archives = Ogre::ArchiveManager::getSingleton();
-                Ogre::Archive *unlit_sources = archives.load(root + "/Hlms/Unlit/GLSL", "FileSystem", true);
-                Ogre::Archive *pbs_sources = archives.load(root + "/Hlms/Pbs/GLSL", "FileSystem", true);
-                library_.clear();
-                library_.push_back(archives.load(root + "/Hlms/Common/GLSL", "FileSystem", true));
-                library_.push_back(archives.load(root + "/Hlms/Common/Any", "FileSystem", true));
-                library_.push_back(archives.load(root + "/Hlms/Unlit/Any", "FileSystem", true));
-                library_.push_back(archives.load(root + "/Hlms/Pbs/Any", "FileSystem", true));
-                hlms_unlit_ = new Ogre::HlmsUnlit(unlit_sources, &library_);
-                hlms_pbs_ = new Ogre::HlmsPbs(pbs_sources, &library_);
+
+                Ogre::String unlit_main, pbs_main;
+                Ogre::StringVector unlit_libs, pbs_libs;
+                Ogre::HlmsUnlit::getDefaultPaths(unlit_main, unlit_libs);
+                Ogre::HlmsPbs::getDefaultPaths(pbs_main, pbs_libs);
+                Ogre::ArchiveVec unlit_library, pbs_library;
+                for (const Ogre::String &path : unlit_libs) {
+                    unlit_library.push_back(archives.load(root + "/" + path, "FileSystem", true));
+                }
+                for (const Ogre::String &path : pbs_libs) {
+                    pbs_library.push_back(archives.load(root + "/" + path, "FileSystem", true));
+                }
+                library_ = pbs_library;
+                hlms_unlit_ = new Ogre::HlmsUnlit(
+                    archives.load(root + "/" + unlit_main, "FileSystem", true), &unlit_library);
+                hlms_pbs_ = new Ogre::HlmsPbs(
+                    archives.load(root + "/" + pbs_main, "FileSystem", true), &pbs_library);
                 root_->getHlmsManager()->registerHlms(hlms_unlit_);
                 root_->getHlmsManager()->registerHlms(hlms_pbs_);
+
+                // A rigged mesh's *skeleton* is a separate file the v1 -> v2
+                // conversion resolves by name, so the folder the meshes live in
+                // has to be an archive OGRE can read from. Without this the
+                // conversion reports the mesh unrigged and nothing says why.
+                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                    root + "/models", "FileSystem", kResourceGroup, false);
+                log_line("ogre: models resource location " + root + "/models (group " +
+                         kResourceGroup + ")");
             }
             // No framebuffer to download under the NULL render system.
             supports_readback_ = !is_null_rs_;
@@ -378,10 +412,16 @@ class BackendOgre final : public Backend {
         Ogre::v1::MeshPtr v1_mesh; ///< kept: the Mesh2 reloads from it
         Ogre::MeshPtr mesh;
         Ogre::TextureGpu *texture = nullptr;
+        /// A rigged mesh's bone count, and the skeleton's name — the probe's
+        /// measured pair (Stickman: 19, "Stickman.skeleton"). 0 means static.
+        uint32_t bones = 0;
+        Ogre::String skeleton_name;
         bool live = false;
     };
 
-    int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) override {
+    int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
+                         uint32_t *out_bones) override {
+        if (out_bones != nullptr) *out_bones = 0;
         try {
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
@@ -404,8 +444,21 @@ class BackendOgre final : public Backend {
             entry.name = name;
             entry.v1_mesh = v1;
             entry.mesh = mesh;
+            // The rig question, asked once, where the answer is: the skeleton
+            // is read from the mesh file's own chunk by the conversion above,
+            // and it is the conversion that keeps it (the probe measured all
+            // four shipped characters coming through with their bone lists).
+            if (mesh->hasSkeleton()) {
+                entry.skeleton_name = mesh->getSkeletonName();
+                if (mesh->getSkeleton()) entry.bones = mesh->getSkeleton()->getBones().size();
+            }
+            log_line("ogre: realised mesh " + name + ": " + std::to_string(entry.bones) +
+                     " bones" +
+                     (entry.skeleton_name.empty() ? std::string("")
+                                                  : " (\"" + entry.skeleton_name + "\")"));
             entry.live = true;
             resources_.push_back(entry);
+            if (out_bones != nullptr) *out_bones = entry.bones;
             *out = handle;
             return 0;
         } catch (const Ogre::Exception &e) {
@@ -490,6 +543,10 @@ class BackendOgre final : public Backend {
             refused += apply_lights(mirror);
             refused += apply_materials(mirror);
             refused += apply_renderables(mirror);
+            // The bone pass last, and only when a new pose snapshot has landed:
+            // a still rig costs one integer compare per frame, which is the
+            // point of the generation counter (DESIGN.md §5.1).
+            apply_bone_updates(mirror);
         } catch (const Ogre::Exception &e) {
             applying_ = nullptr;
             log_line("ogre: apply_submissions: " + e.getFullDescription());
@@ -915,8 +972,12 @@ class BackendOgre final : public Backend {
 
     /// The values a material record carries. Unlit is the 3b path
     /// (DESIGN.md §5.1): `setUseColour` + `setColour` is the pair the probe
-    /// verified, and a texture only when slot 0 names one. PBS is creatable
-    /// and unasserted — without a light rig it draws black.
+    /// verified, and a texture only when slot 0 names one. PBS is the skinned
+    /// path — HlmsUnlit has no skeletal animation in its shaders at all, so a
+    /// rigged mesh drawn with it never moves — and its colour comes from
+    /// **emissive**, because a PBS material with no light rig has nothing else
+    /// to show (the probe measured 0 non-background pixels for a PBS cube
+    /// before that).
     void apply_material_values(Ogre::HlmsDatablock *datablock, const MaterialRecord &record) {
         const Ogre::ColourValue diffuse(record.dr, record.dg, record.db, record.da);
         if (record.kind == TENSION_OGRE_MAT_HLMS_PBS) {
@@ -924,6 +985,8 @@ class BackendOgre final : public Backend {
             // where the record says nothing.
             auto *pbs = static_cast<Ogre::HlmsPbsDatablock *>(datablock);
             pbs->setDiffuse(Ogre::Vector3(record.dr, record.dg, record.db));
+            pbs->setSpecular(Ogre::Vector3(record.sr, record.sg, record.sb));
+            pbs->setEmissive(Ogre::Vector3(record.er, record.eg, record.eb));
             if (record.roughness > 0.0f) pbs->setRoughness(record.roughness);
             if (record.metalness > 0.0f) pbs->setMetalness(record.metalness);
             if (record.slot0_resource != 0) {
@@ -981,6 +1044,13 @@ class BackendOgre final : public Backend {
                     }
                     item = scene_->createItem(mesh, Ogre::SCENE_DYNAMIC);
                     items_[id - 1] = item;
+                    // A rigged mesh's `Item` carries its own `SkeletonInstance`:
+                    // OGRE-Next 3.0 has no `Item::setSkeletonInstance` (the probe
+                    // looked for one) and needs none — `createItem` builds one
+                    // from the mesh's skeleton. Keeping the pointer is what the
+                    // per-frame bone pass poses, and `nullptr` for a static mesh
+                    // is the honest answer for "nothing to pose".
+                    skeletons_[id - 1] = item->getSkeletonInstance();
                     node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
                                ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
                     renderable_nodes_[id - 1] = node;
@@ -1024,6 +1094,48 @@ class BackendOgre final : public Backend {
         return refused;
     }
 
+    // ── the bone pass ────────────────────────────────────────────────────
+
+    /// Pose the rigs the guest has sent bones for (chunk 5b). Runs on the
+    /// render thread inside `apply_submissions`, and only when the mirror's
+    /// generation differs from the one this backend last applied — a frame whose
+    /// rig has not been re-posed does one integer compare and no OGRE work.
+    ///
+    /// The sequence is the probe's: `setPosition` / `setOrientation` / `setScale`
+    /// on the `SkeletonInstance`'s bone, then one `update()` per touched
+    /// skeleton. All seven combinations the probe measured render identically,
+    /// so `setManualBone` is **not** called — it would take the bone away from
+    /// OGRE's own animation system for no gain here — and `update()` is kept
+    /// because it makes the derived transforms correct immediately rather than
+    /// whenever OGRE next walks the rig (2.2-2.9 us per frame for 1-19 bones).
+    void apply_bone_updates(const SceneMirror &mirror) {
+        const uint32_t generation = mirror.bone_generation();
+        if (generation == applied_bone_generation_) return;
+        applied_bone_generation_ = generation;
+
+        const BoneUpdate *updates = mirror.bone_updates();
+        const uint32_t count = mirror.bone_update_count();
+        std::vector<Ogre::SkeletonInstance *> touched;
+        for (uint32_t i = 0; i < count; ++i) {
+            const BoneUpdate &update = updates[i];
+            if (update.renderable_id == 0 || update.renderable_id > kRenderableCapacity) continue;
+            Ogre::SkeletonInstance *skeleton = skeletons_[update.renderable_id - 1];
+            if (skeleton == nullptr) continue;
+            if (update.bone_index >= skeleton->getNumBones()) continue;
+            Ogre::Bone *bone = skeleton->getBone(update.bone_index);
+            if (bone == nullptr) continue;
+            bone->setPosition(Ogre::Vector3(update.px, update.py, update.pz));
+            bone->setOrientation(Ogre::Quaternion(update.rw, update.rx, update.ry, update.rz));
+            bone->setScale(Ogre::Vector3(update.sx, update.sy, update.sz));
+            if (std::find(touched.begin(), touched.end(), skeleton) == touched.end()) {
+                touched.push_back(skeleton);
+            }
+        }
+        for (Ogre::SkeletonInstance *skeleton : touched) {
+            skeleton->update();
+        }
+    }
+
     void destroy_renderable(uint32_t id) {
         Ogre::Item *item = items_[id - 1];
         if (item == nullptr) return;
@@ -1034,6 +1146,7 @@ class BackendOgre final : public Backend {
         }
         scene_->destroyItem(item);
         items_[id - 1] = nullptr;
+        skeletons_[id - 1] = nullptr;
         item_datablocks_[id - 1] = nullptr;
     }
 
@@ -1114,8 +1227,19 @@ class BackendOgre final : public Backend {
     /// never re-binds a datablock that has not changed.
     std::vector<Ogre::HlmsDatablock *> item_datablocks_ =
         std::vector<Ogre::HlmsDatablock *>(kRenderableCapacity, nullptr);
+    /// Each rigged renderable's skeleton, or null for a static one. OGRE owns
+    /// the instance (it belongs to the `Item`); this is the pointer the bone
+    /// pass poses, cleared with the item it came from.
+    std::vector<Ogre::SkeletonInstance *> skeletons_ =
+        std::vector<Ogre::SkeletonInstance *>(kRenderableCapacity, nullptr);
+    /// The mirror's bone generation this backend has already applied. A frame
+    /// with no new snapshot does nothing but compare this.
+    uint32_t applied_bone_generation_ = 0;
     Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
     Ogre::HlmsPbs *hlms_pbs_ = nullptr;
+    /// The media directory the Hlms archives and the models resource location
+    /// were built from — kept so diagnostics can name it.
+    std::string media_root_;
     Ogre::Camera *active_camera_ = nullptr;
     bool dirty_active_camera_ = false;
 

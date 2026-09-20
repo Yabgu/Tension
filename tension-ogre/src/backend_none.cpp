@@ -47,7 +47,8 @@ class BackendNone final : public Backend {
     // A build without OGRE can read and validate bytes — the loader does that
     // on its own thread — but it has no render system to create a resource in,
     // so realisation is refused by name rather than pretended.
-    int32_t realise_mesh(const uint8_t *, size_t, ResourceHandle *) override {
+    int32_t realise_mesh(const uint8_t *, size_t, ResourceHandle *, uint32_t *out_bones) override {
+        if (out_bones != nullptr) *out_bones = 0;
         return refuse("realise_mesh");
     }
     int32_t realise_texture(const uint8_t *, size_t, ResourceHandle *) override {

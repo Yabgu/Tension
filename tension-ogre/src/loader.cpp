@@ -35,6 +35,8 @@ constexpr size_t kResourceSizeOffset = 16;
 constexpr size_t kResourceNameOffsetOffset = 20;
 constexpr size_t kResourceNameLengthOffset = 24;
 constexpr size_t kResourceErrorOffset = 28;
+/// `flags`, at offset 12 — where a rigged mesh says so (bit 0).
+constexpr size_t kResourceFlagsOffset = 12;
 constexpr size_t kResourceSeqOffset = 40;
 
 void put_u32(uint8_t *at, size_t offset, uint32_t value) {
@@ -242,9 +244,11 @@ void Loader::drain_completions(Backend &backend) {
         }
 
         ResourceHandle handle = kNoResourceHandle;
+        uint32_t bones = 0;
         const bool mesh = snapshot.kind == TENSION_OGRE_RES_KIND_MESH;
         const int32_t realised =
-            mesh ? backend.realise_mesh(completion.bytes.data(), completion.bytes.size(), &handle)
+            mesh ? backend.realise_mesh(completion.bytes.data(), completion.bytes.size(), &handle,
+                                        &bones)
                  : backend.realise_texture(completion.bytes.data(), completion.bytes.size(), &handle);
         if (realised != 0 || handle == kNoResourceHandle) {
             fail_slot(index, realised != 0 ? realised : -EIO, sink);
@@ -262,7 +266,7 @@ void Loader::drain_completions(Backend &backend) {
                 // owner left. Discarded below, outside the lock.
                 table_full = true;
             } else {
-                resource_id = allocate_resource(*slot, handle);
+                resource_id = allocate_resource(*slot, handle, bones);
                 job_id = slot->job_id;
                 if (resource_id == 0) {
                     // The RESOURCE table is full: the job fails rather than
@@ -352,7 +356,11 @@ size_t Loader::mirror_to_region(const GuestWrite &write, uint32_t job_region_off
         put_u32(record, kResourceKindOffset, resource.kind);
         put_u32(record, kResourceStateOffset, resource.state);
         put_i32(record, kResourceErrorOffset, resource.error);
-        put_u32(record, kResourceSizeOffset, 0); // filled by 3a-ii when it knows
+        // A rigged mesh puts its bone count in `size` and says so in `flags`:
+        // this is the record the guest reads to decide whether a mesh can be
+        // posed at all, and the two fields were both unwritten before it.
+        put_u32(record, kResourceFlagsOffset, resource.bone_count > 0 ? 1u : 0u);
+        put_u32(record, kResourceSizeOffset, resource.bone_count);
         put_u32(record, kResourceNameOffsetOffset, resource.name_offset);
         put_u32(record, kResourceNameLengthOffset, resource.name_length);
         put_u64(record, kResourceSeqOffset, resource.seq);
@@ -400,6 +408,12 @@ ResourceSlot Loader::resource_at(uint32_t resource_id) const {
     std::lock_guard<std::mutex> lock(mutex_);
     if (resource_id == 0 || resource_id >= resources_.size()) return ResourceSlot{};
     return resources_[resource_id];
+}
+
+uint32_t Loader::resource_bone_count(uint32_t resource_id) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (resource_id == 0 || resource_id >= resources_.size()) return 0;
+    return resources_[resource_id].bone_count;
 }
 
 uint32_t Loader::slot_of(uint32_t job_id) const {
@@ -486,13 +500,14 @@ void Loader::fail_slot(uint32_t index, int32_t error, const LoaderSink &sink) {
     }
 }
 
-uint32_t Loader::allocate_resource(JobSlot &job, ResourceHandle handle) {
+uint32_t Loader::allocate_resource(JobSlot &job, ResourceHandle handle, uint32_t bone_count) {
     if (next_resource_id_ > 1024) return 0; // the RESOURCE region's ceiling
     ResourceSlot resource;
     resource.resource_id = next_resource_id_++;
     resource.kind = job.kind;
     resource.state = TENSION_OGRE_RES_STATE_READY;
     resource.handle = handle;
+    resource.bone_count = bone_count;
     resource.name_offset = job.name_offset;
     resource.name_length = job.name_length;
     resource.dirty = true;
