@@ -21,13 +21,20 @@
 #include <OgreMeshManager.h>
 #include <OgreMeshManager2.h>
 #include <OgreMeshSerializer.h>
+#include <OgreArchiveManager.h>
+#include <OgreHlmsManager.h>
+#include <OgreLight.h>
 #include <OgreLogManager.h>
+#include <OgreQuaternion.h>
 #include <OgreRoot.h>
 #include <OgreSceneManager.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
 
 #include <Compositor/OgreCompositorManager2.h>
+#include <Hlms/Pbs/OgreHlmsPbs.h>
+#include <Hlms/Unlit/OgreHlmsUnlit.h>
+#include <Hlms/Unlit/OgreHlmsUnlitDatablock.h>
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
@@ -39,6 +46,10 @@
 #include <string>
 
 #include "../include/tension_ogre.h"
+
+#ifndef TENSION_OGRE_MEDIA_DIR
+#define TENSION_OGRE_MEDIA_DIR "/usr/share/OGRE-Next/Media"
+#endif
 
 #ifndef TENSION_OGRE_PLUGIN_DIR
 // The build bakes this in from pkg-config's `plugindir`. Without it, the
@@ -201,6 +212,28 @@ class BackendOgre final : public Backend {
                                   "the basic workspace was refused");
                 }
             }
+
+            // The Hlms: archives (sources + library, with each Hlms's own Any
+            // folder — its absence is a shader that fails to compile), then
+            // registration. Without this the first frame cannot build a shader.
+            {
+                const char *media = std::getenv("TENSION_OGRE_MEDIA_DIR");
+                const std::string root = media ? std::string(media) : std::string(TENSION_OGRE_MEDIA_DIR);
+                Ogre::ArchiveManager &archives = Ogre::ArchiveManager::getSingleton();
+                Ogre::Archive *unlit_sources = archives.load(root + "/Hlms/Unlit/GLSL", "FileSystem", true);
+                Ogre::Archive *pbs_sources = archives.load(root + "/Hlms/Pbs/GLSL", "FileSystem", true);
+                library_.clear();
+                library_.push_back(archives.load(root + "/Hlms/Common/GLSL", "FileSystem", true));
+                library_.push_back(archives.load(root + "/Hlms/Common/Any", "FileSystem", true));
+                library_.push_back(archives.load(root + "/Hlms/Unlit/Any", "FileSystem", true));
+                library_.push_back(archives.load(root + "/Hlms/Pbs/Any", "FileSystem", true));
+                hlms_unlit_ = new Ogre::HlmsUnlit(unlit_sources, &library_);
+                hlms_pbs_ = new Ogre::HlmsPbs(pbs_sources, &library_);
+                root_->getHlmsManager()->registerHlms(hlms_unlit_);
+                root_->getHlmsManager()->registerHlms(hlms_pbs_);
+            }
+            // No framebuffer to download under the NULL render system.
+            supports_readback_ = !is_null_rs_;
 
             // ── STAGE_FRAME: prove the pipeline runs before saying ready ──
             status.set_stage(TENSION_OGRE_STAGE_FRAME);
@@ -376,13 +409,26 @@ class BackendOgre final : public Backend {
     // 3b-ii: the OGRE object graph from the mirror's dirty lists, and the
     // framebuffer readback the probe proved (convertFromTexture plus the
     // manual-release dance). Both refuse by name until then.
+    /// 3b-ii's object graph is not written yet: the mirror collects the
+    /// submissions and the render thread drains job completions, but turning
+    /// records into OGRE objects is the next step, and it refuses by name
+    /// rather than half-working.
     int32_t apply_submissions(const SceneMirror &) override {
-        backend_log("ogre: the scene apply path lands in 3b-ii");
+        backend_log("ogre: the scene apply path is not written yet (3b-ii)");
         return -ENOSYS;
     }
-    int32_t screenshot(uint8_t *, size_t, size_t *) override {
-        backend_log("ogre: the framebuffer readback lands in 3b-ii");
+
+    /// The readback itself is proven (the scene probe downloads a frame and
+    /// reads its pixels); wiring it to the verb is part of the same step.
+    int32_t request_readback() override {
+        backend_log("ogre: the screenshot path is not wired yet (3b-ii)");
         return -ENOSYS;
+    }
+
+    int32_t readback(uint8_t **out_ptr, size_t *out_len) override {
+        if (out_ptr) *out_ptr = nullptr;
+        if (out_len) *out_len = 0;
+        return -ENOENT;
     }
 
     int32_t discard_resource(ResourceHandle handle) override {
@@ -449,6 +495,30 @@ class BackendOgre final : public Backend {
     bool is_null_rs_ = true;
     Ogre::Image2 image_;
     StatusWriter *status_for_messages_ = nullptr;
+
+    // The scene, indexed by mirror id - 1.
+    std::vector<Ogre::SceneNode *> nodes_ = std::vector<Ogre::SceneNode *>(kNodeCapacity, nullptr);
+    std::vector<Ogre::Camera *> cameras_ = std::vector<Ogre::Camera *>(kCameraCapacity, nullptr);
+    std::vector<Ogre::Light *> lights_ = std::vector<Ogre::Light *>(kLightCapacity, nullptr);
+    std::vector<Ogre::SceneNode *> light_nodes_ =
+        std::vector<Ogre::SceneNode *>(kLightCapacity, nullptr);
+    std::vector<Ogre::HlmsDatablock *> datablocks_ =
+        std::vector<Ogre::HlmsDatablock *>(kMaterialCapacity, nullptr);
+    std::vector<Ogre::String> datablock_names_ = std::vector<Ogre::String>(kMaterialCapacity);
+    std::vector<Ogre::Item *> items_ = std::vector<Ogre::Item *>(kRenderableCapacity, nullptr);
+    std::vector<Ogre::SceneNode *> renderable_nodes_ =
+        std::vector<Ogre::SceneNode *>(kRenderableCapacity, nullptr);
+    Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
+    Ogre::HlmsPbs *hlms_pbs_ = nullptr;
+    Ogre::Camera *active_camera_ = nullptr;
+    bool dirty_active_camera_ = false;
+
+    /// Screenshot state: one request gives the next frame's pixels, which stay
+    /// until the next request (probe/consume, like `last_error`).
+    bool readback_requested_ = false;
+    bool supports_readback_ = false;
+    std::vector<uint8_t> last_frame_;
+    Ogre::ArchiveVec library_;
     std::vector<ResourceEntry> resources_; ///< index 0 unused: handles are 1-based
     uint32_t next_resource_ = 1;
     Config config_;

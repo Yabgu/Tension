@@ -36,6 +36,7 @@ constexpr uint32_t kVerbQueueTexture = 5;
 constexpr uint32_t kVerbJobState = 6;
 constexpr uint32_t kVerbJobRelease = 7;
 constexpr uint32_t kVerbSubmit = 8;
+constexpr uint32_t kVerbScreenshot = 9;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -155,6 +156,10 @@ void render_main() {
             // Realise whatever the worker finished, on this thread — the only
             // one allowed to touch OGRE.
             s.loader.drain_completions(*s.backend);
+            // 3b-ii's scene apply slot: the mirror's dirty lists become OGRE
+            // objects, on this thread, before the frame that draws them.
+            s.backend->apply_submissions(s.scene);
+            s.scene.clear_dirty();
             const int32_t framed = s.backend->frame(s.status);
             if (framed > 0) break; // the renderer ended normally (window closed)
             if (framed < 0) {
@@ -434,6 +439,39 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     return 0;
 }
 
+/// `ogre::screenshot(ptr, cap)` — probe/consume over the last downloaded frame,
+/// and a request for the next one. `cap <= 0` asks the length; `cap > 0` copies
+/// `min(cap, len)` bytes and consumes them. `-1` means no frame is available.
+///
+/// The request is what makes the next frame worth downloading, so a guest that
+/// wants pixels asks at least one frame ahead of reading them.
+int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+
+    if (s.backend) s.backend->request_readback();
+
+    uint8_t *pixels = nullptr;
+    size_t length = 0;
+    if (!s.backend || s.backend->readback(&pixels, &length) != 0 || pixels == nullptr) {
+        ret->i32 = -1;
+        return 0;
+    }
+    const uint32_t ptr = static_cast<uint32_t>(args[0].i32);
+    const int32_t cap = args[1].i32;
+    if (cap <= 0) {
+        ret->i32 = static_cast<int32_t>(length);
+        return 0;
+    }
+    const size_t take = std::min(static_cast<size_t>(cap), length);
+    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (s.api->guest_write(s.api->user, ptr, pixels, static_cast<uint32_t>(take)) != 0) {
+        return -EINVAL;
+    }
+    ret->i32 = static_cast<int32_t>(take);
+    return 0;
+}
+
 // ── the vtable ───────────────────────────────────────────────────────────
 
 int32_t adapter_init(void *, const tension_core_api *core) {
@@ -474,6 +512,8 @@ int32_t adapter_link(void *, const tension_core_api *core) {
          TENSION_IMPORT_REENTRANT_READONLY},
         {"job_release", one_i32, 1, shim_job_release, kVerbJobRelease, 0},
         {"submit", three_i32, 3, shim_submit, kVerbSubmit, 0},
+        {"screenshot", two_i32, 2, shim_screenshot, kVerbScreenshot,
+         TENSION_IMPORT_REENTRANT_READONLY},
     };
 
     for (const Registration &registration : registrations) {

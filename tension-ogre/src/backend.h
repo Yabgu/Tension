@@ -70,10 +70,14 @@ class Backend {
     /// destroy the renderer's objects from the mirror's dirty lists. 3b-ii.
     virtual int32_t apply_submissions(const SceneMirror &scene) = 0;
 
-    /// The last presented frame as tightly packed RGBA8, up to `cap` bytes.
-    /// `-ENOSYS` when there is no framebuffer to read (the NULL render
-    /// system), which is a refusal the guest can name, not a crash.
-    virtual int32_t screenshot(uint8_t *out, size_t cap, size_t *out_len) = 0;
+    /// Ask for the next frame to be read back into the backend's own buffer
+    /// (one-shot: the next `frame()` does the download). `-ENOSYS` where there
+    /// is no framebuffer to read.
+    virtual int32_t request_readback() = 0;
+
+    /// The last downloaded frame, tightly packed RGBA8, top-left origin, at
+    /// window resolution. Null until a readback has happened.
+    virtual int32_t readback(uint8_t **out_ptr, size_t *out_len) = 0;
 
     /// Release a realised resource. Until the guest has a release verb of its
     /// own, this is called at session teardown.

@@ -96,7 +96,10 @@ if [ "$backend" = ogre ]; then
         # -isystem, not -I: OGRE's headers are not warning-clean, and its
         # warnings are not ours to answer for.
         ogre_include=$(pkg-config --cflags OGRE-Next | sed 's/-I/-isystem /g')
-        ogre_lib=$(pkg-config --libs OGRE-Next)
+        # The Hlms classes live in their own libraries, not in OgreNextMain,
+        # and their headers include siblings by bare name.
+        ogre_lib="$(pkg-config --libs OGRE-Next) -lOgreNextHlmsUnlit -lOgreNextHlmsPbs"
+        ogre_include="$ogre_include -isystem $(pkg-config --variable=includedir OGRE-Next)/OGRE-Next/Hlms/Common -isystem $(pkg-config --variable=includedir OGRE-Next)/OGRE-Next/Hlms/Unlit -isystem $(pkg-config --variable=includedir OGRE-Next)/OGRE-Next/Hlms/Pbs"
         plugin_dir=$(pkg-config --variable=plugindir OGRE-Next 2>/dev/null || true)
         media_dir="$(pkg-config --variable=prefix OGRE-Next 2>/dev/null)/share/OGRE-Next/Media"
     else
