@@ -20,6 +20,9 @@
 // must sit at a 16-byte offset in whatever record contains it. The container
 // layouts below do that, and the sizes are what the check pins.
 
+import { REGION_RESOURCE } from "../runtime/wire";
+import { regionOffset } from "../runtime/arena";
+
 // --- math ------------------------------------------------------------------
 
 /** Two floats, 8 bytes. */
@@ -576,6 +579,66 @@ export const BUFFER_USAGE_STREAM: u32 = 2;
  * renderer's own record is the region's first entry, and its `seq` is the
  * frame counter `frameCount()` reads. */
 export const RESOURCE_SIZE: u32 = 48;
+
+// --- reading a resource record ---------------------------------------------
+//
+// These live next to the offsets they read rather than in `index.ts` with the
+// verbs, because `mesh.ts` needs the state read and cannot import `index.ts`
+// (which re-exports `mesh.ts`) without a cycle. `index.ts` re-exports this
+// file, so `ogre.frameCount()` and `ogre.resourceState(id)` are the same calls
+// either way — and the record's field offsets have one spelling.
+
+/** The `RESOURCE` region's first byte. */
+export function getResourceBase(): usize {
+  return regionOffset(REGION_RESOURCE);
+}
+
+/** The renderer's frame counter: the first `Resource` record's `seq`, which the
+ * adapter writes every publish — no verb, no event, just the region. */
+export function frameCount(): u64 {
+  return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
+}
+
+/** Any resource's `state`: `RES_STATE_REQUESTED`, `_LOADING`, `_READY`,
+ * `_FAILED`, `_UNLOADED` — or 0 for an id that is not in the region.
+ *
+ * The read a guest that **builds** a mesh needs: `MeshBuilder` hands back an id
+ * before the mesh exists (the render thread makes it on its next pass), and a
+ * renderable submitted against a resource that is not `READY` yet is refused
+ * and skipped. `MeshBuilder.build` waits on this; a guest that took the
+ * non-blocking form waits on it itself.
+ */
+export function resourceState(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_STATE_OFFSET);
+}
+
+/**
+ * Whether a mesh resource carries a skeleton.
+ *
+ * The loader records what it saw when it realised the mesh — the v1 -> v2
+ * conversion is what knows whether a rig survived, and nothing on the guest
+ * side can look inside the file. A rigged mesh also puts its **bone count** in
+ * the record's `size`, where other resources put bytes.
+ */
+export function isRigged(resourceId: u32): bool {
+  return (resourceFlags(resourceId) & RES_RIGGED) != 0;
+}
+
+/** How many bones a rigged mesh has, or 0 for anything that is not one. */
+export function boneCount(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  if ((load<u32>(record + RESOURCE_FLAGS_OFFSET) & RES_RIGGED) == 0) return 0;
+  return load<u32>(record + RESOURCE_SIZE_OFFSET);
+}
+
+function resourceFlags(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_FLAGS_OFFSET);
+}
 
 /** A `Resource` record's `seq`, in bytes from the record's start. */
 export const RESOURCE_SEQ_OFFSET: u32 = 40;

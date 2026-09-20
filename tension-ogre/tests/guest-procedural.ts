@@ -31,6 +31,7 @@ import {
   Renderable,
   RES_STATE_FAILED,
   RES_STATE_READY,
+  VF_POSITION,
   assertOgreWireOffsets,
 } from "../../tension-framework/assembly/ogre/wire";
 
@@ -115,7 +116,7 @@ export function _start_game(): void {
   }
   const gl3plus = renderer == "gl3plus";
   const which = gl3plus ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null;
-  total = gl3plus ? 5 : 4;
+  total = gl3plus ? 6 : 5;
 
   assertOgreWireOffsets();
 
@@ -156,24 +157,53 @@ export function _start_game(): void {
   check(ogre.boneCount(triangle) == 0, "a mesh built from arrays reported bones");
   print("2 ok: the record is READY, with no rig");
 
-  // ── clause 3: the camera and the material ────────────────────────────
+  // ── and the blocking form, which does that wait for the caller ───────
+  // `MeshBuilder.build` takes byte arrays and returns only once the mesh is
+  // ready; `triangleBlocking` is the same wait around `triangle`. Both are what
+  // an example or a first game reaches for, so the suite has to exercise the
+  // ArrayBuffer path and the settle loop, not just the call.
   clause = 3;
+  const vertices = new ArrayBuffer(36); // three F32x3 positions
+  const vertex_floats = Float32Array.wrap(vertices);
+  vertex_floats[0] = -1.0;
+  vertex_floats[1] = -1.0;
+  vertex_floats[2] = 0.0;
+  vertex_floats[3] = 1.0;
+  vertex_floats[4] = -1.0;
+  vertex_floats[5] = 0.0;
+  vertex_floats[6] = 0.0;
+  vertex_floats[7] = 1.0;
+  vertex_floats[8] = 0.0;
+  const indices = new ArrayBuffer(6); // three 16-bit indices
+  const index_shorts = Uint16Array.wrap(indices);
+  index_shorts[0] = 0;
+  index_shorts[1] = 1;
+  index_shorts[2] = 2;
+  const blocking = ogre.MeshBuilder.build(vertices, indices, ogre.VF_POSITION);
+  check(blocking > 0, "MeshBuilder.build returned " + blocking.toString());
+  check(ogre.resourceState(blocking) == RES_STATE_READY,
+        "MeshBuilder.build returned an id whose record is state " +
+        ogre.resourceState(blocking).toString() + ", not READY");
+  print("3 ok: the blocking form returned a ready mesh (" + blocking.toString() + ")");
+
+  // ── clause 4: the camera and the material ────────────────────────────
+  clause = 4;
   const camera = CameraRecord.perspective(0.7853982, 4.0 / 3.0, 0.1, 100.0, 0.0, 0.0, 4.0);
   camera.cameraId = 1;
   submitted(ogre.submitCamera(camera), "camera");
   const material = Material.unlit(<f32>UNLIT_RGB[0], <f32>UNLIT_RGB[1], <f32>UNLIT_RGB[2]);
   material.materialId = 1;
   submitted(ogre.submitMaterial(material), "material");
-  print("3 ok");
+  print("4 ok");
 
-  // ── clause 4: a renderable that names it ─────────────────────────────
-  clause = 4;
+  // ── clause 5: a renderable that names it ─────────────────────────────
+  clause = 5;
   // Scale 1.0: the triangle was written at ±1 world units, which is the size
   // this camera's 45° frustum shows at z=0.
   const renderable = Renderable.at(triangle, 1, 0.0, 0.0, 0.0, 1.0);
   renderable.renderableId = 1;
   submitted(ogre.submitRenderable(renderable), "renderable");
-  print("4 ok");
+  print("5 ok");
 
   if (!gl3plus) {
     print("ACID " + total.toString() + "/" + total.toString() +
@@ -191,8 +221,8 @@ export function _start_game(): void {
   const frame = grab();
   check(frame != null, "no frame could be downloaded");
 
-  // ── clause 5: the triangle is on the screen, in its colour ───────────
-  clause = 5;
+  // ── clause 6: the triangle is on the screen, in its colour ───────────
+  clause = 6;
   const stats = new Float64Array(4);
   frame_stats(frame!, stats);
   print("triangle: " + stats[0].toString() + " px, mean rgb " + stats[1].toString() + "/" +
@@ -209,7 +239,7 @@ export function _start_game(): void {
         "the triangle's mean colour is " + stats[1].toString() + "/" + stats[2].toString() + "/" +
         stats[3].toString() + ", not the material's " + (UNLIT_RGB[0] * 255.0).toString() + "/" +
         (UNLIT_RGB[1] * 255.0).toString() + "/" + (UNLIT_RGB[2] * 255.0).toString());
-  print("5 ok");
+  print("6 ok");
 
   print("ACID " + total.toString() + "/" + total.toString() + " passed");
   assert(ogre.shutdown() == 0, "ogre::shutdown");

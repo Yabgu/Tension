@@ -27,9 +27,31 @@
 //     handed to the GPU. A guest that gets that refusal has a bug worth fixing,
 //     not a mesh worth drawing.
 
-import { PROCEDURAL_BASE, PROCEDURAL_CAPACITY, TOPO_TRIANGLE_LIST, VF_POSITION } from "./wire";
+import {
+  PROCEDURAL_BASE,
+  PROCEDURAL_CAPACITY,
+  RES_STATE_FAILED,
+  RES_STATE_READY,
+  TOPO_TRIANGLE_LIST,
+  VF_POSITION,
+  resourceState,
+} from "./wire";
 import { REGION_BUFFER_POOL } from "../runtime/wire";
 import { regionOffset } from "../runtime/arena";
+import { RuntimeSession } from "../runtime";
+
+/**
+ * How many frames `build` and `triangleBlocking` wait for the render thread
+ * before giving up: sixty, which is one second at 60 Hz.
+ *
+ * A guest cannot truly yield, so this is a spin with the session's own frame
+ * wait inside it — and that wait is not decoration: the resource record is
+ * written by an epoch, and epochs run when the guest pumps the session, so a
+ * loop without a wait inside it would poll a record nobody ever updates.
+ */
+const BUILD_ATTEMPTS: u32 = 60;
+/** The delay between those attempts: one frame at the default rate. */
+const BUILD_YIELD_MS: i32 = 16;
 
 /**
  * `ogre::create_mesh(vbOffset, vbBytes, format, ibOffset, ibBytes, topology)`:
@@ -53,8 +75,12 @@ export function getProceduralBase(): usize {
 
 export class MeshBuilder {
   /**
-   * A triangle list from two arrays the caller already has: the vertex data
-   * (interleaved the way `format` says it is) and the 16-bit indices.
+   * The **non-blocking** form: copy the two arrays the caller already has and
+   * return the resource id at once. The mesh does not exist yet — the render
+   * thread builds it on its next pass — so a renderable that names the id in
+   * the same frame is refused and skipped. Reach for this when the guest has
+   * something else to do before it draws (and pair it with `resourceState`),
+   * and for `build` when it does not.
    *
    * Returns the resource id, or a negative errno — `-EINVAL` for an empty
    * array and `-ENOSPC` for a mesh that does not fit the window, both of which
@@ -78,13 +104,44 @@ export class MeshBuilder {
   }
 
   /**
+   * The **blocking** form: same door, then wait for the mesh to exist. Returns
+   * the resource id once the record says `READY`, `-1` when the wait ran out or
+   * the build failed, or a negative errno from the call itself.
+   *
+   * "Blocking" is bounded and honest about it: sixty attempts, one frame apart,
+   * so a second at 60 Hz — a guest cannot truly yield, and a longer wait would
+   * be a hang rather than a patience. What it buys is the thing every guest
+   * does next: a renderable that names this id is drawn from the first frame,
+   * with no poll of its own.
+   *
+   * The bytes are `ArrayBuffer`s — the shape a guest has when it built the
+   * vertex data itself (`MeshBuilder.triangleBlocking` makes them for you).
+   */
+  static build(vertexBytes: ArrayBuffer, indexBytes: ArrayBuffer, format: i32): i32 {
+    return MeshBuilder.settle(MeshBuilder.submit(vertexBytes, indexBytes, format));
+  }
+
+  /**
    * One triangle from nine numbers: a three-vertex, three-index mesh, positions
-   * only. The smallest thing `create_mesh` can be asked for, and the one the
-   * `hello-triangle` example is built on.
+   * only, ready to draw when this returns.
    *
    * No normal and no uv: the probe measured that the renderer needs neither for
    * a constant-colour Unlit draw, and a normal of `(0,0,0)` would be a lie in a
    * mesh that a lit material could later pick up.
+   *
+   * This is the shape to reach for in an example or a first game; `triangle`
+   * and `fromBuffers` are the same mesh without the wait.
+   */
+  static triangleBlocking(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, cx: f32, cy: f32,
+                          cz: f32): i32 {
+    return MeshBuilder.settle(
+      MeshBuilder.triangle(ax, ay, az, bx, by, bz, cx, cy, cz));
+  }
+
+  /**
+   * One triangle from nine numbers: a three-vertex, three-index mesh, positions
+   * only, with the id returned before the mesh exists (`build` is the form that
+   * waits). The smallest thing `create_mesh` can be asked for.
    */
   static triangle(ax: f32, ay: f32, az: f32, bx: f32, by: f32, bz: f32, cx: f32, cy: f32,
                   cz: f32): i32 {
@@ -103,5 +160,36 @@ export class MeshBuilder {
     indices[1] = 1;
     indices[2] = 2;
     return MeshBuilder.fromBuffers(vertices, indices, VF_POSITION);
+  }
+
+  /// The copy the `ArrayBuffer` form needs, kept apart from the wait so the two
+  /// public entry points each say what they are: `build` waits, `submit` does
+  /// not, and neither does anything the other does not.
+  private static submit(vertexBytes: ArrayBuffer, indexBytes: ArrayBuffer, format: i32): i32 {
+    const vertexLength = <i32>vertexBytes.byteLength;
+    const indexLength = <i32>indexBytes.byteLength;
+    if (vertexLength == 0 || indexLength == 0) return -22; // -EINVAL: nothing to build
+    if (vertexLength + indexLength > <i32>PROCEDURAL_CAPACITY) return -28; // -ENOSPC: full
+
+    const verticesAt = getProceduralBase();
+    const indicesAt = verticesAt + vertexLength;
+    memory.copy(verticesAt, changetype<usize>(vertexBytes), <usize>vertexLength);
+    memory.copy(indicesAt, changetype<usize>(indexBytes), <usize>indexLength);
+    return createMeshRaw(<u32>verticesAt, <u32>vertexLength, <u32>format, <u32>indicesAt,
+                         <u32>indexLength, TOPO_TRIANGLE_LIST);
+  }
+
+  /// Wait for a freshly created mesh to exist: `READY` returns the id, `FAILED`
+  /// and the timeout return `-1`, and anything else (including the `LOADING`
+  /// the adapter publishes first) is a reason to keep waiting.
+  private static settle(id: i32): i32 {
+    if (id <= 0) return id;
+    for (let attempt: u32 = 0; attempt < BUILD_ATTEMPTS; attempt++) {
+      const state = resourceState(<u32>id);
+      if (state == RES_STATE_READY) return id;
+      if (state == RES_STATE_FAILED) return -1;
+      RuntimeSession.wait(BUILD_YIELD_MS);
+    }
+    return -1;
   }
 }

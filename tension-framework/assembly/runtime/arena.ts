@@ -14,6 +14,16 @@
 //     nothing and it holds no reference, which is why these are functions and
 //     not a memoized global — a cached view would be a cached pointer into
 //     memory the guest may write.
+//   * **A `usize` is not a TypedArray's bytes.** `changetype<usize>(x)`
+//     reinterprets `x`, and what `x` *is* decides what comes out: for an
+//     `ArrayBuffer` it is the data (an ArrayBuffer's object pointer is its
+//     buffer), while for a **TypedArray** it is the *object* — its header,
+//     buffer field and length — so copying from there writes a runtime header
+//     where you meant your numbers. A TypedArray's data pointer is
+//     `typedArray.dataStart`. This costs guests an afternoon the first time,
+//     because the symptom is not a crash but bytes that are quietly someone
+//     else's: chunk 5.5's `create_mesh` reported "index 0 names vertex 9248"
+//     for an array the guest had written as `{0, 1, 2}`.
 
 import {
   ArenaControl,

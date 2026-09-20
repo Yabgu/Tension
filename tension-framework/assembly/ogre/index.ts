@@ -56,12 +56,6 @@ import {
   BONE_TABLE_OFFSET,
   PROCEDURAL_BASE,
   PROCEDURAL_CAPACITY,
-  RESOURCE_SIZE,
-  RESOURCE_SEQ_OFFSET,
-  RESOURCE_STATE_OFFSET,
-  RESOURCE_FLAGS_OFFSET,
-  RESOURCE_SIZE_OFFSET,
-  RES_RIGGED,
 } from "./wire";
 import {
   REGION_JOB,
@@ -69,7 +63,6 @@ import {
   REGION_MATERIAL,
   REGION_RENDERABLE,
   REGION_BUFFER_POOL,
-  REGION_RESOURCE,
 } from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
 import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
@@ -407,59 +400,6 @@ export function checkSubmissionRegions(): bool {
  * this rather than a clock, which is what makes a solver-driven assertion
  * compare against the renderer's own progress instead of against wall time.
  */
-export function getResourceBase(): usize {
-  return regionOffset(REGION_RESOURCE);
-}
-
-export function frameCount(): u64 {
-  return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
-}
-
-/** Any resource's `state`: `RES_STATE_REQUESTED`, `_LOADING`, `_READY`,
- * `_FAILED`, `_UNLOADED` — or 0 for an id that is not in the region.
- *
- * The same read `isRigged` does, one field over, and it is the one a guest that
- * **builds** a mesh needs: `MeshBuilder` hands back an id before the mesh
- * exists (the render thread makes it on its next pass), and a renderable
- * submitted against a resource that is not `READY` yet is refused and skipped.
- * A guest therefore waits for this to say `READY` exactly as a guest that loads
- * a mesh waits for its job to say `DONE`.
- */
-export function resourceState(resourceId: u32): u32 {
-  if (resourceId == 0) return 0;
-  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
-  return load<u32>(record + RESOURCE_STATE_OFFSET);
-}
-
-/**
- * Whether a mesh resource carries a skeleton.
- *
- * The loader records what it saw when it realised the mesh — the v1 -> v2
- * conversion is what knows whether a rig survived, and nothing on the guest
- * side can look inside the file. A rigged mesh also puts its **bone count** in
- * the record's `size`, where other resources put bytes.
- *
- * The same read that makes `frameCount()` cheap: the record is the truth, and
- * no verb is needed to ask about it.
- */
-export function isRigged(resourceId: u32): bool {
-  return (resourceFlags(resourceId) & RES_RIGGED) != 0;
-}
-
-/** How many bones a rigged mesh has, or 0 for anything that is not one. */
-export function boneCount(resourceId: u32): u32 {
-  if (resourceId == 0) return 0;
-  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
-  if ((load<u32>(record + RESOURCE_FLAGS_OFFSET) & RES_RIGGED) == 0) return 0;
-  return load<u32>(record + RESOURCE_SIZE_OFFSET);
-}
-
-function resourceFlags(resourceId: u32): u32 {
-  if (resourceId == 0) return 0;
-  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
-  return load<u32>(record + RESOURCE_FLAGS_OFFSET);
-}
-
 /** `checkSubmissionRegions`, as an assertion that names what is short. */
 export function assertSubmissionRegions(): void {
   assert(

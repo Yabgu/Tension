@@ -205,7 +205,7 @@ procedural_case() {
     shift
     stdout=$("$core" --capability "$dso" "$out/guest-procedural.wasm" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
-    echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|5/5 passed)" ||
+    echo "$stdout" | grep -qE "^ACID (5/5 passed \(structural, renderer=null\)|6/6 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
     echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
     echo "$stdout" | grep -E '^triangle:' | sed 's/^/== '"$name"': /' || true

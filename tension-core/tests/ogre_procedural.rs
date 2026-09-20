@@ -75,9 +75,10 @@ fn run(renderer: &str) -> std::process::Output {
         .expect("the interpreter runs")
 }
 
-/// The structural tier: the mesh is built out of guest memory, the resource
-/// record reaches READY with no rig, and a renderable that names it is
-/// accepted. No pixels — RenderSystem_NULL has no framebuffer.
+/// The structural tier: the mesh is built out of guest memory (both the
+/// non-blocking call and the blocking helper), the resource record reaches
+/// READY with no rig, and a renderable that names it is accepted. No pixels —
+/// RenderSystem_NULL has no framebuffer.
 #[test]
 fn test_ogre_procedural_structural() {
     if fixture().is_none() || adapter().is_none() {
@@ -93,7 +94,7 @@ fn test_ogre_procedural_structural() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 4/4 passed (structural, renderer=null)"),
+        stdout.contains("ACID 5/5 passed (structural, renderer=null)"),
         "the guest did not pass its structural clauses\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
@@ -121,8 +122,8 @@ fn test_ogre_procedural_pixels() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 5/5 passed"),
-        "the guest did not pass its five clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
+        stdout.contains("ACID 6/6 passed"),
+        "the guest did not pass its six clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
         measured.join("\n")
     );
     println!("ogre_procedural: {}", measured.join("\n                "));
