@@ -463,6 +463,64 @@ a light rig that 3b does not have. PBS datablocks are creatable — the Hlms is
 constructed and registered all the same — but nothing asserts how they look
 until there is a light to see them by.
 
+**Skinned meshes cannot use Unlit at all, and PBS needs two things to draw.**
+Measured by `tests/probe_skinning.cpp` (chunk 5b), and the first of the two cost
+this repo a whole round.
+
+HlmsUnlit's shader templates contain **no skeletal-animation code**: a grep over
+`Media/Hlms/Unlit/` for "bone" or "skeleton" returns nothing, while
+`Media/Hlms/Pbs/Any/Main/800.VertexShader_piece_vs.any` carries an
+`hlms_skeleton` block per vertex — `@property( hlms_skeleton )` around the bone
+matrices, `@foreach( hlms_bones_per_vertex, n, 1 )` around the weights. HlmsUnlit
+is, in its own class reference's words, the implementation *without lighting or
+skeletal animation*. With an Unlit datablock the CPU-side skeleton is perfectly
+correct and the GPU cannot see it: the probe posed a bone through seven
+combinations and measured `flip 0.00000` for every one, while the bone's own
+local transform demonstrably carried the pose (`w=0.707` as set). The joint is
+that a *static* mesh renders under either Hlms, so the 3b choice of Unlit was
+right and still left this trap: **the material family is part of the skinning
+contract, and nothing reports it when it is wrong.** The shape that works with
+no light rig is PBS with diffuse and specular zeroed and the colour in emissive.
+
+A PBS datablock that is created, bound, and reported by the subitem as belonging
+to hlms `"pbs"` can still draw **nothing at all** — silently. Two requirements,
+both easy to miss, both measured:
+
+- **A Forward+ light setup has to exist.** `SceneManager::setForwardClustered(
+  true, 16, 8, 24, 96, 2, 0, 0.0f, 100000.0f )` immediately after
+  `createSceneManager`, before the Hlms is constructed and before any datablock
+  is made.
+- **`HlmsPbs`'s library folders come from `HlmsPbs::getDefaultPaths()`**, never
+  from a hand-written list. That call returns five folders; the last,
+  `Hlms/Pbs/Any/Main`, holds the vertex-shader piece. A list that stops at
+  `Hlms/Pbs/Any` — which is what the Unlit path needs, and what this probe did
+  first — leaves PBS with **no vertex shader**: no exception, no log line, no
+  failed-compile message, and 0 non-background pixels at every scale, for a
+  plain `cube.mesh` as much as for a rigged character. `HlmsUnlit::getDefaultPaths()`
+  is the same call for the Unlit path.
+
+With both in place the PBS arm renders exactly what the Unlit arm did (174
+non-background pixels at scale 0.2, 1574 at 0.6, the same blob) and the pose
+starts moving it: a single 90° bone rotation flips 0.0197 of the frame at scale
+0.6 (1504 px of silhouette to 1376, mean channel delta 1.68).
+
+**The posing sequence: set the bone, nothing else.** `SkeletonInstance::getBone(i)`
+-> `setPosition` / `setOrientation` / `setScale` is sufficient. The probe measured
+seven combinations — with and without `setManualBone( bone, true )`, with and
+without `skeleton->update()`, and in both orders — and **all seven render
+identically** (`flip 0.02065`, the same number to five places, which is what a
+pure function of state should produce). So `setManualBone` is not needed and is
+not used: it takes a bone away from OGRE's animation system, which is a cost to
+pay only if something demands it. `skeleton->update()` is still called after a
+batch — it recomputes derived transforms immediately, at ~2.2-2.9 µs per frame
+for 1-19 bones — but the rendered result does not depend on it.
+
+Not every bone deforms the mesh. The probe's per-bone sweep at scale 0.6: bones
+0-3 (`Hand_IK_L`, `Hand_IK_R`, `Foot_IK_L`, `Foot_IK_R`) give `flip 0.00000` —
+they are IK leaves with no weighted geometry — while `Root`, `Pelvis`, `Spine`,
+`Spine.001`, `Head` and `Arm_L` give `flip 0.030-0.036`. The acid test poses
+`Spine` (index 6), the clearest of them at 0.03557.
+
 **Textures, and the abort that was not about the render system.** Round 3a-i's
 probe aborted inside `Ogre::Exception::~Exception` → `ObjCmdBuffer::clear()` when
 a texture was scheduled to Resident, and the first conclusion — "GPU textures
@@ -1430,9 +1488,19 @@ single session and asserts its own results, printing a pass/fail summary line �
   the frame to the left — 0 px left / 70 right before, 70 left / 0 right after,
   measured. That is the composition claim: the adapter composes nothing, OGRE's
   scene graph does;
-- *skinned mesh*: asserted at frame 60, and the chunk that lands OGRE's own
-  skeleton hierarchy — a separate mechanism from the scene graph this bullet
-  follows;
+- *skinned mesh (chunk 5b)*: a `Stickman.mesh` under a PBS datablock
+  (kind `MAT_HLMS_PBS`, diffuse `(0,0,0)`, specular `(0,0,0)`, emissive
+  `(0.9,0.2,0.2)`, roughness 1.0, metalness 0.0), scaled 0.6 so the silhouette
+  is ~1574 px in a 320x240 frame. Baseline at frame F; then one bone — `Spine`,
+  index 6, the clearest of the ten the probe swept — rotates 90° about X over 60
+  renderer frames, one `BoneBatch` per frame. Assert: the pixel-flip fraction
+  against the baseline is at least 0.005 (the measured clean-pose value is
+  0.0197, so the floor is a quarter of it and still 25x the noise floor of a
+  still frame), the non-background count stays within ±30% of the baseline
+  (measured 1504 -> 1376, -8.5%), and no motion was submitted at all — the
+  change is the rig, not the object. The material and the two setup requirements
+  this depends on are §5.1's; without them the mesh renders 0 pixels and the
+  test cannot tell an unbound datablock from a rig that does not move;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is

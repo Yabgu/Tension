@@ -17,7 +17,36 @@
 //       -isystem /usr/include/OGRE-Next/Hlms/Pbs \
 //       tests/probe_skinning.cpp -o build/probe-skinning/probe_skinning \
 //       -lOgreNextMain -lOgreNextHlmsUnlit -lOgreNextHlmsPbs -lpthread
-//   ./probe_skinning /usr/lib/OGRE-Next [--no-location]
+//   ./probe_skinning /usr/lib/OGRE-Next [--no-location] [--material=unlit]
+//                            [--scale=0.6] [--light] [--cube] [--late-bind]
+//
+// The material defaults to PBS+emissive. That is not a style choice: HlmsUnlit's
+// shader templates contain no skeletal-animation code at all (grep the
+// templates under Media/Hlms/Unlit — zero hits for "bone"/"skeleton"; the PBS
+// templates have an `hlms_skeleton` block per vertex). A first run of this probe
+// with an Unlit datablock therefore measured a correct CPU-side skeleton against
+// a mesh that could not possibly follow it: 7 posing combinations, every one
+// flip=0.00000. `--material=unlit` still runs that arm, so the A/B is one binary
+// and one variable.
+//
+// Switching to PBS was necessary and not sufficient. Two further requirements
+// were found by measurement, and both are now part of the probe's setup:
+//
+//   * `scene->setForwardClustered(...)` — PBS renders through a Forward+ light
+//     setup, and it has to exist before the Hlms generates a PBS shader.
+//   * the library folders come from `HlmsPbs::getDefaultPaths()`. That call
+//     lists five, and the last — `Hlms/Pbs/Any/Main` — is the one holding the
+//     vertex-shader piece. A hand-written list stopping at `Hlms/Pbs/Any`
+//     (what this file did first, matching the Unlit-era pattern) leaves PBS
+//     with no vertex shader: no exception, no log line, and 0 non-background
+//     pixels at every scale — for a plain cube as much as for a rigged mesh.
+//     The `--cube` arm exists to show exactly that, and the report of that
+//     measurement is what led to `getDefaultPaths`.
+//
+// The frame measurement reads the background from the frame's own corner pixel
+// rather than assuming "darker than 40": under a brightness rule, a mesh drawn
+// black and a mesh not drawn at all are the same number, which is precisely the
+// ambiguity that hid the missing vertex shader for a round.
 
 #include <OgreArchiveManager.h>
 #include <OgreCamera.h>
@@ -29,6 +58,7 @@
 #include <OgreHlmsManager.h>
 #include <OgreImage2.h>
 #include <OgreItem.h>
+#include <OgreLight.h>
 #include <OgreLogManager.h>
 #include <OgreMesh.h>
 #include <OgreMesh2.h>
@@ -50,6 +80,7 @@
 #include <Compositor/OgreCompositorManager2.h>
 #include <Compositor/OgreCompositorWorkspace.h>
 #include <Hlms/Pbs/OgreHlmsPbs.h>
+#include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
 #include <Hlms/Unlit/OgreHlmsUnlitDatablock.h>
 
@@ -139,7 +170,15 @@ bool grab(Ogre::Root *root, Downloader &downloader, Frame &out) {
 
 bool is_background(const Frame &frame, size_t x, size_t y) {
     const uint8_t *p = frame.pixels.data() + (y * frame.width + x) * frame.bpp;
-    return p[0] < 40 && p[1] < 40 && p[2] < 40;
+    // The background is read from the frame's own top-left pixel rather than
+    // assumed to be "darker than 40". Under that rule a mesh that renders pure
+    // black is counted as background, so "0 non-background pixels" cannot be
+    // told apart from "nothing was rendered" — which is exactly the ambiguity
+    // this probe hit when the material path changed.
+    const int b0 = frame.pixels[0], b1 = frame.pixels[1], b2 = frame.pixels[2];
+    return std::abs(static_cast<int>(p[0]) - b0) <= 8 &&
+           std::abs(static_cast<int>(p[1]) - b1) <= 8 &&
+           std::abs(static_cast<int>(p[2]) - b2) <= 8;
 }
 
 size_t non_background(const Frame &frame) {
@@ -230,6 +269,31 @@ void pose_bone(Ogre::SkeletonInstance *skeleton, size_t index, float angle_degre
     bone->setScale(Ogre::Vector3::UNIT_SCALE);
 }
 
+/// Where the drawn pixels are, and how bright the frame got. A mesh that is
+/// drawn black and a mesh that is not drawn at all produce the same
+/// non-background count under a brightness rule; the max channel says whether
+/// the frame contains anything the background does not.
+void report_blob(const Frame &frame, const char *label) {
+    size_t total = 0, left = 0, right = 0;
+    int max_channel = 0;
+    for (size_t y = 0; y < frame.height; ++y) {
+        for (size_t x = 0; x < frame.width; ++x) {
+            const uint8_t *p = frame.pixels.data() + (y * frame.width + x) * frame.bpp;
+            max_channel = std::max(max_channel, static_cast<int>(std::max(p[0], std::max(p[1], p[2]))));
+            if (!is_background(frame, x, y)) {
+                ++total;
+                if (x < frame.width / 2) {
+                    ++left;
+                } else {
+                    ++right;
+                }
+            }
+        }
+    }
+    std::printf("  %-22s %5zu px  (left %4zu / right %4zu)  max channel %3d\n", label, total,
+                left, right, max_channel);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
@@ -240,8 +304,20 @@ int main(int argc, char **argv) {
     }
     const std::string plugin_dir = argv[1];
     bool add_location = true;
+    bool use_pbs = true;
+    bool add_light = false;
+    bool add_cube = false;
+    bool late_bind = false;
+    float forced_scale = 0.0f;
     for (int i = 2; i < argc; ++i) {
         if (std::string(argv[i]) == "--no-location") add_location = false;
+        if (std::string(argv[i]) == "--material=unlit") use_pbs = false;
+        if (std::string(argv[i]) == "--light") add_light = true;
+        if (std::string(argv[i]) == "--cube") add_cube = true;
+        if (std::string(argv[i]) == "--late-bind") late_bind = true;
+        if (std::string(argv[i]).rfind("--scale=", 0) == 0) {
+            forced_scale = std::stof(std::string(argv[i]).substr(8));
+        }
     }
 
     {
@@ -268,6 +344,13 @@ int main(int argc, char **argv) {
     Ogre::Window *window =
         root.createRenderWindow("skinning-probe", kWindowWidth, kWindowHeight, false, &params);
     Ogre::SceneManager *scene = root.createSceneManager(Ogre::ST_GENERIC, 1u, "skinning-mgr");
+    // PBS renders through a Forward+ light setup, and the setup has to exist
+    // before the Hlms generates a PBS shader for anything. Without it the
+    // datablock is still created and the item still attaches — and nothing is
+    // ever drawn. (Unlit does not care; this is harmless in that arm.)
+    scene->setForwardClustered(true, 16u, 8u, 24u, 96u, 2u, 0u, 0.0f, 100000.0f);
+    std::printf("SKIN: forward-clustered light setup enabled "
+                "(required by the PBS path)\n");
 
     Ogre::Camera *camera = scene->createCamera("skinning-camera");
     camera->setPosition(0.0f, 0.0f, 4.0f);
@@ -286,6 +369,22 @@ int main(int argc, char **argv) {
     Downloader downloader;
     downloader.window = window;
     root.addFrameListener(&downloader);
+
+    // The diagnostic light: PBS is lit, and an unlit PBS material shows only
+    // what it emits, so "nothing appears" and "nothing is drawn" have to be
+    // told apart before either is believed.
+    if (add_light) {
+        Ogre::Light *light = scene->createLight();
+        light->setType(Ogre::Light::LT_DIRECTIONAL);
+        light->setDirection(Ogre::Vector3(-0.4f, -0.5f, -1.0f));
+        light->setDiffuseColour(Ogre::ColourValue(1.0f, 1.0f, 1.0f));
+        light->setSpecularColour(Ogre::ColourValue(0.0f, 0.0f, 0.0f));
+        Ogre::SceneNode *light_node =
+            scene->getRootSceneNode(Ogre::SCENE_DYNAMIC)->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+        light_node->setPosition(2.0f, 3.0f, 5.0f);
+        light_node->attachObject(light);
+        std::printf("SKIN: diagnostic directional light added\n");
+    }
 
     // ── Q2 first: is the skeleton reachable by name? ─────────────────────
     // The resource location is what makes `createByImportingV1` able to find
@@ -325,30 +424,93 @@ int main(int argc, char **argv) {
         std::printf("SKIN: Stickman.mesh came back unrigged — the conversion dropped the rig\n");
         return 3;
     }
+    // The library folders are asked for, never guessed. HlmsPbs's own
+    // getDefaultPaths() lists `Hlms/Pbs/Any/Main`, and that is the folder holding
+    // the vertex-shader piece with the skeletal-animation block. A hand-written
+    // list that stops at `Hlms/Pbs/Any` (what this probe did first) leaves PBS
+    // without a vertex shader: the datablock is created, the item binds to it and
+    // reports hlms "pbs", and the mesh is silently never drawn — 0
+    // non-background pixels at every scale, for a plain cube as much as for a
+    // rigged character. HlmsUnlit is unaffected by the omission, which is why
+    // only the PBS arm was blank.
     Ogre::ArchiveManager &archives = Ogre::ArchiveManager::getSingleton();
-    Ogre::Archive *unlit_sources =
-        archives.load(std::string(kMedia) + "/Hlms/Unlit/GLSL", "FileSystem", true);
-    Ogre::Archive *pbs_sources =
-        archives.load(std::string(kMedia) + "/Hlms/Pbs/GLSL", "FileSystem", true);
-    Ogre::ArchiveVec library;
-    library.push_back(archives.load(std::string(kMedia) + "/Hlms/Common/GLSL", "FileSystem", true));
-    library.push_back(archives.load(std::string(kMedia) + "/Hlms/Common/Any", "FileSystem", true));
-    library.push_back(archives.load(std::string(kMedia) + "/Hlms/Unlit/Any", "FileSystem", true));
-    library.push_back(archives.load(std::string(kMedia) + "/Hlms/Pbs/Any", "FileSystem", true));
-    Ogre::HlmsUnlit *unlit = new Ogre::HlmsUnlit(unlit_sources, &library);
-    Ogre::HlmsPbs *pbs = new Ogre::HlmsPbs(pbs_sources, &library);
+    Ogre::String unlit_main, pbs_main;
+    Ogre::StringVector unlit_lib_paths, pbs_lib_paths;
+    Ogre::HlmsUnlit::getDefaultPaths(unlit_main, unlit_lib_paths);
+    Ogre::HlmsPbs::getDefaultPaths(pbs_main, pbs_lib_paths);
+    Ogre::ArchiveVec unlit_library, pbs_library;
+    for (const Ogre::String &path : unlit_lib_paths) {
+        unlit_library.push_back(archives.load(std::string(kMedia) + "/" + path, "FileSystem", true));
+    }
+    for (const Ogre::String &path : pbs_lib_paths) {
+        pbs_library.push_back(archives.load(std::string(kMedia) + "/" + path, "FileSystem", true));
+    }
+    std::printf("SKIN: pbs library folders=%zu, last=\"%s\"\n", pbs_lib_paths.size(),
+                pbs_lib_paths.back().c_str());
+    Ogre::HlmsUnlit *unlit = new Ogre::HlmsUnlit(
+        archives.load(std::string(kMedia) + "/" + unlit_main, "FileSystem", true), &unlit_library);
+    Ogre::HlmsPbs *pbs =
+        new Ogre::HlmsPbs(archives.load(std::string(kMedia) + "/" + pbs_main, "FileSystem", true), &pbs_library);
     root.getHlmsManager()->registerHlms(unlit);
     root.getHlmsManager()->registerHlms(pbs);
     Ogre::HlmsMacroblock macroblock;
     Ogre::HlmsBlendblock blendblock;
     Ogre::HlmsParamVec param_vec;
-    Ogre::HlmsUnlitDatablock *datablock = static_cast<Ogre::HlmsUnlitDatablock *>(
-        unlit->createDatablock("skin-red", "skin-red", macroblock, blendblock, param_vec));
-    datablock->setUseColour(true);
-    datablock->setColour(Ogre::ColourValue(0.9f, 0.6f, 0.2f, 1.0f));
+    Ogre::HlmsDatablock *datablock = nullptr;
+    Ogre::HlmsPbsDatablock *pbs_out = nullptr;
+    if (use_pbs) {
+        // The acid test's exact parameters (DESIGN.md §14): the colour that
+        // shows is the emissive one, because with no light rig a PBS material
+        // lit only by diffuse+specular renders black.
+        auto *pbs_datablock = static_cast<Ogre::HlmsPbsDatablock *>(
+            pbs->createDatablock("skin-red", "skin-red", macroblock, blendblock, param_vec));
+        pbs_datablock->setDiffuse(add_light ? Ogre::Vector3(0.9f, 0.2f, 0.2f)
+                                           : Ogre::Vector3(0.0f, 0.0f, 0.0f));
+        pbs_datablock->setSpecular(Ogre::Vector3(0.0f, 0.0f, 0.0f));
+        pbs_datablock->setEmissive(Ogre::Vector3(0.9f, 0.2f, 0.2f));
+        pbs_datablock->setRoughness(1.0f);
+        pbs_datablock->setMetalness(0.0f);
+        datablock = pbs_datablock;
+        pbs_out = pbs_datablock;
+        std::printf("SKIN: material hlms=pbs diffuse=(0,0,0) specular=(0,0,0) "
+                    "emissive=(0.9,0.2,0.2) roughness=1.0 metalness=0.0\n");
+    } else {
+        auto *unlit_datablock = static_cast<Ogre::HlmsUnlitDatablock *>(
+            unlit->createDatablock("skin-red", "skin-red", macroblock, blendblock, param_vec));
+        unlit_datablock->setUseColour(true);
+        unlit_datablock->setColour(Ogre::ColourValue(0.9f, 0.6f, 0.2f, 1.0f));
+        datablock = unlit_datablock;
+        std::printf("SKIN: material hlms=unlit colour=(0.9,0.6,0.2) "
+                    "(no skeletal animation in this shader family)\n");
+    }
+
+    // A datablock carries DirtyTextures from creation until a frame uploads it.
+    // A renderable that binds to it before that upload gets a *deferred* hash
+    // (`HlmsPbs::calculateHashFor` writes 0), and `HlmsDatablock::flushRenderables`
+    // — the only thing that would recompute it — is protected with
+    // `friend class RenderQueue`, so no guest-side code can call it. Rendering a
+    // frame between createDatablock and createItem is the ordering that avoids
+    // ever getting a deferred hash in the first place.
+    if (late_bind) {
+        for (int i = 0; i < 2; ++i) root.renderOneFrame();
+        std::printf("SKIN: late-bind: 2 frames rendered before createItem\n");
+    }
 
     Ogre::Item *item = scene->createItem(rigged.mesh, Ogre::SCENE_DYNAMIC);
     item->setDatablock(datablock);
+    {
+        // What the subitem actually ended up bound to, and which Hlms owns it.
+        // setDatablock returning successfully is not the same as the renderable
+        // being drawn with it.
+        Ogre::HlmsDatablock *bound = item->getSubItem(0)->getDatablock();
+        std::printf("SKIN: subitem 0 -> datablock \"%s\", hlms \"%s\"\n",
+                    bound ? bound->getName().getFriendlyText().c_str() : "(null)",
+                    bound && bound->getCreator() ? bound->getCreator()->getTypeNameStr().c_str()
+                                                 : "(null)");
+        std::printf("SKIN: at bind time: hlmsHash %u, datablock dirty flags %u\n",
+                    item->getSubItem(0)->getHlmsHash(),
+                    pbs_out ? static_cast<unsigned>(pbs_out->getDirtyFlags()) : 0u);
+    }
     Ogre::SceneNode *node = scene->getRootSceneNode(Ogre::SCENE_DYNAMIC)
                                 ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
     node->attachObject(item);
@@ -362,8 +524,9 @@ int main(int argc, char **argv) {
                 static_cast<double>(hi.x), static_cast<double>(hi.y), static_cast<double>(hi.z),
                 static_cast<double>(hi.y - lo.y));
     float scale = kScale;
-    const float scales[] = {0.02f, 0.2f, 1.0f};
-    for (float candidate : scales) {
+    const std::vector<float> scale_candidates =
+        forced_scale > 0.0f ? std::vector<float>{forced_scale} : std::vector<float>{0.02f, 0.2f, 1.0f};
+    for (float candidate : scale_candidates) {
         node->setScale(candidate, candidate, candidate);
         for (int settle = 0; settle < 3; ++settle) root.renderOneFrame();
         Frame try_frame;
@@ -378,6 +541,40 @@ int main(int argc, char **argv) {
         }
     }
     node->setScale(scale, scale, scale);
+    std::printf("SKIN: after rendering: hlmsHash %u, datablock dirty flags %u\n",
+                item->getSubItem(0)->getHlmsHash(),
+                pbs_out ? static_cast<unsigned>(pbs_out->getDirtyFlags()) : 0u);
+    {
+        for (int settle = 0; settle < 3; ++settle) root.renderOneFrame();
+        Frame only_mesh;
+        if (grab(&root, downloader, only_mesh)) report_blob(only_mesh, "stickman alone");
+    }
+
+    // The control: a non-rigged mesh with the very same datablock, off to one
+    // side, so "PBS does not draw this mesh" and "PBS does not draw at all in
+    // this scene" are different answers.
+    if (add_cube) {
+        const Loaded cube_mesh = load_mesh("cube.mesh");
+        if (cube_mesh.mesh) {
+            Ogre::Item *cube = scene->createItem(cube_mesh.mesh, Ogre::SCENE_DYNAMIC);
+            cube->setDatablock(datablock);
+            Ogre::SceneNode *cube_node =
+                scene->getRootSceneNode(Ogre::SCENE_DYNAMIC)->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+            cube_node->setPosition(1.5f, 0.5f, 0.0f);
+            cube_node->setScale(0.3f, 0.3f, 0.3f);
+            cube_node->attachObject(cube);
+            for (int settle = 0; settle < 3; ++settle) root.renderOneFrame();
+            Frame cube_frame;
+            if (grab(&root, downloader, cube_frame)) {
+                report_blob(cube_frame, "control: cube.mesh+pbs");
+            }
+            cube_node->detachObject(cube);
+            scene->destroyItem(cube);
+            scene->destroySceneNode(cube_node);
+        } else {
+            std::printf("SKIN: cube.mesh could not be loaded: %s\n", cube_mesh.note.c_str());
+        }
+    }
 
     // The skinning path is prepared by the *conversion*, and the blend map is
     // where it shows: `RenderableAnimated::getBlendIndexToBoneIndexMap()` is
