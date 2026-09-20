@@ -678,11 +678,15 @@ int32_t adapter_link(void *, const tension_core_api *core) {
 
     // A renderable may only name a mesh that is loaded: the mirror asks the
     // loader rather than guessing, and refuses one that points at nothing.
-    s.scene.set_resource_check([](uint32_t resource_id, uint32_t kind) {
-        const ResourceSlot resource = adapter_state().loader.resource_at(resource_id);
+    s.scene.set_resource_check([](uint32_t resource_id, uint32_t kind) {        const ResourceSlot resource = adapter_state().loader.resource_at(resource_id);
         return resource.resource_id == resource_id && resource.kind == kind &&
                resource.state == TENSION_OGRE_RES_STATE_READY;
     });
+
+    // And where the mirror says why it refused: the walk that found a cycle,
+    // the depth it measured, the child holding a node open. The adapter owns
+    // the log, so the mirror only formats.
+    s.scene.set_log([](const std::string &message) { log_line(3, "ogre: " + message); });
 
     // What the loader needs from the session, without knowing the session
     // exists: a way to post an event and a way to say something.

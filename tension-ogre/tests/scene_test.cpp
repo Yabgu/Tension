@@ -59,12 +59,12 @@ void test_upsert_node_marks_dirty() {
     check(mirror.node_live(1), "without unliving the entry");
 }
 
-void test_upsert_node_with_parent_refused() {
-    std::printf("test_upsert_node_with_parent_refused\n");
+void test_upsert_node_with_missing_parent_refused() {
+    std::printf("test_upsert_node_with_missing_parent_refused\n");
     SceneMirror mirror;
     SceneNodeRecord node;
     node.parent_id = 7;
-    check_eq(mirror.upsert_node(1, node), -EINVAL, "a parent is refused in 3b");
+    check_eq(mirror.upsert_node(1, node), -EINVAL, "a parent that is not a live node is refused");
     check(!mirror.node_live(1), "and nothing was stored");
     node.parent_id = 0;
     check_eq(mirror.upsert_node(0, node), -EINVAL, "id 0 is never valid");
@@ -129,6 +129,172 @@ void test_remove_material_in_use_refused() {
     check_eq(mirror.remove_renderable(1), 0, "drop the renderable");
     check_eq(mirror.remove_material(1), 0, "and then the material goes");
     check(!mirror.material_live(1), "it is gone");
+}
+
+// ── chunk 5a: hierarchy ─────────────────────────────────────────────────
+
+/// A node with the given parent, all other fields default.
+SceneNodeRecord node_under(uint32_t parent_id) {
+    SceneNodeRecord node;
+    node.parent_id = parent_id;
+    return node;
+}
+
+void test_upsert_node_with_live_parent_accepted() {
+    std::printf("test_upsert_node_with_live_parent_accepted\n");
+    SceneMirror mirror;
+    check_eq(mirror.upsert_node(1, SceneNodeRecord{}), 0, "a root node is accepted");
+    check_eq(mirror.upsert_node(2, node_under(1)), 0, "a child of a live node is accepted");
+    check(mirror.node_live(2), "the child is live");
+    check_eq(mirror.child_count(1), 1, "the parent has one child");
+    check_eq(mirror.node_depth(2), 1, "the child is one link deep");
+    check_eq(mirror.node_depth(1), 0, "the root is zero links deep");
+}
+
+void test_child_count_nonzero_refused() {
+    std::printf("test_child_count_nonzero_refused\n");
+    SceneMirror mirror;
+    std::vector<std::string> said;
+    mirror.set_log([&said](const std::string &m) { said.push_back(m); });
+    SceneNodeRecord node;
+    node.child_count = 3;
+    check_eq(mirror.upsert_node(1, node), -EINVAL, "a guest-written childCount is refused");
+    check(!mirror.node_live(1), "and nothing was stored");
+    check(!said.empty() && said[0].find("childCount") != std::string::npos,
+          "and the refusal names the field");
+}
+
+void test_upsert_node_cycle_refused() {
+    std::printf("test_upsert_node_cycle_refused\n");
+    SceneMirror mirror;
+    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(2, node_under(1));
+    mirror.upsert_node(3, node_under(2));
+    // The grandparent is re-parented to its grandchild: the chain would close.
+    check_eq(mirror.upsert_node(1, node_under(3)), -EINVAL, "a cycle is refused");
+    check_eq(mirror.node_depth(1), 0, "and the tree is unchanged");
+    check_eq(mirror.upsert_node(3, node_under(3)), -EINVAL, "a node cannot parent itself");
+}
+
+void test_upsert_node_depth_over_32_refused() {
+    std::printf("test_upsert_node_depth_over_32_refused\n");
+    SceneMirror mirror;
+    uint32_t previous = 0;
+    for (uint32_t id = 1; id <= kMaxNodeDepth; ++id) {
+        check_eq(mirror.upsert_node(id, node_under(previous)), 0, "a chain builds to the cap");
+        previous = id;
+    }
+    // kMaxNodeDepth nodes are a chain of kMaxNodeDepth - 1 links, so the next
+    // node sits exactly at the cap and the one after it does not.
+    check_eq(mirror.upsert_node(kMaxNodeDepth + 1, node_under(previous)), 0,
+             "a node exactly at the cap is accepted");
+    check_eq(mirror.upsert_node(kMaxNodeDepth + 2, node_under(kMaxNodeDepth + 1)), -EINVAL,
+             "one link past the cap is refused");
+    check_eq(mirror.node_depth(kMaxNodeDepth + 1), kMaxNodeDepth, "and the cap is 32 links");
+    // The cap follows the subtree, not just the node: a deep chain moved under
+    // a deep chain would make a chain longer than either.
+    SceneMirror other;
+    uint32_t tail = 0;
+    for (uint32_t id = 1; id <= 17; ++id) {
+        other.upsert_node(id, node_under(tail));
+        tail = id;
+    }
+    uint32_t second = 0;
+    for (uint32_t id = 18; id <= 34; ++id) {
+        other.upsert_node(id, node_under(second));
+        second = id;
+    }
+    check_eq(other.upsert_node(18, node_under(17)), -EINVAL,
+             "a re-parent that makes a 33-link chain is refused");
+}
+
+void test_remove_node_with_live_child_refused_ebusy() {
+    std::printf("test_remove_node_with_live_child_refused_ebusy\n");
+    SceneMirror mirror;
+    std::vector<std::string> said;
+    mirror.set_log([&said](const std::string &m) { said.push_back(m); });
+    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(2, node_under(1));
+    check_eq(mirror.remove_node(1), -EBUSY, "a node with a live child is not removed");
+    check(mirror.node_live(1), "so it stays live");
+    check(!said.empty() && said[0].find("first 2") != std::string::npos,
+          "and the refusal names the child");
+}
+
+void test_remove_node_after_children_removed_succeeds() {
+    std::printf("test_remove_node_after_children_removed_succeeds\n");
+    SceneMirror mirror;
+    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(2, node_under(1));
+    check_eq(mirror.remove_node(2), 0, "the child goes first");
+    check_eq(mirror.remove_node(1), 0, "and then the parent");
+    check(!mirror.node_live(1), "the parent is gone");
+}
+
+void test_remove_node_with_live_renderable_refused() {
+    std::printf("test_remove_node_with_live_renderable_refused\n");
+    SceneMirror mirror;
+    MaterialRecord material;
+    material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
+    mirror.upsert_material(1, material);
+    mirror.set_resource_check([](uint32_t id, uint32_t kind) {
+        return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
+    });
+    mirror.upsert_node(1, SceneNodeRecord{});
+    RenderableRecord renderable = renderable_using(1, 42);
+    renderable.node_id = 1;
+    check_eq(mirror.upsert_renderable(1, renderable), 0, "a drawable on a live node is accepted");
+    check_eq(mirror.remove_node(1), -EBUSY, "a node a drawable hangs from is not removed");
+    check_eq(mirror.remove_renderable(1), 0, "the drawable goes first");
+    check_eq(mirror.remove_node(1), 0, "and then the node");
+}
+
+void test_upsert_renderable_with_missing_node_refused() {
+    std::printf("test_upsert_renderable_with_missing_node_refused\n");
+    SceneMirror mirror;
+    MaterialRecord material;
+    material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
+    mirror.upsert_material(1, material);
+    mirror.set_resource_check([](uint32_t id, uint32_t kind) {
+        return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
+    });
+    RenderableRecord renderable = renderable_using(1, 42);
+    renderable.node_id = 9;
+    check_eq(mirror.upsert_renderable(1, renderable), -EINVAL,
+             "a drawable naming a node that is not live is refused");
+    check(!mirror.renderable_live(1), "and nothing was stored");
+}
+
+void test_upsert_renderable_with_live_node_accepted() {
+    std::printf("test_upsert_renderable_with_live_node_accepted\n");
+    SceneMirror mirror;
+    MaterialRecord material;
+    material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
+    mirror.upsert_material(1, material);
+    mirror.set_resource_check([](uint32_t id, uint32_t kind) {
+        return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
+    });
+    mirror.upsert_node(1, SceneNodeRecord{});
+    RenderableRecord renderable = renderable_using(1, 42);
+    renderable.node_id = 1;
+    check_eq(mirror.upsert_renderable(1, renderable), 0, "a drawable on a live node is accepted");
+    const RenderableRecord *record = mirror.renderable(1);
+    check(record != nullptr && record->node_id == 1, "and the record keeps the node");
+}
+
+void test_upsert_renderable_with_node_zero_is_self_placed() {
+    std::printf("test_upsert_renderable_with_node_zero_is_self_placed\n");
+    SceneMirror mirror;
+    MaterialRecord material;
+    material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
+    mirror.upsert_material(1, material);
+    mirror.set_resource_check([](uint32_t id, uint32_t kind) {
+        return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
+    });
+    check_eq(mirror.upsert_renderable(1, renderable_using(1, 42)), 0,
+             "nodeId 0 is accepted: the drawable is self-placed");
+    const RenderableRecord *record = mirror.renderable(1);
+    check(record != nullptr && record->node_id == 0, "and the record says so");
 }
 
 // ── chunk 4: the motion table ───────────────────────────────────────────
@@ -311,7 +477,17 @@ void test_decode_record_fields_land_where_wire_says() {
 int main() {
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     test_upsert_node_marks_dirty();
-    test_upsert_node_with_parent_refused();
+    test_upsert_node_with_missing_parent_refused();
+    test_upsert_node_with_live_parent_accepted();
+    test_child_count_nonzero_refused();
+    test_upsert_node_cycle_refused();
+    test_upsert_node_depth_over_32_refused();
+    test_remove_node_with_live_child_refused_ebusy();
+    test_remove_node_after_children_removed_succeeds();
+    test_remove_node_with_live_renderable_refused();
+    test_upsert_renderable_with_live_node_accepted();
+    test_upsert_renderable_with_missing_node_refused();
+    test_upsert_renderable_with_node_zero_is_self_placed();
     test_remove_node_clears_live_and_marks_dirty();
     test_upsert_renderable_validates_material_live();
     test_upsert_renderable_validates_mesh_resource_kind();

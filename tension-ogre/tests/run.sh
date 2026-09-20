@@ -60,6 +60,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-motion.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-motion.wasm" >/dev/null ||
     fail "guest-motion.ts did not compile"
+"$asc" "$here/guest-hierarchy.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-hierarchy.wasm" >/dev/null ||
+    fail "guest-hierarchy.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -141,6 +144,20 @@ motion_case() {
     echo "$stdout" | grep -E '^(baseline|final|report):' | sed 's/^/== '"$name"': /' || true
 }
 motion_case motion --renderer=null
+
+# Chunk 5a: a child follows its parent. The adapter composes nothing — OGRE's
+# scene graph does — and the pixels are what says so.
+hierarchy_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-hierarchy.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|8/8 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^(baseline|after):' | sed 's/^/== '"$name"': /' || true
+}
+hierarchy_case hierarchy --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -158,6 +175,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         # batch's own numbers — the same assertions at both sizes.
         motion_case motion-gl3plus --renderer=gl3plus --bodies=1
         motion_case motion-throughput --renderer=gl3plus --bodies=64
+        # Chunk 5a: the child's world position is the parent's to decide.
+        hierarchy_case hierarchy-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

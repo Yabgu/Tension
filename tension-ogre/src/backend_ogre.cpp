@@ -479,6 +479,11 @@ class BackendOgre final : public Backend {
     int32_t apply_submissions(const SceneMirror &mirror) override {
         if (scene_ == nullptr) return 0;
         int32_t refused = 0;
+        // The records the apply pass reads from, for the helpers that have to
+        // create a node whose record has not been applied yet. Set for the
+        // duration of the call and cleared after it, so nothing can hold a
+        // reference past the mirror the caller owns.
+        applying_ = &mirror;
         try {
             refused += apply_nodes(mirror);
             refused += apply_cameras(mirror);
@@ -486,15 +491,19 @@ class BackendOgre final : public Backend {
             refused += apply_materials(mirror);
             refused += apply_renderables(mirror);
         } catch (const Ogre::Exception &e) {
+            applying_ = nullptr;
             log_line("ogre: apply_submissions: " + e.getFullDescription());
             return -EIO;
         } catch (const std::exception &e) {
+            applying_ = nullptr;
             log_line(std::string("ogre: apply_submissions: ") + e.what());
             return -EIO;
         } catch (...) {
+            applying_ = nullptr;
             log_line("ogre: apply_submissions: an exception of unknown type escaped");
             return -EIO;
         }
+        applying_ = nullptr;
         return refused == 0 ? 0 : -EIO;
     }
 
@@ -631,15 +640,13 @@ class BackendOgre final : public Backend {
             const SceneNodeRecord *record = mirror.node(id);
             if (record == nullptr) continue;
             try {
-                Ogre::SceneNode *node = nodes_[id - 1];
+                Ogre::SceneNode *node = node_for(id);
                 if (node == nullptr) {
-                    // The probe's parenting call: a child of the root, so the
-                    // node is in the graph. Hierarchy (`parentId`) is not in
-                    // 3b — the mirror refuses a non-zero one before this runs.
-                    node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
-                               ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
-                    nodes_[id - 1] = node;
+                    refused += 1;
+                    refused_entry("node", id, "the mirror has no live record for it");
+                    continue;
                 }
+                reparent(node, record->parent_id);
                 node->setPosition(record->px, record->py, record->pz);
                 node->setOrientation(
                     Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
@@ -655,10 +662,47 @@ class BackendOgre final : public Backend {
     void destroy_node(uint32_t id) {
         Ogre::SceneNode *node = nodes_[id - 1];
         if (node == nullptr) return;
-        // What a node still carries goes before the node does.
+        // The mirror refuses to remove a node with live children or a drawable
+        // hanging from it, so by the time this runs nothing *should* be
+        // attached. The detach loop stays anyway: the renderer should not be
+        // the thing that discovers a mirror bug.
         while (node->numAttachedObjects() > 0) node->detachObject(node->getAttachedObject(0));
         scene_->destroySceneNode(node);
         nodes_[id - 1] = nullptr;
+    }
+
+    /// The OGRE node for a guest node id, created on demand — with its
+    /// ancestors, from the mirror's records — when the record has not been
+    /// applied yet. A child can be submitted before its parent, and the render
+    /// thread must not depend on the guest's order (DESIGN.md §5.1). The
+    /// recursion is bounded by the mirror's 32-link cap.
+    Ogre::SceneNode *node_for(uint32_t id) {
+        if (id == 0 || id > kNodeCapacity) return nullptr;
+        if (Ogre::SceneNode *existing = nodes_[id - 1]) return existing;
+        if (applying_ == nullptr || !applying_->node_live(id)) return nullptr;
+        const SceneNodeRecord *record = applying_->node(id);
+        if (record == nullptr) return nullptr;
+        Ogre::SceneNode *node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
+                                    ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
+        nodes_[id - 1] = node; // stored before reparent: the chain walks back up
+        reparent(node, record->parent_id);
+        node->setPosition(record->px, record->py, record->pz);
+        node->setOrientation(Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
+        node->setScale(record->sx, record->sy, record->sz);
+        return node;
+    }
+
+    /// Put `node` under the guest node `parent_id` names, 0 meaning the root.
+    /// A no-op when it is already there: OGRE's own scene graph composes the
+    /// world transform, so this is the whole of the adapter's hierarchy work.
+    void reparent(Ogre::SceneNode *node, uint32_t parent_id) {
+        Ogre::SceneNode *want = parent_id == 0 ? scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
+                                               : node_for(parent_id);
+        if (want == nullptr || node == want) return;
+        Ogre::Node *current = node->getParent();
+        if (current == want) return;
+        if (current != nullptr) current->removeChild(node);
+        want->addChild(node);
     }
 
     // ── cameras ──────────────────────────────────────────────────────────
@@ -964,6 +1008,10 @@ class BackendOgre final : public Backend {
                     item->setDatablock(datablock);
                     item_datablocks_[id - 1] = datablock;
                 }
+                // A drawable hangs from its own node, and with a `nodeId` that
+                // node is a child of the guest's — so the transform below is
+                // local to it and a moving parent carries the drawable.
+                reparent(node, record->node_id);
                 node->setPosition(record->px, record->py, record->pz);
                 node->setOrientation(
                     Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
@@ -1089,6 +1137,8 @@ class BackendOgre final : public Backend {
     std::filesystem::path temp_dir_;
 
     std::unique_ptr<ScreenshotListener> screenshot_listener_;
+    /// The mirror the apply pass is reading from, for the duration of the call.
+    const SceneMirror *applying_ = nullptr;
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;

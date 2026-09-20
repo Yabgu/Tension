@@ -403,7 +403,12 @@ export class Renderable {
   renderableId: u32 = 0;
   materialId: u32 = 0;
   meshResourceId: u32 = 0;
-  flags: u32 = 0;
+  /// The node this drawable hangs from, or 0 for self-placed at the world root.
+  /// This word was `flags` until chunk 5a: nothing wrote it and nothing read it
+  /// but the decoder, so the repurposing changed semantics and not shape — no
+  /// offset moved and `layoutHash` did not either. With a node, the inline
+  /// transform below is *local* to it.
+  nodeId: u32 = 0;
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
@@ -420,7 +425,8 @@ export class Renderable {
   /// A drawable: a mesh, a material, and a place in the world — the inline
   /// transform this record carries, with the identity rotation it defaults to.
   /// The id is yours to set; it is the guest's own handle, not part of the
-  /// shape.
+  /// shape. `nodeId` stays 0: a drawable that hangs from a node is a different
+  /// sentence, and the factory should not guess which one you meant.
   static at(meshResourceId: u32, materialId: u32, x: f32 = 0, y: f32 = 0,
             z: f32 = 0, scale: f32 = 1.0): Renderable {
     const renderable = new Renderable();
@@ -668,6 +674,10 @@ function ogreWireOffsetsProblem(): string | null {
   if (offsetof<Resource>("seq") + 8 != 48) return "Resource size";
   if (offsetof<Buffer>("bytes") != 32) return "Buffer.bytes";
   if (offsetof<Buffer>("reserved") + 8 != 48) return "Buffer size";
+  // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
+  // The pin is here because the rename is a *semantics* change, and the one
+  // thing that must not change with it is where the field sits.
+  if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
   if (offsetof<Renderable>("positionX") != 16) return "Renderable.positionX";
   if (offsetof<Renderable>("scalePad") + 4 != 64) return "Renderable size";
   // The motion table's record: the id pair, then the transform at the offsets

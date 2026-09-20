@@ -57,9 +57,53 @@ void SceneMirror::mark(std::vector<uint32_t> &list, uint32_t id) {
 
 int32_t SceneMirror::upsert_node(uint32_t id, const SceneNodeRecord &record) {
     if (id == 0 || id > kNodeCapacity) return -EINVAL; // ids are 1-based
-    // Flat nodes in 3b: parent/child composition waits for the chunk that
-    // needs it, and a silently ignored parentId would be worse than a refusal.
-    if (record.parent_id != 0) return -EINVAL;
+    // The count is the mirror's answer, not the guest's claim. A guest that
+    // fills it in is guessing at something this table already knows.
+    if (record.child_count != 0) {
+        note("node " + std::to_string(id) + " carries childCount " +
+             std::to_string(record.child_count) + ", which the mirror derives from parentId");
+        return -EINVAL;
+    }
+    uint32_t depth = 0;
+    if (record.parent_id != 0) {
+        if (record.parent_id > kNodeCapacity || !nodes_[record.parent_id - 1].live) {
+            note("node " + std::to_string(id) + " names parent " +
+                 std::to_string(record.parent_id) + ", which is not a live node");
+            return -EINVAL;
+        }
+        // Walk the chain the proposal would create, from the proposed parent
+        // up. Every live node's ancestors are live — removal refuses while a
+        // child is live, so the invariant holds by construction — which is why
+        // this walk can stop at 0 without checking liveness again.
+        std::string chain;
+        uint32_t at = record.parent_id;
+        uint32_t links = 1;
+        while (at != 0) {
+            if (at == id) {
+                note("node " + std::to_string(id) + " would be its own ancestor: " + chain +
+                     std::to_string(at));
+                return -EINVAL;
+            }
+            if (links > kMaxNodeDepth) {
+                note("node " + std::to_string(id) + " would sit " + std::to_string(links) +
+                     " links deep, past the cap of " + std::to_string(kMaxNodeDepth));
+                return -EINVAL;
+            }
+            chain += std::to_string(at) + " <- ";
+            at = nodes_[at - 1].rec.parent_id;
+            ++links;
+        }
+        depth = links - 1; // the node's own depth once this lands
+        // The subtree it carries moves with it, so the cap is on the deepest
+        // chain the submission creates, not just on the node's own depth.
+        const uint32_t height = subtree_height(id);
+        if (depth + height > kMaxNodeDepth) {
+            note("node " + std::to_string(id) + " at depth " + std::to_string(depth) +
+                 " carries a subtree " + std::to_string(height) +
+                 " deep, past the cap of " + std::to_string(kMaxNodeDepth));
+            return -EINVAL;
+        }
+    }
     nodes_[id - 1].live = true;
     nodes_[id - 1].rec = record;
     nodes_[id - 1].rec.node_id = id;
@@ -67,11 +111,74 @@ int32_t SceneMirror::upsert_node(uint32_t id, const SceneNodeRecord &record) {
     return 0;
 }
 
+uint32_t SceneMirror::child_count(uint32_t id) const {
+    uint32_t count = 0;
+    for (uint32_t candidate = 1; candidate <= kNodeCapacity; ++candidate) {
+        if (nodes_[candidate - 1].live && nodes_[candidate - 1].rec.parent_id == id) ++count;
+    }
+    return count;
+}
+
+uint32_t SceneMirror::first_child(uint32_t id) const {
+    for (uint32_t candidate = 1; candidate <= kNodeCapacity; ++candidate) {
+        if (nodes_[candidate - 1].live && nodes_[candidate - 1].rec.parent_id == id) {
+            return candidate;
+        }
+    }
+    return 0;
+}
+
+uint32_t SceneMirror::first_renderable_on(uint32_t node_id) const {
+    for (uint32_t candidate = 1; candidate <= kRenderableCapacity; ++candidate) {
+        if (renderables_[candidate - 1].live && renderables_[candidate - 1].rec.node_id == node_id) {
+            return candidate;
+        }
+    }
+    return 0;
+}
+
+uint32_t SceneMirror::node_depth(uint32_t id) const {
+    // Links, not nodes: a root is 0, its child is 1, and the cap reads as "no
+    // node sits more than 32 links below the root".
+    if (id == 0 || id > kNodeCapacity || !nodes_[id - 1].live) return 0;
+    uint32_t depth = 0;
+    uint32_t at = nodes_[id - 1].rec.parent_id;
+    while (at != 0 && depth <= kMaxNodeDepth) {
+        ++depth;
+        if (!nodes_[at - 1].live) break;
+        at = nodes_[at - 1].rec.parent_id;
+    }
+    return depth;
+}
+
+uint32_t SceneMirror::subtree_height(uint32_t id) const {
+    uint32_t tallest = 0;
+    for (uint32_t candidate = 1; candidate <= kNodeCapacity; ++candidate) {
+        if (!nodes_[candidate - 1].live) continue;
+        if (nodes_[candidate - 1].rec.parent_id != id) continue;
+        const uint32_t below = 1 + subtree_height(candidate);
+        if (below > tallest) tallest = below;
+        if (tallest > kMaxNodeDepth) return tallest; // the walk is bounded too
+    }
+    return tallest;
+}
+
 int32_t SceneMirror::remove_node(uint32_t id) {
     if (id == 0 || id > kNodeCapacity) return -EINVAL;
-    // No camera or light references a node in 3b — both carry their own
-    // transform — so nothing can be holding this node. When a record grows a
-    // node reference, this is where the -EBUSY belongs.
+    // A parent that dies under a live child is a dangling reference, and OGRE
+    // would detach the child without saying so. The same is true of a node a
+    // drawable hangs from: "alive but unattached" has no meaning the renderer
+    // could act on, so both are refusals that name what is holding it.
+    if (const uint32_t child = first_child(id)) {
+        note("node " + std::to_string(id) + " still has live children, first " +
+             std::to_string(child) + "; remove or re-parent them first");
+        return -EBUSY;
+    }
+    if (const uint32_t drawable = first_renderable_on(id)) {
+        note("renderable " + std::to_string(drawable) + " still hangs from node " +
+             std::to_string(id) + "; remove it or move it first");
+        return -EBUSY;
+    }
     nodes_[id - 1].live = false;
     mark(dirty_nodes_, id);
     return 0;
@@ -142,6 +249,12 @@ int32_t SceneMirror::upsert_renderable(uint32_t id, const RenderableRecord &reco
     if (record.mesh_resource_id == 0) return -EINVAL;
     if (resource_check_ && !resource_check_(record.mesh_resource_id, TENSION_OGRE_RES_KIND_MESH)) {
         return -EINVAL; // a renderable whose mesh never loaded is a guest bug
+    }
+    if (record.node_id != 0 &&
+        (record.node_id > kNodeCapacity || !nodes_[record.node_id - 1].live)) {
+        note("renderable " + std::to_string(id) + " names node " +
+             std::to_string(record.node_id) + ", which is not a live node");
+        return -EINVAL;
     }
     renderables_[id - 1].live = true;
     renderables_[id - 1].rec = record;
@@ -276,7 +389,9 @@ bool SceneMirror::decode_renderable_at(const uint8_t *r, RenderableRecord &out) 
     out.renderable_id = u32(r, 0);
     out.material_id = u32(r, 4);
     out.mesh_resource_id = u32(r, 8);
-    out.flags = u32(r, 12);
+    // Offset 12: `nodeId` since chunk 5a, `flags` before it. Nothing ever wrote
+    // or read the old meaning, which is what made the repurposing free.
+    out.node_id = u32(r, 12);
     read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;

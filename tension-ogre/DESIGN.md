@@ -572,6 +572,46 @@ reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`,
 does not hold live refuses the whole call with `-ENOENT` and a log line naming
 the index, because a half-applied frame is worse than a refused one.
 
+**Hierarchy is the wire's `parentId`, and the composition is OGRE's.** Chunk 5
+lifts 3b's refusal. The adapter does **not** compose world transforms: it maps
+`SceneNode.parentId` onto `Ogre::SceneNode` parenting (`addChild`,
+`removeFromParent`), and OGRE-Next's scene graph is the cache — setting a
+parent's transform marks its descendants dirty, and the update pass walks them
+in dependency order. The design's §12 note listed "cached world transforms
+invalidated when a parent changes" as hierarchy's cost; that estimate was
+written before this was checked, and the cache is the renderer's. What the
+adapter owes instead is smaller and more precise:
+
+- **Validation at submit** (mirror, guest thread): `parentId` is 0 or a live
+  node; a node is never its own ancestor — the proposed chain is walked to the
+  root and the node's own id on it is a cycle, refused `-EINVAL` with the chain
+  logged; the cap is 32 links, and it applies to every chain the submission
+  creates, so a re-parent is refused when the node's new depth plus the height
+  of the subtree it carries would pass the cap.
+- **Removal rules**: `remove_node` refuses `-EBUSY` while a live node names it
+  as parent (the first child is logged), because a parent that dies under a
+  live child is a dangling reference and OGRE would detach the child silently.
+  The same rule covers renderables: a live renderable whose `nodeId` names the
+  node refuses the removal, so a drawable is never "alive but unattached".
+- **On-demand parent creation**: a child's record can arrive before its
+  parent's, so the render thread walks the chain and creates any missing OGRE
+  node from the mirror's records rather than sorting the dirty list by depth.
+
+**`SceneNode.childCount` is derived, and a guest that writes it is refused.**
+The mirror counts children; a submission with a non-zero `childCount` is
+`-EINVAL` with the field named, because a field the guest fills with a guess is
+worse than no field — the count is the mirror's answer, not the guest's claim.
+
+**A renderable's `nodeId` is the field at offset 12, and its transform is then
+local.** That word was `flags`, written by nobody and read by nobody but the
+decoder (measured in round 5a, which is what made the repurposing safe): it is
+now the id of the node the drawable hangs from, 0 meaning "self-placed at the
+world root" as before. The semantics change and the shape does not, so
+`layoutHash` stays where it is. With a parent, the renderable's inline
+transform is relative to that node — which is also what a motion entry writes,
+so **motion is local**: a body on a moving platform follows the platform for
+free, and a guest that meant world coordinates must compose them itself.
+
 **Motion targets renderables, not cameras or lights.** A camera driven by a
 solver is a distinct feature with its own assertion — a follow-cam changes what
 "the object moved" means — and chunk 4 does not have one.
@@ -1181,15 +1221,13 @@ chunk 1 work, and each is additive:
 - **An Hlms template directory key.** The templates' location is derived from
   OGRE's prefix today (`Media/Hlms/...`); an install with a non-standard media
   path should be targetable by config or environment rather than by a rebuild.
-- **Scene hierarchy.** `parentId` composition, deferred out of chunk 4 by
-  decision rather than by accident. The wire's `Renderable` is self-placed with
-  a *world* transform and solver output is world positions, so a parent chain
-  buys nothing for a rigid body; the guest composes world transforms itself
-  until a clause needs one. What it will cost when it lands: a parent table,
-  cycle detection, depth ordering, cached world transforms invalidated when a
-  parent's changes, and a removal rule for a parent with live children (today
-  `remove_node` refuses with `-EBUSY`). The trigger is the skinned mesh, where
-  bones are a chain because skinning is one.
+- **Scene hierarchy.** Landed in chunk 5a as `parentId` in the wire, with the
+  composition delegated to OGRE's scene graph (see §5.1). The cost this entry
+  used to predict — "cached world transforms invalidated when a parent's
+  changes" — was over-estimated: that cache is the renderer's, and what the
+  adapter actually pays is validation, the removal rules, and on-demand parent
+  creation. What remains deferred is *skeleton* hierarchy, which is OGRE's own
+  `SkeletonInstance` and a separate mechanism (chunk 5b).
 - **More cameras, and split-screen.** 3b activates the first camera it is
   given and leaves the others created but unattached; viewports per camera are
   a compositor-workspace question for later.
@@ -1385,8 +1423,16 @@ single session and asserts its own results, printing a pass/fail summary line �
   single boolean cannot see shows up in those numbers in the CI log. Measured
   this round at N = 64: 64 entries/frame, 30 batches, 30 frames over 31 waits,
   ~60.5 fps estimated, delta 18.04 px against 18.02 predicted.
-- *skinned mesh*: asserted at frame 60, and the chunk that makes hierarchy
-  necessary;
+- *scene hierarchy (chunk 5a)*: a parent node and a child node at local
+  (1, 0, 0), a drawable hanging from the child, and the parent rotated 180
+  degrees about Y. The drawable's own record is never touched after it is
+  submitted, so the assertion is that the blob crosses from the right half of
+  the frame to the left — 0 px left / 70 right before, 70 left / 0 right after,
+  measured. That is the composition claim: the adapter composes nothing, OGRE's
+  scene graph does;
+- *skinned mesh*: asserted at frame 60, and the chunk that lands OGRE's own
+  skeleton hierarchy — a separate mechanism from the scene graph this bullet
+  follows;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is

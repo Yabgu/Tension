@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <string>
 #include <vector>
 
 #include "../include/tension_ogre.h"
@@ -35,6 +36,12 @@ constexpr uint32_t kCameraRecordBytes = 80;
 constexpr uint32_t kLightRecordBytes = 96;
 constexpr uint32_t kMaterialRecordBytes = 208;
 constexpr uint32_t kRenderableRecordBytes = 64;
+
+/// The longest parent chain a submission may create. OGRE's scene graph walks
+/// a parent's descendants on every change, so the adapter refuses to build a
+/// chain deeper than this rather than letting a guest choose the recursion
+/// depth — `-EINVAL`, with the depth logged.
+constexpr uint32_t kMaxNodeDepth = 32;
 
 /// One motion-table entry: `wire.ts`'s `MotionUpdate`, whose transform sits at
 /// the same offsets `Renderable`'s inline one does (16/32/48).
@@ -78,7 +85,10 @@ struct MaterialRecord {
 };
 
 struct RenderableRecord {
-    uint32_t renderable_id = 0, material_id = 0, mesh_resource_id = 0, flags = 0;
+    /// `node_id` is the field at offset 12 (`wire.ts`'s `nodeId`): the node the
+    /// drawable hangs from, or 0 for self-placed at the world root. With a node,
+    /// the transform below is *local* to it.
+    uint32_t renderable_id = 0, material_id = 0, mesh_resource_id = 0, node_id = 0;
     float px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, rw = 1, sx = 1, sy = 1, sz = 1;
 };
 
@@ -109,6 +119,13 @@ class SceneMirror {
     using ResourceKindFn = std::function<bool(uint32_t resource_id, uint32_t kind)>;
 
     void set_resource_check(ResourceKindFn check) { resource_check_ = std::move(check); }
+
+    /// Where the mirror says why it refused. Optional, and deliberately the
+    /// same shape as the loader's sink: a unit test that never sets it gets the
+    /// errno and no prose, and the adapter wires it to its own log at link
+    /// time. The mirror stays OGRE-free and session-free either way.
+    using LogFn = std::function<void(const std::string &message)>;
+    void set_log(LogFn log) { log_ = std::move(log); }
 
     // ── the guest-thread face ────────────────────────────────────────────
     int32_t upsert_node(uint32_t id, const SceneNodeRecord &record);
@@ -158,6 +175,21 @@ class SceneMirror {
     void clear_dirty();
 
     bool node_live(uint32_t id) const;
+    /// How many live nodes name `id` as their parent. Derived, never stored.
+    uint32_t child_count(uint32_t id) const;
+    /// The lowest-numbered live child of `id`, or 0 when there is none — the id
+    /// a refusal names.
+    uint32_t first_child(uint32_t id) const;
+    /// The lowest-numbered live renderable that hangs from `id`, or 0. A node a
+    /// drawable is attached to cannot be removed any more than a node with
+    /// children can: a live drawable with no node is unattached, which is a
+    /// state the renderer has no sensible meaning for.
+    uint32_t first_renderable_on(uint32_t node_id) const;
+    /// The number of links from `id` up to the root (0 for a root node).
+    uint32_t node_depth(uint32_t id) const;
+    /// The height of the subtree under `id`, or `kMaxNodeDepth + 1` when the
+    /// walk passes the cap — the number a re-parent is checked against.
+    uint32_t subtree_height(uint32_t id) const;
     bool camera_live(uint32_t id) const;
     bool light_live(uint32_t id) const;
     bool material_live(uint32_t id) const;
@@ -177,6 +209,11 @@ class SceneMirror {
     struct RenderableEntry { bool live = false; RenderableRecord rec; };
 
     static void mark(std::vector<uint32_t> &list, uint32_t id);
+    void note(const std::string &message) const {
+        if (log_) log_(message);
+    }
+
+    LogFn log_;
 
     std::vector<NodeEntry> nodes_{kNodeCapacity};
     std::vector<CameraEntry> cameras_{kCameraCapacity};
