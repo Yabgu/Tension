@@ -833,6 +833,65 @@ from the first frame. A realisation that fails writes the resource record's
 a guest learns this outcome the way it learns every other resource outcome, by
 reading the region.
 
+**Chunk 6 is guest-side physics, and the adapter does not change at all.** No
+new verb, no wire record, no region, no `layout_hash` move: the solver is a
+guest-facing capability, the contact math is game logic, and the renderer
+already has the path it needs (`submit_motion`, 2048 entries, whole transforms).
+What chunk 6 adds is a model, a thin SDK over it, and the acid test that says it
+holds — stated here because a reader who expects a physics capability in the
+adapter will otherwise look for something that is deliberately absent.
+
+**The state model: six f64 per body — `[x, y, z, vx, vy, vz]` — in Verlet's
+`[q, v]` split.** One solver holds every body (`dim = 6N`, so the 64 KiB
+callback-buffer convention caps N at 1365) because a solver per body would
+multiply the boundary crossings by N. Per-body parameters (radius, inverse mass,
+restitution, friction) live in guest-side tables the derivative reads and never
+integrates — the split `examples/solver/collision/game.ts` already uses. **The
+layout is not interleaved**: the first `3N` slots are every body's position and
+the last `3N` every body's velocity, because that is what `[q, v]` means at
+system scale. P1b's first run read it as interleaved and launched a body at 225
+m/s; the SDK's `World` exists so a game never has to know this.
+
+**Verlet is the integrator, and it was already there.** `GUEST_ABI.md` §7 said
+`verlet` "returns -ENOSYS from create" and was wrong: P0 called
+`create({method: "verlet", source: "wasm", dim: 6})` from a guest and stepped a
+body dropped from y = 10 for 60 frames of 1/60 s — it landed at
+5.094999999999969 against the closed form's 5.095, |Δ| = 3.1e-14, which is
+velocity Verlet exactly. That is the integrator impulse physics wants:
+fixed-step (every discontinuity lands on a step boundary rather than inside a
+step), symplectic, and **two derivative evaluations per step against rk45's
+seven** — measured at N = 256 (dim 1536): 1.4 µs per step for verlet against
+31 µs for rk45, a factor of 22.
+
+**The state channel is cheap, and writing it does not perturb the integral.**
+Measured through the C ABI at dim 1536 (P1a): `state` 0.10 µs, `set_state`
+0.11 µs, create+bind+destroy 0.86 µs, against a 1.4 µs step. The accuracy
+question the design turned on is settled too: one body thrown upward for 60
+steps — once untouched, once with a `state` + `set_state` every step, once with
+the solver destroyed and recreated every step — reached an **apex of
+5.094999999999996 in all three, a delta of 0.0 %** (P1b). Impulses may therefore
+be written between steps with `set_state`: no solver churn, and no need for the
+penalty-contact fallback the plan held in reserve. A frame's whole state channel
+at N = 256 costs ~3 µs per sub-step.
+
+**Contacts: spheres and planes, one impulse pass per sub-step, K = 4.**
+Detection is guest-side and sphere-only — what a box of balls needs, with no
+rotation in the narrow phase. The response is a normal impulse with restitution,
+a tangential impulse clamped by μ, and a Baumgarte-style positional bias. One
+pass, not an iterative solver, and the consequence is measured rather than
+hidden: at 16 bodies (e = 0.3, μ = 0.4, β = 0.2) the deepest penetration is
+**50 / 13 / 4 mm** and the residual jitter at frame 60 is **0.155 / 0.084 /
+0.057 m/s** for **K = 1 / 2 / 4** — a pile creeps. K = 4 is what those numbers
+argue for. Detection is brute force and affordable where the state cap allows:
+**0.008 ms per pass at N = 16, 0.083 at 64, 1.17 at 256, 18.3 at 1024**, so the
+crossover for a uniform grid sits around 256 and 1024 is where brute force stops
+being an option.
+
+**The SDK's lift is narrow: `World`, `Body`, `Contacts`, `resolve`.** No
+integrators (the solver owns them), no joints, no CCD, no iteration, and no
+broad-phase structure beyond what a probe shows is needed — the same shape
+`MeshBuilder` and `BoneBatch` arrived in: an example earns it first.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -1467,6 +1526,19 @@ chunk 1 work, and each is additive:
   a **dynamic** vertex buffer for a mesh whose *positions* change per frame —
   which is a different mechanism from `MotionBatch`, because a motion entry
   moves an object and this would move its vertices.
+- **Physics beyond chunk 6.** Angular dynamics with an inertia tensor is the
+  first thing a second physics round adds, and its cost is known before it is
+  written: four more state slots per body (a quaternion) plus angular velocity
+  puts the state at 13 per body — 26 with Verlet's split padded — which caps N
+  at 315 on the 64 KiB buffer convention, and adds a quaternion to every
+  derivative call. After that, in the order the demand is likely to arrive:
+  joints (hinges, sliders); continuous collision detection, which matters the
+  day a body moves faster than its own radius per sub-step; sleeping and
+  deactivation, which is what a settled pile wants and the probe's residual
+  jitter argues for; non-sphere collider pairs (boxes, capsules) and with them
+  a real narrow phase; a uniform grid or a BVH for detection beyond ~256 bodies;
+  and the solver-side constraint channel (`spook`), which stays deferred and is
+  the one item on this list that is the solver's work rather than the guest's.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.
@@ -1653,6 +1725,21 @@ single session and asserts its own results, printing a pass/fail summary line �
   change is the rig, not the object. The material and the two setup requirements
   this depends on are §5.1's; without them the mesh renders 0 pixels and the
   test cannot tell an unbound datablock from a rig that does not move;
+- *rigid bodies (chunk 6)*: `M` spheres dropped into a box for 60 rendered
+  frames — 1.0 s of simulated time at dt = 1/60 with K = 4 sub-steps per frame,
+  the cadence the probe's numbers chose. Structural (`renderer=null`, M = 16):
+  every step returns 0 and the state stays finite; at frame 60 every |v| < 0.1
+  m/s (measured 0.057 at K = 4 — a pile creeps, and no configuration the probe
+  ran reached 0.05, so 0.1 is the honest threshold rather than a round number),
+  every centre at y ≥ r − 5 mm (measured deepest penetration 4.0 mm at K = 4;
+  13 mm at K = 2 and 50 mm at K = 1), every pair's centre distance ≥ r_i + r_j −
+  5 mm, and total kinetic energy < 0.02 (measured 0.0076 for 16 bodies). Visual
+  (GL3+): the settled pile's non-background pixel count within ±30% of the
+  projected area the state and the pinned camera predict; **no non-background
+  pixel below the floor line** the box's geometry puts on screen; and a
+  pixel-flip fraction ≈ 0 between frames 50 and 60 where it is clearly non-zero
+  between frames 5 and 15 — settled, not merely still. The physics is entirely
+  guest-side (§5.1): this clause is about the model, not about the adapter;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
