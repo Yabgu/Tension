@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
 # Build the bouncing-ball example and run it.
 #
-#   ./run.sh                              headless: submit, no pixels
-#   TENSION_OGRE_WINDOW_TEST=1 ./run.sh   GL3+: a real window and a screenshot
+#   ./run.sh                            a window: a bouncing ball
+#   TENSION_OGRE_HEADLESS=1 ./run.sh    structural only: no display needed
+#
+# A window is the default because that is what a reader running an example
+# wants to see. With no DISPLAY and no WAYLAND_DISPLAY there is nothing to
+# open one on, so it falls back to the headless path and says why. The test
+# suite keeps the opposite default (tension-ogre/tests/run.sh): CI has no
+# display, and headless is the shape CI needs.
 #
 # Everything it needs is checked or built first: the interpreter, the OGRE
 # adapter, the framework's generated session config, and the guest's own build
@@ -39,7 +45,12 @@ if [ ! -x node_modules/.bin/asc ]; then
 fi
 npm run --silent build
 
-if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
-    exec "$core" --capability "$adapter" build/game.wasm --renderer=gl3plus
+renderer=gl3plus
+if [ "${TENSION_OGRE_HEADLESS:-0}" = "1" ]; then
+    echo "TENSION_OGRE_HEADLESS=1: no window; structural only"
+    renderer=null
+elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+    echo "no display available; falling back to renderer=null"
+    renderer=null
 fi
-exec "$core" --capability "$adapter" build/game.wasm --renderer=null
+exec "$core" --capability "$adapter" build/game.wasm --renderer="$renderer"

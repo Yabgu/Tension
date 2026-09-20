@@ -34,7 +34,10 @@ export function _start_game(): void {
   }
   const config = new ogre.ConfigBuilder()
     .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
-    .headless(!windowed).vsync(false).frameHz(60).windowSize(320, 240);
+    // 640x480 rather than something smaller: this example is the one a reader
+    // runs first, and a window a human is looking at should be readable at a
+    // glance. The ball keeps 640x480 for the same reason.
+    .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
   const started = ogre.init(config);
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
 

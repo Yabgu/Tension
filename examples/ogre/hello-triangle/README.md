@@ -13,23 +13,31 @@ renderer's own frame counter, and reading a frame back out of the window.
 
 ```sh
 cd examples/ogre/hello-triangle
-./run.sh                              # headless: no display needed
-TENSION_OGRE_WINDOW_TEST=1 ./run.sh   # GL3+: a real window, and a screenshot
+./run.sh                          # opens a 640x480 window, and prints a summary
+TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only: no display needed
 ```
+
+A window is the default, because this is the example a reader runs first and a
+window a human is looking at should be readable at a glance. With no `DISPLAY`
+and no `WAYLAND_DISPLAY` there is nothing to open one on, so `./run.sh` prints
+`no display available; falling back to renderer=null` and runs the structural
+path instead — exit 0 either way. (`tension-ogre/tests/run.sh` keeps the
+opposite default: CI has no display, and headless is the shape CI needs.)
 
 `./run.sh` builds what it can (the OGRE adapter, the guest, its dependencies)
 and needs `tension-core` already built — it says so if it is missing.
 
-Headless prints one line:
+Windowed prints one line: the frames it rendered, and the pixels the mesh
+actually put on screen.
+
+```
+rendered 35 frames, 288 non-background pixels, mean rgb 229/51/51
+```
+
+Headless prints one line too, and says the same thing about the scene:
 
 ```
 renderer=null: no pixels to read; submitted 1 object
-```
-
-Windowed prints the screenshot's summary:
-
-```
-rendered 34 frames, 72 non-background pixels, mean rgb 229/51/51
 ```
 
 ## Where the SDK surface is documented

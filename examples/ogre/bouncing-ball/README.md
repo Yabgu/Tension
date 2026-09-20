@@ -10,9 +10,16 @@ batch per frame rather than one call per body.
 
 ```sh
 cd examples/ogre/bouncing-ball
-./run.sh                              # headless: no display needed
-TENSION_OGRE_WINDOW_TEST=1 ./run.sh   # GL3+: a real window, and a bouncing ball
+./run.sh                          # opens a 640x480 window, and a ball bounces in it
+TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only: no display needed
 ```
+
+A window is the default. With no `DISPLAY` and no `WAYLAND_DISPLAY` there is
+nothing to open one on, so `./run.sh` prints
+`no display available; falling back to renderer=null` and runs the structural
+path instead — exit 0 either way, and the physics is identical, because the
+solver never sees the pixels. (`tension-ogre/tests/run.sh` keeps the opposite
+default: CI has no display.)
 
 `./run.sh` builds what it can (the OGRE adapter, the guest, its dependencies)
 and needs `tension-core` already built — it says so if it is missing.

@@ -263,10 +263,10 @@ The two renderer examples run through their own script, because a guest that
 uses a capability needs the adapter built and the framework's generated layout:
 
 ```sh
-cd examples/ogre/hello-triangle && ./run.sh                             # headless
-cd examples/ogre/hello-triangle && TENSION_OGRE_WINDOW_TEST=1 ./run.sh  # a real window
-cd examples/ogre/bouncing-ball  && ./run.sh                             # headless
-cd examples/ogre/bouncing-ball  && TENSION_OGRE_WINDOW_TEST=1 ./run.sh  # a real window
+cd examples/ogre/hello-triangle && ./run.sh                          # a real window
+cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
+cd examples/ogre/bouncing-ball  && ./run.sh                          # a real window
+cd examples/ogre/bouncing-ball  && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
 ```
 
 ## Debugging
