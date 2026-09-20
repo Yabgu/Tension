@@ -397,6 +397,34 @@ export const BUFFER_USAGE_STREAM: u32 = 2;
 /** One `Job`, in bytes — the stride of the `JOB` region's table. */
 export const JOB_SIZE: u32 = 64;
 
+// --- the submission sub-tables ---------------------------------------------
+//
+// SCENE holds three tables end to end (DESIGN.md §5.1): 1024 `SceneNode`s,
+// then 512 `CameraRecord`s, then 1024 `LightRecord`s. MATERIAL and RENDERABLE
+// hold one table each. The split is the capability catalogue's business rather
+// than the protocol's, so it does not move `layoutHash` — which is exactly why
+// `assertSubmissionRegions` exists: the arithmetic below is the only thing
+// keeping the guest's idea of a slot and the adapter's in step.
+
+export const SCENE_NODE_COUNT: u32 = 1024;
+export const SCENE_NODE_SIZE: u32 = 80;
+export const SCENE_CAMERA_COUNT: u32 = 512;
+export const SCENE_CAMERA_SIZE: u32 = 80;
+export const SCENE_LIGHT_COUNT: u32 = 1024;
+export const SCENE_LIGHT_SIZE: u32 = 96;
+
+/** Where the cameras' table starts, in bytes from the region's first node. */
+export const SCENE_CAMERA_BASE: u32 = SCENE_NODE_COUNT * SCENE_NODE_SIZE;
+/** And the lights' table, after the cameras'. */
+export const SCENE_LIGHT_BASE: u32 = SCENE_CAMERA_BASE + SCENE_CAMERA_COUNT * SCENE_CAMERA_SIZE;
+/** The bytes SCENE needs for all three tables to fit. */
+export const SCENE_TABLE_BYTES: u32 = SCENE_LIGHT_BASE + SCENE_LIGHT_COUNT * SCENE_LIGHT_SIZE;
+
+export const MATERIAL_COUNT: u32 = 256;
+export const MATERIAL_SIZE: u32 = 208;
+export const RENDERABLE_COUNT: u32 = 2048;
+export const RENDERABLE_SIZE: u32 = 64;
+
 // --- the offset check ------------------------------------------------------
 
 /**

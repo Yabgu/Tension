@@ -399,8 +399,9 @@ after a guess in the other direction cost a probe.
 
 **The Hlms is built from archives, and links separately.** `HlmsUnlit` and
 `HlmsPbs` take an `Archive*` (their language folder, `Media/Hlms/<Hlms>/GLSL`)
-and an `ArchiveVec*` of library folders — `Common/GLSL`, `Common/Any`, **and
-the Hlms's own `Any` folder**, which is the piece a first attempt misses: its
+and an `ArchiveVec*` of library folders, with the sources first and the library
+last: `Common/GLSL`, `Common/Any`, **and the Hlms's own `Any` folder**. Both
+`Any` folders are required, and they are the piece a first attempt misses: their
 absence produces a shader that compiles with `syntax error, unexpected '}'`
 where a fragment should be, not a missing-file error. The classes come from
 `-lOgreNextHlmsUnlit -lOgreNextHlmsPbs`, not from `-lOgreNextMain`.

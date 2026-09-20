@@ -54,6 +54,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-jobs.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-jobs.wasm" >/dev/null ||
     fail "guest-jobs.ts did not compile"
+"$asc" "$here/guest-triangle.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-triangle.wasm" >/dev/null ||
+    fail "guest-triangle.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -102,6 +105,23 @@ jobs_case() {
     echo "== $name: ok — $(echo "$stdout" | tail -1)"
 }
 jobs_case jobs --renderer=null
+
+# The 3b acid test: the scene mirror, the submission verbs, and — where there
+# is a framebuffer — the pixels. Under renderer=null the first five clauses
+# run and the pixel clauses are skipped (the NULL render system has no
+# framebuffer to download); under GL3+ all eight do.
+triangle_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-triangle.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|8/8 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    # The measured pixels, when there are any: the numbers the round reports.
+    echo "$stdout" | grep '^pixels: ' | sed 's/^/== '"$name"': /' || true
+}
+triangle_case triangle --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -113,6 +133,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         # The real texture path: GL3+ creates a TextureGpu; the null case above
         # goes through the same code with the NULL render system.
         jobs_case jobs-gl3plus --renderer=gl3plus
+        # And the visual tier: the same fixture with a framebuffer to read.
+        triangle_case triangle-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"
