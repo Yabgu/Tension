@@ -35,6 +35,7 @@ constexpr uint32_t kVerbQueueMesh = 4;
 constexpr uint32_t kVerbQueueTexture = 5;
 constexpr uint32_t kVerbJobState = 6;
 constexpr uint32_t kVerbJobRelease = 7;
+constexpr uint32_t kVerbSubmit = 8;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -336,6 +337,103 @@ int32_t shim_job_release(void *, const tension_value *args, uint32_t nargs, tens
     return 0;
 }
 
+/// `ogre::submit(kind, id, op)` — the guest's record is already in its region;
+/// this says which one changed. The record is copied out here, decoded, and
+/// handed to the mirror, which is what the render thread will act on.
+int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
+    const uint32_t kind = static_cast<uint32_t>(args[0].i32);
+    const uint32_t id = static_cast<uint32_t>(args[1].i32);
+    const uint32_t op = static_cast<uint32_t>(args[2].i32);
+    if (op != kSubmitUpsert && op != kSubmitRemove) return -EINVAL;
+
+    if (op == kSubmitRemove) {
+        int32_t rc = 0;
+        switch (kind) {
+            case kSubmitNode: rc = s.scene.remove_node(id); break;
+            case kSubmitCamera: rc = s.scene.remove_camera(id); break;
+            case kSubmitLight: rc = s.scene.remove_light(id); break;
+            case kSubmitMaterial: rc = s.scene.remove_material(id); break;
+            case kSubmitRenderable: rc = s.scene.remove_renderable(id); break;
+            default: return -EINVAL;
+        }
+        if (rc != 0) return rc;
+        ret->i32 = 0;
+        return 0;
+    }
+
+    // Upsert: bounds first, then one record's worth of bytes out of the region.
+    uint32_t base = 0, table_offset = 0, record_bytes = 0, capacity = 0;
+    switch (kind) {
+        case kSubmitNode:
+            base = s.scene_offset; table_offset = 0; record_bytes = kNodeRecordBytes;
+            capacity = kNodeCapacity;
+            break;
+        case kSubmitCamera:
+            base = s.scene_offset; table_offset = kCameraTableOffset;
+            record_bytes = kCameraRecordBytes; capacity = kCameraCapacity;
+            break;
+        case kSubmitLight:
+            base = s.scene_offset; table_offset = kLightTableOffset;
+            record_bytes = kLightRecordBytes; capacity = kLightCapacity;
+            break;
+        case kSubmitMaterial:
+            base = s.material_offset; table_offset = 0; record_bytes = kMaterialRecordBytes;
+            capacity = kMaterialCapacity;
+            break;
+        case kSubmitRenderable:
+            base = s.renderable_offset; table_offset = 0; record_bytes = kRenderableRecordBytes;
+            capacity = kRenderableCapacity;
+            break;
+        default:
+            return -EINVAL;
+    }
+    if (id == 0 || id > capacity) return -EINVAL;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+
+    uint8_t record[sizeof(MaterialRecord) + 64] = {};
+    const uint32_t at = base + table_offset + (id - 1) * record_bytes;
+    if (s.api->guest_read(s.api->user, at, record, record_bytes) != 0) return -EINVAL;
+
+    int32_t rc = 0;
+    switch (kind) {
+        case kSubmitNode: {
+            SceneNodeRecord decoded;
+            if (!SceneMirror::decode_node_at(record, decoded)) return -EINVAL;
+            rc = s.scene.upsert_node(id, decoded);
+            break;
+        }
+        case kSubmitCamera: {
+            CameraRecord decoded;
+            if (!SceneMirror::decode_camera_at(record, decoded)) return -EINVAL;
+            rc = s.scene.upsert_camera(id, decoded);
+            break;
+        }
+        case kSubmitLight: {
+            LightRecord decoded;
+            if (!SceneMirror::decode_light_at(record, decoded)) return -EINVAL;
+            rc = s.scene.upsert_light(id, decoded);
+            break;
+        }
+        case kSubmitMaterial: {
+            MaterialRecord decoded;
+            if (!SceneMirror::decode_material_at(record, decoded)) return -EINVAL;
+            rc = s.scene.upsert_material(id, decoded);
+            break;
+        }
+        default: {
+            RenderableRecord decoded;
+            if (!SceneMirror::decode_renderable_at(record, decoded)) return -EINVAL;
+            rc = s.scene.upsert_renderable(id, decoded);
+            break;
+        }
+    }
+    if (rc != 0) return rc;
+    ret->i32 = 0;
+    return 0;
+}
+
 // ── the vtable ───────────────────────────────────────────────────────────
 
 int32_t adapter_init(void *, const tension_core_api *core) {
@@ -375,6 +473,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"job_state", two_i32, 2, shim_job_state, kVerbJobState,
          TENSION_IMPORT_REENTRANT_READONLY},
         {"job_release", one_i32, 1, shim_job_release, kVerbJobRelease, 0},
+        {"submit", three_i32, 3, shim_submit, kVerbSubmit, 0},
     };
 
     for (const Registration &registration : registrations) {
@@ -411,6 +510,36 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         log_line(3, "ogre: link: the JOB region is not in this layout");
         return job_region;
     }
+
+    // The three guest-written submission regions. Asking for them at link is
+    // the declaration (DESIGN.md §7.2).
+    struct Region {
+        uint32_t kind;
+        uint32_t *offset;
+        uint32_t *size;
+        const char *name;
+    };
+    const Region submission_regions[] = {
+        {TENSION_REGION_SCENE, &s.scene_offset, &s.scene_size, "SCENE"},
+        {TENSION_REGION_MATERIAL, &s.material_offset, &s.material_size, "MATERIAL"},
+        {TENSION_REGION_RENDERABLE, &s.renderable_offset, &s.renderable_size, "RENDERABLE"},
+    };
+    for (const Region &region : submission_regions) {
+        const int32_t found_region =
+            core->region_lookup(core->user, region.kind, region.offset, region.size);
+        if (found_region != 0) {
+            log_line(3, std::string("ogre: link: the ") + region.name + " region is not in this layout");
+            return found_region;
+        }
+    }
+
+    // A renderable may only name a mesh that is loaded: the mirror asks the
+    // loader rather than guessing, and refuses one that points at nothing.
+    s.scene.set_resource_check([](uint32_t resource_id, uint32_t kind) {
+        const ResourceSlot resource = adapter_state().loader.resource_at(resource_id);
+        return resource.resource_id == resource_id && resource.kind == kind &&
+               resource.state == TENSION_OGRE_RES_STATE_READY;
+    });
 
     // What the loader needs from the session, without knowing the session
     // exists: a way to post an event and a way to say something.

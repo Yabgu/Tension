@@ -391,6 +391,31 @@ The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
 
+**Attaching an `Item` is `SceneNode::attachObject`.** OGRE-Next 3.0 has no
+`Item::attachToNode` and no constructor path into a node: the object is
+`sceneManager->createItem(meshPtr, SCENE_DYNAMIC)`, given a datablock with
+`Item::setDatablock`, and attached with `node->attachObject(item)`. Measured,
+after a guess in the other direction cost a probe.
+
+**The Hlms is built from archives, and links separately.** `HlmsUnlit` and
+`HlmsPbs` take an `Archive*` (their language folder, `Media/Hlms/<Hlms>/GLSL`)
+and an `ArchiveVec*` of library folders — `Common/GLSL`, `Common/Any`, **and
+the Hlms's own `Any` folder**, which is the piece a first attempt misses: its
+absence produces a shader that compiles with `syntax error, unexpected '}'`
+where a fragment should be, not a missing-file error. The classes come from
+`-lOgreNextHlmsUnlit -lOgreNextHlmsPbs`, not from `-lOgreNextMain`.
+
+**What the headless gate can and cannot assert.** Under `RenderSystem_NULL`
+everything through `createItem` works — mesh, both Hlms, both datablocks, the
+item attach, the frame loop — and the readback cannot: there is no framebuffer
+to download. Pixels require GL3+.
+
+**llvmpipe runs the GL3+ render system on this Mesa.** With
+`LIBGL_ALWAYS_SOFTWARE=1` against the existing display, OGRE brings the GL3+
+RS up and renders (the run fails identically to the hardware path, on the same
+shader bug, which is what proved the driver was never the variable). It is a
+candidate CI substrate that needs no Xvfb.
+
 **`SCENE` owns three sub-tables by convention.** The region is 256 KiB and
 holds them end to end from its offset: 1024 × `SceneNode` (80 B), then 512 ×
 `CameraRecord` (80 B), then 1024 × `LightRecord` (96 B) — 216 KiB of the 256,
@@ -1019,6 +1044,9 @@ chunk 1 work, and each is additive:
   `{typeId, size, align}` table would let the session name the first type that
   differs. It is also the mechanism a second protocol type catalogue would need
   when capability records join the manifest (§5.1).
+- **An Hlms template directory key.** The templates' location is derived from
+  OGRE's prefix today (`Media/Hlms/...`); an install with a non-standard media
+  path should be targetable by config or environment rather than by a rebuild.
 - **Scene hierarchy.** `parentId` composition: the solver-integrated animation
   chunk is the first thing that needs a parent chain, and world transforms
   composed from parents are exactly where a subtle bug hides. Flat nodes in 3b
@@ -1162,6 +1190,10 @@ was recorded on.
 answer "is there a lit sphere in this scene", which no property assertion
 answers. It is not deterministic enough to gate CI: it fails loudly in a report
 and never by blocking a merge. Lands when scenes have semantic content.
+
+The **visual** tier runs under GL3+ with a real window, or with llvmpipe
+against that display; `RenderSystem_NULL` validates the object graph and the
+frame loop but can never produce the pixels a visual assertion needs.
 
 **The acid test.** One AssemblyScript guest that exercises the whole stack in a
 single session and asserts its own results, printing a pass/fail summary line —

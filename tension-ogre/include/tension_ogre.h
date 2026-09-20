@@ -179,6 +179,11 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
 
 #define TENSION_OGRE_JOB_RECORD_BYTES 64u
 
+/* Material shader models, as the catalogue declares them. */
+#define TENSION_OGRE_MAT_HLMS_PBS 0u
+#define TENSION_OGRE_MAT_HLMS_UNLIT 1u
+#define TENSION_OGRE_MAT_HLMS_CUSTOM 2u
+
 /** The two resource kinds this sub-chunk loads. */
 #define TENSION_OGRE_RES_KIND_MESH 0u
 #define TENSION_OGRE_RES_KIND_TEXTURE 1u

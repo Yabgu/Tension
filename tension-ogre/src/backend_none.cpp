@@ -54,6 +54,25 @@ class BackendNone final : public Backend {
         return refuse("realise_texture");
     }
     int32_t discard_resource(ResourceHandle) override { return 0; }
+
+    // The NULL build accepts a scene graph -- there is nothing to draw it with,
+    // but the mirror still tracks it -- and cannot read a framebuffer.
+    int32_t apply_submissions(const SceneMirror &) override {
+        if (!noted_scene_) {
+            backend_log("ogre: this build has no OGRE-Next; submitted scenes are tracked, not drawn");
+            noted_scene_ = true;
+        }
+        return 0;
+    }
+    int32_t screenshot(uint8_t *, size_t, size_t *) override {
+        backend_log("ogre: screenshot is not available in a build without OGRE-Next");
+        return -ENOSYS;
+    }
+
+  private:
+    bool noted_scene_ = false;
+
+  public:
 };
 
 } // namespace

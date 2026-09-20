@@ -84,6 +84,9 @@ const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;
 const TENSION_REGION_JOB: u32 = 3;
+const TENSION_REGION_SCENE: u32 = 8;
+const TENSION_REGION_MATERIAL: u32 = 9;
+const TENSION_REGION_RENDERABLE: u32 = 10;
 
 // ── what the adapter registers, as it registers it ───────────────────────
 
@@ -321,14 +324,28 @@ fn test_ogre_adapter_surface() {
             verb_id: 7,
             flags: 0,
         },
+        Registered {
+            module: "ogre".into(),
+            name: "submit".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 3,
+            verb_id: 8,
+            flags: 0,
+        },
     ];
-    assert_eq!(imports, expected, "the seven imports of the SDK, and their flags");
+    assert_eq!(imports, expected, "the eight imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(
         regions,
-        vec![TENSION_REGION_RESOURCE, TENSION_REGION_JOB],
-        "the two regions this adapter writes: RESOURCE, then JOB"
+        vec![
+            TENSION_REGION_RESOURCE,
+            TENSION_REGION_JOB,
+            TENSION_REGION_SCENE,
+            TENSION_REGION_MATERIAL,
+            TENSION_REGION_RENDERABLE,
+        ],
+        "the regions this adapter declares: the two it writes, then the three it reads"
     );
 
     // ── publish with nothing to say ──────────────────────────────────────

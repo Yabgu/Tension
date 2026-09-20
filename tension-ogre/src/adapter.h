@@ -32,6 +32,12 @@ struct AdapterState {
     /// The `JOB` region, from `region_lookup` in `link`: the job table's mirror.
     uint32_t job_offset = 0;
     uint32_t job_size = 0;
+    /// The three guest-written submission regions, from `region_lookup`.
+    uint32_t scene_offset = 0, scene_size = 0;
+    uint32_t material_offset = 0, material_size = 0;
+    uint32_t renderable_offset = 0, renderable_size = 0;
+    /// What the guest has submitted, host-side (the render thread applies it).
+    SceneMirror scene;
     /// The `RESOURCE` region, from `region_lookup` in `link`. The renderer's
     /// record lives at `resource_offset + (TENSION_OGRE_RESOURCE_RENDERER - 1)
     /// * TENSION_OGRE_RESOURCE_RECORD_BYTES`.

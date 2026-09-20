@@ -373,6 +373,18 @@ class BackendOgre final : public Backend {
         }
     }
 
+    // 3b-ii: the OGRE object graph from the mirror's dirty lists, and the
+    // framebuffer readback the probe proved (convertFromTexture plus the
+    // manual-release dance). Both refuse by name until then.
+    int32_t apply_submissions(const SceneMirror &) override {
+        backend_log("ogre: the scene apply path lands in 3b-ii");
+        return -ENOSYS;
+    }
+    int32_t screenshot(uint8_t *, size_t, size_t *) override {
+        backend_log("ogre: the framebuffer readback lands in 3b-ii");
+        return -ENOSYS;
+    }
+
     int32_t discard_resource(ResourceHandle handle) override {
         if (handle == kNoResourceHandle || handle > resources_.size()) return -ENOENT;
         ResourceEntry &entry = resources_[handle - 1];

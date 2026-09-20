@@ -21,6 +21,7 @@
 #include <string>
 
 #include "config.h"
+#include "scene.h"
 #include "status.h"
 
 namespace tension_ogre {
@@ -65,6 +66,15 @@ class Backend {
 
     virtual int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
     virtual int32_t realise_texture(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
+    /// Apply the guest's scene submissions on this thread: create, update and
+    /// destroy the renderer's objects from the mirror's dirty lists. 3b-ii.
+    virtual int32_t apply_submissions(const SceneMirror &scene) = 0;
+
+    /// The last presented frame as tightly packed RGBA8, up to `cap` bytes.
+    /// `-ENOSYS` when there is no framebuffer to read (the NULL render
+    /// system), which is a refusal the guest can name, not a crash.
+    virtual int32_t screenshot(uint8_t *out, size_t cap, size_t *out_len) = 0;
+
     /// Release a realised resource. Until the guest has a release verb of its
     /// own, this is called at session teardown.
     virtual int32_t discard_resource(ResourceHandle handle) = 0;

@@ -56,7 +56,11 @@ case "${1:-}" in
         "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
             "$here/src/loader.cpp" "$here/tests/loader_test.cpp" \
             -o "$out/tests/loader_test" -lpthread || exit 1
+        "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
+            "$here/src/scene.cpp" "$here/tests/scene_test.cpp" \
+            -o "$out/tests/scene_test" || exit 1
         "$out/tests/config_test" || exit 1
+        "$out/tests/scene_test" || exit 1
         "$out/tests/loader_test" || exit 1
         exit 0
         ;;
@@ -109,9 +113,9 @@ fi
 # Exactly one backend file: each defines `make_backend`, so compiling both is a
 # duplicate symbol, and the choice is the build's to make (B.2b.2).
 if [ "$backend" = ogre ]; then
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/loader.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
 else
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/loader.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
 fi
 
 # -std=c++17: the adapter uses <thread>, <condition_variable> and structured
