@@ -72,6 +72,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-procedural.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-procedural.wasm" >/dev/null ||
     fail "guest-procedural.ts did not compile"
+"$asc" "$here/guest-physics.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-physics.wasm" >/dev/null ||
+    fail "guest-physics.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -211,6 +214,19 @@ procedural_case() {
     echo "$stdout" | grep -E '^triangle:' | sed 's/^/== '"$name"': /' || true
 }
 procedural_case procedural --renderer=null
+
+# Chunk 6: sixteen spheres in a box, and the state they settle into.
+physics_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-physics.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (6/6 passed \(structural, renderer=null\)|9/9 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^(2 ok|7 ok|9 ok):' | sed 's/^/== '"$name"': /' || true
+}
+physics_case physics --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -236,6 +252,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         render_check_case render-check-gl3plus --renderer=gl3plus
         # Chunk 5.5: the triangle the guest built, on a framebuffer.
         procedural_case procedural-gl3plus --renderer=gl3plus
+        # Chunk 6: the pile, the floor line, and settled-versus-moving.
+        physics_case physics-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

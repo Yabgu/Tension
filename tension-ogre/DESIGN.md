@@ -846,11 +846,16 @@ adapter will otherwise look for something that is deliberately absent.
 callback-buffer convention caps N at 1365) because a solver per body would
 multiply the boundary crossings by N. Per-body parameters (radius, inverse mass,
 restitution, friction) live in guest-side tables the derivative reads and never
-integrates — the split `examples/solver/collision/game.ts` already uses. **The
-layout is not interleaved**: the first `3N` slots are every body's position and
-the last `3N` every body's velocity, because that is what `[q, v]` means at
-system scale. P1b's first run read it as interleaved and launched a body at 225
-m/s; the SDK's `World` exists so a game never has to know this.
+integrates — the split `examples/solver/collision/game.ts` already uses.
+
+**Verlet's state is NOT interleaved.** At system scale the layout is all N
+positions followed by all N velocities:
+`[x0,y0,z0, ..., xN,yN,zN, vx0,vy0,vz0, ..., vxN,vyN,vzN]`. Reading it as
+per-body records launches bodies at nonsense velocities — chunk 6a's P1b did
+exactly that and measured a body at 225 m/s with a 9.4 m penetration — and the
+mistake is silent, because every index it reads is a valid index. The physics
+SDK's accessors hide this from a user; a guest reading the raw state must know
+it.
 
 **Verlet is the integrator, and it was already there.** `GUEST_ABI.md` §7 said
 `verlet` "returns -ENOSYS from create" and was wrong: P0 called
@@ -1526,19 +1531,21 @@ chunk 1 work, and each is additive:
   a **dynamic** vertex buffer for a mesh whose *positions* change per frame —
   which is a different mechanism from `MotionBatch`, because a motion entry
   moves an object and this would move its vertices.
-- **Physics beyond chunk 6.** Angular dynamics with an inertia tensor is the
-  first thing a second physics round adds, and its cost is known before it is
-  written: four more state slots per body (a quaternion) plus angular velocity
-  puts the state at 13 per body — 26 with Verlet's split padded — which caps N
-  at 315 on the 64 KiB buffer convention, and adds a quaternion to every
-  derivative call. After that, in the order the demand is likely to arrive:
-  joints (hinges, sliders); continuous collision detection, which matters the
-  day a body moves faster than its own radius per sub-step; sleeping and
-  deactivation, which is what a settled pile wants and the probe's residual
-  jitter argues for; non-sphere collider pairs (boxes, capsules) and with them
-  a real narrow phase; a uniform grid or a BVH for detection beyond ~256 bodies;
-  and the solver-side constraint channel (`spook`), which stays deferred and is
-  the one item on this list that is the solver's work rather than the guest's.
+- **Physics beyond chunk 6.** **Sleeping and deactivation come first**, and the
+  measurement is why: a settled pile keeps creeping — 0.057 m/s at frame 60 at
+  K = 4, and no sub-step count the probe ran reached the ideal 0.05 — because a
+  single impulse pass with a positional bias never quite stops. Sleeping is the
+  cheap answer, and it is also what a game needs before a pile can sit still on
+  screen. After that, angular dynamics with an inertia tensor (four more state
+  slots per body, 26 with Verlet's split padded, which caps N at 315); joints
+  (hinges, sliders); continuous collision detection, which matters the day a
+  body moves faster than its own radius per sub-step; non-sphere collider pairs
+  (boxes, capsules) and with them a real narrow phase; a uniform grid or a BVH
+  for detection beyond ~256 bodies (the measured crossover: brute force is
+  1.17 ms per pass at N = 256 and 18.3 ms at 1024, so chunk 6 keeps brute force
+  and the state cap is the binding limit anyway); and the solver-side constraint
+  channel (`spook`), which stays deferred and is the one item here that is the
+  solver's work rather than the guest's.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.
@@ -1727,19 +1734,27 @@ single session and asserts its own results, printing a pass/fail summary line �
   test cannot tell an unbound datablock from a rig that does not move;
 - *rigid bodies (chunk 6)*: `M` spheres dropped into a box for 60 rendered
   frames — 1.0 s of simulated time at dt = 1/60 with K = 4 sub-steps per frame,
-  the cadence the probe's numbers chose. Structural (`renderer=null`, M = 16):
-  every step returns 0 and the state stays finite; at frame 60 every |v| < 0.1
-  m/s (measured 0.057 at K = 4 — a pile creeps, and no configuration the probe
-  ran reached 0.05, so 0.1 is the honest threshold rather than a round number),
-  every centre at y ≥ r − 5 mm (measured deepest penetration 4.0 mm at K = 4;
-  13 mm at K = 2 and 50 mm at K = 1), every pair's centre distance ≥ r_i + r_j −
-  5 mm, and total kinetic energy < 0.02 (measured 0.0076 for 16 bodies). Visual
-  (GL3+): the settled pile's non-background pixel count within ±30% of the
-  projected area the state and the pinned camera predict; **no non-background
-  pixel below the floor line** the box's geometry puts on screen; and a
-  pixel-flip fraction ≈ 0 between frames 50 and 60 where it is clearly non-zero
-  between frames 5 and 15 — settled, not merely still. The physics is entirely
-  guest-side (§5.1): this clause is about the model, not about the adapter;
+  e = 0.3, μ = 0.4, β = 0.2, the parameters the probe's numbers chose.
+  **Structural** (`renderer=null`, M = 16): every step returns 0 and the state
+  stays finite — no NaN, ever, because a blown-up integrator is a state no
+  later clause can be trusted to read; at frame 60 every |v| < 0.1 m/s
+  (measured 0.057 at K = 4; the pile creeps, and no configuration the probe ran
+  reached the ideal 0.05, so 0.1 is the honest threshold rather than a round
+  number), every body's centre at y ≥ r − 0.005 m (measured deepest penetration
+  4.0 mm at K = 4; 13 mm at K = 2 and 50 mm at K = 1), every pair's centre
+  distance ≥ r_i + r_j − 0.010 m, and total kinetic energy < 0.02 (measured
+  0.0076 for 16 bodies). **Visual** (GL3+, M = 16): the settled pile's
+  non-background pixel count within ±30% of the projected area the state and
+  the pinned camera predict; **no non-background pixel below the floor's screen
+  row** the box's geometry puts on screen; and a pixel-flip fraction above a
+  floor while the bodies are moving, falling to ≈ 0 once they are at rest —
+  settled, not merely still. **The bounce-fidelity experiment** (one body,
+  e = 1.0, 60 frames, a `state` + `set_state` between every step): its apex
+  heights are identical to the no-write run within 0.1 % — the clause that says
+  the impulse channel does not perturb the integrator, measured at 0.0 % in
+  chunk 6a's P1b and pinned here so a later change cannot take it away. The
+  physics is entirely guest-side (§5.1): this clause is about the model, not
+  about the adapter;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
