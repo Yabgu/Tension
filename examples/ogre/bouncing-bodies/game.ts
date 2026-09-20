@@ -1,0 +1,239 @@
+// Bouncing bodies: sixty-four spheres dropped into a box, colliding with each
+// other and with the walls — real rigid-body physics, driven by the solver and
+// drawn through the motion table.
+//
+// What the physics actually is, because a demo that does not say is a demo that
+// lies:
+//
+//   * **spheres and axis-aligned planes only.** Every body is a sphere; the box
+//     is a floor and four walls. There is no other collider pair, and no
+//     rotation in the narrow phase, because a sphere's shape does not depend on
+//     which way it is facing.
+//   * **one impulse pass per contact.** No iteration, no stacking solver: each
+//     contact is resolved once, in the order it was generated. A tall pile would
+//     sink and jitter — which is why sleeping is future work and why this demo
+//     drops bodies into a box rather than building a pyramid.
+//   * **a positional bias, not position projection.** The penetration is
+//     corrected by a velocity term, so it travels through the same channel as
+//     everything else and leaves a few millimetres of overlap at rest.
+//   * **no angular dynamics.** The bodies translate and do not turn: a rolling
+//     orientation would be a kinematic face on a linear model — pleasant to look
+//     at, and not what the simulation computed. The layer says so rather than
+//     painting one on.
+//   * **the state's layout is the solver's**, all positions then all velocities,
+//     and `World`'s accessors are the only place that is written down. A guest
+//     reading the raw vector has to know it; a guest using the layer does not.
+//
+// The cadence is the design: four sub-steps per frame, each one advance → read →
+// detect → resolve → write. Writing the state back between sub-steps is what
+// `set_state` is for, and chunk 6a measured that it does not perturb the
+// integral (a thrown body reached the same apex to 0.0 %).
+//
+//   ./run.sh                             a window, and a box of falling bodies
+//   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
+//   ./run.sh --bodies=256                a bigger box of them
+
+// The session: the loop, the arena, the event ring, the frame handshake.
+import {
+  ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession,
+} from "tension-framework";
+// The physics layer: bodies, contacts, impulses, and the cadence.
+import { World, WorldConfig } from "tension-framework/assembly/physics";
+// The OGRE SDK under its own path — its ConfigBuilder is a different one.
+import * as ogre from "tension-framework/assembly/ogre";
+
+const DT: f64 = 1.0 / 60.0;
+/** How long the simulation runs before the summary, if nothing rests sooner. */
+const FRAMES: i32 = 300;
+/** What "at rest" means here: the probe measured 0.057 m/s for a settled pile. */
+const REST_SPEED: f64 = 0.1;
+const DEFAULT_BODIES: i32 = 64;
+const RADIUS: f64 = 0.4;
+const EXTENT: f64 = 4.0; // the box is 8x8 units, the floor at y = 0
+/** `cube.mesh` is 100 units across, so this draws one diameter (2r = 0.8). */
+const MESH_SCALE: f64 = 0.008;
+const FLOOR_ID: u32 = 1;
+const FIRST_BODY_ID: u32 = 100;
+
+/// A failure the reader can act on: a guest exits non-zero by trapping.
+function fail(what: string): void {
+  print("bouncing-bodies: " + what);
+  assert(false, what);
+}
+
+export function _start_game(): void {
+  let renderer = "null";
+  let bodies = DEFAULT_BODIES;
+  for (let i: i32 = 0; i < argCount(); i++) {
+    const value = arg(i);
+    if (value.startsWith("--renderer=")) renderer = value.slice(11);
+    if (value.startsWith("--bodies=")) bodies = I32.parseInt(value.slice(9));
+  }
+  const windowed = renderer == "gl3plus";
+  if (bodies <= 0 || bodies * 6 > 8192) fail("--bodies is outside 1..1365");
+
+  const callbacks = makeCallbacks(null, null);
+  if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
+    fail("session_open refused");
+  }
+  const config = new ogre.ConfigBuilder()
+    .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
+    .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
+  const started = ogre.init(config);
+  if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+
+  // One mesh, drawn N+1 times: OGRE-Next ships no sphere, so the bodies are
+  // cubes — scaled to a sphere's diameter, which is what the physics thinks they
+  // are. The floor is the same mesh, twenty-four units across, with its top
+  // surface at y = 0.
+  const job = ogre.queueMeshLoad("cube.mesh", 0);
+  if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
+  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
+    RuntimeSession.wait(10);
+  }
+  if (ogre.jobState(job) != ogre.JOB_DONE) fail("cube.mesh did not load");
+  const cube = ogre.jobResult(job);
+
+  const material = new ogre.Material();
+  material.materialId = 1;
+  material.kind = ogre.MAT_HLMS_PBS;
+  material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
+  material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
+  material.emissiveR = 0.9; material.emissiveG = 0.6; material.emissiveB = 0.3;
+  material.roughness = 1.0; material.metalness = 0.0;
+  if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+
+  // A three-quarter view of the box: high enough to see the pile, close enough
+  // that the bodies are more than a few pixels across. The rotation is a pitch
+  // about X aimed at the middle of the box — an identity rotation would look
+  // down -Z at empty sky, which is what the earlier examples' straight-on
+  // cameras never had to say out loud.
+  const eye_y = 6.0, eye_z = 11.0, aim_y = 0.8;
+  const pitch = Math.atan2(aim_y - eye_y, eye_z);
+  const camera = ogre.CameraRecord.perspective(45.0 * (3.14159265358979 / 180.0),
+                                               <f32>640 / <f32>480, 0.1, 200.0, 0.0, <f32>eye_y, <f32>eye_z);
+  camera.rotationX = <f32>Math.sin(pitch * 0.5);
+  camera.rotationY = 0.0;
+  camera.rotationZ = 0.0;
+  camera.rotationW = <f32>Math.cos(pitch * 0.5);
+  camera.cameraId = 1;
+  if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
+
+  const floor = ogre.Renderable.at(cube, 1, 0.0, -12.0, 0.0, 0.24);
+  floor.renderableId = FLOOR_ID;
+  if (ogre.submitRenderable(floor) != 0) fail("submitRenderable refused (floor)");
+
+  // The world: bodies, a container, and the model's constants. K = 4 is the
+  // sub-step count the probe's penetration numbers argued for (50 / 13 / 4 mm
+  // at K = 1 / 2 / 4).
+  const world_config = new WorldConfig();
+  world_config.bodies = bodies;
+  world_config.radius = RADIUS;
+  world_config.gravity = -9.81;
+  world_config.substeps = 4;
+  world_config.restitution = 0.3;
+  world_config.friction = 0.4;
+  world_config.bias = 0.2;
+  world_config.extent = EXTENT;
+  world_config.firstRenderableId = FIRST_BODY_ID;
+  world_config.meshScale = MESH_SCALE;
+  const world = World.create(world_config);
+  if (world == null) fail("World.create refused " + bodies.toString() + " bodies");
+
+  // Staggered drop: four layers per column so the bodies actually meet each
+  // other in the air and in the pile, from heights low enough to settle inside
+  // the run. A carpet of bodies that never touch is not a collision demo.
+  const side = <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies / 4)));
+  for (let i = 0; i < bodies; i++) {
+    const layer = i % 4;
+    const column = i / 4;
+    const x = -1.5 + <f64>(column % side) * (3.0 / <f64>side);
+    const z = -1.5 + <f64>(column / side) * (3.0 / <f64>side);
+    world!.place(i, x, RADIUS + 0.6 + <f64>layer * 0.9, z);
+  }
+  if (world!.seed() != 0) fail("the solver refused the seed state");
+
+  // Every body is a renderable from the start, so the first frame already shows
+  // the whole box: the motion table carries the poses from here on.
+  for (let i = 0; i < bodies; i++) {
+    const body = ogre.Renderable.at(cube, 1, 0.0, 0.0, 0.0, <f32>MESH_SCALE);
+    body.renderableId = FIRST_BODY_ID + <u32>i;
+    if (ogre.submitRenderable(body) != 0) fail("submitRenderable refused (body " + i.toString() + ")");
+  }
+
+  if (!windowed) print("renderer=null: no window; the physics and the summary are the same");
+
+  // ── the loop ─────────────────────────────────────────────────────────
+  const batch = new ogre.MotionBatch();
+  let last = ogre.frameCount(), frame = 0, next_report = 60;
+  let contacts_this_frame = 0, total_contacts = 0, contacts_measured = 0;
+  while (frame < FRAMES) {
+    RuntimeSession.wait(16);
+    const now = ogre.frameCount();
+    const advance = now - last;
+    if (advance == 0) continue; // the renderer has not drawn a new frame yet
+    // Clamped: a stalled frame must not turn into a physics avalanche, which is
+    // the same reason the loop is paced by the renderer rather than by a clock.
+    const steps: i32 = advance > 2 ? 2 : <i32>advance;
+    last = now;
+    frame += steps;
+
+    if (world!.step(<f64>steps * DT) != 0) fail("world.step refused at frame " + frame.toString());
+    contacts_this_frame = world!.contactCount();
+    total_contacts += contacts_this_frame;
+    contacts_measured += 1;
+    world!.pose(batch);
+    if (batch.commit() != bodies) fail("submit_motion refused the batch");
+
+    // A threshold rather than `frame % 60`: the frame counter advances by one
+    // or two per iteration, so an equality test silently skips the report it
+    // was written to print (the 6a probe learned this the same way).
+    if (frame >= next_report) {
+      next_report += 60;
+      let at_rest = 0;
+      for (let i = 0; i < bodies; i++) {
+        const vx = world!.bodies().vel(i, 0), vy = world!.bodies().vel(i, 1),
+              vz = world!.bodies().vel(i, 2);
+        if (Math.sqrt(vx * vx + vy * vy + vz * vz) < REST_SPEED) at_rest += 1;
+      }
+      print("frame " + frame.toString() + "  bodies " + bodies.toString() + "  rest-count " +
+            at_rest.toString() + "  max|v| " + world!.maxSpeed().toString() +
+            "  contacts " + contacts_this_frame.toString());
+    }
+    if (frame > 60 && world!.allAtRest(REST_SPEED)) break; // settled, and not before it moved
+  }
+
+  const contacts_per_frame = contacts_measured > 0
+    ? <f64>total_contacts / <f64>contacts_measured : 0.0;
+  print("simulated " + bodies.toString() + " bodies, " + contacts_per_frame.toString() +
+        " contacts/frame, K=" + world_config.substeps.toString() + " sub-steps");
+  print("max|v| " + world!.maxSpeed().toString() + ", kinetic energy " +
+        world!.kineticEnergy().toString());
+
+  // One line about the picture, the way the other examples end: a box of bodies
+  // that simulates correctly and draws nothing is a bug this line would catch.
+  if (windowed) {
+    const armed = ogre.frameCount();
+    ogre.screenshot(0, 0);
+    for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed + 3; guard++) {
+      RuntimeSession.wait(5);
+    }
+    const length = ogre.screenshot(0, 0);
+    if (length > 0) {
+      const frame = new ArrayBuffer(length);
+      if (ogre.screenshot(changetype<usize>(frame), length) == length) {
+        const pixels = Uint8Array.wrap(frame);
+        let drawn = 0;
+        for (let i = 0; i < length; i += 4) {
+          if (pixels[i] < 40 && pixels[i + 1] < 40 && pixels[i + 2] < 40) continue;
+          drawn++;
+        }
+        print("rendered " + ogre.frameCount().toString() + " frames, " + drawn.toString() +
+              " non-background pixels");
+      }
+    }
+  }
+
+  world!.destroy();
+  ogre.shutdown(); RuntimeSession.close();
+}
