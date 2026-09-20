@@ -23,7 +23,13 @@
 #include <OgreMeshManager2.h>
 #include <OgreMeshSerializer.h>
 #include <OgreArchiveManager.h>
+#include <OgreAxisAlignedBox.h>
 #include <OgreConfigFile.h>
+#include <OgreHardwareBufferManager.h>
+#include <OgreHardwareIndexBuffer.h>
+#include <OgreHardwareVertexBuffer.h>
+#include <OgreSubMesh.h>
+#include <OgreVertexIndexData.h>
 #include <OgreHlmsManager.h>
 #include <OgreHlmsDatablock.h>
 #include <OgreItem.h>
@@ -51,6 +57,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <cstring>
 #include <atomic>
 #include <cerrno>
 #include <cstdlib>
@@ -546,6 +553,131 @@ class BackendOgre final : public Backend {
             return realisation_failed(e.what());
         } catch (...) {
             return realisation_failed("an exception of unknown type escaped the mesh loader");
+        }
+    }
+
+    /// A mesh built out of the guest's own arrays (chunk 5.5).
+    ///
+    /// The probe's sequence (tests/probe_procedural.cpp; DESIGN.md §5.1): the
+    /// v1 mesh is made and filled by hand — `createManual` takes no arrays —
+    /// and then converted through the same `createByImportingV1` door the file
+    /// path uses. Two calls in it are the serializer's job for a file and this
+    /// function's for a hand-built mesh: `prepareForShadowMapping(false)`,
+    /// without which the conversion imports a pass-1 buffer that does not exist
+    /// and takes the process with it (measured: SIGSEGV), and `_setBounds`,
+    /// without which the mesh renders but is never culled.
+    int32_t realise_mesh_from_arrays(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
+                                     const uint8_t *indices, size_t index_bytes, uint32_t topology,
+                                     ResourceHandle *out, uint32_t *out_bones) override {
+        if (out_bones != nullptr) *out_bones = 0;
+        try {
+            if (topology != kTopoTriangleList) return -EINVAL;
+            if ((format & kVfPosition) == 0) return -EINVAL;
+            const bool has_normal = (format & kVfNormal) != 0;
+            const bool has_uv = (format & kVfUv) != 0;
+            const size_t stride = 12 + (has_normal ? 12 : 0) + (has_uv ? 8 : 0);
+            if (vertex_bytes == 0 || vertex_bytes % stride != 0) return -EINVAL;
+            if (index_bytes == 0 || index_bytes % 6 != 0) return -EINVAL; // whole triangles
+            const size_t vertex_count = vertex_bytes / stride;
+            const size_t index_count = index_bytes / 2;
+
+            const uint32_t handle = next_resource_++;
+            const Ogre::String name = "tension-mesh-" + std::to_string(handle);
+
+            Ogre::v1::MeshPtr v1 =
+                Ogre::v1::MeshManager::getSingleton().createManual(name + "-v1", kResourceGroup);
+            Ogre::v1::SubMesh *sub = v1->createSubMesh();
+            sub->useSharedVertices = false;
+            sub->operationType = Ogre::OT_TRIANGLE_LIST;
+
+            sub->vertexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::VertexData(
+                Ogre::v1::HardwareBufferManager::getSingletonPtr());
+            Ogre::v1::VertexData *vertex_data = sub->vertexData[Ogre::VpNormal];
+            vertex_data->vertexStart = 0;
+            vertex_data->vertexCount = vertex_count;
+
+            const size_t f3 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT3);
+            const size_t f2 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT2);
+            Ogre::v1::VertexDeclaration *declaration = vertex_data->vertexDeclaration;
+            size_t offset = 0;
+            declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_POSITION);
+            offset += f3;
+            if (has_normal) {
+                declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_NORMAL);
+                offset += f3;
+            }
+            if (has_uv) {
+                declaration->addElement(0, offset, Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES, 0);
+                offset += f2;
+            }
+
+            Ogre::v1::HardwareVertexBufferSharedPtr vertex_buffer =
+                Ogre::v1::HardwareBufferManager::getSingleton().createVertexBuffer(
+                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+            vertex_data->vertexBufferBinding->setBinding(0, vertex_buffer);
+            {
+                void *destination = vertex_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
+                std::memcpy(destination, vertices, vertex_bytes);
+                vertex_buffer->unlock();
+            }
+
+            sub->indexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::IndexData();
+            Ogre::v1::IndexData *index_data = sub->indexData[Ogre::VpNormal];
+            index_data->indexStart = 0;
+            index_data->indexCount = index_count;
+            Ogre::v1::HardwareIndexBufferSharedPtr index_buffer =
+                Ogre::v1::HardwareBufferManager::getSingleton().createIndexBuffer(
+                    Ogre::v1::HardwareIndexBuffer::IT_16BIT, index_count,
+                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+            {
+                void *destination = index_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
+                std::memcpy(destination, indices, index_bytes);
+                index_buffer->unlock();
+            }
+            index_data->indexBuffer = index_buffer;
+
+            // The bounds: the first three floats of every vertex, which is where
+            // `VF_POSITION` puts them.
+            float minimum[3] = {0.0f, 0.0f, 0.0f};
+            float maximum[3] = {0.0f, 0.0f, 0.0f};
+            for (size_t i = 0; i < vertex_count; ++i) {
+                const uint8_t *vertex = vertices + i * stride;
+                for (size_t axis = 0; axis < 3; ++axis) {
+                    float value = 0.0f;
+                    std::memcpy(&value, vertex + axis * 4, 4);
+                    if (i == 0 || value < minimum[axis]) minimum[axis] = value;
+                    if (i == 0 || value > maximum[axis]) maximum[axis] = value;
+                }
+            }
+
+            v1->prepareForShadowMapping(false);
+            v1->_setBounds(
+                Ogre::AxisAlignedBox(minimum[0], minimum[1], minimum[2], maximum[0], maximum[1],
+                                     maximum[2]),
+                false);
+
+            Ogre::MeshPtr mesh = Ogre::MeshManager::getSingleton().createByImportingV1(
+                name, kResourceGroup, v1.get(), false, false, false);
+            mesh->load();
+
+            ResourceEntry entry;
+            entry.kind = TENSION_OGRE_RES_KIND_MESH;
+            entry.name = name;
+            entry.v1_mesh = v1;
+            entry.mesh = mesh;
+            entry.live = true;
+            resources_.push_back(entry);
+            log_line("ogre: realised procedural mesh " + name + ": " +
+                     std::to_string(vertex_count) + " vertices, " + std::to_string(index_count / 3) +
+                     " triangles, format " + std::to_string(format));
+            *out = handle;
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        } catch (...) {
+            return realisation_failed("an exception of unknown type escaped the mesh builder");
         }
     }
 

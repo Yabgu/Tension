@@ -72,6 +72,18 @@ class Backend {
     /// `isRigged`, and the backend's own skeleton bookkeeping.
     virtual int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
                                  uint32_t *out_bones) = 0;
+    /// Realise a mesh from arrays the guest built in `BUFFER_POOL` rather than
+    /// from a mesh file's bytes (chunk 5.5): interleaved vertices under
+    /// `format`'s element set, then 16-bit indices.
+    ///
+    /// Same out-parameters, same errno contract and the same thread as
+    /// `realise_mesh` — the render thread, from the loader's deferred queue —
+    /// because the difference is where the bytes came from, not what has to be
+    /// built out of them.
+    virtual int32_t realise_mesh_from_arrays(const uint8_t *vertices, size_t vertex_bytes,
+                                             uint32_t format, const uint8_t *indices,
+                                             size_t index_bytes, uint32_t topology,
+                                             ResourceHandle *out, uint32_t *out_bones) = 0;
     virtual int32_t realise_texture(const uint8_t *bytes, size_t len, ResourceHandle *out) = 0;
     /// Apply the guest's scene submissions on this thread: create, update and
     /// destroy the renderer's objects from the mirror's dirty lists. 3b-ii.

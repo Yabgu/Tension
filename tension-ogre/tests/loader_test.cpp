@@ -77,6 +77,23 @@ class MockBackend final : public Backend {
         *out = next_handle++;
         return 0;
     }
+    /// A guest-built mesh: remembers the shape it was handed, and the first
+    /// position, so a test can see the bytes arrive rather than just the call.
+    int32_t realise_mesh_from_arrays(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
+                                     const uint8_t *indices, size_t index_bytes, uint32_t topology,
+                                     ResourceHandle *out, uint32_t *out_bones) override {
+        procedural_meshes += 1;
+        last_procedural_format = format;
+        last_procedural_topology = topology;
+        last_procedural_vertex_bytes = vertex_bytes;
+        last_procedural_index_bytes = index_bytes;
+        if (vertex_bytes >= 4) std::memcpy(&last_procedural_x, vertices, 4);
+        if (index_bytes >= 2) std::memcpy(&last_procedural_index, indices, 2);
+        if (refuse_procedural) return -EIO;
+        if (out_bones != nullptr) *out_bones = 0;
+        *out = next_handle++;
+        return 0;
+    }
     int32_t discard_resource(ResourceHandle) override {
         discarded += 1;
         return 0;
@@ -93,6 +110,14 @@ class MockBackend final : public Backend {
     int meshes = 0;
     int textures = 0;
     int discarded = 0;
+    int procedural_meshes = 0;
+    uint32_t last_procedural_format = 0;
+    uint32_t last_procedural_topology = 0;
+    size_t last_procedural_vertex_bytes = 0;
+    size_t last_procedural_index_bytes = 0;
+    float last_procedural_x = 0.0f;
+    uint16_t last_procedural_index = 0;
+    bool refuse_procedural = false;
     size_t last_mesh_bytes = 0;
     bool last_mesh_magic_ok = false;
     size_t last_texture_bytes = 0;
@@ -359,6 +384,106 @@ void test_sweep_fails_in_flight_jobs() {
     check_eq(static_cast<uint64_t>(slot.error), static_cast<uint64_t>(-EIO), "with -EIO");
 }
 
+/// The guest-built mesh path in the loader's own terms: an id comes back before
+/// the mesh exists, the bytes travel to the render thread intact, and the record
+/// says which of the two happened.
+void test_procedural_mesh_realises_on_drain() {
+    std::printf("test_procedural_mesh_realises_on_drain\n");
+    std::unique_ptr<Loader> loader = std::make_unique<Loader>();
+    Recorder recorder;
+    loader->set_sink(recorder.sink());
+
+    // One triangle: three position-only vertices, three 16-bit indices. The
+    // indices count down so the first one proves the copy arrived — a leading 0
+    // would look the same whether the bytes travelled or not.
+    const float positions[9] = {-1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f};
+    const uint16_t indices[3] = {2, 1, 0};
+    const int32_t id = loader->queue_procedural_mesh(
+        reinterpret_cast<const uint8_t *>(positions), sizeof(positions), 1u,
+        reinterpret_cast<const uint8_t *>(indices), sizeof(indices), 0u);
+    check(id >= static_cast<int32_t>(TENSION_OGRE_RESOURCE_RENDERER + 1),
+          "an id comes back before the mesh exists");
+    check_eq(loader->resource_at(static_cast<uint32_t>(id)).state, TENSION_OGRE_RES_STATE_LOADING,
+             "and the record says it is still being built");
+
+    MockBackend backend;
+    loader->drain_completions(backend);
+    check_eq(backend.procedural_meshes, 1, "the render thread built one mesh");
+    check_eq(backend.last_procedural_format, 1u, "with the format the guest declared");
+    check_eq(backend.last_procedural_vertex_bytes, sizeof(positions), "and the vertex bytes");
+    check_eq(backend.last_procedural_index_bytes, sizeof(indices), "and the index bytes");
+    check(backend.last_procedural_x == -1.0f, "the bytes arrived, not just the call");
+    check_eq(backend.last_procedural_index, 2u, "and so did the indices");
+
+    const ResourceSlot resource = loader->resource_at(static_cast<uint32_t>(id));
+    check_eq(resource.state, TENSION_OGRE_RES_STATE_READY, "the record is READY");
+    check(resource.handle != kNoResourceHandle, "with a backend handle");
+    check_eq(resource.kind, TENSION_OGRE_RES_KIND_MESH, "and knows it is a mesh");
+    check_eq(resource.bone_count, 0u, "a mesh built this way has no rig");
+}
+
+/// A build that fails on the render thread has nobody left to tell: the guest
+/// already holds the id, so the record is where the answer goes.
+void test_procedural_mesh_failure_lands_in_the_resource_record() {
+    std::printf("test_procedural_mesh_failure_lands_in_the_resource_record\n");
+    std::unique_ptr<Loader> loader = std::make_unique<Loader>();
+    Recorder recorder;
+    loader->set_sink(recorder.sink());
+
+    const uint8_t vertices[12] = {};
+    const uint8_t indices[6] = {};
+    const int32_t id = loader->queue_procedural_mesh(vertices, sizeof(vertices), 1u, indices,
+                                                     sizeof(indices), 0u);
+    MockBackend backend;
+    backend.refuse_procedural = true;
+    loader->drain_completions(backend);
+
+    const ResourceSlot resource = loader->resource_at(static_cast<uint32_t>(id));
+    check_eq(resource.state, TENSION_OGRE_RES_STATE_FAILED, "a refused build fails the record");
+    check_eq(static_cast<uint64_t>(resource.error), static_cast<uint64_t>(-EIO), "with -EIO");
+    bool named = false;
+    for (const std::string &line : recorder.logs) {
+        if (line.find("procedural") != std::string::npos) named = true;
+    }
+    check(named, "and the log says what happened");
+}
+
+/// One RESOURCE table, one id space: a loaded mesh and a guest-built one are
+/// separate records, and neither lands in the renderer's slot.
+void test_procedural_mesh_shares_the_resource_id_space() {
+    std::printf("test_procedural_mesh_shares_the_resource_id_space\n");
+    Fixtures fixtures;
+    std::unique_ptr<Loader> loader = std::make_unique<Loader>();
+    Recorder recorder;
+    loader->set_sink(recorder.sink());
+    loader->set_search_paths({fixtures.dir.string()});
+
+    const int32_t job = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    loader->wait_for_idle(5000);
+    MockBackend backend;
+    // Drained first, so the load's id is allocated before the next one is: a
+    // load's id is minted when the mesh is realised (the worker owns the bytes
+    // until then), while a guest-built mesh's id is minted by the call that
+    // hands the bytes over. Same counter, two moments.
+    loader->drain_completions(backend);
+    check_eq(backend.meshes, 1, "the loaded mesh was realised first");
+
+    const uint8_t vertices[12] = {};
+    const uint8_t indices[6] = {};
+    const int32_t built = loader->queue_procedural_mesh(vertices, sizeof(vertices), 1u, indices,
+                                                        sizeof(indices), 0u);
+    loader->drain_completions(backend);
+
+    const JobSlot slot = loader->job_at(loader->slot_of(static_cast<uint32_t>(job)));
+    check_eq(slot.resource_id, TENSION_OGRE_RESOURCE_RENDERER + 1, "the load got the first id");
+    check_eq(built, static_cast<int32_t>(TENSION_OGRE_RESOURCE_RENDERER + 2),
+             "the guest-built mesh got the next one");
+    check_eq(loader->resource_at(TENSION_OGRE_RESOURCE_RENDERER + 1).state,
+             TENSION_OGRE_RES_STATE_READY, "both are ready");
+    check_eq(loader->resource_at(static_cast<uint32_t>(built)).state,
+             TENSION_OGRE_RES_STATE_READY, "in their own records");
+}
+
 } // namespace
 
 int main() {
@@ -373,6 +498,9 @@ int main() {
     test_worker_reports_eio_for_bad_magic();
     test_backend_refusal_fails_the_job();
     test_sweep_fails_in_flight_jobs();
+    test_procedural_mesh_realises_on_drain();
+    test_procedural_mesh_failure_lands_in_the_resource_record();
+    test_procedural_mesh_shares_the_resource_id_space();
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;
 }

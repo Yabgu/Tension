@@ -39,6 +39,7 @@ constexpr uint32_t kVerbSubmit = 8;
 constexpr uint32_t kVerbScreenshot = 9;
 constexpr uint32_t kVerbSubmitMotion = 10;
 constexpr uint32_t kVerbSubmitBones = 11;
+constexpr uint32_t kVerbCreateMesh = 12;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -591,6 +592,118 @@ int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, ten
     return 0;
 }
 
+/// `ogre::create_mesh(vbOffset, vbBytes, format, ibOffset, ibBytes, topology)`
+/// — a mesh built from arrays the guest wrote into `BUFFER_POOL` (chunk 5.5).
+///
+/// Both arrays live in the window past the bone table (`kProceduralBase`,
+/// `kProceduralCapacity`) and both are named by their **arena offset** — the
+/// same kind of number `queue_mesh_load` takes for a name and `screenshot`
+/// takes for a buffer. The guest writes at
+/// `regionOffset(REGION_BUFFER_POOL) + PROCEDURAL_BASE + n` and passes that
+/// number, so the memory it wrote and the memory it names are one expression
+/// rather than two.
+///
+/// Everything a GPU could read out of bounds is refused here, because the guest
+/// is the only author of this data: the window, the format's element set, the
+/// arrays' shapes, and every index against the vertex count — an index past the
+/// last vertex is a read the renderer performs with nobody to blame.
+///
+/// The id comes back now, and the mesh is built by the render thread on its
+/// next pass (only that thread may make an OGRE object), which is why a
+/// realisation failure lands in the resource record instead of in this return
+/// value. `publish` is not engaged: this verb writes nothing to guest memory.
+int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 6) return -EINVAL;
+    const uint32_t vertex_offset = static_cast<uint32_t>(args[0].i32);
+    const uint32_t vertex_bytes = static_cast<uint32_t>(args[1].i32);
+    const uint32_t format = static_cast<uint32_t>(args[2].i32);
+    const uint32_t index_offset = static_cast<uint32_t>(args[3].i32);
+    const uint32_t index_bytes = static_cast<uint32_t>(args[4].i32);
+    const uint32_t topology = static_cast<uint32_t>(args[5].i32);
+
+    if (topology != kTopoTriangleList) {
+        log_line(3, "ogre: create_mesh refused: topology " + std::to_string(topology) +
+                        " is not TOPO_TRIANGLE_LIST");
+        return -EINVAL;
+    }
+    if ((format & kVfPosition) == 0 || (format & ~(kVfPosition | kVfNormal | kVfUv)) != 0) {
+        log_line(3, "ogre: create_mesh refused: format " + std::to_string(format) +
+                        " is not a set of VF_ bits that includes VF_POSITION");
+        return -EINVAL;
+    }
+    const size_t stride = 12 + ((format & kVfNormal) != 0 ? 12 : 0) +
+                          ((format & kVfUv) != 0 ? 8 : 0);
+    if (vertex_bytes == 0 || vertex_bytes % stride != 0) {
+        log_line(3, "ogre: create_mesh refused: " + std::to_string(vertex_bytes) +
+                        " vertex bytes is not a whole number of " + std::to_string(stride) +
+                        "-byte vertices");
+        return -EINVAL;
+    }
+    if (index_bytes == 0 || index_bytes % 6 != 0) {
+        log_line(3, "ogre: create_mesh refused: " + std::to_string(index_bytes) +
+                        " index bytes is not a whole number of 16-bit triangles");
+        return -EINVAL;
+    }
+
+    const uint64_t window = static_cast<uint64_t>(s.motion_offset) + kProceduralBase;
+    const uint64_t window_end = window + kProceduralCapacity;
+    const uint64_t vertex_end = static_cast<uint64_t>(vertex_offset) + vertex_bytes;
+    const uint64_t index_end = static_cast<uint64_t>(index_offset) + index_bytes;
+    if (vertex_offset < window || vertex_end > window_end || index_offset < window ||
+        index_end > window_end) {
+        char line[220];
+        std::snprintf(line, sizeof(line),
+                      "ogre: create_mesh refused: vertex [%u,%llu) and index [%u,%llu) are not "
+                      "both inside BUFFER_POOL's procedural window [%llu,%llu)",
+                      vertex_offset, static_cast<unsigned long long>(vertex_end), index_offset,
+                      static_cast<unsigned long long>(index_end),
+                      static_cast<unsigned long long>(window),
+                      static_cast<unsigned long long>(window_end));
+        log_line(3, line);
+        return -EINVAL;
+    }
+    if (vertex_offset < index_end && index_offset < vertex_end) {
+        log_line(3, "ogre: create_mesh refused: the vertex and index arrays overlap");
+        return -EINVAL;
+    }
+    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+
+    std::vector<uint8_t> vertices(vertex_bytes);
+    std::vector<uint8_t> indices(index_bytes);
+    if (s.api->guest_read(s.api->user, vertex_offset, vertices.data(), vertex_bytes) != 0) {
+        return -EINVAL;
+    }
+    if (s.api->guest_read(s.api->user, index_offset, indices.data(), index_bytes) != 0) {
+        return -EINVAL;
+    }
+
+    // Every index against the vertex count. Two lines, and they are the
+    // difference between a refusal a guest can act on and a GPU reading past
+    // the end of a buffer.
+    const size_t vertex_count = vertex_bytes / stride;
+    for (size_t i = 0; i < index_bytes / 2; ++i) {
+        uint16_t index = 0;
+        std::memcpy(&index, indices.data() + i * 2, 2);
+        if (index >= vertex_count) {
+            char line[200];
+            std::snprintf(line, sizeof(line),
+                          "ogre: create_mesh refused: index %zu names vertex %u, past the %zu "
+                          "vertices given",
+                          i, static_cast<unsigned>(index), vertex_count);
+            log_line(3, line);
+            return -EINVAL;
+        }
+    }
+
+    const int32_t resource_id =
+        s.loader.queue_procedural_mesh(vertices.data(), vertex_bytes, format, indices.data(),
+                                       index_bytes, topology);
+    if (resource_id < 0) return resource_id;
+    ret->i32 = resource_id;
+    return 0;
+}
+
 /// `ogre::screenshot(ptr, cap)` — probe/consume over the last downloaded frame,
 /// and a request for the next one. `cap <= 0` asks the length; `cap > 0` copies
 /// `min(cap, len)` bytes and consumes them. `-1` means no frame is available.
@@ -654,6 +767,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     const uint32_t one_i32[1] = {i32};
     const uint32_t two_i32[2] = {i32, i32};
     const uint32_t three_i32[3] = {i32, i32, i32};
+    const uint32_t six_i32[6] = {i32, i32, i32, i32, i32, i32};
 
     struct Registration {
         const char *name;
@@ -681,6 +795,8 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"submit_motion", one_i32, 1, shim_submit_motion, kVerbSubmitMotion, 0},
         // And one per frame for a whole rig's pose (chunk 5b).
         {"submit_bones", one_i32, 1, shim_submit_bones, kVerbSubmitBones, 0},
+        // A mesh out of guest memory, for a guest with no file to load (5.5).
+        {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
     };
 
     for (const Registration &registration : registrations) {

@@ -210,6 +210,38 @@ int32_t Loader::job_release(uint32_t job_id) {
     return -ENOENT;
 }
 
+int32_t Loader::queue_procedural_mesh(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
+                                     const uint8_t *indices, size_t index_bytes,
+                                     uint32_t topology) {
+    if (vertices == nullptr || vertex_bytes == 0 || indices == nullptr || index_bytes == 0) {
+        return -EINVAL;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (next_resource_id_ > 1024) return -ENOSPC; // the RESOURCE region's ceiling
+
+    ProceduralRequest request;
+    request.resource_id = next_resource_id_++;
+    request.format = format;
+    request.topology = topology;
+    request.vertices.assign(vertices, vertices + vertex_bytes);
+    request.indices.assign(indices, indices + index_bytes);
+
+    ResourceSlot slot;
+    slot.resource_id = request.resource_id;
+    slot.kind = TENSION_OGRE_RES_KIND_MESH;
+    // In flight from here until the render thread realises it. Publishing that
+    // state is the honest answer to "what is this id?" — the same one the job
+    // table gives for a load that is still running.
+    slot.state = TENSION_OGRE_RES_STATE_LOADING;
+    slot.dirty = true;
+    if (resources_.size() <= slot.resource_id) resources_.resize(slot.resource_id + 1);
+    resources_[slot.resource_id] = slot;
+
+    const uint32_t resource_id = request.resource_id;
+    procedural_.push_back(std::move(request));
+    return static_cast<int32_t>(resource_id);
+}
+
 void Loader::drain_completions(Backend &backend) {
     std::deque<LoadCompletion> drained;
     {
@@ -292,6 +324,50 @@ void Loader::drain_completions(Backend &backend) {
             continue;
         }
         if (sink.post_event) sink.post_event(TENSION_OGRE_CLASS_JOB_DONE, job_id, resource_id);
+    }
+
+    // ── the procedural meshes ──────────────────────────────────────────
+    //
+    // Same thread, same reason: the guest wrote the bytes and already holds the
+    // id, so this is where the OGRE object gets made. A failure lands in the
+    // resource record, because the call that could have reported it returned
+    // before the render thread ran — and the region is where a guest looks for
+    // resource outcomes anyway.
+    std::deque<ProceduralRequest> procedures;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        procedures.swap(procedural_);
+    }
+    for (ProceduralRequest &request : procedures) {
+        ResourceHandle handle = kNoResourceHandle;
+        uint32_t bones = 0;
+        const int32_t realised = backend.realise_mesh_from_arrays(
+            request.vertices.data(), request.vertices.size(), request.format,
+            request.indices.data(), request.indices.size(), request.topology, &handle, &bones);
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (request.resource_id >= resources_.size()) continue;
+        ResourceSlot &slot = resources_[request.resource_id];
+        if (realised != 0 || handle == kNoResourceHandle) {
+            slot.state = TENSION_OGRE_RES_STATE_FAILED;
+            slot.error = realised != 0 ? realised : -EIO;
+            slot.dirty = true;
+            if (sink_.log) {
+                sink_.log(3, "ogre: procedural mesh resource " +
+                                 std::to_string(request.resource_id) +
+                                 " failed to realise (errno " + std::to_string(slot.error) + ")");
+            }
+            continue;
+        }
+        slot.handle = handle;
+        slot.state = TENSION_OGRE_RES_STATE_READY;
+        slot.bone_count = bones;
+        slot.dirty = true;
+        if (sink_.log) {
+            sink_.log(1, "ogre: procedural mesh resource " + std::to_string(request.resource_id) +
+                             " ready (" + std::to_string(request.vertices.size()) +
+                             " vertex bytes, " + std::to_string(request.indices.size()) +
+                             " index bytes)");
+        }
     }
 
     {

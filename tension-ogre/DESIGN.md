@@ -759,6 +759,69 @@ children before and after — and the world AABB moves by exactly the transform'
 delta. Chunk 4's ceiling is therefore the mirror walk and the guest's own loop,
 not OGRE.
 
+**`ogre::create_mesh` builds a mesh from guest-written buffers (chunk 5.5).**
+Verbatim `12`, flags 0, synchronous: `create_mesh(vbOffset, vbBytes, format,
+ibOffset, ibBytes, topology) -> resourceId`. The two arrays live in
+`BUFFER_POOL` **past the bone table** — `PROCEDURAL_BASE` = 256 KiB (motion 128
+KiB, bones the next 128 KiB) and `PROCEDURAL_CAPACITY` = 512 KiB, shared by both
+buffers. That capacity is what makes a 16-bit index sufficient rather than a
+limitation to design around: 512 KiB is ~43,000 vertices at 12 B, so no mesh
+built this way can reach the 65,536th index. `topology` is 0
+(`TOPO_TRIANGLE_LIST`) and nothing else yet; an unknown topology is `-EINVAL`.
+
+**The vertex format is a flags word: `VF_POSITION`, `VF_NORMAL`, `VF_UV`.** The
+adapter declares exactly the elements the flags name, in that order, so the
+stride is derivable rather than a second parameter (12 B per vertex, plus 12 for
+a normal and 8 for a uv). What an Unlit datablock *needs* was measured rather
+than assumed: a constant-colour Unlit draw renders identically with position
+alone, position+normal, and position+normal+uv — **10,368 pixels, mean rgb
+229/51/51, all three** (probe, 320x240, camera at z=4, 5 frames). `VF_POSITION`
+is therefore the only element required and the other two are the guest's
+business; a textured datablock is where `VF_UV` would start to matter. Normals
+are carried because a lit path needs them, not because this one does.
+
+**The construction sequence is the probe's, and one call in it is
+load-bearing.** `v1::MeshManager::createManual(name, group)` takes no arrays —
+it makes an empty v1 mesh whose submesh the guest's bytes fill by hand
+(`createSubMesh`, a `VertexData` carrying a declaration and one interleaved
+buffer, an `IndexData` carrying one 16-bit index buffer) — and then
+`MeshManager::createByImportingV1` converts it to the Mesh2 the renderer draws,
+exactly as the file path does. Two calls in that sequence are the serializer's
+job for a file and the adapter's for a hand-built mesh:
+
+- `prepareForShadowMapping(false)` is **required**. Without it the v1 mesh's
+  `vertexData[VpShadow]` is null, `hasValidShadowMappingBuffers()` is false, and
+  `SubMesh::importFromV1` takes the branch that imports a pass-1 buffer that
+  does not exist: **SIGSEGV, measured in a child process** (probe variant
+  `no-shadow`, exit 139).
+- `_setBounds(box, false)` is recommended, not required: the same probe variant
+  (`no-bounds`) converts *and* renders — 10,368 pixels, identical to the run
+  with it — because an unset AABB behaves as infinite rather than empty. It is
+  culling hygiene, and it is in the sequence because a mesh that is never culled
+  is a scene that gets slower for reasons nobody can see.
+
+**A submesh's material name must resolve, or the *PBS* Hlms must be
+registered.** `Item`'s constructor ends in `Renderable::setMaterialName`, which
+falls back to `HlmsManager::getDefaultDatablock()` when no `.material` script
+defines the name — and that lookup indexes `mRegisteredHlms[mDefaultHlmsType]`
+with `mDefaultHlmsType = HLMS_PBS` and no null check (`OgreHlmsManager.cpp:620`).
+The first version of this probe registered Unlit alone and **segfaulted inside
+`createItem`**; the adapter registers both Hlms for its own reasons and inherits
+the protection by accident. Recorded because the failure names nothing and the
+mesh is not what is wrong.
+
+**The id exists before the mesh does, and the region is still the truth.**
+`create_mesh` runs on the guest thread: it validates, reads the two buffers (one
+`guest_read` each, chunk 4 and 5b's shape), allocates the resource id from the
+loader's table and returns it. The render thread is the only thread that may
+make an OGRE object, so realisation is deferred to the next loop iteration,
+where it happens **before** `apply_submissions` in the same pass — a guest that
+calls `create_mesh` and then `submitRenderable` with the id it got back is drawn
+from the first frame. A realisation that fails writes the resource record's
+`state`/`error` (`-EIO`, OGRE's message in the log) instead of failing the verb:
+a guest learns this outcome the way it learns every other resource outcome, by
+reading the region.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -1382,6 +1445,17 @@ chunk 1 work, and each is additive:
   the real NULL render system, and — manually — against GL3+. Before that round
   the path compiled but had never executed, which is the distinction this line
   exists to record.
+- **`create_mesh` covers one topology and one index width.** Round 5.5 ships
+  `TOPO_TRIANGLE_LIST` with 16-bit indices — which the 512 KiB
+  `PROCEDURAL_CAPACITY` makes sufficient rather than merely convenient, since
+  512 KiB of interleaved positions is ~43,000 vertices and never reaches the
+  65,536th index. What a later round would add, in the order the demand is
+  likely to arrive: more vertex elements (tangents, vertex colours, a second uv
+  set) as more `VF_` bits; lines and points as more topologies; 32-bit indices
+  if `PROCEDURAL_CAPACITY` ever grows past what a 16-bit index can address; and
+  a **dynamic** vertex buffer for a mesh whose *positions* change per frame —
+  which is a different mechanism from `MotionBatch`, because a motion entry
+  moves an object and this would move its vertices.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.

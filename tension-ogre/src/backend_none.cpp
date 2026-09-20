@@ -51,6 +51,11 @@ class BackendNone final : public Backend {
         if (out_bones != nullptr) *out_bones = 0;
         return refuse("realise_mesh");
     }
+    int32_t realise_mesh_from_arrays(const uint8_t *, size_t, uint32_t, const uint8_t *, size_t,
+                                     uint32_t, ResourceHandle *, uint32_t *out_bones) override {
+        if (out_bones != nullptr) *out_bones = 0;
+        return refuse("realise_mesh_from_arrays");
+    }
     int32_t realise_texture(const uint8_t *, size_t, ResourceHandle *) override {
         return refuse("realise_texture");
     }

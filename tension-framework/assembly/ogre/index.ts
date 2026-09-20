@@ -51,8 +51,14 @@ import {
   RENDERABLE_COUNT,
   MOTION_SIZE,
   MOTION_CAPACITY,
+  BONE_SIZE,
+  BONE_CAPACITY,
+  BONE_TABLE_OFFSET,
+  PROCEDURAL_BASE,
+  PROCEDURAL_CAPACITY,
   RESOURCE_SIZE,
   RESOURCE_SEQ_OFFSET,
+  RESOURCE_STATE_OFFSET,
   RESOURCE_FLAGS_OFFSET,
   RESOURCE_SIZE_OFFSET,
   RES_RIGGED,
@@ -71,6 +77,7 @@ import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/string
 export * from "./wire";
 export * from "./motion";
 export * from "./bones";
+export * from "./mesh";
 
 /** `ogre::init(cfg)`: 0, or the errno the adapter refused with. */
 @external("ogre", "init")
@@ -381,7 +388,12 @@ export function checkSubmissionRegions(): bool {
     regionSize(REGION_SCENE) >= SCENE_TABLE_BYTES &&
     regionSize(REGION_MATERIAL) >= MATERIAL_COUNT * MATERIAL_SIZE &&
     regionSize(REGION_RENDERABLE) >= RENDERABLE_COUNT * RENDERABLE_SIZE &&
-    regionSize(REGION_BUFFER_POOL) >= MOTION_SIZE * MOTION_CAPACITY
+    // The three tables that share BUFFER_POOL, in the order they sit in it:
+    // motion, bones, then the procedural-mesh window. `create_mesh`'s bounds
+    // check is against this same arithmetic on the adapter's side.
+    regionSize(REGION_BUFFER_POOL) >= MOTION_SIZE * MOTION_CAPACITY &&
+    regionSize(REGION_BUFFER_POOL) >= BONE_TABLE_OFFSET + BONE_SIZE * BONE_CAPACITY &&
+    regionSize(REGION_BUFFER_POOL) >= PROCEDURAL_BASE + PROCEDURAL_CAPACITY
   );
 }
 
@@ -401,6 +413,22 @@ export function getResourceBase(): usize {
 
 export function frameCount(): u64 {
   return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
+}
+
+/** Any resource's `state`: `RES_STATE_REQUESTED`, `_LOADING`, `_READY`,
+ * `_FAILED`, `_UNLOADED` — or 0 for an id that is not in the region.
+ *
+ * The same read `isRigged` does, one field over, and it is the one a guest that
+ * **builds** a mesh needs: `MeshBuilder` hands back an id before the mesh
+ * exists (the render thread makes it on its next pass), and a renderable
+ * submitted against a resource that is not `READY` yet is refused and skipped.
+ * A guest therefore waits for this to say `READY` exactly as a guest that loads
+ * a mesh waits for its job to say `DONE`.
+ */
+export function resourceState(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_STATE_OFFSET);
 }
 
 /**

@@ -43,6 +43,21 @@ struct LoadCompletion {
     int32_t error = 0; ///< 0 on success, else a negative errno
 };
 
+/// One procedural mesh waiting for the render thread: the arrays the guest
+/// wrote into `BUFFER_POOL`, its resource id, and the format it declared.
+///
+/// The id exists before the mesh does — `create_mesh` hands it back to the
+/// guest on the guest thread, and only the render thread may make an OGRE
+/// object — so a realisation that fails writes the resource record's
+/// `state`/`error` instead of returning to a caller that is long gone.
+struct ProceduralRequest {
+    uint32_t resource_id = 0;
+    uint32_t format = 0;
+    uint32_t topology = 0;
+    std::vector<uint8_t> vertices;
+    std::vector<uint8_t> indices;
+};
+
 /// One job's host-side state, mirroring the 64-byte `Job` record.
 ///
 /// A job's id is its slot index plus one — not a separate counter — because the
@@ -127,6 +142,16 @@ class Loader {
     /// the free list and the next job reuses it with a fresh id.
     int32_t job_release(uint32_t job_id);
 
+    /// Take a mesh the guest built in `BUFFER_POOL` and give it a resource id
+    /// now, realising it on the render thread later (chunk 5.5).
+    ///
+    /// Returns the resource id (1-based), `-EINVAL` for an empty array, or
+    /// `-ENOSPC` when the `RESOURCE` region's ceiling is reached. The bytes are
+    /// **copied**: the guest's `BUFFER_POOL` is guest memory, and the guest is
+    /// free to rewrite it the moment this returns.
+    int32_t queue_procedural_mesh(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
+                                 const uint8_t *indices, size_t index_bytes, uint32_t topology);
+
     // ── the render-thread face ───────────────────────────────────────────
 
     /// Realise everything the worker finished, on the render thread. Posts
@@ -183,6 +208,7 @@ class Loader {
     std::deque<uint32_t> free_slots_; ///< FIFO: slot indices are handed out in order
     std::deque<uint32_t> pending_slots_; ///< slots the worker should load
     std::deque<LoadCompletion> completions_;
+    std::deque<ProceduralRequest> procedural_; ///< guest-built meshes, for this thread's next pass
     std::vector<std::string> search_paths_;
     LoaderSink sink_;
     /// Resource ids are 1-based over the RESOURCE region, and **slot 1 belongs

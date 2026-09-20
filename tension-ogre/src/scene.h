@@ -58,6 +58,26 @@ constexpr uint32_t kBoneRecordBytes = 64;
 constexpr uint32_t kBoneTableOffset = kMotionRecordBytes * kMotionCapacity;
 constexpr uint32_t kBoneCapacity = kRenderableCapacity;
 
+/// The procedural-mesh window (chunk 5.5): past the motion table and the bone
+/// table, 512 KiB shared by the vertex and the index array one `create_mesh`
+/// call names. `wire.ts` derives the same start from the same two tables and
+/// pins it at 256 KiB; 512 KiB is ~43,000 vertices at 12 B, which is what makes
+/// a 16-bit index sufficient here rather than merely convenient.
+constexpr uint32_t kProceduralBase = kBoneTableOffset + kBoneRecordBytes * kBoneCapacity;
+constexpr uint32_t kProceduralCapacity = 512 * 1024;
+
+/// The vertex-element bits `create_mesh`'s `format` takes, in the order the
+/// adapter declares them: position, then normal, then uv. Position is the only
+/// element the renderer requires — the probe measured a constant-colour Unlit
+/// draw rendering identically with position alone and with all three.
+constexpr uint32_t kVfPosition = 1u << 0;
+constexpr uint32_t kVfNormal = 1u << 1;
+constexpr uint32_t kVfUv = 1u << 2;
+
+/// `create_mesh`'s topology: a triangle list. The only one this adapter
+/// declares; anything else is refused `-EINVAL` rather than guessed at.
+constexpr uint32_t kTopoTriangleList = 0;
+
 /// SCENE's internal split: nodes, then cameras, then lights, end to end.
 constexpr uint32_t kCameraTableOffset = kNodeCapacity * kNodeRecordBytes;
 constexpr uint32_t kLightTableOffset = kCameraTableOffset + kCameraCapacity * kCameraRecordBytes;

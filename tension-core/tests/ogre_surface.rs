@@ -2,7 +2,7 @@
 //!
 //! Everything here is about the *surface*: that the shared object loads, that
 //! `tension_adapter_v1` returns a well-formed vtable, and that `init` + `link`
-//! register exactly what the guest SDK expects — three imports under `ogre`,
+//! register exactly what the guest SDK expects — every import under `ogre`,
 //! one event source, one region declaration. No renderer runs and no guest
 //! exists: the render thread starts only when a *guest* calls `ogre::init`, so
 //! this test is display-free and OGRE-free, which is what lets it live in
@@ -357,8 +357,16 @@ fn test_ogre_adapter_surface() {
             verb_id: 11,
             flags: 0,
         },
+        Registered {
+            module: "ogre".into(),
+            name: "create_mesh".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 6,
+            verb_id: 12,
+            flags: 0,
+        },
     ];
-    assert_eq!(imports, expected, "the eleven imports of the SDK, and their flags");
+    assert_eq!(imports, expected, "the twelve imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(

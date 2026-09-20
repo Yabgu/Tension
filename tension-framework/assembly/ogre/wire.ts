@@ -580,6 +580,10 @@ export const RESOURCE_SIZE: u32 = 48;
 /** A `Resource` record's `seq`, in bytes from the record's start. */
 export const RESOURCE_SEQ_OFFSET: u32 = 40;
 
+/** A `Resource` record's `state` — `RES_STATE_*`, the field that says whether
+ * a resource can be used yet — in bytes from the record's start. */
+export const RESOURCE_STATE_OFFSET: u32 = 8;
+
 /** Its `flags` (bit 0 is `RES_RIGGED`) and its `size` (a rigged mesh's bone
  * count), in bytes from the record's start. */
 export const RESOURCE_FLAGS_OFFSET: u32 = 12;
@@ -643,6 +647,45 @@ export const BONE_CAPACITY: u32 = 2048;
 
 /** Where the bone table starts, in bytes from `BUFFER_POOL`'s first byte. */
 export const BONE_TABLE_OFFSET: u32 = MOTION_SIZE * MOTION_CAPACITY;
+
+// --- the procedural-mesh window (chunk 5.5) ---------------------------------
+//
+// `ogre::create_mesh` reads vertex and index bytes the guest wrote into
+// `BUFFER_POOL` past the bone table. Both arrays live in this window — one
+// after the other, in whatever order the guest chooses, as long as each lies
+// inside it and they do not overlap — and the window's *size* is what limits a
+// mesh built this way: 512 KiB is ~43,000 vertices at 12 bytes each, so a
+// 16-bit index reaches every vertex such a mesh can hold. That is why the verb
+// takes no index width.
+
+/** Where the procedural-mesh window starts, in bytes from `BUFFER_POOL`'s
+ * first byte — past the motion table and the bone table. */
+export const PROCEDURAL_BASE: u32 = BONE_TABLE_OFFSET + BONE_SIZE * BONE_CAPACITY;
+
+/** How many bytes of `BUFFER_POOL` the window holds, shared by the vertex and
+ * index arrays a single `create_mesh` call names. */
+export const PROCEDURAL_CAPACITY: u32 = 512 * 1024;
+
+// --- vertex formats and topology (chunk 5.5) --------------------------------
+//
+// `format` is a flags word rather than an enum: a vertex is position, then
+// optionally a normal, then optionally a uv, interleaved in that order, and the
+// adapter declares exactly the elements the bits name. Position is the only
+// element the renderer requires — a constant-colour Unlit draw renders the same
+// pixels with position alone as with all three (probe: 10,368 px either way).
+// A textured datablock is where `VF_UV` starts to matter; normals are carried
+// because a lit path needs them, not because this one does.
+
+/** `F32x3` position bytes. Required — a format without it is refused. */
+export const VF_POSITION: u32 = 1 << 0;
+/** `F32x3` normal bytes, after the position. */
+export const VF_NORMAL: u32 = 1 << 1;
+/** `F32x2` uv bytes, after the position (and the normal). */
+export const VF_UV: u32 = 1 << 2;
+
+/** `create_mesh`'s `topology`: a triangle list, the only one the adapter
+ * declares. Anything else is refused with `-EINVAL`. */
+export const TOPO_TRIANGLE_LIST: u32 = 0;
 
 // --- the offset check ------------------------------------------------------
 
@@ -738,6 +781,16 @@ function ogreWireOffsetsProblem(): string | null {
   // build that forgets to call them still catches a moved field.
   const motion = ogreMotionOffsetsProblem();
   if (motion != null) return motion;
+  // The procedural window's start is derived here and written as a literal in
+  // the adapter (DESIGN.md §5.1 pins it at 256 KiB); a derivation that drifts
+  // from that number would put the guest's bytes where the adapter does not
+  // look, so the two are tied together by this.
+  if (PROCEDURAL_BASE != 256 * 1024) return "PROCEDURAL_BASE";
+  if (PROCEDURAL_CAPACITY == 0) return "PROCEDURAL_CAPACITY";
+  // The format bits are a contract with the adapter's element table: the three
+  // the adapter declares, in the order it declares them.
+  if (VF_POSITION != 1 || VF_NORMAL != 2 || VF_UV != 4) return "VF_ bits";
+  if (TOPO_TRIANGLE_LIST != 0) return "TOPO_TRIANGLE_LIST";
   const bone = ogreBoneOffsetsProblem();
   if (bone != null) return bone;
 

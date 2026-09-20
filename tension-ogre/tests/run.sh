@@ -69,6 +69,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-render-check.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-render-check.wasm" >/dev/null ||
     fail "guest-render-check.ts did not compile"
+"$asc" "$here/guest-procedural.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-procedural.wasm" >/dev/null ||
+    fail "guest-procedural.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -195,6 +198,19 @@ render_check_case() {
     echo "$stdout" | grep -E '^(unlit|pbs):' | sed 's/^/== '"$name"': /' || true
 }
 render_check_case render-check --renderer=null
+
+# Chunk 5.5: a mesh built out of the guest's own memory, with no file involved.
+procedural_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-procedural.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|5/5 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^triangle:' | sed 's/^/== '"$name"': /' || true
+}
+procedural_case procedural --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -218,6 +234,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         skinning_case skinning-gl3plus --renderer=gl3plus
         # And the tripwire, on the same window: both material kinds, in colour.
         render_check_case render-check-gl3plus --renderer=gl3plus
+        # Chunk 5.5: the triangle the guest built, on a framebuffer.
+        procedural_case procedural-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"
