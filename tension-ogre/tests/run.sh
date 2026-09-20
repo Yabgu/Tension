@@ -57,6 +57,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-triangle.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-triangle.wasm" >/dev/null ||
     fail "guest-triangle.ts did not compile"
+"$asc" "$here/guest-motion.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-motion.wasm" >/dev/null ||
+    fail "guest-motion.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -122,6 +125,22 @@ triangle_case() {
     echo "$stdout" | grep '^pixels: ' | sed 's/^/== '"$name"': /' || true
 }
 triangle_case triangle --renderer=null
+
+# The chunk-4 acid test: a solver steps once per renderer frame and drives the
+# bodies through one submit_motion call per frame. Structural under NULL; the
+# pixels and the throughput report need GL3+.
+motion_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-motion.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|10/10 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    # The measured pixels and the batch's own numbers, for the round's report.
+    echo "$stdout" | grep -E '^(baseline|final|report):' | sed 's/^/== '"$name"': /' || true
+}
+motion_case motion --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -135,6 +154,10 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         jobs_case jobs-gl3plus --renderer=gl3plus
         # And the visual tier: the same fixture with a framebuffer to read.
         triangle_case triangle-gl3plus --renderer=gl3plus
+        # Chunk 4: one body for the pixel clauses, then sixty-four for the
+        # batch's own numbers — the same assertions at both sizes.
+        motion_case motion-gl3plus --renderer=gl3plus --bodies=1
+        motion_case motion-throughput --renderer=gl3plus --bodies=64
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

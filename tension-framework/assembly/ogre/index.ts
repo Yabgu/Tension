@@ -40,6 +40,7 @@ import {
   RENDERABLE_COUNT,
   MOTION_SIZE,
   MOTION_CAPACITY,
+  RESOURCE_SEQ_OFFSET,
 } from "./wire";
 import {
   REGION_JOB,
@@ -47,11 +48,13 @@ import {
   REGION_MATERIAL,
   REGION_RENDERABLE,
   REGION_BUFFER_POOL,
+  REGION_RESOURCE,
 } from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
 import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
 
 export * from "./wire";
+export * from "./motion";
 
 /** `ogre::init(cfg)`: 0, or the errno the adapter refused with. */
 @external("ogre", "init")
@@ -367,12 +370,21 @@ export function checkSubmissionRegions(): bool {
 }
 
 /**
- * Where the motion table starts: the first byte of `BUFFER_POOL`. Read from the
- * layout at runtime, never baked — the region's offset is the arena's business,
- * and this SDK only addresses it.
+ * The renderer's frame counter: how many frames the backend has drawn since it
+ * started.
+ *
+ * A plain read of the first `Resource` record's `seq`, which the adapter writes
+ * every publish — no verb call, no event, just the table the design calls the
+ * truth. A loop that wants to step something once per rendered frame watches
+ * this rather than a clock, which is what makes a solver-driven assertion
+ * compare against the renderer's own progress instead of against wall time.
  */
-export function getMotionBase(): usize {
-  return regionOffset(REGION_BUFFER_POOL);
+export function getResourceBase(): usize {
+  return regionOffset(REGION_RESOURCE);
+}
+
+export function frameCount(): u64 {
+  return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
 }
 
 /** `checkSubmissionRegions`, as an assertion that names what is short. */

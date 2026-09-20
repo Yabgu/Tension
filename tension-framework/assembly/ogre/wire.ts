@@ -426,6 +426,14 @@ export const BUFFER_USAGE_STATIC: u32 = 0;
 export const BUFFER_USAGE_DYNAMIC: u32 = 1;
 export const BUFFER_USAGE_STREAM: u32 = 2;
 
+/** One `Resource`, 48 bytes: what the session reports into `RESOURCE`. The
+ * renderer's own record is the region's first entry, and its `seq` is the
+ * frame counter `frameCount()` reads. */
+export const RESOURCE_SIZE: u32 = 48;
+
+/** A `Resource` record's `seq`, in bytes from the record's start. */
+export const RESOURCE_SEQ_OFFSET: u32 = 40;
+
 /** One `Job`, in bytes — the stride of the `JOB` region's table. */
 export const JOB_SIZE: u32 = 64;
 
@@ -481,6 +489,36 @@ export const MOTION_CAPACITY: u32 = 2048;
  * its width plus the trailing reserved words, because AS's `sizeof` does not
  * report these records the way the wire needs.
  */
+/**
+ * The motion record's offsets, on their own.
+ *
+ * Separate from `ogreWireOffsetsProblem` so a guest that uses `MotionBatch`
+ * can assert exactly what it depends on, by name, rather than relying on a
+ * larger check happening to include it. The layout is the point: the id pair,
+ * then the transform at the offsets `Renderable`'s inline one already uses.
+ */
+function ogreMotionOffsetsProblem(): string | null {
+  if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
+  if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
+  if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
+  if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
+  if (offsetof<MotionUpdate>("pad2") + 4 != 64) return "MotionUpdate size";
+  return null;
+}
+
+/** Whether this build's `MotionUpdate` matches the catalogue. */
+export function checkOgreMotionOffsets(): bool {
+  return ogreMotionOffsetsProblem() == null;
+}
+
+/** `checkOgreMotionOffsets`, as an assertion that names the field that moved. */
+export function assertOgreMotionOffsets(): void {
+  const problem = ogreMotionOffsetsProblem();
+  if (problem != null) {
+    assert(false, "the motion record's offsets do not match the catalogue: " + problem);
+  }
+}
+
 function ogreWireOffsetsProblem(): string | null {
   // Math: the small ones are pure width, and the two padded ones carry their
   // pad as a field so the container arithmetic below stays honest.
@@ -526,12 +564,10 @@ function ogreWireOffsetsProblem(): string | null {
   if (offsetof<Renderable>("scalePad") + 4 != 64) return "Renderable size";
   // The motion table's record: the id pair, then the transform at the offsets
   // Renderable's inline one uses. `pad0` is what makes the transform land on
-  // 16, and the record end at 64.
-  if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
-  if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
-  if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
-  if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
-  if (offsetof<MotionUpdate>("pad2") + 4 != 64) return "MotionUpdate size";
+  // 16, and the record end at 64. Checked by `ogreMotionOffsetsProblem` so a
+  // guest that uses `MotionBatch` can assert exactly what it depends on.
+  const motion_problem = ogreMotionOffsetsProblem();
+  if (motion_problem != null) return motion_problem;
   if (offsetof<Job>("priority") != 16) return "Job.priority";
   if (offsetof<Job>("progress") != 24) return "Job.progress";
   if (offsetof<Job>("seq") != 40) return "Job.seq";
