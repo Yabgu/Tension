@@ -523,8 +523,24 @@ fn main() -> anyhow::Result<()> {
     // linked and its arena is prepared before instantiation: the guest's data
     // segments land on a band the session already zeroed and canary-laid, which
     // is what makes `verify_post_instantiate` below a complete check.
-    let mut session = session::Session::create_from_module(&mut store, &module)?;
-    session.prepare_arena(&mut store)?;
+    //
+    // **For a guest that imports nothing from `session`, there is no session to
+    // create.** The arena is the session's, so a guest with no session import has
+    // no arena — and the pre-session examples (io, audio, ai, res, solver) are
+    // exactly that: they predate the session, define their own memory, and reach
+    // the host ABI through `get_export("memory")` like every other guest. The
+    // session's constructor requires a memory *import*, which is a rule about
+    // owning an arena; applying it to a guest with no session is the same scope
+    // error the start-section check had, so it is scoped the same way. A session
+    // guest is unaffected: the import is what identifies one.
+    let guest_is_session_guest = module.imports().any(|import| import.module() == "session");
+    let mut session = if guest_is_session_guest {
+        let mut session = session::Session::create_from_module(&mut store, &module)?;
+        session.prepare_arena(&mut store)?;
+        Some(session)
+    } else {
+        None
+    };
     let mut linker: Linker<HostState> = Linker::new(&engine);
 
     // tension::io ABI -----------------------------------------------------
@@ -860,14 +876,19 @@ fn main() -> anyhow::Result<()> {
     // toolchain emits `env::memory`; Tension documents `session::memory`), the
     // two verbs are registered, and the session is installed into the store —
     // the verbs reach it through `caller.data()`, so it must be there before the
-    // guest can run.
-    session.install(&mut store, &mut linker)?;
+    // guest can run. A guest with no session has none of that: it defines its own
+    // memory, imports neither name, and calls none of the verbs — and the verbs
+    // refuse cleanly if one does call them (`no session is installed`).
+    if let Some(session) = session.as_mut() {
+        session.install(&mut store, &mut linker)?;
+        // The verbs take the session out of the store, so the arena is also kept
+        // where it can be reached without it: `guest_write` during a publish
+        // hook, and the epoch's own writes, all need it while a verb holds the
+        // session.
+        store.data_mut().arena = Some(session.memory());
+    }
     session::link_session(&mut linker)?;
-    // The verbs take the session out of the store, so the arena is also kept
-    // where it can be reached without it: `guest_write` during a publish hook,
-    // and the epoch's own writes, all need it while a verb holds the session.
-    store.data_mut().arena = Some(session.memory());
-    store.data_mut().session = Some(session);
+    store.data_mut().session = session;
 
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
@@ -1093,10 +1114,12 @@ fn main() -> anyhow::Result<()> {
 ///   without the re-export the first `tension::io` call panics on an `expect`
 ///   and the process aborts — a load-time bail with the fix in it is strictly
 ///   better than that.
-/// - a module with a `start` section. The session verifies the arena between
-///   `instantiate` and `_start_game`; a start section would run guest code
-///   *before* that verification, which is exactly the window the check exists to
-///   protect.
+/// - a module with a `start` section **that imports the session**. The session
+///   verifies the arena between `instantiate` and `_start_game`; a start section
+///   would run guest code *before* that verification, which is exactly the window
+///   the check exists to protect. The scope is the rationale: a guest with no
+///   session import has no arena to verify, and the pre-session examples build
+///   with plain `asc`, which emits a start section by default (DESIGN.md §10).
 fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
     let mut imports_session = false;
     let mut imports_memory = false;
@@ -1138,7 +1161,15 @@ fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Resu
         }
     }
 
-    if declares_start_section(bytes) {
+    // The start-section check is **scoped to session guests**, and the scope is
+    // the rationale: the session verifies the arena between `instantiate` and
+    // `_start_game`, so a start section would run guest code inside the window
+    // that verification exists to protect. A guest with no session import has no
+    // arena and no verification — the pre-session examples (io, audio, ai, res,
+    // solver) predate the session entirely and build with plain `asc`, which
+    // emits a start section by default. Refusing them was the check reaching
+    // past its own reason: `imports_session` is already in hand two checks up.
+    if imports_session && declares_start_section(bytes) {
         anyhow::bail!(
             "{path} declares a `start` section, which runs guest code at instantiation — \
              before the session verifies the arena. Put that work at the top of `_start_game` \
@@ -1520,6 +1551,111 @@ mod adapter_cli_tests {
         assert!(
             text.contains("does not re-export it as `memory`")
                 && text.contains("(export \"memory\" (memory 0))"),
+            "unexpected diagnostic: {text}"
+        );
+    }
+
+    /// A minimal *binary* module with a `start` section.
+    ///
+    /// The section walk in `declares_start_section` reads the binary format, so a
+    /// `.wat` fixture cannot exercise it — the walk answers `false` for text, as
+    /// its own comment says. These bytes are therefore assembled here: the magic
+    /// and version, a type, a `() -> ()` function, and a start section naming it.
+    /// `session_import` adds an import from the `session` module plus the memory
+    /// import and re-export the neighbouring checks require, so each test trips
+    /// exactly the check it is about and nothing else.
+    fn module_with_start_section(session_import: bool) -> (Module, Vec<u8>) {
+        fn uleb(mut n: u32, out: &mut Vec<u8>) {
+            loop {
+                let byte = (n & 0x7f) as u8;
+                n >>= 7;
+                if n == 0 {
+                    out.push(byte);
+                    return;
+                }
+                out.push(byte | 0x80);
+            }
+        }
+        fn section(id: u8, payload: &[u8], out: &mut Vec<u8>) {
+            out.push(id);
+            uleb(payload.len() as u32, out);
+            out.extend_from_slice(payload);
+        }
+        fn name(text: &str, out: &mut Vec<u8>) {
+            uleb(text.len() as u32, out);
+            out.extend_from_slice(text.as_bytes());
+        }
+
+        let mut bytes = vec![0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+        // type 0: () -> ()
+        let mut types = vec![0x01];
+        types.extend_from_slice(&[0x60, 0x00, 0x00]);
+        section(1, &types, &mut bytes);
+
+        if session_import {
+            // env::memory (min 1), then session::open — a func, so the defined
+            // function's index is 1 and the start section names that.
+            let mut imports = vec![0x02];
+            name("env", &mut imports);
+            name("memory", &mut imports);
+            imports.extend_from_slice(&[0x02, 0x00, 0x01]);
+            name("session", &mut imports);
+            name("open", &mut imports);
+            imports.extend_from_slice(&[0x00, 0x00]);
+            section(2, &imports, &mut bytes);
+        }
+
+        // one defined function of type 0
+        section(3, &[0x01, 0x00], &mut bytes);
+
+        if session_import {
+            // the memory must be re-exported as `memory`, or the check above this
+            // one bails first with a different message
+            let mut exports = vec![0x01];
+            name("memory", &mut exports);
+            exports.extend_from_slice(&[0x02, 0x00]);
+            section(7, &exports, &mut bytes);
+        }
+
+        // start section: the defined function's index
+        let start_index: u32 = if session_import { 1 } else { 0 };
+        let mut start = Vec::new();
+        uleb(start_index, &mut start);
+        section(8, &start, &mut bytes);
+
+        // code: one empty body
+        section(10, &[0x01, 0x02, 0x00, 0x0b], &mut bytes);
+
+        let module = Module::new(&Engine::default(), &bytes).expect("the test module compiles");
+        (module, bytes)
+    }
+
+    /// The scope of the start-section check: a guest with no session import has
+    /// no arena for the session to verify, so a start section is its own business
+    /// — and it is the only shape the pre-session examples can build, because
+    /// plain `asc` emits one.
+    #[test]
+    fn test_start_section_allowed_for_non_session_guest() {
+        let (module, bytes) = module_with_start_section(false);
+        check_guest_module(&module, &bytes, "guest.wasm").expect(
+            "a non-session guest with a start section is not this check's case: there is no \
+             arena to verify between instantiation and `_start_game`",
+        );
+    }
+
+    /// And the case the check exists for, unchanged: a session guest that would
+    /// run guest code inside the arena-verification window is refused, in the
+    /// words the message has always used.
+    #[test]
+    fn test_start_section_refused_for_session_guest() {
+        let (module, bytes) = module_with_start_section(true);
+        let error = check_guest_module(&module, &bytes, "guest.wasm").expect_err("refused");
+        let text = error.to_string();
+        assert!(
+            text.contains("declares a `start` section")
+                && text.contains("before the session verifies the arena")
+                && text.contains("`_start_game`"),
             "unexpected diagnostic: {text}"
         );
     }

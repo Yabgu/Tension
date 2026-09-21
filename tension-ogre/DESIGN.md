@@ -1452,12 +1452,26 @@ violates the relation.
 Flag rules: `--importMemory`, `--memoryBase = max_arena_size`, page counts for
 `--initialMemory` / `--maximumMemory`, `--exportTable`, `--runtime stub`, and
 **`--exportStart __start`** — the last one learned by building. AssemblyScript
-0.28 emits a `start` *section* by default, and the load-time check refuses a
-module that has one, because a start section runs guest code at instantiation,
-before the session has verified the arena. `--exportStart` makes the runtime's
-initializer an export instead, and the host calls it at the safe point: see
-§6.3, where that is now part of the instantiation contract rather than an
-AssemblyScript workaround.
+0.28 emits a `start` *section* by default, and the load-time check refuses one —
+**in a session guest, which is what this pipeline builds**: a start section runs
+guest code at instantiation, before the session has verified the arena, and the
+session is the only thing there is to run ahead of. `--exportStart` makes the
+runtime's initializer an export instead, and the host calls it at the safe
+point: see §6.3, where that is now part of the instantiation contract rather
+than an AssemblyScript workaround.
+
+**The scope of that check is its rationale.** A guest that imports nothing from
+`session` has no arena and no verification, so a start section is its own
+business — and that is exactly what the pre-session examples are (io, audio, ai,
+res, solver): they predate the session and build with plain `asc`, which emits a
+start section by default. Refusing them was the check reaching past its own
+reason, and the fix is one condition: `imports_session && declares_start_section`.
+The same scoping applies one line earlier in the load path, for the same reason:
+the session's constructor requires a memory *import* because a session owns the
+arena, so the session is created **only for a guest that imports it** — a
+non-session guest defines its own memory and reaches the host ABI through
+`get_export("memory")` like every other guest, and the three verbs refuse
+cleanly (`no session is installed`) if such a guest calls one.
 **`--noExportMemory` is forbidden** (F2). `--lowMemoryLimit` is forbidden (it
 errors above its limit, and a multi-MiB base always would).
 **`--zeroFilledMemory` stays unset in chunk 1.** Its safety condition is the
@@ -1486,8 +1500,13 @@ Three cases, and only one of them is inherently silent.
 Load time, before instantiation, three checks that read only the module: a
 module importing `session::*` without a memory import is refused; a module
 importing a memory without exporting one named `memory` is refused (F2); a
-module with a wasm `start` section is refused, because a start section runs
-guest code during instantiation, before the session can validate the arena.
+module with a wasm `start` section **and a session import** is refused, because
+a start section runs guest code during instantiation, before the session can
+validate the arena — a guest with no session import has no arena to validate
+and keeps its start section, which is the pre-session examples' shape and the
+load-time check's own reason applied to itself (the scope landed in the round
+after chunk 8's; before it, the check refused every example in `examples/` that
+predates the session).
 All three are `anyhow::bail!`, the precedent being `main.rs`'s
 `"game.wasm did not export \`_start_game\` or \`_start\`"`.
 
