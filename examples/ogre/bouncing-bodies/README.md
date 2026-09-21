@@ -18,7 +18,8 @@ What the physics honestly is:
   phase.
 - **one impulse pass per contact.** No iteration and no stacking solver, so a
   tall pile would sink and jitter — which is why this is a box of bodies and not
-  a pyramid, and why sleeping is on the design's future-work list.
+  a pyramid. What keeps the pile still is **sleeping**: a body that has stopped
+  moving is deactivated, and the pile ends at zero rather than creeping.
 - **a positional bias, not projection.** Penetration is corrected by a velocity
   term, which leaves a few millimetres of overlap at rest — measured, not
   assumed.
@@ -44,15 +45,16 @@ opposite default: CI has no display.)
 `./run.sh` builds what it can (the OGRE adapter, the guest, its dependencies)
 and needs `tension-core` already built — it says so if it is missing.
 
-Both modes print a status line every sixty frames, and a summary at the end:
+Both modes print a status line every sixty frames, and a summary at the end.
+The run ends when the last body sleeps — or at the frame cap, if it never does:
 
 ```
-frame 60   bodies 64  rest-count 28  max|v| 3.68  contacts 29
-frame 120  bodies 64  rest-count 42  max|v| 3.35  contacts 56
-...
-simulated 64 bodies, 54.5 contacts/frame, K=4 sub-steps
-max|v| 0.27, kinetic energy 0.068
-rendered 304 frames, 223192 non-background pixels
+frame 60   bodies 64  asleep 16/64  max|v| 2.34  contacts 62
+frame 180  bodies 64  asleep 58/64  max|v| 1.09  contacts 54
+frame 240  bodies 64  asleep 59/64  max|v| 0.02  contacts 49
+simulated 64 bodies for 287 frames, 44.9 contacts/frame, K=4 sub-steps
+asleep 64/64, max|v| 0.0, kinetic energy 0.0
+rendered 291 frames, 223096 non-background pixels
 ```
 
 The numbers are one run's: the loop is paced by the frames that actually
@@ -70,6 +72,13 @@ sub-step timing.
 - **One call per frame, however many bodies.** `MotionBatch` writes the table
   and `commit()` names it once; the bodies' poses travel through shared memory,
   not through a verb each.
+- **Sleeping is per body, and its threshold is a trade.** A body sleeps after
+  thirty frames whose average speed is below 0.1 m/s. The number is grounded: the
+  pile's creep measured 0.057 m/s, so a threshold at 0.05 would sleep nothing —
+  and 0.1 means a body genuinely travelling at 0.09 m/s sleeps too, which is the
+  trade. The signal is displacement per frame rather than velocity, because a
+  resting body's *velocity* carries the positional bias it was last pushed out
+  by (~0.14 m/s at a 4 mm penetration) while its position does not move at all.
 - **The state's layout is not interleaved.** It is Verlet's `[q, v]`: every
   body's position, then every body's velocity. The layer's accessors are the only
   place that is written down, and a guest that reads the raw vector has to know

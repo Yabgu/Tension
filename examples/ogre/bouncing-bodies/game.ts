@@ -190,25 +190,25 @@ export function _start_game(): void {
     // was written to print (the 6a probe learned this the same way).
     if (frame >= next_report) {
       next_report += 60;
-      let at_rest = 0;
-      for (let i = 0; i < bodies; i++) {
-        const vx = world!.bodies().vel(i, 0), vy = world!.bodies().vel(i, 1),
-              vz = world!.bodies().vel(i, 2);
-        if (Math.sqrt(vx * vx + vy * vy + vz * vz) < REST_SPEED) at_rest += 1;
-      }
-      print("frame " + frame.toString() + "  bodies " + bodies.toString() + "  rest-count " +
-            at_rest.toString() + "  max|v| " + world!.maxSpeed().toString() +
-            "  contacts " + contacts_this_frame.toString());
+      print("frame " + frame.toString() + "  bodies " + bodies.toString() + "  asleep " +
+            world!.asleepCount().toString() + "/" + bodies.toString() + "  max|v| " +
+            world!.maxSpeed().toString() + "  contacts " + contacts_this_frame.toString());
     }
-    if (frame > 60 && world!.allAtRest(REST_SPEED)) break; // settled, and not before it moved
+    // The loop ends when the pile has stopped — every body asleep — rather than
+    // at a frame count: "runs until it settles" is the honest condition, and the
+    // frame cap above is the backstop that keeps "never settles" from being
+    // "runs forever". Sleeping is per body, so the count climbs as bodies stop
+    // and the last one decides when the picture is finished.
+    if (world!.asleepCount() == bodies) break;
   }
 
   const contacts_per_frame = contacts_measured > 0
     ? <f64>total_contacts / <f64>contacts_measured : 0.0;
-  print("simulated " + bodies.toString() + " bodies, " + contacts_per_frame.toString() +
-        " contacts/frame, K=" + world_config.substeps.toString() + " sub-steps");
-  print("max|v| " + world!.maxSpeed().toString() + ", kinetic energy " +
-        world!.kineticEnergy().toString());
+  print("simulated " + bodies.toString() + " bodies for " + frame.toString() + " frames, " +
+        contacts_per_frame.toString() + " contacts/frame, K=" +
+        world_config.substeps.toString() + " sub-steps");
+  print("asleep " + world!.asleepCount().toString() + "/" + bodies.toString() + ", max|v| " +
+        world!.maxSpeed().toString() + ", kinetic energy " + world!.kineticEnergy().toString());
 
   // One line about the picture, the way the other examples end: a box of bodies
   // that simulates correctly and draws nothing is a bug this line would catch.
