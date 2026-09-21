@@ -1782,6 +1782,20 @@ chunk 1 work, and each is additive:
   with no error anywhere — the probe measured 1.5708 rad where 1.0 was asked for
   (§5.1). And quaternion state writes are as safe as linear ones: written back
   verbatim, the spin is bit-identical.
+- **Rolling resistance, and the two things this model cannot stop.** A sphere
+  that reaches rolling has no slip velocity at its contact, so friction has
+  nothing to act on and it rolls forever (measured: 0.128 m/s held for a hundred
+  frames after a wall bounce); a sphere *spinning about the vertical axis* has no
+  slip at a contact directly below its centre either, so a top on the floor turns
+  at 1.0000 rad/s after two seconds. Both are correct for the model as written
+  and both are the reason the angular acid test's "every body asleep" is a clause
+  about the pile rather than about everything in the box (chunk 8c2's fixture,
+  clause 7). The fix is a rolling-resistance term — a small angular impulse
+  opposing ω at a resting contact, or a velocity threshold below which a resting
+  body's spin is damped — and it belongs beside **a wheel or capsule collider**,
+  since a wheel's useful axis is arbitrary and the diagonal inertia this layer
+  applies in world axes is not enough for it: a wheel wants a full tensor and a
+  body-frame transform, which is where the full-tensor item above lands too.
 - **The solver interface has a gap worth closing.** `create` accepts an odd
   `dim` and the *step* is what refuses it (`-EINVAL`), because the workspace-size
   query deliberately does not check evenness — its comment says so, and the probe
@@ -2043,6 +2057,31 @@ single session and asserts its own results, printing a pass/fail summary line �
   naive layout is pinned as the counter-example: 1.5708 rad and `|q| = 1.41421`
   for a body that should read 1.0 rad and 1.00000 (§5.1). The physics is
   guest-side, as in chunks 6 and 7: no verb, no wire, no session change;
+- *tumbling rigid bodies (chunk 8)*: sixteen bodies under the angular model —
+  fourteen in a pile, one given a horizontal 1 m/s at floor level, one dropped
+  with 1 rad/s about y — for 120 rendered frames at K = 4. **Structural**: the
+  pile is asleep at frame 120 (14 of 14; the other two are clause 7's); every
+  orientation is a unit quaternion within **1e-6**; the settled pile's total
+  angular momentum is **0.0** against a 1e-3 ceiling; **the clause a linear-only
+  model fails** — the roller turns **456°** over the run, and at the frame its
+  sliding stops (frame 7) `v/v₀ = 0.7093` against the closed form's 5/7 = 0.7143
+  (**0.7 %** inside the 2 % band) with `|ω·r + v| = 0.0085` (**1.2 %** of v,
+  inside the 5 % band, against the linear model's 0.0 rad of turn and a slide to
+  a halt); the spinner turns **114.6°** (the clause asks 30°) while moving
+  **0.253 m** (the ceiling is 0.5 m) — the measurement chunk 8c1's sleep signal
+  exists for, since before it the spinner slept at frame 30 with half its turn
+  left. **Clause 7 is the model's boundary asserted rather than assumed**: the
+  roller is still rolling (`|ω·r + v| = 0.0016` at frame 120) and the spinner is
+  still at 1.0000 rad/s, because neither has slip left for friction — a rolling
+  sphere and a vertical-axis top are the two things this model cannot stop, and
+  a model that gains rolling resistance must fail this clause and say so.
+  **Visual** (GL3+): the bodies are drawn within the projected band (113 px
+  against a 345 px ceiling), **no pixel below the floor's row** (142 ≤ 143 —
+  this is what caught the cube mesh's corners dipping below the sphere collider,
+  which is why the fixture draws `Smiley.mesh` and the example, which draws
+  cubes, documents the mismatch instead), and the flip fraction is 0.24 while the
+  bodies move against 0.0 once the pile has slept. The physics is guest-side: no
+  verb, no wire, no session change;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
