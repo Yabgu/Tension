@@ -221,7 +221,7 @@ physics_case() {
     shift
     stdout=$("$core" --capability "$dso" "$out/guest-physics.wasm" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
-    echo "$stdout" | grep -qE "^ACID (6/6 passed \(structural, renderer=null\)|9/9 passed)" ||
+    echo "$stdout" | grep -qE "^ACID (9/9 passed \(structural, renderer=null\)|12/12 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
     echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
     echo "$stdout" | grep -E '^(2 ok|7 ok|9 ok):' | sed 's/^/== '"$name"': /' || true

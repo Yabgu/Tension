@@ -897,6 +897,59 @@ integrators (the solver owns them), no joints, no CCD, no iteration, and no
 broad-phase structure beyond what a probe shows is needed — the same shape
 `MeshBuilder` and `BoneBatch` arrived in: an example earns it first.
 
+**Sleeping is a measured policy, and its signal is displacement rather than
+velocity.** A body sleeps when the average speed over a 30-frame window is below
+`sleepSpeed` (0.1 m/s). Three measurements shaped that sentence, and all three
+are recorded because each of them was a failing test first:
+
+- The threshold is 0.1 because chunk 6's probe measured the pile's creep at
+  **0.057 m/s** — a threshold at 0.05 would sleep nothing, and lowering it is
+  not a tuning knob.
+- The signal is the **displacement per frame**, not the stored velocity: a
+  resting body's velocity carries the positional bias it was last pushed out
+  by, which at a 4 mm penetration is ~0.14 m/s — above any sensible threshold,
+  while the body goes nowhere at all. With the velocity as the signal, no body
+  in the acid test's pile ever slept.
+- The decision is the average over a **fixed** window, not a consecutive-frame
+  count: an instantaneous signal reset the counter every 15-23 frames, and a
+  window that a spike could reset never grew past 27, because a short window is
+a noisy one and its average crosses the threshold. A body that is genuinely
+  moving still never sleeps — its average over the whole window is its speed.
+
+**Sleeping lives in the derivative mask, and it is not an optimization.** One
+solver integrates the whole state vector; there is no per-body stepping and this
+layer does not add one. The World zeroes a body's velocity when it sleeps and
+hands the derivative a mask, which writes zeros in both halves for a sleeping
+body — no gravity, no position derivative. Verlet then leaves the position
+bit-for-bit unchanged, which is what makes the acid test's "the state at 240
+equals the state at 210" an equality rather than a tolerance. The mask is module
+state, like gravity: set before a step, cleared after, constant within one. The
+solver still visits every slot, so sleeping is a **numerical and visual**
+feature — the pile stops — and the only work it saves is the pair loop's
+"both asleep" skip: one array read per pair, per sub-step.
+
+**The wake list, and the one intentional asymmetry.** A sleeping body wakes when
+an awake body touches it (in `resolve`, before the impulse is applied), or when
+the caller says so: `wake`, `wakeAll`, `place`, `setVelocity`, `setParams`. Raw
+writes through `Body`'s accessors do **not** wake — they are views over the
+state vector and cannot be observed — and that is the one place this API can
+surprise a caller, so it is stated on the class.
+
+**The zeroing has to reach the solver.** The sleep decision runs at the end of a
+`step` call, after the loop's last `set_state`; without one more write-back the
+zeroed velocities never leave the buffer. Measured, before that write existed:
+every body asleep, kinetic energy 0.0044 instead of 0 — sleepers holding the
+last velocity they had, frozen but not zero.
+
+**The motion wire has carried a rotation since chunk 4.** `MotionUpdate`'s
+transform is a whole one — position at 16, rotation at 32, scale at 48 — and the
+adapter applies it (`node->setOrientation(Ogre::Quaternion(record->rw, rx, ry,
+rz))` in the apply path). That is why a guest frame naming a rotation has always
+worked, and why chunk 8's angular dynamics is entirely guest-side: the rendering
+path already knows about orientation, and the only things missing are a
+`MotionBatch` writer and the dynamics themselves. No adapter, wire or session
+change is implied by tumbling bodies.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -1531,21 +1584,30 @@ chunk 1 work, and each is additive:
   a **dynamic** vertex buffer for a mesh whose *positions* change per frame —
   which is a different mechanism from `MotionBatch`, because a motion entry
   moves an object and this would move its vertices.
-- **Physics beyond chunk 6.** **Sleeping and deactivation come first**, and the
-  measurement is why: a settled pile keeps creeping — 0.057 m/s at frame 60 at
-  K = 4, and no sub-step count the probe ran reached the ideal 0.05 — because a
-  single impulse pass with a positional bias never quite stops. Sleeping is the
-  cheap answer, and it is also what a game needs before a pile can sit still on
-  screen. After that, angular dynamics with an inertia tensor (four more state
-  slots per body, 26 with Verlet's split padded, which caps N at 315); joints
-  (hinges, sliders); continuous collision detection, which matters the day a
-  body moves faster than its own radius per sub-step; non-sphere collider pairs
-  (boxes, capsules) and with them a real narrow phase; a uniform grid or a BVH
-  for detection beyond ~256 bodies (the measured crossover: brute force is
-  1.17 ms per pass at N = 256 and 18.3 ms at 1024, so chunk 6 keeps brute force
-  and the state cap is the binding limit anyway); and the solver-side constraint
-  channel (`spook`), which stays deferred and is the one item here that is the
-  solver's work rather than the guest's.
+- **Physics beyond chunk 6.** Angular dynamics with an inertia tensor is the
+  next capability, and its cost is known before it is written: four more state
+  slots per body (a quaternion) plus angular velocity puts the state at 14 per
+  body — Verlet's halves must match, and 7 + 6 does not split — which caps N at
+  **585** on the 64 KiB buffer convention, against 1365 for the linear model.
+  After that, in the order the demand is likely to arrive: joints (hinges,
+  sliders); continuous collision detection, which matters the day a body moves
+  faster than its own radius per sub-step; non-sphere collider pairs (boxes,
+  capsules) and with them a real narrow phase; a uniform grid or a BVH for
+  detection beyond ~256 bodies (brute force is 1.17 ms per pass at N = 256 and
+  18.3 ms at 1024, so the state cap is what binds chunk 6's sizes); and the
+  solver-side constraint channel (`spook`), which stays deferred and is the one
+  item here that is the solver's work rather than the guest's.
+
+  **Sleeping left this list in chunk 7**, and what it bought is worth keeping in
+  view: the pile's residual creep is gone, the example exits when the last body
+  sleeps instead of at a frame count, and the acid test's terminal-state clauses
+  are equalities (kinetic energy exactly 0, the state bit-for-bit unchanged over
+  thirty frames) rather than thresholds. What is still absent is what sleeping
+  usually comes with in a mature engine — island detection (a pile sleeping as
+  one decision rather than N), a wake radius for bodies that move near a sleeper
+  without touching it, and `setParams`-driven wake propagation to neighbours.
+  Each is a §12-sized round of its own, and none of them is needed for the
+  behaviour the acid test now asserts.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.
@@ -1755,6 +1817,19 @@ single session and asserts its own results, printing a pass/fail summary line �
   chunk 6a's P1b and pinned here so a later change cannot take it away. The
   physics is entirely guest-side (§5.1): this clause is about the model, not
   about the adapter;
+- *deactivation (chunk 7)*: the same pile, run to 240 frames — four times the
+  horizon above, because sleeping needs a window and then some. Assert: every
+  body is asleep (`asleepCount() == M`); the kinetic energy is **exactly `0.0`**,
+  not below a threshold, because every velocity was zeroed and the derivative
+  keeps them zero; and the state vector is **bit-for-bit** the one from thirty
+  frames earlier — all 96 components for M = 16, which is the clause that tells
+  "asleep" from "creeping slowly" and the one chunk 6, with its measured 0.057
+  m/s creep, could not make. The visual tier's late-frame flip fraction becomes
+  exactly `0.0` rather than ≈ 0, and the example exits when the last body sleeps
+  rather than at a frame count. The measurements behind the policy — the 0.057
+  m/s creep, the ~0.14 m/s bias in a resting body's velocity, the counters that
+  reset at 15-23 and then at 27 — are §5.1's, and each of them was a failing
+  test before it was a paragraph;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is

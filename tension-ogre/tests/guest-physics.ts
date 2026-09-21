@@ -33,7 +33,20 @@
 //   8. nothing is under the floor on screen: every body's lowest pixel is above
 //      the floor's image at that body's own position
 //   9. settled, not merely still: the flip fraction between two early frames is
-//      clearly non-zero and between two late frames is ≈ 0
+//      clearly non-zero and between two late frames is exactly 0
+//
+// and, with sleeping (chunk 7):
+//
+//  10. after 240 frames every body is asleep
+//  11. the kinetic energy is exactly 0.0 — the strong form, because every
+//      velocity was zeroed rather than merely damped
+//  12. the state vector at frame 240 is bit-for-bit the one at frame 210: the
+//      clause that tells "asleep" from "creeping slowly", which chunk 6 (with
+//      its measured 0.057 m/s creep) could not make
+//
+// The clause numbers are identities, not a running order: the structural tail
+// (10-12) is measured before the visual tier's (7-9) because the pile has to
+// finish settling before there is a picture to assert anything about.
 
 import { arg, argCount, print } from "../../tension-framework/assembly/io";
 import { ConfigBuilder, RuntimeSession, makeCallbacks } from "../../tension-framework/assembly/runtime";
@@ -252,6 +265,50 @@ function apex_reached(writes: bool): f64 {
 
 // ── the run ──────────────────────────────────────────────────────────────
 
+let frame_now: i32 = 0;
+let last_frame: u64 = 0;
+let early_a: ArrayBuffer | null = null, early_b: ArrayBuffer | null = null;
+let late_a: ArrayBuffer | null = null, late_b: ArrayBuffer | null = null;
+
+/// Advance to `target`, one rendered frame at a time — the guest's loop is paced
+/// by the renderer, so "advance to frame N" is a wait-and-step loop — capturing
+/// the frames the flip clauses need on the way past.
+function advance_to(world: World, batch: ogre.MotionBatch | null, target: i32): void {
+  while (frame_now < target) {
+    RuntimeSession.wait(16);
+    const now = ogre.frameCount();
+    const elapsed: i32 = <i32>(now - last_frame);
+    if (elapsed == 0) continue;
+    const advance: i32 = elapsed > 2 ? 2 : elapsed; // clamped: no avalanche
+    last_frame = now;
+    frame_now += advance;
+    if (world.step(<f64>advance * DT) != 0) {
+      fail("world.step refused at frame " + frame_now.toString());
+    }
+    if (batch != null) {
+      world.pose(batch);
+      if (batch.commit() != BODIES) fail("submit_motion refused the batch");
+      if (frame_now >= 10 && early_a == null) early_a = grab();
+      if (frame_now >= 20 && early_b == null) early_b = grab();
+    }
+  }
+}
+
+/// The six state components of every body, for the bit-for-bit clause. Read
+/// through the accessors like everything else: the layout is not this file's
+/// business.
+function snapshot(world: World, out: Float64Array): void {
+  const body = world.bodies();
+  for (let i = 0; i < BODIES; i++) {
+    out[i * 6 + 0] = body.pos(i, 0);
+    out[i * 6 + 1] = body.pos(i, 1);
+    out[i * 6 + 2] = body.pos(i, 2);
+    out[i * 6 + 3] = body.vel(i, 0);
+    out[i * 6 + 4] = body.vel(i, 1);
+    out[i * 6 + 5] = body.vel(i, 2);
+  }
+}
+
 export function _start_game(): void {
   let renderer = "null";
   for (let i: i32 = 0; i < argCount(); i++) {
@@ -259,7 +316,7 @@ export function _start_game(): void {
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
-  total = gl3plus ? 9 : 6;
+  total = gl3plus ? 12 : 9;
 
   const callbacks = makeCallbacks(null, null);
   assert(RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) == 0,
@@ -361,29 +418,11 @@ export function _start_game(): void {
   // ── clause 1: sixty frames, four sub-steps each ──────────────────────
   clause = 1;
   const batch = gl3plus ? new ogre.MotionBatch() : null;
-  let last = ogre.frameCount(), frame = 0;
-  let early_a: ArrayBuffer | null = null, early_b: ArrayBuffer | null = null;
-  let late_a: ArrayBuffer | null = null, late_b: ArrayBuffer | null = null;
-  while (frame < FRAMES) {
-    RuntimeSession.wait(16);
-    const now = ogre.frameCount();
-    const elapsed: i32 = <i32>(now - last);
-    if (elapsed == 0) continue;
-    const advance: i32 = elapsed > 2 ? 2 : elapsed; // clamped: no avalanche
-    last = now;
-    frame += advance;
-    if (world!.step(<f64>advance * DT) != 0) fail("world.step refused at frame " + frame.toString());
-    if (gl3plus) {
-      world!.pose(batch!);
-      if (batch!.commit() != BODIES) fail("submit_motion refused the batch");
-      if (frame >= 10 && early_a == null) early_a = grab();
-      if (frame >= 20 && early_b == null) early_b = grab();
-      if (frame >= 55 && late_a == null) late_a = grab();
-    }
-  }
+  last_frame = ogre.frameCount();
+  advance_to(world!, batch, FRAMES);
   world!.readState();
-  print("1 ok: 60 frames, " + BODIES.toString() + " bodies, " +
-        (FRAMES * 4).toString() + " sub-steps");
+  print("1 ok: " + frame_now.toString() + " frames, " + BODIES.toString() + " bodies, " +
+        (frame_now * 4).toString() + " sub-steps");
 
   // ── clauses 2-5: the state at frame 60 ───────────────────────────────
   clause = 2;
@@ -440,6 +479,41 @@ export function _start_game(): void {
   print("6 ok: apex " + apex_open.toString() + " open / " + apex_written.toString() +
         " written, delta " + (apex_delta * 100.0).toString() + " %");
 
+  // ── clause 10: the pile sleeps ───────────────────────────────────────
+  clause = 10;
+  advance_to(world!, batch, 210);
+  const before = new Float64Array(BODIES * 6);
+  snapshot(world!, before);
+  advance_to(world!, batch, 240);
+  world!.readState();
+  const asleep = world!.asleepCount();
+  check(asleep == BODIES,
+        "only " + asleep.toString() + " of " + BODIES.toString() +
+        " bodies are asleep at frame 240");
+  print("10 ok: " + asleep.toString() + "/" + BODIES.toString() + " asleep at frame 240");
+
+  clause = 11;
+  const ke_rest = world!.kineticEnergy();
+  check(ke_rest == 0.0, "kinetic energy at rest is " + ke_rest.toString() + ", not exactly 0");
+  print("11 ok: kinetic energy exactly " + ke_rest.toString());
+
+  clause = 12;
+  const after = new Float64Array(BODIES * 6);
+  snapshot(world!, after);
+  let moved = -1;
+  for (let i = 0; i < before.length; i++) {
+    if (before[i] != after[i]) {
+      moved = i;
+      break;
+    }
+  }
+  if (moved >= 0) {
+    fail("state component " + moved.toString() + " changed between frames 210 and 240: " +
+         before[moved].toString() + " -> " + after[moved].toString());
+  }
+  print("12 ok: all " + before.length.toString() +
+        " state components bit-for-bit identical at frames 210 and 240");
+
   if (!gl3plus) {
     print("ACID " + total.toString() + "/" + total.toString() +
           " passed (structural, renderer=null)");
@@ -495,13 +569,17 @@ export function _start_game(): void {
         (<i32>floor_row).toString());
 
   clause = 9;
+  late_a = grab(); // after the pile slept: two frames of a still picture
+  RuntimeSession.wait(16);
+  late_b = grab();
   check(early_a != null && early_b != null, "the early frames were not captured");
+  check(late_a != null && late_b != null, "the late frames were not captured");
   const moving = flip_fraction(early_a!, early_b!);
   const resting = flip_fraction(late_a!, late_b!);
   check(moving > MOVING_FLIP_FLOOR,
         "two frames while the bodies were falling flipped only " + moving.toString());
-  check(resting < RESTING_FLIP_CEILING,
-        "two frames after the pile settled flipped " + resting.toString());
+  check(resting == 0.0,
+        "two frames after the pile slept flipped " + resting.toString() + ", not exactly 0");
   print("9 ok: flip " + moving.toString() + " moving, " + resting.toString() + " at rest");
 
   print("ACID " + total.toString() + "/" + total.toString() + " passed");

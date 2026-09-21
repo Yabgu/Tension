@@ -76,8 +76,10 @@ fn run(renderer: &str) -> std::process::Output {
         .expect("the interpreter runs")
 }
 
-/// The structural tier: the world runs, and the state at frame 60 is finite,
-/// at rest, above the floor, non-overlapping, and nearly out of energy.
+/// The structural tier: the world runs, the state at frame 60 is finite, at
+/// rest, above the floor, non-overlapping and nearly out of energy, and by
+/// frame 240 the pile is asleep with a kinetic energy of exactly zero and a
+/// state that has not changed in thirty frames.
 #[test]
 fn test_ogre_physics_structural() {
     if fixture().is_none() || adapter().is_none() {
@@ -98,7 +100,7 @@ fn test_ogre_physics_structural() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 6/6 passed (structural, renderer=null)"),
+        stdout.contains("ACID 9/9 passed (structural, renderer=null)"),
         "the guest did not pass its structural clauses\nstdout: {stdout}\nstderr: {stderr}"
     );
 }
@@ -128,8 +130,8 @@ fn test_ogre_physics_pixels() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 9/9 passed"),
-        "the guest did not pass its nine clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
+        stdout.contains("ACID 12/12 passed"),
+        "the guest did not pass its twelve clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
         measured.join("\n")
     );
     println!("ogre_physics: {}", measured.join("\n              "));

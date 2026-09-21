@@ -35,6 +35,14 @@
 // Writing back between sub-steps is what `set_state` is for, and it was measured
 // to be free of perturbation (a body thrown upward reached the same apex to
 // 0.0 % with and without a write between every step).
+//
+// **Sleeping is a numerical and visual feature, not a performance
+// optimization.** A body that has been below the sleep threshold long enough
+// stops being integrated and stops being moved: its velocity is zeroed and the
+// derivative writes zeros for it, so the pile holds its positions bit-for-bit
+// and the frame stops changing. The solver still visits every slot — it
+// integrates one system, not N bodies — so nothing here is faster for having
+// slept; what it is, is still.
 
 import { Solver, SolverConfig } from "./solver";
 import { MotionBatch } from "./ogre/motion";
@@ -48,6 +56,23 @@ import { MotionBatch } from "./ogre/motion";
 
 let gravity_y: f64 = -9.81;
 
+/**
+ * The sleep mask, for the same reason gravity is module state: the derivative
+ * has no context argument. The World sets it before a step and clears it after,
+ * and within a step it is constant.
+ *
+ * This is how sleeping works at all. One solver integrates the whole state
+ * vector — there is no per-body stepping and this layer does not add one — so
+ * "do not integrate this body" can only mean "write zeros for it": no position
+ * derivative, no velocity derivative, no gravity. Verlet then leaves the
+ * position bit-for-bit unchanged, which is what makes "the pile has not moved"
+ * an equality rather than a tolerance in the acid test.
+ *
+ * The mask's stride is the layout's: three slots per body per half in the
+ * linear model. A model with more slots per body needs its own divisor here.
+ */
+let sleep_mask: Uint8Array | null = null;
+
 /** The two callback buffers: 64 KiB each, the ABI's fixed convention. */
 const BUF_IN: usize = memory.data(65536, 8);
 const BUF_OUT: usize = memory.data(65536, 8);
@@ -56,7 +81,8 @@ export function physics_buf_in(): i32 { return i32(BUF_IN); }
 export function physics_buf_out(): i32 { return i32(BUF_OUT); }
 
 /**
- * `[q', v'] = [v, a]`, with `a` gravity on the y component and zero elsewhere.
+ * `[q', v'] = [v, a]`, with `a` gravity on the y component and zero elsewhere —
+ * and zero in both halves for a body the sleep mask says is asleep.
  *
  * `dim` is `6N`, so the first half is every body's position and the second half
  * every body's velocity — the layout `Body` documents.
@@ -64,11 +90,18 @@ export function physics_buf_out(): i32 { return i32(BUF_OUT); }
 export function physics_derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   if (dyCap < len) return -22; // -EINVAL
   const half = len / 2;
+  // The mask as a local, because AssemblyScript's narrowing does not reach into
+  // an index expression: `sleep_mask != null && sleep_mask[i]` does not compile.
+  const mask = sleep_mask;
   for (let i = 0; i < half; i++) {
-    store<f64>(dyPtr + <usize>i * 8, load<f64>(yPtr + <usize>(half + i) * 8));
+    const sleeping = mask != null && mask![i / 3] != 0;
+    store<f64>(dyPtr + <usize>i * 8,
+               sleeping ? 0.0 : load<f64>(yPtr + <usize>(half + i) * 8));
   }
   for (let i = half; i < len; i++) {
-    store<f64>(dyPtr + <usize>i * 8, (i - half) % 3 == 1 ? gravity_y : 0.0);
+    const sleeping = mask != null && mask![(i - half) / 3] != 0;
+    store<f64>(dyPtr + <usize>i * 8,
+               sleeping ? 0.0 : ((i - half) % 3 == 1 ? gravity_y : 0.0));
   }
   return 0;
 }
@@ -109,6 +142,64 @@ export class PhysicsParams {
     this.invMass[index] = mass > 0.0 ? 1.0 / mass : 0.0;
     this.restitution[index] = restitution;
     this.friction[index] = friction;
+  }
+}
+
+// ── sleep ────────────────────────────────────────────────────────────────
+
+/**
+ * Per-body sleep bookkeeping: how long each body has been slow, and whether it
+ * has been put to sleep.
+ *
+ * Sleeping is a **numerical and visual** feature. Chunk 6's pile crept at
+ * 0.057 m/s and no sub-step count reached the ideal 0.05, so the last bodies of
+ * a settled pile kept drifting; sleeping is what makes the picture stop, and
+ * its clauses in the acid test are equalities (kinetic energy exactly 0,
+ * positions bit-for-bit unchanged) rather than thresholds. It is not a
+ * performance feature: the solver integrates one system rather than N bodies,
+ * so a sleeping body still costs its slots in every step.
+ *
+ * The policy: a body that spends `frames` consecutive frames below `speed`
+ * sleeps. It wakes when an awake body touches it, or when the caller says so —
+ * `wake`, `wakeAll`, `place`, `setVelocity`, `setParams`. Raw writes through
+ * `Body`'s accessors do **not** wake it: those are views over the state vector
+ * and cannot be observed, and pretending otherwise would be worse than saying
+ * so. That asymmetry is the one place this API can surprise a caller.
+ */
+export class SleepState {
+  /** Consecutive frames below the threshold, per body. */
+  counter: Uint32Array;
+  /** 1 when the body is asleep. Handed to the derivative as its mask. */
+  asleep: Uint8Array;
+  /** The speed below which a body counts as still, in m/s. */
+  speed: f64 = 0.1;
+  /** Consecutive frames below it before a body sleeps. */
+  frames: u32 = 30;
+
+  constructor(count: i32) {
+    this.counter = new Uint32Array(count);
+    this.asleep = new Uint8Array(count);
+  }
+
+  isAsleep(index: i32): bool {
+    return index >= 0 && index < this.asleep.length && this.asleep[index] != 0;
+  }
+
+  /** Wake one body: clear the flag and the counter, so it gets a fresh run
+   * below the threshold before it sleeps again. */
+  wake(index: i32): void {
+    if (index < 0 || index >= this.asleep.length) return;
+    this.asleep[index] = 0;
+    this.counter[index] = 0;
+  }
+
+  /** Wake every body — what a caller that changes the world underneath the
+   * pile wants, since nothing here can tell which bodies that touched. */
+  wakeAll(): void {
+    for (let i = 0; i < this.asleep.length; i++) {
+      this.asleep[i] = 0;
+      this.counter[i] = 0;
+    }
   }
 }
 
@@ -258,11 +349,26 @@ export class Contacts {
  * pair. Nothing here iterates: each contact is resolved once, in the order it
  * was generated, and a contact resolved earlier is not revisited by a later one.
  */
-export function resolve(contacts: Contacts, body: Body, params: PhysicsParams, beta: f64,
-                        dt: f64): void {
+export function resolve(contacts: Contacts, body: Body, params: PhysicsParams, sleep: SleepState,
+                        beta: f64, dt: f64): void {
   for (let i = 0; i < contacts.count(); i++) {
     const a = contacts.bodyA(i);
     const b = contacts.bodyB(i);
+    // Sleeping bodies are still collision targets — a moving body has to land on
+    // a sleeper, not pass through it — so the skipping lives here rather than in
+    // the generator. Two sleepers have nothing to resolve because neither can
+    // move; a sleeper touched by an awake body wakes and resolves normally,
+    // which is the whole wake rule. A plane wakes nothing: it is not a body, and
+    // nothing about the floor changes while a body rests on it.
+    if (b < 0) {
+      if (sleep.isAsleep(a)) continue;
+    } else {
+      const a_asleep = sleep.isAsleep(a);
+      const b_asleep = sleep.isAsleep(b);
+      if (a_asleep && b_asleep) continue;
+      if (a_asleep) sleep.wake(a);
+      if (b_asleep) sleep.wake(b);
+    }
     const axis = contacts.axis(i);
     const nx = contacts.normal(i, 0);
     const ny = contacts.normal(i, 1);
@@ -368,6 +474,12 @@ export class WorldConfig {
   firstRenderableId: u32 = 1;
   /** The motion entry's scale, so the mesh drawn is the sphere simulated. */
   meshScale: f64 = 1.0;
+  /** The speed below which a body counts as still, in m/s. 0.1 is the acid
+   * test's own rest threshold and sits above the 0.057 m/s creep chunk 6
+   * measured — a threshold at 0.05 would sleep nothing. */
+  sleepSpeed: f64 = 0.1;
+  /** Consecutive frames below it before a body sleeps. */
+  sleepFrames: u32 = 30;
 }
 
 /**
@@ -390,6 +502,12 @@ export class World {
   private body!: Body;
   private contacts!: Contacts;
   params!: PhysicsParams;
+  sleep!: SleepState;
+  /** Where each body was at the start of the current `step` call, for the sleep
+   * signal: the displacement over a frame, not the stored velocity. */
+  private previous!: Float64Array;
+  /** How far each body has travelled during its current quiet window. */
+  private travel!: Float64Array;
 
   private constructor(solver: Solver, config: WorldConfig) {
     this.solver = solver;
@@ -401,6 +519,11 @@ export class World {
     // the buffer is sized for the worst realistic pile rather than the best.
     this.contacts = new Contacts(<i32>Math.max(config.bodies * 8, 64));
     this.params = new PhysicsParams(config.bodies);
+    this.sleep = new SleepState(config.bodies);
+    this.sleep.speed = config.sleepSpeed;
+    this.sleep.frames = config.sleepFrames;
+    this.previous = new Float64Array(config.bodies * 3);
+    this.travel = new Float64Array(config.bodies);
     for (let i = 0; i < config.bodies; i++) {
       this.params.set(i, config.radius, config.mass, config.restitution, config.friction);
     }
@@ -432,6 +555,36 @@ export class World {
   /** How many contacts the last sub-step's detect pass produced. */
   contactCount(): i32 { return this.contacts.count(); }
 
+  /** How many bodies are asleep. The number a loop watches to know it is done. */
+  asleepCount(): i32 {
+    let asleep = 0;
+    for (let i = 0; i < this.config.bodies; i++) {
+      if (this.sleep.asleep[i] != 0) asleep += 1;
+    }
+    return asleep;
+  }
+
+  /** Wake one body. Sleeping bodies do not move, so anything a caller does to
+   * the world around them — a new obstacle, a change of gravity — has to say
+   * who it touched, and this is how. */
+  wake(index: i32): void { this.sleep.wake(index); }
+
+  /** Wake every body, for a change that could have touched any of them. */
+  wakeAll(): void { this.sleep.wakeAll(); }
+
+  /** Set a body's velocity, and wake it: a body that was asleep has not been
+   * evaluated under this velocity, and a sleeping one ignores it entirely. */
+  setVelocity(index: i32, vx: f64, vy: f64, vz: f64): void {
+    this.body.setVel(index, vx, vy, vz);
+    this.sleep.wake(index);
+  }
+
+  /** Change a body's parameters, and wake it, for the same reason. */
+  setParams(index: i32, radius: f64, mass: f64, restitution: f64, friction: f64): void {
+    this.params.set(index, radius, mass, restitution, friction);
+    this.sleep.wake(index);
+  }
+
   /**
    * Place body `index` at rest. Bodies start where the caller puts them; nothing
    * here seeds an arrangement, because a game's opening positions are the game's
@@ -440,6 +593,7 @@ export class World {
   place(index: i32, x: f64, y: f64, z: f64): void {
     this.body.setPos(index, x, y, z);
     this.body.setVel(index, 0.0, 0.0, 0.0);
+    this.sleep.wake(index); // placed is not asleep, whatever it was before
   }
 
   /** Push the seeded state into the solver. Call once, after the placements. */
@@ -465,6 +619,18 @@ export class World {
    * where the caller thinks it is.
    */
   step(dt: f64): i32 {
+    // The sleep signal is the *displacement* over this call, not the stored
+    // velocity, and that is a measured decision rather than a stylistic one: a
+    // resting body's velocity carries the positional bias it was last pushed
+    // out by — ~0.14 m/s for a 4 mm penetration — which is above any sensible
+    // sleep threshold while the body is going nowhere at all. Displacement is
+    // what "has this body stopped?" actually means, and it is immune to the
+    // bias because the bias pushes out and gravity pulls back within the frame.
+    for (let i = 0; i < this.config.bodies; i++) {
+      this.previous[i * 3 + 0] = this.body.pos(i, 0);
+      this.previous[i * 3 + 1] = this.body.pos(i, 1);
+      this.previous[i * 3 + 2] = this.body.pos(i, 2);
+    }
     const per_frame = this.config.substeps;
     if (per_frame <= 0) return -1;
     const nominal = this.config.frameDt / <f64>per_frame;
@@ -474,14 +640,78 @@ export class World {
     if (count > this.config.maxSubsteps) count = this.config.maxSubsteps;
     const h = dt / <f64>count; // the requested advance, spread evenly
     for (let sub = 0; sub < count; sub++) {
-      if (this.solver.step(h) != 0) return -1;
+      // The mask is set before every step and cleared after the last one: a body
+      // that falls asleep below is still for the *next* step, and nothing
+      // outside a step reads the mask at all.
+      sleep_mask = this.sleep.asleep;
+      if (this.solver.step(h) != 0) {
+        sleep_mask = null;
+        return -1;
+      }
       this.readState();
       this.detect();
-      resolve(this.contacts, this.body, this.params, this.config.bias, h);
+      resolve(this.contacts, this.body, this.params, this.sleep, this.config.bias, h);
       const dim = this.config.bodies * 6;
-      if (this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + dim)) != 0) return -1;
+      if (this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + dim)) != 0) {
+        sleep_mask = null;
+        return -1;
+      }
     }
+    sleep_mask = null;
+    // Once per call, which at the guest's cadence is once per rendered frame:
+    // the window counts frames, as the policy says.
+    this.updateSleep(dt);
+    // And the zeroing above has to reach the solver, or it is only a claim about
+    // a buffer nothing reads until the next call copies the old velocity back.
+    // Measured: without this write, every body was asleep and the kinetic energy
+    // was 0.0044 instead of 0 — sleepers holding the last velocity they had,
+    // frozen but not zero.
+    const dim = this.config.bodies * 6;
+    if (this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + dim)) != 0) return -1;
     return 0;
+  }
+
+  /**
+   * The sleep policy, run once per `step` call — once per rendered frame at the
+   * guest's cadence — on how far each body actually moved during it.
+   *
+   * A body slower than `sleepSpeed` (in displacement per second) for
+   * `sleepFrames` consecutive frames sleeps, and sleeping means its velocity is
+   * zeroed here and kept at zero by the derivative above. A body already asleep
+   * is skipped rather than re-counted, and a body woken by `resolve` starts its
+   * count over, which `SleepState.wake` already did.
+   */
+  private updateSleep(dt: f64): void {
+    const threshold = this.config.sleepSpeed;
+    const span = dt > 0.0 ? dt : 1.0e-9;
+    for (let i = 0; i < this.config.bodies; i++) {
+      if (this.sleep.asleep[i] != 0) continue;
+      const dx = this.body.pos(i, 0) - this.previous[i * 3 + 0];
+      const dy = this.body.pos(i, 1) - this.previous[i * 3 + 1];
+      const dz = this.body.pos(i, 2) - this.previous[i * 3 + 2];
+      // The decision is the *average* speed over a full window of `frames`
+      // frames, and the window is fixed rather than reset by a spike. Both
+      // halves of that were measured against a failing pile: an instantaneous
+      // signal reset the counter every 15-23 frames, and an average over a
+      // window that a spike could reset never grew past 27, because a short
+      // window is a noisy one and its average crosses the threshold. A body
+      // that is genuinely moving still never sleeps: its average over the whole
+      // window is its speed.
+      this.travel[i] += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      this.sleep.counter[i] += 1;
+      if (this.sleep.counter[i] < this.sleep.frames) continue;
+      const average = this.travel[i] / (<f64>this.sleep.counter[i] * span);
+      if (average < threshold) {
+        this.sleep.asleep[i] = 1;
+        // Zeroed here, and the derivative keeps it zero: this is what makes the
+        // acid test's "kinetic energy is exactly 0" an equality.
+        this.body.setVel(i, 0.0, 0.0, 0.0);
+      }
+      // Either way the window rolls: slept bodies stop being counted at the top
+      // of the loop, and a body that did not sleep starts a fresh window.
+      this.travel[i] = 0.0;
+      this.sleep.counter[i] = 0;
+    }
   }
 
   /** Copy the solver's state into the buffer the accessors read. */
@@ -500,7 +730,12 @@ export class World {
     const count = this.config.bodies;
     const slop = this.config.slop;
     for (let a = 0; a < count; a++) {
+      const a_asleep = this.sleep.isAsleep(a);
       for (let b = a + 1; b < count; b++) {
+        // Two sleepers: neither can move, so the pair is not a contact and the
+        // generator's arithmetic is the pair loop's whole cost. One array read
+        // per pair, per sub-step — and the only place sleeping saves anything.
+        if (a_asleep && this.sleep.isAsleep(b)) continue;
         this.contacts.sphereSphere(this.body, this.params, a, b, slop);
       }
       const px = this.body.pos(a, 0), py = this.body.pos(a, 1), pz = this.body.pos(a, 2);
