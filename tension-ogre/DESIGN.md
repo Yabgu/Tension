@@ -1038,6 +1038,22 @@ asserts rest *through the sleep policy* rather than by waiting for physical rest
 and why the clause's "no motion" assertions are equalities rather than
 tolerances.
 
+**What the layer ships, and what it does not.** `WorldConfig.angular` is the
+opt-in (8b): the state model above, the impulse formula above, friction that
+carries a torque, and a `MotionBatch.setPose` for the orientation the simulation
+now has. Three boundaries are worth naming because they are choices rather than
+gaps: the **collider set does not change** — spheres and planes, so a body with a
+box's inertia still touches the world at a point on the line of its centre, which
+means a normal impulse can never spin it and friction is what does; the **inertia
+is the diagonal applied in world axes**, exact for a sphere and the
+simplification the probe's numbers are for; and the **sleep signal is still
+linear displacement**, which is why a body spinning in place sleeps (§12 carries
+the refinement, and the unit tests pin the measurement). What the model does
+carry is the two measured rules: the bias is linear-only, and the quaternion
+write-back renormalizes and rewrites `q' = ½ω⊗q` every sub-step — measured at
+0.00014 % of drift against a 0.1 % budget, against bit-identical for a verbatim
+write.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -1700,13 +1716,20 @@ chunk 1 work, and each is additive:
   diagonal-inertia, one-pass, spheres and boxes about their axes. In the order
   the demand is likely to arrive: **full inertia tensors** (a rotated box whose
   principal axes are not its body axes needs `I⁻¹` as a matrix, not three
-  numbers); **capsules and other non-diagonal shapes**, which need the same
-  thing plus a narrow phase that is not a corner list; **angular sleeping**,
-  where the windowed signal should be `|v| + |ω|·r` rather than `|v|` alone — a
-  body spinning in place is not asleep, and the probe measured transient `|ω|`
-  spikes up to 0.25 rad/s on a body that is not going anywhere; **wake
+  numbers) — and the layer applies its three diagonal numbers in **world axes**,
+  which is exact for a sphere and a simplification for a box whose principal
+  axes have swung away from them (chunk 8b ships it that way, with the
+  simplification stated at the field); **capsules and other non-diagonal
+  shapes**, which need the same thing plus a narrow phase that is not a corner
+  list; **angular sleeping**, where the windowed signal should be `|v| + |ω|·r`
+  rather than `|v|` alone — a body spinning in place is not asleep, and chunk 8b
+  measured exactly that: a free body spun at 1 rad/s turns 0.5 rad instead of 1.0
+  because the linear signal sleeps it at frame 30 and zeroes the spin with it,
+  which `tension-framework/tests/guest-physics-units.ts` now pins as a failing
+  test waiting for the refinement (the probe had already measured transient
+  `|ω|` spikes up to 0.25 rad/s on a body that is not going anywhere); **wake
   propagation** to neighbours, since today a sleeper wakes only on direct
-  contact; and **friction that does not creep** — the resting box's 0.044 m of
+  contact; **friction that does not creep** — the resting box's 0.044 m of
   drift over 600 frames is one-pass friction at four corners, and the honest
   fixes (an iterative friction pass, a contact manifold, or a velocity-level bias
   applied to the position rather than the velocity) are each their own round.
@@ -1717,6 +1740,22 @@ chunk 1 work, and each is additive:
   with no error anywhere — the probe measured 1.5708 rad where 1.0 was asked for
   (§5.1). And quaternion state writes are as safe as linear ones: written back
   verbatim, the spin is bit-identical.
+- **The solver interface has a gap worth closing.** `create` accepts an odd
+  `dim` and the *step* is what refuses it (`-EINVAL`), because the workspace-size
+  query deliberately does not check evenness — its comment says so, and the probe
+  confirmed both halves of it (create(dim=7) returns a live solver; step returns
+  -22). A guest therefore cannot learn about a dimension it cannot use until it
+  tries to use it, which for a solver the guest *builds a world around* is the
+  wrong order. The honest fix is a check at `create`, where the error can name
+  the requirement.
+- **Module state means one World at a time.** The derivative has no context
+  argument, so gravity, the sleep mask and the state-layout mode travel through
+  module globals: two `World`s alive at once share them, and the second one to
+  be created wins. The existing layer has always had this for gravity; chunk 8b
+  adds the layout mode to it. It is fine for the shape both chunks use — one
+  world, stepped, drawn — and it is the thing to fix first if a guest ever wants
+  two models side by side (a context pointer in the shim's callback, or a second
+  callback entry point).
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.

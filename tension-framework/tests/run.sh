@@ -8,7 +8,11 @@
 #                   delivery, and a job resolved from the event;
 #   guest-verlet.ts the solver capability: velocity Verlet from a guest, checked
 #                   against a closed form (chunk 6a's P0, which is what settled
-#                   the stale claim in `tension-solver/GUEST_ABI.md` §7).
+#                   the stale claim in `tension-solver/GUEST_ABI.md` §7);
+#   guest-physics-units.ts the physics layer's pieces (8b): quaternion recovery,
+#                   the impulse formula against hand computation, the bias rule,
+#                   a free body's spin, the linear model's invariants, and
+#                   MotionBatch.setPose's offsets.
 #
 # Steps, in the order the design fixes them:
 #
@@ -79,4 +83,5 @@ run_fixture() {
 run_fixture guest-open.ts guest-open.wasm
 run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
+run_fixture guest-physics-units.ts guest-physics-units.wasm
 echo "==> all fixtures OK"

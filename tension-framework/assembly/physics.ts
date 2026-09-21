@@ -30,6 +30,23 @@
 // probe made exactly this mistake and measured a body at 225 m/s. `Body` below
 // is the only place in this file that writes the layout down.
 //
+// **The angular model writes the same rule at a longer stride: seven slots per
+// body per half, fourteen per body.**
+//
+//     [x0,y0,z0,q0x,q0y,q0z,q0w, x1,...,q1w, ...,  v0x,v0y,v0z,q'0x,...,q'0w, ...]
+//     \_______ 7N f64: every body's coordinates ______/  \____ 7N: every body's derivatives ____/
+//
+// The first half is positions and orientations, the second half velocities and
+// **quaternion derivatives**, with `q' = ½ω⊗q` — the derivative, *not* the
+// angular velocity. That is not a matter of taste: the symplectic Verlet updates
+// a coordinate as `coord += dt · (the state's second half)`, so the second half
+// has to be the coordinate's time derivative. A layout that puts `ω` there
+// integrates `q += dt·ω`, which is not a rotation at all — chunk 8a measured
+// 1.5708 rad and |q| = 1.41421 for a body spinning at 1 rad/s for one second,
+// and the RHS it ignored looked perfectly correct. `ω = 2q'⊗q⁻¹` recovers the
+// angular velocity whenever the response needs it, which is why nothing has to
+// live outside the state.
+//
 // The cadence is the other half of the design: `step(dt)` runs `substeps`
 // sub-steps, and each sub-step is advance → read → detect → resolve → write.
 // Writing back between sub-steps is what `set_state` is for, and it was measured
@@ -73,6 +90,16 @@ let gravity_y: f64 = -9.81;
  */
 let sleep_mask: Uint8Array | null = null;
 
+/**
+ * Which layout the derivative is being asked to differentiate: 3 slots per body
+ * per half, or 7. Module state for the same reason gravity is — the callback
+ * has no context argument — and set by `World.create` before the solver exists,
+ * constant for that solver's life.
+ */
+let derivative_mode: i32 = 0;
+const MODEL_LINEAR: i32 = 0;
+const MODEL_ANGULAR: i32 = 1;
+
 /** The two callback buffers: 64 KiB each, the ABI's fixed convention. */
 const BUF_IN: usize = memory.data(65536, 8);
 const BUF_OUT: usize = memory.data(65536, 8);
@@ -89,6 +116,7 @@ export function physics_buf_out(): i32 { return i32(BUF_OUT); }
  */
 export function physics_derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   if (dyCap < len) return -22; // -EINVAL
+  if (derivative_mode == MODEL_ANGULAR) return physics_derivative_angular(yPtr, len, dyPtr);
   const half = len / 2;
   // The mask as a local, because AssemblyScript's narrowing does not reach into
   // an index expression: `sleep_mask != null && sleep_mask[i]` does not compile.
@@ -106,6 +134,65 @@ export function physics_derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, 
   return 0;
 }
 
+/**
+ * The angular RHS: `[v, q' | a, q'']`, seven slots per body per half.
+ *
+ * The accelerations are gravity on y — the contacts are impulses and land in the
+ * write-back phase, not here — and the quaternion's *second* derivative, which
+ * the probe's identity collapses to a scalar multiple of the coordinate:
+ *
+ *     q'' = ½ ω ⊗ q' = −(|q'|² / |q|²) · q      (torque-free; ω = 2q'⊗q⁻¹)
+ *
+ * so a body's orientation costs four multiplies rather than two quaternion
+ * products. Chunk 8a measured both forms at N = 256: 3.4 µs per step for this
+ * one against 7.4 µs for the products, with the same trajectory.
+ *
+ * The first half is written too — the coordinate derivatives, `[v, q']` — for
+ * the methods that read it (rk45 does; the symplectic Verlet reads only the
+ * second half). A sleeping body gets zeros in both halves, which together with
+ * its zeroed second half is what leaves it bit-for-bit where it is.
+ */
+function physics_derivative_angular(yPtr: usize, len: i32, dyPtr: usize): i32 {
+  const half = len / 2; // 7N
+  const mask = sleep_mask;
+  for (let base: i32 = 0; base < half; base += 7) {
+    const body_index = base / 7;
+    const sleeping = mask != null && mask![body_index] != 0;
+    const vbase = half + base;
+    const vx = load<f64>(yPtr + <usize>(vbase + 0) * 8);
+    const vy = load<f64>(yPtr + <usize>(vbase + 1) * 8);
+    const vz = load<f64>(yPtr + <usize>(vbase + 2) * 8);
+    const dqx = load<f64>(yPtr + <usize>(vbase + 3) * 8);
+    const dqy = load<f64>(yPtr + <usize>(vbase + 4) * 8);
+    const dqz = load<f64>(yPtr + <usize>(vbase + 5) * 8);
+    const dqw = load<f64>(yPtr + <usize>(vbase + 6) * 8);
+    const qx = load<f64>(yPtr + <usize>(base + 3) * 8);
+    const qy = load<f64>(yPtr + <usize>(base + 4) * 8);
+    const qz = load<f64>(yPtr + <usize>(base + 5) * 8);
+    const qw = load<f64>(yPtr + <usize>(base + 6) * 8);
+
+    store<f64>(dyPtr + <usize>(base + 0) * 8, sleeping ? 0.0 : vx);
+    store<f64>(dyPtr + <usize>(base + 1) * 8, sleeping ? 0.0 : vy);
+    store<f64>(dyPtr + <usize>(base + 2) * 8, sleeping ? 0.0 : vz);
+    store<f64>(dyPtr + <usize>(base + 3) * 8, sleeping ? 0.0 : dqx);
+    store<f64>(dyPtr + <usize>(base + 4) * 8, sleeping ? 0.0 : dqy);
+    store<f64>(dyPtr + <usize>(base + 5) * 8, sleeping ? 0.0 : dqz);
+    store<f64>(dyPtr + <usize>(base + 6) * 8, sleeping ? 0.0 : dqw);
+
+    store<f64>(dyPtr + <usize>(vbase + 0) * 8, 0.0);
+    store<f64>(dyPtr + <usize>(vbase + 1) * 8, sleeping ? 0.0 : gravity_y);
+    store<f64>(dyPtr + <usize>(vbase + 2) * 8, 0.0);
+    const n2 = qx * qx + qy * qy + qz * qz + qw * qw;
+    const d2 = dqx * dqx + dqy * dqy + dqz * dqz + dqw * dqw;
+    const c = (n2 > 0.0 && !sleeping) ? d2 / n2 : 0.0;
+    store<f64>(dyPtr + <usize>(vbase + 3) * 8, -c * qx);
+    store<f64>(dyPtr + <usize>(vbase + 4) * 8, -c * qy);
+    store<f64>(dyPtr + <usize>(vbase + 5) * 8, -c * qz);
+    store<f64>(dyPtr + <usize>(vbase + 6) * 8, -c * qw);
+  }
+  return 0;
+}
+
 // ── the parameter tables ─────────────────────────────────────────────────
 
 /**
@@ -118,6 +205,21 @@ export class PhysicsParams {
   invMass: Float64Array;
   restitution: Float64Array;
   friction: Float64Array;
+  /**
+   * The diagonal inverse inertia, one per axis per body (chunk 8). Diagonal is
+   * exact for a sphere and for a box about its own axes, and it is the model the
+   * probe measured; a full tensor is §12. Zero means the body cannot rotate —
+   * which is what an immovable body gets, and what the linear model never reads.
+   *
+   * The tensor is applied in **world axes** rather than rotated into the body's
+   * frame. For a sphere that is exact (isotropic), and for a box it is the
+   * simplification the probe's numbers are for: a tumbling box whose principal
+   * axes have swung away from the world axes is stiffer than it should be about
+   * x and z. §12 carries the fix (a full tensor and a body-frame transform).
+   */
+  invInertiaX: Float64Array;
+  invInertiaY: Float64Array;
+  invInertiaZ: Float64Array;
   /**
    * The floor under the positional bias, in m/s. A bias proportional to the
    * penetration is what keeps a pile from sinking, and an uncapped one is what
@@ -134,14 +236,44 @@ export class PhysicsParams {
     this.invMass = new Float64Array(count);
     this.restitution = new Float64Array(count);
     this.friction = new Float64Array(count);
+    this.invInertiaX = new Float64Array(count);
+    this.invInertiaY = new Float64Array(count);
+    this.invInertiaZ = new Float64Array(count);
   }
 
-  /** `mass <= 0` makes a body immovable: infinite mass, and it never moves. */
+  /** `mass <= 0` makes a body immovable: infinite mass, and it never moves.
+   * The inertia is the sphere's — `I = (2/5) m r²` — which is what a sphere's
+   * collider implies; `setMoments` overrides it for a box's. */
   set(index: i32, radius: f64, mass: f64, restitution: f64, friction: f64): void {
     this.radius[index] = radius;
     this.invMass[index] = mass > 0.0 ? 1.0 / mass : 0.0;
     this.restitution[index] = restitution;
     this.friction[index] = friction;
+    const i = 0.4 * mass * radius * radius;
+    this.setMoments(index, i, i, i);
+  }
+
+  /**
+   * Set the three principal moments of inertia (not their inverses). A
+   * non-positive moment means the body cannot rotate about that axis, which is
+   * how an immovable body is expressed.
+   *
+   * A cuboid of half-extents `(hx, hy, hz)` and mass `m`:
+   *
+   *     Ix = (1/3) m (hy² + hz²)     Iy = (1/3) m (hx² + hz²)     Iz = (1/3) m (hx² + hy²)
+   */
+  setMoments(index: i32, ix: f64, iy: f64, iz: f64): void {
+    this.invInertiaX[index] = ix > 0.0 ? 1.0 / ix : 0.0;
+    this.invInertiaY[index] = iy > 0.0 ? 1.0 / iy : 0.0;
+    this.invInertiaZ[index] = iz > 0.0 ? 1.0 / iz : 0.0;
+  }
+
+  /** Inverse inertia about `axis`, or 0 when the body cannot rotate. */
+  invInertiaAt(index: i32, axis: i32): f64 {
+    if (axis == 0) return this.invInertiaX[index];
+    if (axis == 1) return this.invInertiaY[index];
+    if (axis == 2) return this.invInertiaZ[index];
+    return 0.0;
   }
 }
 
@@ -214,41 +346,162 @@ export class Body {
   private state: Float64Array;
   private count: i32;
   private base: i32;
+  /** Slots per body per half: 3 in the linear model, 7 in the angular one. */
+  private half: i32;
+  private omega_scratch: Float64Array = new Float64Array(3);
 
-  constructor(state: Float64Array, count: i32, base: i32 = 0) {
+  constructor(state: Float64Array, count: i32, base: i32 = 0, half: i32 = 3) {
     this.state = state;
     this.count = count;
     this.base = base;
+    this.half = half;
   }
 
   /** How many bodies this view holds. */
   size(): i32 { return this.count; }
 
+  /** Slots per body per half — 3 linear, 7 angular. */
+  slotsPerHalf(): i32 { return this.half; }
+
+  /** Whether this view is over the angular layout at all. */
+  hasAngular(): bool { return this.half == 7; }
+
   /** Position component `axis` (0 = x, 1 = y, 2 = z), or 0 for a stray index. */
   pos(index: i32, axis: i32): f64 {
     if (index < 0 || index >= this.count || axis < 0 || axis > 2) return 0.0;
-    return this.state[this.base + index * 3 + axis];
+    return this.state[this.base + index * this.half + axis];
   }
 
   setPos(index: i32, x: f64, y: f64, z: f64): void {
     if (index < 0 || index >= this.count) return;
-    this.state[this.base + index * 3 + 0] = x;
-    this.state[this.base + index * 3 + 1] = y;
-    this.state[this.base + index * 3 + 2] = z;
+    const at = this.base + index * this.half;
+    this.state[at + 0] = x;
+    this.state[at + 1] = y;
+    this.state[at + 2] = z;
   }
 
   /** Velocity component `axis`, read from the *second* half of the vector. */
   vel(index: i32, axis: i32): f64 {
     if (index < 0 || index >= this.count || axis < 0 || axis > 2) return 0.0;
-    return this.state[this.base + this.count * 3 + index * 3 + axis];
+    return this.state[this.base + this.count * this.half + index * this.half + axis];
   }
 
   setVel(index: i32, x: f64, y: f64, z: f64): void {
     if (index < 0 || index >= this.count) return;
-    const at = this.base + this.count * 3 + index * 3;
+    const at = this.base + this.count * this.half + index * this.half;
     this.state[at + 0] = x;
     this.state[at + 1] = y;
     this.state[at + 2] = z;
+  }
+
+  /**
+   * Orientation component `component` (0 = x, 1 = y, 2 = z, 3 = w) of body
+   * `index`, from the *first* half — the four slots after the position. All
+   * zeroes in the linear model, which has no orientation.
+   */
+  quat(index: i32, component: i32): f64 {
+    if (this.half != 7 || index < 0 || index >= this.count ||
+        component < 0 || component > 3) return 0.0;
+    return this.state[this.base + index * this.half + 3 + component];
+  }
+
+  setQuat(index: i32, qx: f64, qy: f64, qz: f64, qw: f64): void {
+    if (this.half != 7 || index < 0 || index >= this.count) return;
+    const at = this.base + index * this.half + 3;
+    this.state[at + 0] = qx;
+    this.state[at + 1] = qy;
+    this.state[at + 2] = qz;
+    this.state[at + 3] = qw;
+  }
+
+  /** Quaternion-derivative component `component`, from the second half. */
+  dquat(index: i32, component: i32): f64 {
+    if (this.half != 7 || index < 0 || index >= this.count ||
+        component < 0 || component > 3) return 0.0;
+    return this.state[this.base + this.count * this.half + index * this.half + 3 + component];
+  }
+
+  setDquat(index: i32, qx: f64, qy: f64, qz: f64, qw: f64): void {
+    if (this.half != 7 || index < 0 || index >= this.count) return;
+    const at = this.base + this.count * this.half + index * this.half + 3;
+    this.state[at + 0] = qx;
+    this.state[at + 1] = qy;
+    this.state[at + 2] = qz;
+    this.state[at + 3] = qw;
+  }
+
+  /**
+   * Recover body `index`'s angular velocity from the state's own pair, into
+   * `out[0..2]`: `ω = 2 q'⊗q⁻¹`. With `q' = ½ω⊗q` that is exact for any
+   * non-zero quaternion, so the state is self-contained — no angular velocity
+   * table, and `set_state` means what it says. Does nothing in the linear model.
+   */
+  recoverOmega(index: i32, out: Float64Array, outBase: i32 = 0): void {
+    if (this.half != 7 || index < 0 || index >= this.count) {
+      out[outBase + 0] = 0.0; out[outBase + 1] = 0.0; out[outBase + 2] = 0.0;
+      return;
+    }
+    const at = this.base + index * this.half + 3; // the quaternion
+    const dt_at = this.base + this.count * this.half + index * this.half + 3;
+    const qx = this.state[at + 0], qy = this.state[at + 1];
+    const qz = this.state[at + 2], qw = this.state[at + 3];
+    const dx = this.state[dt_at + 0], dy = this.state[dt_at + 1];
+    const dz = this.state[dt_at + 2], dw = this.state[dt_at + 3];
+    const n2 = qx * qx + qy * qy + qz * qz + qw * qw;
+    if (n2 <= 0.0) {
+      out[outBase + 0] = 0.0; out[outBase + 1] = 0.0; out[outBase + 2] = 0.0;
+      return;
+    }
+    // p = q' ⊗ q*, the (x, y, z) components; ω = 2 p / |q|².
+    const s = 2.0 / n2;
+    out[outBase + 0] = s * (-dw * qx + dx * qw - dy * qz + dz * qy);
+    out[outBase + 1] = s * (-dw * qy + dx * qz + dy * qw - dz * qx);
+    out[outBase + 2] = s * (-dw * qz - dx * qy + dy * qx + dz * qw);
+  }
+
+  /** Angular velocity component `axis`, or 0 in the linear model. */
+  omega(index: i32, axis: i32): f64 {
+    if (this.half != 7 || axis < 0 || axis > 2) return 0.0;
+    this.recoverOmega(index, this.omega_scratch);
+    return this.omega_scratch[axis];
+  }
+
+  /**
+   * Write the pair back consistently: a unit quaternion, and
+   * `q' = ½ω⊗q` from the angular velocity given. This is the angular model's
+   * write path — what turns an impulse's `Δω` into a state change.
+   */
+  writePose(index: i32, wx: f64, wy: f64, wz: f64): void {
+    if (this.half != 7 || index < 0 || index >= this.count) return;
+    const at = this.base + index * this.half + 3;
+    let qx = this.state[at + 0], qy = this.state[at + 1];
+    let qz = this.state[at + 2], qw = this.state[at + 3];
+    const n = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (n > 0.0) { qx /= n; qy /= n; qz /= n; qw /= n; }
+    this.state[at + 0] = qx; this.state[at + 1] = qy;
+    this.state[at + 2] = qz; this.state[at + 3] = qw;
+    const dt_at = this.base + this.count * this.half + index * this.half + 3;
+    // The (w, x, y, z) components of ½ ω⊗q, written into the (x, y, z, w) slots.
+    this.state[dt_at + 0] = 0.5 * (wx * qw + wy * qz - wz * qy);
+    this.state[dt_at + 1] = 0.5 * (-wx * qz + wy * qw + wz * qx);
+    this.state[dt_at + 2] = 0.5 * (wx * qy - wy * qx + wz * qw);
+    this.state[dt_at + 3] = 0.5 * (-wx * qx - wy * qy - wz * qz);
+  }
+
+  /** Renormalize body `index`'s quaternion. The angular model runs this once
+   * per sub-step, after the impulses: chunk 8a measured the drift at 0.00014 %
+   * against a 0.1 % budget, so it is safe and it is required. */
+  normalizeQuat(index: i32): void {
+    if (this.half != 7 || index < 0 || index >= this.count) return;
+    const at = this.base + index * this.half + 3;
+    const qx = this.state[at + 0], qy = this.state[at + 1];
+    const qz = this.state[at + 2], qw = this.state[at + 3];
+    const n = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+    if (n <= 0.0) return;
+    this.state[at + 0] = qx / n;
+    this.state[at + 1] = qy / n;
+    this.state[at + 2] = qz / n;
+    this.state[at + 3] = qw / n;
   }
 }
 
@@ -337,11 +590,67 @@ export class Contacts {
 }
 
 /**
+ * `n · ((I⁻¹ (r × n)) × r)`: the rotational part of the effective mass along
+ * `n` for an impulse applied at `r`. Zero for an axis through the centre, which
+ * is what makes a head-on sphere contact behave exactly as it did linearly.
+ */
+function rotational_term(params: PhysicsParams, index: i32, rx: f64, ry: f64, rz: f64,
+                         nx: f64, ny: f64, nz: f64): f64 {
+  const cx = ry * nz - rz * ny;
+  const cy = rz * nx - rx * nz;
+  const cz = rx * ny - ry * nx;
+  const ix = params.invInertiaX[index] * cx;
+  const iy = params.invInertiaY[index] * cy;
+  const iz = params.invInertiaZ[index] * cz;
+  const tx = iy * rz - iz * ry;
+  const ty = iz * rx - ix * rz;
+  const tz = ix * ry - iy * rx;
+  return nx * tx + ny * ty + nz * tz;
+}
+
+/**
+ * `ω += sign · I⁻¹ (r × (j·n))`: the angular half of an impulse `j·n` applied
+ * at `r`. The linear half is the caller's, because the linear velocities live
+ * in the state and the angular ones in `omega` until the write-back.
+ */
+function apply_torque(params: PhysicsParams, omega: Float64Array, index: i32,
+                      rx: f64, ry: f64, rz: f64, j: f64, nx: f64, ny: f64, nz: f64,
+                      sign: f64): void {
+  const px = ry * (j * nz) - rz * (j * ny);
+  const py = rz * (j * nx) - rx * (j * nz);
+  const pz = rx * (j * ny) - ry * (j * nx);
+  omega[index * 3 + 0] += sign * params.invInertiaX[index] * px;
+  omega[index * 3 + 1] += sign * params.invInertiaY[index] * py;
+  omega[index * 3 + 2] += sign * params.invInertiaZ[index] * pz;
+}
+
+/**
  * One impulse pass over every contact: a normal impulse with restitution, a
  * tangential impulse clamped by Coulomb friction, and a positional bias — the
  * part that stops a settled pile sinking through the floor, expressed as a
  * velocity rather than as a position fix so it travels through the same channel
  * as everything else.
+ *
+ * **`omega != null` selects the angular model** (chunk 8): the same pass with
+ * the contact point `r = p − centre` entering the effective mass, the impulse
+ * gaining a torque `I⁻¹(r × j n)`, and friction gaining one too — which is what
+ * makes a ball roll. `omega` is a per-body table recovered from the state's
+ * `q'` before the pass and written back into it after, because the state carries
+ * `q' = ½ω⊗q` rather than `ω` (§5.1 for why it must).
+ *
+ * **Two rules separate the angular pass from the linear one, and both are
+ * measured rather than assumed:**
+ *
+ *   * the **positional bias is linear-only**. It never enters `j`, so it can
+ *     never become a torque: a correction that moved a body by spinning it would
+ *     turn a resting pile. Chunk 8a measured a resting box accumulating
+ *     **0.0 rad** this way, against **0.0356 rad (2.04°)** when the bias is
+ *     folded into `desired` — the wiring this function does not use. The bias
+ *     keeps its 1.0 m/s cap.
+ *   * the contact point is **derived**, not carried in the record: a sphere
+ *     against a plane touches at its deepest point, a pair in the middle of the
+ *     overlap. Both follow from the normal and the penetration, so the contact
+ *     buffer did not have to grow a field.
  *
  * Impulses are divided by the sum of the inverse masses, so two bodies of
  * different mass meet each other the way they should; a plane has infinite mass
@@ -350,7 +659,8 @@ export class Contacts {
  * was generated, and a contact resolved earlier is not revisited by a later one.
  */
 export function resolve(contacts: Contacts, body: Body, params: PhysicsParams, sleep: SleepState,
-                        beta: f64, dt: f64): void {
+                        beta: f64, dt: f64, omega: Float64Array | null = null,
+                        slop: f64 = 0.0): void {
   for (let i = 0; i < contacts.count(); i++) {
     const a = contacts.bodyA(i);
     const b = contacts.bodyB(i);
@@ -376,6 +686,152 @@ export function resolve(contacts: Contacts, body: Body, params: PhysicsParams, s
     const penetration = contacts.penetration(i);
     let bias = beta * penetration / dt;
     if (bias > params.biasCap) bias = params.biasCap;
+
+    if (omega != null) {
+      // ── the angular model ────────────────────────────────────────────────
+      const inv_a = params.invMass[a];
+      const inv_b = b >= 0 ? params.invMass[b] : 0.0;
+      const inv_sum = inv_a + inv_b;
+
+      // The contact point, and `r` from each centre to it. Derived, not carried:
+      // a sphere against a plane touches at its deepest point, a pair in the
+      // middle of the overlap — both follow from the normal and the penetration.
+      let rax = 0.0, ray = 0.0, raz = 0.0;
+      let rbx = 0.0, rby = 0.0, rbz = 0.0;
+      if (b < 0) {
+        const reach = params.radius[a] - penetration;
+        rax = -reach * nx; ray = -reach * ny; raz = -reach * nz;
+      } else {
+        const gap = params.radius[a] + params.radius[b] - penetration; // centre distance
+        const along = params.radius[a] - penetration * 0.5;
+        rax = along * nx; ray = along * ny; raz = along * nz;
+        rbx = rax - gap * nx; rby = ray - gap * ny; rbz = raz - gap * nz;
+      }
+
+      // The contact-point velocities, `v + ω × r` (a plane does not move).
+      const wax = omega[a * 3 + 0], way = omega[a * 3 + 1], waz = omega[a * 3 + 2];
+      const avx = body.vel(a, 0) + (way * raz - waz * ray);
+      const avy = body.vel(a, 1) + (waz * rax - wax * raz);
+      const avz = body.vel(a, 2) + (wax * ray - way * rax);
+      let bvx = 0.0, bvy = 0.0, bvz = 0.0;
+      let wbx = 0.0, wby = 0.0, wbz = 0.0;
+      if (b >= 0) {
+        wbx = omega[b * 3 + 0]; wby = omega[b * 3 + 1]; wbz = omega[b * 3 + 2];
+        bvx = body.vel(b, 0) + (wby * rbz - wbz * rby);
+        bvy = body.vel(b, 1) + (wbz * rbx - wbx * rbz);
+        bvz = body.vel(b, 2) + (wbx * rby - wby * rbx);
+      }
+
+      // Separating velocity along the normal. The two cases read differently
+      // because the stored normal does: from `a` toward `b` for a pair, and out
+      // of the wall for a plane — the same mirroring the linear path has.
+      const vn = b < 0
+        ? (avx * nx + avy * ny + avz * nz)
+        : ((bvx - avx) * nx + (bvy - avy) * ny + (bvz - avz) * nz);
+
+      const restitution = b >= 0
+        ? 0.5 * (params.restitution[a] + params.restitution[b]) : params.restitution[a];
+      const mu = b >= 0
+        ? 0.5 * (params.friction[a] + params.friction[b]) : params.friction[a];
+
+      const rot_n = rotational_term(params, a, rax, ray, raz, nx, ny, nz) +
+                    (b >= 0 ? rotational_term(params, b, rbx, rby, rbz, nx, ny, nz) : 0.0);
+      const kn = inv_sum + rot_n;
+      let jn = 0.0;
+      if (kn > 0.0) {
+        // The bias is absent from `desired` on purpose: this is the rule. A
+        // correction that reached the impulse would be a torque with no force
+        // behind it, and a resting body would turn on it (§5.1).
+        const desired = Math.max(0.0, -restitution * vn);
+        if (vn < desired) {
+          jn = (desired - vn) / kn;
+          if (b < 0) {
+            body.setVel(a, body.vel(a, 0) + jn * inv_a * nx,
+                           body.vel(a, 1) + jn * inv_a * ny,
+                           body.vel(a, 2) + jn * inv_a * nz);
+            apply_torque(params, omega, a, rax, ray, raz, jn, nx, ny, nz, 1.0);
+          } else {
+            body.setVel(a, body.vel(a, 0) - jn * inv_a * nx,
+                           body.vel(a, 1) - jn * inv_a * ny,
+                           body.vel(a, 2) - jn * inv_a * nz);
+            apply_torque(params, omega, a, rax, ray, raz, jn, nx, ny, nz, -1.0);
+            body.setVel(b, body.vel(b, 0) + jn * inv_b * nx,
+                           body.vel(b, 1) + jn * inv_b * ny,
+                           body.vel(b, 2) + jn * inv_b * nz);
+            apply_torque(params, omega, b, rbx, rby, rbz, jn, nx, ny, nz, 1.0);
+          }
+        }
+      }
+
+      // Friction at the same point, from the velocity the normal impulse just
+      // produced — and this is the half that spins a body up. A sphere sliding
+      // on the floor gains ω until `ω × r = −v` at the contact, which is what
+      // "rolling" means; a linear-only model slides to a halt instead (measured:
+      // 0.051 v₀ with no rotation against 0.716 v₀ and 5.72 rad).
+      if (mu > 0.0 && inv_sum > 0.0) {
+        const w1x = omega[a * 3 + 0], w1y = omega[a * 3 + 1], w1z = omega[a * 3 + 2];
+        let tvx = body.vel(a, 0) + (w1y * raz - w1z * ray);
+        let tvy = body.vel(a, 1) + (w1z * rax - w1x * raz);
+        let tvz = body.vel(a, 2) + (w1x * ray - w1y * rax);
+        if (b >= 0) {
+          const u1x = omega[b * 3 + 0], u1y = omega[b * 3 + 1], u1z = omega[b * 3 + 2];
+          tvx = (body.vel(b, 0) + (u1y * rbz - u1z * rby)) - tvx;
+          tvy = (body.vel(b, 1) + (u1z * rbx - u1x * rbz)) - tvy;
+          tvz = (body.vel(b, 2) + (u1x * rby - u1y * rbx)) - tvz;
+        } else {
+          tvx = -tvx; tvy = -tvy; tvz = -tvz;
+        }
+        // The tangential part of the relative velocity.
+        const vn_now = tvx * nx + tvy * ny + tvz * nz;
+        tvx -= vn_now * nx; tvy -= vn_now * ny; tvz -= vn_now * nz;
+        const tlen = Math.sqrt(tvx * tvx + tvy * tvy + tvz * tvz);
+        if (tlen > 1.0e-12) {
+          const tx = tvx / tlen, ty = tvy / tlen, tz = tvz / tlen;
+          const kt = inv_sum + rotational_term(params, a, rax, ray, raz, tx, ty, tz) +
+                     (b >= 0 ? rotational_term(params, b, rbx, rby, rbz, tx, ty, tz) : 0.0);
+          if (kt > 0.0) {
+            // The impulse that would stop the sliding, clamped into the Coulomb
+            // cone of the normal impulse it rides on — which for a resting body
+            // is its weight's impulse for this sub-step, so the cone is right
+            // without a special case.
+            const cone = mu * jn;
+            let jt = -tlen / kt;
+            if (jt < -cone) jt = -cone;
+            if (jt > cone) jt = cone;
+            body.setVel(a, body.vel(a, 0) - jt * inv_a * tx,
+                           body.vel(a, 1) - jt * inv_a * ty,
+                           body.vel(a, 2) - jt * inv_a * tz);
+            apply_torque(params, omega, a, rax, ray, raz, jt, tx, ty, tz, -1.0);
+            if (b >= 0) {
+              body.setVel(b, body.vel(b, 0) + jt * inv_b * tx,
+                             body.vel(b, 1) + jt * inv_b * ty,
+                             body.vel(b, 2) + jt * inv_b * tz);
+              apply_torque(params, omega, b, rbx, rby, rbz, jt, tx, ty, tz, 1.0);
+            }
+          }
+        }
+      }
+
+      // The positional correction, linear only: a velocity change along the
+      // normal, split by inverse mass for a pair and whole for a plane, gated by
+      // the slop so a contact that is barely touching is not corrected at all.
+      if (penetration > slop) {
+        if (b < 0) {
+          body.setVel(a, body.vel(a, 0) + bias * nx,
+                         body.vel(a, 1) + bias * ny,
+                         body.vel(a, 2) + bias * nz);
+        } else if (inv_sum > 0.0) {
+          const share = bias / inv_sum;
+          body.setVel(a, body.vel(a, 0) - share * inv_a * nx,
+                         body.vel(a, 1) - share * inv_a * ny,
+                         body.vel(a, 2) - share * inv_a * nz);
+          body.setVel(b, body.vel(b, 0) + share * inv_b * nx,
+                         body.vel(b, 1) + share * inv_b * ny,
+                         body.vel(b, 2) + share * inv_b * nz);
+        }
+      }
+      continue;
+    }
 
     // Relative velocity along the normal: positive means separating.
     let vn = 0.0;
@@ -480,7 +936,29 @@ export class WorldConfig {
   sleepSpeed: f64 = 0.1;
   /** Consecutive frames below it before a body sleeps. */
   sleepFrames: u32 = 30;
+  /**
+   * Opt into the angular model: fourteen slots per body instead of six,
+   * quaternions in the state, a diagonal inertia per body, and friction that
+   * carries a torque (chunk 8). `false` is the linear model chunk 6 measured and
+   * chunk 7 made stop — the default, and the permanent regression.
+   */
+  angular: bool = false;
+  /**
+   * What each body's inertia is. The *collider* set does not change — spheres
+   * and planes either way — so a body with `SHAPE_BOX` is a sphere's contact
+   * geometry carrying a box's inertia, which is what a tumbling crate needs from
+   * this layer and what the probe measured.
+   */
+  shape: u32 = SHAPE_SPHERE;
+  boxHalfX: f64 = 0.5;
+  boxHalfY: f64 = 0.5;
+  boxHalfZ: f64 = 0.5;
 }
+
+/** A body whose inertia is the sphere's: `I = (2/5) m r²` about every axis. */
+export const SHAPE_SPHERE: u32 = 0;
+/** A body whose inertia is a cuboid's, from `boxHalfX/Y/Z`. */
+export const SHAPE_BOX: u32 = 1;
 
 /**
  * The world: the solver, the state, the contacts and the cadence, in one place.
@@ -508,13 +986,30 @@ export class World {
   private previous!: Float64Array;
   /** How far each body has travelled during its current quiet window. */
   private travel!: Float64Array;
+  /** Slots per body per half: 3 linear, 7 angular. */
+  private half: i32;
+  private angular: bool;
+  /**
+   * The angular velocities recovered from the state's `q'` pair, one per body,
+   * for the duration of one resolve pass. The state carries `q' = ½ω⊗q`, so the
+   * response works here and the write-back puts the result back into the state —
+   * there is no second source of truth, only a scratch for the pass.
+   */
+  private omega!: Float64Array;
 
   private constructor(solver: Solver, config: WorldConfig) {
     this.solver = solver;
     this.config = config;
-    const dim = config.bodies * 6;
+    // Locals first: AssemblyScript refuses to read `this` before every field has
+    // been assigned, and the fields below are sized from these.
+    const angular = config.angular;
+    const half = angular ? 7 : 3;
+    this.angular = angular;
+    this.half = half;
+    const dim = config.bodies * half * 2;
     this.buffer = new Float64Array(dim + 1);
-    this.body = new Body(this.buffer, config.bodies, 1);
+    this.body = new Body(this.buffer, config.bodies, 1, half);
+    this.omega = new Float64Array(config.bodies * 3);
     // One pair per body and one contact per body per plane is the common case;
     // the buffer is sized for the worst realistic pile rather than the best.
     this.contacts = new Contacts(<i32>Math.max(config.bodies * 8, 64));
@@ -525,9 +1020,25 @@ export class World {
     this.previous = new Float64Array(config.bodies * 3);
     this.travel = new Float64Array(config.bodies);
     for (let i = 0; i < config.bodies; i++) {
+      // The angular model's default orientation is the identity — an all-zero
+      // quaternion is not a rotation at all, and a body that started as one would
+      // have no orientation to recover ω from, so every angular path would be
+      // silently dead. A caller who wants a different one calls `setQuat`.
+      if (angular) this.body.setQuat(i, 0.0, 0.0, 0.0, 1.0);
       this.params.set(i, config.radius, config.mass, config.restitution, config.friction);
+      if (this.angular && config.shape == SHAPE_BOX) {
+        // A cuboid's principal moments: Ix = m(hy² + hz²)/3 and its cyclic twins.
+        const m = config.mass;
+        this.params.setMoments(i,
+          m * (config.boxHalfY * config.boxHalfY + config.boxHalfZ * config.boxHalfZ) / 3.0,
+          m * (config.boxHalfX * config.boxHalfX + config.boxHalfZ * config.boxHalfZ) / 3.0,
+          m * (config.boxHalfX * config.boxHalfX + config.boxHalfY * config.boxHalfY) / 3.0);
+      }
     }
   }
+
+  /** The state vector's length: `6N` linear, `14N` angular. */
+  stateDim(): i32 { return this.config.bodies * this.half * 2; }
 
   /**
    * Build a world, or `null` when the solver refuses the config — an
@@ -535,12 +1046,16 @@ export class World {
    * (dim = 6N must fit 8192 f64 slots, so N <= 1365), a full solver table.
    */
   static create(config: WorldConfig): World | null {
-    if (config.bodies <= 0 || config.bodies * 6 > 8192) return null;
+    const dim = config.bodies * (config.angular ? 14 : 6);
+    // The state has to fit the ABI's 64 KiB callback buffer: 8192 f64 slots, so
+    // N <= 1365 linear and N <= 585 angular.
+    if (config.bodies <= 0 || dim > 8192) return null;
     const solver_config = new SolverConfig();
     solver_config.method = "verlet";
     solver_config.source = "wasm";
-    solver_config.dim = config.bodies * 6;
+    solver_config.dim = dim;
     gravity_y = config.gravity;
+    derivative_mode = config.angular ? MODEL_ANGULAR : MODEL_LINEAR;
     const solver = Solver.create(solver_config, {
       derivative: physics_derivative, bufIn: physics_buf_in, bufOut: physics_buf_out,
     });
@@ -572,11 +1087,22 @@ export class World {
   /** Wake every body, for a change that could have touched any of them. */
   wakeAll(): void { this.sleep.wakeAll(); }
 
+  /** Push the buffer into the solver — what makes a write through the accessors
+   * stick. `step` reads the solver's state back at the top of every sub-step, so
+   * a write that stays in the buffer alone would be overwritten before it was
+   * ever integrated. */
+  private flush(): void {
+    this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + this.stateDim()));
+  }
+
   /** Set a body's velocity, and wake it: a body that was asleep has not been
-   * evaluated under this velocity, and a sleeping one ignores it entirely. */
+   * evaluated under this velocity, and a sleeping one ignores it entirely. The
+   * write reaches the solver immediately, so this works mid-simulation and not
+   * only before `seed`. */
   setVelocity(index: i32, vx: f64, vy: f64, vz: f64): void {
     this.body.setVel(index, vx, vy, vz);
     this.sleep.wake(index);
+    this.flush();
   }
 
   /** Change a body's parameters, and wake it, for the same reason. */
@@ -593,14 +1119,30 @@ export class World {
   place(index: i32, x: f64, y: f64, z: f64): void {
     this.body.setPos(index, x, y, z);
     this.body.setVel(index, 0.0, 0.0, 0.0);
+    // "At rest" includes the orientation: with the angular model the derivative
+    // slots are zeroed too, so a placed body is not still spinning.
+    if (this.angular) this.body.setDquat(index, 0.0, 0.0, 0.0, 0.0);
     this.sleep.wake(index); // placed is not asleep, whatever it was before
   }
 
   /** Push the seeded state into the solver. Call once, after the placements. */
   seed(): i32 {
-    const dim = this.config.bodies * 6;
+    const dim = this.stateDim();
     if (this.solver.setState(0.0, this.buffer.subarray(1, 1 + dim)) != 0) return -1;
     return 0;
+  }
+
+  /**
+   * Set a body's angular velocity (chunk 8), and wake it. The state stores the
+   * derivative `q' = ½ω⊗q`, so this writes the pair rather than a new field —
+   * and it renormalizes the quaternion while it is there, which is why a caller
+   * can hand this any orientation it likes.
+   */
+  setAngularVelocity(index: i32, wx: f64, wy: f64, wz: f64): void {
+    if (!this.angular) return;
+    this.body.writePose(index, wx, wy, wz);
+    this.sleep.wake(index);
+    this.flush();
   }
 
   /**
@@ -650,8 +1192,25 @@ export class World {
       }
       this.readState();
       this.detect();
-      resolve(this.contacts, this.body, this.params, this.sleep, this.config.bias, h);
-      const dim = this.config.bodies * 6;
+      if (this.angular) {
+        // Recover ω from each body's own pair, resolve in the ω domain, and put
+        // the result back as `q' = ½ω⊗q` — renormalizing the quaternion as it
+        // goes. Sleeping bodies are left alone entirely: their pair is already
+        // zero and their orientation already unit, and renormalizing a frozen
+        // body would change its bits (the acid test's stillness is bit-for-bit).
+        for (let i = 0; i < this.config.bodies; i++) {
+          this.body.recoverOmega(i, this.omega, i * 3);
+        }
+        resolve(this.contacts, this.body, this.params, this.sleep, this.config.bias, h,
+                this.omega, this.config.slop);
+        for (let i = 0; i < this.config.bodies; i++) {
+          if (this.sleep.isAsleep(i)) continue;
+          this.body.writePose(i, this.omega[i * 3], this.omega[i * 3 + 1], this.omega[i * 3 + 2]);
+        }
+      } else {
+        resolve(this.contacts, this.body, this.params, this.sleep, this.config.bias, h);
+      }
+      const dim = this.stateDim();
       if (this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + dim)) != 0) {
         sleep_mask = null;
         return -1;
@@ -666,7 +1225,7 @@ export class World {
     // Measured: without this write, every body was asleep and the kinetic energy
     // was 0.0044 instead of 0 — sleepers holding the last velocity they had,
     // frozen but not zero.
-    const dim = this.config.bodies * 6;
+    const dim = this.stateDim();
     if (this.solver.setState(this.buffer[0], this.buffer.subarray(1, 1 + dim)) != 0) return -1;
     return 0;
   }
@@ -704,8 +1263,10 @@ export class World {
       if (average < threshold) {
         this.sleep.asleep[i] = 1;
         // Zeroed here, and the derivative keeps it zero: this is what makes the
-        // acid test's "kinetic energy is exactly 0" an equality.
+        // acid test's "kinetic energy is exactly 0" an equality. The angular
+        // model zeroes the pair, so a slept body has no spin to wake up with.
         this.body.setVel(i, 0.0, 0.0, 0.0);
+        if (this.angular) this.body.setDquat(i, 0.0, 0.0, 0.0, 0.0);
       }
       // Either way the window rolls: slept bodies stop being counted at the top
       // of the loop, and a body that did not sleep starts a fresh window.
@@ -753,26 +1314,53 @@ export class World {
   /**
    * One motion entry per body, committed by the caller.
    *
-   * Positions only: this model has no angular state, so a body keeps the
-   * orientation it was submitted with. A rolling orientation would be a
-   * kinematic face on a linear model — pleasant to look at and not what the
-   * simulation computed — which is why the layer does not paint one.
+   * In the linear model, positions only: that model has no orientation state, so
+   * a body keeps the orientation it was submitted with, and painting a rolling
+   * one on would be a kinematic face on a linear model — pleasant to look at and
+   * not what the simulation computed.
+   *
+   * In the angular model the orientation **is** simulated, so `setPose` writes
+   * it: the quaternion goes to the wire at @32 and the adapter applies it with
+   * `setOrientation`, which is why tumbling needs no wire change at all.
    */
   pose(batch: MotionBatch): void {
     const scale: f32 = <f32>this.config.meshScale;
+    if (this.half == 7) {
+      for (let i = 0; i < this.config.bodies; i++) {
+        const at = 1 + i * 7;
+        batch.setPose(<u32>i, this.config.firstRenderableId + <u32>i,
+                      <f32>this.buffer[at + 0], <f32>this.buffer[at + 1], <f32>this.buffer[at + 2],
+                      <f32>this.buffer[at + 3], <f32>this.buffer[at + 4],
+                      <f32>this.buffer[at + 5], <f32>this.buffer[at + 6], scale);
+      }
+      return;
+    }
     for (let i = 0; i < this.config.bodies; i++) {
       batch.setFromState(<u32>i, this.config.firstRenderableId + <u32>i, this.buffer,
                          1 + i * 3, 1 + i * 3 + 1, 1 + i * 3 + 2, scale);
     }
   }
 
-  /** Sum of ½·m·|v|² over the bodies — the number the acid test bounds. */
+  /**
+   * Sum of ½·m·|v|² over the bodies — the number the acid test bounds — plus
+   * ½·ωᵀIω in the angular model, because a spinning body that is not going
+   * anywhere still has energy and a simulation that called that zero would be
+   * lying about its own state.
+   */
   kineticEnergy(): f64 {
     let total = 0.0;
     for (let i = 0; i < this.config.bodies; i++) {
       const vx = this.body.vel(i, 0), vy = this.body.vel(i, 1), vz = this.body.vel(i, 2);
       const mass = this.params.invMass[i] > 0.0 ? 1.0 / this.params.invMass[i] : 0.0;
       total += 0.5 * mass * (vx * vx + vy * vy + vz * vz);
+      if (this.angular) {
+        this.body.recoverOmega(i, this.omega, i * 3);
+        for (let axis = 0; axis < 3; axis++) {
+          const w = this.omega[i * 3 + axis];
+          const inv_i = this.params.invInertiaAt(i, axis);
+          if (inv_i > 0.0) total += 0.5 * w * w / inv_i;
+        }
+      }
     }
     return total;
   }

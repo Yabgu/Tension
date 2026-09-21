@@ -40,6 +40,15 @@ export function getMotionBase(): usize {
  * One batch per frame is the shape this exists for; a second `set` on the same
  * index simply replaces the entry, and `commit` may be called as often as the
  * caller likes (each call sends the whole table as it stands).
+ *
+ * **The writers are a family of whole-transform writers, and each one resets
+ * what it does not set.** A motion entry is a whole transform, so a writer that
+ * sets a position and nothing else must still say what the rotation and the
+ * scale are — leaving them out would leave the previous frame's rotation on a
+ * body that has stopped rotating. `set` and `setFromState` write the **identity
+ * rotation** and the given scale; `setPose` writes the rotation it is given and
+ * the given scale. A caller that wants to keep a rotation and change only the
+ * position uses `setPose` with the rotation it has.
  */
 export class MotionBatch {
   private base: usize;
@@ -78,6 +87,38 @@ export class MotionBatch {
     store<f32>(at + 36, 0);
     store<f32>(at + 40, 0);
     store<f32>(at + 44, 1); // w
+    store<f32>(at + 48, scale);
+    store<f32>(at + 52, scale);
+    store<f32>(at + 56, scale);
+    store<f32>(at + 60, 0);
+    if (index + 1 > this.entries) this.entries = index + 1;
+  }
+
+  /**
+   * Write entry `index` as a whole transform: a renderable id, a position, a
+   * quaternion, and a scale (chunk 8).
+   *
+   * The quaternion goes where `set` writes the identity — rotation at @32, in
+   * the wire record's `(x, y, z, w)` order — and the scale at @48. Unlike `set`,
+   * which is a position writer and therefore identity for the rotation, this one
+   * is the rotation writer: it is what a tumbling body's frame needs, and the
+   * adapter applies it with `setOrientation`.
+   */
+  setPose(index: u32, id: u32, x: f32, y: f32, z: f32,
+          qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
+    if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
+    const at = this.base + <usize>index * MOTION_SIZE;
+    store<u32>(at + 0, id);
+    store<u32>(at + 4, 0); // flags, reserved
+    store<u64>(at + 8, 0); // pad0, which is what puts the transform at 16
+    store<f32>(at + 16, x);
+    store<f32>(at + 20, y);
+    store<f32>(at + 24, z);
+    store<f32>(at + 28, 0);
+    store<f32>(at + 32, qx);
+    store<f32>(at + 36, qy);
+    store<f32>(at + 40, qz);
+    store<f32>(at + 44, qw);
     store<f32>(at + 48, scale);
     store<f32>(at + 52, scale);
     store<f32>(at + 56, scale);
