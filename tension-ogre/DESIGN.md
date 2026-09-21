@@ -916,6 +916,27 @@ are recorded because each of them was a failing test first:
 a noisy one and its average crosses the threshold. A body that is genuinely
   moving still never sleeps — its average over the whole window is its speed.
 
+**The angular model gets a second signal, and it ships (8c1).** The decision is
+linear displacement per frame **and** angular displacement per frame, both
+averaged over the same 30-frame window: a body sleeps when both averages are
+below their thresholds — `sleepSpeed` 0.1 m/s, `sleepAngularSpeed` **0.06 rad/s**
+(0.001 rad per frame at 60 Hz). The threshold is grounded in chunk 8a's Q5, which
+turned a resting box at most 0.0079 rad over 600 frames — **~1.3e-5 rad/frame** —
+so it sits two orders of magnitude above the measured jitter and well below any
+spin a viewer would call motion. Angular **displacement** is used rather than
+`|ω|` for the same reason chunk 7 uses linear displacement rather than `|v|`:
+raw angular velocity carries the positional bias the response last pushed the body
+out by, while the angle between two frames is what "has this body stopped
+turning?" actually means. The measurement is the shortest arc between the two
+orientations, `2·acos(|dot(q_prev, q_now)|)`, with the absolute value handling
+the quaternion double cover — `q` and `−q` are the same rotation, and the arc
+must not go the long way round. The linear model evaluates neither the signal nor
+its threshold, which is why chunk 6 and 7's numbers are unchanged to the last
+digit. What the signal fixes, measured: a free body spun at 1 rad/s displaces
+nothing at all, scored 0.0 m/s on the linear signal, slept at frame 30 and had
+its spin zeroed with it — **0.5 rad of a second's turn**, which the unit test
+pinned as a limitation in 8b and now asserts the fix for.
+
 **Sleeping lives in the derivative mask, and it is not an optimization.** One
 solver integrates the whole state vector; there is no per-body stepping and this
 layer does not add one. The World zeroes a body's velocity when it sleeps and
@@ -1740,13 +1761,15 @@ chunk 1 work, and each is additive:
   axes have swung away from them (chunk 8b ships it that way, with the
   simplification stated at the field); **capsules and other non-diagonal
   shapes**, which need the same thing plus a narrow phase that is not a corner
-  list; **angular sleeping**, where the windowed signal should be `|v| + |ω|·r`
-  rather than `|v|` alone — a body spinning in place is not asleep, and chunk 8b
-  measured exactly that: a free body spun at 1 rad/s turns 0.5 rad instead of 1.0
-  because the linear signal sleeps it at frame 30 and zeroes the spin with it,
-  which `tension-framework/tests/guest-physics-units.ts` now pins as a failing
-  test waiting for the refinement (the probe had already measured transient
-  `|ω|` spikes up to 0.25 rad/s on a body that is not going anywhere); **wake
+  list; **angular sleeping shipped in 8c1** — and in a different shape than this
+  list sketched, which is worth keeping: the signal is angular *displacement*
+  (the angle between two frames, averaged over the same window as the linear
+  one), not `|v| + |ω|·r`, because mixing a linear speed with an angular one
+  needs a length to make them comparable and a body has no single one — two
+  signals, two thresholds, one window, and a body sleeps when both say still
+  (§5.1). Chunk 8b had measured the failure it fixes: a free body spun at 1 rad/s
+  turns 0.5 rad instead of 1.0 when the linear signal sleeps it at frame 30 and
+  zeroes the spin with it. **Wake
   propagation** to neighbours, since today a sleeper wakes only on direct
   contact; **friction that does not creep** — the resting box's 0.044 m of
   drift over 600 frames is one-pass friction at four corners, and the honest

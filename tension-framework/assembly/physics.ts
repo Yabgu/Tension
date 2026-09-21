@@ -57,7 +57,18 @@
 // optimization.** A body that has been below the sleep threshold long enough
 // stops being integrated and stops being moved: its velocity is zeroed and the
 // derivative writes zeros for it, so the pile holds its positions bit-for-bit
-// and the frame stops changing. The solver still visits every slot — it
+// and the frame stops changing.
+//
+// **The angular model gets a second signal, because a body spinning in place
+// displaces nothing.** The decision is linear displacement per frame *and*
+// angular displacement per frame, both averaged over the same window — and the
+// angular signal is a *displacement* rather than a `|ω|` for exactly the reason
+// chunk 7 chose displacement over velocity: raw angular velocity carries the
+// bias the response last pushed the body out by, while the angle between two
+// frames is what "has this body stopped turning?" actually means. Without it a
+// free body spun at 1 rad/s scored 0.0 m/s, slept at frame 30, and had its spin
+// zeroed with it — measured, 0.5 rad of a second's turn. The linear model
+// evaluates neither the signal nor the threshold. The solver still visits every slot — it
 // integrates one system, not N bodies — so nothing here is faster for having
 // slept; what it is, is still.
 
@@ -305,6 +316,15 @@ export class SleepState {
   asleep: Uint8Array;
   /** The speed below which a body counts as still, in m/s. */
   speed: f64 = 0.1;
+  /**
+   * The *angular* speed below which a body counts as still, in rad/s — 0.06,
+   * which is 0.001 rad per frame at 60 Hz. The grounding is chunk 8a's Q5: a
+   * resting box turned at most 0.0079 rad over 600 frames, ~1.3e-5 rad/frame
+   * (7.9e-4 rad/s), so the threshold sits two orders of magnitude above the
+   * measured jitter and well below any spin a viewer would call motion. Only
+   * the angular model reads it.
+   */
+  angularSpeed: f64 = 0.06;
   /** Consecutive frames below it before a body sleeps. */
   frames: u32 = 30;
 
@@ -934,6 +954,9 @@ export class WorldConfig {
    * test's own rest threshold and sits above the 0.057 m/s creep chunk 6
    * measured — a threshold at 0.05 would sleep nothing. */
   sleepSpeed: f64 = 0.1;
+  /** The angular counterpart, in rad/s — 0.001 rad/frame at 60 Hz, and only the
+   * angular model reads it (see `SleepState.angularSpeed` for the grounding). */
+  sleepAngularSpeed: f64 = 0.06;
   /** Consecutive frames below it before a body sleeps. */
   sleepFrames: u32 = 30;
   /**
@@ -984,8 +1007,12 @@ export class World {
   /** Where each body was at the start of the current `step` call, for the sleep
    * signal: the displacement over a frame, not the stored velocity. */
   private previous!: Float64Array;
+  /** And which way each body pointed, for the angular half of the signal. */
+  private previous_quat!: Float64Array;
   /** How far each body has travelled during its current quiet window. */
   private travel!: Float64Array;
+  /** How far it has *turned* during the same window, in radians. */
+  private angular_travel!: Float64Array;
   /** Slots per body per half: 3 linear, 7 angular. */
   private half: i32;
   private angular: bool;
@@ -1016,9 +1043,12 @@ export class World {
     this.params = new PhysicsParams(config.bodies);
     this.sleep = new SleepState(config.bodies);
     this.sleep.speed = config.sleepSpeed;
+    this.sleep.angularSpeed = config.sleepAngularSpeed;
     this.sleep.frames = config.sleepFrames;
     this.previous = new Float64Array(config.bodies * 3);
+    this.previous_quat = new Float64Array(config.bodies * 4);
     this.travel = new Float64Array(config.bodies);
+    this.angular_travel = new Float64Array(config.bodies);
     for (let i = 0; i < config.bodies; i++) {
       // The angular model's default orientation is the identity — an all-zero
       // quaternion is not a rotation at all, and a body that started as one would
@@ -1172,6 +1202,14 @@ export class World {
       this.previous[i * 3 + 0] = this.body.pos(i, 0);
       this.previous[i * 3 + 1] = this.body.pos(i, 1);
       this.previous[i * 3 + 2] = this.body.pos(i, 2);
+      // The orientation too, when there is one to record: the angle between two
+      // frames is the angular signal, and it needs the frame before.
+      if (this.angular) {
+        this.previous_quat[i * 4 + 0] = this.body.quat(i, 0);
+        this.previous_quat[i * 4 + 1] = this.body.quat(i, 1);
+        this.previous_quat[i * 4 + 2] = this.body.quat(i, 2);
+        this.previous_quat[i * 4 + 3] = this.body.quat(i, 3);
+      }
     }
     const per_frame = this.config.substeps;
     if (per_frame <= 0) return -1;
@@ -1242,6 +1280,7 @@ export class World {
    */
   private updateSleep(dt: f64): void {
     const threshold = this.config.sleepSpeed;
+    const angular_threshold = this.config.sleepAngularSpeed;
     const span = dt > 0.0 ? dt : 1.0e-9;
     for (let i = 0; i < this.config.bodies; i++) {
       if (this.sleep.asleep[i] != 0) continue;
@@ -1257,10 +1296,29 @@ export class World {
       // that is genuinely moving still never sleeps: its average over the whole
       // window is its speed.
       this.travel[i] += Math.sqrt(dx * dx + dy * dy + dz * dz);
+      // The angular half: how far the body turned this frame, in radians. The
+      // shortest arc between the two orientations, with |dot| for the double
+      // cover — q and −q are the same rotation, so the sign of the dot product
+      // is not information and the arc must not be the long way round.
+      if (this.angular) {
+        const qx = this.body.quat(i, 0), qy = this.body.quat(i, 1);
+        const qz = this.body.quat(i, 2), qw = this.body.quat(i, 3);
+        let dot = qx * this.previous_quat[i * 4 + 0] + qy * this.previous_quat[i * 4 + 1] +
+                  qz * this.previous_quat[i * 4 + 2] + qw * this.previous_quat[i * 4 + 3];
+        if (dot < 0.0) dot = -dot;
+        if (dot > 1.0) dot = 1.0;
+        this.angular_travel[i] += 2.0 * Math.acos(dot);
+      }
       this.sleep.counter[i] += 1;
       if (this.sleep.counter[i] < this.sleep.frames) continue;
       const average = this.travel[i] / (<f64>this.sleep.counter[i] * span);
-      if (average < threshold) {
+      // Both signals have to say still. A body creeping along the floor and a
+      // body spinning on it are both moving, and either one alone keeps it awake.
+      let angular_average = 0.0;
+      if (this.angular) {
+        angular_average = this.angular_travel[i] / (<f64>this.sleep.counter[i] * span);
+      }
+      if (average < threshold && (!this.angular || angular_average < angular_threshold)) {
         this.sleep.asleep[i] = 1;
         // Zeroed here, and the derivative keeps it zero: this is what makes the
         // acid test's "kinetic energy is exactly 0" an equality. The angular
@@ -1271,6 +1329,7 @@ export class World {
       // Either way the window rolls: slept bodies stop being counted at the top
       // of the loop, and a body that did not sleep starts a fresh window.
       this.travel[i] = 0.0;
+      this.angular_travel[i] = 0.0;
       this.sleep.counter[i] = 0;
     }
   }

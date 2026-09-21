@@ -12,10 +12,12 @@
 //      zero relative velocity must produce **no** impulse at all;
 //   3. the bias does not spin a resting body — and, as the control that keeps
 //      that from being vacuous, friction spins a sliding one;
-//   4. a body with no contacts holds its ω across sixty steps;
-//   5. the linear model is unchanged: deterministic, correct on a drop, and
+//   4. a spinning body does not sleep, and a slowly spinning one does — the two
+//      halves of the angular sleep signal (8c1);
+//   5. a body with no contacts holds its ω across sixty steps;
+//   6. the linear model is unchanged: deterministic, correct on a drop, and
 //      still exactly still after it sleeps;
-//   6. `MotionBatch.setPose` writes the offsets the wire catalogue names.
+//   7. `MotionBatch.setPose` writes the offsets the wire catalogue names.
 //
 // The shape follows the framework's other fixtures: print OK, exit 0
 // (`tension-framework/tests/run.sh`). It needs a session — for the buffer pool
@@ -251,15 +253,14 @@ function test_bias_does_not_spin_resting_box(): void {
 /// rad for a body spun at 1 rad/s for one second, and |q| drifting by 0.0002 %
 /// without renormalization; with the write-back's renormalization the second
 /// number is exactly 1.
-function test_resting_body_holds_omega(): void {
-  print("4. a body with no contacts holds its ω");
-  // Sleeping is off for the measurement, and that is a *finding* rather than a
-  // convenience: the sleep signal is the body's displacement per frame, and a
-  // body spinning in place does not displace at all. Under the default policy it
-  // scores 0.0 m/s, sleeps after 30 frames, and its spin is zeroed with it — see
-  // the second half of this test, which pins that, and §12, which carries the
-  // refinement (`|v| + |ω|·r`).
-  const world = make_world(1, true, 0.0, 0.0, SHAPE_SPHERE, 0.0);
+function test_spinning_body_does_not_sleep(): void {
+  print("4. a spinning body does not sleep (the angular signal)");
+  // Default thresholds throughout — 0.1 m/s and 0.06 rad/s — and no sleeping
+  // switched off for the measurement, because the measurement *is* the policy.
+  // A free body spun at 1 rad/s displaces nothing at all: the linear signal
+  // reads 0.0 m/s and, before the angular signal existed, slept it at frame 30
+  // and zeroed the spin with it — 0.5 rad of a second's rotation, measured.
+  const world = make_world(1, true, 0.0, 0.0);
   check("free-body world created", world != null);
   if (world == null) return;
   const body = world!.bodies();
@@ -276,45 +277,85 @@ function test_resting_body_holds_omega(): void {
   const angle = quat_angle(body.quat(0, 0), body.quat(0, 1), body.quat(0, 2), body.quat(0, 3));
   const norm = Math.sqrt(body.quat(0, 0) * body.quat(0, 0) + body.quat(0, 1) * body.quat(0, 1) +
                          body.quat(0, 2) * body.quat(0, 2) + body.quat(0, 3) * body.quat(0, 3));
+  check("it does not sleep, though it displaces nothing", world!.asleepCount() == 0,
+        "asleep=" + world!.asleepCount().toString());
   check("ω is unchanged after 60 steps (1.0 rad/s)", nearly(wy, 1.0, 1.0e-6),
         "wy=" + wy.toString());
-  check("the body turned 1.0 rad in one second", nearly(angle, 1.0, 1.0e-4),
+  // 1e-4 rather than the 1e-6 a clean 1.0 rad would suggest: the gap is
+  // Verlet's own phase error over 240 sub-steps (chunk 8a's probe measured
+  // 1.0000101 rad), not the sleep signal's — the signal either keeps the body
+  // turning or stops it, and 0.5 rad is what stopping looked like.
+  check("the body turned a full radian in one second", nearly(angle, 1.0, 1.0e-4),
         "angle=" + angle.toString());
   check("|q| is 1 within 1e-6 (the write-back renormalizes)", nearly(norm, 1.0, 1.0e-6),
         "|q|=" + norm.toString());
   check("no drift into the other axes",
         nearly(body.omega(0, 0), 0.0, 1.0e-9) && nearly(body.omega(0, 2), 0.0, 1.0e-9));
   world!.destroy();
-
-  // The same body under the default sleep policy: it stops, and the reason is
-  // the policy's signal rather than the integrator. Pinned here so §12's
-  // refinement has a failing test waiting for it.
-  {
-    const sleeper = make_world(1, true, 0.0, 0.0);
-    if (sleeper == null) { check("sleeper world created", false); return; }
-    const body = sleeper!.bodies();
-    sleeper!.place(0, 0.0, 5.0, 0.0);
-    sleeper!.setAngularVelocity(0, 0.0, 1.0, 0.0);
-    sleeper!.seed();
-    for (let frame: i32 = 0; frame < 60; frame++) sleeper!.step(DT);
-    check("a body spinning in place sleeps under the linear sleep signal (§12)",
-          sleeper!.asleepCount() == 1);
-    check("and its spin is zeroed with it", body.omega(0, 1) == 0.0);
-    const angle = quat_angle(body.quat(0, 0), body.quat(0, 1), body.quat(0, 2), body.quat(0, 3));
-    check("so it turned only half as far as the free body above",
-          nearly(angle, 0.5, 0.02), "angle=" + angle.toString());
-    sleeper!.destroy();
-  }
 }
 
-// ── 5. the linear model is unchanged ─────────────────────────────────────
+/// The other half of the signal: a body turning below the threshold still
+/// sleeps, and sleeping freezes it — the orientation at frame 30 is the
+/// orientation at frame 60, bit for bit. 0.03 rad/s is 0.0005 rad per frame at
+/// 60 Hz, half the 0.001 rad/frame the threshold is stated in.
+function test_slowly_spinning_body_sleeps(): void {
+  print("5. a slowly spinning body sleeps");
+  const world = make_world(1, true, 0.0, 0.0);
+  check("slow-spin world created", world != null);
+  if (world == null) return;
+  const body = world!.bodies();
+  world!.place(0, 0.0, 5.0, 0.0);
+  world!.setAngularVelocity(0, 0.0, 0.03, 0.0);
+  world!.seed();
+  for (let frame: i32 = 0; frame < 30; frame++) {
+    if (world!.step(DT) != 0) break;
+  }
+  check("it sleeps at frame 30 (the window's end)", world!.asleepCount() == 1);
+  const settled = new Float64Array(4);
+  for (let k: i32 = 0; k < 4; k++) settled[k] = body.quat(0, k);
+  for (let frame: i32 = 0; frame < 30; frame++) {
+    if (world!.step(DT) != 0) break;
+  }
+  let frozen = true;
+  for (let k: i32 = 0; k < 4; k++) {
+    if (settled[k] != body.quat(0, k)) frozen = false;
+  }
+  check("and the orientation never changes again (bit for bit)", frozen);
+  const angle = quat_angle(settled[0], settled[1], settled[2], settled[3]);
+  check("it turned for half a second before it stopped (~0.015 rad)",
+        nearly(angle, 0.015, 1.0e-4), "angle=" + angle.toString());
+  check("and its spin was zeroed with it", body.omega(0, 1) == 0.0);
+  world!.destroy();
+}
+
+/// The chunk-7 case in the angular model: a box resting on the floor, jittering
+/// at ~1.3e-5 rad/frame (chunk 8a's Q5), still sleeps. This is the check that the
+/// new threshold is *above* the jitter rather than inside it.
+function test_resting_box_still_sleeps(): void {
+  print("6. a resting box still sleeps");
+  const world = make_world(1, true, -9.81, 0.2, SHAPE_BOX);
+  check("box world created", world != null);
+  if (world == null) return;
+  world!.place(0, 0.0, 0.1 - 0.005, 0.0); // resting, 5 mm into the floor
+  world!.seed();
+  for (let frame: i32 = 0; frame < 60; frame++) {
+    if (world!.step(DT) != 0) break;
+  }
+  check("the resting box sleeps within 60 frames", world!.asleepCount() == 1);
+  const body = world!.bodies();
+  check("and its angular signal never crossed the threshold",
+        body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0);
+  world!.destroy();
+}
+
+// ── 7. the linear model is unchanged ─────────────────────────────────────
 
 /// Chunk 6 and chunk 7's invariants, on a world built the way those chunks build
 /// them: the same code must produce the same numbers twice (determinism), the
 /// drop must match the closed form, and a slept pile must be *exactly* still
 /// (kinetic energy 0.0, and the state bit-for-bit identical thirty frames apart).
 function test_linear_model_unchanged(): void {
-  print("5. the linear model is unchanged");
+  print("7. the linear model is unchanged");
 
   // A single body dropped from y = 10 for 60 frames: 10 − ½·9.81 = 5.095.
   {
@@ -396,14 +437,14 @@ function test_linear_model_unchanged(): void {
   }
 }
 
-// ── 6. MotionBatch.setPose ───────────────────────────────────────────────
+// ── 8. MotionBatch.setPose ───────────────────────────────────────────────
 
 /// The offsets are the wire catalogue's (`wire.ts`: position at @16, rotation at
 /// @32, scale at @48), and the two writers differ exactly where their contracts
 /// say they do: `set` writes the identity rotation, `setPose` writes the one it
 /// is handed.
 function test_motionbatch_setPose_writes_correct_offsets(): void {
-  print("6. MotionBatch.setPose offsets");
+  print("8. MotionBatch.setPose offsets");
   const batch = new MotionBatch();
   const base = getMotionBase();
   batch.setPose(0, 7, 1.5, -2.5, 3.5, 0.25, -0.5, 0.75, 0.8660254037844386, 2.0);
@@ -440,7 +481,9 @@ export function _start_game(): void {
   test_quaternion_recovery();
   test_impulse_no_gravity();
   test_bias_does_not_spin_resting_box();
-  test_resting_body_holds_omega();
+  test_spinning_body_does_not_sleep();
+  test_slowly_spinning_body_sleeps();
+  test_resting_box_still_sleeps();
   test_linear_model_unchanged();
   test_motionbatch_setPose_writes_correct_offsets();
 
