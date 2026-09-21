@@ -21,6 +21,14 @@
 // first dim/2 slots positions and the last dim/2 velocities, which is also a
 // fine layout for the explicit methods. dim = 6N is chunk 6's model: six f64
 // per body.
+//
+// Chunk 8's probe (8a) adds the angular model beside it: 14 slots per body,
+// seven per half — `[x, y, z, qx, qy, qz, qw | vx, vy, vz, wx, wy, wz, pad]` —
+// because a quaternion and an angular velocity do not fit in six. The two
+// models are measured with derivatives that do the same amount of *real* work
+// (the angular one composes w ⊗ q, which is what a tumbling body costs per
+// step), so the ratio between the columns is the state model's cost and not a
+// measurement artifact.
 
 #include "tension_solver.h"
 
@@ -53,12 +61,98 @@ int32_t derivative(const double *y, int32_t len, double t, double *dy, int32_t d
     return 0;
 }
 
+/// f(t, y) for chunk 8's model: seven slots per body per half. Coordinates are
+/// `[x, y, z, qx, qy, qz, qw]`, derivatives `[vx, vy, vz, q'x, q'y, q'z, q'w]`
+/// with `q' = ½ w⊗q` — the *derivative* of the quaternion, not the angular
+/// velocity, because the symplectic Verlet reads the state's second half as the
+/// coordinates' time derivative and its acceleration from the RHS's second half.
+/// The RHS is `[v, q' | a, ½ w⊗q']`, recovering `w = 2 q'⊗q⁻¹` per body.
+int32_t derivative_angular_products(const double *y, int32_t len, double t, double *dy,
+                                    int32_t dy_cap) {
+    g_evaluations += 1;
+    if (dy_cap < len) return -22; // -EINVAL
+    const int32_t half = len / 2; // 7N
+    for (int32_t base = 0; base < half; base += 7) {
+        const double vx = y[half + base + 0], vy = y[half + base + 1], vz = y[half + base + 2];
+        const double dx = y[half + base + 3], dyy = y[half + base + 4];
+        const double dz = y[half + base + 5], dw = y[half + base + 6];
+        const double qx = y[base + 3], qy = y[base + 4], qz = y[base + 5], qw = y[base + 6];
+        dy[base + 0] = vx;
+        dy[base + 1] = vy;
+        dy[base + 2] = vz;
+        dy[base + 3] = dx;
+        dy[base + 4] = dyy;
+        dy[base + 5] = dz;
+        dy[base + 6] = dw;
+        dy[half + base + 0] = 0.0;
+        dy[half + base + 1] = -9.81;
+        dy[half + base + 2] = 0.0;
+        const double n2 = qx * qx + qy * qy + qz * qz + qw * qw;
+        if (n2 <= 0.0) {
+            dy[half + base + 3] = dy[half + base + 4] = 0.0;
+            dy[half + base + 5] = dy[half + base + 6] = 0.0;
+            continue;
+        }
+        // p = q' ⊗ q*, then w = 2 p / |q|², then q'' = ½ w ⊗ q'.
+        const double pw = dw * qw + dx * qx + dyy * qy + dz * qz;
+        const double px = -dw * qx + dx * qw - dyy * qz + dz * qy;
+        const double py = -dw * qy + dx * qz + dyy * qw - dz * qx;
+        const double pz = -dw * qz - dx * qy + dyy * qx + dz * qw;
+        const double s = 2.0 / n2;
+        const double wx = s * px, wy = s * py, wz = s * pz;
+        (void)pw;
+        dy[half + base + 3] = 0.5 * (-wx * dx - wy * dyy - wz * dz);
+        dy[half + base + 4] = 0.5 * (wx * dw + wy * dz - wz * dyy);
+        dy[half + base + 5] = 0.5 * (-wx * dz + wy * dw + wz * dx);
+        dy[half + base + 6] = 0.5 * (wx * dyy - wy * dx + wz * dw);
+    }
+    (void)t;
+    return 0;
+}
+
+/// The same derivative with the products collapsed. For a torque-free body
+/// `q'' = ½ w⊗q'` and, since `q' = ½ w⊗q` implies `|q'| = ½|w||q|`, that is
+/// `-(|q'|² / |q|²) q` — a scalar multiple of q. This is the form the design
+/// proposes, and the two are measured side by side so the saving is a number
+/// rather than a claim.
+int32_t derivative_angular(const double *y, int32_t len, double t, double *dy, int32_t dy_cap) {
+    g_evaluations += 1;
+    if (dy_cap < len) return -22; // -EINVAL
+    const int32_t half = len / 2;
+    for (int32_t base = 0; base < half; base += 7) {
+        const double vx = y[half + base + 0], vy = y[half + base + 1], vz = y[half + base + 2];
+        const double dx = y[half + base + 3], dyy = y[half + base + 4];
+        const double dz = y[half + base + 5], dw = y[half + base + 6];
+        const double qx = y[base + 3], qy = y[base + 4], qz = y[base + 5], qw = y[base + 6];
+        dy[base + 0] = vx;
+        dy[base + 1] = vy;
+        dy[base + 2] = vz;
+        dy[base + 3] = dx;
+        dy[base + 4] = dyy;
+        dy[base + 5] = dz;
+        dy[base + 6] = dw;
+        dy[half + base + 0] = 0.0;
+        dy[half + base + 1] = -9.81;
+        dy[half + base + 2] = 0.0;
+        const double n2 = qx * qx + qy * qy + qz * qz + qw * qw;
+        const double d2 = dx * dx + dyy * dyy + dz * dz + dw * dw;
+        const double c = n2 > 0.0 ? d2 / n2 : 0.0;
+        dy[half + base + 3] = -c * qx;
+        dy[half + base + 4] = -c * qy;
+        dy[half + base + 5] = -c * qz;
+        dy[half + base + 6] = -c * qw;
+    }
+    (void)t;
+    return 0;
+}
+
 double now_us() {
     using clock = std::chrono::steady_clock;
     return std::chrono::duration<double, std::micro>(clock::now().time_since_epoch()).count();
 }
 
-int32_t make_solver(const std::string &method, int32_t dim, uint32_t mask) {
+int32_t make_solver(const std::string &method, int32_t dim, uint32_t mask,
+                    tension_solver_derivative_fn rhs = derivative) {
     tension_solver_config config{};
     config.method = method.c_str();
     config.method_len = static_cast<uint32_t>(method.size());
@@ -73,7 +167,7 @@ int32_t make_solver(const std::string &method, int32_t dim, uint32_t mask) {
     config.fixed_step = kDt;
     const int32_t id = tension_solver_create(&config);
     if (id < 1) return id;
-    const int32_t bound = tension_solver_bind_callbacks(id, derivative, nullptr);
+    const int32_t bound = tension_solver_bind_callbacks(id, rhs, nullptr);
     if (bound != 0) {
         tension_solver_destroy(id);
         return bound;
@@ -89,8 +183,12 @@ struct Measurement {
     double evals_per_step = 0;
 };
 
-Measurement measure(const std::string &method, int32_t dim, uint32_t mask) {
+Measurement measure(const std::string &method, int32_t dim, uint32_t mask,
+                    bool angular = false,
+                    tension_solver_derivative_fn chosen = nullptr) {
     Measurement m;
+    const tension_solver_derivative_fn rhs =
+        chosen != nullptr ? chosen : (angular ? derivative_angular : derivative);
 
     // A solver's lifetime: what create + bind + destroy cost, the number to
     // compare set_state's per-call cost against (a design that destroyed and
@@ -98,7 +196,7 @@ Measurement measure(const std::string &method, int32_t dim, uint32_t mask) {
     {
         const double started = now_us();
         for (int i = 0; i < 20; ++i) {
-            const int32_t id = make_solver(method, dim, mask);
+            const int32_t id = make_solver(method, dim, mask, rhs);
             if (id < 1) {
                 std::printf("  %s dim=%d: create refused (%d)\n", method.c_str(), dim, id);
                 std::exit(2);
@@ -108,7 +206,7 @@ Measurement measure(const std::string &method, int32_t dim, uint32_t mask) {
         m.create_destroy_us = (now_us() - started) / 20.0;
     }
 
-    const int32_t id = make_solver(method, dim, mask);
+    const int32_t id = make_solver(method, dim, mask, rhs);
     if (id < 1) {
         std::printf("  %s dim=%d: create refused (%d)\n", method.c_str(), dim, id);
         std::exit(2);
@@ -116,7 +214,22 @@ Measurement measure(const std::string &method, int32_t dim, uint32_t mask) {
 
     std::vector<double> y(static_cast<size_t>(dim), 0.0);
     std::vector<double> out(static_cast<size_t>(dim), 0.0);
-    for (int32_t i = 0; i < dim / 2; ++i) y[static_cast<size_t>(i)] = 1.0 + i;
+    if (angular) {
+        // Seeded the way an angular model is: unit quaternions (so ½ w⊗q is
+        // real work on sane numbers rather than a product of garbage), a
+        // spread of positions, and a non-zero spin per body.
+        const int32_t half = dim / 2;
+        for (int32_t base = 0; base < half; base += 7) {
+            const double body = static_cast<double>(base / 7);
+            y[static_cast<size_t>(base + 0)] = 0.5 * body;
+            y[static_cast<size_t>(base + 1)] = 1.0 + 0.25 * body;
+            y[static_cast<size_t>(base + 2)] = 0.25 * body;
+            y[static_cast<size_t>(base + 6)] = 1.0;   // qw: identity
+            y[static_cast<size_t>(half + base + 4)] = 0.25; // q'y = ½ w⊗q, w = ½ y
+        }
+    } else {
+        for (int32_t i = 0; i < dim / 2; ++i) y[static_cast<size_t>(i)] = 1.0 + i;
+    }
     if (tension_solver_set_state(id, 0.0, y.data(), dim) != 0) {
         std::printf("  seed refused\n");
         std::exit(2);
@@ -189,6 +302,74 @@ int main() {
                         each.method, n, dim, m.step_us, m.state_us, m.set_state_us,
                         m.create_destroy_us, m.evals_per_step);
         }
+    }
+
+    // Chunk 8's model, measured the same way: 14 slots per body, seven per half
+    // (`[x, y, z, qx, qy, qz, qw | vx, vy, vz, wx, wy, wz, pad]`). The prediction
+    // the design writes down is that the step scales with the slot count —
+    // 14/6 = 2.33x the linear model at the same N — and the ratio line is the
+    // check on that prediction rather than a claim about it.
+    std::printf("PHYS angular model (chunk 8): 14 slots/body, dim = 14N, "
+                "quaternion derivative q' = ½ w⊗q in the RHS\n");
+    double linear_256 = 0.0, angular_256 = 0.0;
+    for (int32_t n : counts) {
+        const int32_t dim = n * 14;
+        const Measurement m = measure("verlet", dim, kVerletMask, /*angular=*/true);
+        std::printf("PHYS verlet N=%3d dim=%5d angular: step %8.2f us  state %7.2f us  "
+                    "set_state %7.2f us  create+destroy %8.2f us  evals/step %5.2f\n",
+                    n, dim, m.step_us, m.state_us, m.set_state_us, m.create_destroy_us,
+                    m.evals_per_step);
+        if (n == 256) angular_256 = m.step_us;
+    }
+    {
+        const Measurement m = measure("verlet", 1536, kVerletMask);
+        linear_256 = m.step_us;
+        std::printf("PHYS step cost, 14 slots/body vs 6 slots/body at N=256: %.2f / %.2f = "
+                    "%.2f x (the slot-count prediction is 14/6 = 2.33 x)\n",
+                    angular_256, linear_256, angular_256 / linear_256);
+    }
+    {
+        const Measurement m = measure("verlet", 256 * 14, kVerletMask, /*angular=*/true,
+                                      derivative_angular_products);
+        std::printf("PHYS step cost at N=256, the two quaternion RHS forms: products %.2f us, "
+                    "scalar %.2f us -> the products cost %.2f x the scalar form\n",
+                    m.step_us, angular_256, m.step_us / angular_256);
+    }
+
+    // The dim = 14N acceptance question, asked through the C ABI as well as
+    // through the guest — and asked about the *step*, because the workspace
+    // query deliberately does not check evenness ("evenness is the step's
+    // business"): create is happy with an odd dim, and the step is where 7 + 6
+    // is refused. Both halves of that are worth having as a number.
+    {
+        const int32_t dim = 16 * 14;
+        const int32_t verlet_id = make_solver("verlet", dim, kVerletMask, derivative_angular);
+        const int32_t rk45_id = make_solver("rk45", dim, kRk45Mask, derivative_angular);
+        std::printf("PHYS dim=224 (N=16, 14 slots/body): create verlet -> %d, rk45 -> %d "
+                    "(both positive is acceptance)\n", verlet_id, rk45_id);
+        if (verlet_id > 0) tension_solver_destroy(verlet_id);
+        if (rk45_id > 0) tension_solver_destroy(rk45_id);
+    }
+    {
+        // A direct Fortran call at dim = 14 and dim = 7: the evenness refusal,
+        // its errno, and the two evaluations of a step that is accepted.
+        const int32_t ok_id = make_solver("verlet", 14, kVerletMask);
+        const int32_t odd_id = make_solver("verlet", 7, kVerletMask);
+        if (ok_id > 0 && odd_id > 0) {
+            const void *params = tension_solver_get_params(ok_id);
+            std::vector<double> s7(7, 0.0), w14(28, 0.0), s14(14, 0.0);
+            s14[6] = 1.0;
+            int32_t status = -1;
+            const int32_t rc_odd = tension_solver_verlet_step(s7.data(), 7, 0.0, kDt, w14.data(),
+                                                              derivative, nullptr, params, &status);
+            int32_t status_even = -1;
+            const int32_t rc_even = tension_solver_verlet_step(s14.data(), 14, 0.0, kDt, w14.data(),
+                                                               derivative, nullptr, params, &status_even);
+            std::printf("PHYS direct verlet step: dim=7 -> rc=%d (the evenness refusal), "
+                        "dim=14 -> rc=%d status=%d\n", rc_odd, rc_even, status_even);
+        }
+        if (ok_id > 0) tension_solver_destroy(ok_id);
+        if (odd_id > 0) tension_solver_destroy(odd_id);
     }
 
     // The status cross-check: one direct call to the Fortran symbol with a

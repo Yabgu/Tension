@@ -950,6 +950,94 @@ path already knows about orientation, and the only things missing are a
 `MotionBatch` writer and the dynamics themselves. No adapter, wire or session
 change is implied by tumbling bodies.
 
+**Chunk 8's angular state is fourteen f64 per body, and the integrator decides
+its shape.** The state stays `[coordinates | derivatives]` in Verlet's split —
+the first half every body's generalized coordinates, the second half their time
+derivatives — at seven slots each: coordinates `[x, y, z, qx, qy, qz, qw]`,
+derivatives `[vx, vy, vz, q'x, q'y, q'z, q'w]`, so `dim = 14N` with no padding
+slot. The second half holds **q' = ½ω⊗q**, the quaternion's derivative, *not* the
+angular velocity. That is the one thing the 8a probe changed about this design,
+and the failure it avoids has no error message anywhere:
+
+`tension_solver_symplectic.f90` is a **second-order** Verlet for `q'' = a`: its
+position update is `q += dt·v_state + ½dt²·a_rhs`, reading the velocity from the
+*state's* second half and the acceleration from the *RHS's* second half. **It
+never reads the RHS's first half.** The ERK family is first-order (`y += dt·k1`)
+and does; the symplectic family does not, and chunk 6's linear model satisfied it
+only because positions and velocities happen to be exactly a second-order pair.
+A state carrying `ω` where the solver expects `dq/dt` is integrated as
+`q += dt·ω` — measured: a body spun at 1 rad/s for one second came out at
+**1.5708 rad with |q| = 1.41421** (√2) instead of 1 rad and 1.00000. The
+`[., ωx, ωy, ωz, pad]` layout this design first proposed is therefore wrong, and
+its RHS — a perfectly correct-looking `q' = ½ω⊗q` written into the half the
+solver ignores — is what hides it.
+
+With the derivative form the RHS is `[v, q' | a, q'']` and is the *same function*
+for both families: Verlet reads the second half, rk45 both. For a torque-free
+body the second derivative collapses to a scalar multiple of the coordinate,
+`q'' = ½ω⊗q' = −(|q'|²/|q|²)·q`, so the quaternion costs no products at all —
+P1a measures that form at **3.4 µs per step against 7.4 µs** for the two-product
+version at N = 256. ω is recovered from the state's own pair (`ω = 2q'⊗q⁻¹`)
+whenever contacts need it, so nothing lives outside the state: `set_state` still
+means what it says, and the region is still the truth.
+
+Cost and cap, measured (P1a, N = 256, dim 3584): the angular step is **3.4–3.6 µs
+against the linear model's 1.33–1.39 µs — 2.4–2.7×, where the slot count predicts
+14/6 = 2.33×** — with `state` and `set_state` at **0.46 µs** (4.6× their linear
+cost) and two evaluations per step. The 64 KiB callback-buffer convention that
+gives the linear model N ≤ 1365 gives this one **N ≤ 585** (8192 f64 slots / 14).
+`WorldConfig.angular` opts in; `angular = false` stays the default, because the
+linear model is what chunk 6's state-write regression and the 1365 cap are
+measured against, and a guest that does not want tumbling should not pay 2.4× the
+state for it. The two models share the accessors, the contact generator, the
+cadence and the tests.
+
+**dim = 14N is accepted, and the evenness check is in the step, not the create.**
+Asked both ways in the probe: a guest's `create(method: "verlet", dim: 224)` and
+a direct call both return a live solver, and a step at dim = 7 returns **−22**
+(`-EINVAL`) while a step at dim = 14 returns 0 with `status = 2`. That is by
+design — `verlet_workspace_size`'s comment says evenness is the step's business —
+but it means a guest cannot learn about an odd dim from `create` alone, and the
+fallback path (rk45 at the same dim) accepts it too.
+
+**The angular impulse, and the two wirings of the position bias.** At a contact
+point `p` with unit normal `n` and `r_a = p − centre_a`, the contact-point
+velocity is `v_p = v + ω × r`, and the normal impulse is
+
+```
+j_n = (desired − v_p·n) / ( invM_a + invM_b
+                           + n·((I⁻¹_a (r_a × n)) × r_a)
+                           + n·((I⁻¹_b (r_b × n)) × r_b) )
+```
+
+applied as `v += j_n · invM · n` and `ω += I⁻¹ (r × j_n n)`. Friction is the same
+form on the tangential direction, clamped by `μ · j_n`. `I` is **diagonal** —
+per-axis moments, exact for a sphere and for a box about its axes; a full tensor
+is §12. The position bias is applied as a **linear-only velocity change and never
+through the impulse**: `desired` above is `max(0, −e · v_p·n)`, and the bias term
+does not enter `j_n`. Measured in the configuration that isolates it — one box
+corner, 2 mm of penetration, no gravity, zero relative velocity, 300 frames at
+K = 4 — the rule accumulates **exactly 0.0 rad** of rotation and the folded
+wiring accumulates **0.0356 rad (2.04°)**: an angular impulse from a positional
+correction is a torque with no force behind it, and a resting body turns on it.
+The bias keeps its 1.0 m/s cap.
+
+**A resting box creeps, and the sleeping policy is what ends it.** 600 frames of
+a box resting on four corner contacts at K = 4, the rule applied (measured): the
+box turns at most **2–16 mrad**, drifts **0.044 m** (one sequential pass) to
+**0.159 m** (two passes) horizontally, and its energy varies by **0.34 %**. With
+friction switched off the drift falls to **0.007 m**, so the wander is the
+friction impulses at the corners, each computed against a state the previous
+contact has already changed. A Jacobi pass — every normal impulse solved against
+the pre-pass velocities and applied together — does **not** remove it (0.116 m),
+which is worth knowing before someone reaches for it as the fix. What ends the
+creep is chunk 7's policy: the drift is **0.0044 m/s**, more than an order of
+magnitude under the 0.1 m/s threshold, so a settled box sleeps inside the 30-frame
+window and the pile becomes exactly still. That is why §14's chunk-8 clause
+asserts rest *through the sleep policy* rather than by waiting for physical rest,
+and why the clause's "no motion" assertions are equalities rather than
+tolerances.
+
 `ArenaControl` (256 B) is unchanged from the earlier rounds: `magic u64@0` (ASCII
 `TNSARENA`), `formatVersion u16@8`, `schemaVersion u16@10`, `abiVersion u16@12`,
 `flags u16@14`, `totalSize u32@16`, `layoutHash u32@20`, `regionCount u32@24`,
@@ -1608,6 +1696,27 @@ chunk 1 work, and each is additive:
   without touching it, and `setParams`-driven wake propagation to neighbours.
   Each is a §12-sized round of its own, and none of them is needed for the
   behaviour the acid test now asserts.
+- **Angular dynamics, and what it leaves for later.** Chunk 8's model is
+  diagonal-inertia, one-pass, spheres and boxes about their axes. In the order
+  the demand is likely to arrive: **full inertia tensors** (a rotated box whose
+  principal axes are not its body axes needs `I⁻¹` as a matrix, not three
+  numbers); **capsules and other non-diagonal shapes**, which need the same
+  thing plus a narrow phase that is not a corner list; **angular sleeping**,
+  where the windowed signal should be `|v| + |ω|·r` rather than `|v|` alone — a
+  body spinning in place is not asleep, and the probe measured transient `|ω|`
+  spikes up to 0.25 rad/s on a body that is not going anywhere; **wake
+  propagation** to neighbours, since today a sleeper wakes only on direct
+  contact; and **friction that does not creep** — the resting box's 0.044 m of
+  drift over 600 frames is one-pass friction at four corners, and the honest
+  fixes (an iterative friction pass, a contact manifold, or a velocity-level bias
+  applied to the position rather than the velocity) are each their own round.
+  **A note for whoever writes the next state model**: the family decides the
+  layout. The symplectic Verlet reads the *state's* second half as the
+  coordinates' time derivative and the *RHS's* second half as their acceleration;
+  an RHS whose first half is a beautiful, correct derivative is simply ignored,
+  with no error anywhere — the probe measured 1.5708 rad where 1.0 was asked for
+  (§5.1). And quaternion state writes are as safe as linear ones: written back
+  verbatim, the spin is bit-identical.
 - **CI configuration.** The repo has no `.github/` today: every gate in §14 is
   a script a developer runs by hand. Wiring them into CI is future work, and
   the layers below are ordered so the cheapest ones run first.
@@ -1830,6 +1939,29 @@ single session and asserts its own results, printing a pass/fail summary line �
   m/s creep, the ~0.14 m/s bias in a resting body's velocity, the counters that
   reset at 15-23 and then at 27 — are §5.1's, and each of them was a failing
   test before it was a paragraph;
+- *tumbling rigid bodies (chunk 8)*: `M` bodies — spheres and boxes — dropped
+  into a box under the angular model (`WorldConfig.angular`, 14 slots per body,
+  120 frames at K = 4), asserted at three levels. **Structural**: every body is
+  asleep at frame 120 (the same policy as chunk 7, and the clause that ends the
+  measured creep rather than waiting it out); every orientation is finite and
+  normalized, `|q|` within **1e-6** of 1; the total angular momentum magnitude is
+  below **1e-3 kg·m²/s**, the tolerance the probe's resting-box drift sets. **The
+  clause a linear-only model fails**: one sphere given an initial horizontal
+  velocity **rolls** — measured, over 60 frames, `v/v₀ = 0.7161` against the
+  sliding-sphere closed form's 5/7 = 0.7143 (0.25 % high), `ω·r/v = 0.9975` at
+  rest, rolling (within 5 %) from frame **5**, and **5.72 rad (328°)** of
+  accumulated rotation where the linear control accumulates **0.0 rad** and
+  slides to a stop at `v/v₀ = 0.051`. **Visual**: the pile is drawn where the
+  state says (non-background pixel count within ±30 % of the projected area),
+  nothing below the floor's screen row, and the flip fraction is clearly non-zero
+  while the bodies roll and exactly `0.0` once they are asleep. **The two
+  permanent experiments**: chunk 6's linear apex (0.0 % delta) and chunk 8's
+  quaternion state-write — untouched 1.0000101 rad, written back **bit-identical
+  (0.0 %)**, canonicalized (renormalize + `q' = ½ω⊗q`) **0.00014 %** different,
+  against the 0.1 % budget, so the angular model needs no second integrator. The
+  naive layout is pinned as the counter-example: 1.5708 rad and `|q| = 1.41421`
+  for a body that should read 1.0 rad and 1.00000 (§5.1). The physics is
+  guest-side, as in chunks 6 and 7: no verb, no wire, no session change;
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
