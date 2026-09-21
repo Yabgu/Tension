@@ -49,7 +49,8 @@ second, runnable surface.
   through the job queue), `bouncing-ball/` (a solver-driven bounce through the
   motion table), `walking-stickman/` (a rigged mesh posed through the bone
   table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
-  through the physics layer).
+  through the physics layer; add `--angular` to run the model that simulates
+  orientation, and the bodies tumble).
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and

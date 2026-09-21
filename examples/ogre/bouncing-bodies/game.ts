@@ -16,13 +16,25 @@
 //   * **a positional bias, not position projection.** The penetration is
 //     corrected by a velocity term, so it travels through the same channel as
 //     everything else and leaves a few millimetres of overlap at rest.
-//   * **no angular dynamics.** The bodies translate and do not turn: a rolling
-//     orientation would be a kinematic face on a linear model — pleasant to look
-//     at, and not what the simulation computed. The layer says so rather than
-//     painting one on.
+//   * **no angular dynamics by default.** The bodies translate and do not turn:
+//     a rolling orientation would be a kinematic face on a linear model —
+//     pleasant to look at, and not what the simulation computed. `--angular`
+//     switches to the model that does simulate it (orientation in the state, a
+//     diagonal inertia, friction with a torque), and then the bodies tumble and
+//     roll for real. **The collider does not change**: the bodies still collide
+//     as spheres and are drawn as cubes, so a cube's corner can pass through
+//     another body by up to its circumradius. That is the layer's model, stated
+//     rather than hidden.
 //   * **the state's layout is the solver's**, all positions then all velocities,
 //     and `World`'s accessors are the only place that is written down. A guest
 //     reading the raw vector has to know it; a guest using the layer does not.
+//
+// Usage: `./run.sh [--bodies=N] [--angular]`. With `--angular` the bodies
+// tumble, friction rolls the ground contact, and the pile freezes with each body
+// at the orientation it stopped in — though a body that ends up *rolling* on the
+// floor keeps rolling, because this model has no rolling resistance: its contact
+// has no slip left for friction to act on. The run ends at the frame cap when
+// that happens, and the summary's "R rolling" count says how many.
 //
 // The cadence is the design: four sub-steps per frame, each one advance → read →
 // detect → resolve → write. Writing the state back between sub-steps is what
@@ -64,13 +76,21 @@ function fail(what: string): void {
 export function _start_game(): void {
   let renderer = "null";
   let bodies = DEFAULT_BODIES;
+  let angular = false;
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
     if (value.startsWith("--bodies=")) bodies = I32.parseInt(value.slice(9));
+    if (value == "--angular") angular = true;
   }
   const windowed = renderer == "gl3plus";
-  if (bodies <= 0 || bodies * 6 > 8192) fail("--bodies is outside 1..1365");
+  // The angular model is fourteen slots per body, so its ceiling is lower: the
+  // ABI's 64 KiB state buffer, 8192 f64.
+  const slot_cap = angular ? 585 : 1365;
+  if (bodies <= 0 || bodies * (angular ? 14 : 6) > 8192) {
+    fail("--bodies is outside 1.." + slot_cap.toString() +
+         (angular ? " with --angular" : ""));
+  }
 
   const callbacks = makeCallbacks(null, null);
   if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
@@ -137,19 +157,45 @@ export function _start_game(): void {
   world_config.extent = EXTENT;
   world_config.firstRenderableId = FIRST_BODY_ID;
   world_config.meshScale = MESH_SCALE;
+  // `--angular`: orientation in the state, a diagonal inertia per body, and
+  // friction that carries a torque. The *collider* does not change — spheres
+  // and planes — so a cube drawn here is a sphere's contact geometry, which the
+  // README says where a reader will meet it.
+  world_config.angular = angular;
   const world = World.create(world_config);
   if (world == null) fail("World.create refused " + bodies.toString() + " bodies");
 
   // Staggered drop: four layers per column so the bodies actually meet each
   // other in the air and in the pile, from heights low enough to settle inside
   // the run. A carpet of bodies that never touch is not a collision demo.
-  const side = <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies / 4)));
+  // The angular model gets a single layer at floor level, spaced just clear of
+  // its neighbours (a hair over one diameter) and dropped from 12 cm: a gentle
+  // arrival that jostles the pile, tumbles it, and lets it settle. The tall
+  // four-layer drop the linear model wants is the wrong shape here — at these
+  // speeds bodies reach rolling, and this model has nothing to stop a rolling
+  // sphere with (measured: 0 of 64 asleep at frame 300, KE 3.19).
+  const layers = angular ? 1 : 4;
+  const side = angular ? <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies)))
+                       : <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies / 4)));
+  // The drop suits the model being demonstrated, and the difference is the
+  // honest one: the linear model damps sliding, so bodies dropped from three
+  // metres arrive, slide and stop; the angular model has no rolling resistance,
+  // so bodies that arrive fast *roll away and never stop* (measured: 0 of 64
+  // asleep at frame 300, KE 3.19, with the tall drop). Angular therefore drops
+  // them low and close — a pile that lands on itself, tumbles, and settles.
+  // Angular spawns them a hair *inside* one diameter: they are born touching,
+  // the bias separates them, and the jostle is what makes a cube-shaped body
+  // turn — a carpet of spheres that never meet would settle without a single
+  // tumble, which demonstrates nothing.
+  const spacing = angular ? 2.0 * RADIUS - 0.02 : 3.0 / <f64>side;
+  const base = angular ? RADIUS + 0.12 : RADIUS + 0.6;
+  const step = 0.9;
   for (let i = 0; i < bodies; i++) {
-    const layer = i % 4;
-    const column = i / 4;
-    const x = -1.5 + <f64>(column % side) * (3.0 / <f64>side);
-    const z = -1.5 + <f64>(column / side) * (3.0 / <f64>side);
-    world!.place(i, x, RADIUS + 0.6 + <f64>layer * 0.9, z);
+    const layer = i % layers;
+    const column = i / layers;
+    const x = -0.5 * <f64>(side) * spacing + <f64>(column % side) * spacing;
+    const z = -0.5 * <f64>(side) * spacing + <f64>(column / side) * spacing;
+    world!.place(i, x, base + <f64>layer * step, z);
   }
   if (world!.seed() != 0) fail("the solver refused the seed state");
 
@@ -162,6 +208,22 @@ export function _start_game(): void {
   }
 
   if (!windowed) print("renderer=null: no window; the physics and the summary are the same");
+
+  // With --angular, what the summary reports: how far each body has *turned*
+  // (accumulated per frame, since a quaternion only expresses a rotation mod a
+  // full turn) and the fastest it has ever spun. Both are per body and over the
+  // whole run, because the interesting moment for a tumbling pile is not the
+  // last frame — by then everything that can stop has.
+  const prev_q = new Float64Array(bodies * 4);
+  const turned = new Float64Array(bodies);
+  const fastest_spin = new Float64Array(bodies);
+  const now_q = new Float64Array(4);
+  if (angular) {
+    const b = world!.bodies();
+    for (let i = 0; i < bodies; i++) {
+      for (let k: i32 = 0; k < 4; k++) prev_q[i * 4 + k] = b.quat(i, k);
+    }
+  }
 
   // ── the loop ─────────────────────────────────────────────────────────
   const batch = new ogre.MotionBatch();
@@ -182,6 +244,23 @@ export function _start_game(): void {
     contacts_this_frame = world!.contactCount();
     total_contacts += contacts_this_frame;
     contacts_measured += 1;
+    if (angular) {
+      const b = world!.bodies();
+      for (let i = 0; i < bodies; i++) {
+        const wx = b.omega(i, 0), wy = b.omega(i, 1), wz = b.omega(i, 2);
+        const spin = Math.sqrt(wx * wx + wy * wy + wz * wz);
+        if (spin > fastest_spin[i]) fastest_spin[i] = spin;
+        let dot = 0.0;
+        for (let k: i32 = 0; k < 4; k++) {
+          now_q[k] = b.quat(i, k);
+          dot += now_q[k] * prev_q[i * 4 + k];
+        }
+        if (dot < 0.0) dot = -dot; // the double cover
+        if (dot > 1.0) dot = 1.0;
+        turned[i] += 2.0 * Math.acos(dot);
+        for (let k: i32 = 0; k < 4; k++) prev_q[i * 4 + k] = now_q[k];
+      }
+    }
     world!.pose(batch);
     if (batch.commit() != bodies) fail("submit_motion refused the batch");
 
@@ -209,6 +288,20 @@ export function _start_game(): void {
         world_config.substeps.toString() + " sub-steps");
   print("asleep " + world!.asleepCount().toString() + "/" + bodies.toString() + ", max|v| " +
         world!.maxSpeed().toString() + ", kinetic energy " + world!.kineticEnergy().toString());
+  if (angular) {
+    // "R rolling, T tumbling": a body that spun faster than 0.1 rad/s at any
+    // point rolled or tumbled, and one that turned more than 30° over the run
+    // visibly did. Both counts are of bodies, not degrees, so the line reads as
+    // a census of the pile.
+    const threshold = 30.0 * (3.14159265358979 / 180.0);
+    let rolling = 0, tumbling = 0;
+    for (let i = 0; i < bodies; i++) {
+      if (fastest_spin[i] > 0.1) rolling += 1;
+      if (turned[i] > threshold) tumbling += 1;
+    }
+    print("angular on, " + rolling.toString() + " rolling, " + tumbling.toString() +
+          " tumbling (> 0.1 rad/s at some point; > 30 deg over the run)");
+  }
 
   // One line about the picture, the way the other examples end: a box of bodies
   // that simulates correctly and draws nothing is a bug this line would catch.

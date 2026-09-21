@@ -53,4 +53,7 @@ elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     echo "no display available; falling back to renderer=null"
     renderer=null
 fi
-exec "$core" --capability "$adapter" build/game.wasm --renderer="$renderer"
+# Anything left on the command line goes to the guest: `--bodies=N` and
+# `--angular` are the guest's own arguments, and this script's job is to hand
+# them over rather than to know what they mean.
+exec "$core" --capability "$adapter" build/game.wasm --renderer="$renderer" "$@"
