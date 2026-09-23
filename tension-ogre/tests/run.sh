@@ -78,6 +78,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-angular.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-angular.wasm" >/dev/null ||
     fail "guest-angular.ts did not compile"
+"$asc" "$here/guest-light.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-light.wasm" >/dev/null ||
+    fail "guest-light.ts did not compile"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -242,6 +245,27 @@ physics_case() {
 }
 physics_case physics --renderer=null
 angular_case angular --renderer=null
+
+# Chunk 10: one directional light through the guest's submitLight, shading a PBS
+# surface while an emissive-only surface and an Unlit one in the same frame must
+# not move. Structural under NULL (the light is mirrored, the frames run); the
+# halves, the profile and the byte-for-byte controls need a framebuffer.
+light_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-light.wasm" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|9/9 passed)" ||
+        fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
+    # The adapter's own refusals go to the session log: a light the apply path
+    # could not realise is a refusal line, and no case may pass with one.
+    if grep -q "refused" "$out/$name.err"; then
+        fail "$name: the adapter refused something: $(grep 'refused' "$out/$name.err" | head -1)"
+    fi
+    echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
+    echo "$stdout" | grep -E '^(3 ok|5 ok|5 band|6 ok|7 ok|8 ok|9 ok):' | sed 's/^/== '"$name"': /' || true
+}
+light_case light --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
@@ -270,6 +294,9 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         # Chunk 6: the pile, the floor line, and settled-versus-moving.
         physics_case physics-gl3plus --renderer=gl3plus
         angular_case angular-gl3plus --renderer=gl3plus
+        # Chunk 10: the lit surface's halves, the profile, and the regression
+        # clauses (an emissive-only and an Unlit surface must not move).
+        light_case light-gl3plus --renderer=gl3plus
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"

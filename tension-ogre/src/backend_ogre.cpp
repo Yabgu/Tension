@@ -1080,6 +1080,14 @@ class BackendOgre final : public Backend {
                 if (light == nullptr) {
                     light = scene_->createLight();
                     lights_[id - 1] = light;
+                    // Chunk 10 has no shadow pipeline. The light explicitly
+                    // refuses to cast shadows; a future chunk that adds a
+                    // shadow camera and depth pass flips this to true and sets
+                    // up the light-space matrix and depth buffer. Setting it
+                    // explicitly so a default-on behavior does not silently
+                    // require a node that does not exist (the 10a probe set it
+                    // by hand for exactly that reason).
+                    light->setCastShadows(false);
                 }
                 switch (record->kind) {
                     case 0: light->setType(Ogre::Light::LT_DIRECTIONAL); break;

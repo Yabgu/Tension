@@ -1072,11 +1072,15 @@ things it needs are more than the round assumed:
   clips). With the light off the same surface is **mean 0.00**: pure black, which
   is what "no light" means with no ambient in scope.
 - **The intensity scalar is a power scale, and 1.0 is far too dim to be
-  usable.** At 1.0 the lit half's mean is **19.7** and the frame's brightest
-  surface pixel is **26**; at 20 it is **217.6** with a 255 maximum; at 100 it
-  clips (lit 255, dark 87.7, ratio 2.9). The examples should submit tens, not
-  ones, and the wire's default of 1 is a value that renders a lit surface
-  almost black.
+  usable.** `LightRecord.intensity` maps straight to `setPowerScale`; it is not
+  normalised to 1.0, and the wire's default of 1 renders a lit surface almost
+  black — a white light at 1.0 lights a 0.8-diffuse surface to a brightest
+  pixel of **26/255**. The probe's ratio table, lit half / dark half on the same
+  surface: **1.0 → 19.67 / 2.09 (ratio 9.40)**; **20 → 217.58 / 39.90 (ratio
+  5.45)**, the row the fixture and the examples are written against; **100 →
+  255.00 / 87.68 (ratio 2.91)**, where saturation clips the lit half and
+  *compresses* the ratio — a brighter light is not a stronger shading test.
+  Examples submit tens, not ones.
 - **A light needs a scene node, and a dynamic one.** No node: **SIGSEGV**, no
   exception and no log line. A `SCENE_STATIC` node: `InvalidParametersException`
   — "Object is static while Node isn't, or viceversa" — because `createLight()`
@@ -1103,21 +1107,32 @@ things it needs are more than the round assumed:
   reachable skeleton leaves the PBS vertex shader reading bone matrices nobody
   filled (`HlmsPbs::fillBuffersForV2`); and a hand-built Mesh2 has no file, so
   `Mesh2::load()` sends the importer back to the resource manager for a v1 mesh
-  that is not on disk (`v1::Mesh::calculateSize` on null). The probe measures
-  with `Barrel.mesh`, scaled to radius 1.
-- **Open, and it belongs to 10b**: the probe sets `setCastShadows(false)`, and
-  the adapter does not. A light casts shadows by default, and the adapter's
-  workspace has no shadow node — the first crash of this probe was *not*
-  that (it was the mesh), so whether shadows-off is required is still
-  unmeasured, and the adapter should set it explicitly rather than find out in
-  an example.
+  that is not on disk (`v1::Mesh::calculateSize` on null). Both the probe and
+  10b's fixture measure with `Barrel.mesh` — file-backed, unrigged, curved,
+  bounding radius **4.8555** (read off the v1 side), scaled by **0.2060** to
+  radius 1, which puts one world unit at the camera's six units of depth at
+  48.3 px. Stated so the next probe does not rediscover the two traps by
+  walking into them.
+- **Shadows are off explicitly, and the flag is the adapter's.** A light casts
+  shadows by default and the adapter's workspace has no shadow node; the probe
+  set `setCastShadows(false)` by hand on every light it made, which is not a
+  measurement the adapter could inherit. **10b sets it in `apply_lights`, once,
+  at creation** — the frame renders identically with it, and the point is
+  explicitness: a future shadow chunk flips that one call and knows where the
+  light-space matrix and the depth buffer have to go. (Whether shadows-on with
+  no shadow node is fatal was never measured — the probe's first crash was the
+  mesh — and it does not need to be: a scene with no shadow pipeline should not
+  be asking.)
 
 **The material rule, stated once.** The adapter writes diffuse and specular
 unconditionally for a PBS record. **No LIT flag and no new material kind**: a
 guest that wants a lit surface writes diffuse and specular, and a guest that
 wants an emissive-only surface keeps diffuse at zero and uses emissive. The
-existing emissive materials — walking-stickman, `bouncing-bodies --angular` — are
-a **regression clause, not a change**: a light must not alter their pixels, and
+existing emissive materials — walking-stickman's body and `bouncing-bodies
+--angular`'s — were a **regression clause until 10b deliberately lit them**;
+what carries the clause now is the fixture's own emissive-only surface, and the
+rule it still enforces is that a light must not alter an emissive-only or Unlit
+material's pixels:
 chunk 10's probe measures exactly that (an emissive-only PBS material and an
 Unlit material, with and without a light in the scene).
 
@@ -2363,23 +2378,42 @@ single session and asserts its own results, printing a pass/fail summary line �
   missed the 120-frame clause by five frames. The fixture now steps once per
   frame, as the policy documents.
 - *lighting (chunk 10)*: a directional light through the guest's `submitLight`,
-  shading a PBS surface. **Structural** (`renderer=null`): the light is mirrored
-  — `submitLight` returns 0, the region's slot holds kind `LIGHT_DIRECTIONAL`,
-  the colour and the direction — and an upsert of the same id replaces the
-  record rather than adding one; `id = 0` is refused with `-EINVAL` before the
-  verb is called. **Visual** (GL3+, gated like every other pixel tier): one lit
-  surface at `intensity 20`, `diffuse = the colour`, `specular = 0.5 grey`,
-  `emissive = 0`, `roughness 0.5`, `metalness 0`, under one white directional
-  light from +x — the probe measured **lit half 217.6, dark half 39.9, ratio
-  5.45** and **mid band 152.9**, so the clause is "the lit half's mean exceeds
-  the dark half's by at least **4×** and the mid band lies strictly between
-  them", with both halves carrying pixels (1740 and 2004 measured — dark is not
-  not-drawn); the same frame's **emissive-only** PBS surface and its **Unlit**
-  surface are **byte-identical with and without the light**; and the Stickman
-  mesh under a lit PBS datablock turns a lit/dark ratio above **2** (measured
-  2.32). The intensity is 20 and not 1: at 1 the probe measured a lit half of
-  19.7 and a brightest pixel of 26, which is a surface that is lit and looks
-  black.
+  shading a PBS surface, with the material records the wire has always been
+  able to carry (`diffuse`, `specular`, `roughness 0.5`, `metalness 0`,
+  `emissive 0`) and no new material kind. **Structural** (`renderer=null`): the
+  meshes load, the scene is accepted, the light is mirrored — `submitLight`
+  returns 0, the region's slot holds kind `LIGHT_DIRECTIONAL`, the colour, the
+  intensity and the direction — an upsert of the same id replaces the record,
+  and thirty frames run with the light in the scene and **no refusal in the
+  session log** (`apply_lights`'s failures are log lines; the adapter refusing
+  nothing is what says the light was realised rather than dropped).
+  **Visual** (GL3+, gated like every other pixel tier): one lit surface at
+  `intensity 20` under one white directional light **perpendicular to the view
+  axis** (the probe's +x geometry), split by the screen-space projection of the
+  light direction. Measured: **lit half 255.0 over 914 px, dark half 0.0 over
+  914 px, mid band 78.0**, brightest 255, whole surface mean 104.30 over 3440 px,
+  and the ten-band profile `0 0 0.0 0.0 0.13 136.44 255.0 255.0 0 0` — the two
+  intermediate bands are what say the transition is a falloff and not a step.
+  The clause is therefore **`lit ≥ 4 × dark + 20`** (the round's ratio, plus a
+  floor so a black frame cannot satisfy a pure ratio), the **mid band strictly
+  between** the halves, **both halves carrying pixels**, and the profile's
+  monotone non-decreasing shape. Removing the light leaves the surface at mean
+  **0.0** and re-submitting it returns it to **104.30** — the light is what
+  does it. The same frame's **emissive-only** PBS surface and its **Unlit**
+  surface are **byte-identical with and without the light** (mean 144.0 over
+  3746 px each — the probe's own 144.00, to the digit). The **skinned** path
+  shades: the Stickman under a lit PBS datablock measures **lit 111.19 over
+  698 px against dark 36.99 over 701 px, ratio 3.01**.
+  Two things the round wrote differently, both measured first. The light
+  direction is the probe's perpendicular one rather than the round's
+  `(-1,-1,-1)`: at 54.7° off the view axis the two halves measure 247.08 and
+  133.32 (ratio 1.85), because a surface that faces the light also faces a
+  camera standing on the light's side — a gradient, not a hemisphere. And the
+  lit half **saturates** at 0.9 diffuse × power 20 (the probe's 0.8 read
+  217.58, not 255), so the ratio clause carries a floor and the profile carries
+  the falloff claim: a saturated lit half would hide a hard edge. The intensity
+  is 20 and not 1 — at 1 the probe measured a lit half of 19.7 and a brightest
+  pixel of 26, which is a surface that is lit and looks black.
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
