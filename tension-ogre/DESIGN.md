@@ -1025,6 +1025,102 @@ of what it measured:
   term that only *removes* motion cannot keep anything awake — and the sleep
   policy remains the only thing that decides when a body is still.
 
+**The light path is implemented end to end and has never been exercised.**
+Recorded before chunk 10's probe ran, because it changes what the round is:
+
+- `LightRecord` (96 B) is mirrored exactly — `kLightRecordBytes = 96`,
+  `kLightCapacity = 1024`, the table at `kLightTableOffset`, and the wire's
+  `SCENE_LIGHT_COUNT`/`SCENE_LIGHT_SIZE` agree with both.
+- The adapter decodes it on the **generic submit verb** (`case kSubmitLight` →
+  `decode_light_at` → `SceneMirror::upsert_light`), which already validates
+  `kind ≤ 2`. The SDK's `submitLight` is a `submitRaw(SUBMIT_LIGHT, …)` — no
+  dedicated import, one verb with a table kind.
+- `apply_submissions` calls `apply_lights` **in the right place**: nodes →
+  cameras → lights → materials → renderables → bones.
+- `apply_lights` creates the Ogre light, sets type (directional/point/spot),
+  diffuse **and specular** colour, `setPowerScale(intensity)`, attenuation from
+  `range` for placed lights, attaches it to a `SCENE_DYNAMIC` node, sets the
+  node's position and the light's direction — and it attaches *before* setting
+  the direction, which is what `createLight()`'s own documentation demands.
+- `setForwardClustered(true, 16, 8, 24, 96, 2, 0, 0.0f, 100000.0f)` matches the
+  installed `OgreSceneManager.h` signature argument for argument: 16×8×24
+  froxels, **96 lights per cell**, near 0, far 100000. It was never a minimum
+  call to make PBS shaders generate — it is configured for lights.
+- `apply_material_values` passes diffuse, specular *and* emissive through
+  unconditionally for PBS. **The "PBS renders black" workaround is guest-side**:
+  the fixtures and examples set `diffuse = 0` and put their colour in emissive.
+
+And the two facts that make this a **prove-or-refute round rather than a wiring
+round**: no fixture or example has ever called `submitLight` (the only references
+in the repo are the adapter, the mirror and the backend), and every PBS material
+in the repo has a zero diffuse — so even a perfect light would multiply nothing.
+The first deliverable is a probe that answers *why nothing is lit*, and the
+standing suspect is not the adapter: it is that nobody has ever asked it to
+light anything.
+
+**What the probe measured, in the order it matters.** The path works, and the
+things it needs are more than the round assumed:
+
+- **The shading exists and the archive list is complete.** Q9 checked all six
+  paths `HlmsPbs::getDefaultPaths()` returns — the data folder `Hlms/Pbs/GLSL`
+  and five library folders, `Hlms/Pbs/Any/Main` among them — and all are
+  present. No folder is missing this time.
+- **A PBS datablock with diffuse, specular and *zero* emissive shades.** Lit
+  half mean **217.6** against dark half **39.9** at intensity 20 (**ratio 5.45**),
+  with the mid band at **152.9** between them and the profile monotone across
+  the surface (`0 0 0 0.2 5.7 13.4 20.7 25.3` at intensity 1, where nothing
+  clips). With the light off the same surface is **mean 0.00**: pure black, which
+  is what "no light" means with no ambient in scope.
+- **The intensity scalar is a power scale, and 1.0 is far too dim to be
+  usable.** At 1.0 the lit half's mean is **19.7** and the frame's brightest
+  surface pixel is **26**; at 20 it is **217.6** with a 255 maximum; at 100 it
+  clips (lit 255, dark 87.7, ratio 2.9). The examples should submit tens, not
+  ones, and the wire's default of 1 is a value that renders a lit surface
+  almost black.
+- **A light needs a scene node, and a dynamic one.** No node: **SIGSEGV**, no
+  exception and no log line. A `SCENE_STATIC` node: `InvalidParametersException`
+  — "Object is static while Node isn't, or viceversa" — because `createLight()`
+  makes the light dynamic. The backend's `SCENE_DYNAMIC` choice is therefore not
+  a style, it is the only thing that works, and the header's
+  attach-before-setDirection rule is satisfied by it: in this version
+  direction-first produces the *same* frame (mean 217.58 / 39.90 either way), so
+  the rule is cheap insurance rather than a hard requirement.
+- **Forward+ needed nothing beyond chunk 5b's call.** `lightsPerCell = 1`
+  produces a byte-identical frame to 96 at one light; a second
+  `setForwardClustered` call is a no-op; a point light parked at y = 200000,
+  beyond the 100000 far plane, contributes nothing (silently, as it should — no
+  exception, no log line); and the frame cost is flat for the first light
+  (**2384 µs at 0 lights, 2378 at 1**) and +13 % at four (**2700**).
+- **The no-light fallback holds.** An emissive-only PBS material and an Unlit
+  material are **byte-identical with and without a light in the scene**, over
+  their own pixel regions: the regression clause that keeps walking-stickman and
+  the angular bouncing-bodies unchanged is satisfied, and **no LIT flag is
+  needed**.
+- **The skinned path shades**: Stickman under a lit PBS datablock turns a
+  lit/dark ratio of **2.32** (the mesh is not a sphere, so it is coarse).
+- **Two mesh traps, both SIGSEGVs with no diagnostic**, found by walking into
+  them: `Smiley.mesh` ships with a skeleton, and importing it without a
+  reachable skeleton leaves the PBS vertex shader reading bone matrices nobody
+  filled (`HlmsPbs::fillBuffersForV2`); and a hand-built Mesh2 has no file, so
+  `Mesh2::load()` sends the importer back to the resource manager for a v1 mesh
+  that is not on disk (`v1::Mesh::calculateSize` on null). The probe measures
+  with `Barrel.mesh`, scaled to radius 1.
+- **Open, and it belongs to 10b**: the probe sets `setCastShadows(false)`, and
+  the adapter does not. A light casts shadows by default, and the adapter's
+  workspace has no shadow node — the first crash of this probe was *not*
+  that (it was the mesh), so whether shadows-off is required is still
+  unmeasured, and the adapter should set it explicitly rather than find out in
+  an example.
+
+**The material rule, stated once.** The adapter writes diffuse and specular
+unconditionally for a PBS record. **No LIT flag and no new material kind**: a
+guest that wants a lit surface writes diffuse and specular, and a guest that
+wants an emissive-only surface keeps diffuse at zero and uses emissive. The
+existing emissive materials — walking-stickman, `bouncing-bodies --angular` — are
+a **regression clause, not a change**: a light must not alter their pixels, and
+chunk 10's probe measures exactly that (an emissive-only PBS material and an
+Unlit material, with and without a light in the scene).
+
 **Sleeping lives in the derivative mask, and it is not an optimization.** One
 solver integrates the whole state vector; there is no per-body stepping and this
 layer does not add one. The World zeroes a body's velocity when it sleeps and
@@ -1886,6 +1982,20 @@ chunk 1 work, and each is additive:
   table**: the roller and the spinner wanting different `k` is not a missing
   parameter but a measured property of a pure-angular term — a spin decay dragging
   linear momentum it is forbidden to touch.
+- **What lighting does not have yet, and what each would cost.** **Ambient
+  light** is a scene-level base colour, not a light — it belongs in the scene
+  configuration the adapter owns, not in `LightRecord`, and it is what an unlit
+  hemisphere would need to stop being pure black. **Shadow mapping** is the
+  largest item in this list and its cost is known: a shadow camera per light, a
+  depth pass into a texture, `setCastShadows` on the light and the renderables,
+  a light-space matrix through the Hlms's shadow-node machinery, and a probe of
+  its own — which the plan for chunk 10 deliberately did not open. **Spot
+  lights** are "in if the probe shows they cost nothing, otherwise here": the
+  backend already has the `LT_SPOTLIGHT` case and the attenuation call, so the
+  only open question is whether the two cone angles need a call the backend does
+  not make. **Environment maps / IBL, area lights, and physical light units**
+  (lumens, candela) stay out of scope by decision, not by omission: the
+  intensity scalar is a power scale and the probe reports what it does.
 - **The older note, kept for the boundary it still names.**
   Chunk 9a-i wrote the term's arithmetic, measured it, and refuted itself; §5.1
   carries the three measurements (an intermittent contact gate, a rolling pair
@@ -2252,6 +2362,24 @@ single session and asserts its own results, printing a pass/fail summary line �
   ticks once per call — ran a 60-frame window instead of 30, and the roller
   missed the 120-frame clause by five frames. The fixture now steps once per
   frame, as the policy documents.
+- *lighting (chunk 10)*: a directional light through the guest's `submitLight`,
+  shading a PBS surface. **Structural** (`renderer=null`): the light is mirrored
+  — `submitLight` returns 0, the region's slot holds kind `LIGHT_DIRECTIONAL`,
+  the colour and the direction — and an upsert of the same id replaces the
+  record rather than adding one; `id = 0` is refused with `-EINVAL` before the
+  verb is called. **Visual** (GL3+, gated like every other pixel tier): one lit
+  surface at `intensity 20`, `diffuse = the colour`, `specular = 0.5 grey`,
+  `emissive = 0`, `roughness 0.5`, `metalness 0`, under one white directional
+  light from +x — the probe measured **lit half 217.6, dark half 39.9, ratio
+  5.45** and **mid band 152.9**, so the clause is "the lit half's mean exceeds
+  the dark half's by at least **4×** and the mid band lies strictly between
+  them", with both halves carrying pixels (1740 and 2004 measured — dark is not
+  not-drawn); the same frame's **emissive-only** PBS surface and its **Unlit**
+  surface are **byte-identical with and without the light**; and the Stickman
+  mesh under a lit PBS datablock turns a lit/dark ratio above **2** (measured
+  2.32). The intensity is 20 and not 1: at 1 the probe measured a lit half of
+  19.7 and a brightest pixel of 26, which is a surface that is lit and looks
+  black.
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
