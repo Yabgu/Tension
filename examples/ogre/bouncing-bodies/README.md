@@ -101,7 +101,12 @@ linear velocity), each body carries a diagonal inertia, and the contact impulse
 gains a torque `I⁻¹(r × j n)` — friction at the ground contact is what rolls a
 body, and it is the half a linear model cannot have.
 
-What to notice: the cubes arrive, jostle, and **turn** — then come to rest. The
+What to notice: the bodies are drawn from a **six-colour palette cycled by body
+index**, so the pile reads as distinct bodies rather than one mass — and the
+floor has its own dark neutral, so the ground reads as ground. (One material per
+colour, chosen when each renderable is submitted; the motion table poses bodies
+and never touches their material.) The cubes arrive, jostle, and **turn** — then
+come to rest. The
 summary line reports the census: 64 of 64 bodies exceed 0.1 rad/s at some point,
 59 of 64 turn more than 30° over the run, and the pile reaches `asleep 64/64,
 kinetic energy 0.0` by frame 136, at which point the picture stops. Their

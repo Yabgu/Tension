@@ -65,6 +65,27 @@ const EXTENT: f64 = 4.0; // the box is 8x8 units, the floor at y = 0
 /** `cube.mesh` is 100 units across, so this draws one diameter (2r = 0.8). */
 const MESH_SCALE: f64 = 0.008;
 const FLOOR_ID: u32 = 1;
+/** The floor's own material, and the first body material: ids 1..palette+1. */
+const FLOOR_MATERIAL: u32 = 1;
+const BODY_MATERIAL_BASE: u32 = 2;
+/**
+ * The body palette, cycled by body index. Flat triples in one array because a
+ * body's colour is a *material*, and one material per colour is what makes the
+ * pile read as distinct bodies rather than one mass: the renderable names the
+ * material id when it is submitted, and the motion table that poses it never
+ * touches it. The floor gets its own dark neutral, so the ground reads as
+ * ground.
+ */
+const PALETTE_RGB: f64[] = [
+  0.90, 0.20, 0.20, // red
+  0.20, 0.55, 0.90, // blue
+  0.95, 0.75, 0.15, // amber
+  0.30, 0.80, 0.35, // green
+  0.80, 0.35, 0.85, // violet
+  0.95, 0.55, 0.20, // orange
+];
+const PALETTE_ENTRIES: u32 = 6;
+const FLOOR_RGB: f64[] = [0.20, 0.20, 0.22];
 const FIRST_BODY_ID: u32 = 100;
 
 /// A failure the reader can act on: a guest exits non-zero by trapping.
@@ -114,14 +135,28 @@ export function _start_game(): void {
   if (ogre.jobState(job) != ogre.JOB_DONE) fail("cube.mesh did not load");
   const cube = ogre.jobResult(job);
 
-  const material = new ogre.Material();
-  material.materialId = 1;
-  material.kind = ogre.MAT_HLMS_PBS;
-  material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
-  material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
-  material.emissiveR = 0.9; material.emissiveG = 0.6; material.emissiveB = 0.3;
-  material.roughness = 1.0; material.metalness = 0.0;
-  if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+  // The same material kind the example has always used — PBS with diffuse and
+  // specular zeroed and the colour in emissive (chunk 5b: a PBS datablock with
+  // no light rig shows only what it emits) — one datablock per colour instead of
+  // one for everything. Nothing about the kind changes; the colours multiply.
+  function submit_emissive(id: u32, r: f64, g: f64, b: f64, what: string): void {
+    const material = new ogre.Material();
+    material.materialId = id;
+    material.kind = ogre.MAT_HLMS_PBS;
+    material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
+    material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
+    material.emissiveR = <f32>r; material.emissiveG = <f32>g; material.emissiveB = <f32>b;
+    material.roughness = 1.0; material.metalness = 0.0;
+    if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + what + ")");
+  }
+  submit_emissive(FLOOR_MATERIAL, FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2], "floor");
+  for (let i: u32 = 0; i < PALETTE_ENTRIES; i++) {
+    submit_emissive(BODY_MATERIAL_BASE + i, PALETTE_RGB[i * 3 + 0], PALETTE_RGB[i * 3 + 1],
+                    PALETTE_RGB[i * 3 + 2], "palette " + i.toString());
+  }
+  print("materials: floor rgb(" + FLOOR_RGB[0].toString() + ", " + FLOOR_RGB[1].toString() +
+        ", " + FLOOR_RGB[2].toString() + "), " + PALETTE_ENTRIES.toString() +
+        " body colours cycled by index");
 
   // A three-quarter view of the box: high enough to see the pile, close enough
   // that the bodies are more than a few pixels across. The rotation is a pitch
@@ -139,7 +174,7 @@ export function _start_game(): void {
   camera.cameraId = 1;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
-  const floor = ogre.Renderable.at(cube, 1, 0.0, -12.0, 0.0, 0.24);
+  const floor = ogre.Renderable.at(cube, FLOOR_MATERIAL, 0.0, -12.0, 0.0, 0.24);
   floor.renderableId = FLOOR_ID;
   if (ogre.submitRenderable(floor) != 0) fail("submitRenderable refused (floor)");
 
@@ -203,7 +238,8 @@ export function _start_game(): void {
   // Every body is a renderable from the start, so the first frame already shows
   // the whole box: the motion table carries the poses from here on.
   for (let i = 0; i < bodies; i++) {
-    const body = ogre.Renderable.at(cube, 1, 0.0, 0.0, 0.0, <f32>MESH_SCALE);
+    const body = ogre.Renderable.at(cube, BODY_MATERIAL_BASE + (<u32>i % PALETTE_ENTRIES),
+                                    0.0, 0.0, 0.0, <f32>MESH_SCALE);
     body.renderableId = FIRST_BODY_ID + <u32>i;
     if (ogre.submitRenderable(body) != 0) fail("submitRenderable refused (body " + i.toString() + ")");
   }
