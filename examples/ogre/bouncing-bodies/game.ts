@@ -31,10 +31,10 @@
 //
 // Usage: `./run.sh [--bodies=N] [--angular]`. With `--angular` the bodies
 // tumble, friction rolls the ground contact, and the pile freezes with each body
-// at the orientation it stopped in — though a body that ends up *rolling* on the
-// floor keeps rolling, because this model has no rolling resistance: its contact
-// has no slip left for friction to act on. The run ends at the frame cap when
-// that happens, and the summary's "R rolling" count says how many.
+// at the orientation it stopped in — rolling resistance (chunk 9a) is what lets
+// a pile that has been set rolling come to rest at all. Measured: 64 of 64 roll,
+// 59 of 64 turn past 30°, and all 64 are asleep by frame 136 with a kinetic
+// energy of exactly 0.
 //
 // The cadence is the design: four sub-steps per frame, each one advance → read →
 // detect → resolve → write. Writing the state back between sub-steps is what
@@ -168,12 +168,13 @@ export function _start_game(): void {
   // Staggered drop: four layers per column so the bodies actually meet each
   // other in the air and in the pile, from heights low enough to settle inside
   // the run. A carpet of bodies that never touch is not a collision demo.
-  // The angular model gets a single layer at floor level, spaced just clear of
-  // its neighbours (a hair over one diameter) and dropped from 12 cm: a gentle
-  // arrival that jostles the pile, tumbles it, and lets it settle. The tall
-  // four-layer drop the linear model wants is the wrong shape here — at these
-  // speeds bodies reach rolling, and this model has nothing to stop a rolling
-  // sphere with (measured: 0 of 64 asleep at frame 300, KE 3.19).
+  // One layer at floor level for the angular model, four stacked layers for the
+  // linear one. The difference is what each model does with a fast arrival: the
+  // linear model damps sliding, so bodies dropped from three metres arrive,
+  // slide and stop; the angular model's bodies roll instead of sliding, and
+  // since chunk 9a it has rolling resistance to stop them — but a tall drop
+  // still spends its energy in the air, and the drop that shows the tumble best
+  // is the flat one. Measured with `--angular`: 64/64 asleep by frame 136.
   const layers = angular ? 1 : 4;
   const side = angular ? <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies)))
                        : <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies / 4)));
@@ -184,9 +185,9 @@ export function _start_game(): void {
   // asleep at frame 300, KE 3.19, with the tall drop). Angular therefore drops
   // them low and close — a pile that lands on itself, tumbles, and settles.
   // Angular spawns them a hair *inside* one diameter: they are born touching,
-  // the bias separates them, and the jostle is what makes a cube-shaped body
-  // turn — a carpet of spheres that never meet would settle without a single
-  // tumble, which demonstrates nothing.
+  // the bias separates them, and the jostle is what makes a body turn — a carpet
+  // that never meets would settle without a single tumble, which demonstrates
+  // nothing (measured: 64 of 64 roll, 59 of 64 turn past 30°).
   const spacing = angular ? 2.0 * RADIUS - 0.02 : 3.0 / <f64>side;
   const base = angular ? RADIUS + 0.12 : RADIUS + 0.6;
   const step = 0.9;

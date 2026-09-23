@@ -101,11 +101,12 @@ linear velocity), each body carries a diagonal inertia, and the contact impulse
 gains a torque `I⁻¹(r × j n)` — friction at the ground contact is what rolls a
 body, and it is the half a linear model cannot have.
 
-What to notice: the cubes arrive, jostle, and **turn** — 64 of 64 bodies exceed
-0.1 rad/s at some point and 64 of 64 turn more than 30° over the run, which the
-summary line reports. Their orientations are simulated, not painted on: the
-adapter receives the quaternion in the motion record and calls `setOrientation`
-with it.
+What to notice: the cubes arrive, jostle, and **turn** — then come to rest. The
+summary line reports the census: 64 of 64 bodies exceed 0.1 rad/s at some point,
+59 of 64 turn more than 30° over the run, and the pile reaches `asleep 64/64,
+kinetic energy 0.0` by frame 136, at which point the picture stops. Their
+orientations are simulated, not painted on: the adapter receives the quaternion
+in the motion record and calls `setOrientation` with it.
 
 **The honest bit:** the collider is a sphere and the mesh is a cube. The physics
 simulates spheres and planes only, so a cube's corner can pass a little way into
@@ -113,15 +114,16 @@ what it hits (by up to its circumradius, ~0.17 units for a 0.2-unit body). The
 tumbling is real; the collision shape is not a box yet — that and a wheel or
 capsule collider are on the future-work list.
 
-**And the pile does not come to rest**, which is the same honesty in a different
-place: a sphere that reaches *rolling* has no slip left for friction to act on,
-and this model has no rolling resistance. Measured: waking from a jostle that
-gives every body a spin, the pile sits at 4 of 64 asleep at frame 300 with a
-kinetic energy of 0.17 — the run ends at the frame cap rather than on the
-`asleepCount() == bodies` condition the linear model reaches at frame 287. A
-gentle drop (bodies born just clear of each other) settles to 64/64 asleep in 68
-frames and tumbles not at all; the two cannot both be had until rolling
-resistance exists (§12).
+**And the pile comes to rest, which it could not do before chunk 9a.** A sphere
+that reaches rolling has no slip left for friction to act on, so without a
+resistance term it rolls forever (chunk 8c2 measured 0.128 m/s held for a hundred
+frames). Chunk 9a adds a contact-only, pure-angular spin decay, and the effect on
+this demo is the difference between a pile that never stops and one that reaches
+`asleep 64/64, kinetic energy 0.0` at frame 136: the run now ends on the
+`asleepCount() == bodies` condition rather than at the frame cap, and the picture
+freezes with every body at the orientation it stopped in. The coefficient is 13
+(1/s) — grounded in the acid test's own clauses, not tuned here (DESIGN.md §5.1,
+§12).
 
 ## Where the SDK surface is documented
 
