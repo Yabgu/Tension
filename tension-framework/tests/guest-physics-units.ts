@@ -239,8 +239,12 @@ function test_bias_does_not_spin_resting_box(): void {
       check("it reaches rolling: ω·r = −v within 5 %",
             abs(-wz * 0.1 - vx) < 0.05 * 1.0, "wz·r=" + (-wz * 0.1).toString() +
             " v=" + vx.toString());
-      check("and it is still travelling: rolling, not stopped",
-            vx > 0.6, "vx=" + vx.toString());
+      // Since chunk 9a there is rolling resistance, so the sphere is slower than
+      // the 5/7 a friction-only slide would leave it at: the point of this line
+      // is that it is *rolling* rather than parked, which is what the check
+      // above asserts — and that it has not been stopped dead by the term either.
+      check("and it is still rolling rather than parked", vx > 0.05,
+            "vx=" + vx.toString());
       world!.destroy();
     }
   }

@@ -59,6 +59,24 @@
 // derivative writes zeros for it, so the pile holds its positions bit-for-bit
 // and the frame stops changing.
 //
+// **Rolling resistance is a contact-only spin decay, and its gate is a
+// *candidate*, not a resolved contact.** `ω ← ω · max(0, 1 − k·h)` per sub-step,
+// angular model only, for any body that had a contact *candidate* this sub-step.
+// The distinction is the whole reason it works: the impulse path deliberately
+// ignores contacts inside the slop, and a body at rest settles at a penetration
+// inside it — so a decay keyed on *resolved* contacts reaches a resting body in
+// only ~23 % of sub-steps, while one keyed on candidates reaches it in 92–100 %
+// (measured, chunk 9a-i). The gate is one byte per body, set by the same loop
+// that generates the contacts (`Contacts`' generators), and it changes no
+// impulse. Two more properties are load-bearing and measured: the term is **pure
+// angular** — a torque cannot move a body's centre, which is what keeps it out
+// of the displacement-based sleep signal — and it has **no stop threshold**: a
+// rule that stopped the decay below the sleep threshold parks a body *on* the
+// threshold and it never sleeps, and a term that only removes motion cannot keep
+// anything awake in the first place. A rolling pair decays at `I/(I + m r²)` of
+// the coefficient, because friction re-couples the spin to the linear momentum
+// the term cannot touch — 2/7 of it for a solid sphere.
+//
 // **The angular model gets a second signal, because a body spinning in place
 // displaces nothing.** The decision is linear displacement per frame *and*
 // angular displacement per frame, both averaged over the same window — and the
@@ -577,14 +595,21 @@ export class Contacts {
   /**
    * Two spheres: one contact when their surfaces overlap. Equal shapes, so the
    * normal is the line between the centres; the normal points from `a` to `b`.
+   *
+   * `touched` is the rolling-resistance gate: it is marked for a contact
+   * *candidate* — surfaces touching, before the slop decides whether the pair is
+   * worth resolving — because a resting body sits inside the slop and the decay
+   * has to see it anyway (the module doc says why).
    */
-  sphereSphere(body: Body, params: PhysicsParams, a: i32, b: i32, slop: f64): bool {
+  sphereSphere(body: Body, params: PhysicsParams, a: i32, b: i32, slop: f64,
+               touched: Uint8Array | null = null): bool {
     const dx = body.pos(b, 0) - body.pos(a, 0);
     const dy = body.pos(b, 1) - body.pos(a, 1);
     const dz = body.pos(b, 2) - body.pos(a, 2);
     const dist2 = dx * dx + dy * dy + dz * dz;
     const reach = params.radius[a] + params.radius[b];
     if (dist2 >= reach * reach || dist2 <= 1.0e-18) return false;
+    if (touched != null) { touched[a] = 1; touched[b] = 1; }
     const dist = Math.sqrt(dist2);
     const penetration = reach - dist;
     if (penetration <= slop) return false;
@@ -599,8 +624,10 @@ export class Contacts {
    * direction that separates the body from the wall.
    */
   spherePlane(body: Body, params: PhysicsParams, index: i32, axis: i32, inside: f64,
-              distance: f64, slop: f64): bool {
+              distance: f64, slop: f64, touched: Uint8Array | null = null): bool {
     const penetration = params.radius[index] - distance;
+    if (penetration <= 0.0) return false;
+    if (touched != null) touched[index] = 1;
     if (penetration <= slop) return false;
     const nx = axis == 0 ? inside : 0.0;
     const ny = axis == 1 ? inside : 0.0;
@@ -957,6 +984,19 @@ export class WorldConfig {
   /** The angular counterpart, in rad/s — 0.001 rad/frame at 60 Hz, and only the
    * angular model reads it (see `SleepState.angularSpeed` for the grounding). */
   sleepAngularSpeed: f64 = 0.06;
+  /**
+   * Rolling resistance: the rate (1/s) at which a body in contact has its spin
+   * decayed, `ω ← ω · max(0, 1 − k·h)` per sub-step, angular model only. `0.0`
+   * disables it and reproduces chunk 8c2's undamped numbers.
+   *
+   * 13 is not a tuned value: it is what the chunk-8 fixture's own clauses
+   * require. A *free* spinner decays at `k`; a *rolling* body decays at
+   * `k·I/(I + m r²)` — 2/7 of it for a solid sphere — because a pure-angular
+   * term cannot touch the linear momentum friction re-couples the spin to. The
+   * fixture's roller needs ≥ 12 for that reason and the speed of a sliding
+   * contact does not enter at all (chunk 9a-i's probe measured the whole curve).
+   */
+  rollResistance: f64 = 13.0;
   /** Consecutive frames below it before a body sleeps. */
   sleepFrames: u32 = 30;
   /**
@@ -1015,6 +1055,9 @@ export class World {
   private angular_travel!: Float64Array;
   /** Slots per body per half: 3 linear, 7 angular. */
   private half: i32;
+  /** Bodies with a contact *candidate* this sub-step: the rolling-resistance
+   * gate, one byte per body, cleared by `detect`. */
+  private touched!: Uint8Array;
   private angular: bool;
   /**
    * The angular velocities recovered from the state's `q'` pair, one per body,
@@ -1037,6 +1080,7 @@ export class World {
     this.buffer = new Float64Array(dim + 1);
     this.body = new Body(this.buffer, config.bodies, 1, half);
     this.omega = new Float64Array(config.bodies * 3);
+    this.touched = new Uint8Array(config.bodies);
     // One pair per body and one contact per body per plane is the common case;
     // the buffer is sized for the worst realistic pile rather than the best.
     this.contacts = new Contacts(<i32>Math.max(config.bodies * 8, 64));
@@ -1241,6 +1285,10 @@ export class World {
         }
         resolve(this.contacts, this.body, this.params, this.sleep, this.config.bias, h,
                 this.omega, this.config.slop);
+        // Rolling resistance, between the response and the write-back: it writes
+        // the angular table only, so the canonicalization below is what puts the
+        // decayed spin into the state, in the same write the impulses use.
+        this.dampContacts(h);
         for (let i = 0; i < this.config.bodies; i++) {
           if (this.sleep.isAsleep(i)) continue;
           this.body.writePose(i, this.omega[i * 3], this.omega[i * 3 + 1], this.omega[i * 3 + 2]);
@@ -1334,6 +1382,34 @@ export class World {
     }
   }
 
+  /**
+   * Rolling resistance: a contact-only, pure-angular spin decay. Sleeping bodies
+   * are skipped — a slept body's state has to stay bit-for-bit what it was — and
+   * nothing else is: no stop threshold, because a rule that stopped the decay
+   * below the sleep threshold parks a body on the threshold instead of letting
+   * it sleep (chunk 9a-i measured that). No linear component either, and that is
+   * a correctness requirement rather than a nicety: the sleep signal is
+   * *displacement*, so a resistance that leaked into translation would keep
+   * awake the very pile it exists to settle.
+   *
+   * The gate is the *candidate* contact `detect` marks, not the resolved one the
+   * impulse pass sees: a resting body's penetration sits inside the slop, so a
+   * resolved-contact gate reaches it in a quarter of its sub-steps.
+   */
+  private dampContacts(h: f64): void {
+    const k = this.config.rollResistance;
+    if (k <= 0.0) return;
+    let factor = 1.0 - k * h;
+    if (factor < 0.0) factor = 0.0;
+    for (let i = 0; i < this.config.bodies; i++) {
+      if (this.touched[i] == 0) continue;
+      if (this.sleep.asleep[i] != 0) continue;
+      this.omega[i * 3 + 0] *= factor;
+      this.omega[i * 3 + 1] *= factor;
+      this.omega[i * 3 + 2] *= factor;
+    }
+  }
+
   /** Copy the solver's state into the buffer the accessors read. */
   readState(): void {
     this.solver.state(this.buffer);
@@ -1347,6 +1423,7 @@ export class World {
    */
   private detect(): void {
     this.contacts.clear();
+    this.touched.fill(0); // the damping gate is per sub-step, like the contacts
     const count = this.config.bodies;
     const slop = this.config.slop;
     for (let a = 0; a < count; a++) {
@@ -1356,17 +1433,17 @@ export class World {
         // generator's arithmetic is the pair loop's whole cost. One array read
         // per pair, per sub-step — and the only place sleeping saves anything.
         if (a_asleep && this.sleep.isAsleep(b)) continue;
-        this.contacts.sphereSphere(this.body, this.params, a, b, slop);
+        this.contacts.sphereSphere(this.body, this.params, a, b, slop, this.touched);
       }
       const px = this.body.pos(a, 0), py = this.body.pos(a, 1), pz = this.body.pos(a, 2);
       const extent = this.config.extent;
       // Floor (interior above y = 0), then the four walls: `inside` says which
       // way the container's interior lies, and `distance` how far inside it is.
-      this.contacts.spherePlane(this.body, this.params, a, 1, 1.0, py, slop);
-      this.contacts.spherePlane(this.body, this.params, a, 0, 1.0, px + extent, slop);
-      this.contacts.spherePlane(this.body, this.params, a, 0, -1.0, extent - px, slop);
-      this.contacts.spherePlane(this.body, this.params, a, 2, 1.0, pz + extent, slop);
-      this.contacts.spherePlane(this.body, this.params, a, 2, -1.0, extent - pz, slop);
+      this.contacts.spherePlane(this.body, this.params, a, 1, 1.0, py, slop, this.touched);
+      this.contacts.spherePlane(this.body, this.params, a, 0, 1.0, px + extent, slop, this.touched);
+      this.contacts.spherePlane(this.body, this.params, a, 0, -1.0, extent - px, slop, this.touched);
+      this.contacts.spherePlane(this.body, this.params, a, 2, 1.0, pz + extent, slop, this.touched);
+      this.contacts.spherePlane(this.body, this.params, a, 2, -1.0, extent - pz, slop, this.touched);
     }
   }
 

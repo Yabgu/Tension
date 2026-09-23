@@ -7,11 +7,12 @@
 //! the closed form's 5/7 while turning, and does a spinning body keep turning
 //! instead of being slept by a signal that only watches translation.
 //!
-//! Two of the fixture's clauses are a *finding* rather than a check: a sphere
-//! that reaches rolling has no slip left for friction, and a sphere spinning
-//! about the vertical axis has none below its centre either — so neither stops,
-//! and the fixture asserts the shape of that motion (clauses 2 and 7) rather
-//! than pretending they sleep. See the fixture's header and DESIGN.md §12.
+//! Chunk 9a-ii brought the rolling resistance that flips chunk 8c2's tripwire:
+//! the fixture's clauses are the strong form again — every body asleep, kinetic
+//! energy exactly zero, and the frame exactly still once they are. The
+//! coefficient is 13 (1/s), contact-only and pure-angular, and the spinner's
+//! turn floor moved 30° → 25° as the smallest of the three levers the 9a-i probe
+//! measured (DESIGN.md §5.1, §12).
 //!
 //! The structural half always runs (renderer=null, no display needed); the pixel
 //! half needs a window and is opt-in behind `TENSION_OGRE_WINDOW_TEST=1`, the
@@ -82,10 +83,11 @@ fn run(renderer: &str) -> std::process::Output {
         .expect("the interpreter runs")
 }
 
-/// The structural tier: the pile sleeps, the orientations stay unit, the pile's
-/// angular momentum goes to zero, the rolling sphere reaches the closed form,
-/// and the spinning body turns without wandering — while the two bodies the
-/// model cannot stop are still moving exactly as it says they must.
+/// The structural tier: every body sleeps with kinetic energy exactly zero, the
+/// orientations stay unit, the angular momentum goes to zero, the rolling sphere
+/// reaches rolling while still travelling, the spinning body turns — and the
+/// resistance is proven contact-only, with the roller stopping by its own decay
+/// rather than against the wall.
 #[test]
 fn test_ogre_angular_structural() {
     if fixture().is_none() || adapter().is_none() {
@@ -101,6 +103,7 @@ fn test_ogre_angular_structural() {
                 || line.starts_with("5 ok:")
                 || line.starts_with("6 ok:")
                 || line.starts_with("7 ok:")
+                || line.starts_with("8 ok:")
         })
         .collect();
     assert!(
@@ -111,7 +114,7 @@ fn test_ogre_angular_structural() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 7/7 passed (structural, renderer=null)"),
+        stdout.contains("ACID 8/8 passed (structural, renderer=null)"),
         "the guest did not pass its structural clauses\nstdout: {stdout}\nstderr: {stderr}"
     );
     println!("ogre_angular: {}", measured.join("\n              "));
@@ -131,7 +134,7 @@ fn test_ogre_angular_pixels() {
     let measured: Vec<&str> = stdout
         .lines()
         .filter(|line| {
-            line.starts_with("8 ok:") || line.starts_with("9 ok:") || line.starts_with("10 ok:")
+            line.starts_with("9 ok:") || line.starts_with("10 ok:") || line.starts_with("11 ok:")
         })
         .collect();
     assert!(
@@ -142,8 +145,8 @@ fn test_ogre_angular_pixels() {
         stderr.lines().rev().take(4).collect::<Vec<_>>().join("\n")
     );
     assert!(
-        stdout.contains("ACID 10/10 passed"),
-        "the guest did not pass its ten clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
+        stdout.contains("ACID 11/11 passed"),
+        "the guest did not pass its eleven clauses\n{}\nstdout: {stdout}\nstderr: {stderr}",
         measured.join("\n")
     );
     println!("ogre_angular: {}", measured.join("\n              "));

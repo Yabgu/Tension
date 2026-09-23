@@ -999,6 +999,32 @@ stops here rather than choosing. §12 carries what would have to move, measured:
 at the smallest k the roller's clause allows, the spinner turns 26.7° against the
 30° it asks for — 11 % short — and every other lever is larger.
 
+**Rolling resistance as delivered: `k = 13`, on a contact candidate, with no
+parking rule.** The term is `ω ← ω · max(0, 1 − k·h)` per sub-step for any body
+with a contact **candidate** this sub-step, in the angular model only.
+`WorldConfig.rollResistance` is the coefficient in 1/s and `0.0` disables it.
+
+Three corrections from the probe moved it, and all three are in the code because
+of what it measured:
+
+- **Candidate, not resolved.** The impulse path skips contacts within the slop —
+  deliberately, that is what the slop is for — and a body at rest settles at a
+  penetration *inside* it. A damping pass keyed on *resolved* contacts therefore
+  sees a resting body in **23 %** of its sub-steps; keyed on candidates, it sees
+  **92–100 %**. The gate is one byte per body, written by the same loops in
+  `Contacts` that generate the contacts, and it changes no impulse.
+- **The coupling is real and it is `I/(I + m r²) = 2/7`.** A pure-angular term
+  cannot touch linear momentum, so friction re-couples a roller's spin to its
+  motion and the *pair* decays at `k·I/(I+mr²)` — a roller needs 3.5× the `k` a
+  free spinner does for the same decay. That is exact arithmetic the plan's
+  window ignored, and it is why the coefficient is 13 and not 3.6.
+- **No parking rule.** The plan skipped damping for bodies below
+  `sleepAngularSpeed`, so a settled pile would not be kept awake by the term's
+  tail. Measured: that stops the decay at exactly the number the sleep signal
+  tests, and the body parks just above it and never sleeps. The rule is gone — a
+  term that only *removes* motion cannot keep anything awake — and the sleep
+  policy remains the only thing that decides when a body is still.
+
 **Sleeping lives in the derivative mask, and it is not an optimization.** One
 solver integrates the whole state vector; there is no per-body stepping and this
 layer does not add one. The World zeroes a body's velocity when it sleeps and
@@ -1844,7 +1870,23 @@ chunk 1 work, and each is additive:
   with no error anywhere — the probe measured 1.5708 rad where 1.0 was asked for
   (§5.1). And quaternion state writes are as safe as linear ones: written back
   verbatim, the spin is bit-identical.
-- **Rolling resistance: the probe's window is empty, and here is what moves.**
+- **Rolling resistance is delivered** (chunk 9a-ii), with the honest record of
+  how it got its coefficient. The chunk-9a plan's arithmetic window `[3.2, 4.5]`
+  was **refuted by its own probe, empty by 1.5×**: the real requirements were
+  `roller ≥ 90° ≤ 14.5`, `asleep by 120 ≥ 12`, `spinner ≥ 30° ≤ 7.8`. Three
+  measured corrections moved it — the resolved-contact gate sees only 23 % of a
+  resting body's sub-steps (the candidate gate sees 92–100 %); a rolling pair
+  decays at `2/7` of `k`, not at `k`; and skipping the damping below the sleep
+  threshold parks a body *on* the threshold instead of letting it sleep (§5.1).
+  The default is **k = 13**, which is what the roller's own clauses require, and
+  the spinner's turn floor moved from **30° to 25°** as the smallest of the three
+  levers (the alternatives were its drop height, 0.55 → 1.05 m, which drags the
+  fixture's displacement ceiling with it, and the fixture's horizon, 120 → 160
+  frames, which alone was *still* not enough). **A second rate remains off the
+  table**: the roller and the spinner wanting different `k` is not a missing
+  parameter but a measured property of a pure-angular term — a spin decay dragging
+  linear momentum it is forbidden to touch.
+- **The older note, kept for the boundary it still names.**
   Chunk 9a-i wrote the term's arithmetic, measured it, and refuted itself; §5.1
   carries the three measurements (an intermittent contact gate, a rolling pair
   that decays at 0.286·k, and a stop rule that parks a body on the sleep
@@ -2183,6 +2225,33 @@ single session and asserts its own results, printing a pass/fail summary line �
   still a tripwire. Flipping it is 9a-ii's job and it needs a decision first;
   writing the clause before the coefficient exists would be the test deciding the
   model.
+- *rolling resistance (chunk 9a-ii)*: the chunk-8 clause flips to the strong
+  form, with `rollResistance = 13` and the spinner's floor at 25°. **Structural**
+  (M = 16, 120 frames, K = 4): **all sixteen bodies asleep at frame 120 with
+  `kineticEnergy()` exactly 0.0** — the pile, the roller and the spinner, where
+  chunk 8c2 could only assert the pile; every orientation a unit quaternion
+  (|q| error **0.0** against 1e-6); total angular momentum **0.0** against a 1e-3
+  ceiling; the roller turns **102.9°** (the clause asks 90°) and reaches rolling
+  at its slip-stop to within **0.0477 m/s** of a 0.05 bound; the spinner turns
+  **39.0°** (the floor is 25°, down from 30° as the smallest of the three levers
+  9a-i measured) while moving **0.253 m**; **the resistance is contact-only** —
+  the spinner's ω stays within **2.4e-10** of 1.0 rad/s over the twelve frames
+  before its first contact; and **the roller stops by its own decay** — asleep at
+  x = 3.479, **0.42 m short of the wall**. **Visual** (GL3+): the bodies are
+  drawn within the band (110 px against a 345 px ceiling), nothing below the
+  floor's row (142 ≤ 143), and the flip fraction — 0.221 while they move, and
+  **exactly 0.0** between two late frames, chunk 6's strong form again. Two
+  clauses moved for reasons the probe measured rather than for convenience: the
+  roller's **v/v₀ = 5/7 is an undamped identity** (this world is damped, and the
+  slip-stop speed is **0.2509 v₀**; the clause keeps the part that is still a
+  claim about the friction model — the roller must be *travelling* when it stops
+  slipping — and the 5/7 identity stays measured in the probe's k = 0 row), and
+  the clause's rolling bound is the detector's own 5 %-of-v₀ rather than a
+  relative one that a damped roller cannot meet. One fixture bug surfaced on the
+  way: its loop advanced two frames per `step` call, so the sleep policy — which
+  ticks once per call — ran a 60-frame window instead of 30, and the roller
+  missed the 120-frame clause by five frames. The fixture now steps once per
+  frame, as the policy documents.
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is

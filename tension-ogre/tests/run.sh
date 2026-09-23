@@ -224,10 +224,10 @@ angular_case() {
     shift
     stdout=$("$core" --capability "$dso" "$out/guest-angular.wasm" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
-    echo "$stdout" | grep -qE "^ACID (7/7 passed \(structural, renderer=null\)|10/10 passed)" ||
+    echo "$stdout" | grep -qE "^ACID (8/8 passed \(structural, renderer=null\)|11/11 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
     echo "== $name: ok — $(echo "$stdout" | grep '^ACID ' | tail -1)"
-    echo "$stdout" | grep -E '^(2 ok|5 ok|7 ok|10 ok):' | sed 's/^/== '"$name"': /' || true
+    echo "$stdout" | grep -E '^(2 ok|5 ok|7 ok|8 ok|11 ok):' | sed 's/^/== '"$name"': /' || true
 }
 
 physics_case() {

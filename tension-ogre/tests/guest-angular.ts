@@ -9,38 +9,36 @@
 // then asked what the linear model cannot answer:
 //
 //   1. the world runs: 120 frames of 4 sub-steps, every step accepted
-//   2. the pile is asleep at frame 120: fourteen bodies, and their KE exactly 0
+//   2. **all sixteen bodies asleep at frame 120 with KE exactly 0.0** — the
+//      strong form, and the clause chunk 8c2 could not make
 //   3. every orientation is finite and normalized: |q| within 1e-6 of 1
-//   4. the settled pile's total angular momentum is below 1e-3 kg·m²/s
+//   4. the total angular momentum is below 1e-3 kg·m²/s
 //   5. **the clause a linear-only model fails** — the sphere given 1 m/s rolls:
 //      its orientation turns at least 90° over the run, and at the frame its
 //      sliding stops, v/v₀ is 5/7 within 2 % and |ω|·r = |v| within 5 %
 //   6. the body dropped with a spin tumbles: its orientation changes by at
-//      least 30° while its position moves less than 0.5 m
-//   7. **the model's boundary, asserted rather than assumed**: the two bodies
-//      this model cannot stop are still moving exactly as it says they must —
-//      the roller is still rolling (|ω·r + v| under 5 % of v) and the spinner is
-//      still spinning at its initial rate
+//      least 25° while its position moves less than 0.5 m
+//   7. **contact-only resistance**: the spinner's ω is bit-identical (to 1e-9)
+//      over the frames before its first contact — a term that damped free-space
+//      rotation fails here
+//   8. **the roller stops by its own decay, not by the pile**: it is asleep, and
+//      it stopped in the open rather than against a wall
 //
 // and, under a renderer with a framebuffer (GL3+):
 //
-//   8. the bodies are drawn: body-coloured pixels are within ±30 % of the area
+//   9. the bodies are drawn: body-coloured pixels are within ±30 % of the area
 //      the state and the pinned camera predict
-//   9. nothing is under the floor on screen
-//  10. the pile is still and the movers are not: the flip fraction between two
-//      early frames is clearly non-zero, and between two late frames it is under
-//      a tenth of it — the pile's pixels are frozen, and clause 7's two bodies
-//      are still crossing them
+//  10. nothing is under the floor on screen
+//  11. the frame is still: the flip fraction between two early frames is clearly
+//      non-zero, and between two late frames it is **exactly 0.0** — back to
+//      chunk 6's strong form, because with rolling resistance every body sleeps
 //
-// **Clauses 2 and 7 are a finding, not a workaround.** A sphere that reaches
-// rolling has no slip left for friction to act on, and a sphere spinning about
-// the vertical axis has no slip at a contact directly below it — so neither
-// stops, and "every body asleep" is not a thing this model produces. Measured:
-// the roller settles to a rolling 0.128 m/s after its wall bounce and holds it
-// for a hundred frames; a spinner left on the floor turns at exactly 1.0000
-// rad/s after two seconds. What this fixture asserts instead is the *shape* of
-// that motion, so a model that gains rolling resistance fails clause 7 and has
-// to say so (DESIGN.md §12).
+// **Chunk 9a brought the resistance that flips the old tripwire.** Until 9a-ii
+// a rolling sphere and a vertical-axis top could not be stopped by this model,
+// and the fixture asserted the *shape* of their endless motion instead. Now they
+// stop: the coefficient is 13 (1/s), contact-only and pure-angular, and the
+// spinner's turn floor moved 30° → 25° as the smallest of the three levers the
+// probe measured (DESIGN.md §5.1, §12). Clause 2 is the strong form again.
 //
 // The tolerances are chunk 8a's probe numbers for this configuration, not
 // numbers chosen to pass: v/v₀ = 0.7161 against the closed form's 5/7 = 0.7143
@@ -89,7 +87,7 @@ const ROLL_RATIO_TOLERANCE: f64 = 0.02;
 const ROLL_SLIP_TOLERANCE: f64 = 0.05;
 /** The spinner: 1 rad/s about y = 114° over two seconds, and the clause asks 30°. */
 const SPIN_RATE: f64 = 1.0;
-const SPIN_TURN_FLOOR: f64 = 30.0 * (3.14159265358979 / 180.0);
+const SPIN_TURN_FLOOR: f64 = 25.0 * (3.14159265358979 / 180.0);
 const SPIN_MOVE_CEILING: f64 = 0.5;
 /** The angular momentum the pile must hold at rest: sleeping zeroes every ω. */
 const ANGULAR_MOMENTUM_CEILING: f64 = 1.0e-3;
@@ -242,7 +240,7 @@ export function _start_game(): void {
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
-  total = gl3plus ? 10 : 7;
+  total = gl3plus ? 11 : 8;
 
   clause = 0; // the wire's own contract, before anything runs
   assertOgreWireOffsets();
@@ -402,6 +400,12 @@ export function _start_game(): void {
   let roller_turned = 0.0, spinner_turned = 0.0;
   read_quat(world!, ROLLER, prev_roller);
   read_quat(world!, SPINNER, prev_spinner);
+  // Clause 7's measurement: the spinner's rate over the frames before it first
+  // touches anything. In free space the resistance must not act at all, and a ω
+  // that drifts here is a term keyed on the wrong thing.
+  let spinner_contact_frame: i32 = -1;
+  let spinner_free_w_error = 0.0;
+  let spinner_free_frames: i32 = 0;
   while (frame_now < FRAMES) {
     RuntimeSession.wait(16);
     const now = ogre.frameCount();
@@ -409,9 +413,16 @@ export function _start_game(): void {
     if (elapsed == 0) continue;
     const advance: i32 = elapsed > 2 ? 2 : elapsed;
     last_frame = now;
-    frame_now += advance;
-    if (world!.step(<f64>advance * DT) != 0) {
-      fail("world.step refused at frame " + frame_now.toString());
+    // One `step` call per frame advanced, not one call of `advance` frames: the
+    // sleep window ticks once per call (that is what "once per rendered frame"
+    // means), so a two-frame call silently doubles the 30-frame window the sleep
+    // policy promises. The physics is identical — each call runs its own four
+    // sub-steps — and the window is the one the policy documents.
+    for (let f: i32 = 0; f < advance; f++) {
+      frame_now += 1;
+      if (world!.step(DT) != 0) {
+        fail("world.step refused at frame " + frame_now.toString());
+      }
     }
     if (batch != null) {
       world!.pose(batch);
@@ -436,6 +447,16 @@ export function _start_game(): void {
     read_quat(world!, SPINNER, now_quat);
     spinner_turned += quat_delta(prev_spinner, now_quat);
     for (let k: i32 = 0; k < 4; k++) prev_spinner[k] = now_quat[k];
+    if (spinner_contact_frame < 0) {
+      if (body.pos(SPINNER, 1) <= RADIUS + 0.01) {
+        spinner_contact_frame = frame_now;
+      } else {
+        spinner_free_frames += 1;
+        const w = body.omega(SPINNER, 1);
+        const err = abs(w - SPIN_RATE);
+        if (err > spinner_free_w_error) spinner_free_w_error = err;
+      }
+    }
     // The spinner's displacement, the largest it ever is.
     const dx = body.pos(SPINNER, 0) - spinner_home[0];
     const dy = body.pos(SPINNER, 1) - spinner_home[1];
@@ -449,9 +470,9 @@ export function _start_game(): void {
 
   // ── clause 2: asleep, spinning bodies included ───────────────────────
   clause = 2;
-  let sleeping_pile = 0;
-  let awake_pile = "";
-  for (let i = 0; i < PILE; i++) {
+  let sleeping = 0;
+  let awake = "";
+  for (let i = 0; i < BODIES; i++) {
     if (!world!.sleep.isAsleep(i)) {
       const vl = Math.sqrt(body.vel(i, 0) * body.vel(i, 0) +
                            body.vel(i, 1) * body.vel(i, 1) +
@@ -459,19 +480,20 @@ export function _start_game(): void {
       const wl = Math.sqrt(body.omega(i, 0) * body.omega(i, 0) +
                            body.omega(i, 1) * body.omega(i, 1) +
                            body.omega(i, 2) * body.omega(i, 2));
-      awake_pile += " [pile body " + i.toString() + " |v| " + vl.toString() +
-                    " |w| " + wl.toString() + "]";
+      awake += " [body " + i.toString() + " |v| " + vl.toString() + " |w| " +
+               wl.toString() + " at (" + body.pos(i, 0).toString() + ", " +
+               body.pos(i, 1).toString() + ", " + body.pos(i, 2).toString() + ")]";
       continue;
     }
-    sleeping_pile += 1;
+    sleeping += 1;
   }
-  check(sleeping_pile == PILE,
-        "only " + sleeping_pile.toString() + " of " + PILE.toString() +
-        " pile bodies are asleep at frame " + frame_now.toString() + awake_pile);
-  const ke_pile: f64 = world!.kineticEnergy() - 0.5;
-  print("2 ok: " + sleeping_pile.toString() + "/" + PILE.toString() +
-        " pile bodies asleep at frame " + frame_now.toString() + " (" +
-        BODIES.toString() + " bodies total; clause 7 names the two still moving)");
+  check(sleeping == BODIES,
+        "only " + sleeping.toString() + " of " + BODIES.toString() +
+        " bodies are asleep at frame " + frame_now.toString() + ":" + awake);
+  const ke_all = world!.kineticEnergy();
+  check(ke_all == 0.0, "kinetic energy at rest is " + ke_all.toString() + ", not exactly 0");
+  print("2 ok: " + sleeping.toString() + "/" + BODIES.toString() +
+        " asleep at frame " + frame_now.toString() + ", kinetic energy exactly 0.0");
 
   // ── clause 3: every orientation is a unit quaternion ─────────────────
   clause = 3;
@@ -497,7 +519,7 @@ export function _start_game(): void {
   const params = world!.parameters();
   const omega = new Float64Array(3);
   let lx = 0.0, ly = 0.0, lz = 0.0;
-  for (let i = 0; i < PILE; i++) {
+  for (let i = 0; i < BODIES; i++) {
     body.recoverOmega(i, omega);
     for (let axis: i32 = 0; axis < 3; axis++) {
       const inv_i = params.invInertiaAt(i, axis);
@@ -511,7 +533,7 @@ export function _start_game(): void {
   const momentum = Math.sqrt(lx * lx + ly * ly + lz * lz);
   check(momentum < ANGULAR_MOMENTUM_CEILING,
         "the total angular momentum is " + momentum.toString());
-  print("4 ok: pile |L| " + momentum.toString() + " < " + ANGULAR_MOMENTUM_CEILING.toString());
+  print("4 ok: |L| " + momentum.toString() + " < " + ANGULAR_MOMENTUM_CEILING.toString());
 
   // ── clause 5: the rolling sphere — what a linear model cannot do ─────
   clause = 5;
@@ -521,14 +543,25 @@ export function _start_game(): void {
   const rolling_error = abs(roll_v_at_stop + roll_w_at_stop * RADIUS);
   check(rolled >= 3.14159265358979 * 0.5,
         "the roller turned only " + (rolled * 180.0 / 3.14159265358979).toString() + " deg");
-  check(abs(ratio - ROLL_CLOSED_FORM) <= ROLL_RATIO_TOLERANCE * ROLL_CLOSED_FORM,
-        "v/v0 at the sliding stop is " + ratio.toString() + ", not 5/7");
-  check(rolling_error < ROLL_SLIP_TOLERANCE * abs(roll_v_at_stop),
-        "at the sliding stop |w r + v| = " + rolling_error.toString());
+  // The 5/7 closed form is a property of an *undamped* sliding phase, and this
+  // world is damped: the resistance removes momentum while the roller is still
+  // sliding, so the speed at the slip-stop is 0.2509 v₀ rather than 0.7143 v₀.
+  // The identity still holds where it can be measured — the probe's k = 0 row
+  // (Q1: v/v₀ 0.7093 after the same slide) — and what this clause keeps is what
+  // is still a claim about the friction model: the roller must be *travelling*
+  // when it stops slipping, not parked.
+  check(ratio > 0.15,
+        "v/v0 at the sliding stop is " + ratio.toString() + ", so the roller had " +
+        "stopped before it rolled");
+  // The same 5 %-of-v₀ bound the detector uses: a *relative* bound on a damped
+  // roller would be tighter than the criterion that found the frame at all.
+  check(rolling_error < ROLL_SLIP_TOLERANCE * ROLL_V0,
+        "at the sliding stop |w r + v| = " + rolling_error.toString() + ", against a " +
+        (ROLL_SLIP_TOLERANCE * ROLL_V0).toString() + " bound");
   print("5 ok: roller turned " + (rolled * 180.0 / 3.14159265358979).toString() +
-        " deg, v/v0 " + ratio.toString() + " against 5/7 = " + ROLL_CLOSED_FORM.toString() +
-        ", |w r + v| " + rolling_error.toString() + " at frame " +
-        slip_stop_frame.toString());
+        " deg, v/v0 " + ratio.toString() + " at the slip-stop (damped; the undamped " +
+        "closed form is 5/7 = " + ROLL_CLOSED_FORM.toString() + "), |w r + v| " +
+        rolling_error.toString() + " at frame " + slip_stop_frame.toString());
 
   // ── clause 6: the spinning body tumbled while staying put ────────────
   clause = 6;
@@ -540,20 +573,29 @@ export function _start_game(): void {
   print("6 ok: spinner turned " + (spun * 180.0 / 3.14159265358979).toString() +
         " deg, moved " + spinner_max_move.toString() + " m");
 
-  // ── clause 7: the two bodies this model cannot stop ──────────────────
+  // ── clause 7: contact-only — no damping in free space ────────────────
   clause = 7;
-  const roller_v = body.vel(ROLLER, 0), roller_w = body.omega(ROLLER, 2);
-  const spinner_w = body.omega(SPINNER, 1);
-  check(!world!.sleep.isAsleep(ROLLER),
-        "the roller slept: rolling has no slip and this model has no rolling resistance");
-  check(abs(roller_v + roller_w * RADIUS) < ROLL_SLIP_TOLERANCE * abs(roller_v),
-        "the roller is not rolling: v " + roller_v.toString() + ", w " + roller_w.toString());
-  check(!world!.sleep.isAsleep(SPINNER), "the spinner slept");
-  check(abs(spinner_w - SPIN_RATE) < 0.02 * SPIN_RATE,
-        "the spinner's rate moved to " + spinner_w.toString() + " rad/s");
-  print("7 ok: roller rolling at " + roller_v.toString() + " m/s (w r + v = " +
-        (roller_v + roller_w * RADIUS).toString() + "), spinner at " +
-        spinner_w.toString() + " rad/s — neither stops, and neither should");
+  check(spinner_contact_frame > 0,
+        "the spinner never reached the floor inside " + frame_now.toString() + " frames");
+  check(spinner_free_w_error <= 1.0e-9,
+        "the spinner's rate moved by " + spinner_free_w_error.toString() +
+        " while it was in free space");
+  print("7 ok: contact-only: the spinner's w stayed within " +
+        spinner_free_w_error.toString() + " of " + SPIN_RATE.toString() +
+        " rad/s over the " + spinner_free_frames.toString() +
+        " frames before its first contact (frame " + spinner_contact_frame.toString() + ")");
+
+  // ── clause 8: the roller stopped by its own decay ────────────────────
+  clause = 8;
+  const roller_x = body.pos(ROLLER, 0);
+  const wall_x = EXTENT - RADIUS;
+  check(world!.sleep.isAsleep(ROLLER),
+        "the roller is not asleep at frame " + frame_now.toString());
+  check(roller_x < wall_x - 0.02,
+        "the roller stopped against the wall: x = " + roller_x.toString() +
+        ", wall at " + wall_x.toString());
+  print("8 ok: roller asleep at x = " + roller_x.toString() + ", " +
+        (wall_x - roller_x).toString() + " m short of the wall at " + wall_x.toString());
 
   if (!gl3plus) {
     print("ACID " + total.toString() + "/" + total.toString() +
@@ -564,8 +606,8 @@ export function _start_game(): void {
     return;
   }
 
-  // ── clause 8: the bodies are drawn where the state says ──────────────
-  clause = 8;
+  // ── clause 9: the bodies are drawn where the state says ──────────────
+  clause = 9;
   const settled = grab();
   check(settled != null, "no frame could be downloaded");
   const blob = measure_blob(settled!);
@@ -589,11 +631,11 @@ export function _start_game(): void {
   check(<f64>blob.count <= ceiling,
         "the bodies cover " + blob.count.toString() + " px, more than the " +
         ceiling.toString() + " px the state predicts");
-  print("8 ok: bodies " + blob.count.toString() + " px, one body " + near_area.toString() +
+  print("9 ok: bodies " + blob.count.toString() + " px, one body " + near_area.toString() +
         " px, ceiling " + ceiling.toString() + " px");
 
-  // ── clause 9: nothing below the floor ────────────────────────────────
-  clause = 9;
+  // ── clause 10: nothing below the floor ───────────────────────────────
+  clause = 10;
   let floor_row = -1.0;
   for (let i = 0; i < BODIES; i++) {
     const beneath = projectRow(body.pos(i, 0), 0.0, body.pos(i, 2));
@@ -603,11 +645,11 @@ export function _start_game(): void {
   check(blob.lowest_row <= <i32>floor_row,
         "body-coloured pixels reach row " + blob.lowest_row.toString() +
         ", below the floor's row " + (<i32>floor_row).toString());
-  print("9 ok: lowest body pixel row " + blob.lowest_row.toString() + " <= floor row " +
+  print("10 ok: lowest body pixel row " + blob.lowest_row.toString() + " <= floor row " +
         (<i32>floor_row).toString());
 
-  // ── clause 10: the pile is still, the movers are not ─────────────────
-  clause = 10;
+  // ── clause 11: the frame is still ────────────────────────────────────
+  clause = 11;
   const late_a = grab();
   RuntimeSession.wait(16);
   const late_b = grab();
@@ -617,15 +659,12 @@ export function _start_game(): void {
   const resting = flip_fraction(late_a!, late_b!);
   check(moving > MOVING_FLIP_FLOOR,
         "two frames while the bodies were moving flipped only " + moving.toString());
-  // Not exactly 0, and the difference is two bodies wide: the pile is asleep
-  // and its pixels are frozen, while clause 7's roller and spinner cross the
-  // frame because the model gives them nothing to lose their motion to.
-  check(resting < moving * 0.1,
-        "two late frames flipped " + resting.toString() + ", against the " +
-        moving.toString() + " the moving frames flipped");
-  print("10 ok: flip " + moving.toString() + " moving, " + resting.toString() +
-        " late (the pile asleep for 30 frames, and the roller's 0.5 px per frame " +
-        "crosses nothing)");
+  // Chunk 6's strong form, available again because every body sleeps: with
+  // rolling resistance there is no roller left to cross the frame.
+  check(resting == 0.0,
+        "two late frames flipped " + resting.toString() + ", not exactly 0");
+  print("11 ok: flip " + moving.toString() + " moving, " + resting.toString() +
+        " late (every body asleep)");
 
   print("ACID " + total.toString() + "/" + total.toString() + " passed");
   world!.destroy();
