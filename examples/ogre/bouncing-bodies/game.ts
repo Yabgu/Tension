@@ -135,28 +135,54 @@ export function _start_game(): void {
   if (ogre.jobState(job) != ogre.JOB_DONE) fail("cube.mesh did not load");
   const cube = ogre.jobResult(job);
 
-  // The same material kind the example has always used — PBS with diffuse and
-  // specular zeroed and the colour in emissive (chunk 5b: a PBS datablock with
-  // no light rig shows only what it emits) — one datablock per colour instead of
-  // one for everything. Nothing about the kind changes; the colours multiply.
-  function submit_emissive(id: u32, r: f64, g: f64, b: f64, what: string): void {
+  // Two material shapes, and the difference is what chunk 10 changed: the
+  // **floor** keeps chunk 5b's emissive-only PBS (diffuse and specular zeroed,
+  // the colour in emissive), which is what a floor wants — it is scenery, and an
+  // unlit-hemisphere floor would go black as soon as a light exists. The
+  // **bodies** carry a real diffuse and specular and a zero emissive, so the
+  // directional light below shades them: the palette is now a *diffuse* colour,
+  // and a tumbling cube shows a lit face and a dark one as it turns. Still PBS
+  // for both — no new material kind, no new flag.
+  function submit_material(id: u32, r: f64, g: f64, b: f64, lit: bool,
+                           what: string): void {
     const material = new ogre.Material();
     material.materialId = id;
     material.kind = ogre.MAT_HLMS_PBS;
-    material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
-    material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
-    material.emissiveR = <f32>r; material.emissiveG = <f32>g; material.emissiveB = <f32>b;
-    material.roughness = 1.0; material.metalness = 0.0;
+    if (lit) {
+      material.diffuseR = <f32>r; material.diffuseG = <f32>g; material.diffuseB = <f32>b;
+      material.specularR = 0.5; material.specularG = 0.5; material.specularB = 0.5;
+      material.emissiveR = 0.0; material.emissiveG = 0.0; material.emissiveB = 0.0;
+      material.roughness = 0.5; material.metalness = 0.0;
+    } else {
+      material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
+      material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
+      material.emissiveR = <f32>r; material.emissiveG = <f32>g; material.emissiveB = <f32>b;
+      material.roughness = 1.0; material.metalness = 0.0;
+    }
     if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + what + ")");
   }
-  submit_emissive(FLOOR_MATERIAL, FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2], "floor");
+  submit_material(FLOOR_MATERIAL, FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2], false, "floor");
   for (let i: u32 = 0; i < PALETTE_ENTRIES; i++) {
-    submit_emissive(BODY_MATERIAL_BASE + i, PALETTE_RGB[i * 3 + 0], PALETTE_RGB[i * 3 + 1],
-                    PALETTE_RGB[i * 3 + 2], "palette " + i.toString());
+    submit_material(BODY_MATERIAL_BASE + i, PALETTE_RGB[i * 3 + 0], PALETTE_RGB[i * 3 + 1],
+                    PALETTE_RGB[i * 3 + 2], true, "palette " + i.toString());
   }
+  // The light: white, from above and in front — the direction the light travels
+  // is down and away from the camera, so it comes from the camera's own side and
+  // lights the faces a viewer can see. Intensity 20 and not 1: `intensity` is a
+  // power scale, and a lit surface at 1.0 measures 26/255, which is a surface
+  // that is lit and looks black (DESIGN.md §5.1).
+  const light = new ogre.LightRecord();
+  light.lightId = 1;
+  light.kind = ogre.LIGHT_DIRECTIONAL;
+  light.colourR = 1.0; light.colourG = 1.0; light.colourB = 1.0;
+  light.intensity = 20.0;
+  light.directionX = 0.0;
+  light.directionY = <f32>-0.8944271909999159; // (0, -1, -0.5) normalised
+  light.directionZ = <f32>-0.4472135954999579;
+  if (ogre.submitLight(light) != 0) fail("submitLight refused");
   print("materials: floor rgb(" + FLOOR_RGB[0].toString() + ", " + FLOOR_RGB[1].toString() +
-        ", " + FLOOR_RGB[2].toString() + "), " + PALETTE_ENTRIES.toString() +
-        " body colours cycled by index");
+        ", " + FLOOR_RGB[2].toString() + ") emissive, " + PALETTE_ENTRIES.toString() +
+        " body colours cycled by index, lit by one directional light at intensity 20");
 
   // A three-quarter view of the box: high enough to see the pile, close enough
   // that the bodies are more than a few pixels across. The rotation is a pitch
@@ -215,10 +241,12 @@ export function _start_game(): void {
                        : <i32>Math.ceil(<f64>Math.sqrt(<f64>(bodies / 4)));
   // The drop suits the model being demonstrated, and the difference is the
   // honest one: the linear model damps sliding, so bodies dropped from three
-  // metres arrive, slide and stop; the angular model has no rolling resistance,
-  // so bodies that arrive fast *roll away and never stop* (measured: 0 of 64
-  // asleep at frame 300, KE 3.19, with the tall drop). Angular therefore drops
-  // them low and close — a pile that lands on itself, tumbles, and settles.
+  // metres arrive, slide and stop. Angular used to drop them low for a different
+  // reason — before chunk 9a-ii it had no rolling resistance, and a tall drop
+  // left bodies that rolled away and never stopped (measured then: 0 of 64
+  // asleep at frame 300, KE 3.19). The resistance is in now, but the drop stays
+  // low and close because that is the drop that *demonstrates* the model: a pile
+  // that lands on itself, tumbles, and settles.
   // Angular spawns them a hair *inside* one diameter: they are born touching,
   // the bias separates them, and the jostle is what makes a body turn — a carpet
   // that never meets would settle without a single tumble, which demonstrates

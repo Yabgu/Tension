@@ -105,8 +105,14 @@ What to notice: the bodies are drawn from a **six-colour palette cycled by body
 index**, so the pile reads as distinct bodies rather than one mass — and the
 floor has its own dark neutral, so the ground reads as ground. (One material per
 colour, chosen when each renderable is submitted; the motion table poses bodies
-and never touches their material.) The cubes arrive, jostle, and **turn** — then
-come to rest. The
+and never touches their material.) **The bodies are lit** — one white
+directional light at intensity 20 from above and in front — so every cube shows
+a lit face and a dark one, and a tumbling body's faces change shade as it turns.
+The **floor stays emissive** on purpose: it is scenery, and an unlit-hemisphere
+floor would go black the moment a light exists. Intensity 20 rather than 1
+because `intensity` is a power scale: at 1.0 a lit surface measures 26/255,
+which is a surface that is lit and looks black. The cubes arrive, jostle, and
+**turn** — then come to rest. The
 summary line reports the census: 64 of 64 bodies exceed 0.1 rad/s at some point,
 59 of 64 turn more than 30° over the run, and the pile reaches `asleep 64/64,
 kinetic energy 0.0` by frame 136, at which point the picture stops. Their

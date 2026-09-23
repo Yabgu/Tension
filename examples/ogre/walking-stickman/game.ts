@@ -11,8 +11,10 @@
 //   * **the material must be PBS.** HlmsUnlit has no skeletal animation in its
 //     shaders at all, so an Unlit rig is a mesh that never moves while every
 //     bone transform is perfectly correct — the failure chunk 5b's probe was
-//     written to find. A PBS material with no light rig shows its *emissive*,
-//     which is why the colour below is emissive and the diffuse is black.
+//     written to find. Until chunk 10 that also meant an *emissive* colour: a
+//     PBS material with no light rig shows only what it emits (DESIGN.md §5.1).
+//     Now there is a light, so the body carries a real diffuse and the stickman
+//     acquires a lit side and a dark side as he walks.
 //   * **a bone is named by index.** The guest has no bone-name lookup (the
 //     rig lives in the renderer), so the index below is the one the probe's
 //     per-bone sweep measured — see `ARM_BONE`.
@@ -107,16 +109,37 @@ export function _start_game(): void {
   const bones = ogre.boneCount(mesh);
   if (ARM_BONE >= bones) fail("the rig has " + bones.toString() + " bones, not " + ARM_BONE.toString());
 
-  // PBS-emissive: a PBS material with no light rig has nothing else that shows,
-  // and only a PBS material can skin a mesh at all.
+  // Lit PBS: a real diffuse and specular with a zero emissive, shaded by the
+  // directional light below. Only a PBS material can skin a mesh at all, and
+  // only a lit one shows a lit side — the emissive-only shape this example
+  // shipped with is now the *regression* clause (chunk 10's fixture keeps an
+  // emissive-only surface in the same frame as a control).
   const material = new ogre.Material();
   material.materialId = 1;
   material.kind = ogre.MAT_HLMS_PBS;
-  material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
-  material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
-  material.emissiveR = 0.8; material.emissiveG = 0.5; material.emissiveB = 0.3;
-  material.roughness = 1.0; material.metalness = 0.0;
+  material.diffuseR = 0.8; material.diffuseG = 0.5; material.diffuseB = 0.3;
+  material.specularR = 0.5; material.specularG = 0.5; material.specularB = 0.5;
+  material.emissiveR = 0.0; material.emissiveG = 0.0; material.emissiveB = 0.0;
+  material.roughness = 0.5; material.metalness = 0.0;
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+
+  // The light: white, from the camera's upper left, so the viewer sees both a
+  // lit side and a dark one — a light on the camera's own axis would light
+  // everything the viewer can see and hide the shading entirely (measured
+  // during chunk 10's fixture work: a light 54.7° off the view axis leaves the
+  // "dark" half at 133/255). The direction is the way the light *travels*:
+  // (+x, -y, -z) is down, to the right of the screen and away from the camera,
+  // which is a source up, to the left and in front. Intensity 20 and not 1:
+  // `intensity` is a power scale, and a lit surface at 1.0 measures 26/255 —
+  // lit, and visually black (DESIGN.md §5.1).
+  const light = new ogre.LightRecord();
+  light.lightId = 1;
+  light.kind = ogre.LIGHT_DIRECTIONAL;
+  light.colourR = 1.0; light.colourG = 1.0; light.colourB = 1.0;
+  light.intensity = 20.0;
+  const L = 0.5773502691896258; // one unit of (1, -1, -1) normalised
+  light.directionX = <f32>L; light.directionY = <f32>-L; light.directionZ = <f32>-L;
+  if (ogre.submitLight(light) != 0) fail("submitLight refused");
 
   // Four units back on +Z, looking at the origin: the stickman is 1.9 units
   // tall at scale 1, so 0.6 puts all of him in the frame with room to swing.

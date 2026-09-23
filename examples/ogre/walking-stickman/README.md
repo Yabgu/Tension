@@ -13,8 +13,10 @@ Two things about it are load-bearing, and neither is guessable:
 
 - **The material must be PBS.** HlmsUnlit has no skeletal animation in its
   shaders at all, so an Unlit rig is a mesh that never moves while every bone
-  transform is perfectly correct. A PBS material with no light rig shows its
-  *emissive*, so that is where this example's colour lives.
+  transform is perfectly correct. PBS is also what a light can shade — until
+  chunk 10 this example lived on the emissive-only shape (a PBS datablock with
+  no light rig shows only what it emits); now it carries a real diffuse and a
+  directional light, and the stickman has a lit side and a dark one.
 - **Bones are named by index.** The rig belongs to the renderer, so the guest
   cannot look a bone up by name; `ARM_BONE` in `game.ts` is the index chunk
   5b's probe measured by rotating each bone in turn and watching the silhouette.
@@ -68,6 +70,16 @@ elapsed, not by a fixed timestep.
 - **A bone's transform is local.** Rotating the arm does not move the pelvis,
   the head or the mesh: the rig is a chain, and only the bones the guest poses
   change.
+- **He is lit, and the light is placed where both sides of him can be seen.**
+  One white directional light at **intensity 20**, from the camera's upper left:
+  the direction in the record is the way the light *travels* — down, to the
+  right of the screen and away from the camera — so the source is up, left and
+  in front, and the walking figure keeps a lit side and a dark one. A light on
+  the camera's own axis would light everything the viewer can see and hide the
+  shading entirely (chunk 10 measured a light 54.7° off the view axis leaving
+  its "dark" half at 133/255). Intensity 20 and not 1 because `intensity` is a
+  **power scale**, not a normalised factor: at 1.0 a lit surface measures
+  26/255 — lit, and visually black.
 
 ## Where the SDK surface is documented
 
