@@ -937,6 +937,68 @@ nothing at all, scored 0.0 m/s on the linear signal, slept at frame 30 and had
 its spin zeroed with it — **0.5 rad of a second's turn**, which the unit test
 pinned as a limitation in 8b and now asserts the fix for.
 
+**Rolling resistance: the model, and the arithmetic that pinches its
+coefficient.** A body that had a contact this sub-step has its spin decayed —
+`ω ← ω · max(0, 1 − k·h)` — in the angular model only. One multiply and one
+clamp per body per sub-step, rate-correct (`h` is the sub-step, so K and the
+renderer's pacing cannot change it), and `k` is a rate in 1/s, which makes "the
+spin decays with a 1/k second time constant" something a guest can read straight
+off the number. The factor never reverses, so there is no chatter to clamp; the
+decay is asymptotic rather than finite-time, which is fine here because the sleep
+policy is a *threshold*, not an exact zero. **It is pure angular** — a torque
+cannot move a body's centre of mass — and that is a correctness requirement
+rather than a nicety: the sleep signal is *displacement*, so a resistance that
+leaked into translation would keep awake the very pile it exists to settle. It
+applies only when the body has a contact; a body in free space keeps its spin,
+which is what makes a tumbling body in flight look like one.
+
+Three clauses already in the chunk-8 acid test pinch `k` before anything is
+chosen, and the arithmetic is worth writing down because the window is narrow.
+The roller's total turn is `∫ω dt = ω₀/k` (7.16/k rad), so its **≥ 90° clause
+needs k ≤ 4.5**. Reaching the 0.06 rad/s sleep threshold takes
+`ln(7.16/0.06) = 4.78` time constants and the sleep window adds thirty frames, so
+**asleep by frame 120 needs k ≥ ~3.2**. The spinner, dropped 0.55 m, turns 0.30
+rad in the air plus `1/k` rad while decaying, so **its ≥ 30° clause needs
+k ≲ 4**. The window is `k ∈ [3.2, 4.5]`; the plan's default is **3.6**, pending
+the probe; and `0.0` disables the term and reproduces chunk 8c2 exactly. Whether
+that window is real — and whether the spinner's contact is continuous enough for
+the arithmetic to hold at all — is what the probe measures, and §12 carries what
+moves if it comes back empty.
+
+**The probe refuted that arithmetic, and the window is empty.** Three measurements,
+each of which the estimate above got wrong in the same direction:
+
+- **A resting body's contact is intermittent.** A body at rest settles at a
+  penetration *inside* the slop, so the contact that the impulse path deliberately
+  does not resolve is also the contact a damping pass keyed on "had a contact"
+  does not see: measured, the spinner is in a *resolved* contact in **23.1 %** of
+  its sub-steps after landing (261 of 1128), and the roller **24.7 %**. Keying the
+  damping on a contact *candidate* — any contact at all, slop or not, a
+  detection-side flag and not an impulse change — lifts that to **91.9 %** and
+  **100 %**. Gate matters, and the probe measured both.
+- **A rolling pair decays at 0.286·k, not k.** The term is pure angular, so it
+  removes angular momentum and nothing else; friction then re-couples the spin to
+  the linear momentum the term cannot touch, and the *pair* decays at
+  `k·I/(I + m r²)` — **0.286·k** for a solid sphere. Measured against the closed
+  form: at k = 4 the roller's rolling speed fell at ~1.18/s against the 4/s a
+  spinner's decay shows. A free spinner decays at k; a roller crawls at a third
+  of it.
+- **Stopping the damping at the sleep threshold parks a body on it.** The plan's
+  rule — skip a body already below `sleepAngularSpeed`, so a settled pile is not
+  kept awake by the term's tail — stops the decay at exactly the number the sleep
+  signal tests. Measured: the body parks just above it and never sleeps, and the
+  pinch table read as a pass until the probe was taught that "never stopped" is
+  the smallest margin rather than the largest. Dropping the rule (damping runs
+  until the body sleeps, which is safe: a term that only *removes* motion cannot
+  keep anything awake) removes the parking and costs nothing.
+
+With those three, the clauses' real requirements are: the roller's ≥ 90° turn
+needs **k ≤ 14.5**, "asleep by frame 120" needs **k ≥ 12**, and the spinner's
+≥ 30° turn needs **k ≤ 7.8**. The window is empty by a factor of 1.5, and 9a-i
+stops here rather than choosing. §12 carries what would have to move, measured:
+at the smallest k the roller's clause allows, the spinner turns 26.7° against the
+30° it asks for — 11 % short — and every other lever is larger.
+
 **Sleeping lives in the derivative mask, and it is not an optimization.** One
 solver integrates the whole state vector; there is no per-body stepping and this
 layer does not add one. The World zeroes a body's velocity when it sleeps and
@@ -1782,20 +1844,48 @@ chunk 1 work, and each is additive:
   with no error anywhere — the probe measured 1.5708 rad where 1.0 was asked for
   (§5.1). And quaternion state writes are as safe as linear ones: written back
   verbatim, the spin is bit-identical.
-- **Rolling resistance, and the two things this model cannot stop.** A sphere
-  that reaches rolling has no slip velocity at its contact, so friction has
-  nothing to act on and it rolls forever (measured: 0.128 m/s held for a hundred
-  frames after a wall bounce); a sphere *spinning about the vertical axis* has no
-  slip at a contact directly below its centre either, so a top on the floor turns
-  at 1.0000 rad/s after two seconds. Both are correct for the model as written
-  and both are the reason the angular acid test's "every body asleep" is a clause
-  about the pile rather than about everything in the box (chunk 8c2's fixture,
-  clause 7). The fix is a rolling-resistance term — a small angular impulse
-  opposing ω at a resting contact, or a velocity threshold below which a resting
-  body's spin is damped — and it belongs beside **a wheel or capsule collider**,
-  since a wheel's useful axis is arbitrary and the diagonal inertia this layer
-  applies in world axes is not enough for it: a wheel wants a full tensor and a
-  body-frame transform, which is where the full-tensor item above lands too.
+- **Rolling resistance: the probe's window is empty, and here is what moves.**
+  Chunk 9a-i wrote the term's arithmetic, measured it, and refuted itself; §5.1
+  carries the three measurements (an intermittent contact gate, a rolling pair
+  that decays at 0.286·k, and a stop rule that parks a body on the sleep
+  threshold). The clause requirements the probe measured, with the gate on a
+  contact candidate and no parking: the roller's **≥ 90° turn needs k ≤ 14.5**,
+  **asleep by frame 120 needs k ≥ 12**, and the spinner's **≥ 30° turn needs
+  k ≤ 7.8**. Empty by 1.5×. In ascending order of what each costs to move:
+  **the spinner's turn clause, 30° → 25°** (at k = 13 it turns 26.7°, so a 25°
+  floor passes with margin and the roller's two clauses pass at 118 and 100°);
+  **the spinner's drop, 0.55 → 1.05 m**, which is 0.95 m of fall and therefore
+  needs the fixture's own 0.5 m displacement ceiling raised to match — a clause
+  moving to accommodate a test is a bigger change than a threshold moving;
+  **the fixture's 120-frame horizon, 120 → 160** (+33 %), which alone is not
+  enough (at the k a 160-frame horizon allows the spinner turns 29.3°, and that
+  is *still* short). The smallest honest change is the first: one clause
+  threshold, −17 %, with the coefficient at **13** and every margin thin but
+  positive. **A second rate is not on the table**: a knob without grounding is a
+  knob that tunes to the test — and the reason the roller and the spinner want
+  different k is not a missing parameter but a measured one, the coupling between
+  a spin decay and the linear momentum it drags.
+- **Rolling resistance's older note, kept for the boundary it names.** A sphere that
+  reaches rolling has no slip velocity at its contact, so friction has nothing to
+  act on and it rolls forever (measured: 0.128 m/s held for a hundred frames
+  after a wall bounce); a sphere *spinning about the vertical axis* has no slip
+  at a contact directly below its centre either, so a top on the floor turns at
+  1.0000 rad/s after two seconds. The term that fixes both is §5.1's —
+  contact-only, pure angular, `ω ← ω·max(0, 1 − k·h)` — and three clauses of the
+  chunk-8 fixture pinch its coefficient into `k ∈ [3.2, 4.5]`: the roller's ≥ 90°
+  turn above it, "asleep by frame 120" below it, and the spinner's ≥ 30° turn
+  above it again. **The probe is what settles the default** (3.6 is the plan's
+  number, not a measured one). If the window comes back empty, the order in which
+  things move is: the spinner's **drop test** first (30° → 25° → 20°, since its
+  0.55 m drop is already capped by the fixture's 0.5 m displacement ceiling), then
+  its drop height (0.55 → 0.7 m, which needs that ceiling raised with it), then
+  the fixture's **120-frame horizon** — a number in the round's own text, and the
+  most expensive of the three to move. **A second rate is not on the table**: a
+  knob without grounding is a knob that tunes to the test. What stays true
+  regardless is the boundary the term does *not* address: **a wheel or capsule
+  collider**, whose useful axis is arbitrary, needs the full inertia tensor and a
+  body-frame transform rather than the diagonal applied in world axes — which is
+  where the full-tensor item above lands too.
 - **The solver interface has a gap worth closing.** `create` accepts an odd
   `dim` and the *step* is what refuses it (`-EINVAL`), because the workspace-size
   query deliberately does not check evenness — its comment says so, and the probe
@@ -2082,6 +2172,17 @@ single session and asserts its own results, printing a pass/fail summary line �
   cubes, documents the mismatch instead), and the flip fraction is 0.24 while the
   bodies move against 0.0 once the pile has slept. The physics is guest-side: no
   verb, no wire, no session change;
+- *rolling resistance (chunk 9a-i)*: **not added, and the reason is a measurement.**
+  The probe that was meant to ground this chunk's clause found the window empty —
+  the roller's ≥ 90° clause needs k ≤ 14.5, "asleep by frame 120" needs k ≥ 12,
+  and the spinner's ≥ 30° clause needs k ≤ 7.8, so no coefficient satisfies all
+  three (§5.1 for the three measurements that moved the estimate, §12 for what
+  would have to move: the smallest is the spinner's turn clause, 30° → 25°, with
+  k = 13). Until that moves, chunk 8c2's clause 7 stands exactly as written: the
+  roller is still rolling and the spinner is still spinning, and the tripwire is
+  still a tripwire. Flipping it is 9a-ii's job and it needs a decision first;
+  writing the clause before the coefficient exists would be the test deciding the
+  model.
 - *full stack*: a small controllable game with input, a light and a shadow.
 
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
