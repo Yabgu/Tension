@@ -1522,13 +1522,38 @@ with a texture of solid magenta. The Hlms samples through `textureMaps`, an
 `TextureFlags::AutomaticBatching` is packed into one — "Most normally we'll
 treat 2D textures internally as a slice to a 2D array texture" — and without
 the flag the datablock's descriptor binds the array's blank 4×4 slice instead.
-Two follow-on facts from the same probes: the flag is a 2D-array mechanism and
+One follow-on fact from the same probes: the flag is a 2D-array mechanism and
 OGRE refuses it for any other type (`ASCII.dds` is a **volume** texture, and
 the jobs fixture aborted the frame with "AutomaticBatching can only be used
-with Type2D textures"), so it is set for `Type2D` images only; and a datablock
-does **not** need the `diffuse_map` creation param for a texture handed to it
-with `setTexture` — that param path is the editor's file-based one, and the
-runtime path uses the resource id the loader returned.
+with Type2D textures"), so it is set for `Type2D` images only.
+
+**Textures must be in a codec the install's `Ogre::Image2` supports, and here
+that is DDS (chunk 13c).** Realising a PNG throws
+`InvalidParametersException: Unable to load image: Image format is unknown.
+Unable to identify codec`: OgreMain on this install carries the DDS codec and
+no FreeImage/STBI plugin (measured — the pack's four skins, PNG, all four
+refused). The Kenney source PNGs are therefore converted with ImageMagick —
+`magick x.png x.dds`, uncompressed 24-bit RGB, 256×256, 262,271 B each — and
+**both forms travel**: the PNG stays in `resources/textures/` as the source
+asset (the one CREDITS names against Kenney), and the DDS is what the loader
+realises and the material samples. It is a packaging step, not an SDK one:
+`queueTextureLoad` reads bytes and hands them to `Image2`, and `Image2` is what
+has an opinion about the container.
+
+**Two misdirections, recorded so the next round does not pay for them again
+(chunk 13c).** *A mesh may split its vertex data across buffers.*
+`characterMedium.mesh` keeps position + normal in one vertex buffer and colour
++ UV in another; a diagnostic that reads every declared element out of
+`vertexBufferBinding->getBuffer(0)` therefore reports the position's own bytes
+as UVs, which looks exactly like a conversion that mangled them (it did not:
+the `.mesh.xml` and the binary both carry the FBX's `[0.008, 0.986] × [0.016,
+0.994]`). Read an element through `VertexElement::baseVertexPointerToElement`
+and respect its own source index. *The `diffuse_map` creation param is the
+editor's path.* The PBS pixel shader does gate diffuse sampling on a
+`diffuse_map` **macro**, so the param looks like the missing piece — but that
+param resolves a *file* by name; a texture the loader has already realised is
+handed to the datablock with `setTexture(type, name)` (the name overload
+resolves it through the `TextureGpuManager`) and needs no param at all.
 
 ### 5.2 Region kinds — the twelve, frozen
 
