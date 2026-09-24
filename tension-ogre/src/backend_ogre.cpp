@@ -1095,14 +1095,26 @@ class BackendOgre final : public Backend {
         return entry.mesh;
     }
 
-    /// The name of the texture a slot names, or empty when it names nothing
-    /// this backend realised.
-    Ogre::String texture_name_for(uint32_t resource_id) {
+    /// The `TextureGpu` a slot names, or null when it names nothing this
+    /// backend realised.
+    ///
+    /// The **pointer**, not the name, and that is round 14a's finding: a
+    /// datablock's name overload (`setTexture(texUnit, const String&)`) settles
+    /// the name through the resource group manager and falls through to "load
+    /// a file by this name" — which cannot see a `TextureGpu` this backend made
+    /// with `TextureGpuManager::createTexture` and never registered as an
+    /// archive resource. Measured on the animated-character example: eight
+    /// `Cannot locate resource tension-texture-N` lines at material-apply time,
+    /// the Hlms swallowing the exception, the datablocks keeping their default
+    /// white, and four lit, skinned, *untextured* characters in the frame. The
+    /// base class's `setTexture(uint8, TextureGpu*, …)` overload takes the
+    /// texture itself and resolves nothing.
+    Ogre::TextureGpu *texture_for(uint32_t resource_id) {
         const ResourceHandle handle = resolve(resource_id);
-        if (handle == kNoResourceHandle || handle > resources_.size()) return Ogre::String();
+        if (handle == kNoResourceHandle || handle > resources_.size()) return nullptr;
         const ResourceEntry &entry = resources_[handle - 1];
-        if (!entry.live || entry.kind != TENSION_OGRE_RES_KIND_TEXTURE) return Ogre::String();
-        return entry.name;
+        if (!entry.live || entry.kind != TENSION_OGRE_RES_KIND_TEXTURE) return nullptr;
+        return entry.texture;
     }
 
     void refused_entry(const char *kind, uint32_t id, const std::string &why) {
@@ -1412,6 +1424,12 @@ class BackendOgre final : public Backend {
     /// **emissive**, because a PBS material with no light rig has nothing else
     /// to show (the probe measured 0 non-background pixels for a PBS cube
     /// before that).
+    ///
+    /// Slot 0 goes on by **pointer** on both paths (round 14a; see
+    /// `texture_for`). A slot that names a resource this backend has no
+    /// texture for logs exactly one line and leaves the datablock's default in
+    /// place — that line is what tells "the guest named nothing we can read"
+    /// apart from "the pointer was set and the draw still failed", so it stays.
     void apply_material_values(Ogre::HlmsDatablock *datablock, const MaterialRecord &record) {
         const Ogre::ColourValue diffuse(record.dr, record.dg, record.db, record.da);
         if (record.kind == TENSION_OGRE_MAT_HLMS_PBS) {
@@ -1424,8 +1442,13 @@ class BackendOgre final : public Backend {
             if (record.roughness > 0.0f) pbs->setRoughness(record.roughness);
             if (record.metalness > 0.0f) pbs->setMetalness(record.metalness);
             if (record.slot0_resource != 0) {
-                const Ogre::String texture = texture_name_for(record.slot0_resource);
-                if (!texture.empty()) pbs->setTexture(Ogre::PBSM_DIFFUSE, texture);
+                Ogre::TextureGpu *texture = texture_for(record.slot0_resource);
+                if (texture != nullptr) {
+                    pbs->setTexture(Ogre::PBSM_DIFFUSE, texture);
+                } else {
+                    log_line("ogre: material slot0 resource " +
+                             std::to_string(record.slot0_resource) + " has no TextureGpu");
+                }
             }
             return;
         }
@@ -1433,8 +1456,13 @@ class BackendOgre final : public Backend {
         unlit->setUseColour(true);
         unlit->setColour(diffuse);
         if (record.slot0_resource != 0) {
-            const Ogre::String texture = texture_name_for(record.slot0_resource);
-            if (!texture.empty()) unlit->setTexture(0, texture);
+            Ogre::TextureGpu *texture = texture_for(record.slot0_resource);
+            if (texture != nullptr) {
+                unlit->setTexture(0, texture);
+            } else {
+                log_line("ogre: material slot0 resource " +
+                         std::to_string(record.slot0_resource) + " has no TextureGpu");
+            }
         }
     }
 

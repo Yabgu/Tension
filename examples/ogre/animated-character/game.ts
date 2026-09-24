@@ -138,6 +138,43 @@ function quadrant_report(frame: ArrayBuffer): string {
   return line;
 }
 
+/// The largest |R - B| among the four quadrants' mean colours — the "are these
+/// characters actually wearing a skin" check, and a *colour* test rather than a
+/// brightness one. The Kenney atlases are warm (the UV-weighted mean of
+/// humanMaleA is rgb(173, 154, 150), R - B = +23); a datablock whose texture
+/// never bound draws its own white diffuse, which is neutral. Measured on the
+/// build before round 14a: -0.14, -0.92, -4.24, -1.95. The floor of 8 sits
+/// between the two, so an untextured render fails the run instead of printing
+/// a number nobody reads.
+function max_red_blue_spread(frame: ArrayBuffer): f64 {
+  const pixels = Uint8Array.wrap(frame);
+  const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
+  const counts = new Float64Array(4);
+  const reds = new Float64Array(4);
+  const blues = new Float64Array(4);
+  const width = 640, height = 480;
+  for (let y: i32 = 0; y < height; y++) {
+    for (let x: i32 = 0; x < width; x++) {
+      const at: i32 = (y * width + x) * 4;
+      if (abs(<i32>pixels[at] - <i32>bg0) <= 8 && abs(<i32>pixels[at + 1] - <i32>bg1) <= 8 &&
+          abs(<i32>pixels[at + 2] - <i32>bg2) <= 8) {
+        continue;
+      }
+      const quadrant = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
+      counts[quadrant] += 1;
+      reds[quadrant] += <f64>pixels[at];
+      blues[quadrant] += <f64>pixels[at + 2];
+    }
+  }
+  let spread: f64 = 0.0;
+  for (let q: i32 = 0; q < 4; q++) {
+    if (counts[q] == 0) continue;
+    const rb = abs(reds[q] / counts[q] - blues[q] / counts[q]);
+    if (rb > spread) spread = rb;
+  }
+  return spread;
+}
+
 /// Wait for a job to finish, and fail with the job's errno when it failed.
 function settle(job: i32, what: string): u32 {
   while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
@@ -276,6 +313,12 @@ export function _start_game(): void {
     // and that they are wearing different skins — the two things a screenshot
     // is looked at for.
     print(quadrant_report(frame!));
+    // The skins must be *on* the characters, not merely loaded: an untextured
+    // surface draws the datablock's white, which is neutral, and every Kenney
+    // atlas is warm. This is round 14a's regression guard.
+    const warmth = max_red_blue_spread(frame!);
+    print("skin warmth: max |R-B| across quadrants = " + warmth.toString());
+    assert(warmth > 8.0, "characters render untextured");
     if (mid_frame != null) {
       const moved = changed_count(mid_frame!, frame!);
       print("motion: " + moved.toString() + " pixels changed between frame " +
