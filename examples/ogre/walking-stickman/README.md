@@ -1,9 +1,11 @@
 # walking-stickman
 
-A rigged stickman swinging an arm, driven the way an animated character is:
+A rigged character swinging an arm, driven the way an animated character is:
 the guest owns a phase, the solver integrates it, the phase becomes a bone
 rotation, and the rotation reaches the renderer through the **bone table** —
-one call per frame, however many bones are posed.
+one call per frame, however many bones are posed. (The mesh is a Kenney
+"characterMedium" — CC0; the example kept its name when the asset changed in
+chunk 12.)
 
 It is the third member of the OGRE family, and the one that shows the rig:
 `hello-triangle` builds a mesh out of memory, `hello-mesh` loads one from disk,
@@ -16,7 +18,7 @@ Two things about it are load-bearing, and neither is guessable:
   transform is perfectly correct. PBS is also what a light can shade — until
   chunk 10 this example lived on the emissive-only shape (a PBS datablock with
   no light rig shows only what it emits); now it carries a real diffuse and a
-  directional light, and the stickman has a lit side and a dark one.
+  directional light, and the character has a lit side and a dark one.
 - **Bones are named by index.** The rig belongs to the renderer, so the guest
   cannot look a bone up by name; `ARM_BONE` in `game.ts` is the index chunk
   5b's probe measured by rotating each bone in turn and watching the silhouette.
@@ -25,7 +27,7 @@ Two things about it are load-bearing, and neither is guessable:
 
 ```sh
 cd examples/ogre/walking-stickman
-./run.sh                          # opens a 640x480 window, and a stickman walks in it
+./run.sh                          # opens a 640x480 window, and the character walks in it
 TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only: no display needed
 ```
 
@@ -97,4 +99,7 @@ holds the source tree (committed), `pack.sh` turns it into `build/assets.tns`
 with the Zig packer, and `run.sh` hands the guest the volume's path. The guest
 mounts it under `resources/` and every load path starts with that prefix — the
 loader reads meshes (and skeletons) out of the volume, and a path no mount
-carries fails with `-ENOENT` rather than falling back to the disk.
+carries fails with `-ENOENT` rather than falling back to the disk. The mesh is
+Kenney's *Animated Characters 3* "characterMedium" (CC0 1.0), converted by
+`tension-ogre/tests/convert-kenney.py`; `resources/CREDITS.md` names the source,
+the licence and the chain.

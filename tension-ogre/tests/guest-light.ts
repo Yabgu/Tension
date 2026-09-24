@@ -9,7 +9,7 @@
 // workaround never asked:
 //
 //   1. the wire offsets, the session, the renderer and the meshes load (Barrel
-//      for the shading, Stickman for the skinned clause)
+//      for the shading, the character for the skinned clause)
 //   2. the scene is accepted: three materials, one camera, three renderables
 //   3. the light is mirrored — `submitLight` returns 0, the region's slot holds
 //      kind `LIGHT_DIRECTIONAL`, the colour, the intensity and the direction —
@@ -30,7 +30,7 @@
 //      angular bouncing-bodies built their look on
 //   8. the **Unlit** surface's region is byte-identical with and without the
 //      light — a light must not reach a material that never asked for one
-//   9. the **skinned** path shades: the Stickman mesh under a lit PBS datablock
+//   9. the **skinned** path shades: the rigged character under a lit PBS datablock
 //      turns a lit/dark profile of its own
 //
 // Measured, GL3+, 320x240, this configuration: the lit half's mean is **255.0**
@@ -68,8 +68,12 @@ const EYE_Z: f64 = 6.0;
 const FOV_Y: f64 = 45.0 * (3.14159265358979 / 180.0);
 /** Barrel.mesh's bounding radius is 4.8555 (probe, off the v1 side). */
 const BARREL_SCALE: f32 = 0.2060;
-/** The stickman at 5b's 0.6 is 1.1 units tall; 1.2 makes him 106 px at depth 6. */
-const STICKMAN_SCALE: f32 = 1.2;
+/**
+ * The character at scale 1 is 3.765 units tall (chunk 12a), so 0.583 is 2.2 —
+ * the same 2x-the-old-rig sizing that made the retired 1.83-tall figure 106 px
+ * at depth 6, and the -1.1 offset below still centres him.
+ */
+const CHARACTER_SCALE: f32 = 0.583;
 /** The three barrel centres: one every 2.4 units, which is 116 px apart. */
 const LIT_X: f64 = 0.0;
 const EMISSIVE_X: f64 = -2.4;
@@ -322,16 +326,16 @@ export function _start_game(): void {
   check(ogre.jobState(barrel_job) == ogre.JOB_DONE, "Barrel.mesh did not load");
   const barrel = ogre.jobResult(barrel_job);
   // The skinned clause's mesh: a rig, resolved by the loader's skeleton path.
-  const stickman_job = ogre.queueMeshLoad("resources/meshes/Stickman.mesh", 0);
-  check(stickman_job > 0, "queueMeshLoad refused (Stickman.mesh)");
-  while (ogre.jobState(stickman_job) != ogre.JOB_DONE &&
-         ogre.jobState(stickman_job) != ogre.JOB_FAILED) {
+  const character_job = ogre.queueMeshLoad("resources/meshes/characterMedium.mesh", 0);
+  check(character_job > 0, "queueMeshLoad refused (characterMedium.mesh)");
+  while (ogre.jobState(character_job) != ogre.JOB_DONE &&
+         ogre.jobState(character_job) != ogre.JOB_FAILED) {
     RuntimeSession.wait(10);
   }
-  check(ogre.jobState(stickman_job) == ogre.JOB_DONE, "Stickman.mesh did not load");
-  const stickman = ogre.jobResult(stickman_job);
-  check(ogre.isRigged(stickman), "Stickman.mesh came back without a rig");
-  print("1 ok: Barrel.mesh and Stickman.mesh loaded through the job queue");
+  check(ogre.jobState(character_job) == ogre.JOB_DONE, "characterMedium.mesh did not load");
+  const character = ogre.jobResult(character_job);
+  check(ogre.isRigged(character), "characterMedium.mesh came back without a rig");
+  print("1 ok: Barrel.mesh and characterMedium.mesh loaded through the job queue");
 
   // ── clause 2: the scene ──────────────────────────────────────────────
   clause = 2;
@@ -522,15 +526,16 @@ export function _start_game(): void {
 
   // ── clause 9: the skinned path shades ────────────────────────────────
   clause = 9;
-  // The three barrels make way for the rig: a stickman is not a sphere, and its
-  // mesh origin is at its feet, so the split's centre is the silhouette's
-  // centroid rather than a projected origin.
+  // The three barrels make way for the rig: the character is not a sphere, and
+  // its mesh origin is at its feet, so the split's centre is the silhouette's
+  // centroid rather than a projected origin (12b: 2422 px, lit/dark 1.746 —
+  // the retired stick figure measured 2765 px and 3.006 at this scale).
   for (let id: u32 = 10; id <= 12; id++) {
     check(ogre.removeRenderable(id) == 0, "removeRenderable refused (" + id.toString() + ")");
   }
-  const hero = Renderable.at(stickman, 4, 0.0, <f32>(-1.1), 0.0, STICKMAN_SCALE);
+  const hero = Renderable.at(character, 4, 0.0, <f32>(-1.1), 0.0, CHARACTER_SCALE);
   hero.renderableId = 13;
-  check(ogre.submitRenderable(hero) == 0, "submitRenderable refused (stickman)");
+  check(ogre.submitRenderable(hero) == 0, "submitRenderable refused (character)");
   settle(8);
   const rigged = grab();
   check(rigged != null, "no frame could be downloaded for the skinned clause");
@@ -545,7 +550,7 @@ export function _start_game(): void {
       sum_row += <f64>row + 0.5;
     }
   }
-  check(count > 100, "the stickman drew " + count.toString() + " pixels");
+  check(count > 100, "the character drew " + count.toString() + " pixels");
   // The split's centre is the silhouette's centroid (a rig's origin is at its
   // feet), and its axis is the same projection of the light direction — the rig
   // is coarse by construction: it is 106 px tall, not a sphere.
@@ -558,12 +563,12 @@ export function _start_game(): void {
                                     Math.sqrt(rig_axis_x * rig_axis_x +
                                               rig_axis_y * rig_axis_y));
   check(rigged_halves.lit_count > 0 && rigged_halves.dark_count > 0,
-        "the stickman's halves are not both drawn");
+        "the character's halves are not both drawn");
   check(rigged_halves.dark_mean > 0.5 &&
         rigged_halves.lit_mean / rigged_halves.dark_mean > 1.5,
-        "the stickman's lit half (" + rigged_halves.lit_mean.toString() +
+        "the character's lit half (" + rigged_halves.lit_mean.toString() +
         ") is not 1.5x its dark half (" + rigged_halves.dark_mean.toString() + ")");
-  print("9 ok: the skinned Stickman under lit PBS: " + count.toString() + " px, lit " +
+  print("9 ok: the skinned character under lit PBS: " + count.toString() + " px, lit " +
         rigged_halves.lit_mean.toString() + " over " + rigged_halves.lit_count.toString() +
         " px, dark " + rigged_halves.dark_mean.toString() + " over " +
         rigged_halves.dark_count.toString() + " px, ratio " +

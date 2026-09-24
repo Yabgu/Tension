@@ -411,6 +411,47 @@ int main(int argc, char **argv) {
         }
     }
 
+    // ── facing (chunk 12b) ───────────────────────────────────────────────
+    // Which way does the character point in its own space? The toes do: a
+    // humanoid's feet extend forward, so `toe_z - foot_z` is the facing sign.
+    // The camera in this probe (and in walking-stickman) sits on +Z looking at
+    // the origin, so a character whose toes point +Z faces the camera.
+    {
+        const size_t left_foot = bone_index(skeleton_instance, "LeftFoot");
+        const size_t left_toes = bone_index(skeleton_instance, "LeftToes");
+        const size_t right_foot = bone_index(skeleton_instance, "RightFoot");
+        const size_t right_toes = bone_index(skeleton_instance, "RightToes");
+        const size_t head = bone_index(skeleton_instance, "Head");
+        if (left_toes != static_cast<size_t>(-1) && left_foot != static_cast<size_t>(-1)) {
+            const Ogre::Vector3 lf =
+                skeleton_instance->getBone(left_foot)->_getDerivedTransform().getTrans();
+            const Ogre::Vector3 lt =
+                skeleton_instance->getBone(left_toes)->_getDerivedTransform().getTrans();
+            const Ogre::Vector3 rf =
+                skeleton_instance->getBone(right_foot)->_getDerivedTransform().getTrans();
+            const Ogre::Vector3 rt =
+                skeleton_instance->getBone(right_toes)->_getDerivedTransform().getTrans();
+            const double head_z = head != static_cast<size_t>(-1)
+                                      ? static_cast<double>(skeleton_instance->getBone(head)
+                                                                ->_getDerivedTransform()
+                                                                .getTrans()
+                                                                .z)
+                                      : 0.0;
+            std::printf("KENNEY facing: foot->toe z  left %.3f, right %.3f (head z %.3f) -> "
+                        "faces %sZ %s\n",
+                        static_cast<double>(lt.z - lf.z), static_cast<double>(rt.z - rf.z), head_z,
+                        (lt.z - lf.z) + (rt.z - rf.z) > 0.0 ? "+" : "-",
+                        (lt.z - lf.z) + (rt.z - rf.z) > 0.0
+                            ? "(toward a +Z camera: front view)"
+                            : "(away from a +Z camera: back view)");
+        } else {
+            std::printf("KENNEY facing: no toe bones on this rig; bone names:\n");
+            for (size_t i = 0; i < skeleton_instance->getNumBones(); ++i) {
+                std::printf("  %2zu %s\n", i, skeleton_instance->getBone(i)->getName().c_str());
+            }
+        }
+    }
+
     Frame rest;
     if (!grab(&root, downloader, rest)) {
         std::printf("KENNEY: the rest frame could not be captured\n");

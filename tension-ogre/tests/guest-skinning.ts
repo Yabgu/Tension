@@ -5,8 +5,8 @@
 //
 // The clauses (DESIGN.md §14 — the last one the original scope named):
 //
-//   1. Stickman.mesh loads: job DONE, resource id > 0
-//   2. the loader says it is **rigged**, with the probe's bone count (19)
+//   1. characterMedium.mesh loads: job DONE, resource id > 0
+//   2. the loader says it is **rigged**, with the probe's bone count (58)
 //   3. a PBS material, a camera and the renderable are submitted
 //   4. a bone batch is accepted in one call, and a bad one is refused whole
 //   5. sixty frames of posing ran, each batch accepted
@@ -14,20 +14,23 @@
 //
 // and, under a renderer with a framebuffer (GL3+), the pixel clauses:
 //
-//   7. the baseline is a solid blob (~1574 px at this scale, the probe's)
-//   8. after 60 frames the mesh still renders (±30% of the baseline)
+//   7. the baseline is a solid blob (measured 1271 px at this scale)
+//   8. after 60 frames the mesh still renders (within 40% of the baseline:
+//      a 90-degree spine bend foreshortens a humanoid toward a frontal camera,
+//      which the retired low-poly stick figure barely showed — measured -30.6%
+//      with this rig against -6.5% with the old one)
 //   9. the silhouette changed shape: at least 0.005 of the frame flipped
-//      between foreground and background (the clean-pose measurement is
-//      0.0197, so the floor is a quarter of it)
+//      between foreground and background (the measured 90-degree spine flip on
+//      this rig is 0.0153, so the floor is a third of it)
 //  10. the change is a **deformation, not a disappearance**: pixels went both
 //      ways — some became foreground where none was, some became background
 //
-// Why the material is PBS and not Unlit, why the scale is 0.6, and why the bone
-// is 6 (`Spine`): the probe measured all three (DESIGN.md §5.1). HlmsUnlit has
-// no skeletal animation in its shaders at all — a correct rig under an Unlit
-// datablock renders a perfectly still mesh — and `Spine` was the clearest of
-// the ten bones the probe swept (flip 0.0356, against 0.00000 for the four IK
-// leaves).
+// Why the material is PBS and not Unlit, why the scale is 0.29, and why the bone
+// is `Spine`: the probes measured all three (DESIGN.md §5.1). HlmsUnlit has no
+// skeletal animation in its shaders at all — a correct rig under an Unlit
+// datablock renders a perfectly still mesh — and `Spine` is 20 on the converted
+// rig (chunk 12a read the bone list by name; `Hips` is 19), posing the whole
+// upper body in one bone.
 //
 // **No motion is submitted anywhere in this file.** That is the point of the
 // round: the change in the pixels is the rig, and nothing moved the object.
@@ -49,16 +52,31 @@ import {
 
 const WINDOW_WIDTH: i32 = 320;
 const WINDOW_HEIGHT: i32 = 240;
-/** The probe's scale for this mesh: 1574 non-background pixels at 320x240. */
-const STICKMAN_SCALE: f32 = 0.6;
-/** `Stickman.mesh`'s bone count, and the bone the probe found clearest. */
-const STICKMAN_BONES: u32 = 19;
-const SPINE: u32 = 6;
+/**
+ * The character's scale: 3.765 units tall at scale 1 (chunk 12a's probe), so
+ * 0.29 is a 1.09-unit figure — the framing the retired 1.83-tall rig had at
+ * 0.6, which keeps every pixel expectation in this file in the same family.
+ */
+const MESH_SCALE: f32 = 0.29;
+/**
+ * The rig's size, and the bone the fixture poses: 58 bones, with `Spine` at
+ * 20 and `Hips` at 19 (chunk 12a's probe read the converted skeleton's list
+ * and found them by name; the def order is the XML's).
+ */
+const RIG_BONES: u32 = 58;
+const SPINE: u32 = 20;
 /** Sixty frames, 90 degrees: the probe's posing arm, at the fixture's size. */
 const POSE_FRAMES: i32 = 60;
 const POSE_RADIANS: f32 = 1.5707963; // 90 degrees
-/** The silhouette floor: a quarter of the probe's clean-pose flip (0.0197). */
+/** The silhouette floor: a third of this rig's measured 90-degree spine flip
+ *  (0.0153). It was a quarter of the retired rig's 0.0197. */
 const FLIP_FLOOR: f64 = 0.005;
+/** How far the posed silhouette's pixel count may move: a deformation changes
+ *  the *shape*, not the *size*. 40%, not 30%, because a humanoid bending 90
+ *  degrees at the spine turns its torso toward a frontal camera — measured
+ *  -30.6% here, against -6.5% for the retired stick figure, which had almost
+ *  no torso to foreshorten. */
+const COUNT_BAND: f64 = 0.40;
 /** A deformation moves pixels both ways; a disappearance only one. */
 const BOTH_WAYS_FLOOR: f64 = 30.0;
 
@@ -193,22 +211,22 @@ export function _start_game(): void {
 
   // ── clause 1: the rigged mesh ────────────────────────────────────────
   clause = 1;
-  const mesh_job = ogre.queueMeshLoad("resources/meshes/Stickman.mesh", 0);
+  const mesh_job = ogre.queueMeshLoad("resources/meshes/characterMedium.mesh", 0);
   check(mesh_job > 0, "queueMeshLoad did not return a job id");
   settle(mesh_job);
   check(ogre.jobState(mesh_job) == JOB_DONE,
-        "Stickman.mesh did not reach DONE (state " + ogre.jobState(mesh_job).toString() +
+        "characterMedium.mesh did not reach DONE (state " + ogre.jobState(mesh_job).toString() +
         ", error " + ogre.jobError(mesh_job).toString() + ")");
   const mesh_resource = ogre.jobResult(mesh_job);
-  check(mesh_resource > 0, "no resource id for Stickman.mesh");
+  check(mesh_resource > 0, "no resource id for characterMedium.mesh");
   print("1 ok");
 
   // ── clause 2: the loader says it is rigged, and how big the rig is ───
   clause = 2;
-  check(ogre.isRigged(mesh_resource), "the loader does not report Stickman.mesh as rigged");
-  check(ogre.boneCount(mesh_resource) == STICKMAN_BONES,
+  check(ogre.isRigged(mesh_resource), "the loader does not report characterMedium.mesh as rigged");
+  check(ogre.boneCount(mesh_resource) == RIG_BONES,
         "the rig is " + ogre.boneCount(mesh_resource).toString() + " bones, not " +
-        STICKMAN_BONES.toString());
+        RIG_BONES.toString());
   print("2 ok");
 
   // ── clause 3: the scene ──────────────────────────────────────────────
@@ -230,7 +248,7 @@ export function _start_game(): void {
   camera.cameraId = 1;
   submitted(ogre.submitCamera(camera), "camera");
 
-  const hero = Renderable.at(mesh_resource, 1, 0.0, 0.0, 0.0, STICKMAN_SCALE);
+  const hero = Renderable.at(mesh_resource, 1, 0.0, 0.0, 0.0, MESH_SCALE);
   hero.renderableId = 1;
   submitted(ogre.submitRenderable(hero), "renderable");
   print("3 ok");
@@ -261,7 +279,7 @@ export function _start_game(): void {
   // And a bone past the end of the rig, which is the refusal that needs the
   // loader's bone count on the guest thread.
   const past = new BoneBatch();
-  past.set(0, 1, STICKMAN_BONES);
+  past.set(0, 1, RIG_BONES);
   const past_refused = past.commit();
   check(past_refused != 1, "a bone index past the rig came back as accepted");
 
@@ -348,9 +366,10 @@ export function _start_game(): void {
 
   // ── clause 8: it still renders ───────────────────────────────────────
   clause = 8;
-  check(final_count > baseline_count * 0.7 && final_count < baseline_count * 1.3,
-        "the pixel count moved outside +/-30%: " + baseline_count.toString() + " -> " +
-        final_count.toString());
+  check(final_count > baseline_count * (1.0 - COUNT_BAND) &&
+        final_count < baseline_count * (1.0 + COUNT_BAND),
+        "the pixel count moved outside +/-" + (COUNT_BAND * 100.0).toString() + "%: " +
+        baseline_count.toString() + " -> " + final_count.toString());
   print("8 ok");
 
   // ── clause 9: the silhouette changed shape ───────────────────────────

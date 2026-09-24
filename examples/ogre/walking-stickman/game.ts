@@ -31,27 +31,36 @@ import * as ogre from "tension-framework/assembly/ogre";
 
 const TAU = 6.283185307179586; // radians in one cycle: one step per second
 const STEP: f64 = 1.0 / 60.0; // one solver step per rendered frame
-/** The probe's scale for this mesh: 1574 non-background pixels at 320x240. */
-const SCALE: f32 = 0.6;
+/**
+ * The scale that frames this mesh: the character is 3.765 units tall at scale
+ * 1 (chunk 12a's probe read that off its bounding box), so 0.29 puts a 1.09
+ * unit figure in the frame — the same framing the old 1.83-tall stickman had
+ * at 0.6, and the numbers below in the camera and renderable comments still
+ * hold. Measured, not guessed: the probe's own auto-fit used 0.664 for a
+ * 2.5-unit target, and 12a's arithmetic gave 0.6 * (1.83 / 3.765) = 0.29.
+ */
+const SCALE: f32 = 0.29;
 /** The swing's amplitude, either side of the rest pose. */
 const SWING = 0.4;
 /**
- * `Arm_L`, **by index** — 9, measured by chunk 5b's per-bone sweep at scale
- * 0.6: rotating it 90° flips 0.03230 of the frame, where `Hand_IK_L` (index 0)
- * flips 0.00000 and `Spine` (6, the clearest) flips 0.03557.
+ * `LeftForeArm`, **by index** — 28 on the Kenney rig (chunk 12a's probe read
+ * the converted skeleton's bone list and found it by name; the def order is
+ * the XML's, and `Hips` is 19 for the same reason).
  *
  * The guest cannot look a bone up by name — the skeleton belongs to the
- * renderer — so an index is what the guest has, and this one is the probe's.
- * `Arm_R` is not posed here for a reason worth knowing: the sweep covered the
- * rig's first ten bones, and `Arm_R` is past that, so posing it would be
- * guessing at an index. Extending the sweep is the small round that would
- * give this example two arms instead of one.
+ * renderer — so an index is what the guest has, and this one is the
+ * conversion's. The rest pose is an A-pose (arms slightly out), so a swing
+ * about X reads as an arm moving at the shoulder.
+ *
+ * The right arm is available too (`RightForeArm`, 39) and is deliberately not
+ * posed: one bone, one swing, one thing to read on screen. Swinging both in
+ * counter-phase is a two-line change for a round that wants a gait.
  */
-const ARM_BONE: u32 = 9;
+const ARM_BONE: u32 = 28;
 const HERO = 1; // the renderable id the bone table names
 const FRAMES = 300; // give up after this many frames
 const CYCLES = 3; // ... or after this many steps
-const MESH = "resources/models/Stickman.mesh"; // its skeleton, `Stickman.skeleton`, ships beside it
+const MESH = "resources/models/characterMedium.mesh"; // its skeleton, `characterMedium.skeleton`, ships beside it
 
 // The solver's two callback buffers: 64 KiB each in the guest's own memory, the
 // addresses the host writes and reads through (tension-solver/GUEST_ABI.md §3.6).
@@ -152,17 +161,20 @@ export function _start_game(): void {
   light.directionX = <f32>L; light.directionY = <f32>-L; light.directionZ = <f32>-L;
   if (ogre.submitLight(light) != 0) fail("submitLight refused");
 
-  // Four units back on +Z, looking at the origin: the stickman is 1.9 units
-  // tall at scale 1, so 0.6 puts all of him in the frame with room to swing.
+  // Four units back on +Z, looking at the origin: the character is 3.765
+  // units tall at scale 1, so 0.29 puts all of him in the frame with room to
+  // swing. (He faces +Z — chunk 12b measured the toes — so a +Z camera is a
+  // front view.)
   const camera = ogre.CameraRecord.perspective(
     45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
   camera.cameraId = 1;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
   // His origin is at his feet, so the model needs shifting *down* to sit in the
-  // middle of the frame: at scale 0.6 he is 1.1 units tall, and the camera
-  // shows ±1.65 at z=0. The fourth argument is the scale — the probe's 0.6,
-  // which is what puts a measurable silhouette in a 320x240 frame too.
+  // middle of the frame: at scale 0.29 he is 1.09 units tall, and the camera
+  // shows ±1.65 at z=0. The fourth argument is the scale — 0.29, the value the
+  // section above derives, which also puts a measurable silhouette in a
+  // 320x240 frame.
   const renderable = ogre.Renderable.at(mesh, 1, 0.0, -0.55, 0.0, SCALE);
   renderable.renderableId = HERO;
   if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
