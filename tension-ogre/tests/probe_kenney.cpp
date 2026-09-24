@@ -411,6 +411,82 @@ int main(int argc, char **argv) {
         }
     }
 
+    // ── animation (chunk 13a A.3) ────────────────────────────────────────
+    // Does OGRE-Next 3.0 play what the conversion wrote? The v2 API is
+    // SkeletonInstance::getAnimation(name) -> a SkeletonAnimation with
+    // addTime/setTime/setLoop/setEnabled (Animation/OgreSkeletonAnimation.h).
+    // The clip's duration is the loop point; 60 frames at 1/60 s is longer
+    // than the 0.667 s clip, so both are measured: the pose at frame 60 and
+    // the pose at exactly one duration.
+    Ogre::SkeletonAnimation *playing = nullptr;
+    {
+        const auto &animations = skeleton_instance->getAnimations();
+        std::printf("KENNEY animation: %zu animation(s) on the instance\n", animations.size());
+        for (const Ogre::SkeletonAnimation &animation : animations) {
+            std::printf("  \"%s\": %.1f frames, duration %.3f s\n",
+                        animation.getName().getFriendlyText().c_str(),
+                        static_cast<double>(animation.getNumFrames()),
+                        static_cast<double>(animation.getDuration()));
+        }
+        if (!animations.empty()) {
+            playing = skeleton_instance->getAnimation(animations[0].getName());
+        }
+    }
+    if (playing != nullptr) {
+        playing->setEnabled(true);
+        playing->setLoop(true);
+        const Ogre::Real dt = 1.0f / 60.0f;
+        const size_t hips = bone_index(skeleton_instance, "Hips");
+
+        Frame at0, at30, at60, at_duration;
+        if (!grab(&root, downloader, at0)) {
+            std::printf("KENNEY animation: no frame at t=0\n");
+            return 3;
+        }
+        const Ogre::Quaternion q0 =
+            skeleton_instance->getBone(hips)->_getDerivedTransform().extractQuaternion();
+        for (int i = 0; i < 30; ++i) {
+            playing->addTime(dt);
+            root.renderOneFrame();
+        }
+        if (!grab(&root, downloader, at30)) {
+            std::printf("KENNEY animation: no frame at t=30\n");
+            return 3;
+        }
+        const Ogre::Quaternion q30 =
+            skeleton_instance->getBone(hips)->_getDerivedTransform().extractQuaternion();
+        for (int i = 0; i < 30; ++i) {
+            playing->addTime(dt);
+            root.renderOneFrame();
+        }
+        if (!grab(&root, downloader, at60)) {
+            std::printf("KENNEY animation: no frame at t=60\n");
+            return 3;
+        }
+        // The true loop point: exactly one duration after the start.
+        playing->setTime(playing->getDuration());
+        root.renderOneFrame();
+        if (!grab(&root, downloader, at_duration)) {
+            std::printf("KENNEY animation: no frame at one duration\n");
+            return 3;
+        }
+
+        const float dot = std::min(1.0f, std::abs(q0.Dot(q30)));
+        const double angle0_30 = 2.0 * std::acos(static_cast<double>(dot)) * 57.29578;
+        std::printf("KENNEY animation: hips orientation moved %.4f deg over 30 frames "
+                    "(%zu px at 0, %zu at 30, %zu at 60)\n",
+                    angle0_30, non_background(at0), non_background(at30), non_background(at60));
+        std::printf("KENNEY animation: flip 0->30 %.5f, 30->60 %.5f, loop closure (one duration "
+                    "vs t=0) %.5f\n",
+                    flip_fraction(at0, at30), flip_fraction(at30, at60),
+                    flip_fraction(at0, at_duration));
+        playing->setEnabled(false);
+        playing->setTime(0.0f);
+        for (int i = 0; i < 2; ++i) root.renderOneFrame();
+    } else {
+        std::printf("KENNEY animation: none to play\n");
+    }
+
     // ── facing (chunk 12b) ───────────────────────────────────────────────
     // Which way does the character point in its own space? The toes do: a
     // humanoid's feet extend forward, so `toe_z - foot_z` is the facing sign.

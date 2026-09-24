@@ -1426,6 +1426,38 @@ T-pose) loads and skins under the 11b recipe with no resource location
 anywhere — forearm 45 degrees flips 0.00763 of the frame, hips 15 degrees
 flips 0.08335.
 
+**Animation rides the same chain, with three exporter traps (chunk 13a).**
+`tension-ogre/tests/convert-kenney-anim.py` converts a character *plus one clip*
+(`blender --background --python convert-kenney-anim.py -- <character.fbx>
+<clip.fbx> <out>`). Measured end to end with `run.fbx` (16 frames, 0.667 s):
+the `.skeleton.xml` gains `<animations>` with one animation and 25 tracks (14
+of them deforming bones), OgreMeshTool's skeleton path reports "Exporting
+animations, count=1" (the binary grows 3,420 -> 17,855 bytes), and OGRE-Next
+3.0 plays it through `SkeletonInstance::getAnimation(name)` +
+`setEnabled`/`setLoop`/`addTime` — the hips turn 83.16 degrees in 30 frames,
+frame flips are 0.0247 and 0.0279, and one full duration after the start the
+pose is bit-identical to frame 0 (flip 0.00000).
+
+Three traps, all measured:
+
+  * io_ogre reads animations **from NLA tracks only** (`ogre/skeleton.py`:
+    "NLA required, lone actions not supported"). An assigned active action
+    exports nothing, and with no NLA track at all the exporter samples the
+    **scene timeline** into an animation it names `my_animation` over
+    `scene.frame_start..frame_end` — which is how the first attempt produced a
+    10.375 s animation of the character FBX's own held pose.
+  * With the clip on an NLA track, the export comes out **empty**: the driver
+    assigns `animation_data.action = action` with no `action_slot`, and Blender
+    5.2's slotted actions evaluate nothing without one, so the sampled tracks
+    are flat (`animationFound` False) and `<animations/>` is written with no
+    children. The addon predates the slot model — the same wall that made
+    `Action.fcurves` unusable for its ONLY_KEYFRAMES path.
+  * The path that works is the exporter's *other* branch: no NLA tracks, the
+    clip assigned to the armature **with its slot bound**, and the scene's
+    frame range set to the clip's own. The exported animation is named
+    `my_animation` (the fallback branch's fixed name) whatever the action was
+    called.
+
 **Thread rule for the mount table, as implemented.** One `tension_res*` per
 mount; every call into it — the guest thread's mount, the worker's read, the
 render thread's sibling read — happens under the loader's job-table mutex. The C header states no thread-safety guarantee and the handle
@@ -1937,13 +1969,19 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
-- **The CC0 rigged-mesh replacement is prepared, not landed (chunk 12).** The
-  converted Kenney character (Kenney Animated Characters 3, CC0 1.0 — public
-  domain, no attribution required) loads and skins, and its conversion recipe
-  is `tension-ogre/tests/convert-kenney.py`. The assets themselves land in 12b:
-  `walking-stickman` and the fixtures swap `Stickman.*`/`Smiley.*` for it, and
-  the CREDITS files keep their "temporary, pending CC0 replacement" note until
-  that swap. §5.1 carries the chain and its three measured rules.
+- **Baked animation is the example's path (chunk 13a's decision A).** The
+  clip conversion works end to end (`tension-ogre/tests/convert-kenney-anim.py`)
+  and OGRE-Next 3.0 plays the result, so 13b rewrites `animated-character` to
+  load `run.fbx`'s cycle and step it through `SkeletonInstance::getAnimation`
+  (`setEnabled`/`setLoop`/`addTime`), retiring the procedural bone-batch swing.
+  §5.1 carries the chain and the three measured rules. The CC0 rigged-mesh
+  replacement itself **landed in 12b**: `Stickman.*` and the fixtures' rig are
+  the converted Kenney character, and the CREDITS files were rewritten with the
+  source, the licence and the recipe.
+- **A CC0 sphere for `guest-angular`.** Smiley — an OGRE-media mesh — is still
+  in `tension-ogre/tests/resources/meshes/` because the angular fixture needs a
+  *unit sphere* as the visual body for its sphere colliders, and the Kenney
+  character is not one. Smiley goes when a CC0 sphere does.
 - **The fixtures share one resource tree, and that is the convention.**
   `tension-ogre/tests/resources/` holds every asset the fixtures load
   (`meshes/`, `textures/`, and the skeletons **in `meshes/`, beside the meshes
