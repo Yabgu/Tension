@@ -1,24 +1,14 @@
 // probe_tns.cpp — the adapter side drives tension-res (chunk 11, round
-// 11a-probe: Q1 and Q3).
+// 11a-probe: Q1 and Q3; header defect fixed in 11b).
 //
-// Q0 (found before Q1 could run): **tension-res/include/tension_res.h does not
-//     compile as C++.** It declares a typedef `tension_res_stat` and a function
-//     `int32_t tension_res_stat(...)`. C keeps type names and function names in
-//     separate name spaces; C++ keeps both in the ordinary identifier
-//     namespace, so the header is C-only. The exact error:
+// Q0 (found by 11a, fixed in 11b): tension-res/include/tension_res.h used to
+//     declare a typedef `tension_res_stat` and a function `tension_res_stat` —
+//     fine in C, a name collision in C++, where types and functions share the
+//     ordinary identifier namespace. The function is now
+//     `tension_res_stat_path` and this file includes the real header, which is
+//     exactly the claim the fix has to survive: a C++ translation unit.
 //
-//       tension_res.h:93:47: error: 'int32_t tension_res_stat(const tension_res*,
-//       const char*, size_t, tension_res_stat*)' redeclared as different kind
-//       of entity
-//
-//     This probe is the first C++ consumer the ABI has had (Rust's FFI and
-//     Zig's cImport both rename), which is exactly why it exists. The header
-//     fix is a decision for the round report, not for this file: the probe
-//     declares the ABI locally instead, so Q1's substance — does the archive
-//     link from C++, do the calls work against the real volume — is answered
-//     by measurement rather than blocked on a rename.
-//
-// Q1. The C ABI has only ever been called from Rust (tension-core) and the Zig
+// Q1. The C ABI had only ever been called from Rust (tension-core) and the Zig
 //     tests. Chunk 11's design has the OGRE adapter DSO — C++ — calling
 //     `tension_res_load_borrowed / open / stat_fd / read / close` directly,
 //     linked against the same static archive `tension-core/build.rs` links.
@@ -32,13 +22,16 @@
 //     the File — `stat_fd`'s flags bit 0 says which, and the report says so
 //     rather than letting the numbers imply a raw copy.
 //
-// Build (no -I for tension-res/include: this file does not include the header):
-//   g++ -std=c++17 -O2 tests/probe_tns.cpp -o build/probe-tns/probe_tns \
+// Build:
+//   g++ -std=c++17 -O2 -I tension-res/include \
+//       tests/probe_tns.cpp -o build/probe-tns/probe_tns \
 //       tension-res/zig-out/lib/libtension_res.a -lpthread
 //
 // Run:
 //   ./probe_tns <volume.tns> [path-in-volume]                    # Q1
 //   ./probe_tns --time <disk-file> <volume.tns> <in-volume-path> # Q3
+
+#include "tension_res.h"
 
 #include <chrono>
 #include <cstddef>
@@ -50,38 +43,6 @@
 #include <string>
 #include <vector>
 
-// ── the local ABI shim ───────────────────────────────────────────────────
-// Signatures copied from tension-res/include/tension_res.h. The two stat
-// entry points carry C++-safe spellings with an asm label, which is what lets
-// a C++ translation unit name symbols the header cannot otherwise declare:
-// the name in the source is the one beside the type, the symbol on the wire
-// is the real `tension_res_stat` / `tension_res_stat_fd`.
-
-extern "C" {
-
-struct tension_res;
-
-struct tension_res_stat {
-    uint32_t kind;  /* 0 = file, 1 = directory */
-    uint32_t size;  /* payload bytes for a file, 0 for a directory */
-    uint32_t flags; /* bit 0 = compressed payload; bits 1-31 reserved, zero */
-};
-static_assert(sizeof(tension_res_stat) == 12, "the stat record is three u32");
-
-int32_t tension_res_load(const uint8_t *bytes, size_t len, tension_res **out, char *err,
-                         size_t errcap);
-int32_t tension_res_load_borrowed(const uint8_t *bytes, size_t len, tension_res **out, char *err,
-                                  size_t errcap);
-void tension_res_free(tension_res *res);
-int32_t tension_res_open(const tension_res *res, const char *path, size_t path_len);
-int32_t tension_res_read(const tension_res *res, int32_t fd, uint8_t *dst, size_t len);
-int32_t tension_res_close(const tension_res *res, int32_t fd);
-int32_t tension_res_stat_fn(const tension_res *res, const char *path, size_t path_len,
-                            tension_res_stat *out) asm("tension_res_stat");
-int32_t tension_res_stat_fd_fn(const tension_res *res, int32_t fd,
-                               tension_res_stat *out) asm("tension_res_stat_fd");
-
-} // extern "C"
 
 namespace {
 
@@ -127,7 +88,7 @@ int32_t read_through(const tension_res *res, const char *path, std::vector<uint8
         return fd;
     }
     tension_res_stat st{};
-    const int32_t st_rc = tension_res_stat_fd_fn(res, fd, &st);
+    const int32_t st_rc = tension_res_stat_fd(res, fd, &st);
     if (announce) {
         std::printf("  open(\"%s\"): fd=%d stat=%d kind=%u size=%u flags=0x%x%s\n", path, fd, st_rc,
                     st.kind, st.size, st.flags,
@@ -250,7 +211,7 @@ int main(int argc, char **argv) {
         std::fprintf(stderr, "usage: probe_tns <volume.tns> [path-in-volume]\n");
         return 2;
     }
-    std::printf("Q0 note: tension_res.h does not compile as C++; this probe declares the ABI "
-                "locally (asm-labelled stat entry points) and links the real symbols\n");
+    std::printf("Q0 note: this file includes tension_res.h directly — the C++ header fix "
+                "(tension_res_stat_path) is what makes that possible\n");
     return q1(argv[1], argc >= 3 ? argv[2] : "text/intro.txt");
 }

@@ -38,7 +38,7 @@ fn openFixture(borrowed: bool, err: []u8) !*tension_res {
 fn exercise(handle: *tension_res) !void {
     // stat "/" — the root is a directory.
     var rec: Stat = undefined;
-    try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat(handle, "/", 1, &rec));
+    try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat_path(handle, "/", 1, &rec));
     try testing.expectEqual(@as(u32, 1), rec.kind);
     try testing.expectEqual(@as(u32, 0), rec.size);
     try testing.expectEqual(@as(u32, 0), rec.flags);
@@ -86,7 +86,7 @@ fn exercise(handle: *tension_res) !void {
     try testing.expectEqual(EINVAL, c_api.tension_res_open(handle, "a\x00b", 3));
     try testing.expectEqual(EINVAL, c_api.tension_res_open(handle, "hello.txt", c_api.PATH_MAX + 1));
     // The empty path is the root, not an error.
-    try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat(handle, null, 0, &rec));
+    try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat_path(handle, null, 0, &rec));
     try testing.expectEqual(@as(u32, 1), rec.kind);
 }
 
@@ -155,7 +155,7 @@ test "truncation: load fails when the structures it reads are damaged" {
         if (rc == 0) {
             const got = handle orelse return error.NullHandle;
             var rec: Stat = undefined;
-            try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat(got, "/", 1, &rec));
+            try testing.expectEqual(@as(i32, 0), c_api.tension_res_stat_path(got, "/", 1, &rec));
             try testing.expectEqual(@as(u32, 1), rec.kind);
             c_api.tension_res_free(got);
             loaded += 1;
