@@ -25,7 +25,14 @@ skeleton in another directory is a skeleton the importer never finds.
   carries.
 - `textures/humanMaleA.png`, `humanFemaleA.png`, `zombieMaleA.png`,
   `zombieFemaleA.png` — the pack's four skins (`Skins/`), same source and
-  licence, ready for the rounds that texture the rigged path.
+  licence.
+- `textures/humanMaleA.dds`, `humanFemaleA.dds`, `zombieMaleA.dds`,
+  `zombieFemaleA.dds` — the same four skins in the form this install's
+  `Image2` reads (its codec set is DDS-only; a PNG aborts with "Image format is
+  unknown", measured in 13c). Converted with ImageMagick (`magick x.png
+  x.dds`), uncompressed 24-bit RGB, 256×256. The fixtures load no texture of
+  the pack yet — the example is what binds them — but both trees carry the same
+  assets, and the PNG stays as the source.
 - `meshes/Barrel.mesh` — the OGRE-Next media set (`ogre-next`, `Media/models/`),
   redistributed under that set's licence.
 - `meshes/cube.mesh` — the OGRE-Next media set, same terms.

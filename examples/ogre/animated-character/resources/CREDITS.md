@@ -24,9 +24,18 @@ load path starts with that prefix.
   `jump` (0.500 s), from the pack's `Animations/{idle,run,jump}.fbx`, same
   source and licence as the character. Converted by
   `tension-ogre/tests/convert-kenney-anim.py` (all three clips in one scene →
-  one `.skeleton` with three `<animation>` elements, 43,978 bytes).
+  one `.skeleton` with three `<animation>` elements, 43,978 bytes). The example
+  plays them through the animation verb — one clip per character, the fourth a
+  half-cycle behind — so each clip's name and duration are load-bearing.
 
 - **`textures/humanMaleA.png`, `humanFemaleA.png`, `zombieMaleA.png`,
   `zombieFemaleA.png`** — the pack's four skins (`Skins/`), same source and
-  licence. Each is the texture for one of the four characters the example is
-  being rewritten to show.
+  licence. One per character, named by that character's slot-0 material.
+
+- **`textures/humanMaleA.dds`, `humanFemaleA.dds`, `zombieMaleA.dds`,
+  `zombieFemaleA.dds`** — the same four skins in the form the renderer reads.
+  This install's `Image2` codec set is DDS-only (a PNG aborts realisation with
+  "Image format is unknown", measured in round 13c), so each skin is converted
+  with ImageMagick — `magick humanMaleA.png humanMaleA.dds`, uncompressed
+  24-bit RGB, 256×256, 262,271 bytes each — and both forms travel in the
+  volume: the PNG as the source asset, the DDS as the runtime one.

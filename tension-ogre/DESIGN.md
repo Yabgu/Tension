@@ -1493,6 +1493,43 @@ carries mutable state (fd table, readdir cursor); if a future round needs two
 readers, the ABI's own answer is `tension_res_load_borrowed` twice over the same
 immutable bytes, which yields two independent handles.
 
+**The animation verb (chunk 13c).** `ogre::submit_animation(renderableId,
+clipNamePtr, clipNameLen, timeMs)` (verb id 14, flags 0) is the guest's one
+door into OGRE's animation system, and it is deliberately thin: the guest owns
+the clock and passes **absolute** time, not a delta. The shim validates the
+renderable and the clip name and records a pending request; the render thread
+drains that queue after `apply_submissions` and before the frame draws —
+*before* the apply, the first batch is refused, because the renderables do not
+exist yet (measured). The call it makes is OGRE-Next 3.0's actual API, which is
+**not** the v1 one: there is no `AnimationState` and no `createAnimationState`
+in this version. `SkeletonInstance::getAnimation(IdString)` returns a
+`SkeletonAnimation *`, and `setEnabled(true)` / `setLoop(true)` /
+`setTime(seconds)` are the whole of it (the 13a probe played three clips through
+exactly these). Lookup is by the clip's *name* — `idle`, `run`, `jump`, what the
+exporter wrote — and a name the skeleton does not have is `-ENOENT`, with a log
+line listing the names it does. Zero or negative time is `-EINVAL`: the clip's
+first addressable moment is 1 ms, and a guest whose `%` wrap lands on exactly
+zero clamps to 1 (measured: four refusals in a 300-frame run before it did).
+
+**A sampled texture needs `AutomaticBatching`, and a texture is not a wire
+record (chunk 13c).** Measured, not assumed: `realise_texture` created the
+texture, uploaded it, and verified it — `residency=Resident`, `pending=0`,
+`dataReady=yes`, `PFG_BGRX8_UNORM`, and the image's own bytes byte-for-byte
+correct — the datablock held it (`getDiffuseTexture()` returned it at draw
+time), and the pixel shader still drew `rgb(0,0,0)`, for PBS *and* Unlit, even
+with a texture of solid magenta. The Hlms samples through `textureMaps`, an
+**array of 2D texture arrays**, and only a texture created with
+`TextureFlags::AutomaticBatching` is packed into one — "Most normally we'll
+treat 2D textures internally as a slice to a 2D array texture" — and without
+the flag the datablock's descriptor binds the array's blank 4×4 slice instead.
+Two follow-on facts from the same probes: the flag is a 2D-array mechanism and
+OGRE refuses it for any other type (`ASCII.dds` is a **volume** texture, and
+the jobs fixture aborted the frame with "AutomaticBatching can only be used
+with Type2D textures"), so it is set for `Type2D` images only; and a datablock
+does **not** need the `diffuse_map` creation param for a texture handed to it
+with `setTexture` — that param path is the editor's file-based one, and the
+runtime path uses the resource id the loader returned.
+
 ### 5.2 Region kinds — the twelve, frozen
 
 | kind | region | default size | writes |
@@ -1997,28 +2034,17 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
-- **Baked animation: conversion landed, example playback blocked on a missing
-  guest surface (chunk 13b).** The *conversion* works end to end — three clips
-  in one skeleton, OGRE lists and plays them (§5.1) — and the assets are in
-  both resource trees. What is missing is a way for a **guest** to start and
-  step an animation: the complete SDK surface is config/init/shutdown, queueMeshLoad/
-  queueTextureLoad/mountTns, the job readers, submit*/remove* for nodes,
-  cameras, lights, materials and renderables, screenshot, `BoneBatch` and
-  `MotionBatch` — and the adapter registers no animation verb (init, shutdown,
-  last_error, queue_mesh_load, queue_texture_load, job_state, job_release,
-  submit, screenshot, submit_motion, submit_bones, create_mesh, mount_tns).
-  `SkeletonInstance::getAnimation` + `setEnabled`/`setLoop`/`addTime` — what the
-  13a C++ probe calls — therefore has no guest-side path, and `bones.ts` is
-  explicit that the bone table writes what "OGRE's own animation system would
-  write" without touching it.
-  The unblocking change is one verb: `submit_animation(renderableId,
-  clipIndex, time)` (or an op on the bone table's record), the adapter owning
-  each item's `SkeletonAnimation` and the guest stepping it — verbs are not
-  wire records (`mount_tns` is the precedent, and chunks 11b/13a both added
-  one without moving `layout_hash`). Then the 13b rewrite as specified: four
-  renderables, four PBS materials over the four skin textures, one mesh, three
-  clips, one clip offset by half its duration. The example's README says so
-  plainly until then.
+- **Clip durations are the guest's to know, and it cannot ask (chunk 13c).**
+  The animation verb landed — a guest names a clip and a time, and the four
+  characters in `animated-character` play three clips through it (§5.1) — but
+  `submit_animation` takes **absolute** time, so a guest that loops a clip has
+  to wrap it itself (`elapsed % duration`) and therefore has to know the
+  durations. The example hardcodes them from 13a's probe (idle 1.333 s, run
+  0.667 s, jump 0.500 s). A `query_animation_duration(renderableId, clipName)`
+  returning milliseconds (`-ENOENT` for an unknown clip, the same shape as
+  every other refusal) would let a guest look them up instead of knowing them;
+  it is additive, a verb is not a wire record, and `layout_hash` would not
+  move.
 - **A CC0 sphere for `guest-angular`.** Smiley — an OGRE-media mesh — is still
   in `tension-ogre/tests/resources/meshes/` because the angular fixture needs a
   *unit sphere* as the visual body for its sphere colliders, and the Kenney

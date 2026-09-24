@@ -1,81 +1,53 @@
-// A stickman walking: a rigged mesh, a solver for the cadence, one bone posed
-// per frame.
+// Four characters, one mesh, four skins, three clips.
 //
-// The chain: the guest owns a phase, the solver integrates it, the guest turns
-// the phase into a bone rotation, and the renderer draws it — through the bone
-// table, one call per frame rather than one call per bone, exactly as
-// `bouncing-ball` drives the motion table.
+// The subject is `submitAnimation`: the guest names a clip and a time, the
+// adapter enables that animation on the renderable's `SkeletonInstance` and
+// puts it at that time, and OGRE's own animation system deforms the mesh. The
+// guest owns the clock (it computes `elapsed % duration` itself); nothing here
+// poses a bone. The bone table still exists for guests that want to pose by
+// hand — this example is the other road, the one keyframed clips are for.
 //
-// Two things about this example are load-bearing and are not obvious:
+// The four renderables share **one** mesh resource and differ in two ways: the
+// material (each has its own PBS datablock, textured with one of the pack's
+// four skins through `slot0`) and the clip. Characters 2 and 4 both run, half
+// a cycle apart, so the same clip reads differently twice in one frame.
 //
-//   * **the material must be PBS.** HlmsUnlit has no skeletal animation in its
-//     shaders at all, so an Unlit rig is a mesh that never moves while every
-//     bone transform is perfectly correct — the failure chunk 5b's probe was
-//     written to find. Until chunk 10 that also meant an *emissive* colour: a
-//     PBS material with no light rig shows only what it emits (DESIGN.md §5.1).
-//     Now there is a light, so the body carries a real diffuse and the stickman
-//     acquires a lit side and a dark side as he walks.
-//   * **a bone is named by index.** The guest has no bone-name lookup (the
-//     rig lives in the renderer), so the index below is the one the probe's
-//     per-bone sweep measured — see `ARM_BONE`.
-//
-//   ./run.sh                             a window, and a walking stickman
+//   ./run.sh                             a window, a screenshot, a summary
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import {
-  ConfigBuilder, Solver, SolverConfig, arg, argCount, makeCallbacks, print, RuntimeSession,
-} from "tension-framework";
+import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 
-const TAU = 6.283185307179586; // radians in one cycle: one step per second
-const STEP: f64 = 1.0 / 60.0; // one solver step per rendered frame
-/**
- * The scale that frames this mesh: the character is 3.765 units tall at scale
- * 1 (chunk 12a's probe read that off its bounding box), so 0.29 puts a 1.09
- * unit figure in the frame — the same framing the old 1.83-tall stickman had
- * at 0.6, and the numbers below in the camera and renderable comments still
- * hold. Measured, not guessed: the probe's own auto-fit used 0.664 for a
- * 2.5-unit target, and 12a's arithmetic gave 0.6 * (1.83 / 3.765) = 0.29.
- */
+/** The character is 3.765 units tall at scale 1; 0.29 makes it 1.09. */
 const SCALE: f32 = 0.29;
-/** The swing's amplitude, either side of the rest pose. */
-const SWING = 0.4;
-/**
- * `LeftForeArm`, **by index** — 28 on the Kenney rig (chunk 12a's probe read
- * the converted skeleton's bone list and found it by name; the def order is
- * the XML's, and `Hips` is 19 for the same reason).
- *
- * The guest cannot look a bone up by name — the skeleton belongs to the
- * renderer — so an index is what the guest has, and this one is the
- * conversion's. The rest pose is an A-pose (arms slightly out), so a swing
- * about X reads as an arm moving at the shoulder.
- *
- * The right arm is available too (`RightForeArm`, 39) and is deliberately not
- * posed: one bone, one swing, one thing to read on screen. Swinging both in
- * counter-phase is a two-line change for a round that wants a gait.
- */
-const ARM_BONE: u32 = 28;
-const HERO = 1; // the renderable id the bone table names
-const FRAMES = 300; // give up after this many frames
-const CYCLES = 3; // ... or after this many steps
-const MESH = "resources/models/characterMedium.mesh"; // its skeleton, `characterMedium.skeleton`, ships beside it
+const FRAMES = 300; // ~5 seconds at 60 Hz
+const MESH = "resources/models/characterMedium.mesh"; // its skeleton, and its three clips, ship beside it
 
-// The solver's two callback buffers: 64 KiB each in the guest's own memory, the
-// addresses the host writes and reads through (tension-solver/GUEST_ABI.md §3.6).
-const BUF_IN: usize = memory.data(65536, 8);
-const BUF_OUT: usize = memory.data(65536, 8);
-export function deriv_buf_in(): i32 { return i32(BUF_IN); }
-export function deriv_buf_out(): i32 { return i32(BUF_OUT); }
+/// The four skins, in the order the four characters stand.
+const SKINS: string[] = [
+  "resources/textures/humanMaleA.dds",
+  "resources/textures/humanFemaleA.dds",
+  "resources/textures/zombieMaleA.dds",
+  "resources/textures/zombieFemaleA.dds",
+];
+/// The clips, as the skeleton exporter wrote them (13b's inventory).
+const CLIPS: string[] = ["idle", "run", "jump", "run"];
+/// Their durations in seconds (13a measured them; this verb does not report them).
+const DURATIONS: f64[] = [1.333333, 0.666667, 0.5, 0.666667];
+/// The fourth runner starts half a cycle behind the second: same clip, visibly
+/// out of phase — 0.333 s is half of Run's 0.667 s.
+const OFFSETS: f64[] = [0.0, 0.0, 0.0, 0.333];
+const CHARACTERS = 4;
 
-/// f(t, y) = [2π]: the phase advances one full cycle per second, which is the
-/// cadence. The solver integrates it; the guest only reads the angle back out.
-export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
-  if (dyCap < len) return -22; // -EINVAL; the host always calls with dim == dyCap
-  store<f64>(dyPtr, TAU);
-  return 0;
-}
+/// The 2x2 grid: two columns, two rows (the front row is nearer the camera).
+/// The characters are 1.05 units wide at this scale, so ±0.62 leaves a gap.
+const GRID_X: f32[] = [-0.62, 0.62, -0.62, 0.62];
+const GRID_Z: f32[] = [-0.45, -0.45, 0.55, 0.55];
+/// The mesh origin is at the feet, so every character shifts down to sit in the
+/// middle of the frame (the same -0.55 the previous single-character version used).
+const GRID_Y: f32 = -0.55;
 
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
@@ -83,7 +55,103 @@ function fail(what: string): void {
   assert(false, what);
 }
 
+/// One frame from the renderer's readback, or null when there is none (the NULL
+/// render system has no framebuffer).
+function grab(): ArrayBuffer | null {
+  const armed_at = ogre.frameCount();
+  ogre.screenshot(0, 0);
+  for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed_at + 3; guard++) {
+    RuntimeSession.wait(5);
+  }
+  const length = ogre.screenshot(0, 0);
+  if (length <= 0) return null;
+  const frame = new ArrayBuffer(length);
+  const got = ogre.screenshot(changetype<usize>(frame), length);
+  if (got != length) return null;
+  return frame;
+}
+
+/// Foreground is "not the frame's own corner pixel" — a mesh drawn black and a
+/// mesh not drawn at all are the same number under a brightness test.
+function foreground_count(frame: ArrayBuffer): f64 {
+  const pixels = Uint8Array.wrap(frame);
+  const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
+  let count: f64 = 0;
+  const length: i32 = <i32>pixels.length;
+  for (let i: i32 = 0; i + 2 < length; i += 4) {
+    if (abs(<i32>pixels[i] - <i32>bg0) > 8 || abs(<i32>pixels[i + 1] - <i32>bg1) > 8 ||
+        abs(<i32>pixels[i + 2] - <i32>bg2) > 8) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/// Pixels that differ between two frames by more than the tolerance the
+/// background test uses. Nothing else in the frame moves — the camera is
+/// still, the background is a clear colour — so a changed pixel is a bone
+/// that moved, and the number is the skinning deforming the mesh.
+function changed_count(a: ArrayBuffer, b: ArrayBuffer): f64 {
+  const pa = Uint8Array.wrap(a), pb = Uint8Array.wrap(b);
+  const length: i32 = <i32>(pa.length < pb.length ? pa.length : pb.length);
+  let count: f64 = 0;
+  for (let i: i32 = 0; i + 2 < length; i += 4) {
+    if (abs(<i32>pa[i] - <i32>pb[i]) > 8 || abs(<i32>pa[i + 1] - <i32>pb[i + 1]) > 8 ||
+        abs(<i32>pa[i + 2] - <i32>pb[i + 2]) > 8) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+/// Per-quadrant foreground pixels and mean colour: four characters, four skins.
+function quadrant_report(frame: ArrayBuffer): string {
+  const pixels = Uint8Array.wrap(frame);
+  const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
+  const counts = new Float64Array(4);
+  const sums = new Float64Array(12);
+  const width = 640, height = 480;
+  for (let y: i32 = 0; y < height; y++) {
+    for (let x: i32 = 0; x < width; x++) {
+      const at: i32 = (y * width + x) * 4;
+      if (abs(<i32>pixels[at] - <i32>bg0) <= 8 && abs(<i32>pixels[at + 1] - <i32>bg1) <= 8 &&
+          abs(<i32>pixels[at + 2] - <i32>bg2) <= 8) {
+        continue;
+      }
+      const quadrant = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
+      counts[quadrant] += 1;
+      sums[quadrant * 3] += <f64>pixels[at];
+      sums[quadrant * 3 + 1] += <f64>pixels[at + 1];
+      sums[quadrant * 3 + 2] += <f64>pixels[at + 2];
+    }
+  }
+  let line = "quadrants (back-left, back-right, front-left, front-right):";
+  for (let q: i32 = 0; q < 4; q++) {
+    if (counts[q] == 0) {
+      line += " q" + q.toString() + "=none";
+      continue;
+    }
+    line += " q" + q.toString() + "=" + counts[q].toString() + "px rgb(" +
+            (sums[q * 3] / counts[q]).toString() + "," + (sums[q * 3 + 1] / counts[q]).toString() +
+            "," + (sums[q * 3 + 2] / counts[q]).toString() + ")";
+  }
+  return line;
+}
+
+/// Wait for a job to finish, and fail with the job's errno when it failed.
+function settle(job: i32, what: string): u32 {
+  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
+    RuntimeSession.wait(10);
+  }
+  if (ogre.jobState(job) != ogre.JOB_DONE) {
+    fail(what + " did not load (state " + ogre.jobState(job).toString() + ", error " +
+         ogre.jobError(job).toString() + ")");
+  }
+  return ogre.jobResult(job);
+}
+
 export function _start_game(): void {
+  // The launcher names the renderer; null needs no display, so it is the default.
   let renderer = "null";
   let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
@@ -93,7 +161,7 @@ export function _start_game(): void {
   }
   const windowed = renderer == "gl3plus";
 
-  // Same setup as the other examples: session, mesh, material, camera.
+  // Open the session, then hand the renderer its own config.
   const callbacks = makeCallbacks(null, null);
   if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
     fail("session_open refused");
@@ -112,128 +180,112 @@ export function _start_game(): void {
   const mounted = ogre.mountTns("resources", tns);
   if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
 
-
-  // The rig is a file, and its skeleton is a second file the loader resolves by
-  // name — which is why this example needs the models directory the adapter
-  // reads from `resources2.cfg`.
-  const job = ogre.queueMeshLoad(MESH, 0);
-  if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
-  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
-    RuntimeSession.wait(10);
-  }
-  if (ogre.jobState(job) != ogre.JOB_DONE) fail(MESH + " did not load");
-  const mesh = ogre.jobResult(job);
-  // The record is the truth about the rig — the loader wrote it when the v1 ->
-  // v2 conversion told it whether a skeleton survived.
+  // One mesh, and the skeleton that ships beside it — with the three clips the
+  // converter baked into it (idle, run, jump; chunk 13b).
+  const mesh_job = ogre.queueMeshLoad(MESH, 0);
+  if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
+  const mesh = settle(mesh_job, MESH);
   if (!ogre.isRigged(mesh)) fail(MESH + " came back without a rig");
-  const bones = ogre.boneCount(mesh);
-  if (ARM_BONE >= bones) fail("the rig has " + bones.toString() + " bones, not " + ARM_BONE.toString());
 
-  // Lit PBS: a real diffuse and specular with a zero emissive, shaded by the
-  // directional light below. Only a PBS material can skin a mesh at all, and
-  // only a lit one shows a lit side — the emissive-only shape this example
-  // shipped with is now the *regression* clause (chunk 10's fixture keeps an
-  // emissive-only surface in the same frame as a control).
-  const material = new ogre.Material();
-  material.materialId = 1;
-  material.kind = ogre.MAT_HLMS_PBS;
-  material.diffuseR = 0.8; material.diffuseG = 0.5; material.diffuseB = 0.3;
-  material.specularR = 0.5; material.specularG = 0.5; material.specularB = 0.5;
-  material.emissiveR = 0.0; material.emissiveG = 0.0; material.emissiveB = 0.0;
-  material.roughness = 0.5; material.metalness = 0.0;
-  if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused");
+  // Four skins, one job each: the texture path through the volume, and the
+  // resource ids the four materials name in their slot 0.
+  const textures: u32[] = [];
+  for (let i = 0; i < CHARACTERS; i++) {
+    const job = ogre.queueTextureLoad(SKINS[i], 0);
+    if (job <= 0) fail("queueTextureLoad refused (" + SKINS[i] + ")");
+    const id = settle(job, SKINS[i]);
+    textures.push(id);
+  }
 
-  // The light: white, from the camera's upper left, so the viewer sees both a
-  // lit side and a dark one — a light on the camera's own axis would light
-  // everything the viewer can see and hide the shading entirely (measured
-  // during chunk 10's fixture work: a light 54.7° off the view axis leaves the
-  // "dark" half at 133/255). The direction is the way the light *travels*:
-  // (+x, -y, -z) is down, to the right of the screen and away from the camera,
-  // which is a source up, to the left and in front. Intensity 20 and not 1:
-  // `intensity` is a power scale, and a lit surface at 1.0 measures 26/255 —
-  // lit, and visually black (DESIGN.md §5.1).
-  const light = new ogre.LightRecord();
-  light.lightId = 1;
-  light.kind = ogre.LIGHT_DIRECTIONAL;
-  light.colourR = 1.0; light.colourG = 1.0; light.colourB = 1.0;
-  light.intensity = 20.0;
+  // Four PBS materials, one per skin: diffuse white so the texture is what shows,
+  // specular off, roughness 0.5. Slot 0 is the id the loader handed back.
+  for (let i = 0; i < CHARACTERS; i++) {
+    const material = ogre.Material.pbs(1.0, 1.0, 1.0, 0.5, 0.0);
+    material.materialId = <u32>(i + 1);
+    material.specularR = 0.0;
+    material.specularG = 0.0;
+    material.specularB = 0.0;
+    material.slot0Resource = textures[i];
+    if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + (i + 1).toString() + ")");
+  }
+
+  // One directional light: PBS is lit, and an unlit PBS datablock draws black.
   const L = 0.5773502691896258; // one unit of (1, -1, -1) normalised
-  light.directionX = <f32>L; light.directionY = <f32>-L; light.directionZ = <f32>-L;
+  const light = ogre.LightRecord.directional(1.0, 1.0, 1.0, 20.0, <f32>L, <f32>-L, <f32>-L);
+  light.lightId = 1;
   if (ogre.submitLight(light) != 0) fail("submitLight refused");
 
-  // Four units back on +Z, looking at the origin: the character is 3.765
-  // units tall at scale 1, so 0.29 puts all of him in the frame with room to
-  // swing. (He faces +Z — chunk 12b measured the toes — so a +Z camera is a
-  // front view.)
+  // Four units back on +Z, looking at the origin: at scale 0.29 the characters
+  // are 1.09 units tall, well inside the ±1.65 the camera shows at z=0.
   const camera = ogre.CameraRecord.perspective(
     45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
   camera.cameraId = 1;
   if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
-  // His origin is at his feet, so the model needs shifting *down* to sit in the
-  // middle of the frame: at scale 0.29 he is 1.09 units tall, and the camera
-  // shows ±1.65 at z=0. The fourth argument is the scale — 0.29, the value the
-  // section above derives, which also puts a measurable silhouette in a
-  // 320x240 frame.
-  const renderable = ogre.Renderable.at(mesh, 1, 0.0, -0.55, 0.0, SCALE);
-  renderable.renderableId = HERO;
-  if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
-
-  // The cadence is the guest's derivative and the solver's integral: one
-  // dimension, one number out. The rest of the walk is game logic reading it.
-  const solver_config = new SolverConfig();
-  solver_config.method = "rk45";
-  solver_config.source = "wasm";
-  solver_config.dim = 1;
-  solver_config.relTol = 1e-8; solver_config.absTol = 1e-10;
-  const solver = Solver.create(solver_config, {
-    derivative: _derivative, bufIn: deriv_buf_in, bufOut: deriv_buf_out,
-  });
-  if (solver == null) fail("Solver.create refused the config");
-
-  const state = new Float64Array(2); // [t, phase]
-  if (solver!.setState(0.0, state.subarray(1)) != 0) fail("setState refused the seed");
-  if (!windowed) print("renderer=null: no window; the pose and the summary are the same");
-
-  // One solver step, one batch commit, one frame — the shape every animated
-  // guest has.
-  const batch = new ogre.BoneBatch();
-  let last = ogre.frameCount(), first = last, steps = 0;
-  while (ogre.frameCount() < first + FRAMES && steps < CYCLES) {
-    RuntimeSession.wait(16);
-    const now = ogre.frameCount();
-    const advance = now - last;
-    if (advance == 0) continue; // the renderer has not drawn a new frame yet
-    last = now;
-
-    if (solver!.step(<f64>advance * STEP) != 0) fail("solver step failed");
-    if (solver!.state(state) < 0) fail("solver state failed");
-    const phase = state[1];
-
-    // The pose. `sin(phase) * 0.4` is a swing about X, which is the axis the
-    // stickman's arms hang on; a bone's transform is *local* to its parent, so
-    // this rotates the arm without touching anything above or below it in the
-    // rig. A batch entry is a whole transform, so the rotation is the whole of
-    // what this line sends.
-    const swing = <f32>(Math.sin(phase) * SWING);
-    batch.setRotation(0, HERO, ARM_BONE, 1.0, 0.0, 0.0, swing);
-    // The count is the accepted shape: a batch returns how many entries the
-    // adapter took, so 1 is success and 0 is a refusal (a refused verb writes
-    // nothing into the guest's return slot — the errno goes to the session log).
-    if (batch.commit() != 1) fail("submit_bones refused the batch");
-
-    // Printed a quarter of a cycle apart, so the samples show the swing's whole
-    // range (±0.4) rather than landing on the same two phases every time — at
-    // 30 frames, which is half a cycle here, every line would read the same
-    // pair of numbers.
-    if (now % 15 == 0) {
-      print("frame " + now.toString() + "  phase " + phase.toString() + "  swing " +
-            swing.toString());
+  // Four renderables over the one mesh resource, in a 2x2 grid.
+  for (let i = 0; i < CHARACTERS; i++) {
+    const renderable = ogre.Renderable.at(mesh, <u32>(i + 1), GRID_X[i], GRID_Y, GRID_Z[i], SCALE);
+    renderable.renderableId = <u32>(i + 1);
+    if (ogre.submitRenderable(renderable) != 0) {
+      fail("submitRenderable refused (" + (i + 1).toString() + ")");
     }
-    const cycles = <i32>(phase / TAU);
-    if (cycles > steps) steps = cycles;
   }
 
-  print("animated-character took " + steps.toString() + " steps");
-  ogre.shutdown(); RuntimeSession.close();
+  print("clips: " + CLIPS[0] + " " + CLIPS[1] + " " + CLIPS[2] + " " + CLIPS[3] +
+        " (" + DURATIONS[0].toString() + "s, " + DURATIONS[1].toString() + "s, " +
+        DURATIONS[2].toString() + "s, fourth offset +" + OFFSETS[3].toString() + "s)");
+
+  // The loop. The guest owns the clock: one tick of 1/60 s per iteration, and
+  // each character's time is `elapsed % its duration` — the clip loops because
+  // the caller wraps it, not because the adapter knows the duration.
+  let elapsed: f64 = 0.0;
+  let frames = 0;
+  let mid_frame: ArrayBuffer | null = null;
+  for (frames = 0; frames < FRAMES; frames++) {
+    elapsed += 1.0 / 60.0;
+    for (let i = 0; i < CHARACTERS; i++) {
+      const at = (elapsed + OFFSETS[i]) % DURATIONS[i];
+      // The wrap is floating point: when the accumulated time lands a hair
+      // past a duration boundary, `%` gives a hair *past zero*, and the
+      // millisecond truncation makes it 0 — the one time the verb refuses
+      // (`0 ms` is not distinguishable from "no time given"; the clip's start
+      // is 1 ms). Measured: four refusals in a 300-frame run before this.
+      let ms: i32 = <i32>(at * 1000.0);
+      if (ms <= 0) ms = 1;
+      const accepted = ogre.submitAnimation(<i32>(i + 1), CLIPS[i], ms);
+      if (accepted != 0) fail("submitAnimation refused (" + accepted.toString() + " at character " +
+                              (i + 1).toString() + ")");
+    }
+    RuntimeSession.wait(16);
+    // Halfway through, a second frame is kept: the last one is compared
+    // against it below, and the difference is the animation.
+    if (windowed && frames == FRAMES / 2) mid_frame = grab();
+  }
+
+  // The readback, where there is a framebuffer to read: four characters, three
+  // clips, one mesh, four skins — and the count says they were drawn.
+  if (windowed) {
+    const frame = grab();
+    if (frame == null) {
+      fail("no frame could be downloaded");
+    }
+    print("rendered " + foreground_count(frame!).toString() + " non-background pixels");
+    // The four characters are in the four screen quadrants (the back row
+    // projects higher and the front row lower at this camera), so a per-
+    // quadrant count and mean colour is a self-check that all four are drawn
+    // and that they are wearing different skins — the two things a screenshot
+    // is looked at for.
+    print(quadrant_report(frame!));
+    if (mid_frame != null) {
+      const moved = changed_count(mid_frame!, frame!);
+      print("motion: " + moved.toString() + " pixels changed between frame " +
+            (FRAMES / 2).toString() + " and " + frames.toString());
+      assert(moved > 0.0, "no pixel changed between the two frames: the clips did not move the rig");
+    }
+  }
+
+  print("animated 4 characters, 3 clips, " + frames.toString() + " frames");
+  print("done: 4 characters, one mesh, four skins, three clips");
+  assert(ogre.shutdown() == 0, "ogre::shutdown");
+  assert(RuntimeSession.close() == 0, "session_close");
 }
