@@ -19,3 +19,14 @@ load path starts with that prefix.
   is a re-run, not archaeology. The converted rig is 58 bones (`LeftForeArm` at
   index 28, `Hips` at 19), 3.765 units tall at scale 1, resting in an A-pose,
   facing +Z.
+
+- **The skeleton's three animations** — `idle` (1.333 s), `run` (0.667 s),
+  `jump` (0.500 s), from the pack's `Animations/{idle,run,jump}.fbx`, same
+  source and licence as the character. Converted by
+  `tension-ogre/tests/convert-kenney-anim.py` (all three clips in one scene →
+  one `.skeleton` with three `<animation>` elements, 43,978 bytes).
+
+- **`textures/humanMaleA.png`, `humanFemaleA.png`, `zombieMaleA.png`,
+  `zombieFemaleA.png`** — the pack's four skins (`Skins/`), same source and
+  licence. Each is the texture for one of the four characters the example is
+  being rewritten to show.

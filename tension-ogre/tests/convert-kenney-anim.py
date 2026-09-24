@@ -1,7 +1,13 @@
 # convert-kenney-anim.py — the animation half of the Kenney pipeline (chunk 13a).
 #
 #     blender --background --python tests/convert-kenney-anim.py -- \
-#         <character.fbx> <animation.fbx> <output-dir>
+#         <character.fbx> <clip.fbx> [<clip2.fbx> ...] <output-dir>
+#
+# One clip or many: every argument but the last is an input (the first is the
+# character, the rest are clips) and the last is the output directory, so the
+# single-clip form from chunk 13a still works unchanged. Each clip becomes its
+# own `<animation>` in one skeleton — the shape the multi-character demo needs,
+# where four renderables share one mesh and each plays a different clip.
 #
 # `convert-kenney.py` converts a rigged *mesh*; this converts a rigged mesh
 # **plus one animation clip** into a skeleton whose `<animations>` element
@@ -67,68 +73,102 @@ def main() -> int:
     argv = sys.argv
     if "--" not in argv:
         print("usage: blender --background --python convert-kenney-anim.py -- "
-              "<character.fbx> <animation.fbx> <output-dir>")
+              "<character.fbx> <clip.fbx> [<clip2.fbx> ...] <output-dir>")
         return 2
     args = argv[argv.index("--") + 1:]
-    if len(args) != 3:
-        print("convert-kenney-anim.py: expected exactly <character.fbx> <animation.fbx> <out-dir>")
+    if len(args) < 3:
+        print("usage: <character.fbx> <clip.fbx> [<clip2.fbx> ...] <output-dir>")
         return 2
-    character, animation, outdir = (os.path.abspath(a) for a in args)
-    for path in (character, animation):
+    inputs = [os.path.abspath(a) for a in args[:-1]]
+    outdir = os.path.abspath(args[-1])
+    character, clips = inputs[0], inputs[1:]
+    for path in inputs:
         if not os.path.isfile(path):
             print("convert-kenney-anim.py: no such file: %s" % path)
             return 2
+    print("convert-kenney-anim.py: %d clip(s): %s"
+          % (len(clips), ", ".join(os.path.basename(c) for c in clips)))
     os.makedirs(outdir, exist_ok=True)
 
     # 1. an empty scene, then the addon (the factory reset unloads it — 12a).
     bpy.ops.wm.read_factory_settings(use_empty=True)
     enable_io_ogre()
 
-    # 2. the character, then the clip into the same scene. The clip imports its
-    #    own copy of the rig; the bone sets must be identical for the retarget.
+    # 2. the character, then each clip into the same scene. Every clip imports
+    #    its own copy of the rig; the bone sets must be identical to retarget.
     bpy.ops.import_scene.fbx(filepath=character)
     character_arm = [o for o in bpy.context.scene.objects if o.type == "ARMATURE"][0]
-    bpy.ops.import_scene.fbx(filepath=animation)
-    clip_arms = [o for o in bpy.context.scene.objects
-                 if o.type == "ARMATURE" and o is not character_arm]
-    if not clip_arms:
-        print("convert-kenney-anim.py: the clip FBX imported no armature — nothing to retarget")
-        return 1
-    clip_arm = clip_arms[0]
     character_bones = set(b.name for b in character_arm.data.bones)
-    clip_bones = set(b.name for b in clip_arm.data.bones)
-    print("convert-kenney-anim.py: %d character bones, %d clip bones, identical: %s"
-          % (len(character_bones), len(clip_bones), character_bones == clip_bones))
-    if character_bones != clip_bones:
-        print("convert-kenney-anim.py: the rigs differ — retargeting by name is not safe")
-        return 1
-
-    # 3. pick the clip's action: the multi-frame one, not the 1-frame bind pose.
-    clip_action = None
-    for act in bpy.data.actions:
-        if act.frame_range[1] > 2.0 and act is not clip_arm.animation_data.action:
-            clip_action = act
-    if clip_action is None:
-        print("convert-kenney-anim.py: no multi-frame action in the clip FBX")
-        return 1
-    print("convert-kenney-anim.py: retargeting \"%s\" (frames %.0f..%.0f) onto %s"
-          % (clip_action.name, clip_action.frame_range[0], clip_action.frame_range[1],
-             character_arm.name))
-
-    # 4. the working shape (finding 3): no NLA, the action assigned *with its
-    #    slot*, and the scene range set to the clip's.
     if character_arm.animation_data is None:
         character_arm.animation_data_create()
     ad = character_arm.animation_data
     while len(ad.nla_tracks):
         ad.nla_tracks.remove(ad.nla_tracks[0])
-    ad.action = clip_action
-    if hasattr(ad, "action_slot"):
-        ad.action_slot = clip_action.slots[0]
-    bpy.context.scene.frame_start = int(clip_action.frame_range[0])
-    bpy.context.scene.frame_end = int(clip_action.frame_range[1])
-    bpy.context.scene.frame_step = 1
-    bpy.data.objects.remove(clip_arm, do_unlink=True)
+    ad.action = None
+
+    retargeted = []
+    for clip_path in clips:
+        clip_name = os.path.splitext(os.path.basename(clip_path))[0]
+        before = set(bpy.context.scene.objects)
+        actions_before = set(bpy.data.actions)
+        bpy.ops.import_scene.fbx(filepath=clip_path)
+        clip_arms = [o for o in set(bpy.context.scene.objects) - before
+                     if o.type == "ARMATURE"]
+        if not clip_arms:
+            print("convert-kenney-anim.py: %s imported no armature — nothing to retarget"
+                  % clip_name)
+            return 1
+        clip_arm = clip_arms[0]
+        clip_bones = set(b.name for b in clip_arm.data.bones)
+        print("convert-kenney-anim.py: clip \"%s\": %d bones, identical to the character: %s"
+              % (clip_name, len(clip_bones), clip_bones == character_bones))
+        if clip_bones != character_bones:
+            print("convert-kenney-anim.py: the rigs differ — retargeting by name is not safe")
+            return 1
+
+        # The clip's action is the *new* multi-frame one: with several clips in
+        # one scene every earlier clip's action is still in `bpy.data.actions`,
+        # and a "last multi-frame action wins" loop picks a previous clip's —
+        # measured: the first run of this loop built "jump" out of Run's
+        # 16-frame action and exported two animations instead of three.
+        new_actions = [act for act in set(bpy.data.actions) - actions_before
+                       if act.frame_range[1] > 2.0]
+        clip_action = new_actions[0] if new_actions else None
+        if clip_action is None:
+            print("convert-kenney-anim.py: no multi-frame action in %s" % clip_name)
+            return 1
+        # The action's own name ("Root.001|Root|Run") is what the exporter
+        # writes into the XML; the clip's file name is what a reader wants.
+        clip_action.name = clip_name
+
+        # 3. The NLA branch, made to sample (13b). io_ogre's driver assigns
+        #    `animation_data.action = action` with no slot, and Blender 5.2's
+        #    slotted actions evaluate **nothing** until a slot is bound — the
+        #    tracks come out flat and `<animations/>` empty (13a's attempt 2,
+        #    measured again here: the pose bone stays at identity at every
+        #    frame with the slot unbound). The lever is the slot's *target*:
+        #    point it at this armature and the driver's plain assignment binds
+        #    it by itself. Each clip then becomes its own `<animation>`, which
+        #    is the whole reason this branch is worth having.
+        for slot in clip_action.slots:
+            slot.identifier = "OB" + character_arm.name
+            slot.name_display = character_arm.name
+
+        track = ad.nla_tracks.new()
+        track.name = clip_name
+        strip = track.strips.new(clip_name, int(clip_action.frame_range[0]), clip_action)
+        print("convert-kenney-anim.py: clip \"%s\" on NLA track \"%s\", strip frames %.0f..%.0f, "
+              "%.0f frames, slot -> OB%s"
+              % (clip_name, track.name, strip.frame_start, strip.frame_end,
+                 clip_action.frame_range[1] - clip_action.frame_range[0],
+                 character_arm.name))
+        retargeted.append((clip_name, clip_action, strip.frame_start, strip.frame_end))
+        bpy.data.objects.remove(clip_arm, do_unlink=True)
+
+    # The scene range covers every clip (the timeline branch is not used while
+    # NLA tracks exist, but a range that named one clip would be a lie).
+    bpy.context.scene.frame_start = int(min(r[2] for r in retargeted))
+    bpy.context.scene.frame_end = int(max(r[3] for r in retargeted))
     show("after retarget")
 
     # 5. the export. The poll needs an active object (removing the clip armature
@@ -147,10 +187,19 @@ def main() -> int:
     # 6. report what landed, so a silent drop is loud.
     skeleton_xml = os.path.join(outdir, stem + ".skeleton.xml")
     if os.path.isfile(skeleton_xml):
+        import xml.etree.ElementTree as ET
+
         text = open(skeleton_xml, encoding="utf-8").read()
-        has_animations = "<animation " in text or "<animation>" in text
-        print("convert-kenney-anim.py: %s carries animations: %s (%d bytes)"
-              % (os.path.basename(skeleton_xml), has_animations, len(text)))
+        root = ET.parse(skeleton_xml).getroot()
+        animations = root.find("animations")
+        found = list(animations) if animations is not None else []
+        print("convert-kenney-anim.py: %s carries %d animation(s) (%d bytes)"
+              % (os.path.basename(skeleton_xml), len(found), len(text)))
+        for anim in found:
+            tracks = anim.findall("tracks/track")
+            keys = anim.findall(".//keyframe")
+            print("  \"%s\": length %s, tracks %d, keyframes %d"
+                  % (anim.get("name"), anim.get("length"), len(tracks), len(keys)))
     else:
         print("convert-kenney-anim.py: no skeleton XML was written")
     print("convert-kenney-anim.py: output dir: %s" % sorted(os.listdir(outdir)))

@@ -1458,6 +1458,34 @@ Three traps, all measured:
     `my_animation` (the fallback branch's fixed name) whatever the action was
     called.
 
+**Three animations in one skeleton (chunk 13b).** `convert-kenney-anim.py`
+now takes any number of clips (`<character.fbx> <clip.fbx>... <out-dir>`); each
+becomes its own `<animation>`, which is what a scene where several renderables
+share one mesh needs — four characters playing *different* clips at once. The
+route is io_ogre's NLA branch, made to sample:
+
+  * one clip per import, each retargeted by name (58/58 bones identical to the
+    character's);
+  * **each action's slot re-pointed at the armature** (`slot.identifier = "OB" +
+    object.name`). The driver assigns `animation_data.action = action` with no
+    slot, and Blender 5.2 evaluates nothing until one is bound, so the tracks
+    sample flat and `<animations/>` goes out empty (13a's attempt 2, measured
+    again). Pointing the identifier at the object makes the driver's own plain
+    assignment bind — and then the NLA branch, "one `<animation>` per action",
+    does the job the timeline branch cannot: three clips at once;
+  * the clip's action is picked from the **newly imported** actions
+    (`set(bpy.data.actions) - before`). With several clips in one scene every
+    earlier clip's action is still present, and a "last multi-frame action
+    wins" loop silently built `jump` out of Run's 16-frame action — two
+    animations instead of three, one mislabelled (measured).
+
+Measured with idle + run + jump: three `<animation>` elements — `idle` 1.333 s /
+16 tracks, `run` 0.667 s / 25 tracks, `jump` 0.500 s / 12 tracks — OgreMeshTool
+reports "Exporting animations, count=3", the skeleton binary grows 3,420 ->
+43,978 bytes, and the C++ probe lists **3 animations on the SkeletonInstance**
+with exact loop closure. The fixtures are unaffected: same bind pose, same
+numbers (skinning flip 0.0153, light ratio 1.746).
+
 **Thread rule for the mount table, as implemented.** One `tension_res*` per
 mount; every call into it — the guest thread's mount, the worker's read, the
 render thread's sibling read — happens under the loader's job-table mutex. The C header states no thread-safety guarantee and the handle
@@ -1969,15 +1997,28 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
-- **Baked animation is the example's path (chunk 13a's decision A).** The
-  clip conversion works end to end (`tension-ogre/tests/convert-kenney-anim.py`)
-  and OGRE-Next 3.0 plays the result, so 13b rewrites `animated-character` to
-  load `run.fbx`'s cycle and step it through `SkeletonInstance::getAnimation`
-  (`setEnabled`/`setLoop`/`addTime`), retiring the procedural bone-batch swing.
-  §5.1 carries the chain and the three measured rules. The CC0 rigged-mesh
-  replacement itself **landed in 12b**: `Stickman.*` and the fixtures' rig are
-  the converted Kenney character, and the CREDITS files were rewritten with the
-  source, the licence and the recipe.
+- **Baked animation: conversion landed, example playback blocked on a missing
+  guest surface (chunk 13b).** The *conversion* works end to end — three clips
+  in one skeleton, OGRE lists and plays them (§5.1) — and the assets are in
+  both resource trees. What is missing is a way for a **guest** to start and
+  step an animation: the complete SDK surface is config/init/shutdown, queueMeshLoad/
+  queueTextureLoad/mountTns, the job readers, submit*/remove* for nodes,
+  cameras, lights, materials and renderables, screenshot, `BoneBatch` and
+  `MotionBatch` — and the adapter registers no animation verb (init, shutdown,
+  last_error, queue_mesh_load, queue_texture_load, job_state, job_release,
+  submit, screenshot, submit_motion, submit_bones, create_mesh, mount_tns).
+  `SkeletonInstance::getAnimation` + `setEnabled`/`setLoop`/`addTime` — what the
+  13a C++ probe calls — therefore has no guest-side path, and `bones.ts` is
+  explicit that the bone table writes what "OGRE's own animation system would
+  write" without touching it.
+  The unblocking change is one verb: `submit_animation(renderableId,
+  clipIndex, time)` (or an op on the bone table's record), the adapter owning
+  each item's `SkeletonAnimation` and the guest stepping it — verbs are not
+  wire records (`mount_tns` is the precedent, and chunks 11b/13a both added
+  one without moving `layout_hash`). Then the 13b rewrite as specified: four
+  renderables, four PBS materials over the four skin textures, one mesh, three
+  clips, one clip offset by half its duration. The example's README says so
+  plainly until then.
 - **A CC0 sphere for `guest-angular`.** Smiley — an OGRE-media mesh — is still
   in `tension-ogre/tests/resources/meshes/` because the angular fixture needs a
   *unit sphere* as the visual body for its sphere colliders, and the Kenney

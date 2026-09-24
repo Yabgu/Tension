@@ -18,7 +18,14 @@ skeleton in another directory is a skeleton the importer never finds.
   0.9.0) → `.mesh.xml` + `.skeleton.xml` → `OgreMeshTool -V 1.10` →
   `.mesh` + `.skeleton`; the recipe is `tension-ogre/tests/convert-kenney.py`.
   The rig is 58 bones (`LeftForeArm` 28, `Hips` 19) and the shape that replaced
-  the OGRE-media `Stickman` in chunk 12.
+  the OGRE-media `Stickman` in chunk 12. The skeleton also carries the pack's
+  three clips — `idle` 1.333 s, `run` 0.667 s, `jump` 0.500 s — converted by
+  `tension-ogre/tests/convert-kenney-anim.py`; nothing in the fixtures plays
+  them (the bone table poses the rig), they are inert data the load path
+  carries.
+- `textures/humanMaleA.png`, `humanFemaleA.png`, `zombieMaleA.png`,
+  `zombieFemaleA.png` — the pack's four skins (`Skins/`), same source and
+  licence, ready for the rounds that texture the rigged path.
 - `meshes/Barrel.mesh` — the OGRE-Next media set (`ogre-next`, `Media/models/`),
   redistributed under that set's licence.
 - `meshes/cube.mesh` — the OGRE-Next media set, same terms.

@@ -103,3 +103,10 @@ carries fails with `-ENOENT` rather than falling back to the disk. The mesh is
 Kenney's *Animated Characters 3* "characterMedium" (CC0 1.0), converted by
 `tension-ogre/tests/convert-kenney.py`; `resources/CREDITS.md` names the source,
 the licence and the chain.
+
+The volume also carries the pack's **three clips** (`idle`, `run`, `jump`) baked
+into the skeleton by `tension-ogre/tests/convert-kenney-anim.py`, and the pack's
+**four skins** as textures. The example does not play the clips yet: the guest
+poses the rig through the bone table (the arm swing you see), and stepping
+OGRE's own `SkeletonAnimation` needs a call the guest SDK does not expose —
+that is the next round's work, and the assets are already packed for it.
