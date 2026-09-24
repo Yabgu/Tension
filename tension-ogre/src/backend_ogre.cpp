@@ -543,6 +543,54 @@ class BackendOgre final : public Backend {
         asset_resolver_ = std::move(resolver);
     }
 
+    /// `submit_animation`, on the render thread (chunk 13c). The OGRE-Next 3.0
+    /// accessor is **not** the v1 `getAnimationState`/`createAnimationState` —
+    /// there is no `AnimationState` in this version. The v2 API is
+    /// `SkeletonInstance::hasAnimation(IdString)` / `getAnimation(IdString)`
+    /// returning a `SkeletonAnimation *`, whose `setEnabled`/`setLoop`/
+    /// `setTime` are the whole of it (Animation/OgreSkeletonAnimation.h; the
+    /// 13a probe played a clip through exactly these). Lookup is by IdString,
+    /// which is the clip's *name* — the ones the exporter wrote (`idle`,
+    /// `run`, `jump`).
+    int32_t set_animation(uint32_t renderable_id, const std::string &clip, double seconds) override {
+        try {
+            if (renderable_id == 0 || renderable_id > items_.size() ||
+                items_[renderable_id - 1] == nullptr) {
+                log_line("ogre: submit_animation: renderable " + std::to_string(renderable_id) +
+                         " is not a live renderable");
+                return -ENOENT;
+            }
+            Ogre::SkeletonInstance *skeleton = items_[renderable_id - 1]->getSkeletonInstance();
+            if (skeleton == nullptr) {
+                log_line("ogre: submit_animation: renderable " + std::to_string(renderable_id) +
+                         " has no skeleton (it was not rigged at load)");
+                return -ENOENT;
+            }
+            const Ogre::IdString name(clip);
+            if (!skeleton->hasAnimation(name)) {
+                std::string available;
+                for (const Ogre::SkeletonAnimation &animation : skeleton->getAnimations()) {
+                    if (!available.empty()) available += ", ";
+                    available += animation.getName().getFriendlyText();
+                }
+                log_line("ogre: submit_animation: \"" + clip + "\" is not one of renderable " +
+                         std::to_string(renderable_id) + "'s clips (" +
+                         (available.empty() ? "none" : available) + ")");
+                return -ENOENT;
+            }
+            Ogre::SkeletonAnimation *animation = skeleton->getAnimation(name);
+            if (animation == nullptr) return -ENOENT; // name known, handle not: refused, not fatal
+            animation->setEnabled(true);
+            animation->setLoop(true);
+            animation->setTime(static_cast<Ogre::Real>(seconds));
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        }
+    }
+
     /// The sibling the loader found before the import (chunk 11). It has to be
     /// registered here, before `importMesh`, because the v1 importer captures
     /// the skeleton resource it finds at *import* time: registering afterwards
@@ -793,8 +841,26 @@ class BackendOgre final : public Backend {
             image_.load(stream);
 
             Ogre::TextureGpuManager *textures = render_system_->getTextureGpuManager();
+            // A *sampled* texture needs `AutomaticBatching`, and this is the
+            // round that measured why (13c): the Hlms samples through
+            // `textureMaps`, an array of 2D texture arrays, and only a
+            // texture with this flag is packed into one -- "Most normally
+            // we'll treat 2D textures internally as a slice to a 2D array
+            // texture". Created without it, the texture is resident and
+            // correct and the datablock holds it, and the pixel shader still
+            // samples the array's blank 4x4 slice, which is black: four
+            // characters, lit and textured, at rgb(0,0,0) with the image data
+            // verified byte-for-byte. The flag is a 2D-array mechanism and
+            // OGRE refuses it for any other type -- ASCII.dds is a volume
+            // texture, and the jobs fixture aborted the frame with
+            // "AutomaticBatching can only be used with Type2D textures"
+            // (measured) -- so a 2D image gets it and nothing else does.
+            const uint32_t texture_flags =
+                image_.getTextureType() == Ogre::TextureTypes::Type2D
+                    ? static_cast<uint32_t>(Ogre::TextureFlags::AutomaticBatching)
+                    : 0u;
             Ogre::TextureGpu *texture = textures->createTexture(
-                name, Ogre::GpuPageOutStrategy::Discard, Ogre::TextureFlags::ManualTexture,
+                name, Ogre::GpuPageOutStrategy::Discard, texture_flags,
                 Ogre::TextureTypes::Type2D, kResourceGroup);
             texture->setPixelFormat(image_.getPixelFormat());
             texture->setTextureType(image_.getTextureType());
@@ -1030,8 +1096,7 @@ class BackendOgre final : public Backend {
     }
 
     /// The name of the texture a slot names, or empty when it names nothing
-    /// this backend realised. A datablock binds textures by name, so the name
-    /// is the whole mapping.
+    /// this backend realised.
     Ogre::String texture_name_for(uint32_t resource_id) {
         const ResourceHandle handle = resolve(resource_id);
         if (handle == kNoResourceHandle || handle > resources_.size()) return Ogre::String();

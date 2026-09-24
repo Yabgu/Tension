@@ -69,6 +69,7 @@ import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../
 
 export * from "./wire";
 export * from "./motion";
+export * from "./animation";
 export * from "./bones";
 export * from "./mesh";
 
