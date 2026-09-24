@@ -51,7 +51,7 @@ const ARM_BONE: u32 = 9;
 const HERO = 1; // the renderable id the bone table names
 const FRAMES = 300; // give up after this many frames
 const CYCLES = 3; // ... or after this many steps
-const MESH = "Stickman.mesh"; // its skeleton, `Stickman.skeleton`, ships beside it
+const MESH = "resources/models/Stickman.mesh"; // its skeleton, `Stickman.skeleton`, ships beside it
 
 // The solver's two callback buffers: 64 KiB each in the guest's own memory, the
 // addresses the host writes and reads through (tension-solver/GUEST_ABI.md §3.6).
@@ -76,8 +76,10 @@ function fail(what: string): void {
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const windowed = renderer == "gl3plus";
@@ -92,6 +94,15 @@ export function _start_game(): void {
     .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
   const started = ogre.init(config);
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+
+  // Everything this example loads comes out of one packed volume (chunk 11):
+  // the assets live in `resources/`, `pack.sh` packs them, and the run script
+  // hands the absolute path in as `--tns=`. No mount, no bytes — there is no
+  // fallback to the disk.
+  if (tns.length == 0) fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
+  const mounted = ogre.mountTns("resources", tns);
+  if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+
 
   // The rig is a file, and its skeleton is a second file the loader resolves by
   // name — which is why this example needs the models directory the adapter

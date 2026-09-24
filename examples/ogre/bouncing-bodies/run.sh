@@ -45,6 +45,11 @@ if [ ! -x node_modules/.bin/asc ]; then
 fi
 npm run --silent build
 
+# The guest's assets travel as one packed volume (chunk 11). `pack.sh` rebuilds
+# it from resources/ — the packer is byte-reproducible — and the guest mounts
+# it under "resources/" before the first load.
+bash ./pack.sh >/dev/null
+
 renderer=gl3plus
 if [ "${TENSION_OGRE_HEADLESS:-0}" = "1" ]; then
     echo "TENSION_OGRE_HEADLESS=1: no window; structural only"
@@ -56,4 +61,4 @@ fi
 # Anything left on the command line goes to the guest: `--bodies=N` and
 # `--angular` are the guest's own arguments, and this script's job is to hand
 # them over rather than to know what they mean.
-exec "$core" --capability "$adapter" build/game.wasm --renderer="$renderer" "$@"
+exec "$core" --capability "$adapter" build/game.wasm --tns="$here/build/assets.tns" --renderer="$renderer" "$@"

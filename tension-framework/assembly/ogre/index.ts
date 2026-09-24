@@ -65,7 +65,7 @@ import {
   REGION_BUFFER_POOL,
 } from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
-import { writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
+import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
 
 export * from "./wire";
 export * from "./motion";
@@ -217,12 +217,18 @@ export function queueTextureLoad(path: string, priority: i32 = 0): i32 {
  * fallback to the disk).
  */
 export function mountTns(prefix: string, tnsPath: string): i32 {
-  const prefixAt = writeString(prefix);
+  // Two strings, one half: `writeString` always writes at the start of the
+  // guest half, so a second call would overwrite the first. `writeBytesAt`
+  // takes the offset it should land at, which is what the second string is
+  // placed with — the first string's byte length.
+  const prefixBytes = String.UTF8.encode(prefix);
+  const prefixAt = writeBytesAt(prefixBytes, 0);
   const prefixLength = lastWriteLength;
-  if (prefixAt == 0 && prefix.length > 0) return -28; // -ENOSPC: the half is full
-  const tnsAt = writeString(tnsPath);
+  if (prefixAt == 0 && prefixBytes.byteLength > 0) return -28; // -ENOSPC: the half is full
+  const tnsBytes = String.UTF8.encode(tnsPath);
+  const tnsAt = writeBytesAt(tnsBytes, prefixLength);
   const tnsLength = lastWriteLength;
-  if (tnsAt == 0 && tnsPath.length > 0) return -28;
+  if (tnsAt == 0 && tnsBytes.byteLength > 0) return -28;
   return mountTnsRaw(prefixAt, prefixLength, tnsAt, tnsLength);
 }
 

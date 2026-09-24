@@ -45,12 +45,16 @@ second, runnable surface.
   rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
   `ogre/` is the renderer's front door, five guests that print rather than
   assert: `hello-triangle/` (a triangle built out of the guest's own memory with
-  `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded off disk
-  through the job queue), `bouncing-ball/` (a solver-driven bounce through the
+  `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded through
+  the job queue out of a packed volume), `bouncing-ball/` (a solver-driven bounce through the
   motion table), `walking-stickman/` (a rigged mesh posed through the bone
   table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
   through the physics layer; add `--angular` to run the model that simulates
-  orientation, and the bodies tumble).
+  orientation, and the bodies tumble). Each of those that loads meshes carries
+  its own `resources/` tree and a `pack.sh`: the assets are packed into
+  `build/assets.tns` — a Tension Volume, made with the same packer `examples/res`
+  uses — and the guest mounts it under `resources/`, so the loader reads bytes
+  out of the volume instead of off the disk.
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and

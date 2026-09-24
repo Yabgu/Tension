@@ -89,3 +89,12 @@ rules; `tension-framework/assembly/ogre/wire.ts` — the records, the region
 layouts, and the record readers (`isRigged`, `boneCount`); and
 `tension-ogre/DESIGN.md` §5.1 — the design record behind the rig, including the
 probe's per-bone sweep that chose `ARM_BONE`.
+
+## Assets
+
+What this example loads is packed, not read from an OGRE install: `resources/`
+holds the source tree (committed), `pack.sh` turns it into `build/assets.tns`
+with the Zig packer, and `run.sh` hands the guest the volume's path. The guest
+mounts it under `resources/` and every load path starts with that prefix — the
+loader reads meshes (and skeletons) out of the volume, and a path no mount
+carries fails with `-ENOENT` rather than falling back to the disk.

@@ -48,8 +48,10 @@ function fail(what: string): void {
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const windowed = renderer == "gl3plus";
@@ -65,7 +67,16 @@ export function _start_game(): void {
   const started = ogre.init(config);
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
 
-  const job = ogre.queueMeshLoad("Barrel.mesh", 0);
+  // Everything this example loads comes out of one packed volume (chunk 11):
+  // the assets live in `resources/`, `pack.sh` packs them, and the run script
+  // hands the absolute path in as `--tns=`. No mount, no bytes — there is no
+  // fallback to the disk.
+  if (tns.length == 0) fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
+  const mounted = ogre.mountTns("resources", tns);
+  if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+
+
+  const job = ogre.queueMeshLoad("resources/models/Barrel.mesh", 0);
   if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
   while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
     RuntimeSession.wait(10);

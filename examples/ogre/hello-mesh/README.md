@@ -51,3 +51,12 @@ exact byte layout of every record, with the offsets pinned by a check the guest
 can run (`assertOgreWireOffsets`), and the factories this example builds its
 records with (`CameraRecord.perspective`, `Material.unlit`, `Renderable.at`).
 `tension-ogre/DESIGN.md` is the design record behind both.
+
+## Assets
+
+What this example loads is packed, not read from an OGRE install: `resources/`
+holds the source tree (committed), `pack.sh` turns it into `build/assets.tns`
+with the Zig packer, and `run.sh` hands the guest the volume's path. The guest
+mounts it under `resources/` and every load path starts with that prefix — the
+loader reads meshes (and skeletons) out of the volume, and a path no mount
+carries fails with `-ENOENT` rather than falling back to the disk.

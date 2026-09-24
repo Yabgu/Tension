@@ -45,6 +45,11 @@ if [ ! -x node_modules/.bin/asc ]; then
 fi
 npm run --silent build
 
+# The guest's assets travel as one packed volume (chunk 11). `pack.sh` rebuilds
+# it from resources/ — the packer is byte-reproducible — and the guest mounts
+# it under "resources/" before the first load.
+bash ./pack.sh >/dev/null
+
 renderer=gl3plus
 if [ "${TENSION_OGRE_HEADLESS:-0}" = "1" ]; then
     echo "TENSION_OGRE_HEADLESS=1: no window; structural only"
@@ -53,4 +58,4 @@ elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     echo "no display available; falling back to renderer=null"
     renderer=null
 fi
-exec "$core" --capability "$adapter" build/game.wasm --renderer="$renderer"
+exec "$core" --capability "$adapter" build/game.wasm --tns="$here/build/assets.tns" --renderer="$renderer"

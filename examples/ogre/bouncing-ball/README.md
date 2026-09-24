@@ -62,3 +62,12 @@ table's rules; `tension-framework/assembly/solver.ts` — the solver's class;
 example builds its camera, material and renderable with.
 `tension-ogre/DESIGN.md` §5.1 and `tension-solver/GUEST_ABI.md` are the design
 records behind them.
+
+## Assets
+
+What this example loads is packed, not read from an OGRE install: `resources/`
+holds the source tree (committed), `pack.sh` turns it into `build/assets.tns`
+with the Zig packer, and `run.sh` hands the guest the volume's path. The guest
+mounts it under `resources/` and every load path starts with that prefix — the
+loader reads meshes (and skeletons) out of the volume, and a path no mount
+carries fails with `-ENOENT` rather than falling back to the disk.
