@@ -138,21 +138,29 @@ function quadrant_report(frame: ArrayBuffer): string {
   return line;
 }
 
-/// The largest |R - B| among the four quadrants' mean colours — the "are these
-/// characters actually wearing a skin" check, and a *colour* test rather than a
-/// brightness one. The Kenney atlases are warm (the UV-weighted mean of
-/// humanMaleA is rgb(173, 154, 150), R - B = +23); a datablock whose texture
-/// never bound draws its own white diffuse, which is neutral. Measured on the
-/// build before round 14a: -0.14, -0.92, -4.24, -1.95. The floor of 8 sits
-/// between the two, so an untextured render fails the run instead of printing
-/// a number nobody reads.
-function max_red_blue_spread(frame: ArrayBuffer): f64 {
+/// Per-character patch means, and the largest pairwise |dR| + |dG| + |dB|
+/// between them — the "are these characters wearing different skins" test.
+///
+/// One character stands in each screen quadrant and each wears a different
+/// skin, all under the same light. At a sane exposure a textured render gives
+/// four measurably different patches (the skins' atlas means differ by >= 10 on
+/// at least one channel pair); an untextured render draws the datablock's
+/// white, a saturated one clips every skin to white, and a failed one draws
+/// black — all three give pairwise ~ 0 and fail.
+///
+/// This replaced round 14a's whole-quadrant `|R-B| > 8` test (round 14d). That
+/// one measured the captured animation phase and the light's saturation rather
+/// than the surface: it passed on one phase and failed on another with the same
+/// binary. A patch at the centroid of a quadrant does not have that problem —
+/// it is a colour comparison between characters in the *same* frame, so phase
+/// and exposure cancel between them.
+function character_patch_spread(frame: ArrayBuffer, label: string): f64 {
   const pixels = Uint8Array.wrap(frame);
   const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
-  const counts = new Float64Array(4);
-  const reds = new Float64Array(4);
-  const blues = new Float64Array(4);
   const width = 640, height = 480;
+  const counts = new Float64Array(4);
+  const cx = new Float64Array(4);
+  const cy = new Float64Array(4);
   for (let y: i32 = 0; y < height; y++) {
     for (let x: i32 = 0; x < width; x++) {
       const at: i32 = (y * width + x) * 4;
@@ -162,15 +170,48 @@ function max_red_blue_spread(frame: ArrayBuffer): f64 {
       }
       const quadrant = (y < height / 2 ? 0 : 2) + (x < width / 2 ? 0 : 1);
       counts[quadrant] += 1;
-      reds[quadrant] += <f64>pixels[at];
-      blues[quadrant] += <f64>pixels[at + 2];
+      cx[quadrant] += <f64>x;
+      cy[quadrant] += <f64>y;
     }
   }
-  let spread: f64 = 0.0;
+  // A 16x16 patch at each character's centroid, clamped to the frame.
+  const patch = new Float64Array(12);
+  let line = label + " character patches (back-left, back-right, front-left, front-right):";
   for (let q: i32 = 0; q < 4; q++) {
-    if (counts[q] == 0) continue;
-    const rb = abs(reds[q] / counts[q] - blues[q] / counts[q]);
-    if (rb > spread) spread = rb;
+    if (counts[q] == 0) {
+      line += " q" + q.toString() + "=none";
+      continue;
+    }
+    const px: i32 = <i32>(cx[q] / counts[q]) - 8;
+    const py: i32 = <i32>(cy[q] / counts[q]) - 8;
+    let n: f64 = 0;
+    for (let dy: i32 = 0; dy < 16; dy++) {
+      for (let dx: i32 = 0; dx < 16; dx++) {
+        const x = px + dx, y = py + dy;
+        if (x < 0 || y < 0 || x >= width || y >= height) continue;
+        const at: i32 = (y * width + x) * 4;
+        patch[q * 3] += <f64>pixels[at];
+        patch[q * 3 + 1] += <f64>pixels[at + 1];
+        patch[q * 3 + 2] += <f64>pixels[at + 2];
+        n += 1;
+      }
+    }
+    if (n > 0) {
+      patch[q * 3] /= n;
+      patch[q * 3 + 1] /= n;
+      patch[q * 3 + 2] /= n;
+    }
+    line += " q" + q.toString() + "=" + patch[q * 3].toString() + "/" +
+            patch[q * 3 + 1].toString() + "/" + patch[q * 3 + 2].toString();
+  }
+  print(line);
+  let spread: f64 = 0.0;
+  for (let a: i32 = 0; a < 4; a++) {
+    for (let b: i32 = a + 1; b < 4; b++) {
+      const d = abs(patch[a * 3] - patch[b * 3]) + abs(patch[a * 3 + 1] - patch[b * 3 + 1]) +
+                abs(patch[a * 3 + 2] - patch[b * 3 + 2]);
+      if (d > spread) spread = d;
+    }
   }
   return spread;
 }
@@ -247,8 +288,12 @@ export function _start_game(): void {
   }
 
   // One directional light: PBS is lit, and an unlit PBS datablock draws black.
+  // The intensity is a power scale, so it is the whole exposure: 20.0 blew the
+  // lit facets out to white and flattened the skins' hue. Round 14d lowered it
+  // until no character saturates at any captured phase (the measured means are
+  // in the round's report).
   const L = 0.5773502691896258; // one unit of (1, -1, -1) normalised
-  const light = ogre.LightRecord.directional(1.0, 1.0, 1.0, 20.0, <f32>L, <f32>-L, <f32>-L);
+  const light = ogre.LightRecord.directional(1.0, 1.0, 1.0, 1.5, <f32>L, <f32>-L, <f32>-L);
   light.lightId = 1;
   if (ogre.submitLight(light) != 0) fail("submitLight refused");
 
@@ -313,13 +358,19 @@ export function _start_game(): void {
     // and that they are wearing different skins — the two things a screenshot
     // is looked at for.
     print(quadrant_report(frame!));
-    // The skins must be *on* the characters, not merely loaded: an untextured
-    // surface draws the datablock's white, which is neutral, and every Kenney
-    // atlas is warm. This is round 14a's regression guard.
-    const warmth = max_red_blue_spread(frame!);
-    print("skin warmth: max |R-B| across quadrants = " + warmth.toString());
-    assert(warmth > 8.0, "characters render untextured");
+    // The four characters must show measurably different surface hues: four
+    // skins, one light, one frame. This is measured at a fixed index — the
+    // final frame of the run, the same one the motion check below ends on.
+    const patch_spread = character_patch_spread(frame!, "frame " + frames.toString());
+    print("character patch spread (max pairwise |dR|+|dG|+|dB|) = " + patch_spread.toString());
+    assert(patch_spread > 9.0, "the four characters do not show different skins");
     if (mid_frame != null) {
+      // The same comparison at the other captured phase (frame FRAMES/2),
+      // printed but not asserted: it is the evidence that the guard's value is
+      // a property of the four characters, not of the pose the frame caught.
+      const mid_spread = character_patch_spread(mid_frame!, "frame " + (FRAMES / 2).toString());
+      print("character patch spread at frame " + (FRAMES / 2).toString() + " = " +
+            mid_spread.toString());
       const moved = changed_count(mid_frame!, frame!);
       print("motion: " + moved.toString() + " pixels changed between frame " +
             (FRAMES / 2).toString() + " and " + frames.toString());
