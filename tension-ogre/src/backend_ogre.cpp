@@ -543,6 +543,54 @@ class BackendOgre final : public Backend {
         asset_resolver_ = std::move(resolver);
     }
 
+    /// `submit_animation`, on the render thread (chunk 13c). The OGRE-Next 3.0
+    /// accessor is **not** the v1 `getAnimationState`/`createAnimationState` —
+    /// there is no `AnimationState` in this version. The v2 API is
+    /// `SkeletonInstance::hasAnimation(IdString)` / `getAnimation(IdString)`
+    /// returning a `SkeletonAnimation *`, whose `setEnabled`/`setLoop`/
+    /// `setTime` are the whole of it (Animation/OgreSkeletonAnimation.h; the
+    /// 13a probe played a clip through exactly these). Lookup is by IdString,
+    /// which is the clip's *name* — the ones the exporter wrote (`idle`,
+    /// `run`, `jump`).
+    int32_t set_animation(uint32_t renderable_id, const std::string &clip, double seconds) override {
+        try {
+            if (renderable_id == 0 || renderable_id > items_.size() ||
+                items_[renderable_id - 1] == nullptr) {
+                log_line("ogre: submit_animation: renderable " + std::to_string(renderable_id) +
+                         " is not a live renderable");
+                return -ENOENT;
+            }
+            Ogre::SkeletonInstance *skeleton = items_[renderable_id - 1]->getSkeletonInstance();
+            if (skeleton == nullptr) {
+                log_line("ogre: submit_animation: renderable " + std::to_string(renderable_id) +
+                         " has no skeleton (it was not rigged at load)");
+                return -ENOENT;
+            }
+            const Ogre::IdString name(clip);
+            if (!skeleton->hasAnimation(name)) {
+                std::string available;
+                for (const Ogre::SkeletonAnimation &animation : skeleton->getAnimations()) {
+                    if (!available.empty()) available += ", ";
+                    available += animation.getName().getFriendlyText();
+                }
+                log_line("ogre: submit_animation: \"" + clip + "\" is not one of renderable " +
+                         std::to_string(renderable_id) + "'s clips (" +
+                         (available.empty() ? "none" : available) + ")");
+                return -ENOENT;
+            }
+            Ogre::SkeletonAnimation *animation = skeleton->getAnimation(name);
+            if (animation == nullptr) return -ENOENT; // name known, handle not: refused, not fatal
+            animation->setEnabled(true);
+            animation->setLoop(true);
+            animation->setTime(static_cast<Ogre::Real>(seconds));
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        }
+    }
+
     /// The sibling the loader found before the import (chunk 11). It has to be
     /// registered here, before `importMesh`, because the v1 importer captures
     /// the skeleton resource it finds at *import* time: registering afterwards

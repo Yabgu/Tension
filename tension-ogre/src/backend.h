@@ -94,6 +94,20 @@ class Backend {
         (void)bytes;
     }
 
+    /// Start or re-time one renderable's named clip (chunk 13c). `seconds` is
+    /// **absolute time within the clip** — the guest owns the clock and calls
+    /// this every frame; the backend calls `setTime` on the named
+    /// `SkeletonAnimation` and the renderer deforms the mesh with the pose that
+    /// time names. Called on the render thread, before the frame that draws it.
+    /// -ENOENT for an unknown renderable, an unrigged one, or a name the rig
+    /// does not carry (the backend logs the names it does).
+    virtual int32_t set_animation(uint32_t renderable_id, const std::string &clip, double seconds) {
+        (void)renderable_id;
+        (void)clip;
+        (void)seconds;
+        return -ENOSYS;
+    }
+
     /// `out_bones` receives the mesh's bone count — 0 for a static mesh, the
     /// rig's size for a rigged one. It is an out-parameter rather than a
     /// separate query because realisation is the moment the answer exists, and

@@ -45,6 +45,15 @@ constexpr uint32_t kVerbCreateMesh = 12;
 // same id would shadow it (the 11b plan said "verb_id 12"; the count it was
 // after is the thirteenth verb, which is id 13).
 constexpr uint32_t kVerbMountTns = 13;
+// 14, not 15: the ids run 1..13 above, so the next verb is the fourteenth (the
+// same off-by-one the 11b plan had for mount_tns — the count it wanted, the id
+// it named, and the free slot differed by one).
+constexpr uint32_t kVerbSubmitAnimation = 14;
+
+/// The longest clip name this verb accepts, in bytes. Clip names are the
+/// exporter's (`idle`, `run`, `jump`); 64 leaves room and keeps a garbage
+/// length from being copied out of guest memory.
+constexpr uint32_t kMaxClipNameBytes = 64;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -179,6 +188,35 @@ void render_main() {
                 std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
                 s.backend->apply_submissions(s.scene);
                 s.scene.clear_dirty();
+            }
+
+            // Animation requests (13c), *after* the apply that creates the
+            // renderables and *before* the frame that draws them. Order is the
+            // whole point: the first frame a guest can name a clip is the
+            // frame its `submitRenderable` lands on, and a request drained
+            // before that apply has no item to name (measured: the first
+            // frame's four requests were refused "not a live renderable").
+            // The skeletons belong to this thread; the queue is the guest's,
+            // so it is swapped empty under the guest lock and applied outside
+            // it.
+            {
+                std::vector<AdapterState::AnimationRequest> requests;
+                {
+                    std::lock_guard<std::mutex> lock(s.mutex);
+                    requests.swap(s.animations);
+                }
+                for (const AdapterState::AnimationRequest &request : requests) {
+                    const int32_t set = s.backend->set_animation(
+                        request.renderable_id, request.clip,
+                        static_cast<double>(request.time_ms) / 1000.0);
+                    if (set != 0) {
+                        char line[224];
+                        std::snprintf(line, sizeof(line),
+                                      "ogre: submit_animation(%u, \"%s\") refused (%d)",
+                                      request.renderable_id, request.clip.c_str(), set);
+                        log_line(3, line);
+                    }
+                }
             }
             const int32_t framed = s.backend->frame(s.status);
             if (framed > 0) break; // the renderer ended normally (window closed)
@@ -324,6 +362,44 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
     const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
     if (job < 0) return job; // -ENOSPC: the table is full, and said so in the log
     ret->i32 = job;
+    return 0;
+}
+
+/// `submit_animation(renderableId, clip_ptr, clip_len, time_ms)`: name a clip
+/// on a renderable's rig and put it at an absolute time (chunk 13c). The guest
+/// owns the clock — one call per renderable per frame, the same shape as the
+/// bone table's per-frame pose, but the *adapter* drives OGRE's animation
+/// system instead of the guest writing bone transforms. Queued, not applied
+/// here: the skeleton belongs to the render thread.
+int32_t shim_submit_animation(void *, const tension_value *args, uint32_t nargs,
+                              tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 4) return -EINVAL;
+    const uint32_t renderable_id = static_cast<uint32_t>(args[0].i32);
+    const uint32_t clip_ptr = static_cast<uint32_t>(args[1].i32);
+    const uint32_t clip_len = static_cast<uint32_t>(args[2].i32);
+    const int32_t time_ms = args[3].i32;
+
+    std::string clip;
+    if (!read_guest_name(s.api, clip_ptr, clip_len, clip) || clip.size() > kMaxClipNameBytes) {
+        log_line(3, "ogre: submit_animation refused: the clip name is unreadable, empty, or longer "
+                    "than 64 bytes");
+        return -EINVAL;
+    }
+    if (renderable_id == 0 || time_ms <= 0) {
+        char line[160];
+        std::snprintf(line, sizeof(line),
+                      "ogre: submit_animation refused: renderable %u at %d ms",
+                      renderable_id, time_ms);
+        log_line(3, line);
+        return -EINVAL;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(s.mutex);
+        s.animations.push_back(AdapterState::AnimationRequest{renderable_id, std::move(clip), time_ms});
+    }
+    ret->i32 = 0;
     return 0;
 }
 
@@ -847,6 +923,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         // A mesh out of guest memory, for a guest with no file to load (5.5).
         {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
         {"mount_tns", four_i32, 4, shim_mount_tns, kVerbMountTns, 0},
+        {"submit_animation", four_i32, 4, shim_submit_animation, kVerbSubmitAnimation, 0},
     };
 
     for (const Registration &registration : registrations) {

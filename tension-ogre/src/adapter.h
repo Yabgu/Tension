@@ -42,6 +42,18 @@ struct AdapterState {
     /// render thread reads it once a frame. Held briefly by both; never held
     /// while the render thread waits on `cv`.
     std::mutex scene_mutex;
+
+    /// Pending `submit_animation` requests (chunk 13c): the guest thread pushes
+    /// (under `mutex`), the render thread swaps the queue empty once a frame
+    /// and calls `Backend::set_animation` for each entry. The guest owns the
+    /// clock — a request carries an absolute time within the clip — so a
+    /// newest-per-renderable policy falls out of draining every frame.
+    struct AnimationRequest {
+        uint32_t renderable_id = 0;
+        std::string clip;
+        int32_t time_ms = 0;
+    };
+    std::vector<AnimationRequest> animations;
     /// The `RESOURCE` region, from `region_lookup` in `link`. The renderer's
     /// record lives at `resource_offset + (TENSION_OGRE_RESOURCE_RENDERER - 1)
     /// * TENSION_OGRE_RESOURCE_RECORD_BYTES`.
