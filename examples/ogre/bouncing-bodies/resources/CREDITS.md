@@ -8,5 +8,6 @@ and every load path starts with that prefix.
 - `models/cube.mesh` — the OGRE-Next media set (`ogre-next`'s `Media/models/`),
   redistributed here under that set's licence. **Temporary:** the media set's
   licensing is under review and this file moves when its successor does — the
-  same decision `walking-stickman/resources/` records, pending the Kenney
-  Animated Characters 3 (CC0) replacement.
+  same decision `animated-character/resources/` records, and the Kenney
+  Animated Characters 3 (CC0) replacement that file anticipated landed there
+  in chunk 12.

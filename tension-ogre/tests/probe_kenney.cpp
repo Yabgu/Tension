@@ -490,7 +490,7 @@ int main(int argc, char **argv) {
     // ── facing (chunk 12b) ───────────────────────────────────────────────
     // Which way does the character point in its own space? The toes do: a
     // humanoid's feet extend forward, so `toe_z - foot_z` is the facing sign.
-    // The camera in this probe (and in walking-stickman) sits on +Z looking at
+    // The camera in this probe (and in animated-character) sits on +Z looking at
     // the origin, so a character whose toes point +Z faces the camera.
     {
         const size_t left_foot = bone_index(skeleton_instance, "LeftFoot");

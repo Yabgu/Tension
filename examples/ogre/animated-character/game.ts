@@ -79,7 +79,7 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
 
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
-  print("walking-stickman: " + what);
+  print("animated-character: " + what);
   assert(false, what);
 }
 
@@ -234,6 +234,6 @@ export function _start_game(): void {
     if (cycles > steps) steps = cycles;
   }
 
-  print("stickman took " + steps.toString() + " steps");
+  print("animated-character took " + steps.toString() + " steps");
   ogre.shutdown(); RuntimeSession.close();
 }

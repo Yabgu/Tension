@@ -47,8 +47,8 @@ second, runnable surface.
   assert: `hello-triangle/` (a triangle built out of the guest's own memory with
   `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded through
   the job queue out of a packed volume), `bouncing-ball/` (a solver-driven bounce through the
-  motion table), `walking-stickman/` (a rigged mesh posed through the bone
-  table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
+  motion table), `animated-character/` (a rigged mesh posed through the
+  bone table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
   through the physics layer; add `--angular` to run the model that simulates
   orientation, and the bodies tumble). Each of those that loads meshes carries
   its own `resources/` tree and a `pack.sh`: the assets are packed into

@@ -26,7 +26,7 @@
 //   6. the light is what does it: with the light removed the lit surface's
 //      region goes black, and re-submitting it brings the shading back
 //   7. the **emissive-only** PBS surface's region is byte-identical with and
-//      without the light — the regression clause walking-stickman and the
+//      without the light — the regression clause animated-character and the
 //      angular bouncing-bodies built their look on
 //   8. the **Unlit** surface's region is byte-identical with and without the
 //      light — a light must not reach a material that never asked for one
@@ -351,7 +351,7 @@ export function _start_game(): void {
   check(ogre.submitMaterial(lit_material) == 0, "submitMaterial refused (lit)");
 
   // The control that must not move: an emissive-only PBS material, the exact
-  // shape walking-stickman and `bouncing-bodies --angular` submit.
+  // shape animated-character and `bouncing-bodies --angular` submit.
   const emissive_material = new Material();
   emissive_material.materialId = 2;
   emissive_material.kind = ogre.MAT_HLMS_PBS;

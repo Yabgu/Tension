@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the walking-stickman example and run it.
+# Build the animated-character example and run it.
 #
 #   ./run.sh                            a window, and a stickman walking
 #   TENSION_OGRE_HEADLESS=1 ./run.sh    structural only: no display needed
@@ -26,7 +26,7 @@ if [ ! -x "$core" ]; then
     exit 2
 fi
 if [ ! -f "$adapter" ]; then
-    echo "walking-stickman: building the OGRE adapter (tension-ogre/build.sh)..."
+    echo "animated-character: building the OGRE adapter (tension-ogre/build.sh)..."
     "$root/tension-ogre/build.sh" >/dev/null
 fi
 
@@ -40,7 +40,7 @@ bash "$framework/build.sh" --hash "$hash" >/dev/null
 
 # A fresh clone has no build dependencies.
 if [ ! -x node_modules/.bin/asc ]; then
-    echo "walking-stickman: installing the guest's build dependencies (npm install)..."
+    echo "animated-character: installing the guest's build dependencies (npm install)..."
     npm install --silent
 fi
 npm run --silent build

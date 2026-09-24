@@ -1097,7 +1097,7 @@ things it needs are more than the round assumed:
   (**2384 µs at 0 lights, 2378 at 1**) and +13 % at four (**2700**).
 - **The no-light fallback holds.** An emissive-only PBS material and an Unlit
   material are **byte-identical with and without a light in the scene**, over
-  their own pixel regions: the regression clause that keeps walking-stickman and
+  their own pixel regions: the regression clause that keeps animated-character and
   the angular bouncing-bodies unchanged is satisfied, and **no LIT flag is
   needed**.
 - **The skinned path shades**: Stickman under a lit PBS datablock turns a
@@ -1128,7 +1128,7 @@ things it needs are more than the round assumed:
 unconditionally for a PBS record. **No LIT flag and no new material kind**: a
 guest that wants a lit surface writes diffuse and specular, and a guest that
 wants an emissive-only surface keeps diffuse at zero and uses emissive. The
-existing emissive materials — walking-stickman's body and `bouncing-bodies
+existing emissive materials — animated-character's body and `bouncing-bodies
 --angular`'s — were a **regression clause until 10b deliberately lit them**;
 what carries the clause now is the fixture's own emissive-only surface, and the
 rule it still enforces is that a light must not alter an emissive-only or Unlit

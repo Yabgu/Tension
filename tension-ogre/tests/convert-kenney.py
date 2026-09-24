@@ -114,7 +114,7 @@ def main() -> int:
         # produces a .mesh.xml whose <skeletonlink> points at a .skeleton.xml
         # that was never written — measured. The model FBX carries no clips
         # (the pack's idle/run/jump are separate files), so this writes a
-        # skeleton and no animation tracks either way; walking-stickman poses
+        # skeleton and no animation tracks either way; animated-character poses
         # bones through the bone table (chunk 5b), not through baked animation.
         EX_ARMATURE_ANIMATION=True,
     )

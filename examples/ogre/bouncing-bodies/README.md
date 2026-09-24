@@ -8,7 +8,7 @@ momentum from one body to the next.
 
 It is the fifth member of the OGRE family, and the one where the *simulation* is
 the subject: `hello-triangle` builds a mesh, `hello-mesh` loads one,
-`bouncing-ball` drops one, `walking-stickman` poses a rig, and this one drops
+`bouncing-ball` drops one, `animated-character` poses a rig, and this one drops
 sixty-four that hit each other.
 
 What the physics honestly is:

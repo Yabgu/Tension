@@ -1,4 +1,4 @@
-# walking-stickman
+# animated-character
 
 A rigged character swinging an arm, driven the way an animated character is:
 the guest owns a phase, the solver integrates it, the phase becomes a bone
@@ -26,7 +26,7 @@ Two things about it are load-bearing, and neither is guessable:
 ## Run it
 
 ```sh
-cd examples/ogre/walking-stickman
+cd examples/ogre/animated-character
 ./run.sh                          # opens a 640x480 window, and the character walks in it
 TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only: no display needed
 ```
