@@ -1904,12 +1904,19 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
-- **The guest fixtures still queue bare names: 11c's work.** The loader's byte
-  source is a mount or nothing now (11b), so every fixture under
-  `tension-ogre/tests/` that asks for `"Barrel.mesh"` fails `-ENOENT` ("no mount
-  for …") until 11c gives them a packed volume and prefixed paths. That is the
-  plan, not an accident: the four examples are what this round proves, and the
-  fixtures' own run.sh is where the paths move next.
+- **The fixtures share one resource tree, and that is the convention.**
+  `tension-ogre/tests/resources/` holds every asset the fixtures load
+  (`meshes/`, `textures/`, and the skeletons **in `meshes/`, beside the meshes
+  that link them** — the loader derives a rig's skeleton from the mesh's own
+  path, so a `skeletons/` directory is a directory nothing looks in);
+  `tests/pack.sh` packs it into `build/fixtures.tns` once, and every case in
+  `run.sh` hands the path to its guest as `--tns=`. The examples stay
+  self-contained instead — each carries its own `resources/` and `pack.sh` —
+  because a reader studies an example as a whole, while the fixtures are tests
+  that happen to load the same four meshes. The framework's own `guest-ogre.ts`
+  is the exception that proves the boundary: it runs against the **stub**
+  adapter, which completes jobs synthetically and has never read a disk, so
+  there is no asset to migrate and its bare `meshes/hero.glb` names nothing.
 - **Deflate costs 6× on a mounted read, and it does not matter yet.** The 11a
   probe measured 946.6 µs through a volume against 158.2 µs from disk for the
   same 94,025-byte mesh (the volume arm pays decompression; the packer has no

@@ -40,6 +40,22 @@ fn fixture() -> Option<PathBuf> {
     None
 }
 
+/// The shared fixture volume (chunk 11): every fixture that loads anything
+/// mounts this one, packed by `tension-ogre/tests/pack.sh` from
+/// `tension-ogre/tests/resources/`. Absent means run.sh has not run.
+fn volume() -> Option<PathBuf> {
+    let path = built("fixtures.tns");
+    if path.exists() {
+        return Some(path);
+    }
+    eprintln!(
+        "FIXTURE: {} is not built — run `tension-ogre/tests/run.sh` (it packs the shared \
+         fixture volume); skipping the acid test",
+        path.display()
+    );
+    None
+}
+
 fn adapter() -> Option<PathBuf> {
     let path = std::env::var("TENSION_OGRE_DSO_PATH")
         .map(PathBuf::from)
@@ -64,14 +80,15 @@ fn windowed() -> bool {
 }
 
 fn run(renderer: &str) -> std::process::Output {
-    let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else {
-        panic!("the fixture and the adapter must both be built to run this test");
+    let (Some(fixture), Some(adapter), Some(volume)) = (fixture(), adapter(), volume()) else {
+        panic!("the fixture, the adapter and the fixture volume must all be built to run this test");
     };
     Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .arg("--capability")
         .arg(&adapter)
         .arg(&fixture)
         .arg(format!("--renderer={renderer}"))
+        .arg(format!("--tns={}", volume.display()))
         .output()
         .expect("the interpreter runs")
 }
@@ -82,7 +99,7 @@ fn run(renderer: &str) -> std::process::Output {
 /// state that has not changed in thirty frames.
 #[test]
 fn test_ogre_physics_structural() {
-    if fixture().is_none() || adapter().is_none() {
+    if fixture().is_none() || adapter().is_none() || volume().is_none() {
         return;
     }
     let output = run("null");
@@ -110,7 +127,7 @@ fn test_ogre_physics_structural() {
 /// has settled.
 #[test]
 fn test_ogre_physics_pixels() {
-    if !windowed() || fixture().is_none() || adapter().is_none() {
+    if !windowed() || fixture().is_none() || adapter().is_none() || volume().is_none() {
         return;
     }
     let output = run("gl3plus");

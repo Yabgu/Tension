@@ -31,6 +31,22 @@ fn fixture() -> Option<PathBuf> {
     None
 }
 
+/// The shared fixture volume (chunk 11): every fixture that loads anything
+/// mounts this one, packed by `tension-ogre/tests/pack.sh` from
+/// `tension-ogre/tests/resources/`. Absent means run.sh has not run.
+fn volume() -> Option<PathBuf> {
+    let path = built("fixtures.tns");
+    if path.exists() {
+        return Some(path);
+    }
+    eprintln!(
+        "FIXTURE: {} is not built — run `tension-ogre/tests/run.sh` (it packs the shared \
+         fixture volume); skipping the acid test",
+        path.display()
+    );
+    None
+}
+
 fn adapter() -> Option<PathBuf> {
     let path = std::env::var("TENSION_OGRE_DSO_PATH")
         .map(PathBuf::from)
@@ -44,12 +60,13 @@ fn adapter() -> Option<PathBuf> {
 
 #[test]
 fn test_ogre_jobs_acid() {
-    let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
+    let (Some(fixture), Some(adapter), Some(volume)) = (fixture(), adapter(), volume()) else { return };
     let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .arg("--capability")
         .arg(&adapter)
         .arg(&fixture)
         .arg("--renderer=null")
+        .arg(format!("--tns={}", volume.display()))
         .output()
         .expect("the interpreter runs");
 

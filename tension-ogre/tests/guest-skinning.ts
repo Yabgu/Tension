@@ -156,8 +156,10 @@ function flip_stats(before: ArrayBuffer, after: ArrayBuffer, out: Float64Array):
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
@@ -181,11 +183,17 @@ export function _start_game(): void {
     .frameHz(60)
     .windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
   assert(ogre.init(ogre_config) == 0, "ogre::init refused the config");
+  // Everything this fixture loads comes out of one packed volume (chunk 11):
+  // tests/resources is packed into build/fixtures.tns and the runner hands the
+  // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
+  // grandfathered.
+  assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
+  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
   ogre.assertSubmissionRegions();
 
   // ── clause 1: the rigged mesh ────────────────────────────────────────
   clause = 1;
-  const mesh_job = ogre.queueMeshLoad("Stickman.mesh", 0);
+  const mesh_job = ogre.queueMeshLoad("resources/meshes/Stickman.mesh", 0);
   check(mesh_job > 0, "queueMeshLoad did not return a job id");
   settle(mesh_job);
   check(ogre.jobState(mesh_job) == JOB_DONE,

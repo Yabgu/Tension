@@ -82,6 +82,12 @@ asc="$framework/node_modules/.bin/asc"
     -o "$out/guest-light.wasm" >/dev/null ||
     fail "guest-light.ts did not compile"
 
+# One volume for everything the fixtures load (chunk 11): they share
+# tests/resources, pack.sh packs it, and every case below hands the path in as
+# the guest's own `--tns=` argument. The cases with nothing to load ignore it.
+bash "$here/pack.sh" "$out/fixtures.tns" >/dev/null ||
+    fail "the fixture volume did not pack"
+
 # ── the cases ────────────────────────────────────────────────────────────
 
 # case <name> <expected-stdout-substring> <expected-stderr-substring-or-empty> [args...]
@@ -122,7 +128,7 @@ case_run vulkan "^FAIL 0 -38" "" --renderer=vulkan --expect-fail
 jobs_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-jobs.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-jobs.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -q "^ACID 5/5 passed" ||
         fail "$name: no 'ACID 5/5 passed' (got: $(echo "$stdout" | tail -2))"
@@ -137,7 +143,7 @@ jobs_case jobs --renderer=null
 triangle_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-triangle.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-triangle.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|8/8 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -153,7 +159,7 @@ triangle_case triangle --renderer=null
 motion_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-motion.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-motion.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|10/10 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -168,7 +174,7 @@ motion_case motion --renderer=null
 hierarchy_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-hierarchy.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-hierarchy.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (5/5 passed \\(structural, renderer=null\\)|8/8 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -183,7 +189,7 @@ hierarchy_case hierarchy --renderer=null
 skinning_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-skinning.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-skinning.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (6/6 passed \(structural, renderer=null\)|10/10 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -199,7 +205,7 @@ skinning_case skinning --renderer=null
 render_check_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-render-check.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-render-check.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|6/6 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -225,7 +231,7 @@ procedural_case procedural --renderer=null
 angular_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-angular.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-angular.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (8/8 passed \(structural, renderer=null\)|11/11 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -236,7 +242,7 @@ angular_case() {
 physics_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-physics.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-physics.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (9/9 passed \(structural, renderer=null\)|12/12 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"
@@ -253,7 +259,7 @@ angular_case angular --renderer=null
 light_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-light.wasm" "$@" 2>"$out/$name.err") ||
+    stdout=$("$core" --capability "$dso" "$out/guest-light.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
         fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^ACID (4/4 passed \(structural, renderer=null\)|9/9 passed)" ||
         fail "$name: no passing ACID line (got: $(echo "$stdout" | tail -2))"

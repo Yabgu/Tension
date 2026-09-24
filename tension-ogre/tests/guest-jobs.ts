@@ -56,8 +56,10 @@ function settle(job: i32): void {
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const which = renderer == "gl3plus" ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null;
@@ -73,10 +75,16 @@ export function _start_game(): void {
     .frameHz(60)
     .windowSize(640, 480);
   assert(ogre.init(ogre_config) == 0, "ogre::init refused the config");
+  // Everything this fixture loads comes out of one packed volume (chunk 11):
+  // tests/resources is packed into build/fixtures.tns and the runner hands the
+  // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
+  // grandfathered.
+  assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
+  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
 
   // ── clause 1: a shipped mesh ─────────────────────────────────────────
   clause = 1;
-  const mesh_job = ogre.queueMeshLoad("Barrel.mesh", 0);
+  const mesh_job = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   check(mesh_job > 0, "queueMeshLoad did not return a job id");
   settle(mesh_job);
   check(ogre.jobState(mesh_job) == JOB_DONE,
@@ -87,7 +95,7 @@ export function _start_game(): void {
 
   // ── clause 2: a mesh that is not there ───────────────────────────────
   clause = 2;
-  const missing = ogre.queueMeshLoad("does-not-exist.mesh", 0);
+  const missing = ogre.queueMeshLoad("resources/meshes/does-not-exist.mesh", 0);
   check(missing > 0, "queueMeshLoad refused the missing file at queue time");
   settle(missing);
   check(ogre.jobState(missing) == JOB_FAILED, "a missing mesh did not fail");
@@ -98,7 +106,7 @@ export function _start_game(): void {
   clause = 3;
   const ids = new Array<i32>(8);
   for (let i = 0; i < 8; i++) {
-    ids[i] = ogre.queueMeshLoad("Barrel.mesh", 0);
+    ids[i] = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
     check(ids[i] > 0, "one of eight loads was refused");
   }
   for (let i = 0; i < 8; i++) settle(ids[i]);
@@ -121,7 +129,7 @@ export function _start_game(): void {
   // becomes visible when an epoch runs — not the instant the verb returns.
   RuntimeSession.wait(0);
   check(ogre.jobState(released) == JOB_RELEASED, "the released job does not read RELEASED");
-  const again = ogre.queueMeshLoad("Barrel.mesh", 0);
+  const again = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   // The id *is* the slot, so the freed one comes straight back — which is what
   // makes jobRecord(jobId) arithmetic true on the guest side too.
   check(again == released, "the freed slot was not reused");
@@ -133,7 +141,7 @@ export function _start_game(): void {
   // DDS is the format this install's OGRE can decode (its codecs are OITD and
   // DDS only); a PNG would fail with a named error, which is clause 2's shape.
   clause = 5;
-  const texture_job = ogre.queueTextureLoad("ASCII.dds", 0);
+  const texture_job = ogre.queueTextureLoad("resources/textures/ASCII.dds", 0);
   check(texture_job > 0, "queueTextureLoad did not return a job id");
   settle(texture_job);
   check(ogre.jobState(texture_job) == JOB_DONE, "ASCII.dds did not reach DONE");

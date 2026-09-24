@@ -284,8 +284,10 @@ function region_identical(a: ArrayBuffer, b: ArrayBuffer, cx: i32, cy: i32, half
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
@@ -301,11 +303,17 @@ export function _start_game(): void {
     .renderer(gl3plus ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
     .headless(!gl3plus).vsync(false).frameHz(60).windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
   assert(ogre.init(config) == 0, "ogre::init refused");
+  // Everything this fixture loads comes out of one packed volume (chunk 11):
+  // tests/resources is packed into build/fixtures.tns and the runner hands the
+  // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
+  // grandfathered.
+  assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
+  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
   ogre.assertSubmissionRegions();
 
   // ── clause 1: the meshes ─────────────────────────────────────────────
   clause = 1;
-  const barrel_job = ogre.queueMeshLoad("Barrel.mesh", 0);
+  const barrel_job = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   check(barrel_job > 0, "queueMeshLoad refused (Barrel.mesh)");
   while (ogre.jobState(barrel_job) != ogre.JOB_DONE &&
          ogre.jobState(barrel_job) != ogre.JOB_FAILED) {
@@ -314,7 +322,7 @@ export function _start_game(): void {
   check(ogre.jobState(barrel_job) == ogre.JOB_DONE, "Barrel.mesh did not load");
   const barrel = ogre.jobResult(barrel_job);
   // The skinned clause's mesh: a rig, resolved by the loader's skeleton path.
-  const stickman_job = ogre.queueMeshLoad("Stickman.mesh", 0);
+  const stickman_job = ogre.queueMeshLoad("resources/meshes/Stickman.mesh", 0);
   check(stickman_job > 0, "queueMeshLoad refused (Stickman.mesh)");
   while (ogre.jobState(stickman_job) != ogre.JOB_DONE &&
          ogre.jobState(stickman_job) != ogre.JOB_FAILED) {

@@ -235,8 +235,10 @@ function read_quat(world: World, index: i32, out: Float64Array): void {
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
@@ -252,6 +254,12 @@ export function _start_game(): void {
     .renderer(gl3plus ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
     .headless(!gl3plus).vsync(false).frameHz(60).windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
   assert(ogre.init(config) == 0, "ogre::init refused");
+  // Everything this fixture loads comes out of one packed volume (chunk 11):
+  // tests/resources is packed into build/fixtures.tns and the runner hands the
+  // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
+  // grandfathered.
+  assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
+  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
 
   // ── the picture's scaffolding (GL3+ only) ────────────────────────────
   if (gl3plus) {
@@ -261,7 +269,7 @@ export function _start_game(): void {
     // a sphere collides pokes its corners through the floor by its circumradius
     // (measured: one pixel per corner, which is what "no pixel below the floor"
     // caught). The floor stays a cube, which is what a floor is.
-    const floor_job = ogre.queueMeshLoad("cube.mesh", 0);
+    const floor_job = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
     check(floor_job > 0, "queueMeshLoad refused (cube)");
     while (ogre.jobState(floor_job) != ogre.JOB_DONE &&
            ogre.jobState(floor_job) != ogre.JOB_FAILED) {
@@ -269,7 +277,7 @@ export function _start_game(): void {
     }
     check(ogre.jobState(floor_job) == ogre.JOB_DONE, "cube.mesh did not load");
     const cube = ogre.jobResult(floor_job);
-    const body_job = ogre.queueMeshLoad("Smiley.mesh", 0);
+    const body_job = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
     check(body_job > 0, "queueMeshLoad refused (Smiley)");
     while (ogre.jobState(body_job) != ogre.JOB_DONE &&
            ogre.jobState(body_job) != ogre.JOB_FAILED) {

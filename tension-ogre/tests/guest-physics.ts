@@ -311,8 +311,10 @@ function snapshot(world: World, out: Float64Array): void {
 
 export function _start_game(): void {
   let renderer = "null";
+  let tns = "";
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
+    if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value.startsWith("--renderer=")) renderer = value.slice(11);
   }
   const gl3plus = renderer == "gl3plus";
@@ -325,12 +327,18 @@ export function _start_game(): void {
     .renderer(gl3plus ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
     .headless(!gl3plus).vsync(false).frameHz(60).windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
   assert(ogre.init(config) == 0, "ogre::init refused");
+  // Everything this fixture loads comes out of one packed volume (chunk 11):
+  // tests/resources is packed into build/fixtures.tns and the runner hands the
+  // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
+  // grandfathered.
+  assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
+  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
 
   // ── the picture's scaffolding ────────────────────────────────────────
   // GL3+ only: the structural tier has no framebuffer to put anything in, and
   // nothing in clauses 1-6 needs a mesh.
   if (gl3plus) {
-    const job = ogre.queueMeshLoad("cube.mesh", 0);
+    const job = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
     check(job > 0, "queueMeshLoad refused");
     while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
       RuntimeSession.wait(10);
