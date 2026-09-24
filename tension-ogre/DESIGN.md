@@ -1287,6 +1287,66 @@ constants so a guest can cross-check its build at startup: `magic u64`,
 `maxArenaSize`, `memoryBase`, `initialPages`, `maxPages`, `layoutHash`,
 `regionCount`, `classCount`, `classCapacity[10]`, `openNonce u64`, reserved.
 
+**The adapter mounts Tension Volumes, and the loader reads meshes and textures
+from them (chunk 11, round 11a's probes).** `ogre::mount_tns(prefix, tns_path)`
+reads both strings from the STRING arena, opens `tns_path` — always absolute,
+the adapter does not resolve relative paths — reads it into memory and calls
+`tension_res_load_borrowed`, pushing `{prefix, tns_path, bytes, handle}` onto
+the mount table. `queue_mesh_load` and `queue_texture_load` resolve through the
+table: **longest prefix wins**, the path after the strip carries no leading `/`,
+`"<prefix>/"` alone is `-EINVAL`, and a job whose path no mount matches fails
+**deferred** with `-ENOENT` — the same shape the existing guest-jobs test
+asserts — with a queue-time log line distinguishing "no mount matched" from
+"not in the matched mount". The C ABI is the right shape for this seam: the
+caller owns the bytes and the library never opens a file. But its header does
+not compile as C++ — the typedef `tension_res_stat` and the function
+`tension_res_stat` collide in the ordinary identifier namespace
+(`tension_res.h:93`), which is invisible to Rust's FFI and Zig's cImport and
+fatal to the first C++ consumer this ABI has ever had. 11b needs one of: rename
+the function, or declare it for C++ under an asm label. The probe measures the
+read path against the shipping archive: `text/intro.txt` (313 B) and
+`data/level1.bin` (4096 B, the multi-chunk file) read byte-exact through
+`load_borrowed`/`open`/`stat_fd`/`read`/`close`, `-2` for a missing path, and a
+50,688-byte scratch volume loads borrowed in 51.8 µs; a 94,025-byte mesh reads
+in **946.6 µs through the volume against 158.2 µs from disk — 6.0×** — because
+the volume arm pays Deflate (the packer compressed the same bytes into
+50,688 B). Per mesh at load time that is nothing beside the disk arm's
+syscalls; a round that wants the raw path wants a packer "stored" switch, not a
+loader change.
+
+**A skeleton can be fileless, and the probe proved it (11a Q2).** With **no
+resource location registered at all** — and a group created *empty*, which is
+itself a requirement: a resource cannot be created in a group that does not
+exist (`ItemIdentityException` from `isResourceGroupInitialised`; the adapter's
+group exists today only as a side effect of `addResourceLocation`) — the
+sequence is: read the skeleton bytes, create the resource as
+`v1::OldSkeletonManager::create(name, group, /*isManual*/true, loader)` whose
+`loadResource` runs `v1::SkeletonSerializer::importSkeleton` on a
+`MemoryDataStream` over those bytes, then import the mesh exactly as
+`realise_mesh` does. The conversion's own lookup **fires the loader** (measured:
+`loadResource` 0 → 1 across `mesh->load()`, `isLoaded` yes), so no preload step
+is needed, and `SkeletonManager::getSkeletonDef(name, group)` resolves from the
+same manual resource when asked directly. Stickman comes back with
+`hasSkeleton=true, bones=19`, an item `SkeletonInstance` of 19 bones, and the
+skinning is visible: posing `Pelvis` 30° moves the figure from 3629 to 8355
+silhouette pixels, flip **0.11294**. One trap earns its ink: the **name must be
+exactly the mesh's own reference** — `getSkeletonName()` returns
+`"Stickman.skeleton"`, and registering `"Stickman"` yields `hasSkeleton=true`
+with a **null def and no exception** (measured, first arm); the no-registration
+control arm lands in the same silent state, which is chunk 5b's SIGSEGV class
+waiting for the draw. The manual-registration policy is therefore taken: no
+partial migration, no `Ogre::Archive` subclass, and 11b's loader needs no
+resource location for meshes or skeletons. (Textures read through the same
+volume path by construction, but the probe measured meshes only — the upload
+half is unchanged by the source swap.)
+
+**Thread rule for the mount table (11b).** One `tension_res*` per mount; every
+call into it — mount, worker read, close — happens under the loader's existing
+job-table mutex. The C header states no thread-safety guarantee and the handle
+carries mutable state (fd table, readdir cursor); if a future round needs two
+readers, the ABI's own answer is `tension_res_load_borrowed` twice over the same
+immutable bytes, which yields two independent handles.
+
 ### 5.2 Region kinds — the twelve, frozen
 
 | kind | region | default size | writes |
