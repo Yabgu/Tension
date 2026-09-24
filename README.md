@@ -43,6 +43,18 @@ second, runnable surface.
   `wasm/` (rk45 on y' = -y), `world/` (a YAML scene through
   `source: "world"`) and `collision/` (two soft spheres in a square wall,
   rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
+  `ogre/` is the renderer's front door, five guests that print rather than
+  assert: `hello-triangle/` (a triangle built out of the guest's own memory with
+  `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded through
+  the job queue out of a packed volume), `bouncing-ball/` (a solver-driven bounce through the
+  motion table), `animated-character/` (a rigged mesh posed through the
+  bone table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
+  through the physics layer; add `--angular` to run the model that simulates
+  orientation, and the bodies tumble). Each of those that loads meshes carries
+  its own `resources/` tree and a `pack.sh`: the assets are packed into
+  `build/assets.tns` — a Tension Volume, made with the same packer `examples/res`
+  uses — and the guest mounts it under `resources/`, so the loader reads bytes
+  out of the volume instead of off the disk.
   Each folder is a standalone npm project — its own `package.json`,
   `node_modules`, and `build` / `start` scripts — and there is no project at
   the `examples/` level itself. `io/` also carries a `build:debug` script and
@@ -175,15 +187,17 @@ without any ABI change. In-memory `model.blob` loading is deferred for the same
 kind of reason: the key is typed, encoded and decoded, but only the stub
 adapter honours it today, because the pinned crate ships no in-memory loader.
 
-The `ai` cargo feature is **off by default**. `--features ai` links llama.cpp
-in-process (a long vendored C++ build; needs `cmake` + `g++`). Without it,
-`tension::ai` is served by a deterministic headless adapter — the same one the
-tests use — so the SDK and the example run with no GGUF file at all.
+The `ai` cargo feature is **on by default**: a plain `cargo build` links
+llama.cpp in-process (a long vendored C++ build; needs `cmake` + `g++`). Build
+with `--no-default-features --features audio` and `tension::ai` is served by a
+deterministic headless adapter instead — the same one the tests use — so the
+SDK and the example run with no GGUF file at all.
 
 ## Build & run
 
 ```sh
-# 1. build the interpreter
+# 1. build the interpreter. `ai` is a default feature: this links llama.cpp
+#    (needs cmake + a C++ compiler; a one-time ~2 min build).
 cargo build --manifest-path tension-core/Cargo.toml
 
 # 2. compile the game (AssemblyScript -> wasm), from the example's own folder.
@@ -205,10 +219,12 @@ npm install
 npm run build
 ../../tension-core/target/debug/tension-core build/demo.wasm
 
-# 5. the AI demo: an interactive chat session over tension::ai. With the
-#    default build the host answers from its deterministic headless adapter,
-#    so any model path works and no GGUF file is needed; rebuild tension-core
-#    with `--features ai` to link llama.cpp in-process and use a real model.
+# 5. the AI demo: an interactive chat session over tension::ai. The default
+#    build from step 1 links llama.cpp in-process, and the demo answers from
+#    the model named below — without the weights the host refuses the config.
+#    For the deterministic headless adapter (any model path works, no GGUF
+#    file, no cmake/C++ compiler needed), rebuild tension-core with
+#    `--no-default-features --features audio`.
 #    `npm install` runs prepare.sh, which downloads the ~2.3 GB q4 weights
 #    into models/ -- a no-op once they are there, and never committed
 #    (.gitignore has *.gguf). Install offline with TENSION_SKIP_MODEL_FETCH=1
@@ -228,6 +244,21 @@ Or use the demo runner:
 ./demo.sh
 ```
 
+It builds the interpreter and runs every example, the ai demo included. `ai`
+is a default feature, so when the gguf file exists and cmake + a C++ compiler
+are available the ai demo answers from the model (linking llama.cpp is a
+one-time ~2 min build); otherwise the script builds with
+`--no-default-features --features audio`, says so, and runs the ai demo on the
+headless adapter. It never downloads the ~2.3 GB weights by itself —
+`npm install` inside `examples/ai` does that.
+
+Or just build everything — interpreter, guest API, and every example —
+without running it:
+
+```sh
+./build.sh
+```
+
 Or, from inside any example, build and run with npm (assumes `tension-core`
 is built first):
 
@@ -235,6 +266,16 @@ is built first):
 cd examples/io    && npm start  # io example (build + run)
 cd examples/audio && npm start  # audio example (build + run)
 cd examples/ai    && npm start  # ai example (fetches models/Phi-3-mini-4k-instruct-q4.gguf on first run; MODEL=... to override)
+```
+
+The two renderer examples run through their own script, because a guest that
+uses a capability needs the adapter built and the framework's generated layout:
+
+```sh
+cd examples/ogre/hello-triangle && ./run.sh                          # a real window
+cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
+cd examples/ogre/bouncing-ball  && ./run.sh                          # a real window
+cd examples/ogre/bouncing-ball  && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
 ```
 
 ## Debugging

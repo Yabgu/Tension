@@ -88,9 +88,17 @@ int64_t tension_res_seek(const tension_res *res, int32_t fd, int64_t off, int32_
 /** Current position of an open handle, or a negative errno. */
 int64_t tension_res_tell(const tension_res *res, int32_t fd);
 
-/** Stat a path: 0 on success (fills *out), or a negative errno. */
-int32_t tension_res_stat(const tension_res *res, const char *path, size_t path_len,
-                         tension_res_stat *out);
+/**
+ * Stat a path: 0 on success (fills *out), or a negative errno.
+ *
+ * The `_path` suffix is not decoration: the record type above already carries
+ * the name `tension_res_stat`, and C++ keeps type names and function names in
+ * one namespace, so a C++ translation unit cannot declare both. This header
+ * must compile as C++ (the OGRE adapter is the first C++ consumer); the record
+ * keeps the short name, the function took the suffix.
+ */
+int32_t tension_res_stat_path(const tension_res *res, const char *path, size_t path_len,
+                              tension_res_stat *out);
 
 /** Stat an open handle: 0 on success (fills *out), or a negative errno. */
 int32_t tension_res_stat_fd(const tension_res *res, int32_t fd, tension_res_stat *out);

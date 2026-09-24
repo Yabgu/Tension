@@ -1,0 +1,3 @@
+# The adapter and its probe are built by build.sh into build/.
+build/
+node_modules/

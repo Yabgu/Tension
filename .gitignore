@@ -34,3 +34,15 @@ tension-audio.wav
 # Editor / OS
 *.swp
 .DS_Store
+
+# Adapter and capability binaries: built by build.sh and dlopen'd, never committed
+*.so
+*.o
+*.a
+
+# Guests are compiled by asc; the fixtures that are text (.wat) are committed
+*.wasm
+
+# AssemblyScript-emitted declarations (tension-framework/index.d.ts is tracked
+# and hand-written; ignore rules do not apply to already-tracked files)
+*.d.ts

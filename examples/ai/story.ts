@@ -52,7 +52,12 @@ export function _start_game(): void {
     if (text.length == 0) continue;
     if (text == "/quit") break;
     if (text == "/reset") {
-      print(session.reset() ? "(history cleared)" : "(cannot reset while generating)");
+      const cleared = session.reset();
+      // reset clears the whole history, including the system prompt that
+      // makes the model narrate. Restore it, or the next reply comes back
+      // from a generic assistant instead of the game's narrator.
+      if (cleared) session.add(AiRole.System, SYSTEM_PROMPT);
+      print(cleared ? "(history cleared)" : "(cannot reset while generating)");
       continue;
     }
     if (text == "/cancel") {

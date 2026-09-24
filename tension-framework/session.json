@@ -1,0 +1,20 @@
+{
+  "abi_version": 1,
+  "layout_hash": 3451714980,
+  "arena_size": 6250528,
+  "max_arena_size": 8388608,
+  "ring_capacities": [
+    1,
+    256,
+    256,
+    64,
+    4096,
+    4096,
+    256,
+    64,
+    1024,
+    256
+  ],
+  "initial_pages": 132,
+  "maximum_pages": 512
+}

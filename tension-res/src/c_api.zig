@@ -23,8 +23,9 @@ const vfs_mod = @import("vfs.zig");
 const writer = @import("writer.zig");
 
 /// The 12-byte record of §7.4 — the header's `tension_res_stat`. Named `Stat`
-/// here because Zig file-scope declarations share one namespace, and the
-/// exported `tension_res_stat` function must keep its C symbol.
+/// here because Zig file-scope declarations share one namespace. (The C
+/// function is `tension_res_stat_path`: C++ puts type names and function names
+/// in one namespace, and the header must compile as C++.)
 pub const Stat = vfs_mod.StatRecord;
 
 /// The path length the ABI accepts (must match `TENSION_RES_PATH_MAX` in
@@ -178,7 +179,7 @@ pub export fn tension_res_open(res: ?*const tension_res, path: ?[*]const u8, pat
     return self.vfs.open(p);
 }
 
-pub export fn tension_res_stat(
+pub export fn tension_res_stat_path(
     res: ?*const tension_res,
     path: ?[*]const u8,
     path_len: usize,
@@ -385,7 +386,7 @@ test "load rejects bad arguments with a message, never a panic" {
     try testing.expect(tension_res_load(null, 0, &handle, null, 0) < 0);
     try testing.expect(tension_res_open(null, "/", 1) == errors.EINVAL);
     var rec: Stat = undefined;
-    try testing.expect(tension_res_stat(null, "/", 1, &rec) == errors.EINVAL);
+    try testing.expect(tension_res_stat_path(null, "/", 1, &rec) == errors.EINVAL);
     try testing.expect(tension_res_readdir(null, "/", 1, 0, null, 0, &rec) == errors.EINVAL);
 
     // the packer rejects a null source with a message, never a crash

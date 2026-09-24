@@ -410,7 +410,9 @@ change if the diagnostic quality becomes important.
 
 **What phase 5 does not deliver:** the YAML world compiler (P8; `source:
 "world"` answered `-ENOSYS` until P8e wired it); verlet, implicit_euler and
-spook (P6);
+spook (P6 — of which P6 has since delivered the first two: `verlet` and
+`implicit_euler` create and step, measured from a guest in chunk 6a's P0;
+`spook` still answers `-ENOSYS`, §10);
 async stepping or cancellation; guest-visible diagnostics beyond errno; and
 the plugin lifecycle through the vtable (only `step` is dispatched).
 

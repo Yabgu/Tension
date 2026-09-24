@@ -1,0 +1,5 @@
+# Fixture output: asc compiles into build/, the generator writes the asconfig
+# and layout.ts beside the sources (layout.ts is committed — it is what asc
+# compiles and what the Rust layout cross-check reads).
+build/
+node_modules/

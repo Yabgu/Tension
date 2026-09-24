@@ -487,9 +487,18 @@ beyond that is implied.
   line/column message on the debug channel (`[tension-core]`-prefixed
   stderr) — not across the wasm boundary, because create has no err
   buffer (solver/DESIGN.md §9).
-- **No verlet, implicit_euler, spook (P6).** Those `method` names
-  return `-ENOSYS` from create. The explicit-RK family (euler, heun,
-  rk23, rk45) is the whole delivered set.
+- **No spook (P6).** `spook` returns `-ENOSYS` from create: it is
+  constraint-based position-based dynamics, and the frozen ABI has no
+  constraint channel (solver/DESIGN.md §10). The delivered set is the
+  explicit-RK family (euler, heun, rk23, rk45) **plus `verlet` and
+  `implicit_euler`**, which this bullet denied until 2026-09-21. Chunk 6a's P0
+  called `create({method: "verlet", source: "wasm", dim: 6})` from a guest and
+  stepped it — a body dropped from y = 10 for 60 steps of 1/60 s landed at
+  5.094999999999969 against the closed form's 5.095 (|Δ| = 3.1e-14) — so the
+  shim's dispatch (`tension_solver.c`'s `TS_VERLET_INDEX` case) was the
+  truthful half of the disagreement. Corrected here rather than in a
+  changelog, because this is the document a guest author reads to decide what
+  they may ask for.
 - **No plugin lifecycle through the vtable.** A registered native
   backend's `state` / `set_state` / `destroy` slots are not dispatched
   by the runtime yet; only `step` is.

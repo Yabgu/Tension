@@ -178,7 +178,7 @@ extern "C" {
     fn tension_res_read(res: *const TensionRes, fd: i32, dst: *mut u8, len: usize) -> i32;
     fn tension_res_seek(res: *const TensionRes, fd: i32, off: i64, whence: i32) -> i64;
     fn tension_res_tell(res: *const TensionRes, fd: i32) -> i64;
-    fn tension_res_stat(
+    fn tension_res_stat_path(
         res: *const TensionRes,
         path: *const u8,
         path_len: usize,
@@ -329,7 +329,7 @@ impl<'a> ResourceSet<'a> {
     pub fn stat(&self, path: &str) -> Result<Stat, Errno> {
         let mut out = Stat::default();
         let rc = unsafe {
-            tension_res_stat(self.handle, path.as_ptr(), path.len(), &mut out as *mut Stat)
+            tension_res_stat_path(self.handle, path.as_ptr(), path.len(), &mut out as *mut Stat)
         };
         if rc == 0 {
             Ok(out)
