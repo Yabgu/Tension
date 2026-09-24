@@ -159,17 +159,11 @@ export function _start_game(): void {
     const material = new ogre.Material();
     material.materialId = id;
     material.kind = ogre.MAT_HLMS_PBS;
-    if (lit) {
-      material.diffuseR = <f32>r; material.diffuseG = <f32>g; material.diffuseB = <f32>b;
-      material.specularR = 0.5; material.specularG = 0.5; material.specularB = 0.5;
-      material.emissiveR = 0.0; material.emissiveG = 0.0; material.emissiveB = 0.0;
-      material.roughness = 0.5; material.metalness = 0.0;
-    } else {
-      material.diffuseR = 0.0; material.diffuseG = 0.0; material.diffuseB = 0.0;
-      material.specularR = 0.0; material.specularG = 0.0; material.specularB = 0.0;
-      material.emissiveR = <f32>r; material.emissiveG = <f32>g; material.emissiveB = <f32>b;
-      material.roughness = 1.0; material.metalness = 0.0;
-    }
+    const litF = <f32>lit, unlitF = <f32>!lit;
+    material.diffuseR = <f32>r * litF; material.diffuseG = <f32>g * litF; material.diffuseB = <f32>b * litF;
+    material.specularR = 0.5 * litF;   material.specularG = 0.5 * litF;   material.specularB = 0.5 * litF;
+    material.emissiveR = <f32>r * unlitF; material.emissiveG = <f32>g * unlitF; material.emissiveB = <f32>b * unlitF;
+    material.roughness = 0.5 * litF + 1.0 * unlitF; material.metalness = 0.0;
     if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + what + ")");
   }
   submit_material(FLOOR_MATERIAL, FLOOR_RGB[0], FLOOR_RGB[1], FLOOR_RGB[2], false, "floor");
