@@ -1393,6 +1393,39 @@ fails `-ENOENT`. And a mesh that comes back rigged with a null def is refused
 read through the same volume path; the upload half is unchanged by the source
 swap.
 
+**The conversion chain, and the flag that actually pins v1 (chunk 12).** The
+temporary OGRE-media rigs are being replaced by a CC0 character (Kenney
+Animated Characters 3), and the chain is FBX -> Blender 5.2.2 (`io_ogre` 0.9.0)
+-> `.mesh.xml` + `.skeleton.xml` -> `OgreMeshTool` -> `.mesh` + `.skeleton`.
+The recipe is `tension-ogre/tests/convert-kenney.py`; the binary step is run by
+hand, because `io_ogre`'s converter autodetection knows only `OgreXMLConverter`
+— not installed here — and otherwise only warns. Three measured rules:
+
+  * **The mesh must be written with `OgreMeshTool -V 1.10`.** The adapter
+    imports with `Ogre::v1::MeshSerializer` and every shipped mesh is
+    `[MeshSerializer_v1.100]`. The tool's default for XML input is *v2.1*
+    (`[MeshSerializer_v2.1 R0 LEGACYV1]`, which that serializer cannot read),
+    and `-v1` — despite its help text ("Export the mesh as a v1 object") —
+    produces the same v2.1 file. Only `-V 1.10` yields the v1.100 magic,
+    measured on the same XML three times. Skeletons are unaffected: the tool's
+    skeleton path writes `[Serializer_v1.80]`, which the manual-registration
+    recipe loads.
+  * **`EX_ARMATURE_ANIMATION=True` is what enables skeleton export at all.**
+    io_ogre gates `ogre/skeleton.py` on it; with it False the exporter writes a
+    `.mesh.xml` whose `<skeletonlink>` points at a `.skeleton.xml` that never
+    appears (measured — the first conversion produced exactly that).
+  * **`bpy.ops.wm.read_factory_settings` runs before the addon is enabled, and
+    the addon is enabled persistently.** The factory reset unloads io_ogre (the
+    operator then does not exist), and the addon's config reads
+    `context.preferences.addons["io_ogre"].preferences`, which exists only once
+    Blender has written the addon into the user's preferences.
+
+The converted character (58 bones; `LeftForeArm` at index 28; a rest pose with
+the hands 0.88 out and 0.69 above the hips, i.e. a relaxed A-pose, not a
+T-pose) loads and skins under the 11b recipe with no resource location
+anywhere — forearm 45 degrees flips 0.00763 of the frame, hips 15 degrees
+flips 0.08335.
+
 **Thread rule for the mount table, as implemented.** One `tension_res*` per
 mount; every call into it — the guest thread's mount, the worker's read, the
 render thread's sibling read — happens under the loader's job-table mutex. The C header states no thread-safety guarantee and the handle
@@ -1904,6 +1937,13 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
+- **The CC0 rigged-mesh replacement is prepared, not landed (chunk 12).** The
+  converted Kenney character (Kenney Animated Characters 3, CC0 1.0 — public
+  domain, no attribution required) loads and skins, and its conversion recipe
+  is `tension-ogre/tests/convert-kenney.py`. The assets themselves land in 12b:
+  `walking-stickman` and the fixtures swap `Stickman.*`/`Smiley.*` for it, and
+  the CREDITS files keep their "temporary, pending CC0 replacement" note until
+  that swap. §5.1 carries the chain and its three measured rules.
 - **The fixtures share one resource tree, and that is the convention.**
   `tension-ogre/tests/resources/` holds every asset the fixtures load
   (`meshes/`, `textures/`, and the skeletons **in `meshes/`, beside the meshes
