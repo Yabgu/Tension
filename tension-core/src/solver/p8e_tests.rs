@@ -179,6 +179,14 @@ fn test_state() -> HostState {
         audio: audio::AudioSession::new(Box::new(HeadlessAdapter::new())),
         ai: ai::AiSession::new(Box::new(StubAdapter::new())),
         solver: SolverHost::default(),
+        posting: std::sync::Arc::new(
+            crate::session::posting::PostingSide::default(),
+        ),
+        arena: None,
+        depth: 0,
+        pending: crate::session::apply::PendingQueue::new(),
+        adapters: Vec::new(),
+        session: None,
     }
 }
 

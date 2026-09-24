@@ -1684,6 +1684,7 @@ dependencies = [
  "arc-swap",
  "cpal",
  "encoding_rs 0.8.40",
+ "libc",
  "llama-cpp-2",
  "wasmtime",
  "yaml-rust2",

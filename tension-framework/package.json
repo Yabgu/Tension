@@ -5,6 +5,11 @@
   "type": "module",
   "ascMain": "assembly/index.ts",
   "types": "index.d.ts",
+  "scripts": {
+    "build": "asc index.ts -o build/index.wasm --runtime stub --target release",
+    "test": "bash tests/run.sh",
+    "build:fixture": "bash tests/run.sh"
+  },
   "exports": {
     ".": {
       "types": "./index.d.ts"
@@ -21,5 +26,8 @@
     "assemblyscript",
     "text-game"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
 }

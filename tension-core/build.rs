@@ -148,6 +148,80 @@ fn main() {
         ),
     }
     println!("cargo:rustc-link-arg-tests={}", plugin_obj.display());
+
+    // ---- the adapter ABI's reference fixture ------------------------------
+    // One C file, built twice: the reference adapter and a twin whose vtable
+    // claims ABI version 2, so the loader's version refusal is proven without a
+    // second source file. Neither needs a host symbol — every service arrives
+    // through the core API table — which is the property that makes dlopen safe
+    // with no -rdynamic.
+    let adapter_src = manifest.join("tests").join("support").join("echo_adapter.c");
+    let adapter_header = manifest.join("include").join("tension_adapter.h");
+    println!("cargo:rerun-if-changed={}", adapter_src.display());
+    println!("cargo:rerun-if-changed={}", adapter_header.display());
+    let include = manifest.join("include");
+    for (name, define) in [
+        ("libtension_echo.so", None),
+        ("libtension_echo_badabi.so", Some("-DECHO_BAD_ABI_VERSION=1")),
+    ] {
+        let output = out_dir.join(name);
+        let mut command = Command::new("cc");
+        command
+            .args(["-std=c11", "-O2", "-fPIC", "-shared"])
+            .arg("-I")
+            .arg(&include)
+            .arg(&adapter_src);
+        if let Some(define) = define {
+            command.arg(define);
+        }
+        match command.arg("-o").arg(&output).status() {
+            Ok(status) if status.success() => {}
+            Ok(status) => panic!("compiling {} failed with {status}", adapter_src.display()),
+            Err(error) => panic!(
+                "could not run `cc` ({error}) — the adapter ABI's reference fixture is built \
+                 by that toolchain"
+            ),
+        }
+    }
+    println!(
+        "cargo:rustc-env=TENSION_ECHO_ADAPTER={}",
+        out_dir.join("libtension_echo.so").display()
+    );
+    println!(
+        "cargo:rustc-env=TENSION_ECHO_BADABI_ADAPTER={}",
+        out_dir.join("libtension_echo_badabi.so").display()
+    );
+
+    // ── tension-ogre's stub adapter ───────────────────────────────────────
+    //
+    // The capability ABI's end-to-end fixture (A3b): an AssemblyScript guest
+    // calls the `ogre` namespace, a stub adapter behind it answers, and the
+    // session delivers the completion. It links no OGRE-Next — this is the
+    // shape of the capability, not a renderer.
+    let ogre_stub_src = manifest.join("tests").join("support").join("ogre_stub_adapter.c");
+    println!("cargo:rerun-if-changed={}", ogre_stub_src.display());
+    println!("cargo:rerun-if-changed={}", adapter_header.display());
+    let ogre_stub = out_dir.join("libtension_ogre_stub.so");
+    match Command::new("cc")
+        .args(["-std=c11", "-O2", "-fPIC", "-shared"])
+        .arg("-I")
+        .arg(&include)
+        .arg(&ogre_stub_src)
+        .arg("-o")
+        .arg(&ogre_stub)
+        .status()
+    {
+        Ok(status) if status.success() => {}
+        Ok(status) => panic!("compiling {} failed with {status}", ogre_stub_src.display()),
+        Err(error) => panic!(
+            "could not run `cc` ({error}) — the capability ABI's stub fixture is built \
+             by that toolchain"
+        ),
+    }
+    println!(
+        "cargo:rustc-env=TENSION_OGRE_STUB_ADAPTER={}",
+        out_dir.join("libtension_ogre_stub.so").display()
+    );
 }
 
 fn check_zig_version() {

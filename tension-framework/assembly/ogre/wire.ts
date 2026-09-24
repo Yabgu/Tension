@@ -1,0 +1,912 @@
+// The OGRE capability's wire, as the guest sees it.
+//
+// Same rules as the session runtime's `wire.ts`: every type is `@unmanaged`
+// with scalar fields in declared order and its padding spelled out, so a
+// `changetype<T>(offset)` is a view and the field order is the wire order. No
+// nested types — an `@unmanaged` class holding another class holds a *reference*
+// to it, which is the one thing a wire record must not do — so a `Transformf`
+// is twelve floats and a `Mat4f` is sixteen.
+//
+// **These field layouts are defined here, for the first time.** The design note
+// (§5.1) defers the capability catalogue's *field sets* until the OGRE version
+// pin and extends the manifest then; chunk 1's manifest still holds the nine
+// protocol types, so nothing here moves `layoutHash`. What is fixed is the
+// sizes, and `checkOgreWireOffsets` proves them the same way the runtime's
+// check proves its own: `offsetof<T>("lastField")` plus that field's width plus
+// the trailing reserved words, never `sizeof<T>()`.
+//
+// Alignment is a *placement* rule, not something offsetof can check: AS aligns
+// an `@unmanaged` record to its widest scalar field, so a `Vec4f` or a `Mat4f`
+// must sit at a 16-byte offset in whatever record contains it. The container
+// layouts below do that, and the sizes are what the check pins.
+
+import { REGION_RESOURCE } from "../runtime/wire";
+import { regionOffset } from "../runtime/arena";
+
+// --- math ------------------------------------------------------------------
+
+/** Two floats, 8 bytes. */
+@unmanaged
+export class Vec2f {
+  x: f32 = 0;
+  y: f32 = 0;
+}
+
+/** Three floats, 12 bytes. */
+@unmanaged
+export class Vec3f {
+  x: f32 = 0;
+  y: f32 = 0;
+  z: f32 = 0;
+}
+
+/** A `Vec3f` padded to 16 bytes: the alignment a `Vec4f` has, without a w. */
+@unmanaged
+export class Vec3f16 {
+  x: f32 = 0;
+  y: f32 = 0;
+  z: f32 = 0;
+  pad: f32 = 0;
+}
+
+/** Four floats, 16 bytes, align 16. */
+@unmanaged
+export class Vec4f {
+  x: f32 = 0;
+  y: f32 = 0;
+  z: f32 = 0;
+  w: f32 = 0;
+}
+
+/** A quaternion, xyzw, 16 bytes, align 16. */
+@unmanaged
+export class Quatf {
+  x: f32 = 0;
+  y: f32 = 0;
+  z: f32 = 0;
+  w: f32 = 0;
+}
+
+/** Linear RGBA, 16 bytes, align 16. */
+@unmanaged
+export class Colourf {
+  r: f32 = 0;
+  g: f32 = 0;
+  b: f32 = 0;
+  a: f32 = 0;
+}
+
+/** A 4x4 matrix, column-major, 64 bytes, align 16. */
+@unmanaged
+export class Mat4f {
+  m00: f32 = 0; m01: f32 = 0; m02: f32 = 0; m03: f32 = 0;
+  m10: f32 = 0; m11: f32 = 0; m12: f32 = 0; m13: f32 = 0;
+  m20: f32 = 0; m21: f32 = 0; m22: f32 = 0; m23: f32 = 0;
+  m30: f32 = 0; m31: f32 = 0; m32: f32 = 0; m33: f32 = 0;
+}
+
+/** Position, rotation, uniform scale — 48 bytes, align 16. */
+@unmanaged
+export class Transformf {
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  pad0: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  pad1: f32 = 0;
+}
+
+/** An axis-aligned box, 32 bytes, align 16. */
+@unmanaged
+export class Aabbf {
+  minX: f32 = 0;
+  minY: f32 = 0;
+  minZ: f32 = 0;
+  pad0: f32 = 0;
+  maxX: f32 = 0;
+  maxY: f32 = 0;
+  maxZ: f32 = 0;
+  pad1: f32 = 0;
+}
+
+// --- refs ------------------------------------------------------------------
+
+/** A UTF-8 string in the `STRING` region, 8 bytes. */
+@unmanaged
+export class StringRef {
+  offset: u32 = 0;
+  length: u32 = 0;
+}
+
+/** Bytes in the `BUFFER_POOL` region, 8 bytes. */
+@unmanaged
+export class BufferRef {
+  offset: u32 = 0;
+  length: u32 = 0;
+}
+
+// --- records ---------------------------------------------------------------
+
+/** A scene node, 80 bytes: `transform` at 24, alignment 16. */
+@unmanaged
+export class SceneNode {
+  nodeId: u32 = 0;
+  parentId: u32 = 0;
+  flags: u32 = 0;
+  childCount: u32 = 0;
+  nameOffset: u32 = 0;
+  nameLength: u32 = 0;
+  // 24: the transform, exactly where the header's six words end.
+  transformX: f32 = 0;
+  transformY: f32 = 0;
+  transformZ: f32 = 0;
+  transformPad: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  scalePad: f32 = 0;
+  reserved: u64 = 0;
+
+  /// A node at a place, with the identity rotation and unit scale the fields
+  /// already default to. `parentId` stays 0: hierarchy is refused in this
+  /// chunk, and a factory that quietly set a parent would be the wrong kind of
+  /// helpful.
+  static at(x: f32 = 0, y: f32 = 0, z: f32 = 0): SceneNode {
+    const node = new SceneNode();
+    node.transformX = x;
+    node.transformY = y;
+    node.transformZ = z;
+    return node;
+  }
+}
+
+/** A light, 96 bytes. */
+@unmanaged
+export class LightRecord {
+  lightId: u32 = 0;
+  kind: u32 = 0;
+  flags: u32 = 0;
+  private pad0: u32 = 0;
+  colourR: f32 = 1;
+  colourG: f32 = 1;
+  colourB: f32 = 1;
+  colourA: f32 = 1;
+  intensity: f32 = 1;
+  range: f32 = 0;
+  spotInner: f32 = 0;
+  spotOuter: f32 = 0;
+  directionX: f32 = 0;
+  directionY: f32 = -1;
+  directionZ: f32 = 0;
+  directionPad: f32 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  positionPad: f32 = 0;
+  nameOffset: u32 = 0;
+  nameLength: u32 = 0;
+  reserved: u64 = 0;
+
+  /// A directional light: a colour, an intensity, and the direction the light
+  /// travels in. No position — a directional light is everywhere.
+  static directional(r: f32, g: f32, b: f32, intensity: f32, dx: f32, dy: f32,
+                     dz: f32): LightRecord {
+    const light = new LightRecord();
+    light.kind = LIGHT_DIRECTIONAL;
+    light.colourR = r;
+    light.colourG = g;
+    light.colourB = b;
+    light.intensity = intensity;
+    light.directionX = dx;
+    light.directionY = dy;
+    light.directionZ = dz;
+    return light;
+  }
+
+  /// A point light at a place. `range` of 0 is no attenuation.
+  static point(r: f32, g: f32, b: f32, intensity: f32, x: f32, y: f32, z: f32,
+               range: f32 = 0): LightRecord {
+    const light = new LightRecord();
+    light.kind = LIGHT_POINT;
+    light.colourR = r;
+    light.colourG = g;
+    light.colourB = b;
+    light.intensity = intensity;
+    light.positionX = x;
+    light.positionY = y;
+    light.positionZ = z;
+    light.range = range;
+    return light;
+  }
+}
+
+/** A camera, 80 bytes. */
+@unmanaged
+export class CameraRecord {
+  cameraId: u32 = 0;
+  flags: u32 = 0;
+  fovY: f32 = 1;
+  aspect: f32 = 1;
+  nearClip: f32 = 0.1;
+  farClip: f32 = 1000;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  positionPad: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  viewportWidth: u32 = 0;
+  viewportHeight: u32 = 0;
+  reserved: u64 = 0;
+  reserved2: u64 = 0;
+
+  /// A perspective camera looking down its own -Z (an OGRE camera's default),
+  /// which is why the rotation is left at the identity the field defaults to.
+  /// The viewport stays 0 x 0, which means the window's whole size.
+  static perspective(fovY: f32, aspect: f32, near: f32, far: f32, x: f32 = 0,
+                     y: f32 = 0, z: f32 = 0): CameraRecord {
+    const camera = new CameraRecord();
+    camera.fovY = fovY;
+    camera.aspect = aspect;
+    camera.nearClip = near;
+    camera.farClip = far;
+    camera.positionX = x;
+    camera.positionY = y;
+    camera.positionZ = z;
+    return camera;
+  }
+}
+
+/** One texture unit of a material, 16 bytes. */
+@unmanaged
+export class TextureSlot {
+  resourceId: u32 = 0;
+  sampler: u32 = 0;
+  flags: u32 = 0;
+  uvSet: u32 = 0;
+}
+
+/** A material, 208 bytes: eight texture slots from 80. */
+@unmanaged
+export class Material {
+  materialId: u32 = 0;
+  kind: u32 = 0;
+  flags: u32 = 0;
+  private pad0: u32 = 0;
+  diffuseR: f32 = 1;
+  diffuseG: f32 = 1;
+  diffuseB: f32 = 1;
+  diffuseA: f32 = 1;
+  specularR: f32 = 1;
+  specularG: f32 = 1;
+  specularB: f32 = 1;
+  specularA: f32 = 1;
+  emissiveR: f32 = 0;
+  emissiveG: f32 = 0;
+  emissiveB: f32 = 0;
+  emissiveA: f32 = 0;
+  roughness: f32 = 1;
+  metalness: f32 = 0;
+  opacity: f32 = 1;
+  private pad1: f32 = 0;
+  // Eight TextureSlots, 16 bytes each, from offset 80.
+  slot0Resource: u32 = 0; slot0Sampler: u32 = 0; slot0Flags: u32 = 0; slot0Uv: u32 = 0;
+  slot1Resource: u32 = 0; slot1Sampler: u32 = 0; slot1Flags: u32 = 0; slot1Uv: u32 = 0;
+  slot2Resource: u32 = 0; slot2Sampler: u32 = 0; slot2Flags: u32 = 0; slot2Uv: u32 = 0;
+  slot3Resource: u32 = 0; slot3Sampler: u32 = 0; slot3Flags: u32 = 0; slot3Uv: u32 = 0;
+  slot4Resource: u32 = 0; slot4Sampler: u32 = 0; slot4Flags: u32 = 0; slot4Uv: u32 = 0;
+  slot5Resource: u32 = 0; slot5Sampler: u32 = 0; slot5Flags: u32 = 0; slot5Uv: u32 = 0;
+  slot6Resource: u32 = 0; slot6Sampler: u32 = 0; slot6Flags: u32 = 0; slot6Uv: u32 = 0;
+  slot7Resource: u32 = 0; slot7Sampler: u32 = 0; slot7Flags: u32 = 0; slot7Uv: u32 = 0;
+
+  /// An Unlit material: a diffuse colour and nothing else, which is the
+  /// simplest thing a mesh can be drawn with — no lights, no texture slots.
+  static unlit(r: f32, g: f32, b: f32, a: f32 = 1.0): Material {
+    const material = new Material();
+    material.kind = MAT_HLMS_UNLIT;
+    material.diffuseR = r;
+    material.diffuseG = g;
+    material.diffuseB = b;
+    material.diffuseA = a;
+    material.opacity = a;
+    return material;
+  }
+
+  /// A PBS material: physically based, and *black* until the scene has a light
+  /// rig, which is why the examples use `unlit`. Here so the surface is
+  /// complete rather than half-documented.
+  static pbs(r: f32, g: f32, b: f32, roughness: f32 = 0.5, metalness: f32 = 0.0,
+             a: f32 = 1.0): Material {
+    const material = new Material();
+    material.kind = MAT_HLMS_PBS;
+    material.diffuseR = r;
+    material.diffuseG = g;
+    material.diffuseB = b;
+    material.diffuseA = a;
+    material.roughness = roughness;
+    material.metalness = metalness;
+    material.opacity = a;
+    return material;
+  }
+}
+
+/** A shader, 40 bytes: source bytes live in the `STRING` region. */
+@unmanaged
+export class ShaderRecord {
+  shaderId: u32 = 0;
+  stage: u32 = 0;
+  sourceKind: u32 = 0;
+  flags: u32 = 0;
+  byteOffset: u32 = 0;
+  byteLength: u32 = 0;
+  entryOffset: u32 = 0;
+  entryLength: u32 = 0;
+  reserved: u64 = 0;
+}
+
+/** A request the guest writes into `RESOURCE_REQ`, 40 bytes. */
+@unmanaged
+export class ResourceReq {
+  kind: u32 = 0;
+  state: u32 = 0;
+  priority: i32 = 0;
+  flags: u32 = 0;
+  nameOffset: u32 = 0;
+  nameLength: u32 = 0;
+  requestedSeq: u64 = 0;
+  reserved: u64 = 0;
+}
+
+/** A resource the session reports into `RESOURCE`, 48 bytes. */
+@unmanaged
+export class Resource {
+  resourceId: u32 = 0;
+  kind: u32 = 0;
+  state: u32 = 0;
+  flags: u32 = 0;
+  size: u32 = 0;
+  nameOffset: u32 = 0;
+  nameLength: u32 = 0;
+  error: i32 = 0;
+  refs: u32 = 0;
+  private pad0: u32 = 0;
+  seq: u64 = 0;
+}
+
+/** A GPU buffer the adapter describes, 48 bytes. */
+@unmanaged
+export class Buffer {
+  bufferId: u32 = 0;
+  kind: u32 = 0;
+  usage: u32 = 0;
+  flags: u32 = 0;
+  size: u32 = 0;
+  stride: u32 = 0;
+  dataOffset: u32 = 0;
+  private pad0: u32 = 0;
+  bytes: u64 = 0;
+  reserved: u64 = 0;
+}
+
+/** A drawable, 64 bytes: its transform is inline at 16. */
+@unmanaged
+export class Renderable {
+  renderableId: u32 = 0;
+  materialId: u32 = 0;
+  meshResourceId: u32 = 0;
+  /// The node this drawable hangs from, or 0 for self-placed at the world root.
+  /// This word was `flags` until chunk 5a: nothing wrote it and nothing read it
+  /// but the decoder, so the repurposing changed semantics and not shape — no
+  /// offset moved and `layoutHash` did not either. With a node, the inline
+  /// transform below is *local* to it.
+  nodeId: u32 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  positionPad: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  scalePad: f32 = 0;
+
+  /// A drawable: a mesh, a material, and a place in the world — the inline
+  /// transform this record carries, with the identity rotation it defaults to.
+  /// The id is yours to set; it is the guest's own handle, not part of the
+  /// shape. `nodeId` stays 0: a drawable that hangs from a node is a different
+  /// sentence, and the factory should not guess which one you meant.
+  static at(meshResourceId: u32, materialId: u32, x: f32 = 0, y: f32 = 0,
+            z: f32 = 0, scale: f32 = 1.0): Renderable {
+    const renderable = new Renderable();
+    renderable.meshResourceId = meshResourceId;
+    renderable.materialId = materialId;
+    renderable.positionX = x;
+    renderable.positionY = y;
+    renderable.positionZ = z;
+    renderable.scaleX = scale;
+    renderable.scaleY = scale;
+    renderable.scaleZ = scale;
+    return renderable;
+  }
+}
+
+/**
+ * One entry of the motion table, 64 bytes (chunk 4): a renderable's whole
+ * transform and nothing else. The table lives at the start of `BUFFER_POOL`,
+ * the guest writes it, and `ogre::submit_motion(count)` names how much of it is
+ * live — one call per frame instead of one per body.
+ *
+ * **Flat fields, like every other record here.** An AssemblyScript field whose
+ * type is a class is a *reference*: `position: Vec3f` would be a 4-byte pointer
+ * and this record would not be 64 bytes. The `Transformf` layout is written out
+ * instead, at the offsets `Renderable`'s inline transform already uses
+ * (16/32/48), so the two read the same way — and `pad0` is what puts them
+ * there, because a record holding a `Quatf` aligns that `Quatf` to 16.
+ */
+@unmanaged
+export class MotionUpdate {
+  renderableId: u32 = 0;
+  flags: u32 = 0;
+  pad0: u64 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  pad1: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  pad2: f32 = 0;
+}
+
+/** One bone pose, 64 bytes — one entry of the bone table (DESIGN.md §5.1,
+ * chunk 5b). Same layout as `MotionUpdate`, with `boneIndex` where the motion
+ * record carries `flags`: a rig is posed by naming a renderable *and* a bone
+ * inside it, and the transform that follows is the bone's local transform.
+ *
+ * The table lives in `BUFFER_POOL` after the motion table, so `BONE_TABLE_OFFSET`
+ * is an offset *within the region*, not a region.
+ */
+@unmanaged
+export class BoneUpdate {
+  renderableId: u32 = 0;
+  boneIndex: u32 = 0;
+  pad0: u64 = 0;
+  positionX: f32 = 0;
+  positionY: f32 = 0;
+  positionZ: f32 = 0;
+  pad1: f32 = 0;
+  rotationX: f32 = 0;
+  rotationY: f32 = 0;
+  rotationZ: f32 = 0;
+  rotationW: f32 = 1;
+  scaleX: f32 = 1;
+  scaleY: f32 = 1;
+  scaleZ: f32 = 1;
+  pad2: f32 = 0;
+}
+
+/** One job, 64 bytes: what the session reports into `JOB`. */
+@unmanaged
+export class Job {
+  jobId: u32 = 0;
+  state: u32 = 0;
+  kind: u32 = 0;
+  flags: u32 = 0;
+  priority: i32 = 0;
+  resourceId: u32 = 0;
+  progress: f32 = 0;
+  error: i32 = 0;
+  nameOffset: u32 = 0;
+  nameLength: u32 = 0;
+  seq: u64 = 0;
+  reserved: u64 = 0;
+  reserved2: u64 = 0;
+}
+
+// --- constants -------------------------------------------------------------
+
+export const JOB_PENDING: u32 = 0;
+export const JOB_LOADING: u32 = 1;
+export const JOB_DONE: u32 = 2;
+export const JOB_FAILED: u32 = 3;
+export const JOB_CANCELLED: u32 = 4;
+/** Not one of the five states: a slot `releaseJob` freed. A stale id reports
+ * this rather than the next job's state, because ids are never reused. */
+export const JOB_RELEASED: u32 = 5;
+
+export const RES_MESH: u32 = 0;
+export const RES_TEXTURE: u32 = 1;
+export const RES_SHADER: u32 = 2;
+export const RES_FONT: u32 = 3;
+
+/** A mesh resource that carries a skeleton, in the `Resource` record's `flags`
+ * (DESIGN.md §5.1). The resource's `size` carries the *bone count* for these,
+ * where other resources carry bytes. */
+export const RES_RIGGED: u32 = 1;
+
+export const RES_STATE_REQUESTED: u32 = 0;
+export const RES_STATE_LOADING: u32 = 1;
+export const RES_STATE_READY: u32 = 2;
+export const RES_STATE_FAILED: u32 = 3;
+export const RES_STATE_UNLOADED: u32 = 4;
+
+export const MAT_HLMS_PBS: u32 = 0;
+export const MAT_HLMS_UNLIT: u32 = 1;
+export const MAT_HLMS_CUSTOM: u32 = 2;
+
+export const SHADER_VERTEX: u32 = 0;
+export const SHADER_FRAGMENT: u32 = 1;
+export const SHADER_COMPUTE: u32 = 2;
+
+export const SHADER_SOURCE_GLSL: u32 = 0;
+export const SHADER_SOURCE_SPIRV: u32 = 1;
+
+export const LIGHT_DIRECTIONAL: u32 = 0;
+export const LIGHT_POINT: u32 = 1;
+export const LIGHT_SPOT: u32 = 2;
+
+export const BUFFER_VERTEX: u32 = 0;
+export const BUFFER_INDEX: u32 = 1;
+export const BUFFER_INSTANCE: u32 = 2;
+export const BUFFER_STORAGE: u32 = 3;
+export const BUFFER_UNIFORM: u32 = 4;
+export const BUFFER_SKIN: u32 = 5;
+
+export const BUFFER_USAGE_STATIC: u32 = 0;
+export const BUFFER_USAGE_DYNAMIC: u32 = 1;
+export const BUFFER_USAGE_STREAM: u32 = 2;
+
+/** One `Resource`, 48 bytes: what the session reports into `RESOURCE`. The
+ * renderer's own record is the region's first entry, and its `seq` is the
+ * frame counter `frameCount()` reads. */
+export const RESOURCE_SIZE: u32 = 48;
+
+// --- reading a resource record ---------------------------------------------
+//
+// These live next to the offsets they read rather than in `index.ts` with the
+// verbs, because `mesh.ts` needs the state read and cannot import `index.ts`
+// (which re-exports `mesh.ts`) without a cycle. `index.ts` re-exports this
+// file, so `ogre.frameCount()` and `ogre.resourceState(id)` are the same calls
+// either way — and the record's field offsets have one spelling.
+
+/** The `RESOURCE` region's first byte. */
+export function getResourceBase(): usize {
+  return regionOffset(REGION_RESOURCE);
+}
+
+/** The renderer's frame counter: the first `Resource` record's `seq`, which the
+ * adapter writes every publish — no verb, no event, just the region. */
+export function frameCount(): u64 {
+  return load<u64>(getResourceBase() + RESOURCE_SEQ_OFFSET);
+}
+
+/** Any resource's `state`: `RES_STATE_REQUESTED`, `_LOADING`, `_READY`,
+ * `_FAILED`, `_UNLOADED` — or 0 for an id that is not in the region.
+ *
+ * The read a guest that **builds** a mesh needs: `MeshBuilder` hands back an id
+ * before the mesh exists (the render thread makes it on its next pass), and a
+ * renderable submitted against a resource that is not `READY` yet is refused
+ * and skipped. `MeshBuilder.build` waits on this; a guest that took the
+ * non-blocking form waits on it itself.
+ */
+export function resourceState(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_STATE_OFFSET);
+}
+
+/**
+ * Whether a mesh resource carries a skeleton.
+ *
+ * The loader records what it saw when it realised the mesh — the v1 -> v2
+ * conversion is what knows whether a rig survived, and nothing on the guest
+ * side can look inside the file. A rigged mesh also puts its **bone count** in
+ * the record's `size`, where other resources put bytes.
+ */
+export function isRigged(resourceId: u32): bool {
+  return (resourceFlags(resourceId) & RES_RIGGED) != 0;
+}
+
+/** How many bones a rigged mesh has, or 0 for anything that is not one. */
+export function boneCount(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  if ((load<u32>(record + RESOURCE_FLAGS_OFFSET) & RES_RIGGED) == 0) return 0;
+  return load<u32>(record + RESOURCE_SIZE_OFFSET);
+}
+
+function resourceFlags(resourceId: u32): u32 {
+  if (resourceId == 0) return 0;
+  const record = getResourceBase() + <usize>(resourceId - 1) * RESOURCE_SIZE;
+  return load<u32>(record + RESOURCE_FLAGS_OFFSET);
+}
+
+/** A `Resource` record's `seq`, in bytes from the record's start. */
+export const RESOURCE_SEQ_OFFSET: u32 = 40;
+
+/** A `Resource` record's `state` — `RES_STATE_*`, the field that says whether
+ * a resource can be used yet — in bytes from the record's start. */
+export const RESOURCE_STATE_OFFSET: u32 = 8;
+
+/** Its `flags` (bit 0 is `RES_RIGGED`) and its `size` (a rigged mesh's bone
+ * count), in bytes from the record's start. */
+export const RESOURCE_FLAGS_OFFSET: u32 = 12;
+export const RESOURCE_SIZE_OFFSET: u32 = 16;
+
+/** One `Job`, in bytes — the stride of the `JOB` region's table. */
+export const JOB_SIZE: u32 = 64;
+
+// --- the submission sub-tables ---------------------------------------------
+//
+// SCENE holds three tables end to end (DESIGN.md §5.1): 1024 `SceneNode`s,
+// then 512 `CameraRecord`s, then 1024 `LightRecord`s. MATERIAL and RENDERABLE
+// hold one table each. The split is the capability catalogue's business rather
+// than the protocol's, so it does not move `layoutHash` — which is exactly why
+// `assertSubmissionRegions` exists: the arithmetic below is the only thing
+// keeping the guest's idea of a slot and the adapter's in step.
+
+export const SCENE_NODE_COUNT: u32 = 1024;
+export const SCENE_NODE_SIZE: u32 = 80;
+export const SCENE_CAMERA_COUNT: u32 = 512;
+export const SCENE_CAMERA_SIZE: u32 = 80;
+export const SCENE_LIGHT_COUNT: u32 = 1024;
+export const SCENE_LIGHT_SIZE: u32 = 96;
+
+/** Where the cameras' table starts, in bytes from the region's first node. */
+export const SCENE_CAMERA_BASE: u32 = SCENE_NODE_COUNT * SCENE_NODE_SIZE;
+/** And the lights' table, after the cameras'. */
+export const SCENE_LIGHT_BASE: u32 = SCENE_CAMERA_BASE + SCENE_CAMERA_COUNT * SCENE_CAMERA_SIZE;
+/** The bytes SCENE needs for all three tables to fit. */
+export const SCENE_TABLE_BYTES: u32 = SCENE_LIGHT_BASE + SCENE_LIGHT_COUNT * SCENE_LIGHT_SIZE;
+
+export const MATERIAL_COUNT: u32 = 256;
+export const MATERIAL_SIZE: u32 = 208;
+export const RENDERABLE_COUNT: u32 = 2048;
+export const RENDERABLE_SIZE: u32 = 64;
+
+// --- the motion table (chunk 4) ---------------------------------------------
+//
+// One `MotionUpdate` per moving body, written by the guest at the start of
+// `BUFFER_POOL` and named in full to `ogre::submit_motion(count)`. The
+// capacity is the smaller of what the renderable table can hold and what the
+// region has room for: min(2048, 4 MiB / 64).
+
+/** One `MotionUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
+export const MOTION_SIZE: u32 = 64;
+
+/** How many entries the table can hold. */
+export const MOTION_CAPACITY: u32 = 2048;
+
+// --- the bone table (chunk 5b) ----------------------------------------------
+//
+// A second table of the same stride, past the motion table's 128 KiB:
+// `BONE_TABLE_OFFSET` + `BONE_SIZE * BONE_CAPACITY` must fit inside the region
+// alongside the motion table, and the arithmetic below is what says so.
+
+/** One `BoneUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
+export const BONE_SIZE: u32 = 64;
+
+/** How many entries the bone table can hold. */
+export const BONE_CAPACITY: u32 = 2048;
+
+/** Where the bone table starts, in bytes from `BUFFER_POOL`'s first byte. */
+export const BONE_TABLE_OFFSET: u32 = MOTION_SIZE * MOTION_CAPACITY;
+
+// --- the procedural-mesh window (chunk 5.5) ---------------------------------
+//
+// `ogre::create_mesh` reads vertex and index bytes the guest wrote into
+// `BUFFER_POOL` past the bone table. Both arrays live in this window — one
+// after the other, in whatever order the guest chooses, as long as each lies
+// inside it and they do not overlap — and the window's *size* is what limits a
+// mesh built this way: 512 KiB is ~43,000 vertices at 12 bytes each, so a
+// 16-bit index reaches every vertex such a mesh can hold. That is why the verb
+// takes no index width.
+
+/** Where the procedural-mesh window starts, in bytes from `BUFFER_POOL`'s
+ * first byte — past the motion table and the bone table. */
+export const PROCEDURAL_BASE: u32 = BONE_TABLE_OFFSET + BONE_SIZE * BONE_CAPACITY;
+
+/** How many bytes of `BUFFER_POOL` the window holds, shared by the vertex and
+ * index arrays a single `create_mesh` call names. */
+export const PROCEDURAL_CAPACITY: u32 = 512 * 1024;
+
+// --- vertex formats and topology (chunk 5.5) --------------------------------
+//
+// `format` is a flags word rather than an enum: a vertex is position, then
+// optionally a normal, then optionally a uv, interleaved in that order, and the
+// adapter declares exactly the elements the bits name. Position is the only
+// element the renderer requires — a constant-colour Unlit draw renders the same
+// pixels with position alone as with all three (probe: 10,368 px either way).
+// A textured datablock is where `VF_UV` starts to matter; normals are carried
+// because a lit path needs them, not because this one does.
+
+/** `F32x3` position bytes. Required — a format without it is refused. */
+export const VF_POSITION: u32 = 1 << 0;
+/** `F32x3` normal bytes, after the position. */
+export const VF_NORMAL: u32 = 1 << 1;
+/** `F32x2` uv bytes, after the position (and the normal). */
+export const VF_UV: u32 = 1 << 2;
+
+/** `create_mesh`'s `topology`: a triangle list, the only one the adapter
+ * declares. Anything else is refused with `-EINVAL`. */
+export const TOPO_TRIANGLE_LIST: u32 = 0;
+
+// --- the offset check ------------------------------------------------------
+
+/**
+ * The first OGRE wire offset that disagrees with this catalogue, or `null`.
+ *
+ * Same shape as the runtime's `wireOffsetsProblem`, and for the same reason: a
+ * mismatch is a build that will read another field's bytes, and naming the
+ * field is the whole diagnostic. Sizes come from the last field's offset plus
+ * its width plus the trailing reserved words, because AS's `sizeof` does not
+ * report these records the way the wire needs.
+ */
+/**
+ * The motion record's offsets, on their own.
+ *
+ * Separate from `ogreWireOffsetsProblem` so a guest that uses `MotionBatch`
+ * can assert exactly what it depends on, by name, rather than relying on a
+ * larger check happening to include it. The layout is the point: the id pair,
+ * then the transform at the offsets `Renderable`'s inline one already uses.
+ */
+function ogreMotionOffsetsProblem(): string | null {
+  if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
+  if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
+  if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
+  if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
+  if (offsetof<MotionUpdate>("pad2") + 4 != 64) return "MotionUpdate size";
+  return null;
+}
+
+/** Whether this build's `MotionUpdate` matches the catalogue. */
+export function checkOgreMotionOffsets(): bool {
+  return ogreMotionOffsetsProblem() == null;
+}
+
+/** `checkOgreMotionOffsets`, as an assertion that names the field that moved. */
+export function assertOgreMotionOffsets(): void {
+  const problem = ogreMotionOffsetsProblem();
+  if (problem != null) {
+    assert(false, "the motion record's offsets do not match the catalogue: " + problem);
+  }
+}
+
+/**
+ * The bone record's offsets, on their own.
+ *
+ * The motion record's layout with `boneIndex` where `flags` was, checked
+ * separately for the same reason: a guest that poses a rig depends on these
+ * fields by name, and the record's size is the table's stride.
+ */
+function ogreBoneOffsetsProblem(): string | null {
+  if (offsetof<BoneUpdate>("pad0") != 8) return "BoneUpdate.pad0";
+  if (offsetof<BoneUpdate>("positionX") != 16) return "BoneUpdate.positionX";
+  if (offsetof<BoneUpdate>("rotationX") != 32) return "BoneUpdate.rotationX";
+  if (offsetof<BoneUpdate>("scaleX") != 48) return "BoneUpdate.scaleX";
+  if (offsetof<BoneUpdate>("pad2") + 4 != BONE_SIZE) return "BoneUpdate size";
+  return null;
+}
+
+/** Whether this build's `BoneUpdate` matches the catalogue. */
+export function checkOgreBoneOffsets(): bool {
+  return ogreBoneOffsetsProblem() == null;
+}
+
+/** `checkOgreBoneOffsets`, as an assertion that names the field that moved. */
+export function assertOgreBoneOffsets(): void {
+  const problem = ogreBoneOffsetsProblem();
+  if (problem != null) {
+    assert(false, "the bone record's offsets do not match the catalogue: " + problem);
+  }
+}
+
+function ogreWireOffsetsProblem(): string | null {
+  // Math: the small ones are pure width, and the two padded ones carry their
+  // pad as a field so the container arithmetic below stays honest.
+  if (offsetof<Vec2f>("y") != 4 || offsetof<Vec2f>("y") + 4 != 8) return "Vec2f";
+  if (offsetof<Vec3f>("z") != 8 || offsetof<Vec3f>("z") + 4 != 12) return "Vec3f";
+  if (offsetof<Vec3f16>("pad") != 12 || offsetof<Vec3f16>("pad") + 4 != 16) return "Vec3f16";
+  if (offsetof<Vec4f>("w") != 12 || offsetof<Vec4f>("w") + 4 != 16) return "Vec4f";
+  if (offsetof<Quatf>("w") != 12 || offsetof<Quatf>("w") + 4 != 16) return "Quatf";
+  if (offsetof<Colourf>("a") != 12 || offsetof<Colourf>("a") + 4 != 16) return "Colourf";
+  if (offsetof<Mat4f>("m33") != 60 || offsetof<Mat4f>("m33") + 4 != 64) return "Mat4f";
+  if (offsetof<Transformf>("rotationX") != 16) return "Transformf.rotationX";
+  if (offsetof<Transformf>("scaleX") != 32) return "Transformf.scaleX";
+  if (offsetof<Transformf>("pad1") != 44 || offsetof<Transformf>("pad1") + 4 != 48) return "Transformf";
+  if (offsetof<Aabbf>("maxX") != 16) return "Aabbf.maxX";
+  if (offsetof<Aabbf>("pad1") != 28 || offsetof<Aabbf>("pad1") + 4 != 32) return "Aabbf";
+
+  // Refs.
+  if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
+  if (offsetof<BufferRef>("length") != 4 || offsetof<BufferRef>("length") + 4 != 8) return "BufferRef";
+
+  // The two moving tables. Checked here as well as by their own assertions so a
+  // build that forgets to call them still catches a moved field.
+  const motion = ogreMotionOffsetsProblem();
+  if (motion != null) return motion;
+  // The procedural window's start is derived here and written as a literal in
+  // the adapter (DESIGN.md §5.1 pins it at 256 KiB); a derivation that drifts
+  // from that number would put the guest's bytes where the adapter does not
+  // look, so the two are tied together by this.
+  if (PROCEDURAL_BASE != 256 * 1024) return "PROCEDURAL_BASE";
+  if (PROCEDURAL_CAPACITY == 0) return "PROCEDURAL_CAPACITY";
+  // The format bits are a contract with the adapter's element table: the three
+  // the adapter declares, in the order it declares them.
+  if (VF_POSITION != 1 || VF_NORMAL != 2 || VF_UV != 4) return "VF_ bits";
+  if (TOPO_TRIANGLE_LIST != 0) return "TOPO_TRIANGLE_LIST";
+  const bone = ogreBoneOffsetsProblem();
+  if (bone != null) return bone;
+
+  // Records.
+  if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
+  if (offsetof<SceneNode>("reserved") != 72) return "SceneNode.reserved";
+  if (offsetof<SceneNode>("reserved") + 8 != 80) return "SceneNode size";
+  if (offsetof<LightRecord>("intensity") != 32) return "LightRecord.intensity";
+  if (offsetof<LightRecord>("nameOffset") != 80) return "LightRecord.nameOffset";
+  if (offsetof<LightRecord>("reserved") + 8 != 96) return "LightRecord size";
+  if (offsetof<CameraRecord>("rotationX") != 40) return "CameraRecord.rotationX";
+  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord size";
+  if (offsetof<TextureSlot>("uvSet") + 4 != 16) return "TextureSlot size";
+  if (offsetof<Material>("slot0Resource") != 80) return "Material.slot0Resource";
+  if (offsetof<Material>("slot7Resource") != 192) return "Material.slot7Resource";
+  if (offsetof<Material>("slot7Uv") + 4 != 208) return "Material size";
+  if (offsetof<ShaderRecord>("reserved") != 32) return "ShaderRecord.reserved";
+  if (offsetof<ShaderRecord>("reserved") + 8 != 40) return "ShaderRecord size";
+  if (offsetof<ResourceReq>("requestedSeq") != 24) return "ResourceReq.requestedSeq";
+  if (offsetof<ResourceReq>("reserved") + 8 != 40) return "ResourceReq size";
+  if (offsetof<Resource>("seq") != 40) return "Resource.seq";
+  if (offsetof<Resource>("seq") + 8 != 48) return "Resource size";
+  if (offsetof<Buffer>("bytes") != 32) return "Buffer.bytes";
+  if (offsetof<Buffer>("reserved") + 8 != 48) return "Buffer size";
+  // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
+  // The pin is here because the rename is a *semantics* change, and the one
+  // thing that must not change with it is where the field sits.
+  if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
+  if (offsetof<Renderable>("positionX") != 16) return "Renderable.positionX";
+  if (offsetof<Renderable>("scalePad") + 4 != 64) return "Renderable size";
+  // The motion table's record: the id pair, then the transform at the offsets
+  // Renderable's inline one uses. `pad0` is what makes the transform land on
+  // 16, and the record end at 64. Checked by `ogreMotionOffsetsProblem` so a
+  // guest that uses `MotionBatch` can assert exactly what it depends on.
+  const motion_problem = ogreMotionOffsetsProblem();
+  if (motion_problem != null) return motion_problem;
+  if (offsetof<Job>("priority") != 16) return "Job.priority";
+  if (offsetof<Job>("progress") != 24) return "Job.progress";
+  if (offsetof<Job>("seq") != 40) return "Job.seq";
+  if (offsetof<Job>("reserved2") + 8 != 64) return "Job size";
+
+  return null;
+}
+
+/** Whether this build's OGRE wire offsets match the catalogue. */
+export function checkOgreWireOffsets(): bool {
+  return ogreWireOffsetsProblem() == null;
+}
+
+/** `checkOgreWireOffsets`, as an assertion that names the field that moved. */
+export function assertOgreWireOffsets(): void {
+  const problem = ogreWireOffsetsProblem();
+  if (problem != null) {
+    assert(false, "the OGRE wire offsets do not match the catalogue: " + problem);
+  }
+}
