@@ -793,8 +793,26 @@ class BackendOgre final : public Backend {
             image_.load(stream);
 
             Ogre::TextureGpuManager *textures = render_system_->getTextureGpuManager();
+            // A *sampled* texture needs `AutomaticBatching`, and this is the
+            // round that measured why (13c): the Hlms samples through
+            // `textureMaps`, an array of 2D texture arrays, and only a
+            // texture with this flag is packed into one -- "Most normally
+            // we'll treat 2D textures internally as a slice to a 2D array
+            // texture". Created without it, the texture is resident and
+            // correct and the datablock holds it, and the pixel shader still
+            // samples the array's blank 4x4 slice, which is black: four
+            // characters, lit and textured, at rgb(0,0,0) with the image data
+            // verified byte-for-byte. The flag is a 2D-array mechanism and
+            // OGRE refuses it for any other type -- ASCII.dds is a volume
+            // texture, and the jobs fixture aborted the frame with
+            // "AutomaticBatching can only be used with Type2D textures"
+            // (measured) -- so a 2D image gets it and nothing else does.
+            const uint32_t texture_flags =
+                image_.getTextureType() == Ogre::TextureTypes::Type2D
+                    ? static_cast<uint32_t>(Ogre::TextureFlags::AutomaticBatching)
+                    : 0u;
             Ogre::TextureGpu *texture = textures->createTexture(
-                name, Ogre::GpuPageOutStrategy::Discard, Ogre::TextureFlags::ManualTexture,
+                name, Ogre::GpuPageOutStrategy::Discard, texture_flags,
                 Ogre::TextureTypes::Type2D, kResourceGroup);
             texture->setPixelFormat(image_.getPixelFormat());
             texture->setTextureType(image_.getTextureType());
@@ -1030,8 +1048,7 @@ class BackendOgre final : public Backend {
     }
 
     /// The name of the texture a slot names, or empty when it names nothing
-    /// this backend realised. A datablock binds textures by name, so the name
-    /// is the whole mapping.
+    /// this backend realised.
     Ogre::String texture_name_for(uint32_t resource_id) {
         const ResourceHandle handle = resolve(resource_id);
         if (handle == kNoResourceHandle || handle > resources_.size()) return Ogre::String();
