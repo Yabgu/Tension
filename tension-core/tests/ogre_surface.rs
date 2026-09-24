@@ -365,8 +365,16 @@ fn test_ogre_adapter_surface() {
             verb_id: 12,
             flags: 0,
         },
+        Registered {
+            module: "ogre".into(),
+            name: "mount_tns".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 4,
+            verb_id: 13,
+            flags: 0,
+        },
     ];
-    assert_eq!(imports, expected, "the twelve imports of the SDK, and their flags");
+    assert_eq!(imports, expected, "the thirteen imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(

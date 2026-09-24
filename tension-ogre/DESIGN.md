@@ -1298,12 +1298,12 @@ table: **longest prefix wins**, the path after the strip carries no leading `/`,
 **deferred** with `-ENOENT` — the same shape the existing guest-jobs test
 asserts — with a queue-time log line distinguishing "no mount matched" from
 "not in the matched mount". The C ABI is the right shape for this seam: the
-caller owns the bytes and the library never opens a file. But its header does
-not compile as C++ — the typedef `tension_res_stat` and the function
-`tension_res_stat` collide in the ordinary identifier namespace
-(`tension_res.h:93`), which is invisible to Rust's FFI and Zig's cImport and
-fatal to the first C++ consumer this ABI has ever had. 11b needs one of: rename
-the function, or declare it for C++ under an asm label. The probe measures the
+caller owns the bytes and the library never opens a file. The header's one C++ defect is fixed (11b): the
+typedef `tension_res_stat` and the function of the same name collided in the
+ordinary identifier namespace — invisible to Rust's FFI and Zig's cImport, and
+fatal to the first C++ consumer this ABI has ever had. The function is
+`tension_res_stat_path` now, and `tests/probe_tns.cpp` includes the real header
+with no local declarations. The probe measures the
 read path against the shipping archive: `text/intro.txt` (313 B) and
 `data/level1.bin` (4096 B, the multi-chunk file) read byte-exact through
 `load_borrowed`/`open`/`stat_fd`/`read`/`close`, `-2` for a missing path, and a
@@ -1313,6 +1313,22 @@ the volume arm pays Deflate (the packer compressed the same bytes into
 50,688 B). Per mesh at load time that is nothing beside the disk arm's
 syscalls; a round that wants the raw path wants a packer "stored" switch, not a
 loader change.
+
+**The loader's byte source, as delivered (11b).** `mounts.{h,cpp}` holds the
+table: `Mount { prefix, tns_path, bytes, res }` in a heap-stable `unique_ptr`
+vector — stable so a resolved `const Mount *` outlives the lock that found it,
+append-only so there is nothing to invalidate. The verb is `mount_tns`, **verb
+id 13** (the plan said 12; `create_mesh` already held 12, and a second verb on
+one id would shadow it): four `i32` arguments, registered beside the rest, and
+the surface test now counts thirteen imports. The worker resolves by longest
+prefix, reads through `tension_res_open`/`stat_fd`/`read`/`close`, keeps the
+magic check and the completion push; no mount matches → `-ENOENT` ("no mount
+for <path>"), and a path that ends in `/` → `-EINVAL` (a directory is not a
+file). The render side is untouched: same queue, same `MemoryDataStream`, same
+`MeshSerializer::importMesh`. The DSO links the same static archive
+`tension-core` links — measured 3,504,488 → 4,443,544 bytes (+26.8 %), with
+`--exclude-libs,ALL` keeping the archive's exported symbols out of the DSO's
+dynamic table.
 
 **A skeleton can be fileless, and the probe proved it (11a Q2).** With **no
 resource location registered at all** — and a group created *empty*, which is
@@ -1336,13 +1352,50 @@ with a **null def and no exception** (measured, first arm); the no-registration
 control arm lands in the same silent state, which is chunk 5b's SIGSEGV class
 waiting for the draw. The manual-registration policy is therefore taken: no
 partial migration, no `Ogre::Archive` subclass, and 11b's loader needs no
-resource location for meshes or skeletons. (Textures read through the same
-volume path by construction, but the probe measured meshes only — the upload
-half is unchanged by the source swap.)
+resource location for meshes or skeletons.
 
-**Thread rule for the mount table (11b).** One `tension_res*` per mount; every
-call into it — mount, worker read, close — happens under the loader's existing
-job-table mutex. The C header states no thread-safety guarantee and the handle
+**As delivered (11b): the sibling convention, and four measurements the 11a
+plan did not have.** The shipped v1 meshes are *binary*
+(`[MeshSerializer_v1.100]`), not XML — there is no `<skeletonlink name="...">`
+text for the worker to scan, and the plan's tag does not exist in the files.
+What the round measured instead, one trap at a time:
+
+1. The v1 importer *captures* the skeleton resource it finds at **import**
+   time. Registering the manual resource after `importMesh` — the plan's order —
+   replaces a resource the mesh already holds, and the conversion then builds a
+   def with **0 bones on a 19-bone rig** (measured twice, in two orders).
+2. The importer also *declares* a skeleton resource the moment it parses a
+   linking mesh: an empty shell under the right name, no loader behind it. "A
+   resource with this name exists" is therefore the wrong test; "is it loaded,
+   and is it ours" is the right one, and the backend replaces shells.
+3. With the media `models` location still registered, the import loaded
+   `Stickman.skeleton` **from the OGRE install on disk** — the mounted volume
+   was decoration. That location now retires in `add_resource_locations`; the
+   volume is the only source of a skeleton, no disk fallback.
+4. `initialiseResourceGroup(kResourceGroup, false)` — the round's plan's way to
+   satisfy the probe's group-state finding — is an unconditional **SIGSEGV at
+   startup** in this adapter: initialising "General" parses every script in the
+   media tree, and one of them dies inside
+   `UnifiedHighLevelGpuProgram::createParameters` under the NULL render system.
+   It is not called. The default group is already initialised, which is the
+   state manual resources check (the probe's missing-group finding was about a
+   group that did not exist at all, and it lives on in `mount_tns`'s world).
+
+The delivered sequence: the loader derives the sibling name from the mesh's own
+path (`resources/models/x.mesh` → `x.skeleton`), reads it through the mount
+table (the per-job `AssetResolver`, same lock as the worker's) and hands it to
+the backend **before** the import; `realise_mesh` registers it as a manual v1
+resource under exactly the name the mesh references and keeps its loader alive,
+then imports. If the parse still reports a skeleton the candidate did not
+cover, the resolver gets one chance; if the volume does not carry it, the job
+fails `-ENOENT`. And a mesh that comes back rigged with a null def is refused
+`-ENOENT` rather than drawn — that state is chunk 5b's SIGSEGV class. Textures
+read through the same volume path; the upload half is unchanged by the source
+swap.
+
+**Thread rule for the mount table, as implemented.** One `tension_res*` per
+mount; every call into it — the guest thread's mount, the worker's read, the
+render thread's sibling read — happens under the loader's job-table mutex. The C header states no thread-safety guarantee and the handle
 carries mutable state (fd table, readdir cursor); if a future round needs two
 readers, the ABI's own answer is `tension_res_load_borrowed` twice over the same
 immutable bytes, which yields two independent handles.
@@ -1851,6 +1904,18 @@ concern that the wire format does not depend on.
 Recorded here so the seams are named rather than rediscovered. None of these is
 chunk 1 work, and each is additive:
 
+- **The guest fixtures still queue bare names: 11c's work.** The loader's byte
+  source is a mount or nothing now (11b), so every fixture under
+  `tension-ogre/tests/` that asks for `"Barrel.mesh"` fails `-ENOENT` ("no mount
+  for …") until 11c gives them a packed volume and prefixed paths. That is the
+  plan, not an accident: the four examples are what this round proves, and the
+  fixtures' own run.sh is where the paths move next.
+- **Deflate costs 6× on a mounted read, and it does not matter yet.** The 11a
+  probe measured 946.6 µs through a volume against 158.2 µs from disk for the
+  same 94,025-byte mesh (the volume arm pays decompression; the packer has no
+  "stored" flag). Per mesh, once, at load time, next to the disk arm's syscalls
+  it is nothing — but a round that wants the raw number wants a packer switch,
+  not a loader change.
 - **`SUBMISSION_REJECTED` is class 3, not the last class.** The round that
   introduced deferred submission numbered it last (`9`); the urgent-first
   ordering that same round adopted puts it at `3` (§3.2), and the frozen

@@ -157,9 +157,16 @@ struct Recorder {
     }
 };
 
-/// A directory of fixture files, removed when the test ends.
+/// A directory of fixture files — packed into a Tension Volume at
+/// construction, removed when the test ends. Chunk 11 made the mount table the
+/// loader's only byte source, so the fixtures travel the same road a real
+/// asset does: written to a temp tree, packed with the library's own packer,
+/// loaded borrowed, and mounted under the "fixtures" prefix.
 struct Fixtures {
     std::filesystem::path dir;
+    std::filesystem::path volume;
+    std::vector<uint8_t> bytes; ///< the volume image; the handle borrows it
+    tension_res *res = nullptr;
 
     Fixtures() {
         dir = std::filesystem::temp_directory_path() /
@@ -168,8 +175,10 @@ struct Fixtures {
         write("good.mesh", std::string("[MeshSerializer_v1.8]") + std::string(64, '\0'));
         write("bad.mesh", std::string("not a mesh at all"));
         write("good.png", std::string("\x89PNG\r\n\x1a\n", 8) + std::string(64, '\0'));
+        pack();
     }
     ~Fixtures() {
+        if (res != nullptr) tension_res_free(res);
         std::error_code ignored;
         std::filesystem::remove_all(dir, ignored);
     }
@@ -177,6 +186,35 @@ struct Fixtures {
     void write(const std::string &name, const std::string &content) {
         std::ofstream file(dir / name, std::ios::binary);
         file.write(content.data(), static_cast<std::streamsize>(content.size()));
+        // The first version of this helper wrote into a directory that did not
+        // exist and the packer packed an empty tree: a silent ofstream, and the
+        // check is what turns that into a test failure.
+        check(file.good(), "the fixture file \"" + name + "\" was written");
+    }
+
+    void pack() {
+        volume = dir / "fixtures.tns";
+        char err[512] = {0};
+        const int32_t rc = tension_res_pack(dir.string().c_str(), volume.string().c_str(), err,
+                                            sizeof err);
+        check(rc == 0, std::string("the fixture volume packs: ") + err);
+        std::ifstream file(volume, std::ios::binary);
+        bytes.assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+        check(!bytes.empty(), "the fixture volume is non-empty");
+        tension_res *handle = nullptr;
+        const int32_t loaded =
+            tension_res_load_borrowed(bytes.data(), bytes.size(), &handle, err, sizeof err);
+        check(loaded == 0 && handle != nullptr,
+              std::string("the fixture volume loads borrowed: ") + err);
+        res = handle;
+    }
+
+    /// Mount the volume; the loader owns the image from here (the move keeps
+    /// the buffer's address, which is what the borrowed handle points at).
+    void install(Loader &loader) {
+        const int32_t mounted =
+            loader.add_mount("fixtures", volume.string(), std::move(bytes), res);
+        check_eq(static_cast<uint64_t>(mounted), 0, "the fixture volume mounts under fixtures/");
     }
 };
 
@@ -184,10 +222,10 @@ void test_queue_allocates_sequential_ids() {
     std::printf("test_queue_allocates_sequential_ids\n");
     Fixtures fixtures;
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
-    loader->set_search_paths({fixtures.dir.string()});
-    const int32_t first = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
-    const int32_t second = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
-    const int32_t third = loader->queue(TENSION_OGRE_RES_KIND_TEXTURE, "good.png", 0, 0, 0);
+    fixtures.install(*loader);
+    const int32_t first = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
+    const int32_t second = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
+    const int32_t third = loader->queue(TENSION_OGRE_RES_KIND_TEXTURE, "fixtures/good.png", 0, 0, 0);
     check_eq(first, 1, "the first job id");
     check_eq(second, 2, "the second job id");
     check_eq(third, 3, "the third job id");
@@ -198,16 +236,16 @@ void test_queue_full_returns_enospc() {
     std::printf("test_queue_full_returns_enospc\n");
     Fixtures fixtures;
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
     for (uint32_t index = 0; index < Loader::kCapacity; ++index) {
-        const int32_t id = loader->queue(TENSION_OGRE_RES_KIND_MESH, "missing.mesh", 0, 0, 0);
+        const int32_t id = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/missing.mesh", 0, 0, 0);
         if (id <= 0) {
             check(false, "queue refused before the table was full");
             return;
         }
     }
     check_eq(loader->free_slots(), 0, "no free slots left");
-    check_eq(static_cast<uint64_t>(loader->queue(TENSION_OGRE_RES_KIND_MESH, "missing.mesh", 0, 0, 0)),
+    check_eq(static_cast<uint64_t>(loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/missing.mesh", 0, 0, 0)),
              static_cast<uint64_t>(-ENOSPC), "the 769th job is refused with -ENOSPC");
 }
 
@@ -215,15 +253,15 @@ void test_job_release_returns_slot_to_free_list() {
     std::printf("test_job_release_returns_slot_to_free_list\n");
     Fixtures fixtures;
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
-    loader->set_search_paths({fixtures.dir.string()});
-    const int32_t first = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    fixtures.install(*loader);
+    const int32_t first = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
     const uint32_t slot_before_release = loader->slot_of(static_cast<uint32_t>(first));
     check_eq(loader->job_release(static_cast<uint32_t>(first)), 0, "release succeeds");
     check_eq(loader->free_slots(), Loader::kCapacity, "the slot is free again");
     check_eq(static_cast<uint64_t>(loader->job_release(static_cast<uint32_t>(first))),
              static_cast<uint64_t>(-ENOENT), "releasing twice is -ENOENT");
 
-    const int32_t second = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    const int32_t second = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
     check_eq(second, first, "the freed id is handed straight back");
     check_eq(loader->slot_of(static_cast<uint32_t>(second)), slot_before_release,
              "the freed slot was reused");
@@ -247,8 +285,8 @@ void test_mirror_writes_only_dirty_slots() {
     std::printf("test_mirror_writes_only_dirty_slots\n");
     Fixtures fixtures;
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
-    loader->set_search_paths({fixtures.dir.string()});
-    loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    fixtures.install(*loader);
+    loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
 
     Recorder recorder;
     const size_t first = loader->mirror_to_region(recorder.write(), 0x1000, 0x2000);
@@ -259,7 +297,7 @@ void test_mirror_writes_only_dirty_slots() {
 
     // A refused write (the publish budget) leaves the slot dirty for the next
     // epoch, and stops the pass rather than pushing on.
-    loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
     Recorder refusing;
     refusing.refuse_after = 0;
     const size_t third = loader->mirror_to_region(refusing.write(), 0x1000, 0x2000);
@@ -273,9 +311,9 @@ void test_worker_reads_bytes_and_completes() {
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
     Recorder recorder;
     loader->set_sink(recorder.sink());
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
 
-    const int32_t job = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 11, 22, 0);
+    const int32_t job = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 11, 22, 0);
     check(loader->wait_for_idle(5000), "the worker goes idle");
 
     MockBackend backend;
@@ -320,9 +358,9 @@ void test_worker_reports_enoent_for_missing_file() {
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
     Recorder recorder;
     loader->set_sink(recorder.sink());
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
 
-    loader->queue(TENSION_OGRE_RES_KIND_MESH, "not-there.mesh", 0, 0, 0);
+    loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/not-there.mesh", 0, 0, 0);
     check(loader->wait_for_idle(5000), "the worker goes idle");
 
     MockBackend backend;
@@ -340,9 +378,9 @@ void test_worker_reports_eio_for_bad_magic() {
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
     Recorder recorder;
     loader->set_sink(recorder.sink());
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
 
-    loader->queue(TENSION_OGRE_RES_KIND_MESH, "bad.mesh", 0, 0, 0);
+    loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/bad.mesh", 0, 0, 0);
     check(loader->wait_for_idle(5000), "the worker goes idle");
 
     MockBackend backend;
@@ -359,9 +397,9 @@ void test_backend_refusal_fails_the_job() {
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
     Recorder recorder;
     loader->set_sink(recorder.sink());
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
 
-    loader->queue(TENSION_OGRE_RES_KIND_TEXTURE, "good.png", 0, 0, 0);
+    loader->queue(TENSION_OGRE_RES_KIND_TEXTURE, "fixtures/good.png", 0, 0, 0);
     check(loader->wait_for_idle(5000), "the worker goes idle");
 
     MockBackend backend;
@@ -456,9 +494,9 @@ void test_procedural_mesh_shares_the_resource_id_space() {
     std::unique_ptr<Loader> loader = std::make_unique<Loader>();
     Recorder recorder;
     loader->set_sink(recorder.sink());
-    loader->set_search_paths({fixtures.dir.string()});
+    fixtures.install(*loader);
 
-    const int32_t job = loader->queue(TENSION_OGRE_RES_KIND_MESH, "good.mesh", 0, 0, 0);
+    const int32_t job = loader->queue(TENSION_OGRE_RES_KIND_MESH, "fixtures/good.mesh", 0, 0, 0);
     loader->wait_for_idle(5000);
     MockBackend backend;
     // Drained first, so the load's id is allocated before the next one is: a

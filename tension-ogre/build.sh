@@ -48,14 +48,24 @@ case "${1:-}" in
         ;;
     --test)
         # The unit tests need no OGRE: the loader's worker reads bytes and the
-        # backend is a mock, the config decoder is pure parsing.
+        # backend is a mock, the config decoder is pure parsing. The loader
+        # reads through the mount table now (chunk 11), so these tests link
+        # tension-res too — the same static archive tension-core links.
+        res_dir="$here/../tension-res"
+        if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ]; then
+            echo "tension-ogre: $res_dir/zig-out/lib/libtension_res.a is missing." >&2
+            echo "  Build it first: (cd $res_dir && zig build -Doptimize=ReleaseSafe)" >&2
+            exit 1
+        fi
         mkdir -p "$out/tests"
         "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
             "$here/src/config.cpp" "$here/tests/config_test.cpp" \
             -o "$out/tests/config_test" || exit 1
         "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
-            "$here/src/loader.cpp" "$here/tests/loader_test.cpp" \
-            -o "$out/tests/loader_test" -lpthread || exit 1
+            -I"$res_dir/include" \
+            "$here/src/loader.cpp" "$here/src/mounts.cpp" "$here/tests/loader_test.cpp" \
+            -o "$out/tests/loader_test" \
+            "$res_dir/zig-out/lib/libtension_res.a" -lpthread || exit 1
         "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
             "$here/src/scene.cpp" "$here/tests/scene_test.cpp" \
             -o "$out/tests/scene_test" || exit 1
@@ -115,10 +125,25 @@ fi
 
 # Exactly one backend file: each defines `make_backend`, so compiling both is a
 # duplicate symbol, and the choice is the build's to make (B.2b.2).
+#
+# Chunk 11: `mounts.cpp` (the Tension Volume mount table) joins every build, and
+# the static archive it drives is linked in. The archive is the same one
+# `tension-core/build.rs` links (`zig build -Doptimize=ReleaseSafe`);
+# `--exclude-libs,ALL` keeps its ~120 exported symbols out of this DSO's
+# dynamic table — the adapter's own entry points are the ones that must be
+# visible to dlopen.
+res_dir="$here/../tension-res"
+if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ]; then
+    echo "tension-ogre: $res_dir/zig-out/lib/libtension_res.a is missing." >&2
+    echo "  Build it first: (cd $res_dir && zig build -Doptimize=ReleaseSafe)" >&2
+    exit 1
+fi
+res_include="-I$res_dir/include"
+res_archive="$res_dir/zig-out/lib/libtension_res.a"
 if [ "$backend" = ogre ]; then
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/mounts.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
 else
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/mounts.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
 fi
 
 # -std=c++17: the adapter uses <thread>, <condition_variable> and structured
@@ -129,13 +154,13 @@ fi
 mkdir -p "$out"
 # shellcheck disable=SC2086  # the flag lists are deliberate word splits
 "${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \
-    -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $ogre_include \
+    -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $res_include $ogre_include \
     ${plugin_dir:+-DTENSION_OGRE_PLUGIN_DIR="\"$plugin_dir\""} \
     ${media_dir:+-DTENSION_OGRE_MEDIA_DIR="\"$media_dir\""} \
     -DTENSION_OGRE_BACKEND="${backend}" \
     $sources \
     -shared -o "$out/libtension_ogre.so" \
-    $ogre_lib -lpthread
+    $ogre_lib $res_archive -Wl,--exclude-libs,ALL -lpthread
 
 echo "tension-ogre: $out/libtension_ogre.so (backend $backend)"
 if [ "$backend" = ogre ]; then

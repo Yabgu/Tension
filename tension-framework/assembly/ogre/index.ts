@@ -1,4 +1,4 @@
-// The OGRE capability's guest SDK: the ten verbs a guest may call, and the
+// The OGRE capability's guest SDK: the eleven verbs a guest may call, and the
 // conveniences that make them usable (a config builder, a last-error reader,
 // the record writers the submission verbs address, and the frame counter).
 //
@@ -84,6 +84,9 @@ declare function queueMeshLoadRaw(namePtr: u32, nameLen: u32, priority: i32): i3
 /** Queue a texture load; returns a job id (> 0) or an errno. */
 @external("ogre", "queue_texture_load")
 declare function queueTextureLoadRaw(namePtr: u32, nameLen: u32, priority: i32): i32;
+/** Mount a Tension Volume under a prefix; 0, or the errno the mount refused with. */
+@external("ogre", "mount_tns")
+declare function mountTnsRaw(prefixPtr: u32, prefixLen: u32, tnsPtr: u32, tnsLen: u32): i32;
 /** Copy a `Job` record into `out_ptr`; 0, or -ENOENT for an unknown id. */
 @external("ogre", "job_state")
 declare function jobStateRaw(jobId: i32, outPtr: u32): i32;
@@ -203,6 +206,24 @@ export function queueTextureLoad(path: string, priority: i32 = 0): i32 {
   const at = writeString(path);
   if (at == 0 && path.length > 0) return -28;
   return queueTextureLoadRaw(at, lastWriteLength, priority);
+}
+
+/**
+ * Mount a Tension Volume under `prefix` (chunk 11): every load path resolves
+ * against the mount table by longest prefix, and the bytes come from the
+ * volume — the disk is read once, here, and never again. `tnsPath` must be an
+ * absolute path the host can open. Call it after `init` and before the first
+ * load; loading a path no mount carries fails with -ENOENT (there is no
+ * fallback to the disk).
+ */
+export function mountTns(prefix: string, tnsPath: string): i32 {
+  const prefixAt = writeString(prefix);
+  const prefixLength = lastWriteLength;
+  if (prefixAt == 0 && prefix.length > 0) return -28; // -ENOSPC: the half is full
+  const tnsAt = writeString(tnsPath);
+  const tnsLength = lastWriteLength;
+  if (tnsAt == 0 && tnsPath.length > 0) return -28;
+  return mountTnsRaw(prefixAt, prefixLength, tnsAt, tnsLength);
 }
 
 /** A job's state (`JOB_*`), or `JOB_FAILED` for an id outside the table. */

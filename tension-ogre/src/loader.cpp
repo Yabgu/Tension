@@ -95,21 +95,12 @@ bool magic_ok(uint32_t kind, const std::vector<uint8_t> &bytes) {
 
 /// Read a whole file. `-ENOENT` when it is not there, `-EIO` when it is there
 /// and unreadable.
-std::vector<uint8_t> read_file(const std::string &path, int32_t &error) {
-    std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        error = -ENOENT;
-        return {};
-    }
-    std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(file)),
-                               std::istreambuf_iterator<char>());
-    if (file.bad() || bytes.empty()) {
-        error = -EIO;
-        return {};
-    }
-    error = 0;
-    return bytes;
-}
+/// (Chunk 11 removed the disk read this used to be: the worker's bytes come
+/// from the mount table now, through `mount_read` — see mounts.{h,cpp}.)
+
+/// The mount table's snapshot and a sibling asset read live on the Loader; see
+/// loader.h for why the worker holds stable `const Mount *` pointers rather
+/// than a copy of the table.
 
 } // namespace
 
@@ -135,6 +126,56 @@ void Loader::set_sink(LoaderSink sink) {
 void Loader::set_search_paths(std::vector<std::string> paths) {
     std::lock_guard<std::mutex> lock(mutex_);
     search_paths_ = std::move(paths);
+}
+
+int32_t Loader::add_mount(const std::string &prefix, const std::string &tns_path,
+                          std::vector<uint8_t> bytes, tension_res *res) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const int32_t refusal = mount_refusal(mounts_, prefix, tns_path);
+    if (refusal != 0) return refusal;
+    std::unique_ptr<Mount> mount = std::make_unique<Mount>();
+    mount->prefix = prefix;
+    mount->tns_path = tns_path;
+    mount->bytes = std::move(bytes);
+    mount->res = res;
+    mounts_.push_back(std::move(mount));
+    return 0;
+}
+
+std::vector<const Mount *> Loader::mount_pointers_locked() const {
+    return mount_pointers(mounts_);
+}
+
+std::vector<uint8_t> Loader::read_sibling_asset(const std::string &mesh_path,
+                                                const std::string &name,
+                                                int32_t *error) const {
+    int32_t local_error = 0;
+    int32_t *slot = error != nullptr ? error : &local_error;
+    const size_t slash = mesh_path.find_last_of('/');
+    const std::string sibling =
+        slash == std::string::npos ? name : mesh_path.substr(0, slash + 1) + name;
+
+    std::vector<const Mount *> mounts;
+    LoaderSink sink;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        mounts = mount_pointers_locked();
+        sink = sink_;
+    }
+    std::string relative;
+    const Mount *mount = mount_resolve(mounts, sibling, &relative);
+    if (mount == nullptr) {
+        *slot = -ENOENT;
+        sink.note(3, "ogre: mesh " + mesh_path + " links \"" + name +
+                         "\" and no mount carries " + sibling);
+        return {};
+    }
+    std::vector<uint8_t> bytes = mount_read(*mount, relative, slot);
+    if (*slot != 0) {
+        sink.note(3, "ogre: skeleton " + sibling + " could not be read (" +
+                         std::to_string(*slot) + ")");
+    }
+    return bytes;
 }
 
 int32_t Loader::queue(uint32_t kind, const std::string &name, uint32_t name_offset,
@@ -278,6 +319,42 @@ void Loader::drain_completions(Backend &backend) {
         ResourceHandle handle = kNoResourceHandle;
         uint32_t bones = 0;
         const bool mesh = snapshot.kind == TENSION_OGRE_RES_KIND_MESH;
+        if (mesh) {
+            // A mesh's skeleton is named inside the mesh file, and only OGRE's
+            // parse can say what that name is — the shipped v1 meshes are
+            // binary, so there is no tag for the worker to scan. The backend
+            // asks back for the skeleton through this resolver while it has
+            // the mesh's bytes in hand; the bytes come from the mount table
+            // through the same lock the worker uses, and no OGRE object is
+            // touched by the read. Binding it to the job's own path is what
+            // makes the lookup a *sibling* of the mesh.
+            const std::string mesh_path = snapshot.name;
+            backend.set_asset_resolver([this, mesh_path](const std::string &name, int32_t *error) {
+                return read_sibling_asset(mesh_path, name, error);
+            });
+            // The sibling convention, applied before the parse: a mesh
+            // `resources/models/x.mesh` in a volume links `x.skeleton` beside
+            // it, and the v1 importer captures whatever skeleton resource it
+            // finds *at import time* — so the candidate has to be registered
+            // before `realise_mesh` runs, not after. Absent is not an error: an
+            // unrigged mesh has no sibling.
+            const size_t dot = mesh_path.find_last_of('.');
+            const size_t slash = mesh_path.find_last_of('/');
+            if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) {
+                const std::string stem = mesh_path.substr(0, dot);
+                const std::string candidate = stem.substr(stem.find_last_of('/') + 1) + ".skeleton";
+                int32_t sibling_error = 0;
+                std::vector<uint8_t> candidate_bytes =
+                    read_sibling_asset(mesh_path, candidate, &sibling_error);
+                if (sibling_error == 0 && !candidate_bytes.empty()) {
+                    backend.set_skeleton_candidate(candidate, std::move(candidate_bytes));
+                } else {
+                    backend.set_skeleton_candidate("", {});
+                }
+            } else {
+                backend.set_skeleton_candidate("", {});
+            }
+        }
         const int32_t realised =
             mesh ? backend.realise_mesh(completion.bytes.data(), completion.bytes.size(), &handle,
                                         &bones)
@@ -512,7 +589,8 @@ void Loader::worker_main() {
         uint32_t index = 0;
         uint32_t kind_for_worker = TENSION_OGRE_RES_KIND_MESH;
         std::string name;
-        std::vector<std::string> paths;
+        std::vector<const Mount *> mounts;
+        LoaderSink sink;
         {
             std::unique_lock<std::mutex> lock(mutex_);
             work_cv_.wait(lock, [this] { return stopping_ || !pending_slots_.empty(); });
@@ -529,16 +607,35 @@ void Loader::worker_main() {
             name = jobs_[index].name;
             kind_for_worker = jobs_[index].kind;
             slot_state_for_worker(index);
-            paths = search_paths_;
+            mounts = mount_pointers_locked();
+            sink = sink_;
             worker_busy_ = true;
         }
 
         int32_t error = -ENOENT;
         std::vector<uint8_t> bytes;
-        for (const std::string &directory : paths) {
-            bytes = read_file(directory + "/" + name, error);
-            if (error == 0) break;
-            if (error == -EIO) break; // there, but unreadable: another path will not help
+        {
+            std::string relative;
+            const Mount *mount = mount_resolve(mounts, name, &relative);
+            if (mount == nullptr) {
+                // The mount table is the only byte source (11a's decision: no
+                // fallback to the disk the media tree used to be read from).
+                // A path that spells a directory gets the refusal that says
+                // so; everything else is "no mount carries this".
+                if (mount_path_is_directory(name)) {
+                    error = -EINVAL;
+                    sink.note(3, "ogre: " + name + " names a directory, not a file");
+                } else {
+                    error = -ENOENT;
+                    sink.note(3, "ogre: no mount for " + name);
+                }
+            } else {
+                bytes = mount_read(*mount, relative, &error);
+                if (error != 0) {
+                    sink.note(3, "ogre: " + name + " is not in mount \"" + mount->prefix +
+                                     "\" (" + std::to_string(error) + ")");
+                }
+            }
         }
         if (error == 0 && !magic_ok(kind_for_worker, bytes)) error = -EIO;
 

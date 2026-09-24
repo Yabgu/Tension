@@ -22,6 +22,7 @@
 #include "../include/tension_ogre.h"
 #include "backend.h"
 #include "loader.h"
+#include "mounts.h"
 
 namespace tension_ogre {
 namespace {
@@ -40,6 +41,10 @@ constexpr uint32_t kVerbScreenshot = 9;
 constexpr uint32_t kVerbSubmitMotion = 10;
 constexpr uint32_t kVerbSubmitBones = 11;
 constexpr uint32_t kVerbCreateMesh = 12;
+// Note: 13, not 12 — `create_mesh` already holds 12, and a second verb on the
+// same id would shadow it (the 11b plan said "verb_id 12"; the count it was
+// after is the thirteenth verb, which is id 13).
+constexpr uint32_t kVerbMountTns = 13;
 
 /// The longest resource name this adapter will copy out of guest memory.
 constexpr uint32_t kMaxNameBytes = 4096;
@@ -324,6 +329,49 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
 
 int32_t shim_queue_mesh(void *ctx, const tension_value *args, uint32_t nargs, tension_value *ret) {
     return shim_queue(ctx, args, nargs, ret, TENSION_OGRE_RES_KIND_MESH);
+}
+
+/// `mount_tns(prefix_ptr, prefix_len, tns_ptr, tns_len)`: read a Tension Volume
+/// off the disk once, hand its bytes to the resource library, and mount it
+/// under a prefix the load paths resolve against (chunk 11). The disk is
+/// touched exactly once per mount, here — reads never see it again.
+int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 4) return -EINVAL;
+
+    const uint32_t prefix_ptr = static_cast<uint32_t>(args[0].i32);
+    const uint32_t prefix_len = static_cast<uint32_t>(args[1].i32);
+    const uint32_t tns_ptr = static_cast<uint32_t>(args[2].i32);
+    const uint32_t tns_len = static_cast<uint32_t>(args[3].i32);
+
+    std::string prefix;
+    std::string tns_path;
+    if (!read_guest_name(s.api, prefix_ptr, prefix_len, prefix) ||
+        !read_guest_name(s.api, tns_ptr, tns_len, tns_path)) {
+        log_line(3, "ogre: mount_tns refused: the prefix or the path is unreadable or too long");
+        return -EINVAL;
+    }
+
+    std::vector<uint8_t> bytes;
+    tension_res *res = nullptr;
+    std::string err;
+    const int32_t opened = mount_open(tns_path, &bytes, &res, &err);
+    if (opened != 0) {
+        log_line(3, "ogre: mount_tns refused: " + tns_path + " could not be opened (" +
+                         std::to_string(opened) + ")" + (err.empty() ? "" : ": " + err));
+        return opened;
+    }
+
+    const int32_t mounted = s.loader.add_mount(prefix, tns_path, std::move(bytes), res);
+    if (mounted != 0) {
+        log_line(3, "ogre: mount_tns refused: prefix \"" + prefix + "\" (" +
+                         std::to_string(mounted) + ")");
+        tension_res_free(res);
+        return mounted;
+    }
+    log_line(1, "ogre: mounted \"" + prefix + "/\" from " + tns_path);
+    ret->i32 = 0;
+    return 0;
 }
 
 int32_t shim_queue_texture(void *ctx, const tension_value *args, uint32_t nargs,
@@ -767,6 +815,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     const uint32_t one_i32[1] = {i32};
     const uint32_t two_i32[2] = {i32, i32};
     const uint32_t three_i32[3] = {i32, i32, i32};
+    const uint32_t four_i32[4] = {i32, i32, i32, i32};
     const uint32_t six_i32[6] = {i32, i32, i32, i32, i32, i32};
 
     struct Registration {
@@ -797,6 +846,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"submit_bones", one_i32, 1, shim_submit_bones, kVerbSubmitBones, 0},
         // A mesh out of guest memory, for a guest with no file to load (5.5).
         {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
+        {"mount_tns", four_i32, 4, shim_mount_tns, kVerbMountTns, 0},
     };
 
     for (const Registration &registration : registrations) {

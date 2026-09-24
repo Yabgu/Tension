@@ -20,6 +20,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "config.h"
 #include "scene.h"
@@ -64,6 +65,34 @@ class Backend {
     // the worker read. Parsing and creation are the only OGRE work in the load
     // path, and it happens here so that every OGRE call in this adapter is made
     // by one thread. A negative return fails the job with that errno.
+
+    // ── the asset resolver: a mesh's own parse names its skeleton ───────
+    //
+    // The loader binds this before realising a *mesh* job, to the directory of
+    // the mesh the guest queued. The backend calls it when the mesh parse
+    // reports a linked skeleton, so the skeleton's bytes come from the same
+    // volume the mesh did (chunk 11). A backend with nothing bound has no
+    // skeleton source, and a mesh that links one fails its realisation with
+    // the resolver's error, naming the skeleton.
+    //
+    // The resolver is called on the render thread and must do no OGRE work:
+    // it reads bytes (the adapter's implementation takes the loader's lock and
+    // a mounted volume's File), nothing more.
+    using AssetResolver =
+        std::function<std::vector<uint8_t>(const std::string &name, int32_t *error)>;
+    virtual void set_asset_resolver(AssetResolver resolver) { (void)resolver; }
+
+    /// The skeleton the loader found *before* the import, read from the mesh's
+    /// own directory in the mount table (the sibling convention: a mesh
+    /// `.../models/x.mesh` links `x.skeleton`). It has to arrive before the
+    /// parse because the v1 importer captures the skeleton resource it finds
+    /// at import time — a registration after the fact replaces the resource
+    /// the mesh already holds, and the conversion then builds a def with no
+    /// bones (measured). Empty bytes clear it.
+    virtual void set_skeleton_candidate(const std::string &name, std::vector<uint8_t> bytes) {
+        (void)name;
+        (void)bytes;
+    }
 
     /// `out_bones` receives the mesh's bone count — 0 for a static mesh, the
     /// rig's size for a rigged one. It is an out-parameter rather than a

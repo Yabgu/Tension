@@ -32,6 +32,7 @@
 #include <vector>
 
 #include "backend.h"
+#include "mounts.h"
 #include "status.h"
 
 namespace tension_ogre {
@@ -127,6 +128,14 @@ class Loader {
     /// Where names are looked up, in order. Paths are tried in the order given.
     void set_search_paths(std::vector<std::string> paths);
 
+    /// Mount a Tension Volume under `prefix` (chunk 11). The loader owns the
+    /// bytes and borrows `res` over them (mounts.h). Returns 0, or the errno:
+    /// -EINVAL for a bad prefix, -EEXIST for a duplicate. The table is
+    /// append-only and never rewritten, which is what makes a resolved
+    /// pointer a lifetime decision rather than a race.
+    int32_t add_mount(const std::string &prefix, const std::string &tns_path,
+                      std::vector<uint8_t> bytes, tension_res *res);
+
     // ── the guest-thread face (called from the import shims) ─────────────
 
     /// Create a job and hand it to the worker. Returns the job id (1-based),
@@ -192,6 +201,15 @@ class Loader {
 
   private:
     void worker_main();
+    /// The mounts as stable pointers. The caller must hold `mutex_`.
+    std::vector<const Mount *> mount_pointers_locked() const;
+    /// The backend's asset resolver: a skeleton the render thread's mesh parse
+    /// asked for, read through the mount table as a sibling of the mesh the
+    /// job named (`resources/models/x.mesh` + `Stickman.skeleton` ->
+    /// `resources/models/Stickman.skeleton`). Takes `mutex_` itself, so it is
+    /// safe from the render thread; no OGRE object is touched.
+    std::vector<uint8_t> read_sibling_asset(const std::string &mesh_path, const std::string &name,
+                                           int32_t *error) const;
     void slot_state_for_worker(uint32_t slot_index);
     void fail_slot(uint32_t slot_index, int32_t error, const LoaderSink &sink);
     uint32_t allocate_resource(JobSlot &job, ResourceHandle handle, uint32_t bone_count);
@@ -210,6 +228,7 @@ class Loader {
     std::deque<LoadCompletion> completions_;
     std::deque<ProceduralRequest> procedural_; ///< guest-built meshes, for this thread's next pass
     std::vector<std::string> search_paths_;
+    MountTable mounts_; ///< appended by the guest thread, read by the worker
     LoaderSink sink_;
     /// Resource ids are 1-based over the RESOURCE region, and **slot 1 belongs
     /// to the renderer**: `TENSION_OGRE_RESOURCE_RENDERER` is 1, and the adapter
