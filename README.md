@@ -1,65 +1,80 @@
-# TensionCore (alpha)
+# Tension (alpha)
 
-A **command-line interpreter** for text games. `tension-core` loads a guest
-`game.wasm` into a Wasmtime VM and supplies the **`tension::io`** host ABI
-(plus `tension::audio` and `tension::ai`).
-The game authors logic in **AssemblyScript** (a TypeScript dialect, compiled
-to wasm with `asc`) and compiles *against* that ABI; the interpreter implements it.
+A **WASM game engine**. A Rust host (`tension-core`) embeds a Wasmtime VM
+and exposes native capabilities to AssemblyScript guests through import
+namespaces. Guests import verbs; capabilities provide them.
 
-The split is the point: **the host owns the terminal, the game owns the world.**
-That makes `tension-core` a language runtime, not a linker.
+The host is **capability-agnostic**. A capability is either built into the
+host (I/O, audio, AI, and the ODE solver and resource cores, statically
+linked in) or shipped as a **DSO adapter** — a shared library `dlopen`'d at
+runtime, speaking a single adapter ABI (`tension_adapter_v1`). The renderer
+is the DSO one today. Adding a DSO capability does not change the host; it
+adds a `.so`.
+
+The split is the point: **the host owns the machine, the guest owns the
+world.**
 
 ## Architecture
 
 ```
-[ BUILD ]  game (AssemblyScript)  --asc-->  build/game.wasm     (imports tension::io)
-[ RUN   ]  tension-core game.wasm [args...]                 (host: implements tension::io)
+[ BUILD ]  game.ts (AssemblyScript)  --asc-->  build/game.wasm
+[ RUN   ]  tension-core game.wasm [args...]
                  │
                  ▼
-            Wasmtime VM + tension::io host API
+┌──────────────────────────────────────────────────────┐
+│              tension-core (Rust + Wasmtime)          │
+│                                                      │
+│  ┌────────────────────────────────────────────────┐  │
+│  │           The session — the coprocessor        │  │
+│  │  arena · epoch · event ring · job table ·      │  │
+│  │  resource table · seven verbs: open close      │  │
+│  │  wait drain subscribe unsubscribe pending      │  │
+│  └───────────────────────┬────────────────────────┘  │
+│                          │ tension_adapter_v1        │
+│  ┌───────────────────────┴────────────────────────┐  │
+│  │        Capability DSOs (dlopen, runtime)       │  │
+│  │                  ogre   …                      │  │
+│  └────────────────────────────────────────────────┘  │
+│                                                      │
+│  built into the host (no DSO): io · audio · ai ·     │
+│  solver · res                                        │
+└──────────────────────────────────────────────────────┘
 ```
 
-Because strings cross wasm as raw bytes, games are written in
-**AssemblyScript** (a TypeScript dialect) and compiled by `asc`; the package
-ships `index.d.ts` so TS-aware tooling types game sources, while `index.ts`
-is the AssemblyScript barrel `asc` resolves as the package entry. There is no
-second, runnable surface.
+The **session** is Tension's coprocessor: it owns the shared arena (memory
+the guest and host both read), the event ring, the job table and the
+resource table, and runs the **epoch** — publish (host writes status),
+invoke (callbacks fire on the guest thread), apply (deferred work).
+All guest↔host communication is mediated by it. The arena's `layout_hash`
+only moves on a wire-shape change; verbs don't move it.
 
-## Components
+Each **DSO adapter** implements `tension_adapter_v1()` returning a vtable:
+`init`, `link`, `publish`, `apply`, `shutdown`, `destroy`. During `link` it
+registers wasm imports; at runtime it never touches guest memory except
+through `guest_read`/`guest_write` inside a host call. The ABI lives in
+`tension-core/include/tension_adapter.h` and is frozen.
 
-- **`tension-core/`** — the Rust host (wasmtime). Registers the `tension::io`,
-  `tension::audio` and `tension::ai` imports, loads `game.wasm`, and calls its
-  exported `_start_game()` (falling back to `_start`). Run:
-  `tension-core <game.wasm> [args...]`. `--debug` and `--symbol-path` shape a
-  debugger session around that run — see [Debugging](#debugging).
-- **`tension-framework/`** — the guest SDK. `assembly/` holds the
-  AssemblyScript bindings through which the game imports the host services.
-  `index.d.ts` declares the same surface so TS-aware tooling can type game
-  sources.
-- **`examples/`** — one folder per example: `io/` (arguments + prints +
-  read-line, `game.ts`), `audio/` (guest-synthesised PCM playback, `demo.ts`)
-  and `ai/` (an interactive chat session over the model host, `story.ts`).
-  `solver/` is a subtree of three guests written against the solver's ABI —
-  `wasm/` (rk45 on y' = -y), `world/` (a YAML scene through
-  `source: "world"`) and `collision/` (two soft spheres in a square wall,
-  rendered to a GIF with gnuplot) — indexed in `examples/solver/README.md`.
-  `ogre/` is the renderer's front door, five guests that print rather than
-  assert: `hello-triangle/` (a triangle built out of the guest's own memory with
-  `MeshBuilder`, no file involved), `hello-mesh/` (a barrel loaded through
-  the job queue out of a packed volume), `bouncing-ball/` (a solver-driven bounce through the
-  motion table), `animated-character/` (a rigged mesh posed through the
-  bone table) and `bouncing-bodies/` (sixty-four rigid bodies colliding in a box,
-  through the physics layer; add `--angular` to run the model that simulates
-  orientation, and the bodies tumble). Each of those that loads meshes carries
-  its own `resources/` tree and a `pack.sh`: the assets are packed into
-  `build/assets.tns` — a Tension Volume, made with the same packer `examples/res`
-  uses — and the guest mounts it under `resources/`, so the loader reads bytes
-  out of the volume instead of off the disk.
-  Each folder is a standalone npm project — its own `package.json`,
-  `node_modules`, and `build` / `start` scripts — and there is no project at
-  the `examples/` level itself. `io/` also carries a `build:debug` script and
-  `.vscode/` launch configs for debugging the guest (see
-  [Debugging](#debugging)).
+## Capabilities
+
+| Capability | Import namespace | Provides | Where |
+| --- | --- | --- | --- |
+| I/O | `tension::io` | `print`, `read_line`, `arg_count`, `arg` | `tension-core/` |
+| Audio | `tension::audio` | Guest-synthesized PCM playback | `tension-core/` |
+| AI | `tension::ai` | An in-process llama.cpp chat session | `tension-core/` |
+| Solver | `tension::solver` | ODE integration (Fortran core) | `tension-solver/`, linked into `tension-core/` |
+| Resources | `tension::res` | `.tns` archives (ECMA-208 SIDF profile) | `tension-res/`, linked into `tension-core/` |
+| Renderer | `ogre` | OGRE-Next: scenes, materials, animation, motion, physics-driven pose | `tension-ogre/`, a DSO adapter |
+
+The first five are **built into the host**: their Rust implementations live
+in `tension-core/`, and the solver's Fortran core and the resource library's
+Zig core are statically linked into it. `ogre` is the **DSO adapter** — the
+host finds it through `--capability` (a path, or a name resolved as
+`libtension_<name>.so` in the capability directories) and `dlopen`s it.
+
+Each capability has its own `DESIGN.md` recording its wire catalogue, its
+error surface, and its verified/unverified facts. Read those first for
+anything deeper than a tour: `tension-ogre/DESIGN.md`,
+`tension-solver/DESIGN.md`, `tension-res/DESIGN.md`.
 
 ## The `tension::io` ABI
 
@@ -193,6 +208,97 @@ with `--no-default-features --features audio` and `tension::ai` is served by a
 deterministic headless adapter instead — the same one the tests use — so the
 SDK and the example run with no GGUF file at all.
 
+## The adapter ABI
+
+The host is a thin dispatcher. It opens a wasm module, opens one or more
+capabilities, and lets the session be the meeting point. Nothing about a
+**DSO** capability lives in `tension-core` except the loader.
+
+* A DSO capability is a shared library. The host `dlopen`s it, calls
+  `tension_adapter_v1()`, gets a vtable.
+* During `link`, the adapter registers wasm imports by name
+  (`register_import(module, name, ...)`).
+* Guest callbacks are registered by table index.
+* Status tables are truth; events are advisory.
+* Adapter threads never touch guest memory — only `guest_read` /
+  `guest_write` inside a host call.
+* Negative errno, one table per capability, prefix `[tension:session]` for
+  session messages; adapters self-identify in their own logs.
+
+That is the whole contract. Everything else is a capability.
+
+## The `ogre` capability
+
+`tension-ogre/` is the renderer: a C++ DSO that wraps OGRE-Next and
+implements `tension_adapter_v1`. Its fourteen verbs cover bring-up and the
+error surface (`init`, `shutdown`, `last_error`), loads through the job
+queue (`queue_mesh_load`, `queue_texture_load`, `job_state`,
+`job_release`), scene record submission (`submit` — materials, lights,
+cameras, renderables — and `screenshot`), the per-frame batches
+(`submit_motion`, `submit_bones`), procedural meshes (`create_mesh`), TNS
+volume mounting (`mount_tns`), and named-clip animation
+(`submit_animation`). `tension-ogre/DESIGN.md` is the document — read it
+before touching the adapter.
+
+Notable pieces:
+
+- **Assets are packed, not on disk.** Every example and fixture carries a
+  `resources/` tree; `pack.sh` runs `tension-pack` to produce a `.tns`
+  archive (Tension Volume, ECMA-208 SIDF profile); the guest calls
+  `ogre.mountTns(prefix, path)` and loads through prefixed paths. There is
+  no filesystem fallback.
+- **The skeleton trap.** OGRE's rigged mesh importer captures a skeleton at
+  import time. The adapter derives the sibling path (`<stem>.skeleton`),
+  reads it through the mounts, and registers it manually before the mesh
+  imports.
+- **The framework is the writer; the host is the strict reader.** Wire
+  records are `@unmanaged`; no class-typed fields; every field's offset is
+  part of the layout. `layout_hash` moves when the wire shape moves.
+
+Five examples demonstrate it: `hello-triangle`, `hello-mesh`,
+`bouncing-ball`, `animated-character`, `bouncing-bodies`. All five are
+class-shaped, share a common structure (`Options` + `Game` + a short
+composition root), and run through the shared `examples/ogre/run.sh`.
+
+## The `solver` capability
+
+`tension-solver/` is the ODE solver: a Fortran numerical core (euler, heun,
+rk23, rk45, verlet, implicit_euler) behind a C ABI shim, built by its own
+pinned recipe and **statically linked into the host**
+(`tension-core/build.rs`); the host serves the `tension::solver` imports
+from it. The framework's physics layer uses it for rigid-body dynamics;
+`bouncing-ball` and `bouncing-bodies` demonstrate the two layers
+(solver-driven motion, and full rigid-body physics with sleeping and
+angular dynamics). `tension-solver/DESIGN.md` records the contract.
+
+## The `res` capability
+
+`tension-res/` is the resource manager: a Zig library (behind a C ABI) that
+reads and writes `.tns` archives — a Tension Volume, conforming to the
+ECMA-208 SIDF profile. It is built by `zig build` and **statically linked
+into the host** (`tension-core/build.rs`), which serves the `tension::res`
+imports from it; the OGRE adapter links the same archive to read volumes
+through its mount table, and the packer and tools (`tension-pack`,
+`prune-report`, `generate-fixture`) are Zig executables from the same tree.
+The same format serves `examples/res`, the OGRE examples, and the test
+fixtures. `tension-res/DESIGN.md` records the format.
+
+## Repository layout
+
+```
+tension-core/        Rust host — Wasmtime, session, adapter loader, wire
+  include/           tension_adapter.h — the ABI (v1, frozen)
+  src/session/       arena, epoch, posting, subring, apply, config
+  src/adapter/       loader, ffi, signatures
+tension-framework/   AssemblyScript guest SDK
+  assembly/runtime/  session verbs, arena view, config, callbacks
+  assembly/ogre/     OGRE wire records, verbs, batches, factories
+tension-ogre/        the OGRE capability (C++ DSO)
+tension-res/         the resource capability (Zig)
+tension-solver/      the ODE solver capability (Fortran)
+examples/            one folder per example
+```
+
 ## Build & run
 
 ```sh
@@ -200,83 +306,34 @@ SDK and the example run with no GGUF file at all.
 #    (needs cmake + a C++ compiler; a one-time ~2 min build).
 cargo build --manifest-path tension-core/Cargo.toml
 
-# 2. compile the game (AssemblyScript -> wasm), from the example's own folder.
+# 2. compile a game (AssemblyScript -> wasm), from the example's own folder.
 #    Each example is a standalone npm project: its package.json links the
 #    framework into its own node_modules (a `file:` dependency).
 cd examples/io
 npm install
-npm run build   # asc game.ts -o build/game.wasm --runtime stub --target release
-
-# 3. run it (args after the wasm are the game's arguments)
+npm run build
 printf 'hello\n' \
   | ../../tension-core/target/debug/tension-core build/game.wasm alpha beta gamma
-
-# 4. the audio demo (generates a sine + square in the guest and plays them
-#    through the system device; a `--no-default-features` build uses the
-#    headless adapter and renders the session to tension-audio.wav instead)
-cd ../audio
-npm install
-npm run build
-../../tension-core/target/debug/tension-core build/demo.wasm
-
-# 5. the AI demo: an interactive chat session over tension::ai. The default
-#    build from step 1 links llama.cpp in-process, and the demo answers from
-#    the model named below — without the weights the host refuses the config.
-#    For the deterministic headless adapter (any model path works, no GGUF
-#    file, no cmake/C++ compiler needed), rebuild tension-core with
-#    `--no-default-features --features audio`.
-#    `npm install` runs prepare.sh, which downloads the ~2.3 GB q4 weights
-#    into models/ -- a no-op once they are there, and never committed
-#    (.gitignore has *.gguf). Install offline with TENSION_SKIP_MODEL_FETCH=1
-#    and fetch later with `npm run fetch-model`, or point MODEL= at any other
-#    .gguf.
-cd ../ai
-npm install   # deps + models/Phi-3-mini-4k-instruct-q4.gguf (~2.3 GB, one time)
-npm run build
-printf 'hello\n/quit\n' \
-  | ../../tension-core/target/debug/tension-core build/story.wasm \
-      models/Phi-3-mini-4k-instruct-q4.gguf
 ```
 
 Or use the demo runner:
 
 ```sh
-./demo.sh
+./demo.sh          # builds and runs io, audio, ai
+./build.sh         # builds the interpreter, the guest API and every example
+                   # that needs no adapter (the OGRE five build through run.sh)
 ```
 
-It builds the interpreter and runs every example, the ai demo included. `ai`
-is a default feature, so when the gguf file exists and cmake + a C++ compiler
-are available the ai demo answers from the model (linking llama.cpp is a
-one-time ~2 min build); otherwise the script builds with
-`--no-default-features --features audio`, says so, and runs the ai demo on the
-headless adapter. It never downloads the ~2.3 GB weights by itself —
-`npm install` inside `examples/ai` does that.
-
-Or just build everything — interpreter, guest API, and every example —
-without running it:
-
-```sh
-./build.sh
-```
-
-Or, from inside any example, build and run with npm (assumes `tension-core`
-is built first):
-
-```sh
-cd examples/io    && npm start  # io example (build + run)
-cd examples/audio && npm start  # audio example (build + run)
-cd examples/ai    && npm start  # ai example (fetches models/Phi-3-mini-4k-instruct-q4.gguf on first run; MODEL=... to override)
-```
-
-The two renderer examples run through their own script, because a guest that
-uses a capability needs the adapter built and the framework's generated layout:
+The OGRE examples need the adapter built and the framework's generated
+layout, so they run through their own script:
 
 ```sh
 cd examples/ogre/hello-triangle && ./run.sh                          # a real window
 cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
-cd examples/ogre/bouncing-ball  && ./run.sh                          # a real window
-cd examples/ogre/bouncing-ball  && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
 ```
+
+`examples/ogre/run.sh` is the shared mechanism; each example's `run.sh`
+is an 8-line wrapper naming its banner and calling the shared script.
 
 ## Debugging
 
@@ -433,14 +490,13 @@ diagnosis prints on stderr before any guest output.
 
 ## Scope & notes
 
-- There is **no `tension-cli`** — compilation is plain `asc`; the "Tension API"
-  is the `tension::io` ABI, not an npm CLI package. Each example is its own npm
-  project, and its `build` script wraps the `asc` invocation.
-- The ABI is **core wasm imports** (not the Component Model / WIT) for alpha
-  reliability; a WIT adapter can be layered later without changing the contract
-  shape.
-- `tension-plugin-vulkan` and `tension-plugin-nodes` (rendering / node-UI) are
-  out of scope for the text-engine alpha.
+- There is **no `tension-cli`** — compilation is plain `asc`; each example's
+  build script wraps the `asc` invocation.
+- The adapter ABI is **core wasm imports** (not the Component Model / WIT)
+  for alpha reliability; a WIT adapter can be layered later without changing
+  the contract shape.
+- The project is at the size where a fresh reader wants a tour: this README
+  is the tour. The `DESIGN.md` files are the reference.
 
 ## Verified
 
@@ -466,19 +522,11 @@ diagnosis prints on stderr before any guest output.
 - llama.cpp's own logging is silenced at backend init, so a real session's
   stderr carries only those `[tension:ai]` lines; `TENSION_AI_LLAMA_LOG=1`
   brings the loader dump back when a model misbehaves.
-- Guest debugging: `tension-core --debug` reports the guest's debug surface and
-  registers it with the platform debugger. Against lldb 22.1.3, breaking on
-  `wasmtime_jit_debug::gdb_jit_int::register_gdb_jit_image` is reached with
-  `--debug` and never without it; `image list` then shows the guest as
-  `JIT(0x…)`.
+- The OGRE capability renders, animates and simulates: five examples green
+  in both windowed and headless modes.
 - **Source-level AssemblyScript debugging works with no Node in the path.**
   Against lldb 22.1.3, with a `--sourceMap` build and the GDB JIT loader on,
-  `breakpoint set -f game.ts -l 11` resolves at launch and stops in the guest:
-  ``frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8``, with `source
-  list` printing the AssemblyScript line. The host synthesizes that DWARF from
-  the guest's source map; `md5sum examples/io/build/game.wasm` is unchanged
-  across a `--debug` run (`d789929c…`), and the guest's own stdout is
-  byte-identical with and without the flag.
+  `breakpoint set -f game.ts -l 11` resolves at launch and stops in the guest.
 
 ## Licensing
 
