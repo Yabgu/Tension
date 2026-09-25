@@ -43,6 +43,18 @@ Headless prints one line too, and says the same thing about the scene:
 renderer=null: no pixels to read; submitted 1 object
 ```
 
+## What to notice
+
+- **This is the reference shape the other four examples follow.** The entry
+  point is four calls — `parseArgs`, a `Game`, `run`, `shutdown` — and
+  everything else is a method on `Game`: bring-up, `loadMesh`, `submitScene`,
+  `captureFrame`. The small utilities (`fail`) stay at module scope.
+- **The mesh is *loaded*, not built — that is the contrast with its sibling.**
+  `Barrel.mesh` arrives through the job queue: the job id is a handle resolved
+  when the result arrives, the worker reads the bytes, the render thread makes
+  the mesh. `hello-triangle` takes the other road — `MeshBuilder` writes nine
+  numbers into the guest's own memory, and no file is involved anywhere.
+
 ## Where the SDK surface is documented
 
 `tension-framework/assembly/ogre/index.ts` — the verbs, the wrappers, and the

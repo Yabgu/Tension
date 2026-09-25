@@ -39,6 +39,17 @@ renderer=null: no pixels to read; submitted 1 object
 
 `hello-mesh` is the sibling example: the same records, a barrel off disk.
 
+## What to notice
+
+- **This is the smallest example in the OGRE set.** No assets, no job
+  queue, no volume: the triangle is written into the guest's own memory
+  with `MeshBuilder` and submitted directly. If you want the minimum
+  viable renderer example, this is it.
+- **The contrast with `hello-mesh` is the point.** That example loads a
+  mesh through the job queue out of a packed volume; this one never
+  touches a file. Between the two, you see both ways a mesh arrives at
+  the renderer.
+
 ## Where the SDK surface is documented
 
 `tension-framework/assembly/ogre/index.ts` — the verbs, the wrappers, and the
