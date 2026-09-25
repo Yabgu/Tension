@@ -166,12 +166,23 @@ std::vector<uint8_t> Loader::read_sibling_asset(const std::string &mesh_path,
     const Mount *mount = mount_resolve(mounts, sibling, &relative);
     if (mount == nullptr) {
         *slot = -ENOENT;
-        sink.note(3, "ogre: mesh " + mesh_path + " links \"" + name +
+        // Absence is not an error: the caller's probe invents this candidate
+        // from the mesh's own stem, and an unrigged mesh has no sibling (the
+        // call site says so). -ENOENT is this branch's only outcome, so the
+        // guarded note below cannot fire today; it keeps its place for a
+        // genuine refusal. The true "mesh links a skeleton no mount carries"
+        // case is reported by the backend (level 1) and fails the job through
+        // `fail_slot`, so silence here loses no evidence.
+        if (*slot != -ENOENT) {
+            sink.note(3, "ogre: mesh " + mesh_path + " links \"" + name +
                          "\" and no mount carries " + sibling);
+        }
         return {};
     }
     std::vector<uint8_t> bytes = mount_read(*mount, relative, slot);
-    if (*slot != 0) {
+    // The same rule: absence is the unrigged case, not a failure — a genuine
+    // read failure (a corrupt entry, a short read) still speaks.
+    if (*slot != 0 && *slot != -ENOENT) {
         sink.note(3, "ogre: skeleton " + sibling + " could not be read (" +
                          std::to_string(*slot) + ")");
     }
