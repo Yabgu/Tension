@@ -57,8 +57,6 @@ import * as ogre from "tension-framework/assembly/ogre";
 const DT: f64 = 1.0 / 60.0;
 /** How long the simulation runs before the summary, if nothing rests sooner. */
 const FRAMES: i32 = 300;
-/** What "at rest" means here: the probe measured 0.057 m/s for a settled pile. */
-const REST_SPEED: f64 = 0.1;
 const DEFAULT_BODIES: i32 = 64;
 const RADIUS: f64 = 0.4;
 const EXTENT: f64 = 4.0; // the box is 8x8 units, the floor at y = 0
