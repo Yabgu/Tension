@@ -49,6 +49,8 @@ const GRID_Z: f32[] = [-0.45, -0.45, 0.55, 0.55];
 /// middle of the frame (the same -0.55 the previous single-character version used).
 const GRID_Y: f32 = -0.55;
 
+const WINDOWED_RENDERER = "gl3plus";
+
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
   print("animated-character: " + what);
@@ -228,125 +230,191 @@ function settle(job: i32, what: string): u32 {
   return ogre.jobResult(job);
 }
 
-export function _start_game(): void {
-  // The launcher names the renderer; null needs no display, so it is the default.
-  let renderer = "null";
-  let tns = "";
+// ---------------------------------------------------------------------------
+// Command line
+// ---------------------------------------------------------------------------
+
+/// Whatever `_start_game` needs to know before it touches the runtime.
+class Options {
+  tns: string = "";
+  renderer: string = "null";
+
+  get windowed(): bool { return this.renderer == WINDOWED_RENDERER; }
+}
+
+/// The launcher names the renderer; null needs no display, so it is the default.
+function parseArgs(): Options {
+  const options = new Options();
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
-    if (value.startsWith("--tns=")) tns = value.slice(6);
-    if (value.startsWith("--renderer=")) renderer = value.slice(11);
+    if (value.startsWith("--tns=")) options.tns = value.slice(6);
+    else if (value.startsWith("--renderer=")) options.renderer = value.slice(11);
   }
-  const windowed = renderer == "gl3plus";
+  return options;
+}
 
-  // Open the session, then hand the renderer its own config.
-  const callbacks = makeCallbacks(null, null);
-  if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
-    fail("session_open refused");
-  }
-  const config = new ogre.ConfigBuilder()
-    .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
-    .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
-  const started = ogre.init(config);
-  if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+// ---------------------------------------------------------------------------
+// The game
+// ---------------------------------------------------------------------------
 
-  // Everything this example loads comes out of one packed volume (chunk 11):
-  // the assets live in `resources/`, `pack.sh` packs them, and the run script
-  // hands the absolute path in as `--tns=`. No mount, no bytes — there is no
-  // fallback to the disk.
-  if (tns.length == 0) fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
-  const mounted = ogre.mountTns("resources", tns);
-  if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+class Game {
+  private options: Options;
+  private frames: i32 = 0; // how many frames the clip loop ran
+  private midFrame: ArrayBuffer | null = null; // the frame kept halfway through the run
 
-  // One mesh, and the skeleton that ships beside it — with the three clips the
-  // converter baked into it (idle, run, jump; chunk 13b).
-  const mesh_job = ogre.queueMeshLoad(MESH, 0);
-  if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
-  const mesh = settle(mesh_job, MESH);
-  if (!ogre.isRigged(mesh)) fail(MESH + " came back without a rig");
-
-  // Four skins, one job each: the texture path through the volume, and the
-  // resource ids the four materials name in their slot 0.
-  const textures: u32[] = [];
-  for (let i = 0; i < CHARACTERS; i++) {
-    const job = ogre.queueTextureLoad(SKINS[i], 0);
-    if (job <= 0) fail("queueTextureLoad refused (" + SKINS[i] + ")");
-    const id = settle(job, SKINS[i]);
-    textures.push(id);
+  constructor(options: Options) {
+    this.options = options;
   }
 
-  // Four PBS materials, one per skin: diffuse white so the texture is what shows,
-  // specular off, roughness 0.5. Slot 0 is the id the loader handed back.
-  for (let i = 0; i < CHARACTERS; i++) {
-    const material = ogre.Material.pbs(1.0, 1.0, 1.0, 0.5, 0.0);
-    material.materialId = <u32>(i + 1);
-    material.specularR = 0.0;
-    material.specularG = 0.0;
-    material.specularB = 0.0;
-    material.slot0Resource = textures[i];
-    if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + (i + 1).toString() + ")");
+  /// Open the session and the renderer, mount the volume, load the mesh and
+  /// submit the scene, play the clips, then read the frames back.
+  run(): void {
+    this.openSession();
+    this.openRenderer();
+    this.mountAssets();
+    const mesh = this.loadMesh(MESH);
+    this.submitScene(mesh);
+    this.animate();
+    this.captureFrame();
+
+    print("animated 4 characters, 3 clips, " + this.frames.toString() + " frames");
+    print("done: 4 characters, one mesh, four skins, three clips");
   }
 
-  // One directional light: PBS is lit, and an unlit PBS datablock draws black.
-  // The intensity is a power scale, so it is the whole exposure: 20.0 blew the
-  // lit facets out to white and flattened the skins' hue. Round 14d lowered it
-  // until no character saturates at any captured phase (the measured means are
-  // in the round's report).
-  const L = 0.5773502691896258; // one unit of (1, -1, -1) normalised
-  const light = ogre.LightRecord.directional(1.0, 1.0, 1.0, 1.5, <f32>L, <f32>-L, <f32>-L);
-  light.lightId = 1;
-  if (ogre.submitLight(light) != 0) fail("submitLight refused");
-
-  // Four units back on +Z, looking at the origin: at scale 0.29 the characters
-  // are 1.09 units tall, well inside the ±1.65 the camera shows at z=0.
-  const camera = ogre.CameraRecord.perspective(
-    45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
-  camera.cameraId = 1;
-  if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
-
-  // Four renderables over the one mesh resource, in a 2x2 grid.
-  for (let i = 0; i < CHARACTERS; i++) {
-    const renderable = ogre.Renderable.at(mesh, <u32>(i + 1), GRID_X[i], GRID_Y, GRID_Z[i], SCALE);
-    renderable.renderableId = <u32>(i + 1);
-    if (ogre.submitRenderable(renderable) != 0) {
-      fail("submitRenderable refused (" + (i + 1).toString() + ")");
+  /// The session itself: the loop, the arena, the event ring, the frame
+  /// handshake. Nothing in this file runs before it opens.
+  private openSession(): void {
+    // Open the session, then hand the renderer its own config.
+    const callbacks = makeCallbacks(null, null);
+    if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
+      fail("session_open refused");
     }
   }
 
-  print("clips: " + CLIPS[0] + " " + CLIPS[1] + " " + CLIPS[2] + " " + CLIPS[3] +
-        " (" + DURATIONS[0].toString() + "s, " + DURATIONS[1].toString() + "s, " +
-        DURATIONS[2].toString() + "s, fourth offset +" + OFFSETS[3].toString() + "s)");
+  /// Bring up the renderer the launcher asked for.
+  private openRenderer(): void {
+    const windowed = this.options.windowed;
+    const config = new ogre.ConfigBuilder()
+      .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
+      .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
+    const started = ogre.init(config);
+    if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+  }
 
-  // The loop. The guest owns the clock: one tick of 1/60 s per iteration, and
-  // each character's time is `elapsed % its duration` — the clip loops because
-  // the caller wraps it, not because the adapter knows the duration.
-  let elapsed: f64 = 0.0;
-  let frames = 0;
-  let mid_frame: ArrayBuffer | null = null;
-  for (frames = 0; frames < FRAMES; frames++) {
-    elapsed += 1.0 / 60.0;
+  /// Mount the packed volume the assets were shipped in.
+  private mountAssets(): void {
+    // Everything this example loads comes out of one packed volume (chunk 11):
+    // the assets live in `resources/`, `pack.sh` packs them, and the run script
+    // hands the absolute path in as `--tns=`. No mount, no bytes — there is no
+    // fallback to the disk.
+    if (this.options.tns.length == 0) {
+      fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
+    }
+    const mounted = ogre.mountTns("resources", this.options.tns);
+    if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+  }
+
+  /// One mesh, and the skeleton that ships beside it — with the three clips the
+  /// converter baked into it (idle, run, jump; chunk 13b).
+  private loadMesh(path: string): i32 {
+    const mesh_job = ogre.queueMeshLoad(path, 0);
+    if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
+    const mesh = settle(mesh_job, path);
+    if (!ogre.isRigged(mesh)) fail(path + " came back without a rig");
+    return mesh;
+  }
+
+  /// Four skins, four materials, one light, one camera, four renderables: the
+  /// whole scene, submitted once.
+  submitScene(mesh: i32): void {
+    // Four skins, one job each: the texture path through the volume, and the
+    // resource ids the four materials name in their slot 0.
+    const textures: u32[] = [];
     for (let i = 0; i < CHARACTERS; i++) {
-      const at = (elapsed + OFFSETS[i]) % DURATIONS[i];
-      // The wrap is floating point: when the accumulated time lands a hair
-      // past a duration boundary, `%` gives a hair *past zero*, and the
-      // millisecond truncation makes it 0 — the one time the verb refuses
-      // (`0 ms` is not distinguishable from "no time given"; the clip's start
-      // is 1 ms). Measured: four refusals in a 300-frame run before this.
-      let ms: i32 = <i32>(at * 1000.0);
-      if (ms <= 0) ms = 1;
-      const accepted = ogre.submitAnimation(<i32>(i + 1), CLIPS[i], ms);
-      if (accepted != 0) fail("submitAnimation refused (" + accepted.toString() + " at character " +
-                              (i + 1).toString() + ")");
+      const job = ogre.queueTextureLoad(SKINS[i], 0);
+      if (job <= 0) fail("queueTextureLoad refused (" + SKINS[i] + ")");
+      const id = settle(job, SKINS[i]);
+      textures.push(id);
     }
-    RuntimeSession.wait(16);
-    // Halfway through, a second frame is kept: the last one is compared
-    // against it below, and the difference is the animation.
-    if (windowed && frames == FRAMES / 2) mid_frame = grab();
+
+    // Four PBS materials, one per skin: diffuse white so the texture is what shows,
+    // specular off, roughness 0.5. Slot 0 is the id the loader handed back.
+    for (let i = 0; i < CHARACTERS; i++) {
+      const material = ogre.Material.pbs(1.0, 1.0, 1.0, 0.5, 0.0);
+      material.materialId = <u32>(i + 1);
+      material.specularR = 0.0;
+      material.specularG = 0.0;
+      material.specularB = 0.0;
+      material.slot0Resource = textures[i];
+      if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + (i + 1).toString() + ")");
+    }
+
+    // One directional light: PBS is lit, and an unlit PBS datablock draws black.
+    // The intensity is a power scale, so it is the whole exposure: 20.0 blew the
+    // lit facets out to white and flattened the skins' hue. Round 14d lowered it
+    // until no character saturates at any captured phase (the measured means are
+    // in the round's report).
+    const L = 0.5773502691896258; // one unit of (1, -1, -1) normalised
+    const light = ogre.LightRecord.directional(1.0, 1.0, 1.0, 1.5, <f32>L, <f32>-L, <f32>-L);
+    light.lightId = 1;
+    if (ogre.submitLight(light) != 0) fail("submitLight refused");
+
+    // Four units back on +Z, looking at the origin: at scale 0.29 the characters
+    // are 1.09 units tall, well inside the ±1.65 the camera shows at z=0.
+    const camera = ogre.CameraRecord.perspective(
+      45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
+    camera.cameraId = 1;
+    if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
+
+    // Four renderables over the one mesh resource, in a 2x2 grid.
+    for (let i = 0; i < CHARACTERS; i++) {
+      const renderable = ogre.Renderable.at(mesh, <u32>(i + 1), GRID_X[i], GRID_Y, GRID_Z[i], SCALE);
+      renderable.renderableId = <u32>(i + 1);
+      if (ogre.submitRenderable(renderable) != 0) {
+        fail("submitRenderable refused (" + (i + 1).toString() + ")");
+      }
+    }
   }
 
-  // The readback, where there is a framebuffer to read: four characters, three
-  // clips, one mesh, four skins — and the count says they were drawn.
-  if (windowed) {
+  /// The loop. The guest owns the clock: one tick of 1/60 s per iteration, and
+  /// each character's time is `elapsed % its duration` — the clip loops because
+  /// the caller wraps it, not because the adapter knows the duration.
+  private animate(): void {
+    print("clips: " + CLIPS[0] + " " + CLIPS[1] + " " + CLIPS[2] + " " + CLIPS[3] +
+          " (" + DURATIONS[0].toString() + "s, " + DURATIONS[1].toString() + "s, " +
+          DURATIONS[2].toString() + "s, fourth offset +" + OFFSETS[3].toString() + "s)");
+
+    let elapsed: f64 = 0.0;
+    let frames = 0;
+    let mid_frame: ArrayBuffer | null = null;
+    for (frames = 0; frames < FRAMES; frames++) {
+      elapsed += 1.0 / 60.0;
+      for (let i = 0; i < CHARACTERS; i++) {
+        const at = (elapsed + OFFSETS[i]) % DURATIONS[i];
+        // The wrap is floating point: when the accumulated time lands a hair
+        // past a duration boundary, `%` gives a hair *past zero*, and the
+        // millisecond truncation makes it 0 — the one time the verb refuses
+        // (`0 ms` is not distinguishable from "no time given"; the clip's start
+        // is 1 ms). Measured: four refusals in a 300-frame run before this.
+        let ms: i32 = <i32>(at * 1000.0);
+        if (ms <= 0) ms = 1;
+        const accepted = ogre.submitAnimation(<i32>(i + 1), CLIPS[i], ms);
+        if (accepted != 0) fail("submitAnimation refused (" + accepted.toString() + " at character " +
+                                (i + 1).toString() + ")");
+      }
+      RuntimeSession.wait(16);
+      // Halfway through, a second frame is kept: the last one is compared
+      // against it below, and the difference is the animation.
+      if (this.options.windowed && frames == FRAMES / 2) mid_frame = grab();
+    }
+    this.frames = frames;
+    this.midFrame = mid_frame;
+  }
+
+  /// The readback, where there is a framebuffer to read: four characters, three
+  /// clips, one mesh, four skins — and the count says they were drawn.
+  private captureFrame(): void {
+    if (!this.options.windowed) return;
     const frame = grab();
     if (frame == null) {
       fail("no frame could be downloaded");
@@ -358,28 +426,43 @@ export function _start_game(): void {
     // and that they are wearing different skins — the two things a screenshot
     // is looked at for.
     print(quadrant_report(frame!));
-    // The four characters must show measurably different surface hues: four
-    // skins, one light, one frame. This is measured at a fixed index — the
-    // final frame of the run, the same one the motion check below ends on.
-    const patch_spread = character_patch_spread(frame!, "frame " + frames.toString());
-    print("character patch spread (max pairwise |dR|+|dG|+|dB|) = " + patch_spread.toString());
-    assert(patch_spread > 9.0, "the four characters do not show different skins");
-    if (mid_frame != null) {
+    this.assertSkinsDiffer(frame!, "frame " + this.frames.toString());
+    if (this.midFrame != null) {
       // The same comparison at the other captured phase (frame FRAMES/2),
       // printed but not asserted: it is the evidence that the guard's value is
       // a property of the four characters, not of the pose the frame caught.
-      const mid_spread = character_patch_spread(mid_frame!, "frame " + (FRAMES / 2).toString());
+      const mid_spread = character_patch_spread(this.midFrame!, "frame " + (FRAMES / 2).toString());
       print("character patch spread at frame " + (FRAMES / 2).toString() + " = " +
             mid_spread.toString());
-      const moved = changed_count(mid_frame!, frame!);
+      const moved = changed_count(this.midFrame!, frame!);
       print("motion: " + moved.toString() + " pixels changed between frame " +
-            (FRAMES / 2).toString() + " and " + frames.toString());
+            (FRAMES / 2).toString() + " and " + this.frames.toString());
       assert(moved > 0.0, "no pixel changed between the two frames: the clips did not move the rig");
     }
   }
 
-  print("animated 4 characters, 3 clips, " + frames.toString() + " frames");
-  print("done: 4 characters, one mesh, four skins, three clips");
-  assert(ogre.shutdown() == 0, "ogre::shutdown");
-  assert(RuntimeSession.close() == 0, "session_close");
+  /// The four characters must show measurably different surface hues: four
+  /// skins, one light, one frame. This is measured at a fixed index — the
+  /// final frame of the run, the same one the motion check below ends on.
+  private assertSkinsDiffer(frame: ArrayBuffer, label: string): void {
+    const patch_spread = character_patch_spread(frame, label);
+    print("character patch spread (max pairwise |dR|+|dG|+|dB|) = " + patch_spread.toString());
+    assert(patch_spread > 9.0, "the four characters do not show different skins");
+  }
+
+  /// Bring the renderer and the session down.
+  shutdown(): void {
+    assert(ogre.shutdown() == 0, "ogre::shutdown");
+    assert(RuntimeSession.close() == 0, "session_close");
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
+
+export function _start_game(): void {
+  const game = new Game(parseArgs());
+  game.run();
+  game.shutdown();
 }
