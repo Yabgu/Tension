@@ -13,6 +13,11 @@
 #                   the impulse formula against hand computation, the bias rule,
 #                   a free body's spin, the linear model's invariants, and
 #                   MotionBatch.setPose's offsets.
+#   guest-ozz-parser.ts  the ozz runtime archive parser (18a): skeleton v2 and
+#                   animation v7 archives parsed against expectations taken from
+#                   ozz's own runtime, with the three format traps checked. It
+#                   needs no capability — the fixtures are compiled in, and the
+#                   only host surface it touches is `print`.
 #
 # Steps, in the order the design fixes them:
 #
@@ -80,8 +85,38 @@ run_fixture() {
   esac
 }
 
+# A fixture that is not a session guest: it imports nothing but `tension::io`
+# (for `print`) and defines its own memory, so it is compiled without the
+# session's flags and run with no capability. The host treats a module as a
+# session guest only when it imports from the `session` namespace, which is the
+# distinction this pair of runners makes explicit rather than accidental.
+run_plain_fixture() {
+  local entry="$1" out="$2"
+  echo "==> compiling $entry (plain module: no session, no capability)"
+  ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
+      --runtime stub --target release -o "build/$out" )
+  echo "==> running $out"
+  set +e
+  local stdout
+  stdout="$("$core" "$root/build/$out" 2>"$root/build/$out.err")"
+  local status=$?
+  set -e
+  local line
+  while IFS= read -r line; do echo "    $line"; done <<< "$stdout"
+  if [ "$status" -ne 0 ]; then
+    echo "run.sh: $entry: the interpreter exited $status; stderr:" >&2
+    cat "$root/build/$out.err" >&2
+    exit 1
+  fi
+  case "$stdout" in
+    *OK*) echo "    == $entry: OK" ;;
+    *) echo "run.sh: $entry: the guest did not print OK" >&2; cat "$root/build/$out.err" >&2; exit 1 ;;
+  esac
+}
+
 run_fixture guest-open.ts guest-open.wasm
 run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
 run_fixture guest-physics-units.ts guest-physics-units.wasm
+run_plain_fixture guest-ozz-parser.ts guest-ozz-parser.wasm
 echo "==> all fixtures OK"
