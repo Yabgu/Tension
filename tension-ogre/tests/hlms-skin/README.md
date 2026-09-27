@@ -98,6 +98,17 @@ the mechanism changes.
   exactly like "the channel does not work". `map( ..., false )` is also wrong: it targets a
   copy one ahead of the one being drawn, so nothing changes on screen at all. One
   whole-range `map( 0, N, true )` per pass is the only shape that works.
+- **`lower_gpu_overhead` is not a way to get the instance struct.** The reference set it to
+  bring `worldMaterialIdx[]` (and with it `inVs_drawId`) into the variant, which does work —
+  but the same property switches the PBS *pixel* shader to `#define material
+  materialArray[0]` (`800.PixelShader_piece_ps.any:191`), so every object in the pass shades
+  with the **first** datablock's constants. A one-datablock scene cannot see this (slot 0 is
+  then the correct answer), which is why the probe did not; the adapter port did, as
+  different pixel numbers for an unchanged scene. For the rigged meshes this Hlms draws the
+  property is unnecessary anyway — `hlms_skeleton` is already on, and that alone declares the
+  instance struct (`800.VertexShader_piece_vs.any:22`). Expect this problem again in the
+  no-skeleton state, where `hlms_skeleton` is off by definition and the variant still needs
+  `inVs_drawId`.
 
 ## The no-skeleton mesh state
 
