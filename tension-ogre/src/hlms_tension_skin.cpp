@@ -161,15 +161,33 @@ void HlmsTensionSkin::calculateHashForPreCreate(Renderable *renderable, PiecesMa
     // whereas posExecution runs after the whole body, where only the clip
     // position is still live. Here `worldPos` is in scope.
     String &exec = inOutPieces[VertexShader][IdString("custom_vs_preTransform")];
-    exec += "// tension-ogre: this object's matrices, by draw id.\n";
+    exec += "// tension-ogre: skin from the guest's matrices, or leave the base's pose alone.\n";
     exec += "{ int tensionBase = int( inVs_drawId ) * " +
             StringConverter::toString(kRecordFloats / 4) + ";\n";
-    // The first matrix's translation column: matrix m at vec4 m*4 .. m*4+3, so
-    // the first matrix's 4th column is vec4 3 (floats 12..15 of the record).
-    // A translation offset is all this round applies — enough to prove the
-    // guest's bytes reached the shader. Full skinning reads every joint.
-    exec += "  float4 tensionT = readOnlyFetch( tensionMatrixBuf, tensionBase + 3 );\n";
-    exec += "  worldPos.xyz += tensionT.xyz; }\n";
+    // The sentinel: the fill sets record[0].w (the first matrix's m30, which is
+    // 0 for every affine matrix and unused by the transform) to 1 when the guest
+    // submitted matrices for this renderable, and leaves the record zeroed when
+    // it did not. Without that test an all-zero record would skin every vertex
+    // to the origin and break the base's own SkeletonInstance path — which is
+    // the path animated-character still uses.
+    exec += "  float4 tensionS = readOnlyFetch( tensionMatrixBuf, tensionBase );\n";
+    exec += "  if( tensionS.w > 0.5 )\n";
+    exec += "  { float4 skinned = float4( 0.0, 0.0, 0.0, 0.0 );\n";
+    // Four influences per vertex: the vertex stream carries UBYTE4 weights and
+    // indices, and the compiled PBS variant expands its own skeleton block to
+    // inVs_blendWeights[0..3] (measured). One column-major 4x4 matrix per joint,
+    // four vec4s each, at bone * 4.
+    exec += "    for( int i = 0; i < 4; ++i )\n";
+    exec += "    { int mb = tensionBase + int( inVs_blendIndices[i] ) * 4;\n";
+    exec += "      float4 c0 = readOnlyFetch( tensionMatrixBuf, mb + 0 );\n";
+    exec += "      float4 c1 = readOnlyFetch( tensionMatrixBuf, mb + 1 );\n";
+    exec += "      float4 c2 = readOnlyFetch( tensionMatrixBuf, mb + 2 );\n";
+    exec += "      float4 c3 = readOnlyFetch( tensionMatrixBuf, mb + 3 );\n";
+    exec += "      float4 tp = c0 * inputPos.x + c1 * inputPos.y + c2 * inputPos.z +\n";
+    exec += "                  c3 * inputPos.w;\n";
+    exec += "      skinned += tp * inVs_blendWeights[i]; }\n";
+    exec += "    worldPos.xyz = skinned.xyz; }\n";
+    exec += "}\n";
 }
 
 void HlmsTensionSkin::set_renderable_matrices(const Renderable *renderable,
@@ -258,6 +276,11 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
             const size_t count = std::min(itor->second.size(), kRecordFloats);
             std::copy(itor->second.begin(), itor->second.begin() + count, dst);
             if (count < kRecordFloats) std::fill(dst + count, dst + kRecordFloats, 0.0f);
+            // The sentinel the shader branches on: record[0].w is the first
+            // matrix's m30, which is 0 for every affine matrix and unused by the
+            // transform, so it can carry "matrices were submitted" without
+            // touching anything the skinning reads.
+            dst[3] = 1.0f;
         } else {
             std::fill(dst, dst + kRecordFloats, 0.0f);
         }
