@@ -1621,6 +1621,17 @@ class BackendOgre final : public Backend {
                 // being offset instead of keeping the last ones.
                 if (hlms_tension_skin_ != nullptr && item->getSkeletonInstance() != nullptr) {
                     if (Ogre::SubItem *sub = item->getSubItem(0)) {
+                        { // TEMP-DIAG: is the blend index map identity?
+                            const auto *map = sub->getBlendIndexToBoneIndexMap();
+                            std::string dump;
+                            for (size_t k = 0; map != nullptr && k < map->size() && k < 8; ++k)
+                                dump += std::to_string((*map)[k]) + " ";
+                            log_line("ogre: TEMP-DIAG blend map size=" +
+                                     std::to_string(map ? map->size() : 0) +
+                                     " joints=" + std::to_string(
+                                         item->getSkeletonInstance()->getNumBones()) +
+                                     " first8=[" + dump + "]");
+                        }
                         const std::vector<float> *matrices = mirror.skin_matrices(id);
                         hlms_tension_skin_->set_renderable_matrices(
                             sub, matrices ? *matrices : std::vector<float>{});
