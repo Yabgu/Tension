@@ -8,6 +8,7 @@
 #include <OgreHlmsManager.h>
 #include <OgreLogManager.h>
 #include <OgreRenderQueue.h>
+#include <OgreRenderable.h>
 #include <OgreRenderSystem.h>
 #include <Vao/OgreReadOnlyBufferPacked.h>
 #include <Vao/OgreVaoManager.h>
@@ -273,9 +274,28 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
         float *dst = records_ + baseInstance * kRecordFloats;
         const auto itor = renderable_matrices_.find(queuedRenderable.renderable);
         if (itor != renderable_matrices_.end() && !itor->second.empty()) {
-            const size_t count = std::min(itor->second.size(), kRecordFloats);
-            std::copy(itor->second.begin(), itor->second.begin() + count, dst);
-            if (count < kRecordFloats) std::fill(dst + count, dst + kRecordFloats, 0.0f);
+            // The matrices are re-packed in **blend-slot order**, not joint order.
+            // The vertex stream's blend indices are IndexMap slots — measured on
+            // characterMedium: the map has 32 entries over 58 joints and starts
+            // {19, 20, 21, 22, ...}, so slot 0 is joint 19. PBS packs its matrices
+            // in that order for exactly this reason; a fill that copied the
+            // guest's matrices in joint order would have the shader read the wrong
+            // matrix for every vertex (measured: delta 1815 against 48 for the
+            // translation-only read, which is what exposed it).
+            std::fill(dst, dst + kRecordFloats, 0.0f);
+            const auto *animated =
+                dynamic_cast<const Ogre::RenderableAnimated *>(queuedRenderable.renderable);
+            const Ogre::RenderableAnimated::IndexMap *blendMap =
+                animated != nullptr ? animated->getBlendIndexToBoneIndexMap() : nullptr;
+            const size_t slots = blendMap != nullptr ? blendMap->size() : 0;
+            const size_t joints = itor->second.size() / kMatrixFloats;
+            for (size_t slot = 0; slot < slots && slot < kMaxBones; ++slot) {
+                const uint16_t joint = (*blendMap)[slot];
+                if (joint >= joints) continue;
+                std::copy(itor->second.begin() + joint * kMatrixFloats,
+                          itor->second.begin() + joint * kMatrixFloats + kMatrixFloats,
+                          dst + slot * kMatrixFloats);
+            }
             // The sentinel the shader branches on: record[0].w is the first
             // matrix's m30, which is 0 for every affine matrix and unused by the
             // transform, so it can carry "matrices were submitted" without

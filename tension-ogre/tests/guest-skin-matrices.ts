@@ -46,6 +46,9 @@ const WINDOW_HEIGHT: i32 = 240;
 const MESH_SCALE: f32 = 0.29;
 /// The rig's size (chunk 12a): one matrix per joint is what the batch carries.
 const RIG_BONES: u32 = 58;
+/// The first joint the mesh's IndexMap reports as influencing a vertex
+/// (round 19f, measured on characterMedium: the map is {19, 20, 21, ...}).
+const FIRST_INFLUENCING_JOINT: u32 = 19;
 /// The translation the first clause applies, in world units. Two units against
 /// a figure 1.09 units tall is a move no threshold can mistake for antialiasing.
 const SHIFT: f32 = 2.0;
@@ -111,10 +114,16 @@ function foreground_count(frame: ArrayBuffer): f64 {
   return <f64>count;
 }
 
-/// A rig whose joints are all identity, except that the **first** joint carries
-/// the translation. Column-major, 16 floats per joint, which is what the batch
-/// and the shader both expect; the shader reads the first matrix's column 3
-/// (floats 12, 13, 14), so that is where the translation goes.
+/// A rig whose joints are all identity, except that one joint carries the
+/// translation. Column-major, 16 floats per joint, which is what the batch and
+/// the shader both expect; the translation goes in the matrix's column 3 (floats
+/// 12, 13, 14).
+///
+/// The joint is **19**, not 0, and that is measured rather than arbitrary: the
+/// mesh's blend indices are IndexMap slots, the map has 32 entries over 58
+/// joints, and it starts {19, 20, 21, ...}. A matrix on joint 0 is a matrix no
+/// vertex is weighted to, so it moves nothing (measured: delta 0.0 after the
+/// fill started packing in blend-slot order).
 function rig_with_translation(x: f32, y: f32, z: f32): Float32Array {
   const matrices = new Float32Array(RIG_BONES * 16);
   for (let joint: u32 = 0; joint < RIG_BONES; joint++) {
@@ -124,9 +133,10 @@ function rig_with_translation(x: f32, y: f32, z: f32): Float32Array {
     matrices[at + 10] = 1.0;
     matrices[at + 15] = 1.0;
   }
-  matrices[12] = x;
-  matrices[13] = y;
-  matrices[14] = z;
+  const at = FIRST_INFLUENCING_JOINT * 16;
+  matrices[at + 12] = x;
+  matrices[at + 13] = y;
+  matrices[at + 14] = z;
   return matrices;
 }
 
