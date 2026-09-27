@@ -156,9 +156,24 @@ void HlmsTensionSkin::calculateHashForPreCreate(Renderable *renderable, PiecesMa
     // whereas posExecution runs after the whole body, where only the clip
     // position is still live. Here `worldPos` is in scope.
     String &exec = inOutPieces[VertexShader][IdString("custom_vs_preTransform")];
-    exec += "// tension-ogre: this object's record, by draw id.\n";
-    exec += "{ float4 tensionRec = readOnlyFetch( tensionMatrixBuf, int( inVs_drawId ) );\n";
-    exec += "  worldPos.xyz += tensionRec.xyz; }\n";
+    exec += "// tension-ogre: this object's matrices, by draw id.\n";
+    exec += "{ int tensionBase = int( inVs_drawId ) * " +
+            StringConverter::toString(kRecordFloats / 4) + ";\n";
+    // The first matrix's translation column: matrix m at vec4 m*4 .. m*4+3, so
+    // the first matrix's 4th column is vec4 3 (floats 12..15 of the record).
+    // A translation offset is all this round applies — enough to prove the
+    // guest's bytes reached the shader. Full skinning reads every joint.
+    exec += "  float4 tensionT = readOnlyFetch( tensionMatrixBuf, tensionBase + 3 );\n";
+    exec += "  worldPos.xyz += tensionT.xyz; }\n";
+}
+
+void HlmsTensionSkin::set_renderable_matrices(const Renderable *renderable,
+                                              const std::vector<float> &matrices) {
+    renderable_matrices_[renderable] = matrices;
+}
+
+void HlmsTensionSkin::clear_renderable_matrices(const Renderable *renderable) {
+    renderable_matrices_.erase(renderable);
 }
 
 uint32_t HlmsTensionSkin::fillBuffersFor(const HlmsCache *cache,
@@ -204,15 +219,19 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
     const uint32_t baseInstance = HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass,
                                                             lastCacheHash, commandBuffer);
 
-    // The payload slot. A later round writes this object's matrices here; today
-    // it is zeros, which is what the buffer already holds — the write is kept
-    // because it is where the payload goes and it costs one store per object.
+    // The payload: the matrices the adapter stored for this renderable, or
+    // zeros. One store of the whole record either way, so a slot that had a rig
+    // in the last frame and a static mesh in this one cannot show the old rig.
     if (records_ != nullptr && baseInstance < kMaxObjects) {
         float *dst = records_ + baseInstance * kRecordFloats;
-        dst[0] = 0.0f;
-        dst[1] = 0.0f;
-        dst[2] = 0.0f;
-        dst[3] = 0.0f;
+        const auto itor = renderable_matrices_.find(queuedRenderable.renderable);
+        if (itor != renderable_matrices_.end() && !itor->second.empty()) {
+            const size_t count = std::min(itor->second.size(), kRecordFloats);
+            std::copy(itor->second.begin(), itor->second.begin() + count, dst);
+            if (count < kRecordFloats) std::fill(dst + count, dst + kRecordFloats, 0.0f);
+        } else {
+            std::fill(dst, dst + kRecordFloats, 0.0f);
+        }
     }
 
     return baseInstance;

@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "../include/tension_ogre.h"
@@ -65,6 +66,22 @@ constexpr uint32_t kBoneCapacity = kRenderableCapacity;
 /// a 16-bit index sufficient here rather than merely convenient.
 constexpr uint32_t kProceduralBase = kBoneTableOffset + kBoneRecordBytes * kBoneCapacity;
 constexpr uint32_t kProceduralCapacity = 512 * 1024;
+
+/// The guest's skin matrices (chunk 19 round 19b): a table of 32-byte records
+/// at the start of the procedural window, then the matrix bytes the records
+/// point at. `wire.ts` derives the same offsets from the same base, so the two
+/// sides agree by construction rather than by comment.
+constexpr uint32_t kSkinRecordBytes = 32;
+constexpr uint32_t kSkinCapacity = 64;
+constexpr uint32_t kSkinTableOffset = kProceduralBase;
+constexpr uint32_t kSkinDataOffset = kSkinTableOffset + kSkinRecordBytes * kSkinCapacity;
+constexpr uint32_t kSkinDataCapacity = 256 * 1024;
+/// The most joints one renderable may send: 128 x 16 floats = 8 KiB. This is
+/// also the Hlms buffer's per-object stride, so the two ceilings are one
+/// number.
+constexpr uint32_t kSkinMaxBones = 128;
+static_assert(kSkinDataOffset + kSkinDataCapacity <= kProceduralBase + kProceduralCapacity,
+              "the skin-matrix area must fit the procedural window it shares");
 
 /// The vertex-element bits `create_mesh`'s `format` takes, in the order the
 /// adapter declares them: position, then normal, then uv. Position is the only
@@ -212,6 +229,17 @@ class SceneMirror {
     uint32_t bone_update_count() const { return bone_count_; }
     uint32_t bone_generation() const { return bone_generation_; }
 
+    // ── the guest's skin matrices (chunk 19 round 19b) ───────────────────
+    //
+    // Not a table: a rig's matrices are variable-length, so they are a map keyed
+    // by renderable id instead. Written by `submit_skin_matrices` on the guest
+    // thread under this mirror's lock; read by the render thread's apply, which
+    // copies them into the Hlms that draws the rig. Removing a renderable drops
+    // them, so an id reused later starts with no matrices rather than the last
+    // occupant's.
+    void set_skin_matrices(uint32_t id, const std::vector<float> &matrices);
+    const std::vector<float> *skin_matrices(uint32_t id) const;
+
     // ── decoders: a record out of a guest-written region (no OGRE) ───────
     static bool decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNodeRecord &out);
     static bool decode_camera(const uint8_t *region, size_t len, uint32_t id, CameraRecord &out);
@@ -294,6 +322,7 @@ class SceneMirror {
     std::vector<BoneUpdate> bones_{kBoneCapacity};
     uint32_t bone_count_ = 0;
     uint32_t bone_generation_ = 0;
+    std::unordered_map<uint32_t, std::vector<float>> skin_matrices_;
 };
 
 } // namespace tension_ogre
