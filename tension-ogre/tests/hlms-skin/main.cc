@@ -1,6 +1,6 @@
 // hlms-skin — the HlmsPbs subclass mechanism, measured end to end.
 //
-//	hlms-skin <resource-dir> [frames] [render-system] [off]
+//	probe <resource-dir> [frames] [render-system] [off]
 //
 // Registers PBS and HlmsTensionSkin side by side, draws N identical Items that share
 // one mesh and one (subclass-made) datablock at one scene node, and reads the frame
@@ -9,8 +9,8 @@
 // different places. With "off" they must collapse into one.
 //
 // The load-bearing run:
-//	hlms-skin <dir> 10 "OpenGL 3+ Rendering Subsystem"        # 3 blobs, ~3x the pixels
-//	hlms-skin <dir> 10 "OpenGL 3+ Rendering Subsystem" off    # 1 blob
+//	probe <dir> 10 "OpenGL 3+ Rendering Subsystem"        # 3 blobs, ~3x the pixels
+//	probe <dir> 10 "OpenGL 3+ Rendering Subsystem" off    # 1 blob
 //
 // Build and run: see README.md beside this file.
 
@@ -48,7 +48,7 @@ static void step(const std::string &s) { std::cout << "[hlms-skin] " << s << std
 
 int main(int argc, char **argv) {
     if (argc < 2) {
-        std::cerr << "usage: hlms-skin <resource-dir> [frames] [render-system] [off]\n"
+        std::cerr << "usage: probe <resource-dir> [frames] [render-system] [off]\n"
                      "  <resource-dir> must contain characterMedium-v2.mesh (and, for the\n"
                      "  rigged run, its sibling characterMedium.skeleton)\n"
                      "  [off] runs the contrast case: every record zero\n" << std::endl;
@@ -158,6 +158,18 @@ int main(int argc, char **argv) {
         root->renderOneFrame();
     step("rendered " + StringConverter::toString(frames) + " frames; records written = " +
          StringConverter::toString(HlmsTensionSkin::sObjectCounter));
+
+    // A capture that does not depend on the download ticket: on Vulkan the
+    // convert-from-texture path returned an all-zero image even though the frame was
+    // correct, while writeContentsToFile worked on both renderers. This file is the
+    // evidence the runs above are compared with.
+    {
+        TextureGpu *tex = window->getTexture();
+        const std::string png =
+            scratch + "/frame-" + (HlmsTensionSkin::sChannelEnabled ? "on" : "off") + ".png";
+        tex->writeContentsToFile(png.c_str(), 0u, tex->getNumMipmaps() - 1u);
+        step("wrote " + png);
+    }
 
     // ── the readback ─────────────────────────────────────────────────────────
     // The recipe from OgreWindow.h:174-185: ask to download, take the manual swap
