@@ -140,10 +140,14 @@ namespace Ogre
             return;
 
         setProperty( "tension_skinning", 1 );
-        // The instance struct (worldMaterialIdx[], and with it inVs_drawId) is declared
-        // only when one of hlms_skeleton / hlms_shadowcaster / hlms_pose / metal /
-        // lower_gpu_overhead is on. We need inVs_drawId, so force it on.
-        setProperty( "lower_gpu_overhead", 1 );
+        // NOT lower_gpu_overhead. It forces the instance struct into the variant
+        // (which is why the original probe used it), but it also switches the PBS
+        // pixel shader to materialArray[0] for
+        // every object (800.PixelShader_piece_ps.any:191), so every object in the
+        // pass shades with the first datablock's constants. The probe could not
+        // catch this: its scene had exactly one datablock, for which slot 0 is
+        // correct. The reference already gets inVs_drawId because hlms_skeleton is
+        // on for rigged meshes; the property is unnecessary.
 
         String &decl = inOutPieces[VertexShader][IdString( "custom_vs_uniformDeclaration" )];
         // NOT "layout(binding = 1) uniform samplerBuffer": under GL3Plus, OGRE binds a
