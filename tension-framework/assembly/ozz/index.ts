@@ -275,3 +275,10 @@ export function verifyAnimationIndex(animation: Animation, index: AnimationIndex
   if (s.length > 0) return "scales: " + s;
   return "";
 }
+
+// The runtime half: matrices, and the three operations ozz's jobs perform on the
+// data above. Re-exported from here so the SDK's surface is the module, not the
+// file layout — and last, so the classes these modules name above are already
+// defined when a consumer's first import is this barrel.
+export * from "./matrix";
+export * from "./evaluator";

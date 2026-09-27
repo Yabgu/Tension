@@ -18,6 +18,10 @@
 #                   ozz's own runtime, with the three format traps checked. It
 #                   needs no capability — the fixtures are compiled in, and the
 #                   only host surface it touches is `print`.
+#   guest-ozz-eval.ts    the ozz evaluator (17c): sampling, blending and
+#                   local-to-model against ozz's own SamplingJob /
+#                   BlendingJob / LocalToModelJob output, on the same fixtures.
+#                   Plain module too — parse, evaluate, compare, print.
 #
 # Steps, in the order the design fixes them:
 #
@@ -119,4 +123,5 @@ run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
 run_fixture guest-physics-units.ts guest-physics-units.wasm
 run_plain_fixture guest-ozz-parser.ts guest-ozz-parser.wasm
+run_plain_fixture guest-ozz-eval.ts guest-ozz-eval.wasm
 echo "==> all fixtures OK"
