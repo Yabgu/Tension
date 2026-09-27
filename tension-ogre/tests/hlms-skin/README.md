@@ -233,3 +233,35 @@ itself at `/tmp/hlms-skin/frame-on.png` / `frame-off.png`.
   mesh.
 - The program's own scratch is fixed at `/tmp/hlms-skin/` (log, dump, frames) rather than a
   random directory, so the evidence is findable afterwards.
+
+## Shadow-node setup (OGRE-Next 3.0)
+
+A caster pass changes the binding rules, and every trap below cost a run. They were found
+while reproducing the caster-pass binding bug (chunk 19): **a subclass that binds its own
+buffer must bind it on the caster pass too.** Binding state persists across passes within a
+command buffer, so a caster pass that leaves slot 1 holding something else poisons the main
+pass that follows — the main pass's own bind does not correct it, and the shader reads
+garbage (measured: the rig renders out of frame, 0 non-background pixels, where the same
+scene without a shadow node renders three objects at 3920). It is not the caster *shader*
+reading the buffer: our piece is not emitted into the caster variant at all — 0 occurrences
+in its dump against 4 in the main variant.
+
+- `Light::setDirection` **before** `attachObject` is a **SIGSEGV** (`OgreLight.cpp:131` —
+  the setter dereferences the light's node). Attach the light to a scene node first, then
+  set its direction.
+- The header is `Compositor/Pass/PassScene/OgreCompositorPassSceneDef.h`, not
+  `Compositor/OgreCompositorPassSceneDef.h`.
+- There is **no explicit `addNode`** for a shadow node in 3.0. The workspace's
+  auto-generated node definition is fetched by
+  `"AutoGen " + IdString( workspace + "/Node" ).getReleaseText()`, and its
+  `CompositorPassSceneDef::mShadowNode` names the shadow node — which must already exist
+  (`ShadowNodeHelper::createShadowNodeWithSettings`) when the workspace is created.
+  The reference sample is `Samples/2.0/ApiUsage/ShadowMapFromCode/ShadowMapFromCode.cpp`.
+
+### The layout, corrected
+
+`HlmsPbs::setupRootLayout` reserves **`ReadOnlyBuffer [0, 2)`**, `ConstBuffer [0, 3)` and
+`TexBuffer [2, 3)` — measured, not assumed. Earlier rounds recorded the first as `[0, 1)`,
+which is why this subclass's widening looked necessary and was in fact a **no-op**: slot 1
+was already inside the base's own range. The widening stays, because the reservation is
+PBS's to change and not ours to assume.
