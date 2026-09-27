@@ -56,6 +56,8 @@
 #include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
 #include <Hlms/Unlit/OgreHlmsUnlitDatablock.h>
+
+#include "hlms_tension_skin.h"
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
@@ -306,8 +308,19 @@ class BackendOgre final : public Backend {
                     archives.load(root + "/" + unlit_main, "FileSystem", true), &unlit_library);
                 hlms_pbs_ = new Ogre::HlmsPbs(
                     archives.load(root + "/" + pbs_main, "FileSystem", true), &pbs_library);
+                // The subclass comes *after* PBS and on its own HlmsTypes slot:
+                // a second provider for HLMS_PBS is refused at registration.
+                // It shares PBS's data folder and library list — the same
+                // shader templates, extended by its own piece.
+                hlms_tension_skin_ = new HlmsTensionSkin(
+                    archives.load(root + "/" + pbs_main, "FileSystem", true), &pbs_library);
                 root_->getHlmsManager()->registerHlms(hlms_unlit_);
                 root_->getHlmsManager()->registerHlms(hlms_pbs_);
+                root_->getHlmsManager()->registerHlms(hlms_tension_skin_);
+                // One line naming all three, so a log alone answers "which Hlmses
+                // does this run have". The subclass logs itself too, from its own
+                // `_changeRenderSystem`, with the instance OGRE actually set up.
+                log_line("ogre: hlms registered: unlit, pbs, tension-skin");
 
                 // A rigged mesh's *skeleton* is a separate file the v1 -> v2
                 // conversion resolves by name, so the folders meshes and their
@@ -1408,6 +1421,12 @@ class BackendOgre final : public Backend {
                     datablock_kinds_[id - 1] = record->kind;
                 }
                 apply_material_values(datablocks_[id - 1], *record);
+                // A rigged renderable may be drawing the subclass's mirror of
+                // this datablock: apply the same values to it, or the two
+                // would drift the first time a guest edits a material.
+                if (skin_datablocks_[id - 1] != nullptr) {
+                    apply_material_values(skin_datablocks_[id - 1], *record);
+                }
             } catch (const std::exception &e) {
                 refused += 1;
                 refused_entry("material", id, e.what());
@@ -1475,12 +1494,46 @@ class BackendOgre final : public Backend {
         if (owner != nullptr && !datablock_names_[id - 1].empty()) {
             owner->destroyDatablock(datablock_names_[id - 1]);
         }
+        if (skin_datablocks_[id - 1] != nullptr) {
+            if (hlms_tension_skin_ != nullptr && !skin_datablock_names_[id - 1].empty()) {
+                hlms_tension_skin_->destroyDatablock(skin_datablock_names_[id - 1]);
+            }
+            skin_datablocks_[id - 1] = nullptr;
+            skin_datablock_names_[id - 1].clear();
+        }
         datablocks_[id - 1] = nullptr;
         datablock_names_[id - 1].clear();
         datablock_kinds_[id - 1] = 0;
     }
 
     // ── renderables ──────────────────────────────────────────────────────
+
+    /// The subclass mirror of a material's PBS datablock, created on first use
+    /// by a rigged renderable and kept until the material is removed (chunk 19).
+    ///
+    /// It carries the *same* values: `apply_material_values` takes a
+    /// `HlmsPbsDatablock *`, and this is one — only the Hlms that draws it
+    /// differs, so nothing about the picture changes. Returns nullptr when the
+    /// subclass is not registered or the record is unknown, which lets the
+    /// caller fall back to the PBS datablock rather than refuse the renderable.
+    Ogre::HlmsDatablock *skin_datablock_for(const SceneMirror &mirror, uint32_t material_id) {
+        if (hlms_tension_skin_ == nullptr) return nullptr;
+        if (material_id == 0 || material_id > kMaterialCapacity) return nullptr;
+        if (skin_datablocks_[material_id - 1] != nullptr) return skin_datablocks_[material_id - 1];
+        const MaterialRecord *record = mirror.material(material_id);
+        if (record == nullptr) return nullptr;
+
+        const Ogre::String name = "tension-skin-mat-" + std::to_string(material_id);
+        Ogre::HlmsMacroblock macroblock;
+        Ogre::HlmsBlendblock blendblock;
+        Ogre::HlmsParamVec params;
+        Ogre::HlmsDatablock *datablock =
+            hlms_tension_skin_->createDatablock(name, name, macroblock, blendblock, params);
+        apply_material_values(datablock, *record);
+        skin_datablocks_[material_id - 1] = datablock;
+        skin_datablock_names_[material_id - 1] = name;
+        return datablock;
+    }
 
     int32_t apply_renderables(const SceneMirror &mirror) {
         int32_t refused = 0;
@@ -1536,9 +1589,22 @@ class BackendOgre final : public Backend {
                 // belongs to the legacy v1 `Renderable`, and `Item` derives
                 // from `MovableObject` — so this backend remembers what it
                 // bound, which it must do either way.
-                if (item_datablocks_[id - 1] != datablock) {
-                    item->setDatablock(datablock);
-                    item_datablocks_[id - 1] = datablock;
+                // A rigged mesh is drawn by the subclass: `Item` carries its
+                // own `SkeletonInstance`, and that is the test for "rigged".
+                // The subclass's fill calls the base, so the SkeletonInstance
+                // path still does the skinning and the picture is unchanged —
+                // the point of this round is that the plumbing exists.
+                Ogre::HlmsDatablock *bound = datablock;
+                if (item->getSkeletonInstance() != nullptr &&
+                    datablock_kinds_[record->material_id - 1] == TENSION_OGRE_MAT_HLMS_PBS) {
+                    if (Ogre::HlmsDatablock *skin_db =
+                            skin_datablock_for(mirror, record->material_id)) {
+                        bound = skin_db;
+                    }
+                }
+                if (item_datablocks_[id - 1] != bound) {
+                    item->setDatablock(bound);
+                    item_datablocks_[id - 1] = bound;
                 }
                 // A drawable hangs from its own node, and with a `nodeId` that
                 // node is a child of the guest's — so the transform below is
@@ -1699,6 +1765,16 @@ class BackendOgre final : public Backend {
     uint32_t applied_bone_generation_ = 0;
     Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
     Ogre::HlmsPbs *hlms_pbs_ = nullptr;
+    /// The subclass that draws rigged meshes (chunk 19). Its buffer and shader
+    /// piece are in place; the payload lands in a later round, so today it
+    /// draws exactly what PBS draws.
+    HlmsTensionSkin *hlms_tension_skin_ = nullptr;
+    /// One mirrored datablock per material id, created on first use by a rigged
+    /// renderable and destroyed with the PBS datablock it mirrors. Index 0
+    /// unused: material ids are 1-based.
+    std::vector<Ogre::HlmsDatablock *> skin_datablocks_ =
+        std::vector<Ogre::HlmsDatablock *>(kMaterialCapacity, nullptr);
+    std::vector<std::string> skin_datablock_names_ = std::vector<std::string>(kMaterialCapacity);
     /// The media directory the Hlms archives and the models resource location
     /// were built from — kept so diagnostics can name it.
     std::string media_root_;
