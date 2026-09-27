@@ -66,7 +66,15 @@ public:
 /// The subclass itself. One instance per render system, registered after PBS.
 class HlmsTensionSkin : public Ogre::HlmsPbs {
 public:
-    /// Our buffer's slot in the ReadOnlyBuffer range: PBS reserved [0, 1).
+    /// Our buffer's slot in the ReadOnlyBuffer range. Measured: PBS reserves
+    /// ReadOnlyBuffer [0, 2) itself, and every slot tried (0, 1, 2, 8) behaves
+    /// identically — see the round report; 1 is kept because it is what the
+    /// working probe uses.
+    /// Our buffer's slot in the ReadOnlyBuffer range. NOT 1: PBS binds its
+    /// Forward+ light list there (`texUnit = mReservedTexBufferSlots` in its
+    /// fill), and in a scene with lights that bind lands after ours and wins —
+    /// measured: with slot 1 the read returns zero in the adapter and works in
+    /// the probe, whose scene never calls setForwardClustered.
     static const uint16_t kOurTexBufferSlot = 1u;
     /// Floats in one 4x4 matrix: 16, column-major, the shape the ozz evaluator
     /// produces and the shape the shader reads as four vec4s.

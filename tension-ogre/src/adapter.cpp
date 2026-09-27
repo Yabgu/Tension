@@ -760,6 +760,9 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
+    // Always on, like submit_bones' refusals and unlike the debug-gated
+    // paths: a verb that carries a rig is worth one line in the adapter's
+    // log, and the fixture asserts the line is there.
     for (int32_t i = 0; i < count; ++i) {
         const uint8_t *entry = table.data() + static_cast<size_t>(i) * kSkinRecordBytes;
         uint32_t renderable_id = 0, matrices_offset = 0, matrix_bytes = 0, flags = 0;
@@ -793,6 +796,10 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
             return -EINVAL;
         }
         s.scene.set_skin_matrices(renderable_id, matrices);
+        char line[128];
+        std::snprintf(line, sizeof(line), "ogre: submit_skin_matrices renderable=%u bytes=%u",
+                      renderable_id, matrix_bytes);
+        log_line(2, line);
     }
     ret->i32 = count;
     return 0;
