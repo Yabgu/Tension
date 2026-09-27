@@ -253,32 +253,12 @@ class BackendOgre final : public Backend {
             camera_->setNearClipDistance(0.1f);
             camera_->setAutoAspectRatio(true);
 
-            // The NULL render system is the exception, and it is measured
-            // rather than assumed: hanging a workspace over its window
-            // segfaults inside OGRE (CompositorPassScene -> getDepthBufferFor
-            // -> Window::getDepthBuffer, with both pointers valid when the
-            // window is queried directly), and a headless gate has no image to
-            // clear. Its frame loop still runs, which is the whole point of it.
-            if (renderer_ == TENSION_OGRE_RENDERER_NULL) {
-                log_line("ogre: the NULL render system presents nothing; "
-                         "running without a compositor workspace");
-            } else {
-                // A workspace from the first frame, so the window is cleared
-                // and lit before the guest has said anything — the placeholder
-                // camera stands in until a submitted one replaces it, which is
-                // the probe's proven removeWorkspace + addWorkspace pair in
-                // `activate_camera`.
-                Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
-                compositors->createBasicWorkspaceDef("tension-basic",
-                                                     Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
-                workspace_ = compositors->addWorkspace(scene_, window_->getTexture(), camera_,
-                                                       "tension-basic", true);
-                if (workspace_ == nullptr) {
-                    return refuse(status, TENSION_OGRE_STAGE_INITIALISE, -EIO,
-                                  "the basic workspace was refused");
-                }
-            }
-
+            // ORDER IS LOAD-BEARING: the Hlmses are registered *before* the
+            // workspace below, because the workspace's pass builds the root layout
+            // the pipelines use, and the subclass's slot-1 reservation has to be in
+            // it. Measured (round 19g): with the workspace first, the subclass's
+            // shader piece compiles and runs but its buffer read returns zero — the
+            // layout the pipeline was built against had no slot 1.
             // The Hlms: archives (sources + library), then registration. The
             // library folders come from each Hlms's own `getDefaultPaths()`
             // rather than from a hand-written list, because the list is not
@@ -343,6 +323,32 @@ class BackendOgre final : public Backend {
                 // group which does not exist at all cannot host a resource;
                 // that is `mount_tns`'s business, not this call's.)
             }
+            // The NULL render system is the exception, and it is measured
+            // rather than assumed: hanging a workspace over its window
+            // segfaults inside OGRE (CompositorPassScene -> getDepthBufferFor
+            // -> Window::getDepthBuffer, with both pointers valid when the
+            // window is queried directly), and a headless gate has no image to
+            // clear. Its frame loop still runs, which is the whole point of it.
+            if (renderer_ == TENSION_OGRE_RENDERER_NULL) {
+                log_line("ogre: the NULL render system presents nothing; "
+                         "running without a compositor workspace");
+            } else {
+                // A workspace from the first frame, so the window is cleared
+                // and lit before the guest has said anything — the placeholder
+                // camera stands in until a submitted one replaces it, which is
+                // the probe's proven removeWorkspace + addWorkspace pair in
+                // `activate_camera`.
+                Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
+                compositors->createBasicWorkspaceDef("tension-basic",
+                                                     Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
+                workspace_ = compositors->addWorkspace(scene_, window_->getTexture(), camera_,
+                                                       "tension-basic", true);
+                if (workspace_ == nullptr) {
+                    return refuse(status, TENSION_OGRE_STAGE_INITIALISE, -EIO,
+                                  "the basic workspace was refused");
+                }
+            }
+
             // No framebuffer to download under the NULL render system.
             supports_readback_ = !is_null_rs_;
             if (supports_readback_) {
@@ -934,6 +940,7 @@ class BackendOgre final : public Backend {
             // a still rig costs one integer compare per frame, which is the
             // point of the generation counter (DESIGN.md §5.1).
             apply_bone_updates(mirror);
+            apply_skin_matrices(mirror);
         } catch (const Ogre::Exception &e) {
             applying_ = nullptr;
             log_line("ogre: apply_submissions: " + e.getFullDescription());
@@ -1649,6 +1656,30 @@ class BackendOgre final : public Backend {
     /// OGRE's own animation system for no gain here — and `update()` is kept
     /// because it makes the derived transforms correct immediately rather than
     /// whenever OGRE next walks the rig (2.2-2.9 us per frame for 1-19 bones).
+    /// Hand the guest's matrices to the Hlms that draws the rigs (chunk 19).
+    ///
+    /// The render thread's half of the split `apply_bone_updates` follows: the
+    /// mirror holds what the guest submitted, keyed by renderable id, and this
+    /// copies it into the Hlms keyed by the `Renderable` the fill is handed.
+    /// It runs on a generation change, so a frame that submits nothing does one
+    /// integer compare and no OGRE work — and it runs *after* the renderables,
+    /// so a rig applied this frame gets its matrices as soon as they exist.
+    void apply_skin_matrices(const SceneMirror &mirror) {
+        const uint32_t generation = mirror.skin_generation();
+        if (generation == applied_skin_generation_) return;
+        applied_skin_generation_ = generation;
+        if (hlms_tension_skin_ == nullptr) return;
+        for (uint32_t id = 1; id <= kRenderableCapacity; ++id) {
+            Ogre::Item *item = items_[id - 1];
+            if (item == nullptr || item->getSkeletonInstance() == nullptr) continue;
+            Ogre::SubItem *sub = item->getSubItem(0);
+            if (sub == nullptr) continue;
+            const std::vector<float> *matrices = mirror.skin_matrices(id);
+            hlms_tension_skin_->set_renderable_matrices(sub,
+                                                        matrices ? *matrices : std::vector<float>{});
+        }
+    }
+
     void apply_bone_updates(const SceneMirror &mirror) {
         const uint32_t generation = mirror.bone_generation();
         if (generation == applied_bone_generation_) return;
@@ -1783,6 +1814,8 @@ class BackendOgre final : public Backend {
     /// The mirror's bone generation this backend has already applied. A frame
     /// with no new snapshot does nothing but compare this.
     uint32_t applied_bone_generation_ = 0;
+    /// The mirror's skin-matrix generation this backend has already pushed.
+    uint32_t applied_skin_generation_ = 0;
     Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
     Ogre::HlmsPbs *hlms_pbs_ = nullptr;
     /// The subclass that draws rigged meshes (chunk 19). Its buffer and shader

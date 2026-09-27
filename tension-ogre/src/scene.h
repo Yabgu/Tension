@@ -228,6 +228,9 @@ class SceneMirror {
     const BoneUpdate *bone_updates() const { return bones_.data(); }
     uint32_t bone_update_count() const { return bone_count_; }
     uint32_t bone_generation() const { return bone_generation_; }
+    /// Bumped by every `set_skin_matrices`, so the render thread re-reads the
+    /// map only when a guest actually sent something (the bone path's shape).
+    uint32_t skin_generation() const { return skin_generation_; }
 
     // ── the guest's skin matrices (chunk 19 round 19b) ───────────────────
     //
@@ -322,6 +325,7 @@ class SceneMirror {
     std::vector<BoneUpdate> bones_{kBoneCapacity};
     uint32_t bone_count_ = 0;
     uint32_t bone_generation_ = 0;
+    uint32_t skin_generation_ = 0;
     std::unordered_map<uint32_t, std::vector<float>> skin_matrices_;
 };
 

@@ -18,7 +18,8 @@
 
 namespace tension_ogre {
 
-using namespace Ogre; // NOLINT(google-build-using-namespace) — OGRE's own types are the subject here
+using namespace Ogre;
+ // NOLINT(google-build-using-namespace) — OGRE's own types are the subject here
 
 HlmsTensionSkin::HlmsTensionSkin(Archive *dataFolder, ArchiveVec *libraryFolders) :
     HlmsPbs(dataFolder, libraryFolders),
@@ -49,6 +50,7 @@ void HlmsTensionSkin::_changeRenderSystem(RenderSystem *newRs) {
     matrix_buffer_ = newRs->getVaoManager()->createReadOnlyBuffer(
         PixelFormatGpu::PFG_RGBA32_FLOAT, matrix_buffer_bytes_, BT_DYNAMIC_PERSISTENT, zeros.data(),
         false);
+
 
     // One line, once per render system: this is what tells a reader that both
     // Hlmses are registered and which slot each one holds.
@@ -85,7 +87,10 @@ HlmsCache HlmsTensionSkin::preparePassHash(const CompositorShadowNode *shadowNod
 void HlmsTensionSkin::setupRootLayout(RootLayout &rootLayout, size_t tid) {
     HlmsPbs::setupRootLayout(rootLayout, tid);
 
-    // PBS reserved ReadOnlyBuffer [0, 1); widen it by one so slot 1 is ours.
+    // Measured: PBS's own call already reserves TWO read-only buffer slots
+    // (ReadOnlyBuffer [0, 2), ConstBuffer [0, 3), TexBuffer [2, 3)), so slot 1
+    // sits inside the base's range and this widening is a no-op today. It stays
+    // because the reservation is PBS's to change, not ours to assume.
     DescBindingRange *ranges = rootLayout.mDescBindingRanges[0];
     ranges[DescBindingTypes::ReadOnlyBuffer].end =
         std::max<uint16>(ranges[DescBindingTypes::ReadOnlyBuffer].end, kOurTexBufferSlot + 1u);
@@ -200,16 +205,20 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
                                            const QueuedRenderable &queuedRenderable,
                                            bool casterPass, uint32_t lastCacheHash,
                                            CommandBuffer *commandBuffer) {
-    // Only the main pass writes records: a caster pass draws the same objects
-    // with draw ids the main shader never sees.
-    if (casterPass || matrix_buffer_ == nullptr) {
+    if (matrix_buffer_ == nullptr) {
         return HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass, lastCacheHash,
                                          commandBuffer);
     }
 
-    // Bind BEFORE the base records the draw: the bind command must precede the
-    // draw command that samples it.
-    bind_our_buffer(commandBuffer);
+    // Only the main pass writes records: a caster pass draws the same objects
+    // with draw ids the main shader never sees, and the caster variant has no
+    // use for the record.
+    if (casterPass) {
+        const uint32_t casterBase = HlmsPbs::fillBuffersForV2(
+            cache, queuedRenderable, casterPass, lastCacheHash, commandBuffer);
+        bind_our_buffer(commandBuffer);
+        return casterBase;
+    }
 
     // The base's return value IS the object's identity: `RenderQueue` stores it
     // as the draw's `baseInstance` (OgreRenderQueue.cpp:794), and the shader's
@@ -218,6 +227,26 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
     // per-object block.
     const uint32_t baseInstance = HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass,
                                                             lastCacheHash, commandBuffer);
+
+    // The bind goes LAST, after the base's fill, and both halves of that are
+    // load-bearing:
+    //
+    //   * after, because the base fills its own read-only buffers and one of them
+    //     is slot 1 — PBS reserves ReadOnlyBuffer [0, 2), where slot 0 is
+    //     `worldMatBuf` and slot 1 is the Forward+ light list (`texUnit =
+    //     mReservedTexBufferSlots` in its fill). A bind before the base is
+    //     overwritten; measured: before, delta 0.0; after, delta 48.0.
+    //   * on every pass including the caster, because binding state persists
+    //     across passes within a command buffer, so a caster pass that leaves
+    //     slot 1 holding something else poisons the main pass that follows.
+    //     Measured: with a shadow node and no caster bind, the rig renders out
+    //     of frame (0 non-background pixels against 3920 for the same scene
+    //     without one).
+    //
+    // It is not the caster *shader* that reads the buffer — our piece is not
+    // emitted into the caster variant at all (0 occurrences in its dump against
+    // 4 in the main variant) — it is the binding each pass leaves behind.
+    bind_our_buffer(commandBuffer);
 
     // The payload: the matrices the adapter stored for this renderable, or
     // zeros. One store of the whole record either way, so a slot that had a rig

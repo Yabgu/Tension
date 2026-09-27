@@ -276,6 +276,7 @@ int32_t SceneMirror::remove_renderable(uint32_t id) {
 void SceneMirror::set_skin_matrices(uint32_t id, const std::vector<float> &matrices) {
     if (id == 0 || id > kRenderableCapacity) return;
     skin_matrices_[id] = matrices;
+    ++skin_generation_;
 }
 
 const std::vector<float> *SceneMirror::skin_matrices(uint32_t id) const {
