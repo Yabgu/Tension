@@ -1606,6 +1606,19 @@ class BackendOgre final : public Backend {
                     item->setDatablock(bound);
                     item_datablocks_[id - 1] = bound;
                 }
+                // The matrices the guest sent for this renderable, if any. The
+                // subclass's fill looks them up by the `Renderable` it is
+                // handed — the sub-item — and the shader applies the first
+                // matrix's translation. A renderable with none is stored as an
+                // empty vector, so a rig whose matrices were withdrawn stops
+                // being offset instead of keeping the last ones.
+                if (hlms_tension_skin_ != nullptr && item->getSkeletonInstance() != nullptr) {
+                    if (Ogre::SubItem *sub = item->getSubItem(0)) {
+                        const std::vector<float> *matrices = mirror.skin_matrices(id);
+                        hlms_tension_skin_->set_renderable_matrices(
+                            sub, matrices ? *matrices : std::vector<float>{});
+                    }
+                }
                 // A drawable hangs from its own node, and with a `nodeId` that
                 // node is a child of the guest's — so the transform below is
                 // local to it and a moving parent carries the drawable.
@@ -1667,6 +1680,13 @@ class BackendOgre final : public Backend {
     void destroy_renderable(uint32_t id) {
         Ogre::Item *item = items_[id - 1];
         if (item == nullptr) return;
+        // Drop the matrices before the Item goes: the map is keyed by the
+        // Renderable OGRE is about to free.
+        if (hlms_tension_skin_ != nullptr) {
+            if (Ogre::SubItem *sub = item->getSubItem(0)) {
+                hlms_tension_skin_->clear_renderable_matrices(sub);
+            }
+        }
         if (Ogre::SceneNode *node = renderable_nodes_[id - 1]) {
             node->detachObject(item);
             scene_->destroySceneNode(node);

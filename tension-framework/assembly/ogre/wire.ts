@@ -729,6 +729,35 @@ export const PROCEDURAL_BASE: u32 = BONE_TABLE_OFFSET + BONE_SIZE * BONE_CAPACIT
  * index arrays a single `create_mesh` call names. */
 export const PROCEDURAL_CAPACITY: u32 = 512 * 1024;
 
+// --- guest skin matrices (chunk 19 round 19b) -------------------------------
+//
+// The matrices a guest computed for a rig — ozz's evaluator produces them, 16
+// floats per joint, column-major — do not go through the `SkeletonInstance` at
+// all: they go to the `HlmsPbs` subclass this adapter registers for rigged
+// meshes, which carries its own buffer and its own vertex-shader piece.
+//
+// The batch reuses the procedural window rather than adding a table to the
+// fixed layout, so no region grows and the layout hash does not move. A verb
+// reads the window synchronously, in the call that names it, so a guest that
+// submits skin matrices and builds a procedural mesh in one frame must write
+// each one immediately before its own call.
+
+/** One record of the skin-matrix table, in bytes. */
+export const SKIN_SIZE: u32 = 32;
+
+/** How many renderables one batch can name. */
+export const SKIN_CAPACITY: u32 = 64;
+
+/** Where the table starts: the first byte of the procedural window. */
+export const SKIN_TABLE_OFFSET: u32 = PROCEDURAL_BASE;
+
+/** Where the matrices themselves start, past the table. */
+export const SKIN_DATA_OFFSET: u32 = SKIN_TABLE_OFFSET + SKIN_SIZE * SKIN_CAPACITY;
+
+/** How many bytes of matrices the window holds: 256 KiB, 4096 joints at 64
+ * bytes each — far past the per-renderable ceiling the adapter accepts. */
+export const SKIN_DATA_CAPACITY: u32 = 256 * 1024;
+
 // --- vertex formats and topology (chunk 5.5) --------------------------------
 //
 // `format` is a flags word rather than an enum: a vertex is position, then

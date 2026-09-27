@@ -49,6 +49,8 @@ constexpr uint32_t kVerbMountTns = 13;
 // same off-by-one the 11b plan had for mount_tns — the count it wanted, the id
 // it named, and the free slot differed by one).
 constexpr uint32_t kVerbSubmitAnimation = 14;
+// 15: the guest's skin matrices, the fifteenth verb (chunk 19 round 19b).
+constexpr uint32_t kVerbSubmitSkinMatrices = 15;
 
 /// The longest clip name this verb accepts, in bytes. Clip names are the
 /// exporter's (`idle`, `run`, `jump`); 64 leaves room and keeps a garbage
@@ -716,6 +718,86 @@ int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, ten
     return 0;
 }
 
+/// `ogre::submit_skin_matrices(count)` — the guest's model-space matrices for
+/// `count` renderables (chunk 19 round 19b).
+///
+/// The table sits at the start of the procedural window in `BUFFER_POOL`:
+/// `count` 32-byte records, then the matrix bytes the records point at. Each
+/// record is `renderableId`, `matricesOffset` (window-relative), `matrixBytes`
+/// and `flags` (bit 0: the matrices are model-space; the rest reserved). The
+/// whole table is read in one `guest_read` and each matrix block in another —
+/// the window is scratch, and a verb that reads it synchronously is what makes
+/// sharing it with `create_mesh` safe.
+///
+/// What this does with them is storage. The mirror holds them by renderable id;
+/// the render thread's apply copies them into the `HlmsPbs` subclass's buffer
+/// for the rig being drawn. Nothing here touches OGRE.
+int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t nargs,
+                                  tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    const int32_t count = args[0].i32;
+    if (count <= 0 || count > static_cast<int32_t>(kSkinCapacity)) {
+        char line[160];
+        std::snprintf(line, sizeof(line),
+                      "ogre: submit_skin_matrices refused: %d entries is not in 1..%u", count,
+                      kSkinCapacity);
+        log_line(3, line);
+        return -EINVAL;
+    }
+    const size_t table_bytes = static_cast<size_t>(count) * kSkinRecordBytes;
+    if (s.motion_size < static_cast<size_t>(kSkinTableOffset) + table_bytes) {
+        log_line(3, "ogre: submit_skin_matrices refused: the BUFFER_POOL region is smaller than "
+                    "the skin table");
+        return -EINVAL;
+    }
+    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+
+    std::vector<uint8_t> table(table_bytes);
+    if (s.api->guest_read(s.api->user, s.motion_offset + kSkinTableOffset, table.data(),
+                          static_cast<uint32_t>(table_bytes)) != 0) {
+        return -EINVAL;
+    }
+
+    std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
+    for (int32_t i = 0; i < count; ++i) {
+        const uint8_t *entry = table.data() + static_cast<size_t>(i) * kSkinRecordBytes;
+        uint32_t renderable_id = 0, matrices_offset = 0, matrix_bytes = 0, flags = 0;
+        std::memcpy(&renderable_id, entry + 0, 4);
+        std::memcpy(&matrices_offset, entry + 4, 4);
+        std::memcpy(&matrix_bytes, entry + 8, 4);
+        std::memcpy(&flags, entry + 12, 4);
+        (void)flags; // reserved: bit 0 says model space, which is the only space there is yet
+        // A block that is not a whole number of 4x4 matrices, or longer than the
+        // ceiling the Hlms buffer is sized for, is a refusal rather than a
+        // truncated copy: half a rig is not a rig.
+        if (matrix_bytes == 0 || (matrix_bytes % 64u) != 0 ||
+            matrix_bytes > kSkinMaxBones * 64u) {
+            char line[200];
+            std::snprintf(line, sizeof(line),
+                          "ogre: submit_skin_matrices refused: entry %d sends %u bytes, which is "
+                          "not 64..%u in steps of 64",
+                          i, matrix_bytes, kSkinMaxBones * 64u);
+            log_line(3, line);
+            return -EINVAL;
+        }
+        if (static_cast<size_t>(matrices_offset) + matrix_bytes > kSkinDataCapacity) {
+            log_line(3, "ogre: submit_skin_matrices refused: an entry's matrices run past the "
+                        "window");
+            return -EINVAL;
+        }
+        std::vector<float> matrices(static_cast<size_t>(matrix_bytes) / sizeof(float));
+        if (s.api->guest_read(s.api->user,
+                              s.motion_offset + kSkinDataOffset + matrices_offset,
+                              matrices.data(), matrix_bytes) != 0) {
+            return -EINVAL;
+        }
+        s.scene.set_skin_matrices(renderable_id, matrices);
+    }
+    ret->i32 = count;
+    return 0;
+}
+
 /// `ogre::create_mesh(vbOffset, vbBytes, format, ibOffset, ibBytes, topology)`
 /// — a mesh built from arrays the guest wrote into `BUFFER_POOL` (chunk 5.5).
 ///
@@ -920,6 +1002,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"submit_motion", one_i32, 1, shim_submit_motion, kVerbSubmitMotion, 0},
         // And one per frame for a whole rig's pose (chunk 5b).
         {"submit_bones", one_i32, 1, shim_submit_bones, kVerbSubmitBones, 0},
+        {"submit_skin_matrices", one_i32, 1, shim_submit_skin_matrices, kVerbSubmitSkinMatrices, 0},
         // A mesh out of guest memory, for a guest with no file to load (5.5).
         {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
         {"mount_tns", four_i32, 4, shim_mount_tns, kVerbMountTns, 0},

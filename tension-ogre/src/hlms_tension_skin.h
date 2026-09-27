@@ -44,6 +44,9 @@
 #include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <OgreRootLayout.h>
 
+#include <unordered_map>
+#include <vector>
+
 namespace tension_ogre {
 
 /// The datablock a rigged Item carries. Its values are the same ones the
@@ -65,12 +68,29 @@ class HlmsTensionSkin : public Ogre::HlmsPbs {
 public:
     /// Our buffer's slot in the ReadOnlyBuffer range: PBS reserved [0, 1).
     static const uint16_t kOurTexBufferSlot = 1u;
-    /// Floats per object record in our buffer (one vec4).
-    static const size_t kRecordFloats = 4u;
+    /// Floats in one 4x4 matrix: 16, column-major, the shape the ozz evaluator
+    /// produces and the shape the shader reads as four vec4s.
+    static const size_t kMatrixFloats = 16u;
+    /// The most joints one renderable's record holds — the same ceiling the
+    /// adapter accepts per batch entry (its `kSkinMaxBones`), so a guest can
+    /// never send a rig this buffer cannot store.
+    static const size_t kMaxBones = 128u;
+    /// Floats per object record in our buffer: one joint per bone, all of them.
+    static const size_t kRecordFloats = kMaxBones * kMatrixFloats;
     /// How many objects our buffer can carry records for.
     static const size_t kMaxObjects = 64u;
 
     HlmsTensionSkin(Ogre::Archive *dataFolder, Ogre::ArchiveVec *libraryFolders);
+
+    /// The matrices for a renderable, keyed by the `Renderable` the fill is
+    /// handed. Set by the adapter's apply on the render thread (it is the only
+    /// thread that touches this map), read by the fill. An empty vector is the
+    /// same as none.
+    void set_renderable_matrices(const Ogre::Renderable *renderable,
+                                 const std::vector<float> &matrices);
+    /// Drop a renderable's matrices: called when the Item is destroyed, so a
+    /// pointer OGRE frees cannot be looked up again.
+    void clear_renderable_matrices(const Ogre::Renderable *renderable);
 
     void setupRootLayout(Ogre::RootLayout &rootLayout, size_t tid) override;
     Ogre::HlmsCache preparePassHash(const Ogre::CompositorShadowNode *shadowNode, bool casterPass,
@@ -90,6 +110,8 @@ public:
 protected:
     Ogre::ReadOnlyBufferPacked *matrix_buffer_ = nullptr;
     size_t matrix_buffer_bytes_;
+    /// The matrices the adapter has stored for the renderables it draws.
+    std::unordered_map<const Ogre::Renderable *, std::vector<float>> renderable_matrices_;
     /// The whole record range, mapped once per pass — one ring advance per
     /// pass, never one per object.
     float *records_ = nullptr;
