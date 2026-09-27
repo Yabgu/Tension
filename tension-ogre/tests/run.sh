@@ -69,6 +69,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-skin-matrices.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-skin-matrices.wasm" >/dev/null ||
     fail "guest-skin-matrices.ts did not compile"
+"$asc" "$here/guest-skin-deform.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-skin-deform.wasm" >/dev/null ||
+    fail "guest-skin-deform.ts did not compile"
 "$asc" "$here/guest-render-check.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-render-check.wasm" >/dev/null ||
     fail "guest-render-check.ts did not compile"
@@ -291,6 +294,22 @@ skin_matrices_case() {
     echo "== $name: ok — $(echo "$stdout" | grep '^MATRICES ' | tail -1)"
 }
 
+# Chunk 19g: skinning deforms rather than merely moving. Windowed only, like
+# skin-matrices: its clauses are pixel statistics.
+skin_deform_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-deform.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err")
+    rc=$?
+    echo "$stdout" | sed 's/^/    /'
+    [ "$rc" = 0 ] ||
+        fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | sed 's/^/    /'
+    echo "$stdout" | grep -qE "^OK$" ||
+        fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^DEFORM ' | tail -1)"
+}
+
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         echo "== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY"
@@ -312,6 +331,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         skinning_case skinning-gl3plus --renderer=gl3plus
         # Chunk 19c: the guest's matrices, through the subclass's own buffer.
         skin_matrices_case skin-matrices --renderer=gl3plus
+        # Chunk 19g: the shape changes, not just the position.
+        skin_deform_case skin-deform --renderer=gl3plus
         # And the tripwire, on the same window: both material kinds, in colour.
         render_check_case render-check-gl3plus --renderer=gl3plus
         # Chunk 5.5: the triangle the guest built, on a framebuffer.
