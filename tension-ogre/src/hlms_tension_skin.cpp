@@ -14,6 +14,7 @@
 #include <Vao/OgreVaoManager.h>
 
 #include <algorithm>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -229,51 +230,59 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
                                          commandBuffer);
     }
 
-    // Only the main pass writes records: a caster pass draws the same objects
-    // with draw ids the main shader never sees, and the caster variant has no
-    // use for the record.
-    if (casterPass) {
-        const uint32_t casterBase = HlmsPbs::fillBuffersForV2(
-            cache, queuedRenderable, casterPass, lastCacheHash, commandBuffer);
-        bind_our_buffer(commandBuffer);
-        return casterBase;
+    // The bind goes FIRST, and on every pass including the caster. For a
+    // renderable that is ours, nothing after this touches slot 1 before the
+    // draw: the base's fill is no longer called for ours — that is this
+    // round's change, the base dereferences the SkeletonInstance at :3528 and
+    // :3571 — so the pre-bind is the one that survives. (The previous round
+    // measured a bind *after* the base precisely because the base ran for ours
+    // and rebound slot 1 — the Forward+ light list, `texUnit =
+    // mReservedTexBufferSlots` — over it; that fill no longer runs.) For a
+    // renderable that is NOT ours, the base's own fill runs next and rebinds
+    // its own slot-1 buffers where it needs them. On every pass, because
+    // binding state persists across passes within a command buffer: with a
+    // shadow node and no caster bind, the rig renders out of frame (0
+    // non-background pixels against 3920 for the same scene without one). It
+    // is not the caster *shader* that reads the buffer — our piece is not
+    // emitted into the caster variant at all (0 occurrences in its dump
+    // against 4 in the main variant) — it is the binding each pass leaves
+    // behind.
+    bind_our_buffer(commandBuffer);
+
+    // The datablock is what makes a renderable ours: the adapter gives
+    // HlmsTensionSkinDatablock to the Items it drives with guest matrices, and
+    // everything else keeps a plain PBS datablock (drawn by PBS's own Hlms). A
+    // renderable that still arrives here with a foreign datablock takes the
+    // base's path, unchanged.
+    const HlmsTensionSkinDatablock *ours =
+        dynamic_cast<HlmsTensionSkinDatablock *>(queuedRenderable.renderable->getDatablock());
+
+    if (ours == nullptr) {
+        // Not ours: base does everything, unchanged.
+        return HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass, lastCacheHash,
+                                         commandBuffer);
     }
 
-    // The base's return value IS the object's identity: `RenderQueue` stores it
-    // as the draw's `baseInstance` (OgreRenderQueue.cpp:794), and the shader's
-    // `inVs_drawId` is that value. Keeping it is also what keeps the
-    // SkeletonInstance path intact — this fill does not touch the base's own
-    // per-object block.
-    const uint32_t baseInstance = HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass,
-                                                            lastCacheHash, commandBuffer);
-
-    // The bind goes LAST, after the base's fill, and both halves of that are
-    // load-bearing:
-    //
-    //   * after, because the base fills its own read-only buffers and one of them
-    //     is slot 1 — PBS reserves ReadOnlyBuffer [0, 2), where slot 0 is
-    //     `worldMatBuf` and slot 1 is the Forward+ light list (`texUnit =
-    //     mReservedTexBufferSlots` in its fill). A bind before the base is
-    //     overwritten; measured: before, delta 0.0; after, delta 48.0.
-    //   * on every pass including the caster, because binding state persists
-    //     across passes within a command buffer, so a caster pass that leaves
-    //     slot 1 holding something else poisons the main pass that follows.
-    //     Measured: with a shadow node and no caster bind, the rig renders out
-    //     of frame (0 non-background pixels against 3920 for the same scene
-    //     without one).
-    //
-    // It is not the caster *shader* that reads the buffer — our piece is not
-    // emitted into the caster variant at all (0 occurrences in its dump against
-    // 4 in the main variant) — it is the binding each pass leaves behind.
-    bind_our_buffer(commandBuffer);
+    // Ours: reproduce the per-object block, skeleton omitted. The base's
+    // return value IS the object's identity: `RenderQueue` stores it as the
+    // draw's `baseInstance` (OgreRenderQueue.cpp:794), and the shader's
+    // `inVs_drawId` is that value. fill_our_object computes it the same way
+    // the base does — from the const-buffer cursor — without ever touching a
+    // SkeletonInstance.
+    const uint32_t baseInstance = fill_our_object(queuedRenderable, casterPass, commandBuffer);
 
     // The payload: the matrices the adapter stored for this renderable, or
     // zeros. One store of the whole record either way, so a slot that had a rig
     // in the last frame and a static mesh in this one cannot show the old rig.
     if (records_ != nullptr && baseInstance < kMaxObjects) {
         float *dst = records_ + baseInstance * kRecordFloats;
+        std::fill(dst, dst + kRecordFloats, 0.0f);
+        const auto *animated =
+            dynamic_cast<const Ogre::RenderableAnimated *>(queuedRenderable.renderable);
+        const Ogre::RenderableAnimated::IndexMap *blendMap =
+            animated != nullptr ? animated->getBlendIndexToBoneIndexMap() : nullptr;
         const auto itor = renderable_matrices_.find(queuedRenderable.renderable);
-        if (itor != renderable_matrices_.end() && !itor->second.empty()) {
+        if (itor != renderable_matrices_.end() && !itor->second.empty() && blendMap != nullptr) {
             // The matrices are re-packed in **blend-slot order**, not joint order.
             // The vertex stream's blend indices are IndexMap slots — measured on
             // characterMedium: the map has 32 entries over 58 joints and starts
@@ -282,12 +291,7 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
             // guest's matrices in joint order would have the shader read the wrong
             // matrix for every vertex (measured: delta 1815 against 48 for the
             // translation-only read, which is what exposed it).
-            std::fill(dst, dst + kRecordFloats, 0.0f);
-            const auto *animated =
-                dynamic_cast<const Ogre::RenderableAnimated *>(queuedRenderable.renderable);
-            const Ogre::RenderableAnimated::IndexMap *blendMap =
-                animated != nullptr ? animated->getBlendIndexToBoneIndexMap() : nullptr;
-            const size_t slots = blendMap != nullptr ? blendMap->size() : 0;
+            const size_t slots = blendMap->size();
             const size_t joints = itor->second.size() / kMatrixFloats;
             for (size_t slot = 0; slot < slots && slot < kMaxBones; ++slot) {
                 const uint16_t joint = (*blendMap)[slot];
@@ -301,12 +305,122 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
             // transform, so it can carry "matrices were submitted" without
             // touching anything the skinning reads.
             dst[3] = 1.0f;
-        } else {
-            std::fill(dst, dst + kRecordFloats, 0.0f);
         }
     }
 
     return baseInstance;
+}
+
+uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRenderable,
+                                          bool casterPass, Ogre::CommandBuffer *commandBuffer) {
+    // A literal transcription of the base's no-skeleton-animation block:
+    // OgreHlmsPbs.cpp:3402-3463 — the `!hasSkeletonAnimation && numPoses == 0`
+    // branch, world matrix from the node's full transform — plus the shared
+    // tail at :3691-3757 (the shadow-bias / light-mask / planar-reflection
+    // words at +1/+2/+3, the +4 cursor advance, the member syncs and the
+    // return). The skeleton drive loop (:3565-3575) has no counterpart here:
+    // nothing reads a SkeletonInstance, so a renderable with blend data and no
+    // resolved skeleton — which the base dereferences at :3528 and :3571 —
+    // fills cleanly.
+    //
+    // One deliberate difference from the fast path's own write: the word below
+    // is the dist-prefixed identity from :3560-3563, not the slot-only form of
+    // :3432. Ours draw with `hlms_skeleton` on, and `SkeletonTransform`
+    // resolves bone slot 0 from `(worldMaterialIdx[inVs_drawId].x >> 9u)` —
+    // the float4 index of this object's matrices. The rigid 4x3 written just
+    // below is what that fetch must find. The slot-only form serves only the
+    // `!hlms_skeleton` fetch, which addresses `worldMatBuf` by draw id and
+    // never reads those bits.
+    const HlmsPbsDatablock *datablock =
+        static_cast<const HlmsPbsDatablock *>(queuedRenderable.renderable->getDatablock());
+
+    uint32 *currentMappedConstBuffer = mCurrentMappedConstBuffer;
+    float *currentMappedTexBuffer = mCurrentMappedTexBuffer;
+
+    const Matrix4 &worldMat = queuedRenderable.movableObject->_getParentNodeFullTransform();
+
+    // We need to correct currentMappedConstBuffer to point to the right texture buffer's
+    // offset, which may not be in sync if the previous draw had skeletal and/or pose animation.
+    const size_t currentConstOffset =
+        static_cast<size_t>( currentMappedTexBuffer - mStartMappedTexBuffer ) >>
+        ( 2u + !casterPass );
+    currentMappedConstBuffer = currentConstOffset + mStartMappedConstBuffer;
+    bool exceedsConstBuffer =
+        static_cast<size_t>( ( currentMappedConstBuffer - mStartMappedConstBuffer ) + 4u ) >
+        mCurrentConstBufferSize;
+
+    const size_t minimumTexBufferSize = 16u * ( 1u + !casterPass );
+    bool exceedsTexBuffer =
+        ( static_cast<size_t>( currentMappedTexBuffer - mStartMappedTexBuffer ) +
+          minimumTexBufferSize ) >= mCurrentTexBufferSize;
+
+    if( exceedsConstBuffer || exceedsTexBuffer )
+    {
+        currentMappedConstBuffer = mapNextConstBuffer( commandBuffer );
+
+        if( exceedsTexBuffer )
+            mapNextTexBuffer( commandBuffer, minimumTexBufferSize * sizeof( float ) );
+        else
+            rebindTexBuffer( commandBuffer, true, minimumTexBufferSize * sizeof( float ) );
+
+        currentMappedTexBuffer = mCurrentMappedTexBuffer;
+    }
+
+    // uint worldMaterialIdx[] — :3560-3563, dist-prefixed on purpose.
+    size_t distToWorldMatStart =
+        static_cast<size_t>( mCurrentMappedTexBuffer - mStartMappedTexBuffer );
+    distToWorldMatStart >>= 2;
+    *currentMappedConstBuffer = uint32( ( distToWorldMatStart << 9 ) |
+                                        ( datablock->getAssignedSlot() & 0x1FF ) );
+
+    // mat4x3 world
+#if !OGRE_DOUBLE_PRECISION
+    memcpy( currentMappedTexBuffer, &worldMat, 4 * 3 * sizeof( float ) );
+    currentMappedTexBuffer += 16;
+#else
+    for( int y = 0; y < 3; ++y )
+    {
+        for( int x = 0; x < 4; ++x )
+        {
+            *currentMappedTexBuffer++ = worldMat[y][x];
+        }
+    }
+    currentMappedTexBuffer += 4;
+#endif
+
+    // mat4 worldView
+    Matrix4 tmp = mPreparedPass.viewMatrix.concatenateAffine( worldMat );
+#if !OGRE_DOUBLE_PRECISION
+    memcpy( currentMappedTexBuffer, &tmp, sizeof( Matrix4 ) * !casterPass );
+    currentMappedTexBuffer += 16 * !casterPass;
+#else
+    if( !casterPass )
+    {
+        for( int y = 0; y < 4; ++y )
+        {
+            for( int x = 0; x < 4; ++x )
+            {
+                *currentMappedTexBuffer++ = tmp[y][x];
+            }
+        }
+    }
+#endif
+
+    // The tail every base arm falls through to (:3691-3757).
+    *reinterpret_cast<float * RESTRICT_ALIAS>( currentMappedConstBuffer + 1 ) =
+        datablock->mShadowConstantBias * mConstantBiasScale;
+#if !OGRE_NO_FINE_LIGHT_MASK_GRANULARITY
+    *( currentMappedConstBuffer + 2u ) = queuedRenderable.movableObject->getLightMask();
+#endif
+#ifdef OGRE_BUILD_COMPONENT_PLANAR_REFLECTIONS
+    *( currentMappedConstBuffer + 3u ) = queuedRenderable.renderable->mCustomParameter & 0x7F;
+#endif
+    currentMappedConstBuffer += 4;
+
+    mCurrentMappedConstBuffer = currentMappedConstBuffer;
+    mCurrentMappedTexBuffer = currentMappedTexBuffer;
+
+    return uint32( ( ( mCurrentMappedConstBuffer - mStartMappedConstBuffer ) >> 2u ) - 1u );
 }
 
 }  // namespace tension_ogre

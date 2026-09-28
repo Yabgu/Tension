@@ -136,6 +136,18 @@ protected:
                                    Ogre::PiecesMap *inOutPieces) override;
 
     void bind_our_buffer(Ogre::CommandBuffer *commandBuffer);
+
+private:
+    /// The base's per-object block for a renderable with no skeleton animation,
+    /// reproduced for ours (OgreHlmsPbs.cpp:3402-3463 and the shared tail at
+    /// :3691-3757), with the skeleton drive loop (:3565-3575) omitted — nothing
+    /// here reads a SkeletonInstance, which is what lets a mesh with blend data
+    /// and no resolved skeleton fill at all. Writes this object's const-buffer
+    /// quad and tex-buffer matrices, advances both cursors, and returns the
+    /// quad index the base would have returned: the draw's `baseInstance` and
+    /// the record slot for the guest matrices.
+    uint32_t fill_our_object(const Ogre::QueuedRenderable &queuedRenderable, bool casterPass,
+                             Ogre::CommandBuffer *commandBuffer);
 };
 
 }  // namespace tension_ogre
