@@ -230,67 +230,43 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
                                          commandBuffer);
     }
 
-    // The bind goes FIRST, and on every pass including the caster. For a
-    // renderable that is ours, nothing after this touches slot 1 before the
-    // draw: the base's fill is no longer called for ours — that is this
-    // round's change, the base dereferences the SkeletonInstance at :3528 and
-    // :3571 — so the pre-bind is the one that survives. (The previous round
-    // measured a bind *after* the base precisely because the base ran for ours
-    // and rebound slot 1 — the Forward+ light list, `texUnit =
-    // mReservedTexBufferSlots` — over it; that fill no longer runs.) For a
-    // renderable that is NOT ours, the base's own fill runs next and rebinds
-    // its own slot-1 buffers where it needs them. On every pass, because
-    // binding state persists across passes within a command buffer: with a
-    // shadow node and no caster bind, the rig renders out of frame (0
-    // non-background pixels against 3920 for the same scene without one). It
-    // is not the caster *shader* that reads the buffer — our piece is not
-    // emitted into the caster variant at all (0 occurrences in its dump
-    // against 4 in the main variant) — it is the binding each pass leaves
-    // behind.
-    bind_our_buffer(commandBuffer);
-
     // The datablock is what makes a renderable ours: the adapter gives
     // HlmsTensionSkinDatablock to the Items it drives with guest matrices, and
-    // everything else keeps a plain PBS datablock (drawn by PBS's own Hlms). A
-    // renderable that still arrives here with a foreign datablock takes the
-    // base's path, unchanged.
+    // everything else keeps a plain PBS datablock (drawn by PBS's own Hlms).
     const HlmsTensionSkinDatablock *ours =
         dynamic_cast<HlmsTensionSkinDatablock *>(queuedRenderable.renderable->getDatablock());
 
-    if (ours == nullptr) {
-        // Not ours: base does everything, unchanged.
-        return HlmsPbs::fillBuffersForV2(cache, queuedRenderable, casterPass, lastCacheHash,
-                                         commandBuffer);
-    }
+    // Skip the base ONLY when there is no SkeletonInstance — the state the base
+    // dereferences at :3528 and :3571 and crashes on. When a skeleton is
+    // present, call the base: it streams the bone matrices the shader's
+    // SkeletonTransform piece needs, and then we append our own record on top.
+    // 79ed0de skipped the base for every one of ours, and rigged meshes drew 0
+    // pixels because nothing streamed their bones.
+    const Ogre::SkeletonInstance *skeleton =
+        queuedRenderable.movableObject->getSkeletonInstance();
 
-    // Ours: reproduce the per-object block, skeleton omitted. The base's
-    // return value IS the object's identity: `RenderQueue` stores it as the
-    // draw's `baseInstance` (OgreRenderQueue.cpp:794), and the shader's
-    // `inVs_drawId` is that value. fill_our_object computes it the same way
-    // the base does — from the const-buffer cursor — without ever touching a
-    // SkeletonInstance.
-    const uint32_t baseInstance = fill_our_object(queuedRenderable, casterPass, commandBuffer);
-
-    // The payload: the matrices the adapter stored for this renderable, or
-    // zeros. One store of the whole record either way, so a slot that had a rig
-    // in the last frame and a static mesh in this one cannot show the old rig.
-    if (records_ != nullptr && baseInstance < kMaxObjects) {
+    // One store shared by both paths below: the matrices the adapter stored for
+    // this renderable, or zeros, into the object's record slot. One whole
+    // record either way, so a slot that had a rig in the last frame and a
+    // static mesh in this one cannot show the old rig.
+    const auto write_our_record = [&](const QueuedRenderable &qr, uint32_t baseInstance) {
+        if (records_ == nullptr || baseInstance >= kMaxObjects) return;
         float *dst = records_ + baseInstance * kRecordFloats;
         std::fill(dst, dst + kRecordFloats, 0.0f);
-        const auto *animated =
-            dynamic_cast<const Ogre::RenderableAnimated *>(queuedRenderable.renderable);
+        const auto *animated = dynamic_cast<const Ogre::RenderableAnimated *>(qr.renderable);
         const Ogre::RenderableAnimated::IndexMap *blendMap =
             animated != nullptr ? animated->getBlendIndexToBoneIndexMap() : nullptr;
-        const auto itor = renderable_matrices_.find(queuedRenderable.renderable);
+        const auto itor = renderable_matrices_.find(qr.renderable);
         if (itor != renderable_matrices_.end() && !itor->second.empty() && blendMap != nullptr) {
-            // The matrices are re-packed in **blend-slot order**, not joint order.
-            // The vertex stream's blend indices are IndexMap slots — measured on
-            // characterMedium: the map has 32 entries over 58 joints and starts
-            // {19, 20, 21, 22, ...}, so slot 0 is joint 19. PBS packs its matrices
-            // in that order for exactly this reason; a fill that copied the
-            // guest's matrices in joint order would have the shader read the wrong
-            // matrix for every vertex (measured: delta 1815 against 48 for the
-            // translation-only read, which is what exposed it).
+            // The matrices are re-packed in **blend-slot order**, not joint
+            // order. The vertex stream's blend indices are IndexMap slots —
+            // measured on characterMedium: the map has 32 entries over 58 joints
+            // and starts {19, 20, 21, 22, ...}, so slot 0 is joint 19. PBS packs
+            // its matrices in that order for exactly this reason; a fill that
+            // copied the guest's matrices in joint order would have the shader
+            // read the wrong matrix for every vertex (measured: delta 1815
+            // against 48 for the translation-only read, which is what exposed
+            // it).
             const size_t slots = blendMap->size();
             const size_t joints = itor->second.size() / kMatrixFloats;
             for (size_t slot = 0; slot < slots && slot < kMaxBones; ++slot) {
@@ -306,8 +282,44 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
             // touching anything the skinning reads.
             dst[3] = 1.0f;
         }
+    };
+
+    if (ours == nullptr || skeleton != nullptr) {
+        const uint32_t baseInstance = HlmsPbs::fillBuffersForV2(cache, queuedRenderable,
+                                                                casterPass, lastCacheHash,
+                                                                commandBuffer);
+        // The bind goes AFTER the base's fill: the base fills its own read-only
+        // buffers and one of them is slot 1 — the Forward+ light list (`texUnit
+        // = mReservedTexBufferSlots` in its fill) — so a bind before the base
+        // is overwritten. Measured: before, delta 0.0; after, delta 48.0. It
+        // goes on every pass including the caster, because binding state
+        // persists across passes within a command buffer: with a shadow node
+        // and no caster bind, the rig renders out of frame (0 non-background
+        // pixels against 3920 for the same scene without one). It is not the
+        // caster *shader* that reads the buffer — our piece is not emitted into
+        // the caster variant at all (0 occurrences in its dump against 4 in the
+        // main variant) — it is the binding each pass leaves behind.
+        bind_our_buffer(commandBuffer);
+        if (ours != nullptr) {
+            // Ours with a skeleton: the base's return value IS the object's
+            // identity: `RenderQueue` stores it as the draw's `baseInstance`
+            // (OgreRenderQueue.cpp:794), and the shader's `inVs_drawId` is that
+            // value. The record goes on top of the base's stream — the bone
+            // matrices stay in the tex buffer, deforming the mesh whenever the
+            // sentinel is off and feeding the normals when it is on.
+            write_our_record(queuedRenderable, baseInstance);
+        }
+        return baseInstance;
     }
 
+    // ours != nullptr && skeleton == nullptr: the base would crash on the null
+    // SkeletonInstance. fill_our_object reproduces its no-skeleton per-object
+    // block, and nothing after this touches slot 1, so the bind follows the
+    // fill. Same identity rule as above: the return is the draw's
+    // `baseInstance` and the record slot.
+    const uint32_t baseInstance = fill_our_object(queuedRenderable, casterPass, commandBuffer);
+    bind_our_buffer(commandBuffer);
+    write_our_record(queuedRenderable, baseInstance);
     return baseInstance;
 }
 
