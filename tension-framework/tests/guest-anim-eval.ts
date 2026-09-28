@@ -47,9 +47,9 @@ import {
   sample,
   sampleRatio,
   verifyAnimationIndex,
-} from "../assembly/the reference";
-import { fixtureBytes, fnv1a, fixtureFnv } from "./the reference-fixtures";
-import { EvalExpect, MATRIX_FLOATS, POSE_FLOATS, evalExpect } from "./the reference-eval-expectations";
+} from "../assembly/anim";
+import { fixtureBytes, fnv1a, fixtureFnv } from "./anim-fixtures";
+import { EvalExpect, MATRIX_FLOATS, POSE_FLOATS, evalExpect } from "./anim-eval-expectations";
 
 /** Acceptable error against the reference, per component class.
  *

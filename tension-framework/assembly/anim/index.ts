@@ -36,6 +36,8 @@ export * from "./reader";
 export * from "./key";
 export * from "./skeleton";
 export * from "./animation";
+export * from "./evaluator";
+export * from "./matrix";
 
 /** Keys per slot, and the keys themselves, grouped by slot. */
 export class TrackIndex {
