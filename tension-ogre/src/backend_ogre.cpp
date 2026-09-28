@@ -666,12 +666,19 @@ class BackendOgre final : public Backend {
                     int32_t read_error = 0;
                     std::vector<uint8_t> skeleton_bytes = asset_resolver_(linked, &read_error);
                     if (read_error != 0 || skeleton_bytes.empty()) {
-                        backend_log("ogre: mesh links \"" + std::string(linked) + "\" (" +
-                                    std::to_string(read_error != 0 ? read_error : -EIO) + ")");
-                        return read_error != 0 ? read_error : -EIO;
+                        // Absent is not an error — the loader's own contract
+                        // ("Absent is not an error: an unrigged mesh has no
+                        // sibling"). The mesh realises with hasSkeleton=true
+                        // and a null def; apply_renderables draws that state
+                        // through the skin Hlms, or refuses the datablock that
+                        // would crash the base fill. Note it, and carry on.
+                        log_line("ogre: mesh links \"" + std::string(linked) +
+                                 "\" but the volume has no such skeleton — realising without "
+                                 "bone data");
+                    } else {
+                        const int32_t registered = register_manual_skeleton(linked, skeleton_bytes);
+                        if (registered != 0) return registered;
                     }
-                    const int32_t registered = register_manual_skeleton(linked, skeleton_bytes);
-                    if (registered != 0) return registered;
                 }
             }
 
@@ -679,14 +686,16 @@ class BackendOgre final : public Backend {
                 name, kResourceGroup, v1.get(), false, false, false);
             mesh->load();
 
-            // A rigged mesh whose def is missing is chunk 5b's SIGSEGV class
-            // waiting for the first frame: the vertex shader reads bone
-            // matrices nobody filled. Refuse it here, where the reason is
-            // still known, instead of drawing it.
+            // A rigged mesh whose def is missing is a legal realised state:
+            // hasSkeleton=true, no SkeletonInstance, blend data from the
+            // mesh's own bone assignments. apply_renderables routes it to the
+            // skin Hlms — whose fill reproduces the base's no-skeleton block —
+            // and refuses any other datablock before a frame can crash the
+            // base fill on the null instance. Note it as information, not a
+            // failure.
             if (mesh->hasSkeleton() && mesh->getSkeleton() == nullptr) {
-                backend_log("ogre: mesh \"" + std::string(linked) + "\" came back rigged with no skeleton "
-                            "def — a rigged mesh needs its sibling <stem>.skeleton in the volume");
-                return -ENOENT;
+                log_line("ogre: mesh \"" + name + "\" came back rigged with no skeleton def (it links \"" +
+                         std::string(linked) + "\") — no bone data; draws go through the skin Hlms");
             }
 
             ResourceEntry entry;
@@ -1596,18 +1605,42 @@ class BackendOgre final : public Backend {
                 // belongs to the legacy v1 `Renderable`, and `Item` derives
                 // from `MovableObject` — so this backend remembers what it
                 // bound, which it must do either way.
-                // A rigged mesh is drawn by the subclass: `Item` carries its
-                // own `SkeletonInstance`, and that is the test for "rigged".
-                // The subclass's fill calls the base, so the SkeletonInstance
-                // path still does the skinning and the picture is unchanged —
-                // the point of this round is that the plumbing exists.
+                // What draws this item. A rigged mesh goes through the skin
+                // Hlms (unchanged since chunk 19a). A rigless one goes
+                // through it too **when it carries blend data**: that is a
+                // mesh whose skeleton def never resolved, and the base fill
+                // takes its skeleton branch off the blend map — dereferencing
+                // the null `SkeletonInstance` (the :3571 class). OGRE's own
+                // test is the sub-item's `getBlendIndexToBoneIndexMap()`
+                // (`OgreSubItem.cpp`'s `setupSkeleton` sets
+                // `mHasSkeletonAnimation` exactly when the map is non-empty),
+                // so that is the test here. A static mesh has an empty map
+                // and stays on the base Hlms, untouched.
                 Ogre::HlmsDatablock *bound = datablock;
-                if (item->getSkeletonInstance() != nullptr &&
+                Ogre::SubItem *piece = item->getSubItem(0);
+                const auto *blend_map =
+                    piece != nullptr ? piece->getBlendIndexToBoneIndexMap() : nullptr;
+                const bool carries_blend_data = blend_map != nullptr && !blend_map->empty();
+                if ((item->getSkeletonInstance() != nullptr || carries_blend_data) &&
                     datablock_kinds_[record->material_id - 1] == TENSION_OGRE_MAT_HLMS_PBS) {
                     if (Ogre::HlmsDatablock *skin_db =
                             skin_datablock_for(mirror, record->material_id)) {
                         bound = skin_db;
                     }
+                }
+                // The one state that must never draw: blend data with no
+                // `SkeletonInstance`, under any datablock but the skin Hlms.
+                // Ours is the only fill that draws it; the base's would crash
+                // on the null instance, so the renderable is refused here,
+                // where the reason is still known.
+                if (carries_blend_data && item->getSkeletonInstance() == nullptr &&
+                    dynamic_cast<HlmsTensionSkinDatablock *>(bound) == nullptr) {
+                    refused += 1;
+                    log_line("ogre: renderable " + std::to_string(id) +
+                             " has blend data but no skeleton and a PBS datablock — refusing "
+                             "(it would crash the base fill)");
+                    destroy_renderable(id);
+                    continue;
                 }
                 if (item_datablocks_[id - 1] != bound) {
                     item->setDatablock(bound);
@@ -1619,22 +1652,28 @@ class BackendOgre final : public Backend {
                 // matrix's translation. A renderable with none is stored as an
                 // empty vector, so a rig whose matrices were withdrawn stops
                 // being offset instead of keeping the last ones.
-                if (hlms_tension_skin_ != nullptr && item->getSkeletonInstance() != nullptr) {
+                // The datablock decides, not the rig: a rigless item with
+                // blend data is drawn by the skin Hlms and reads the same
+                // matrices.
+                if (hlms_tension_skin_ != nullptr &&
+                    dynamic_cast<HlmsTensionSkinDatablock *>(bound) != nullptr) {
                     if (Ogre::SubItem *sub = item->getSubItem(0)) {
-                        { // TEMP-DIAG: is the blend index map identity?
-                            const auto *map = sub->getBlendIndexToBoneIndexMap();
-                            std::string dump;
-                            for (size_t k = 0; map != nullptr && k < map->size() && k < 8; ++k)
-                                dump += std::to_string((*map)[k]) + " ";
-                            log_line("ogre: TEMP-DIAG blend map size=" +
-                                     std::to_string(map ? map->size() : 0) +
-                                     " joints=" + std::to_string(
-                                         item->getSkeletonInstance()->getNumBones()) +
-                                     " first8=[" + dump + "]");
-                        }
                         const std::vector<float> *matrices = mirror.skin_matrices(id);
                         hlms_tension_skin_->set_renderable_matrices(
                             sub, matrices ? *matrices : std::vector<float>{});
+                        // A mesh with no `SkeletonInstance` has no pose to draw
+                        // from: with matrices the reproduced per-object block
+                        // streams them and the mesh is visible; without them
+                        // the shader's skeleton piece reads whatever the
+                        // buffer holds and the mesh draws as a stump. Both are
+                        // legal — loud, not refused.
+                        if (item->getSkeletonInstance() == nullptr &&
+                            (matrices == nullptr || matrices->empty()) &&
+                            !stump_logged_[id - 1]) {
+                            stump_logged_[id - 1] = true;
+                            log_line("ogre: renderable " + std::to_string(id) +
+                                     " has no skeleton and no matrices — it will render as a stump");
+                        }
                     }
                 }
                 // A drawable hangs from its own node, and with a `nodeId` that
@@ -1682,7 +1721,12 @@ class BackendOgre final : public Backend {
         if (hlms_tension_skin_ == nullptr) return;
         for (uint32_t id = 1; id <= kRenderableCapacity; ++id) {
             Ogre::Item *item = items_[id - 1];
-            if (item == nullptr || item->getSkeletonInstance() == nullptr) continue;
+            if (item == nullptr) continue;
+            // The datablock decides, not the rig: a rigless item with blend
+            // data is drawn by the skin Hlms and reads the same matrices.
+            if (dynamic_cast<HlmsTensionSkinDatablock *>(item_datablocks_[id - 1]) ==
+                nullptr)
+                continue;
             Ogre::SubItem *sub = item->getSubItem(0);
             if (sub == nullptr) continue;
             const std::vector<float> *matrices = mirror.skin_matrices(id);
@@ -1738,6 +1782,7 @@ class BackendOgre final : public Backend {
         items_[id - 1] = nullptr;
         skeletons_[id - 1] = nullptr;
         item_datablocks_[id - 1] = nullptr;
+        stump_logged_[id - 1] = false;
     }
 
     // ── the readback ─────────────────────────────────────────────────────
@@ -1822,6 +1867,9 @@ class BackendOgre final : public Backend {
     /// pass poses, cleared with the item it came from.
     std::vector<Ogre::SkeletonInstance *> skeletons_ =
         std::vector<Ogre::SkeletonInstance *>(kRenderableCapacity, nullptr);
+    /// The no-skeleton stump note is once per renderable: the apply path runs
+    /// again for every dirty pass, and the state is legal.
+    std::vector<bool> stump_logged_ = std::vector<bool>(kRenderableCapacity, false);
     /// The mirror's bone generation this backend has already applied. A frame
     /// with no new snapshot does nothing but compare this.
     uint32_t applied_bone_generation_ = 0;
