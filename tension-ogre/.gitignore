@@ -1,3 +1,6 @@
 # The adapter and its probe are built by build.sh into build/.
 build/
 node_modules/
+
+# The hlms-skin reference builds `probe` beside its sources.
+/tests/hlms-skin/probe
