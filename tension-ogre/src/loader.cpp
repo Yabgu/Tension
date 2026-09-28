@@ -166,12 +166,12 @@ std::vector<uint8_t> Loader::read_sibling_asset(const std::string &mesh_path,
     const Mount *mount = mount_resolve(mounts, sibling, &relative);
     if (mount == nullptr) {
         *slot = -ENOENT;
-        sink.note(3, "ogre: mesh " + mesh_path + " links \"" + name +
-                         "\" and no mount carries " + sibling);
         return {};
     }
     std::vector<uint8_t> bytes = mount_read(*mount, relative, slot);
-    if (*slot != 0) {
+    // The same rule: absence is the unrigged case, not a failure — a genuine
+    // read failure (a corrupt entry, a short read) still speaks.
+    if (*slot != 0 && *slot != -ENOENT) {
         sink.note(3, "ogre: skeleton " + sibling + " could not be read (" +
                          std::to_string(*slot) + ")");
     }

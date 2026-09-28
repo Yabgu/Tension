@@ -1101,11 +1101,9 @@ int32_t adapter_shutdown(void *) {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.shutting_down = true;
     }
-    const int32_t rc = stop_and_join(kJoinTimeoutMs);
+    const int32_t rc = stop_render_thread();
     {
         std::lock_guard<std::mutex> lock(s.mutex);
-        s.backend.reset();
-        s.initialized = false;
         s.shutting_down = false;
     }
     return rc;
@@ -1165,6 +1163,23 @@ int32_t stop_and_join(uint32_t timeout_ms) {
     s.stop_requested = false;
     return 0;
 }
+
+int32_t stop_render_thread() {
+    AdapterState &s = adapter_state();
+    const int32_t rc = stop_and_join(kJoinTimeoutMs);
+    std::lock_guard<std::mutex> lock(s.mutex);
+    s.backend.reset();
+    s.initialized = false;
+    return rc;
+}
+
+/// The DSO's last word. On the happy path the guest called `ogre::shutdown`
+/// and this finds nothing to do — no thread, no backend. On the trap path it
+/// is the only teardown the process gets, and the reason it exists: without
+/// it, the members below are destroyed here — `backend`, and with it
+/// `Ogre::Root` and its scene — while the render thread is still drawing,
+/// which is the SIGSEGV (windowed) and SIGABRT (headless) the probe measured.
+AdapterState::~AdapterState() { stop_render_thread(); }
 
 } // namespace tension_ogre
 
