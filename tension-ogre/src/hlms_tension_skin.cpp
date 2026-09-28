@@ -4,12 +4,15 @@
 #include "hlms_tension_skin.h"
 
 #include <CommandBuffer/OgreCbShaderBuffer.h>
+#include <CommandBuffer/OgreCbTexture.h>
 #include <CommandBuffer/OgreCommandBuffer.h>
+#include <OgreHlmsListener.h>
 #include <OgreHlmsManager.h>
 #include <OgreLogManager.h>
 #include <OgreRenderQueue.h>
 #include <OgreRenderable.h>
 #include <OgreRenderSystem.h>
+#include <Vao/OgreConstBufferPacked.h>
 #include <Vao/OgreReadOnlyBufferPacked.h>
 #include <Vao/OgreVaoManager.h>
 
@@ -317,14 +320,16 @@ uint32_t HlmsTensionSkin::fillBuffersForV2(const HlmsCache *cache,
     // block, and nothing after this touches slot 1, so the bind follows the
     // fill. Same identity rule as above: the return is the draw's
     // `baseInstance` and the record slot.
-    const uint32_t baseInstance = fill_our_object(queuedRenderable, casterPass, commandBuffer);
+    const uint32_t baseInstance =
+        fill_our_object(queuedRenderable, casterPass, lastCacheHash, commandBuffer);
     bind_our_buffer(commandBuffer);
     write_our_record(queuedRenderable, baseInstance);
     return baseInstance;
 }
 
 uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRenderable,
-                                          bool casterPass, Ogre::CommandBuffer *commandBuffer) {
+                                          bool casterPass, uint32_t lastCacheHash,
+                                          Ogre::CommandBuffer *commandBuffer) {
     // A literal transcription of the base's no-skeleton-animation block:
     // OgreHlmsPbs.cpp:3402-3463 — the `!hasSkeletonAnimation && numPoses == 0`
     // branch, world matrix from the node's full transform — plus the shared
@@ -350,6 +355,134 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
     float *currentMappedTexBuffer = mCurrentMappedTexBuffer;
 
     const Matrix4 &worldMat = queuedRenderable.movableObject->_getParentNodeFullTransform();
+
+    // ── The base's type-changed prelude (OgreHlmsPbs.cpp:3148-3390), reproduced ──
+    // The base issues these shared binds only when the Hlms type changes in the batch
+    // (first draw of this Hlms in a frame-sequence, or after another Hlms). Our fill must
+    // do the same, or an ours-only frame never binds them: without the pass buffer above
+    // all, `passBuf.viewProj` reads garbage and every vertex leaves the clip volume.
+    // Skipped deliberately, with the reasons:
+    //   * mAtmosphere->bindConstBuffers: our scenes never configure an atmosphere, and the
+    //     call is inert for an unconfigured one (the base runs it for plain PBS draws that
+    //     render identically without any atmosphere set up).
+    //   * the feature-texture cascade (prepass/depth/SSR/refractions/irradiance/VCT/area
+    //     masks/light profiles/LTC/decals/PCC): none of those HlmsPbs members can be
+    //     non-null on an HlmsTensionSkin instance — the adapter configures none of them —
+    //     and the variant does not declare their samplers, so every guard is false and
+    //     the texUnit progression below matches the base's.
+    // The listener call IS reproduced: Hlms::mListener is never null, and its default
+    // implementation is the extension point.
+    if( OGRE_EXTRACT_HLMS_TYPE_FROM_CACHE_HASH( lastCacheHash ) != mType )
+    {
+        // layout(binding = 0) uniform PassBuffer {} pass
+        ConstBufferPacked *passBuffer = mPassBuffers[mCurrentPassBuffer - 1];
+        *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+            VertexShader, 0, passBuffer, 0, (uint32)passBuffer->getTotalSizeBytes() );
+        *commandBuffer->addCommand<CbShaderBuffer>() =
+            CbShaderBuffer( PixelShader, 0, passBuffer, 0, (uint32)passBuffer->getTotalSizeBytes() );
+
+        if( mUseLightBuffers )
+        {
+            ConstBufferPacked *light0Buffer = mLight0Buffers[mCurrentPassBuffer - 1];
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                VertexShader, 3, light0Buffer, 0, (uint32)light0Buffer->getTotalSizeBytes() );
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                PixelShader, 3, light0Buffer, 0, (uint32)light0Buffer->getTotalSizeBytes() );
+
+            ConstBufferPacked *light1Buffer = mLight1Buffers[mCurrentPassBuffer - 1];
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                VertexShader, 4, light1Buffer, 0, (uint32)light1Buffer->getTotalSizeBytes() );
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                PixelShader, 4, light1Buffer, 0, (uint32)light1Buffer->getTotalSizeBytes() );
+
+            ConstBufferPacked *light2Buffer = mLight2Buffers[mCurrentPassBuffer - 1];
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                VertexShader, 5, light2Buffer, 0, (uint32)light2Buffer->getTotalSizeBytes() );
+            *commandBuffer->addCommand<CbShaderBuffer>() = CbShaderBuffer(
+                PixelShader, 5, light2Buffer, 0, (uint32)light2Buffer->getTotalSizeBytes() );
+        }
+
+        size_t texUnit = mReservedTexBufferSlots;
+
+        if( !casterPass )
+        {
+            if( mGridBuffer )
+            {
+                *commandBuffer->addCommand<CbShaderBuffer>() =
+                    CbShaderBuffer( PixelShader, (uint16)texUnit++, mGlobalLightListBuffer, 0, 0 );
+                *commandBuffer->addCommand<CbShaderBuffer>() =
+                    CbShaderBuffer( PixelShader, (uint16)texUnit++, mGridBuffer, 0, 0 );
+            }
+
+            texUnit += mReservedTexSlots;
+
+            // The shadow maps this pass' shadow node brought in — the same loop the base
+            // runs inside its cascade, and it applies to our Hlms's pass data as well.
+            FastArray<TextureGpu *>::const_iterator itor = mPreparedPass.shadowMaps.begin();
+            FastArray<TextureGpu *>::const_iterator end = mPreparedPass.shadowMaps.end();
+            while( itor != end )
+            {
+                *commandBuffer->addCommand<CbTexture>() =
+                    CbTexture( (uint16)texUnit, *itor, mCurrentShadowmapSamplerblock );
+                ++texUnit;
+                ++itor;
+            }
+        }
+
+        if( mHlmsManager->getBlueNoiseTexture() )
+        {
+            *commandBuffer->addCommand<CbTexture>() =
+                CbTexture( (uint16)texUnit, mHlmsManager->getBlueNoiseTexture(), 0 );
+            ++texUnit;
+        }
+
+        mLastDescTexture = 0;
+        mLastDescSampler = 0;
+        mLastBoundPool = 0;
+
+        // layout(binding = 2) uniform InstanceBuffer {} instance
+        if( mCurrentConstBuffer < mConstBuffers.size() &&
+            (size_t)( ( mCurrentMappedConstBuffer - mStartMappedConstBuffer ) + 4 ) <=
+                mCurrentConstBufferSize )
+        {
+            *commandBuffer->addCommand<CbShaderBuffer>() =
+                CbShaderBuffer( VertexShader, 2, mConstBuffers[mCurrentConstBuffer], 0, 0 );
+            *commandBuffer->addCommand<CbShaderBuffer>() =
+                CbShaderBuffer( PixelShader, 2, mConstBuffers[mCurrentConstBuffer], 0, 0 );
+        }
+
+        rebindTexBuffer( commandBuffer );
+
+#ifdef OGRE_BUILD_COMPONENT_PLANAR_REFLECTIONS
+        mLastBoundPlanarReflection = 0u;
+        if( mHasPlanarReflections )
+            ++texUnit;  // We do not bind this texture now, but its slot is reserved.
+#endif
+        mListener->hlmsTypeChanged( casterPass, commandBuffer, datablock, texUnit );
+    }
+
+    // The base's per-datablock prelude (OgreHlmsPbs.cpp:3362-3387): bind PBS's material
+    // pool at slot 1 for both stages, so the pixel shader's `materialArray`
+    // (layout(binding = 1) uniform MaterialBuf) is THIS datablock's pool. Same tracking
+    // as the base — `mLastBoundPool` — so a pool already bound is not rebound. (The base
+    // also binds a manual cubemap probe's const buffer here; our datablocks never carry
+    // one, so that branch is elided.)
+    // Don't bind the material buffer on caster passes (important to keep
+    // MDI & auto-instancing running on shadow map passes)
+    if( mLastBoundPool != datablock->getAssignedPool() &&
+        ( !casterPass || datablock->getAlphaTest() != CMPF_ALWAYS_PASS ||
+          datablock->getAlphaHashing() ) )
+    {
+        // layout(binding = 1) uniform MaterialBuf {} materialArray
+        const ConstBufferPool::BufferPool *newPool = datablock->getAssignedPool();
+        *commandBuffer->addCommand<CbShaderBuffer>() =
+            CbShaderBuffer( VertexShader, 1, newPool->materialBuffer, 0,
+                            (uint32)newPool->materialBuffer->getTotalSizeBytes() );
+        *commandBuffer->addCommand<CbShaderBuffer>() =
+            CbShaderBuffer( PixelShader, 1, newPool->materialBuffer, 0,
+                            (uint32)newPool->materialBuffer->getTotalSizeBytes() );
+        mLastBoundPool = newPool;
+    }
 
     // We need to correct currentMappedConstBuffer to point to the right texture buffer's
     // offset, which may not be in sync if the previous draw had skeletal and/or pose animation.

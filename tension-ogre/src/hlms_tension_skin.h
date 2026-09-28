@@ -147,7 +147,7 @@ private:
     /// quad index the base would have returned: the draw's `baseInstance` and
     /// the record slot for the guest matrices.
     uint32_t fill_our_object(const Ogre::QueuedRenderable &queuedRenderable, bool casterPass,
-                             Ogre::CommandBuffer *commandBuffer);
+                             uint32_t lastCacheHash, Ogre::CommandBuffer *commandBuffer);
 };
 
 }  // namespace tension_ogre
