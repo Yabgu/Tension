@@ -85,13 +85,11 @@ struct AdapterState {
     /// The render thread's own "I am done" flag; the condvar carries it.
     bool thread_exited = false;
 
-    ~AdapterState() {
-        // Last resort. The session calls the vtable's `shutdown` at the end of
-        // every run, which joins; if something else tears the library down
-        // with a live thread, detaching avoids std::terminate from a joinable
-        // thread's destructor.
-        if (thread.joinable()) thread.detach();
-    }
+    /// The library's last teardown — and, on a guest that traps, the only one:
+    /// the host never calls the vtable's `shutdown`, and a trapped guest never
+    /// reaches its own `ogre::shutdown`. Defined in adapter.cpp beside
+    /// `stop_render_thread`, which it shares with the `shutdown` slot.
+    ~AdapterState();
 };
 
 /// The adapter's one instance.
@@ -101,6 +99,13 @@ AdapterState &adapter_state();
 /// Idempotent, and 0 when no thread is running. Returns `-EIO` if the thread
 /// did not stop in time, in which case it is detached and left to finish.
 int32_t stop_and_join(uint32_t timeout_ms);
+
+/// Stop the render thread and drop the backend it owns, unmade on the thread
+/// that made it. The `shutdown` slot and `~AdapterState` both call this, so a
+/// run whose guest trapped gets the teardown a well-behaved guest would have
+/// asked for. Idempotent: nothing to stop is 0, and the backend is already
+/// null once the thread has exited.
+int32_t stop_render_thread();
 
 } // namespace tension_ogre
 
