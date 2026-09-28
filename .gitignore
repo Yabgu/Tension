@@ -46,3 +46,11 @@ tension-audio.wav
 # AssemblyScript-emitted declarations (tension-framework/index.d.ts is tracked
 # and hand-written; ignore rules do not apply to already-tracked files)
 *.d.ts
+
+# Compiled binaries and scratch files (any toolchain)
+*.obj
+*.bin
+*.dll
+*.dylib
+*.exe
+*.log
