@@ -71,6 +71,7 @@ export * from "./wire";
 export * from "./motion";
 export * from "./animation";
 export * from "./bones";
+export * from "./skin";
 export * from "./mesh";
 
 /** `ogre::init(cfg)`: 0, or the errno the adapter refused with. */

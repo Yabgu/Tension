@@ -141,7 +141,7 @@ fi
 res_include="-I$res_dir/include"
 res_archive="$res_dir/zig-out/lib/libtension_res.a"
 if [ "$backend" = ogre ]; then
-    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/mounts.cpp $here/src/backend_ogre.cpp $here/src/adapter.cpp"
+    sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/mounts.cpp $here/src/backend_ogre.cpp $here/src/hlms_tension_skin.cpp $here/src/adapter.cpp"
 else
     sources="$here/src/config.cpp $here/src/status.cpp $here/src/scene.cpp $here/src/loader.cpp $here/src/mounts.cpp $here/src/backend_none.cpp $here/src/adapter.cpp"
 fi
