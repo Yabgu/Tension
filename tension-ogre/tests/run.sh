@@ -66,6 +66,15 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-skinning.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-skinning.wasm" >/dev/null ||
     fail "guest-skinning.ts did not compile"
+"$asc" "$here/guest-skin-matrices.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-skin-matrices.wasm" >/dev/null ||
+    fail "guest-skin-matrices.ts did not compile"
+"$asc" "$here/guest-skin-deform.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-skin-deform.wasm" >/dev/null ||
+    fail "guest-skin-deform.ts did not compile"
+"$asc" "$here/guest-skin-noskel.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-skin-noskel.wasm" >/dev/null ||
+    fail "guest-skin-noskel.ts did not compile"
 "$asc" "$here/guest-render-check.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-render-check.wasm" >/dev/null ||
     fail "guest-render-check.ts did not compile"
@@ -85,8 +94,12 @@ asc="$framework/node_modules/.bin/asc"
 # One volume for everything the fixtures load (chunk 11): they share
 # tests/resources, pack.sh packs it, and every case below hands the path in as
 # the guest's own `--tns=` argument. The cases with nothing to load ignore it.
-bash "$here/pack.sh" "$out/fixtures.tns" >/dev/null ||
+# And one volume that is deliberately not shared: resources-noskel holds the
+# mesh without its .skeleton (chunk 19, 19e-b — the no-skeleton fixture).
+bash "$here/pack.sh" "$here/resources" "$out/fixtures.tns" >/dev/null ||
     fail "the fixture volume did not pack"
+bash "$here/pack.sh" "$here/resources-noskel" "$out/fixtures-noskel.tns" >/dev/null ||
+    fail "the no-skeleton fixture volume did not pack"
 
 # ── the cases ────────────────────────────────────────────────────────────
 
@@ -274,6 +287,54 @@ light_case() {
 light_case light --renderer=null
 case_run shutdown-only "^OK shutdown-before-init" "" --shutdown-only
 
+# Chunk 19c: a guest's skin matrices reach the subclass's shader. Windowed
+# only: its clauses are pixel clauses, and the NULL renderer has no framebuffer
+# to download (`grab` returns null and clause 3 fails by design).
+skin_matrices_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-matrices.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
+        { echo "$stdout" | sed 's/^/    /'; \
+          fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"; }
+    echo "$stdout" | grep -qE "^OK$" ||
+        fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^MATRICES ' | tail -1)"
+}
+
+# Chunk 19g: skinning deforms rather than merely moving. Windowed only, like
+# skin-matrices: its clauses are pixel statistics.
+skin_deform_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-deform.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err")
+    rc=$?
+    echo "$stdout" | sed 's/^/    /'
+    [ "$rc" = 0 ] ||
+        fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | sed 's/^/    /'
+    echo "$stdout" | grep -qE "^OK$" ||
+        fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^DEFORM ' | tail -1)"
+}
+
+# Chunk 19e: the no-skeleton mesh state — a mesh that links a skeleton the
+# volume does not carry. Windowed only, like skin-matrices: its clauses are
+# pixel counts. Two runs of the same fixture: with identity matrices (the
+# mesh must be visible) and without (the state must be accepted as a stump —
+# a frame, no SIGSEGV — however wrong the picture is).
+noskel_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-noskel.wasm" "--tns=$out/fixtures-noskel.tns" "$@" 2>"$out/$name.err")
+    rc=$?
+    echo "$stdout" | sed 's/^/    /'
+    [ "$rc" = 0 ] ||
+        fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -qE "^OK$" ||
+        fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^NOSKEL ' | tail -1)"
+}
+
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         echo "== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY"
@@ -293,6 +354,13 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         hierarchy_case hierarchy-gl3plus --renderer=gl3plus
         # Chunk 5b: the rig, not the object.
         skinning_case skinning-gl3plus --renderer=gl3plus
+        # Chunk 19c: the guest's matrices, through the subclass's own buffer.
+        skin_matrices_case skin-matrices --renderer=gl3plus
+        # Chunk 19g: the shape changes, not just the position.
+        skin_deform_case skin-deform --renderer=gl3plus
+        # Chunk 19e: the no-skeleton state, with matrices and without.
+        noskel_case noskel-matrix --renderer=gl3plus
+        noskel_case noskel-stump --renderer=gl3plus --mode=stump
         # And the tripwire, on the same window: both material kinds, in colour.
         render_check_case render-check-gl3plus --renderer=gl3plus
         # Chunk 5.5: the triangle the guest built, on a framebuffer.
@@ -306,6 +374,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     fi
 else
     echo "== windowed: skipped — set TENSION_OGRE_WINDOW_TEST=1 to open a real window"
+    echo "== skin-matrices: skipped — set TENSION_OGRE_WINDOW_TEST=1 (pixel clauses need a window)"
+    echo "== noskel: skipped — set TENSION_OGRE_WINDOW_TEST=1 (pixel clauses need a window)"
 fi
 
 echo "tension-ogre tests: all cases passed"

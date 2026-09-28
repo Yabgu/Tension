@@ -266,8 +266,22 @@ int32_t SceneMirror::upsert_renderable(uint32_t id, const RenderableRecord &reco
 int32_t SceneMirror::remove_renderable(uint32_t id) {
     if (id == 0 || id > kRenderableCapacity) return -EINVAL;
     renderables_[id - 1].live = false;
+    // The matrices belonged to that renderable; an id reused later must not
+    // inherit the last occupant's rig.
+    skin_matrices_.erase(id);
     mark(dirty_renderables_, id);
     return 0;
+}
+
+void SceneMirror::set_skin_matrices(uint32_t id, const std::vector<float> &matrices) {
+    if (id == 0 || id > kRenderableCapacity) return;
+    skin_matrices_[id] = matrices;
+    ++skin_generation_;
+}
+
+const std::vector<float> *SceneMirror::skin_matrices(uint32_t id) const {
+    const auto itor = skin_matrices_.find(id);
+    return itor == skin_matrices_.end() ? nullptr : &itor->second;
 }
 
 int32_t SceneMirror::apply_motion(uint32_t id, const MotionUpdate &update) {

@@ -56,6 +56,8 @@
 #include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
 #include <Hlms/Unlit/OgreHlmsUnlitDatablock.h>
+
+#include "hlms_tension_skin.h"
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
@@ -251,32 +253,12 @@ class BackendOgre final : public Backend {
             camera_->setNearClipDistance(0.1f);
             camera_->setAutoAspectRatio(true);
 
-            // The NULL render system is the exception, and it is measured
-            // rather than assumed: hanging a workspace over its window
-            // segfaults inside OGRE (CompositorPassScene -> getDepthBufferFor
-            // -> Window::getDepthBuffer, with both pointers valid when the
-            // window is queried directly), and a headless gate has no image to
-            // clear. Its frame loop still runs, which is the whole point of it.
-            if (renderer_ == TENSION_OGRE_RENDERER_NULL) {
-                log_line("ogre: the NULL render system presents nothing; "
-                         "running without a compositor workspace");
-            } else {
-                // A workspace from the first frame, so the window is cleared
-                // and lit before the guest has said anything — the placeholder
-                // camera stands in until a submitted one replaces it, which is
-                // the probe's proven removeWorkspace + addWorkspace pair in
-                // `activate_camera`.
-                Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
-                compositors->createBasicWorkspaceDef("tension-basic",
-                                                     Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
-                workspace_ = compositors->addWorkspace(scene_, window_->getTexture(), camera_,
-                                                       "tension-basic", true);
-                if (workspace_ == nullptr) {
-                    return refuse(status, TENSION_OGRE_STAGE_INITIALISE, -EIO,
-                                  "the basic workspace was refused");
-                }
-            }
-
+            // ORDER IS LOAD-BEARING: the Hlmses are registered *before* the
+            // workspace below, because the workspace's pass builds the root layout
+            // the pipelines use, and the subclass's slot-1 reservation has to be in
+            // it. Measured (round 19g): with the workspace first, the subclass's
+            // shader piece compiles and runs but its buffer read returns zero — the
+            // layout the pipeline was built against had no slot 1.
             // The Hlms: archives (sources + library), then registration. The
             // library folders come from each Hlms's own `getDefaultPaths()`
             // rather than from a hand-written list, because the list is not
@@ -306,8 +288,19 @@ class BackendOgre final : public Backend {
                     archives.load(root + "/" + unlit_main, "FileSystem", true), &unlit_library);
                 hlms_pbs_ = new Ogre::HlmsPbs(
                     archives.load(root + "/" + pbs_main, "FileSystem", true), &pbs_library);
+                // The subclass comes *after* PBS and on its own HlmsTypes slot:
+                // a second provider for HLMS_PBS is refused at registration.
+                // It shares PBS's data folder and library list — the same
+                // shader templates, extended by its own piece.
+                hlms_tension_skin_ = new HlmsTensionSkin(
+                    archives.load(root + "/" + pbs_main, "FileSystem", true), &pbs_library);
                 root_->getHlmsManager()->registerHlms(hlms_unlit_);
                 root_->getHlmsManager()->registerHlms(hlms_pbs_);
+                root_->getHlmsManager()->registerHlms(hlms_tension_skin_);
+                // One line naming all three, so a log alone answers "which Hlmses
+                // does this run have". The subclass logs itself too, from its own
+                // `_changeRenderSystem`, with the instance OGRE actually set up.
+                log_line("ogre: hlms registered: unlit, pbs, tension-skin");
 
                 // A rigged mesh's *skeleton* is a separate file the v1 -> v2
                 // conversion resolves by name, so the folders meshes and their
@@ -330,6 +323,32 @@ class BackendOgre final : public Backend {
                 // group which does not exist at all cannot host a resource;
                 // that is `mount_tns`'s business, not this call's.)
             }
+            // The NULL render system is the exception, and it is measured
+            // rather than assumed: hanging a workspace over its window
+            // segfaults inside OGRE (CompositorPassScene -> getDepthBufferFor
+            // -> Window::getDepthBuffer, with both pointers valid when the
+            // window is queried directly), and a headless gate has no image to
+            // clear. Its frame loop still runs, which is the whole point of it.
+            if (renderer_ == TENSION_OGRE_RENDERER_NULL) {
+                log_line("ogre: the NULL render system presents nothing; "
+                         "running without a compositor workspace");
+            } else {
+                // A workspace from the first frame, so the window is cleared
+                // and lit before the guest has said anything — the placeholder
+                // camera stands in until a submitted one replaces it, which is
+                // the probe's proven removeWorkspace + addWorkspace pair in
+                // `activate_camera`.
+                Ogre::CompositorManager2 *compositors = root_->getCompositorManager2();
+                compositors->createBasicWorkspaceDef("tension-basic",
+                                                     Ogre::ColourValue(0.1f, 0.1f, 0.1f, 1.0f));
+                workspace_ = compositors->addWorkspace(scene_, window_->getTexture(), camera_,
+                                                       "tension-basic", true);
+                if (workspace_ == nullptr) {
+                    return refuse(status, TENSION_OGRE_STAGE_INITIALISE, -EIO,
+                                  "the basic workspace was refused");
+                }
+            }
+
             // No framebuffer to download under the NULL render system.
             supports_readback_ = !is_null_rs_;
             if (supports_readback_) {
@@ -647,12 +666,19 @@ class BackendOgre final : public Backend {
                     int32_t read_error = 0;
                     std::vector<uint8_t> skeleton_bytes = asset_resolver_(linked, &read_error);
                     if (read_error != 0 || skeleton_bytes.empty()) {
-                        backend_log("ogre: mesh links \"" + std::string(linked) + "\" (" +
-                                    std::to_string(read_error != 0 ? read_error : -EIO) + ")");
-                        return read_error != 0 ? read_error : -EIO;
+                        // Absent is not an error — the loader's own contract
+                        // ("Absent is not an error: an unrigged mesh has no
+                        // sibling"). The mesh realises with hasSkeleton=true
+                        // and a null def; apply_renderables draws that state
+                        // through the skin Hlms, or refuses the datablock that
+                        // would crash the base fill. Note it, and carry on.
+                        log_line("ogre: mesh links \"" + std::string(linked) +
+                                 "\" but the volume has no such skeleton — realising without "
+                                 "bone data");
+                    } else {
+                        const int32_t registered = register_manual_skeleton(linked, skeleton_bytes);
+                        if (registered != 0) return registered;
                     }
-                    const int32_t registered = register_manual_skeleton(linked, skeleton_bytes);
-                    if (registered != 0) return registered;
                 }
             }
 
@@ -660,14 +686,16 @@ class BackendOgre final : public Backend {
                 name, kResourceGroup, v1.get(), false, false, false);
             mesh->load();
 
-            // A rigged mesh whose def is missing is chunk 5b's SIGSEGV class
-            // waiting for the first frame: the vertex shader reads bone
-            // matrices nobody filled. Refuse it here, where the reason is
-            // still known, instead of drawing it.
+            // A rigged mesh whose def is missing is a legal realised state:
+            // hasSkeleton=true, no SkeletonInstance, blend data from the
+            // mesh's own bone assignments. apply_renderables routes it to the
+            // skin Hlms — whose fill reproduces the base's no-skeleton block —
+            // and refuses any other datablock before a frame can crash the
+            // base fill on the null instance. Note it as information, not a
+            // failure.
             if (mesh->hasSkeleton() && mesh->getSkeleton() == nullptr) {
-                backend_log("ogre: mesh \"" + std::string(linked) + "\" came back rigged with no skeleton "
-                            "def — a rigged mesh needs its sibling <stem>.skeleton in the volume");
-                return -ENOENT;
+                log_line("ogre: mesh \"" + name + "\" came back rigged with no skeleton def (it links \"" +
+                         std::string(linked) + "\") — no bone data; draws go through the skin Hlms");
             }
 
             ResourceEntry entry;
@@ -921,6 +949,7 @@ class BackendOgre final : public Backend {
             // a still rig costs one integer compare per frame, which is the
             // point of the generation counter (DESIGN.md §5.1).
             apply_bone_updates(mirror);
+            apply_skin_matrices(mirror);
         } catch (const Ogre::Exception &e) {
             applying_ = nullptr;
             log_line("ogre: apply_submissions: " + e.getFullDescription());
@@ -1408,6 +1437,12 @@ class BackendOgre final : public Backend {
                     datablock_kinds_[id - 1] = record->kind;
                 }
                 apply_material_values(datablocks_[id - 1], *record);
+                // A rigged renderable may be drawing the subclass's mirror of
+                // this datablock: apply the same values to it, or the two
+                // would drift the first time a guest edits a material.
+                if (skin_datablocks_[id - 1] != nullptr) {
+                    apply_material_values(skin_datablocks_[id - 1], *record);
+                }
             } catch (const std::exception &e) {
                 refused += 1;
                 refused_entry("material", id, e.what());
@@ -1475,12 +1510,46 @@ class BackendOgre final : public Backend {
         if (owner != nullptr && !datablock_names_[id - 1].empty()) {
             owner->destroyDatablock(datablock_names_[id - 1]);
         }
+        if (skin_datablocks_[id - 1] != nullptr) {
+            if (hlms_tension_skin_ != nullptr && !skin_datablock_names_[id - 1].empty()) {
+                hlms_tension_skin_->destroyDatablock(skin_datablock_names_[id - 1]);
+            }
+            skin_datablocks_[id - 1] = nullptr;
+            skin_datablock_names_[id - 1].clear();
+        }
         datablocks_[id - 1] = nullptr;
         datablock_names_[id - 1].clear();
         datablock_kinds_[id - 1] = 0;
     }
 
     // ── renderables ──────────────────────────────────────────────────────
+
+    /// The subclass mirror of a material's PBS datablock, created on first use
+    /// by a rigged renderable and kept until the material is removed (chunk 19).
+    ///
+    /// It carries the *same* values: `apply_material_values` takes a
+    /// `HlmsPbsDatablock *`, and this is one — only the Hlms that draws it
+    /// differs, so nothing about the picture changes. Returns nullptr when the
+    /// subclass is not registered or the record is unknown, which lets the
+    /// caller fall back to the PBS datablock rather than refuse the renderable.
+    Ogre::HlmsDatablock *skin_datablock_for(const SceneMirror &mirror, uint32_t material_id) {
+        if (hlms_tension_skin_ == nullptr) return nullptr;
+        if (material_id == 0 || material_id > kMaterialCapacity) return nullptr;
+        if (skin_datablocks_[material_id - 1] != nullptr) return skin_datablocks_[material_id - 1];
+        const MaterialRecord *record = mirror.material(material_id);
+        if (record == nullptr) return nullptr;
+
+        const Ogre::String name = "tension-skin-mat-" + std::to_string(material_id);
+        Ogre::HlmsMacroblock macroblock;
+        Ogre::HlmsBlendblock blendblock;
+        Ogre::HlmsParamVec params;
+        Ogre::HlmsDatablock *datablock =
+            hlms_tension_skin_->createDatablock(name, name, macroblock, blendblock, params);
+        apply_material_values(datablock, *record);
+        skin_datablocks_[material_id - 1] = datablock;
+        skin_datablock_names_[material_id - 1] = name;
+        return datablock;
+    }
 
     int32_t apply_renderables(const SceneMirror &mirror) {
         int32_t refused = 0;
@@ -1536,9 +1605,76 @@ class BackendOgre final : public Backend {
                 // belongs to the legacy v1 `Renderable`, and `Item` derives
                 // from `MovableObject` — so this backend remembers what it
                 // bound, which it must do either way.
-                if (item_datablocks_[id - 1] != datablock) {
-                    item->setDatablock(datablock);
-                    item_datablocks_[id - 1] = datablock;
+                // What draws this item. A rigged mesh goes through the skin
+                // Hlms (unchanged since chunk 19a). A rigless one goes
+                // through it too **when it carries blend data**: that is a
+                // mesh whose skeleton def never resolved, and the base fill
+                // takes its skeleton branch off the blend map — dereferencing
+                // the null `SkeletonInstance` (the :3571 class). OGRE's own
+                // test is the sub-item's `getBlendIndexToBoneIndexMap()`
+                // (`OgreSubItem.cpp`'s `setupSkeleton` sets
+                // `mHasSkeletonAnimation` exactly when the map is non-empty),
+                // so that is the test here. A static mesh has an empty map
+                // and stays on the base Hlms, untouched.
+                Ogre::HlmsDatablock *bound = datablock;
+                Ogre::SubItem *piece = item->getSubItem(0);
+                const auto *blend_map =
+                    piece != nullptr ? piece->getBlendIndexToBoneIndexMap() : nullptr;
+                const bool carries_blend_data = blend_map != nullptr && !blend_map->empty();
+                if ((item->getSkeletonInstance() != nullptr || carries_blend_data) &&
+                    datablock_kinds_[record->material_id - 1] == TENSION_OGRE_MAT_HLMS_PBS) {
+                    if (Ogre::HlmsDatablock *skin_db =
+                            skin_datablock_for(mirror, record->material_id)) {
+                        bound = skin_db;
+                    }
+                }
+                // The one state that must never draw: blend data with no
+                // `SkeletonInstance`, under any datablock but the skin Hlms.
+                // Ours is the only fill that draws it; the base's would crash
+                // on the null instance, so the renderable is refused here,
+                // where the reason is still known.
+                if (carries_blend_data && item->getSkeletonInstance() == nullptr &&
+                    dynamic_cast<HlmsTensionSkinDatablock *>(bound) == nullptr) {
+                    refused += 1;
+                    log_line("ogre: renderable " + std::to_string(id) +
+                             " has blend data but no skeleton and a PBS datablock — refusing "
+                             "(it would crash the base fill)");
+                    destroy_renderable(id);
+                    continue;
+                }
+                if (item_datablocks_[id - 1] != bound) {
+                    item->setDatablock(bound);
+                    item_datablocks_[id - 1] = bound;
+                }
+                // The matrices the guest sent for this renderable, if any. The
+                // subclass's fill looks them up by the `Renderable` it is
+                // handed — the sub-item — and the shader applies the first
+                // matrix's translation. A renderable with none is stored as an
+                // empty vector, so a rig whose matrices were withdrawn stops
+                // being offset instead of keeping the last ones.
+                // The datablock decides, not the rig: a rigless item with
+                // blend data is drawn by the skin Hlms and reads the same
+                // matrices.
+                if (hlms_tension_skin_ != nullptr &&
+                    dynamic_cast<HlmsTensionSkinDatablock *>(bound) != nullptr) {
+                    if (Ogre::SubItem *sub = item->getSubItem(0)) {
+                        const std::vector<float> *matrices = mirror.skin_matrices(id);
+                        hlms_tension_skin_->set_renderable_matrices(
+                            sub, matrices ? *matrices : std::vector<float>{});
+                        // A mesh with no `SkeletonInstance` has no pose to draw
+                        // from: with matrices the reproduced per-object block
+                        // streams them and the mesh is visible; without them
+                        // the shader's skeleton piece reads whatever the
+                        // buffer holds and the mesh draws as a stump. Both are
+                        // legal — loud, not refused.
+                        if (item->getSkeletonInstance() == nullptr &&
+                            (matrices == nullptr || matrices->empty()) &&
+                            !stump_logged_[id - 1]) {
+                            stump_logged_[id - 1] = true;
+                            log_line("ogre: renderable " + std::to_string(id) +
+                                     " has no skeleton and no matrices — it will render as a stump");
+                        }
+                    }
                 }
                 // A drawable hangs from its own node, and with a `nodeId` that
                 // node is a child of the guest's — so the transform below is
@@ -1570,6 +1706,35 @@ class BackendOgre final : public Backend {
     /// OGRE's own animation system for no gain here — and `update()` is kept
     /// because it makes the derived transforms correct immediately rather than
     /// whenever OGRE next walks the rig (2.2-2.9 us per frame for 1-19 bones).
+    /// Hand the guest's matrices to the Hlms that draws the rigs (chunk 19).
+    ///
+    /// The render thread's half of the split `apply_bone_updates` follows: the
+    /// mirror holds what the guest submitted, keyed by renderable id, and this
+    /// copies it into the Hlms keyed by the `Renderable` the fill is handed.
+    /// It runs on a generation change, so a frame that submits nothing does one
+    /// integer compare and no OGRE work — and it runs *after* the renderables,
+    /// so a rig applied this frame gets its matrices as soon as they exist.
+    void apply_skin_matrices(const SceneMirror &mirror) {
+        const uint32_t generation = mirror.skin_generation();
+        if (generation == applied_skin_generation_) return;
+        applied_skin_generation_ = generation;
+        if (hlms_tension_skin_ == nullptr) return;
+        for (uint32_t id = 1; id <= kRenderableCapacity; ++id) {
+            Ogre::Item *item = items_[id - 1];
+            if (item == nullptr) continue;
+            // The datablock decides, not the rig: a rigless item with blend
+            // data is drawn by the skin Hlms and reads the same matrices.
+            if (dynamic_cast<HlmsTensionSkinDatablock *>(item_datablocks_[id - 1]) ==
+                nullptr)
+                continue;
+            Ogre::SubItem *sub = item->getSubItem(0);
+            if (sub == nullptr) continue;
+            const std::vector<float> *matrices = mirror.skin_matrices(id);
+            hlms_tension_skin_->set_renderable_matrices(sub,
+                                                        matrices ? *matrices : std::vector<float>{});
+        }
+    }
+
     void apply_bone_updates(const SceneMirror &mirror) {
         const uint32_t generation = mirror.bone_generation();
         if (generation == applied_bone_generation_) return;
@@ -1601,6 +1766,13 @@ class BackendOgre final : public Backend {
     void destroy_renderable(uint32_t id) {
         Ogre::Item *item = items_[id - 1];
         if (item == nullptr) return;
+        // Drop the matrices before the Item goes: the map is keyed by the
+        // Renderable OGRE is about to free.
+        if (hlms_tension_skin_ != nullptr) {
+            if (Ogre::SubItem *sub = item->getSubItem(0)) {
+                hlms_tension_skin_->clear_renderable_matrices(sub);
+            }
+        }
         if (Ogre::SceneNode *node = renderable_nodes_[id - 1]) {
             node->detachObject(item);
             scene_->destroySceneNode(node);
@@ -1610,6 +1782,7 @@ class BackendOgre final : public Backend {
         items_[id - 1] = nullptr;
         skeletons_[id - 1] = nullptr;
         item_datablocks_[id - 1] = nullptr;
+        stump_logged_[id - 1] = false;
     }
 
     // ── the readback ─────────────────────────────────────────────────────
@@ -1694,11 +1867,26 @@ class BackendOgre final : public Backend {
     /// pass poses, cleared with the item it came from.
     std::vector<Ogre::SkeletonInstance *> skeletons_ =
         std::vector<Ogre::SkeletonInstance *>(kRenderableCapacity, nullptr);
+    /// The no-skeleton stump note is once per renderable: the apply path runs
+    /// again for every dirty pass, and the state is legal.
+    std::vector<bool> stump_logged_ = std::vector<bool>(kRenderableCapacity, false);
     /// The mirror's bone generation this backend has already applied. A frame
     /// with no new snapshot does nothing but compare this.
     uint32_t applied_bone_generation_ = 0;
+    /// The mirror's skin-matrix generation this backend has already pushed.
+    uint32_t applied_skin_generation_ = 0;
     Ogre::HlmsUnlit *hlms_unlit_ = nullptr;
     Ogre::HlmsPbs *hlms_pbs_ = nullptr;
+    /// The subclass that draws rigged meshes (chunk 19). Its buffer and shader
+    /// piece are in place; the payload lands in a later round, so today it
+    /// draws exactly what PBS draws.
+    HlmsTensionSkin *hlms_tension_skin_ = nullptr;
+    /// One mirrored datablock per material id, created on first use by a rigged
+    /// renderable and destroyed with the PBS datablock it mirrors. Index 0
+    /// unused: material ids are 1-based.
+    std::vector<Ogre::HlmsDatablock *> skin_datablocks_ =
+        std::vector<Ogre::HlmsDatablock *>(kMaterialCapacity, nullptr);
+    std::vector<std::string> skin_datablock_names_ = std::vector<std::string>(kMaterialCapacity);
     /// The media directory the Hlms archives and the models resource location
     /// were built from — kept so diagnostics can name it.
     std::string media_root_;
