@@ -5,3 +5,4 @@ export * from "./res";
 export * from "./solver";
 export * from "./runtime";
 export * from "./ogre";
+export * from "./anim";
