@@ -18,6 +18,10 @@
 #                   the format's own runtime, with the three format traps checked. It
 #                   needs no capability — the fixtures are compiled in, and the
 #                   only host surface it touches is `print`.
+#   guest-anim-eval.ts the animation evaluator: sampling, blending, local-to-model
+#                   and the rest pose over the same archive fixtures, against
+#                   reference values taken from the format's own runtime. A plain
+#                   module like the parser — no capability needed.
 #
 # Steps, in the order the design fixes them:
 #
@@ -119,4 +123,5 @@ run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
 run_fixture guest-physics-units.ts guest-physics-units.wasm
 run_plain_fixture guest-anim-parser.ts guest-anim-parser.wasm
+run_plain_fixture guest-anim-eval.ts guest-anim-eval.wasm
 echo "==> all fixtures OK"
