@@ -1,11 +1,15 @@
-// Four characters, one mesh, four skins, three clips.
-//
-// The subject is `submitAnimation`: the guest names a clip and a time, the
-// adapter enables that animation on the renderable's `SkeletonInstance` and
-// puts it at that time, and OGRE's own animation system deforms the mesh. The
-// guest owns the clock (it computes `elapsed % duration` itself); nothing here
-// poses a bone. The bone table still exists for guests that want to pose by
-// hand — this example is the other road, the one keyframed clips are for.
+// Four characters, one mesh, four skins, three clips — animated **by the
+// guest**. The clips ship as ozz archives (`resources/models/*.ozz`); the guest
+// reads them through `tension::res` at startup, samples each character's clip
+// every frame with the framework's evaluator, turns the pose into model-space
+// matrices with `localToModel`, and submits them through
+// `submit_skin_matrices`. The matrices carry the whole chain the base path
+// would have applied — `world × model × bind⁻¹`, at rest the world transform
+// alone — because the piece's overwrite lands where `worldPos` already is:
+// **world space** (the template applies `worldMat` before the custom piece and
+// `viewProj` after it). OGRE's own `SkeletonInstance` no longer drives the
+// pose, and the adapter's animation verb is not called at all (it stays, for
+// guests that want it).
 //
 // The four renderables share **one** mesh resource and differ in two ways: the
 // material (each has its own PBS datablock, textured with one of the pack's
@@ -16,14 +20,32 @@
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
+import {
+  Animation,
+  AnimationIndex,
+  BoneTransform,
+  ConfigBuilder,
+  RuntimeSession,
+  Skeleton,
+  arg,
+  argCount,
+  identityPose,
+  indexAnimation,
+  localToModel,
+  makeCallbacks,
+  mat4Multiply,
+  print,
+  resReadFile,
+  restPose,
+  sample,
+} from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 
 /** The character is 3.765 units tall at scale 1; 0.29 makes it 1.09. */
 const SCALE: f32 = 0.29;
 const FRAMES = 300; // ~5 seconds at 60 Hz
-const MESH = "resources/models/characterMedium.mesh"; // its skeleton, and its three clips, ship beside it
+const MESH = "resources/models/characterMedium.mesh"; // its skeleton ships beside it; the pose comes from the .ozz archives
 
 /// The four skins, in the order the four characters stand.
 const SKINS: string[] = [
@@ -32,13 +54,15 @@ const SKINS: string[] = [
   "resources/textures/zombieMaleA.dds",
   "resources/textures/zombieFemaleA.dds",
 ];
-/// The clips, as the skeleton exporter wrote them (13b's inventory).
-const CLIPS: string[] = ["idle", "run", "jump", "run"];
-/// Their durations in seconds (13a measured them; this verb does not report them).
-const DURATIONS: f64[] = [1.333333, 0.666667, 0.5, 0.666667];
+/// The clip archives, one per clip: the loader reads
+/// `models/characterMedium_<name>.ozz` for each of them.
+const CLIP_NAMES: string[] = ["idle", "run", "jump"];
+/// Which clip each of the four characters plays (the fourth runs, like the
+/// second).
+const CLIP_INDEX: i32[] = [0, 1, 2, 1];
 /// The fourth runner starts half a cycle behind the second: same clip, visibly
-/// out of phase — 0.333 s is half of Run's 0.667 s.
-const OFFSETS: f64[] = [0.0, 0.0, 0.0, 0.333];
+/// out of phase — 0.35416667 s is half of Run's 0.7083333 s.
+const CLIP_OFFSETS: f32[] = [0.0, 0.0, 0.0, 0.35416667];
 const CHARACTERS = 4;
 
 /// The 2x2 grid: two columns, two rows (the front row is nearer the camera).
@@ -218,6 +242,55 @@ function character_patch_spread(frame: ArrayBuffer, label: string): f64 {
   return spread;
 }
 
+/// The parser takes `StaticArray<u8>`; `resReadFile` hands out `Uint8Array`.
+/// One copy, deliberately — no pointer games in an example.
+function asStatic(bytes: Uint8Array): StaticArray<u8> {
+  const out = new StaticArray<u8>(bytes.length);
+  for (let i = 0; i < bytes.length; i++) out[i] = bytes[i];
+  return out;
+}
+
+/// The inverse of a column-major affine 4x4 (rotation/scale + translation) —
+/// the shape `localToModel` produces. `false` when the linear part is
+/// singular (a rig with a zero scale somewhere).
+function mat4AffineInverseInto(src: Float32Array, src_at: i32, dst: Float32Array,
+                               dst_at: i32): bool {
+  const m0 = src[src_at + 0], m1 = src[src_at + 1], m2 = src[src_at + 2];
+  const m4 = src[src_at + 4], m5 = src[src_at + 5], m6 = src[src_at + 6];
+  const m8 = src[src_at + 8], m9 = src[src_at + 9], m10 = src[src_at + 10];
+  const det = m0 * (m5 * m10 - m9 * m6) - m4 * (m1 * m10 - m9 * m2) +
+              m8 * (m1 * m6 - m5 * m2);
+  if (abs(det) < 1e-12) return false;
+  const inv: f32 = <f32>1.0 / det;
+  const b00: f32 = (m5 * m10 - m9 * m6) * inv;
+  const b01: f32 = (m8 * m6 - m4 * m10) * inv;
+  const b02: f32 = (m4 * m9 - m8 * m5) * inv;
+  const b10: f32 = (m9 * m2 - m1 * m10) * inv;
+  const b11: f32 = (m0 * m10 - m8 * m2) * inv;
+  const b12: f32 = (m8 * m1 - m0 * m9) * inv;
+  const b20: f32 = (m1 * m6 - m5 * m2) * inv;
+  const b21: f32 = (m4 * m2 - m0 * m6) * inv;
+  const b22: f32 = (m0 * m5 - m4 * m1) * inv;
+  const tx = src[src_at + 12], ty = src[src_at + 13], tz = src[src_at + 14];
+  dst[dst_at + 0] = b00;
+  dst[dst_at + 1] = b10;
+  dst[dst_at + 2] = b20;
+  dst[dst_at + 3] = 0.0;
+  dst[dst_at + 4] = b01;
+  dst[dst_at + 5] = b11;
+  dst[dst_at + 6] = b21;
+  dst[dst_at + 7] = 0.0;
+  dst[dst_at + 8] = b02;
+  dst[dst_at + 9] = b12;
+  dst[dst_at + 10] = b22;
+  dst[dst_at + 11] = 0.0;
+  dst[dst_at + 12] = -(b00 * tx + b01 * ty + b02 * tz);
+  dst[dst_at + 13] = -(b10 * tx + b11 * ty + b12 * tz);
+  dst[dst_at + 14] = -(b20 * tx + b21 * ty + b22 * tz);
+  dst[dst_at + 15] = 1.0;
+  return true;
+}
+
 /// Wait for a job to finish, and fail with the job's errno when it failed.
 function settle(job: i32, what: string): u32 {
   while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
@@ -261,6 +334,12 @@ class Game {
   private options: Options;
   private frames: i32 = 0; // how many frames the clip loop ran
   private midFrame: ArrayBuffer | null = null; // the frame kept halfway through the run
+  private skeleton: Skeleton = new Skeleton();
+  private animations: Animation[] = [];
+  private indices: AnimationIndex[] = [];
+  /// Each joint's bind matrix, inverted once: the shader's matrices are
+  /// bind-relative, so every frame multiplies the model pose by this.
+  private bind_inverse: Float32Array = new Float32Array(0);
 
   constructor(options: Options) {
     this.options = options;
@@ -272,6 +351,7 @@ class Game {
     this.openSession();
     this.openRenderer();
     this.mountAssets();
+    this.loadClips();
     const mesh = this.loadMesh(MESH);
     this.submitScene(mesh);
     this.animate();
@@ -314,8 +394,51 @@ class Game {
     if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
   }
 
-  /// One mesh, and the skeleton that ships beside it — with the three clips the
-  /// converter baked into it (idle, run, jump; chunk 13b).
+  /// The animation archives: the skeleton and the three clips, read through
+  /// `tension::res` — the `--res` pak the run script passes — and parsed by
+  /// the framework's own reader. `resReadFile` does **not** see the OGRE
+  /// mount (`--tns` feeds the adapter's loader, a separate table), which is
+  /// why the launcher gives the same volume to both flags.
+  private loadClips(): void {
+    const skeleton_bytes = resReadFile("models/characterMedium_skeleton.ozz");
+    if (skeleton_bytes == null) {
+      fail("resReadFile refused the skeleton archive (does ./run.sh pass --res?)");
+    }
+    this.skeleton = Skeleton.parse(asStatic(skeleton_bytes!));
+    if (this.skeleton.error.length > 0) fail("the skeleton archive: " + this.skeleton.error);
+    if (this.skeleton.jointCount != 58) {
+      fail("the skeleton has " + this.skeleton.jointCount.toString() +
+           " joints, not the rig's 58");
+    }
+    for (let i = 0; i < CLIP_NAMES.length; i++) {
+      const path = "models/characterMedium_" + CLIP_NAMES[i] + ".ozz";
+      const bytes = resReadFile(path);
+      if (bytes == null) fail("resReadFile refused " + path);
+      const animation = Animation.parse(asStatic(bytes!));
+      if (animation.error.length > 0) fail(path + ": " + animation.error);
+      if (animation.trackCount != 58) {
+        fail(path + " has " + animation.trackCount.toString() + " tracks, not 58");
+      }
+      this.animations.push(animation);
+      this.indices.push(indexAnimation(animation));
+    }
+
+    // The bind, once. The shader's matrices are **bind-relative** (at rest
+    // they are identity — the fixture path's proven contract), the mesh is
+    // skinned against the skeleton's rest pose, and `localToModel(rest)` is
+    // that bind, so each joint's frame matrix will be `model × bind⁻¹`.
+    const bind = localToModel(this.skeleton, restPose(this.skeleton));
+    this.bind_inverse = new Float32Array(bind.length);
+    for (let j = 0; j < this.skeleton.jointCount; j++) {
+      if (!mat4AffineInverseInto(bind, j * 16, this.bind_inverse, j * 16)) {
+        fail("joint " + j.toString() + "'s bind matrix is singular");
+      }
+    }
+  }
+
+  /// One mesh, and the skeleton that ships beside it. The rig still matters —
+  /// it is what makes the mesh skinnable and what the base fill streams — but
+  /// the **pose** is no longer OGRE's: the .ozz archives drive it now.
   private loadMesh(path: string): i32 {
     const mesh_job = ogre.queueMeshLoad(path, 0);
     if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
@@ -376,32 +499,76 @@ class Game {
     }
   }
 
-  /// The loop. The guest owns the clock: one tick of 1/60 s per iteration, and
-  /// each character's time is `elapsed % its duration` — the clip loops because
-  /// the caller wraps it, not because the adapter knows the duration.
+  /// The loop. The guest owns the clock and the pose: one tick of 1/60 s per
+  /// iteration, each character's time wrapped into its clip, and the pose
+  /// sampled and turned into model-space matrices here — the adapter only
+  /// forwards them. Everything the loop uses is allocated once, before it.
   private animate(): void {
-    print("clips: " + CLIPS[0] + " " + CLIPS[1] + " " + CLIPS[2] + " " + CLIPS[3] +
-          " (" + DURATIONS[0].toString() + "s, " + DURATIONS[1].toString() + "s, " +
-          DURATIONS[2].toString() + "s, fourth offset +" + OFFSETS[3].toString() + "s)");
+    print("clips: " + CLIP_NAMES[CLIP_INDEX[0]] + " " + CLIP_NAMES[CLIP_INDEX[1]] + " " +
+          CLIP_NAMES[CLIP_INDEX[2]] + " " + CLIP_NAMES[CLIP_INDEX[3]] + " (" +
+          this.animations[CLIP_INDEX[0]].duration.toString() + "s, " +
+          this.animations[CLIP_INDEX[1]].duration.toString() + "s, " +
+          this.animations[CLIP_INDEX[2]].duration.toString() + "s, fourth offset +" +
+          CLIP_OFFSETS[3].toString() + "s)");
 
-    let elapsed: f64 = 0.0;
+    // Per-character buffers, allocated once: a pose the sampler writes into,
+    // a scratch for the frame's model matrices, the bind-relative block the
+    // shader consumes, and one batch the four renderables share every frame
+    // (`commit` resets its cursor, so the batch is the frame's scratch, not
+    // one object per submit).
+    const poses: BoneTransform[][] = [];
+    const models: Float32Array[] = [];
+    const placed: Float32Array[] = [];
+    const matrices: Float32Array[] = [];
+    for (let i = 0; i < CHARACTERS; i++) {
+      poses.push(identityPose(this.animations[CLIP_INDEX[i]].slots));
+      models.push(new Float32Array(this.skeleton.jointCount * 16));
+      placed.push(new Float32Array(this.skeleton.jointCount * 16));
+      matrices.push(new Float32Array(this.skeleton.jointCount * 16));
+    }
+    // The node's world matrix, constant per character. The shader piece's
+    // overwrite lands where `worldPos` already is — **world space** (the
+    // template transforms by `worldMat` before the custom piece and by
+    // `viewProj` after it) — so the submitted matrices carry the node transform
+    // the base path would have applied: world × model × bind⁻¹.
+    const worlds: Float32Array[] = [];
+    for (let i = 0; i < CHARACTERS; i++) {
+      const world = new Float32Array(16);
+      world[0] = SCALE;
+      world[5] = SCALE;
+      world[10] = SCALE;
+      world[15] = 1.0;
+      world[12] = GRID_X[i];
+      world[13] = GRID_Y;
+      world[14] = GRID_Z[i];
+      worlds.push(world);
+    }
+    const batch = new ogre.SkinMatrixBatch();
+
     let frames = 0;
     let mid_frame: ArrayBuffer | null = null;
     for (frames = 0; frames < FRAMES; frames++) {
-      elapsed += 1.0 / 60.0;
+      const now: f32 = <f32>frames / 60.0;
       for (let i = 0; i < CHARACTERS; i++) {
-        const at = (elapsed + OFFSETS[i]) % DURATIONS[i];
-        // The wrap is floating point: when the accumulated time lands a hair
-        // past a duration boundary, `%` gives a hair *past zero*, and the
-        // millisecond truncation makes it 0 — the one time the verb refuses
-        // (`0 ms` is not distinguishable from "no time given"; the clip's start
-        // is 1 ms). Measured: four refusals in a 300-frame run before this.
-        let ms: i32 = <i32>(at * 1000.0);
-        if (ms <= 0) ms = 1;
-        const accepted = ogre.submitAnimation(<i32>(i + 1), CLIPS[i], ms);
-        if (accepted != 0) fail("submitAnimation refused (" + accepted.toString() + " at character " +
-                                (i + 1).toString() + ")");
+        const clip = this.animations[CLIP_INDEX[i]];
+        let t: f32 = now + CLIP_OFFSETS[i];
+        while (t >= clip.duration) t -= clip.duration;
+        const pose = sample(clip, this.indices[CLIP_INDEX[i]], t, poses[i]);
+        const model = localToModel(this.skeleton, pose, models[i]);
+        const skin = matrices[i];
+        // The submitted matrices carry the whole chain the base path would
+        // have applied: world × model × bind⁻¹ (two multiplies per joint —
+        // `placed` exists because the module's mat4Multiply may not alias its
+        // output).
+        for (let j = 0; j < this.skeleton.jointCount; j++) {
+          mat4Multiply(worlds[i], model, placed[i], 0, j * 16, j * 16);
+          mat4Multiply(placed[i], this.bind_inverse, skin, j * 16, j * 16, j * 16);
+        }
+        if (!batch.set(<u32>i, <u32>(i + 1), skin)) {
+          fail("the matrix batch refused character " + (i + 1).toString());
+        }
       }
+      if (batch.commit() != CHARACTERS) fail("submit_skin_matrices refused the batch");
       RuntimeSession.wait(16);
       // Halfway through, a second frame is kept: the last one is compared
       // against it below, and the difference is the animation.

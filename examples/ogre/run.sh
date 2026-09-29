@@ -71,10 +71,17 @@ elif [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
 fi
 
 assets=()
+res=()
 if [ -f build/assets.tns ]; then
     assets=(--tns="$example/build/assets.tns")
+    # The same volume for `tension::res`: `resReadFile` reads the interpreter's
+    # `--res` paks, not the OGRE mount — `--tns` feeds the adapter's loader and
+    # the two are separate tables (the loading probe measured this). Guests
+    # that never read a res file are unaffected; ones that do would otherwise
+    # find the volume mounted for OGRE and invisible to their byte reads.
+    res=(--res "$example/build/assets.tns")
 fi
 # Anything left on the command line goes to the guest: `--bodies=N` and
 # `--angular` are the guest's own arguments, and this script's job is to hand
 # them over rather than to know what they mean.
-exec "$core" --capability "$adapter" build/game.wasm "${assets[@]}" --renderer="$renderer" "$@"
+exec "$core" "${res[@]}" --capability "$adapter" build/game.wasm "${assets[@]}" --renderer="$renderer" "$@"
