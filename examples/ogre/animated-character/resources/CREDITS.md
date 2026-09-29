@@ -39,3 +39,16 @@ load path starts with that prefix.
   with ImageMagick — `magick humanMaleA.png humanMaleA.dds`, uncompressed
   24-bit RGB, 256×256, 262,271 bytes each — and both forms travel in the
   volume: the PNG as the source asset, the DDS as the runtime one.
+
+- **`models/characterMedium_*.ozz`** — the same character's rig and three clips
+  as ozz runtime archives (skeleton v2 + animation v7): `_skeleton` (3,295 B,
+  58 joints), `_idle` (5,415 B), `_run` (6,404 B), `_jump` (4,050 B). Same
+  source and licence as the mesh (Kenney, CC0). Pipeline: the Kenney FBX →
+  Blender 5.2.2 (one scene, the three clips retargeted onto the character
+  armature, as `convert-kenney-anim.py` does) → glTF → `gltf2ozz`
+  (ozz-animation at `744eb9d`; the build recipe is committed in
+  `tension-framework/tests/fixtures/ozz/CREDITS.md`) →
+  `tension-ogre/tests/remap-ozz.py`, which rewrites the archives into OGRE's
+  bone order — 58 joints, `Hips` at 19, `LeftForeArm` at 28 — mapping by joint
+  name and dropping gltf2ozz's two non-bone object nodes (`Root`,
+  `characterMedium`).
