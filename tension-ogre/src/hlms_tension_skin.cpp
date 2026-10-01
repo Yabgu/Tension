@@ -344,10 +344,10 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
     // is the dist-prefixed identity from :3560-3563, not the slot-only form of
     // :3432. Ours draw with `hlms_skeleton` on, and `SkeletonTransform`
     // resolves bone slot 0 from `(worldMaterialIdx[inVs_drawId].x >> 9u)` —
-    // the float4 index of this object's matrices. The rigid 4x3 written just
-    // below is what that fetch must find. The slot-only form serves only the
-    // `!hlms_skeleton` fetch, which addresses `worldMatBuf` by draw id and
-    // never reads those bits.
+    // the float4 index of this object's matrices. The 4×3 block written just
+    // below — one per bone, in IndexMap order — is what that fetch must find.
+    // (The slot-only form serves only the `!hlms_skeleton` fetch, which
+    // addresses `worldMatBuf` by draw id and never reads those bits.)
     const HlmsPbsDatablock *datablock =
         static_cast<const HlmsPbsDatablock *>(queuedRenderable.renderable->getDatablock());
 
@@ -533,6 +533,27 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
         }
     }
 
+    // The renderable's blend map and the guest's matrices, resolved once: the
+    // bone-matrix loop below writes one 4×3 per slot, so the overrun check
+    // needs the real size of that write (the base's skeleton branch does the
+    // same with `12 * numWorldTransforms`).
+    const Ogre::RenderableAnimated *animated =
+        dynamic_cast<const Ogre::RenderableAnimated *>(queuedRenderable.renderable);
+    const Ogre::RenderableAnimated::IndexMap *blend_map =
+        animated != nullptr ? animated->getBlendIndexToBoneIndexMap() : nullptr;
+    const size_t slots = blend_map != nullptr ? blend_map->size() : 0;
+    const size_t bone_slots = slots > 0 ? slots : 1;
+    const float *guest = nullptr;
+    size_t guest_joints = 0;
+    {
+        const auto itor = renderable_matrices_.find(queuedRenderable.renderable);
+        if( itor != renderable_matrices_.end() && !itor->second.empty() )
+        {
+            guest = itor->second.data();
+            guest_joints = itor->second.size() / 16u;
+        }
+    }
+
     // We need to correct currentMappedConstBuffer to point to the right texture buffer's
     // offset, which may not be in sync if the previous draw had skeletal and/or pose animation.
     const size_t currentConstOffset =
@@ -543,7 +564,7 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
         static_cast<size_t>( ( currentMappedConstBuffer - mStartMappedConstBuffer ) + 4u ) >
         mCurrentConstBufferSize;
 
-    const size_t minimumTexBufferSize = 16u * ( 1u + !casterPass );
+    const size_t minimumTexBufferSize = 12u * bone_slots;
     bool exceedsTexBuffer =
         ( static_cast<size_t>( currentMappedTexBuffer - mStartMappedTexBuffer ) +
           minimumTexBufferSize ) >= mCurrentTexBufferSize;
@@ -567,38 +588,54 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
     *currentMappedConstBuffer = uint32( ( distToWorldMatStart << 9 ) |
                                         ( datablock->getAssignedSlot() & 0x1FF ) );
 
-    // mat4x3 world
-#if !OGRE_DOUBLE_PRECISION
-    memcpy( currentMappedTexBuffer, &worldMat, 4 * 3 * sizeof( float ) );
-    currentMappedTexBuffer += 16;
-#else
-    for( int y = 0; y < 3; ++y )
+    // The bone matrices, in the format `SkeletonTransform` reads (the piece at
+    // :89-130 of 800.VertexShader_piece_vs.any): one 4×3 per bone, 12 floats,
+    // three float4 `(x, y, z, t)` rows at `matStart + blendIndex * 3 + 0..2` —
+    // the layout `SimpleMatrixAf4x3::streamTo4x3` streams (the base's skeleton
+    // branch feeds it straight from `_getBoneFullTransform`). The guest's
+    // matrices are column-major 4×4 with the translation at 12..14, so each
+    // row is a transpose step: (0,4,8 | 12), (1,5,9 | 13), (2,6,10 | 14). The
+    // piece then skins position AND normal from the guest's data — the single
+    // rigid world matrix it got before left posed limbs shading with the
+    // rest pose's normals (the 19f-x measurement).
+    for( size_t s = 0; s < bone_slots; ++s )
     {
-        for( int x = 0; x < 4; ++x )
+        const uint16 joint = slots > 0 ? (*blend_map)[s] : 0;
+        if( guest != nullptr && joint < guest_joints )
         {
-            *currentMappedTexBuffer++ = worldMat[y][x];
+            const float *src = guest + joint * 16u;
+            currentMappedTexBuffer[0] = src[0];
+            currentMappedTexBuffer[1] = src[4];
+            currentMappedTexBuffer[2] = src[8];
+            currentMappedTexBuffer[3] = src[12];
+            currentMappedTexBuffer[4] = src[1];
+            currentMappedTexBuffer[5] = src[5];
+            currentMappedTexBuffer[6] = src[9];
+            currentMappedTexBuffer[7] = src[13];
+            currentMappedTexBuffer[8] = src[2];
+            currentMappedTexBuffer[9] = src[6];
+            currentMappedTexBuffer[10] = src[10];
+            currentMappedTexBuffer[11] = src[14];
         }
+        else
+        {
+            // No matrices for this renderable (or none for this slot): the
+            // object's world matrix repeated — a rigid stand-in, so an
+            // unsubmitted no-skeleton mesh stands rather than collapsing (the
+            // RUN B stump becomes a rigid render at the object's transform).
+            memcpy( currentMappedTexBuffer, &worldMat, 4 * 3 * sizeof( float ) );
+        }
+        currentMappedTexBuffer += 12;
     }
-    currentMappedTexBuffer += 4;
-#endif
 
-    // mat4 worldView
-    Matrix4 tmp = mPreparedPass.viewMatrix.concatenateAffine( worldMat );
-#if !OGRE_DOUBLE_PRECISION
-    memcpy( currentMappedTexBuffer, &tmp, sizeof( Matrix4 ) * !casterPass );
-    currentMappedTexBuffer += 16 * !casterPass;
-#else
-    if( !casterPass )
+    // The base's skeleton-branch exit (:3682-3690): the tex cursor is
+    // realigned to the 16/32-float grid the const-cursor correction assumes.
     {
-        for( int y = 0; y < 4; ++y )
-        {
-            for( int x = 0; x < 4; ++x )
-            {
-                *currentMappedTexBuffer++ = tmp[y][x];
-            }
-        }
+        size_t tex_offset = static_cast<size_t>( currentMappedTexBuffer - mStartMappedTexBuffer );
+        tex_offset = alignToNextMultiple<size_t>( tex_offset, 16u + 16u * !casterPass );
+        tex_offset = std::min( tex_offset, mCurrentTexBufferSize );
+        currentMappedTexBuffer = mStartMappedTexBuffer + tex_offset;
     }
-#endif
 
     // The tail every base arm falls through to (:3691-3757).
     *reinterpret_cast<float * RESTRICT_ALIAS>( currentMappedConstBuffer + 1 ) =
