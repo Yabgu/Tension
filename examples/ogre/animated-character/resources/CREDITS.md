@@ -4,7 +4,7 @@
 volume from the repository, the guest mounts it under `resources/`, and every
 load path starts with that prefix.
 
-- **`models/characterMedium.mesh`, `models/characterMedium.skeleton`** —
+- **`models/characterMedium.mesh`** —
   Kenney, *Animated Characters 3*
   (<https://kenney.nl/assets/animated-characters-3>).
   **Licence: CC0 1.0 Universal** (public domain dedication,
@@ -24,9 +24,11 @@ load path starts with that prefix.
   `jump` (0.500 s), from the pack's `Animations/{idle,run,jump}.fbx`, same
   source and licence as the character. Converted by
   `tension-ogre/tests/convert-kenney-anim.py` (all three clips in one scene →
-  one `.skeleton` with three `<animation>` elements, 43,978 bytes). The example
-  plays them through the animation verb — one clip per character, the fourth a
-  half-cycle behind — so each clip's name and duration are load-bearing.
+  one `.skeleton` with three `<animation>` elements). **The `.skeleton` files
+  have since been removed** — both this one and the mesh's sibling (19f-d):
+  the example's pose is computed by the guest from the `.ozz` archives below,
+  and the loader accepts the mesh without its skeleton def (19e-b). The v1
+  skeleton binaries are pipeline intermediates now, not shipped assets.
 
 - **`textures/humanMaleA.png`, `humanFemaleA.png`, `zombieMaleA.png`,
   `zombieFemaleA.png`** — the pack's four skins (`Skins/`), same source and

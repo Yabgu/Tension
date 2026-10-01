@@ -45,7 +45,7 @@ import * as ogre from "tension-framework/assembly/ogre";
 /** The character is 3.765 units tall at scale 1; 0.29 makes it 1.09. */
 const SCALE: f32 = 0.29;
 const FRAMES = 300; // ~5 seconds at 60 Hz
-const MESH = "resources/models/characterMedium.mesh"; // its skeleton ships beside it; the pose comes from the .ozz archives
+const MESH = "resources/models/characterMedium.mesh"; // links a skeleton; the sibling no longer ships (the pose is the .ozz archives')
 
 /// The four skins, in the order the four characters stand.
 const SKINS: string[] = [
@@ -436,15 +436,19 @@ class Game {
     }
   }
 
-  /// One mesh, and the skeleton that ships beside it. The rig still matters —
-  /// it is what makes the mesh skinnable and what the base fill streams — but
-  /// the **pose** is no longer OGRE's: the .ozz archives drive it now.
+  /// One mesh — and no skeleton beside it any more. The mesh still *links*
+  /// one (the v1 file's `<skeletonlink>` is inside it), so it realises as a
+  /// rigged-without-def mesh: blend data present, no `SkeletonInstance`,
+  /// `boneCount` 0. `isRigged` reads a bone-count flag (the loader writes
+  /// `flags = bone_count > 0`), so it is **false** here by design — that flag
+  /// is what makes the bone-update path refuse a mesh it cannot pose, and
+  /// this mesh is posed by matrices, not bones. There is no rig assert left
+  /// to make: `settle` fails on any realisation refusal, and the pixel checks
+  /// are the proof the pose arrives.
   private loadMesh(path: string): i32 {
     const mesh_job = ogre.queueMeshLoad(path, 0);
     if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
-    const mesh = settle(mesh_job, path);
-    if (!ogre.isRigged(mesh)) fail(path + " came back without a rig");
-    return mesh;
+    return settle(mesh_job, path);
   }
 
   /// Four skins, four materials, one light, one camera, four renderables: the
