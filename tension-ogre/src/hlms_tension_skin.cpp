@@ -484,6 +484,55 @@ uint32_t HlmsTensionSkin::fill_our_object(const Ogre::QueuedRenderable &queuedRe
         mLastBoundPool = newPool;
     }
 
+    // The datablock's own textures and samplers (OgreHlmsPbs.cpp:3720-3755) —
+    // the block the 19e-a reproduction missed. Untextured probes never reached
+    // it, so nothing noticed; the animated-character skins are the first
+    // textured datablocks to draw through here, and they rendered black
+    // because the pixel shader's descriptor set was never bound. The calls,
+    // the `mTexUnitSlotStart` anchor and the tracking are the base's; the
+    // descriptor sets come through the datablock subclass because
+    // `friend class HlmsPbs` does not extend to a subclass. Same caster guard
+    // as the material pool above, and `mLastDescTexture` / `mLastDescSampler`
+    // are reset alongside `mLastBoundPool` in the type-changed prelude.
+    const HlmsTensionSkinDatablock *our_datablock =
+        static_cast<const HlmsTensionSkinDatablock *>(datablock);
+    if( !casterPass || datablock->getAlphaTest() != CMPF_ALWAYS_PASS ||
+        datablock->getAlphaHashing() )
+    {
+        if( our_datablock->textures_desc_set() != mLastDescTexture )
+        {
+            if( our_datablock->textures_desc_set() )
+            {
+                // Rebind textures
+                size_t texUnit = mTexUnitSlotStart;
+
+                *commandBuffer->addCommand<CbTextures>() =
+                    CbTextures( (uint16)texUnit, our_datablock->cubemap_idx_in_desc_set(),
+                                our_datablock->textures_desc_set() );
+
+                if( !mHasSeparateSamplers )
+                {
+                    *commandBuffer->addCommand<CbSamplers>() =
+                        CbSamplers( (uint16)texUnit, our_datablock->samplers_desc_set() );
+                }
+            }
+
+            mLastDescTexture = our_datablock->textures_desc_set();
+        }
+
+        if( our_datablock->samplers_desc_set() != mLastDescSampler && mHasSeparateSamplers )
+        {
+            if( our_datablock->samplers_desc_set() )
+            {
+                // Bind samplers
+                size_t texUnit = mTexUnitSlotStart;
+                *commandBuffer->addCommand<CbSamplers>() =
+                    CbSamplers( (uint16)texUnit, our_datablock->samplers_desc_set() );
+                mLastDescSampler = our_datablock->samplers_desc_set();
+            }
+        }
+    }
+
     // We need to correct currentMappedConstBuffer to point to the right texture buffer's
     // offset, which may not be in sync if the previous draw had skeletal and/or pose animation.
     const size_t currentConstOffset =

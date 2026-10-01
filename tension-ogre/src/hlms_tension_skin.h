@@ -61,6 +61,15 @@ public:
                              const Ogre::HlmsBlendblock *blendblock,
                              const Ogre::HlmsParamVec &paramVec) :
         Ogre::HlmsPbsDatablock(name, creator, macroblock, blendblock, paramVec) {}
+
+    /// The base's per-datablock descriptor sets and cubemap slot, read from
+    /// the derived class: `friend class HlmsPbs` (OgreHlmsPbsDatablock.h:195)
+    /// does not extend to a subclass, but reading the inherited protected
+    /// members through `this` is exactly what inheritance allows — and the
+    /// fill's texture binds (OgreHlmsPbs.cpp:3720-3755) need exactly these.
+    const Ogre::DescriptorSetTexture *textures_desc_set() const { return this->mTexturesDescSet; }
+    const Ogre::DescriptorSetSampler *samplers_desc_set() const { return this->mSamplersDescSet; }
+    Ogre::uint8 cubemap_idx_in_desc_set() const { return this->mCubemapIdxInDescSet; }
 };
 
 /// The subclass itself. One instance per render system, registered after PBS.
