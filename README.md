@@ -230,15 +230,15 @@ That is the whole contract. Everything else is a capability.
 ## The `ogre` capability
 
 `tension-ogre/` is the renderer: a C++ DSO that wraps OGRE-Next and
-implements `tension_adapter_v1`. Its fourteen verbs cover bring-up and the
+implements `tension_adapter_v1`. Its fifteen verbs cover bring-up and the
 error surface (`init`, `shutdown`, `last_error`), loads through the job
 queue (`queue_mesh_load`, `queue_texture_load`, `job_state`,
 `job_release`), scene record submission (`submit` — materials, lights,
 cameras, renderables — and `screenshot`), the per-frame batches
-(`submit_motion`, `submit_bones`), procedural meshes (`create_mesh`), TNS
-volume mounting (`mount_tns`), and named-clip animation
-(`submit_animation`). `tension-ogre/DESIGN.md` is the document — read it
-before touching the adapter.
+(`submit_motion`, `submit_bones`, `submit_skin_matrices`), procedural
+meshes (`create_mesh`), TNS volume mounting (`mount_tns`), and named-clip
+animation (`submit_animation`). `tension-ogre/DESIGN.md` is the document —
+read it before touching the adapter.
 
 Notable pieces:
 
