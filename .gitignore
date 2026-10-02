@@ -1,5 +1,8 @@
 .codewhale
 
+# Locally built Arch packages consumed by ci/Dockerfile (machine-local, large)
+ci/ogre-next-pkg/
+
 # Local scratch space (no /tmp — keep temp artifacts here)
 .tmp/
 

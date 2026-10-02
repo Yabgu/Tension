@@ -297,6 +297,7 @@ tension-ogre/        the OGRE capability (C++ DSO)
 tension-res/         the resource capability (Zig)
 tension-solver/      the ODE solver capability (Fortran)
 examples/            one folder per example
+ci/                  container image + scripts for CI and development
 ```
 
 ## Build & run
@@ -334,6 +335,13 @@ cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structura
 
 `examples/ogre/run.sh` is the shared mechanism; each example's `run.sh`
 is an 8-line wrapper naming its banner and calling the shared script.
+
+## Container / CI
+
+`ci/` holds the development/CI image and its scripts: `ci/docker.sh build`
+builds the image, `ci/docker.sh test` runs the full test suite inside it,
+and `ci/docker.sh dev` drops you into a development shell with the
+repository bind-mounted and X available. See `ci/README.md` for details.
 
 ## Debugging
 
