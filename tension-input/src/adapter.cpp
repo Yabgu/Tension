@@ -50,6 +50,20 @@ AdapterState &adapter_state() {
     return state;
 }
 
+/// Answer a refusal so the *guest* sees it.
+///
+/// The session puts `ret` into the wasm result slot and only logs the shim's
+/// return value as a status (tension-core/src/adapter/ffi.rs: `let mut ret =
+/// TensionValue::zero(); ... results[0] = val_of_tension(ret)`, then
+/// `if status != 0 { log_line(...) }`). So a `return -ENOENT;` that leaves
+/// `ret` alone answers the guest 0 — measured by this capability's own fixture,
+/// which saw `pad(0)` answer 0 while the session logged `adapter status -2`.
+/// Every refusal therefore writes both.
+int32_t refuse(tension_value *ret, int32_t errno_value) {
+    if (ret != nullptr) ret->i32 = errno_value;
+    return errno_value;
+}
+
 void log_line(int level, const char *message) {
     AdapterState &s = adapter_state();
     if (s.api != nullptr && s.api->log != nullptr && message != nullptr)
@@ -70,13 +84,20 @@ namespace {
 int32_t shim_input_open(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
-    if (args[0].i32 != 0) return -EINVAL; /* no flags are defined yet */
-    if (s.handle != 0) return -EBUSY;
+    if (args[0].i32 != 0) return refuse(ret, -EINVAL); /* no flags are defined yet */
+    if (s.handle != 0) return refuse(ret, -EBUSY);
+    // The capability's life is the handle's: `input_close` stops the thread, so
+    // opening a second time starts it again (INPUT.md §8's device precedent —
+    // the subsystem is re-acquirable).
+    if (!s.thread.running()) {
+        const int32_t started = s.thread.start();
+        if (started != 0) return refuse(ret, started);
+    }
     if (!s.thread.sdl_up()) {
         const int32_t retried = s.thread.retry_sdl();
         if (retried != 0 || !s.thread.sdl_up()) {
             log_line(1, "input: open: no SDL subsystem on this machine");
-            return -ENODEV;
+            return refuse(ret, -ENODEV);
         }
     }
     s.handle = 1;
@@ -93,15 +114,15 @@ int32_t shim_input_attach(void *, const tension_value *args, uint32_t nargs, ten
     const int32_t kind = args[1].i32;
     const uint32_t lo = static_cast<uint32_t>(args[2].i32);
     const uint32_t hi = static_cast<uint32_t>(args[3].i32);
-    if (s.handle == 0 || handle != s.handle) return -EINVAL;
-    if (kind < 0 || kind > 4) return -EINVAL;
-    if (s.attached) return -EBUSY;
+    if (s.handle == 0 || handle != s.handle) return refuse(ret, -EINVAL);
+    if (kind < 0 || kind > 4) return refuse(ret, -EINVAL);
+    if (s.attached) return refuse(ret, -EBUSY);
 
     const uint64_t token = (static_cast<uint64_t>(hi) << 32) | static_cast<uint64_t>(lo);
     const int32_t rc = s.thread.attach(static_cast<uint32_t>(kind), token);
     if (rc != 0) {
         log_line(1, ("input: attach refused (" + std::to_string(rc) + ")").c_str());
-        return rc;
+        return refuse(ret, rc);
     }
     s.attached = true;
     ret->i32 = 0;
@@ -112,10 +133,10 @@ int32_t shim_input_set_relative(void *, const tension_value *args, uint32_t narg
                                 tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
-    if (s.handle == 0 || args[0].i32 != s.handle) return -EINVAL;
-    if (!s.attached) return -ENODEV;
+    if (s.handle == 0 || args[0].i32 != s.handle) return refuse(ret, -EINVAL);
+    if (!s.attached) return refuse(ret, -ENODEV);
     const int32_t rc = s.thread.set_relative(args[1].i32 != 0);
-    if (rc != 0) return rc;
+    if (rc != 0) return refuse(ret, rc);
     ret->i32 = 0;
     return 0;
 }
@@ -123,20 +144,21 @@ int32_t shim_input_set_relative(void *, const tension_value *args, uint32_t narg
 int32_t shim_input_state(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
-    if (s.handle == 0 || args[0].i32 != s.handle) return -EINVAL;
-    if (!s.attached) return -ENODEV;
+    if (s.handle == 0 || args[0].i32 != s.handle) return refuse(ret, -EINVAL);
+    if (!s.attached) return refuse(ret, -ENODEV);
     const uint32_t ptr = static_cast<uint32_t>(args[1].i32);
     const int32_t cap = args[2].i32;
     if (cap <= 0) { /* the probe: the size, nothing written */
         ret->i32 = static_cast<int32_t>(TENSION_INPUT_STATE_SIZE);
         return 0;
     }
-    if (static_cast<uint32_t>(cap) < TENSION_INPUT_STATE_SIZE) return -ENOSPC;
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (static_cast<uint32_t>(cap) < TENSION_INPUT_STATE_SIZE) return refuse(ret, -ENOSPC);
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
 
     StateRecord record = {};
     s.thread.snapshot(&record);
-    if (s.api->guest_write(s.api->user, ptr, &record, sizeof(record)) != 0) return -EINVAL;
+    if (s.api->guest_write(s.api->user, ptr, &record, sizeof(record)) != 0)
+        return refuse(ret, -EINVAL);
     ret->i32 = static_cast<int32_t>(TENSION_INPUT_STATE_SIZE);
     return 0;
 }
@@ -144,22 +166,24 @@ int32_t shim_input_state(void *, const tension_value *args, uint32_t nargs, tens
 int32_t shim_input_pad(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 4) return -EINVAL;
-    if (s.handle == 0 || args[0].i32 != s.handle) return -EINVAL;
-    if (!s.attached) return -ENODEV;
+    if (s.handle == 0 || args[0].i32 != s.handle) return refuse(ret, -EINVAL);
+    if (!s.attached) return refuse(ret, -ENODEV);
     const int32_t slot = args[1].i32;
-    if (slot < 0 || slot >= static_cast<int32_t>(TENSION_INPUT_PAD_SLOTS)) return -EINVAL;
+    if (slot < 0 || slot >= static_cast<int32_t>(TENSION_INPUT_PAD_SLOTS)) return refuse(ret, -EINVAL);
     const uint32_t ptr = static_cast<uint32_t>(args[2].i32);
     const int32_t cap = args[3].i32;
     if (cap <= 0) {
         ret->i32 = static_cast<int32_t>(TENSION_INPUT_PAD_SIZE);
         return 0;
     }
-    if (static_cast<uint32_t>(cap) < TENSION_INPUT_PAD_SIZE) return -ENOSPC;
+    if (static_cast<uint32_t>(cap) < TENSION_INPUT_PAD_SIZE) return refuse(ret, -ENOSPC);
 
     PadRecord record = {};
-    if (!s.thread.pad(static_cast<uint32_t>(slot), &record)) return -ENOENT; /* no pad is normal */
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
-    if (s.api->guest_write(s.api->user, ptr, &record, sizeof(record)) != 0) return -EINVAL;
+    if (!s.thread.pad(static_cast<uint32_t>(slot), &record))
+        return refuse(ret, -ENOENT); /* no pad is normal */
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
+    if (s.api->guest_write(s.api->user, ptr, &record, sizeof(record)) != 0)
+        return refuse(ret, -EINVAL);
     ret->i32 = static_cast<int32_t>(TENSION_INPUT_PAD_SIZE);
     return 0;
 }
@@ -167,18 +191,21 @@ int32_t shim_input_pad(void *, const tension_value *args, uint32_t nargs, tensio
 int32_t shim_input_close(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
-    if (s.handle == 0 || args[0].i32 != s.handle) return -EINVAL;
+    if (s.handle == 0 || args[0].i32 != s.handle) return refuse(ret, -EINVAL);
     if (s.attached) {
         const int32_t rc = s.thread.detach();
         if (rc != 0) {
             log_line(2, ("input: close: detach answered " + std::to_string(rc)).c_str());
-            return rc;
+            return refuse(ret, rc);
         }
         s.attached = false;
     }
     s.handle = 0;
-    /* The SDL subsystem stays up: it is the process-scoped aspect, and the next
-       open inherits it (INPUT.md §3 Q2). */
+    /* Everything the capability owns goes with the handle — the window (above),
+       then SDL and the thread. The host on `main` never calls the vtable's
+       `shutdown`, so this is the teardown that runs; leaving the SDL thread
+       alive for the DSO's destructor to join is the hang DESIGN.md §7 records. */
+    s.thread.stop(/*quit_sdl=*/true);
     ret->i32 = 0;
     return 0;
 }

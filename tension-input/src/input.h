@@ -91,8 +91,18 @@ class InputThread {
     /// the thread itself could not be created.
     int32_t start();
 
-    /// Ask the thread to stop (tearing down SDL on it) and join. Idempotent.
-    void stop();
+    /// Ask the thread to stop and join. Idempotent.
+    ///
+    /// `quit_sdl` says whether the thread tears SDL down on its way out. It is
+    /// true for `input_close` and the vtable's `shutdown` — a host that unloads
+    /// the DSO later must not find threads in it — and false from the
+    /// destructor, where the process is already ending and asking SDL to quit
+    /// from inside the loader's unload callback is the deadlock that was
+    /// measured (`SDL_Quit` never returned; see DESIGN.md §7).
+    void stop(bool quit_sdl = true);
+
+    /// Whether the thread is running (it stops on `input_close`).
+    bool running() const;
 
     bool sdl_up() const { return sdl_up_.load(std::memory_order_acquire); }
 
@@ -131,7 +141,7 @@ class InputThread {
 
     void thread_main();
     int32_t sdl_start();     // on the SDL thread: SDL_Init(VIDEO|GAMEPAD)
-    void sdl_stop();         // on the SDL thread: window, gamepads, SDL_Quit
+    void sdl_stop(bool quit_sdl);  // on the SDL thread: window, SDL_Quit
     int32_t sdl_attach(uint32_t kind, uint64_t token);
     void sdl_detach();
     void pump_events();
@@ -195,6 +205,8 @@ class InputThread {
     uint64_t discard_motion_until_ms_ = 0;             /* the attach-settle rule */
 
     // ── posting; `link` fills these after `init` started the thread ─────
+    /// Whether the thread tears SDL down on its way out; set by `stop`.
+    bool quitting_sdl_ = true;
     std::atomic<const tension_core_api *> api_{nullptr};
     std::atomic<uint32_t> source_id_{0};
 };
