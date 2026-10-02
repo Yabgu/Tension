@@ -11,12 +11,11 @@
 //     `tension-solver/DESIGN.md` §10): fixed-step, so every impulse lands on a
 //     step boundary; symplectic; two derivative evaluations per step.
 //   * no iteration and no stacking: one pass per contact, resolved
-//     independently. Tall stacks sink and jitter, which is why sleeping is on
-//     the future-work list rather than in here.
-//   * no joints, no continuous collision detection, no angular dynamics, no
-//     sleeping, and no broad phase beyond the brute-force pair loop — which
-//     measured 1.17 ms per pass at N = 256 and 18.3 ms at 1024, and is
-//     therefore fine where the state's size cap puts the ceiling anyway.
+//     independently. Sleeping settles piles to hold rest positions bit-for-bit.
+//   * no joints, no continuous collision detection, and no broad phase beyond
+//     the brute-force pair loop — which measured 1.17 ms per pass at N = 256
+//     and 18.3 ms at 1024, and is therefore fine where the state's size cap puts
+//     the ceiling anyway.
 //
 // **The state layout is the solver's, and it is not interleaved.** Verlet's
 // `[q, v]` at system scale is every body's position, then every body's velocity:
@@ -151,12 +150,12 @@ export function physics_derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, 
   // an index expression: `sleep_mask != null && sleep_mask[i]` does not compile.
   const mask = sleep_mask;
   for (let i = 0; i < half; i++) {
-    const sleeping = mask != null && mask![i / 3] != 0;
+    const sleeping = mask != null && mask[i / 3] != 0;
     store<f64>(dyPtr + <usize>i * 8,
                sleeping ? 0.0 : load<f64>(yPtr + <usize>(half + i) * 8));
   }
   for (let i = half; i < len; i++) {
-    const sleeping = mask != null && mask![(i - half) / 3] != 0;
+    const sleeping = mask != null && mask[(i - half) / 3] != 0;
     store<f64>(dyPtr + <usize>i * 8,
                sleeping ? 0.0 : ((i - half) % 3 == 1 ? gravity_y : 0.0));
   }
@@ -186,7 +185,7 @@ function physics_derivative_angular(yPtr: usize, len: i32, dyPtr: usize): i32 {
   const mask = sleep_mask;
   for (let base: i32 = 0; base < half; base += 7) {
     const body_index = base / 7;
-    const sleeping = mask != null && mask![body_index] != 0;
+    const sleeping = mask != null && mask[body_index] != 0;
     const vbase = half + base;
     const vx = load<f64>(yPtr + <usize>(vbase + 0) * 8);
     const vy = load<f64>(yPtr + <usize>(vbase + 1) * 8);
