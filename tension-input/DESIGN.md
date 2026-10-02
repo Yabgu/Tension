@@ -116,6 +116,10 @@ returns from `post_event` is kept as the state record's `seq`.
   of its own; `state` probe → 96; `state` → a 96-byte record with
   `version=1 flags=0x1`; `set_relative(1)` → 0; `pad(0)` → `-ENOENT`; `close` →
   0; `shutdown` → 0, thread joined.
+- **The DSO through the real host.** `tests/run.sh` loads
+  `libtension_input.so` with `tension-core --capability` and drives it from a
+  wasm guest — the whole path: the host's loader, `init`/`link`, the six
+  imports, the session, and the guest SDK.
 - `tests/run.sh` — three cases, all green: `with-display` (open, attach kind 0,
   a 96-byte state record, eight `-ENOENT` pad slots, close), `no-driver`
   (`SDL_VIDEODRIVER=` a name that cannot exist: `input_open` refuses `-ENODEV`
@@ -131,11 +135,11 @@ returns from `post_event` is kept as the state record's `seq`.
 
 ## 7. Unverified, and the two hazards found while writing this
 
-- **A real guest through the host.** The DSO has only been driven by the stub
-  core; nothing has loaded it through `tension-core --capability` and called it
-  from wasm. The fixture in `tests/` is the first step, not the proof.
 - **Keys and edges end to end.** The pump's post path is exercised only by
-  inspection: no test has moved a mouse or pressed a key through the DSO yet.
+  inspection: no test has moved a mouse or pressed a key through the DSO yet,
+  so `INPUT_KEY`/`INPUT_MOUSE` posts, the coalescing, and the `class_info`
+  subscription check have no measurement behind them. The three rules have
+  unit-level coverage (the isolation test's state reads) but not end-to-end.
 - **An invalid token no longer reaches SDL, because it used to be fatal.**
   Measured three ways, with the isolation test's bogus XID (`0xdeadbeef`):
   1. against SDL alone, `BadWindow` inside its `XGetWindowAttributes` call
