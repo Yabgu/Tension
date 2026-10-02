@@ -98,6 +98,10 @@ declare function jobReleaseRaw(jobId: i32): i32;
 /** Probe/consume the last error string: `-1` when there is none. */
 @external("ogre", "last_error")
 declare function lastErrorRaw(ptr: u32, cap: i32): i32;
+/** The platform window handle as two i32 halves; 0, or -ENODEV when the
+ *  renderer has no window yet. The token INPUT.md's Q1 hands to input. */
+@external("ogre", "window_handle")
+declare function windowHandleRaw(loPtr: u32, hiPtr: u32): i32;
 /** `ogre::submit(kind, id, op)`: the record is already in its region slot. */
 @external("ogre", "submit")
 declare function submitRaw(kind: i32, id: i32, op: i32): i32;
@@ -166,6 +170,24 @@ export class ConfigBuilder {
   toBytes(): ArrayBuffer {
     return this.argmap.toBytes();
   }
+}
+
+/**
+ * The platform window handle as one `u64`, or 0 when the renderer has no window
+ * yet (no handle any platform hands out is 0, so it doubles as "not yet").
+ *
+ * One call per session, not per frame: this is the token the guest carries from
+ * the renderer to the input capability — the guest is the mediator, and neither
+ * capability learns the other exists. A guest that needs the errno calls
+ * `windowHandleRaw` itself; `input.attach` takes the two halves.
+ */
+export function windowHandle(): u64 {
+  const staging = heap.alloc(8);
+  const rc = windowHandleRaw(<u32>staging, <u32>(staging + 4));
+  if (rc !== 0) return 0;
+  const lo = <u64>load<u32>(staging);
+  const hi = <u64>load<u32>(staging + 4);
+  return lo | (hi << 32);
 }
 
 /** Initialize the adapter. */

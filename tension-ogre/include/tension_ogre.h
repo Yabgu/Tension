@@ -86,6 +86,31 @@ int32_t ogre_shutdown(void);
  */
 int32_t ogre_last_error(uint32_t ptr, int32_t cap);
 
+/*
+ * `ogre::window_handle(i32 lo_ptr, i32 hi_ptr) -> i32`  — verb_id 16,
+ * flags TENSION_IMPORT_REENTRANT_READONLY.
+ *
+ * Writes the platform window handle as two 32-bit halves: the low 32 bits of
+ * the native handle to `lo_ptr` and the high 32 bits (0 on a 32-bit platform)
+ * to `hi_ptr`. Both destinations are 4-byte guest addresses. 0 on success.
+ *
+ * -ENODEV when there is no window yet — before `init`, while the window is
+ * still coming up (readiness arrives as a RESOURCE_READY event, not from
+ * `init`), with the null renderer, or after `shutdown`. A caller that sees any
+ * non-zero return must not use either destination: the two writes are not
+ * atomic with each other, so a refusal can leave the first half written.
+ *
+ * Reentrant because it is the purest exempt-accessor case: the value was
+ * cached by the render thread when the window was made, so this reads an
+ * atomic and writes guest memory — no pump, no lock, no block.
+ *
+ * This is the renderer half of INPUT.md Q1: the guest learns the token here
+ * and hands it to the input capability, which is the only other party that
+ * needs it. Nothing in this adapter reads another capability's records, and
+ * this verb is how the rule is honoured rather than worked around.
+ */
+int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
+
 /* ── the config TLV ──────────────────────────────────────────────────── */
 
 /*
@@ -219,8 +244,17 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
 /* ── refusals ────────────────────────────────────────────────────────── */
 
 /*
- * The adapter's errno vocabulary is tension_adapter.h's — the boundary's list
- * is closed, and there is no -ENODEV in it, so "no display" is -EIO here:
+ * The adapter's errno vocabulary is tension_adapter.h's, with one recorded
+ * exception. The boundary's list is closed and has no -ENODEV in it, so "no
+ * display" is -EIO here — and `window_handle` returns -ENODEV anyway, because
+ * none of the closed list's codes names "no window *yet*": -EINVAL is a
+ * malformed argument, -ENOENT an unknown region or class, -EIO a fault. The
+ * absent-window case is none of those, it is the normal state of a renderer
+ * that is still starting. The amendment tension-core owes is one line in
+ * tension_adapter.h's list (`-ENODEV  no window or device yet`); until it
+ * lands, this header is where the deviation is recorded.
+ *
+ * The rest of the vocabulary:
  *
  *   -EINVAL  the config TLV is malformed, unknown-keyed, trailing, or not
  *            version 1. Returned by `init`, synchronously, before any thread

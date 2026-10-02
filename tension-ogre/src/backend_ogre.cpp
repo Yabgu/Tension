@@ -234,6 +234,24 @@ class BackendOgre final : public Backend {
                      std::to_string(window_->getHeight()) + " created (" + render_system_name_ +
                      ")");
 
+            // The native handle the guest can hand to another capability
+            // (INPUT.md Q1: the renderer learns the token, the guest relays it,
+            // input attaches). It is read here, on the thread that made the
+            // window, and cached — `ogre::window_handle` answers from the cache
+            // on the interpreter thread, and reading a renderer object across
+            // threads is exactly what backend.h's note on that virtual forbids.
+            // A render system that does not publish the attribute leaves the
+            // cache at 0, which the verb reports as -ENODEV.
+            {
+                unsigned long native = 0;
+                window_->getCustomAttribute("WINDOW", &native);
+                native_window_.store(static_cast<uint64_t>(native), std::memory_order_release);
+                if (native != 0) {
+                    log_line("ogre: window handle " + std::to_string(native) +
+                             " cached for window_handle");
+                }
+            }
+
             // ── STAGE_INITIALISE ────────────────────────────────────────
             // OGRE-Next has no `addViewport` and no viewport background colour:
             // a window is cleared by a compositor workspace, and the workspace's
@@ -414,6 +432,10 @@ class BackendOgre final : public Backend {
             for (ResourceHandle handle = 1; handle <= resources_.size(); ++handle) {
                 discard_resource(handle);
             }
+            // The cache goes before the window does: an interpreter-thread
+            // `window_handle` between these two lines must see "no window", not
+            // a handle whose window is being destroyed.
+            native_window_.store(0, std::memory_order_release);
             if (root_ != nullptr && window_ != nullptr && render_system_ != nullptr) {
                 render_system_->destroyRenderWindow(window_);
             }
@@ -446,6 +468,15 @@ class BackendOgre final : public Backend {
     }
 
     const char *name() const override { return name_.empty() ? "ogre" : name_.c_str(); }
+
+    /// The native window handle, from the render thread's cache — backend.h's
+    /// note on this virtual is why it is a cache read and not a lookup.
+    bool window_handle(uint64_t *out) const override {
+        const uint64_t handle = native_window_.load(std::memory_order_acquire);
+        if (handle == 0) return false;
+        *out = handle;
+        return true;
+    }
 
     /// One realised resource. Handles are indices into this table, 1-based, so
     /// that 0 stays "no handle".
@@ -1923,6 +1954,10 @@ class BackendOgre final : public Backend {
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;
+    /// The window's native handle, cached by the render thread the moment the
+    /// window exists and cleared before it is destroyed. 0 is "no window yet"
+    /// (no platform Tension builds for hands out 0 as a real handle).
+    std::atomic<uint64_t> native_window_{0};
     Ogre::SceneManager *scene_ = nullptr;
     Ogre::Camera *camera_ = nullptr;
     Ogre::CompositorWorkspace *workspace_ = nullptr;

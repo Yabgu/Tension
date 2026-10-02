@@ -155,6 +155,19 @@ class Backend {
     /// own, this is called at session teardown.
     virtual int32_t discard_resource(ResourceHandle handle) = 0;
 
+    /// The platform window handle, when this backend has one and knows it.
+    ///
+    /// Unlike the virtuals above, this one is called from the interpreter
+    /// thread — `ogre::window_handle` answers the guest from it — so an
+    /// implementation must return a value the render thread cached when it
+    /// made the window, never a renderer object read across threads. False
+    /// when there is no window: before `start`, with no window at all, or
+    /// after `stop`.
+    virtual bool window_handle(uint64_t *out) const {
+        (void)out;
+        return false;
+    }
+
     /// The backend's name, for `[tension:ogre]` diagnostics.
     virtual const char *name() const = 0;
 
