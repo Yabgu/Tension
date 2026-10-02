@@ -141,28 +141,47 @@ def main() -> int:
         # writes into the XML; the clip's file name is what a reader wants.
         clip_action.name = clip_name
 
-        # 3. The NLA branch, made to sample (13b). io_ogre's driver assigns
-        #    `animation_data.action = action` with no slot, and Blender 5.2's
-        #    slotted actions evaluate **nothing** until a slot is bound — the
-        #    tracks come out flat and `<animations/>` empty (13a's attempt 2,
-        #    measured again here: the pose bone stays at identity at every
-        #    frame with the slot unbound). The lever is the slot's *target*:
-        #    point it at this armature and the driver's plain assignment binds
-        #    it by itself. Each clip then becomes its own `<animation>`, which
-        #    is the whole reason this branch is worth having.
-        for slot in clip_action.slots:
-            slot.identifier = "OB" + character_arm.name
-            slot.name_display = character_arm.name
+        clip_arm.animation_data.action = clip_action
+
+        # 3. Visual retargeting via constraints and baking.
+        # The animation clips from the Kenney pack have an A-pose rest pose, while
+        # the base character model (characterMedium) has a T-pose rest pose.
+        # Retargeting by copying raw action tracks directly applies local rotations
+        # relative to the T-pose (yielding horizontal T-pose arms during run).
+        # Constraining the character bones to the clip bones and baking captures the
+        # visual pose into a new action with correct relative rotations.
+        for pb in character_arm.pose.bones:
+            if pb.name in clip_arm.pose.bones:
+                c = pb.constraints.new("COPY_TRANSFORMS")
+                c.target = clip_arm
+                c.subtarget = pb.name
+
+        bpy.context.view_layer.objects.active = character_arm
+        character_arm.select_set(True)
+
+        f_start = int(clip_action.frame_range[0])
+        f_end = int(clip_action.frame_range[1])
+
+        bpy.ops.nla.bake(
+            frame_start=f_start,
+            frame_end=f_end,
+            only_selected=False,
+            visual_keying=True,
+            clear_constraints=True,
+            bake_types={"POSE"}
+        )
+
+        baked_act = character_arm.animation_data.action
+        baked_act.name = clip_name
 
         track = ad.nla_tracks.new()
         track.name = clip_name
-        strip = track.strips.new(clip_name, int(clip_action.frame_range[0]), clip_action)
-        print("convert-kenney-anim.py: clip \"%s\" on NLA track \"%s\", strip frames %.0f..%.0f, "
-              "%.0f frames, slot -> OB%s"
-              % (clip_name, track.name, strip.frame_start, strip.frame_end,
-                 clip_action.frame_range[1] - clip_action.frame_range[0],
-                 character_arm.name))
-        retargeted.append((clip_name, clip_action, strip.frame_start, strip.frame_end))
+        strip = track.strips.new(clip_name, f_start, baked_act)
+        ad.action = None
+
+        print("convert-kenney-anim.py: clip \"%s\" visually baked onto \"%s\", frames %d..%d"
+              % (clip_name, track.name, f_start, f_end))
+        retargeted.append((clip_name, baked_act, strip.frame_start, strip.frame_end))
         bpy.data.objects.remove(clip_arm, do_unlink=True)
 
     # The scene range covers every clip (the timeline branch is not used while
@@ -176,6 +195,17 @@ def main() -> int:
     bpy.context.view_layer.objects.active = character_arm
     bpy.ops.object.select_all(action="SELECT")
     stem = os.path.splitext(os.path.basename(character))[0]
+
+    # Export glTF for gltf2ozz pipeline
+    gltf_path = os.path.join(outdir, stem + ".gltf")
+    bpy.ops.export_scene.gltf(
+        filepath=gltf_path,
+        export_format="GLTF_SEPARATE",
+        export_animations=True,
+        export_animation_mode="NLA_TRACKS",
+    )
+    print("convert-kenney-anim.py: gltf export -> %s" % gltf_path)
+
     result = bpy.ops.ogre.export(
         filepath=os.path.join(outdir, stem + ".scene"),
         EX_MESH=True, EX_MESH_OVERWRITE=True, EX_EXPORT_XML_DELETE=False,
