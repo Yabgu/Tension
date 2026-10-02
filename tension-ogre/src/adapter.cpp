@@ -51,6 +51,9 @@ constexpr uint32_t kVerbMountTns = 13;
 constexpr uint32_t kVerbSubmitAnimation = 14;
 // 15: the guest's skin matrices, the fifteenth verb (chunk 19 round 19b).
 constexpr uint32_t kVerbSubmitSkinMatrices = 15;
+// 16: the window handle, the sixteenth verb (chunk 20 round 20c). A read-only
+// accessor like `job_state` — no pump, no block, callable from a callback.
+constexpr uint32_t kVerbWindowHandle = 16;
 
 /// The longest clip name this verb accepts, in bytes. Clip names are the
 /// exporter's (`idle`, `run`, `jump`); 64 leaves room and keeps a garbage
@@ -961,6 +964,42 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
     return 0;
 }
 
+/// `ogre::window_handle(lo_ptr, hi_ptr)` — the platform window handle as two
+/// i32 halves, which is the widest shape this boundary carries (every import
+/// here is i32; INPUT.md Q1). The guest is the mediator between capabilities:
+/// the renderer hands it the token, the guest hands it to input. The value is
+/// the one OGRE's own "WINDOW" custom attribute carries — measured on this
+/// install to match the window XQueryTree finds — and the adapter caches it on
+/// the render thread when the window is made.
+///
+/// -ENODEV when there is no window yet: before `init`, while the window is
+/// still coming up, with the null renderer, or after `shutdown`. That code is
+/// the one this adapter returns that is not in tension_adapter.h's boundary
+/// list; tension_ogre.h's refusal section records why and what the amendment
+/// is.
+int32_t shim_window_handle(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    const uint32_t lo_ptr = static_cast<uint32_t>(args[0].i32);
+    const uint32_t hi_ptr = static_cast<uint32_t>(args[1].i32);
+
+    uint64_t handle = 0;
+    if (s.backend == nullptr || !s.backend->window_handle(&handle)) {
+        log_line(1, "ogre: window_handle: no window yet");
+        return -ENODEV;
+    }
+    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    const uint32_t lo = static_cast<uint32_t>(handle & 0xFFFFFFFFull);
+    const uint32_t hi = static_cast<uint32_t>(handle >> 32);
+    // Two destinations, two writes: if the second is refused the first half is
+    // already there, so the contract is that a caller seeing a non-zero return
+    // must not use either — the doc block in tension_ogre.h says so.
+    if (s.api->guest_write(s.api->user, lo_ptr, &lo, sizeof(lo)) != 0) return -EINVAL;
+    if (s.api->guest_write(s.api->user, hi_ptr, &hi, sizeof(hi)) != 0) return -EINVAL;
+    ret->i32 = 0;
+    return 0;
+}
+
 // ── the vtable ───────────────────────────────────────────────────────────
 
 int32_t adapter_init(void *, const tension_core_api *core) {
@@ -1014,6 +1053,10 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
         {"mount_tns", four_i32, 4, shim_mount_tns, kVerbMountTns, 0},
         {"submit_animation", four_i32, 4, shim_submit_animation, kVerbSubmitAnimation, 0},
+        // The window token, for the guest to hand to a peer capability
+        // (INPUT.md Q1). Read-only: a cached value, no pump, no block.
+        {"window_handle", two_i32, 2, shim_window_handle, kVerbWindowHandle,
+         TENSION_IMPORT_REENTRANT_READONLY},
     };
 
     for (const Registration &registration : registrations) {
