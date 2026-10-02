@@ -41,7 +41,7 @@ const CLIP_NAMES: string[] = ["idle", "run", "jump"];
 const CLIP_SECONDS: f64[] = [1.375, 0.7083333, 0.5416667];
 /// The shipped sizes, in bytes — the archive files, as packed.
 const SKELETON_BYTES: i32 = 3295;
-const CLIP_BYTES: i32[] = [5415, 6404, 4050];
+const CLIP_BYTES: i32[] = [5482, 6422, 4103];
 
 function fail(reason: string): void {
   print("OZZ-LOAD FAIL: " + reason);

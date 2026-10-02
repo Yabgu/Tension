@@ -159,7 +159,7 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
         return String::new();
     };
     let data = mem.data(&*caller);
-    let p = ptr as usize;
+    let p = (ptr as u32) as usize;
     let rt_size = match p.checked_sub(4) {
         Some(h) if h.saturating_add(4) <= data.len() => {
             u32::from_le_bytes(data[h..h + 4].try_into().unwrap_or([0; 4]))
@@ -167,16 +167,17 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
         _ => 0,
     };
     let chars = (rt_size as usize) / 2;
-    let mut s = String::new();
-    for i in 0..chars {
+    let u16_iter = (0..chars).filter_map(|i| {
         let off = p.saturating_add(i * 2);
-        if off.saturating_add(2) > data.len() {
-            break;
+        if off.saturating_add(2) <= data.len() {
+            Some(u16::from_le_bytes([data[off], data[off + 1]]))
+        } else {
+            None
         }
-        let u = u16::from_le_bytes([data[off], data[off + 1]]);
-        s.push(char::from_u32(u as u32).unwrap_or('\u{FFFD}'));
-    }
-    s
+    });
+    char::decode_utf16(u16_iter)
+        .map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER))
+        .collect()
 }
 
 const PACK_USAGE: &str = r#"usage: tension-core pack <source-dir> [-o output.pak]

@@ -359,6 +359,14 @@ fn test_ogre_adapter_surface() {
         },
         Registered {
             module: "ogre".into(),
+            name: "submit_skin_matrices".into(),
+            ret_type: TENSION_VT_I32,
+            nparams: 1,
+            verb_id: 15,
+            flags: 0,
+        },
+        Registered {
+            module: "ogre".into(),
             name: "create_mesh".into(),
             ret_type: TENSION_VT_I32,
             nparams: 6,
@@ -382,7 +390,7 @@ fn test_ogre_adapter_surface() {
             flags: 0,
         },
     ];
-    assert_eq!(imports, expected, "the fourteen imports of the SDK, and their flags");
+    assert_eq!(imports, expected, "the fifteen imports of the SDK, and their flags");
 
     assert_eq!(sources, vec!["ogre".to_string()], "one event source, named for the module");
     assert_eq!(

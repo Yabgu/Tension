@@ -230,15 +230,15 @@ That is the whole contract. Everything else is a capability.
 ## The `ogre` capability
 
 `tension-ogre/` is the renderer: a C++ DSO that wraps OGRE-Next and
-implements `tension_adapter_v1`. Its fourteen verbs cover bring-up and the
+implements `tension_adapter_v1`. Its fifteen verbs cover bring-up and the
 error surface (`init`, `shutdown`, `last_error`), loads through the job
 queue (`queue_mesh_load`, `queue_texture_load`, `job_state`,
 `job_release`), scene record submission (`submit` — materials, lights,
 cameras, renderables — and `screenshot`), the per-frame batches
-(`submit_motion`, `submit_bones`), procedural meshes (`create_mesh`), TNS
-volume mounting (`mount_tns`), and named-clip animation
-(`submit_animation`). `tension-ogre/DESIGN.md` is the document — read it
-before touching the adapter.
+(`submit_motion`, `submit_bones`, `submit_skin_matrices`), procedural
+meshes (`create_mesh`), TNS volume mounting (`mount_tns`), and named-clip
+animation (`submit_animation`). `tension-ogre/DESIGN.md` is the document —
+read it before touching the adapter.
 
 Notable pieces:
 
@@ -297,6 +297,7 @@ tension-ogre/        the OGRE capability (C++ DSO)
 tension-res/         the resource capability (Zig)
 tension-solver/      the ODE solver capability (Fortran)
 examples/            one folder per example
+ci/                  container image + scripts for CI and development
 ```
 
 ## Build & run
@@ -334,6 +335,13 @@ cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structura
 
 `examples/ogre/run.sh` is the shared mechanism; each example's `run.sh`
 is an 8-line wrapper naming its banner and calling the shared script.
+
+## Container / CI
+
+`ci/` holds the development/CI image and its scripts: `ci/docker.sh build`
+builds the image, `ci/docker.sh test` runs the full test suite inside it,
+and `ci/docker.sh dev` drops you into a development shell with the
+repository bind-mounted and X available. See `ci/README.md` for details.
 
 ## Debugging
 

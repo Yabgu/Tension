@@ -44,13 +44,22 @@ load path starts with that prefix.
 
 - **`models/characterMedium_*.ozz`** — the same character's rig and three clips
   as ozz runtime archives (skeleton v2 + animation v7): `_skeleton` (3,295 B,
-  58 joints), `_idle` (5,415 B), `_run` (6,404 B), `_jump` (4,050 B). Same
+  58 joints), `_idle` (5,482 B), `_run` (6,422 B), `_jump` (4,103 B). Same
   source and licence as the mesh (Kenney, CC0). Pipeline: the Kenney FBX →
-  Blender 5.2.2 (one scene, the three clips retargeted onto the character
-  armature, as `convert-kenney-anim.py` does) → glTF → `gltf2ozz`
+  Blender 5.2.2 (one scene, the three clips retargeted with visual baking onto
+  the character armature to compensate for rest pose differences, as
+  `convert-kenney-anim.py` does) → glTF → `gltf2ozz`
   (ozz-animation at `744eb9d`; the build recipe is committed in
   `tension-framework/tests/fixtures/ozz/CREDITS.md`) →
   `tension-ogre/tests/remap-ozz.py`, which rewrites the archives into OGRE's
   bone order — 58 joints, `Hips` at 19, `LeftForeArm` at 28 — mapping by joint
   name and dropping gltf2ozz's two non-bone object nodes (`Root`,
   `characterMedium`).
+
+  **`jump` is a held pose, not a jump.** The pack's own `Animations/jump.fbx`
+  (13 frames) changes by at most 1.8°, with every translation curve flat —
+  measured in the FBX with Blender 5.2.2 and assimp — and the shipped archive
+  holds one pose for its whole 0.5417 s (the hips never move; measured with
+  the framework's evaluator). The example therefore plays `idle` and `run`
+  only (`CLIP_INDEX` in `game.ts`); the third archive still ships and is still
+  loaded, but no character is assigned it.

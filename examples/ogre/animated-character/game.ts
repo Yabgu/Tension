@@ -486,10 +486,13 @@ class Game {
     light.lightId = 1;
     if (ogre.submitLight(light) != 0) fail("submitLight refused");
 
-    // Four units back on +Z, looking at the origin: at scale 0.29 the characters
-    // are 1.09 units tall, well inside the ±1.65 the camera shows at z=0.
+    // Isometric view from top-right.
     const camera = ogre.CameraRecord.perspective(
-      45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 0.0, 0.0, 4.0);
+      45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 3.0, 2.5, 3.0);
+    camera.rotationX = -0.23912;
+    camera.rotationY = 0.36964;
+    camera.rotationZ = 0.09905;
+    camera.rotationW = 0.89240;
     camera.cameraId = 1;
     if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 

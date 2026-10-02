@@ -142,48 +142,44 @@ function test_impulse_no_gravity(): void {
   // (a) zero relative velocity, bias on, e = 0.
   {
     const world = make_world(2, true, 0.0, 0.2);
-    check("world created for the resting pair", world != null);
-    if (world != null) {
-      const body = world!.bodies();
-      world!.place(0, -0.095, 5.0, 0.0);
-      world!.place(1, 0.095, 5.0, 0.0); // 10 mm of overlap on the line of centres
-      check("seed accepted", world!.seed() == 0);
-      check("one sub-step ran", world!.step(HALF_STEP) == 0);
-      const va = body.vel(0, 0), vb = body.vel(1, 0);
-      check("no impulse: the bias alone moves each body (±0.24)",
-            nearly(va, -0.24, 1.0e-12) && nearly(vb, 0.24, 1.0e-12),
-            "va=" + va.toString() + " vb=" + vb.toString());
-      check("no angular velocity from a bias that never became an impulse",
-            body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0 &&
-            body.omega(1, 0) == 0.0 && body.omega(1, 1) == 0.0 && body.omega(1, 2) == 0.0);
-      check("the bias is capped at 1.0 m/s, so a 10 mm overlap gives 0.48",
-            abs(body.vel(0, 0)) < 1.0);
-      world!.destroy();
-    }
+    if (world == null) { check("world created for the resting pair", false); return; }
+    const body = world.bodies();
+    world.place(0, -0.095, 5.0, 0.0);
+    world.place(1, 0.095, 5.0, 0.0); // 10 mm of overlap on the line of centres
+    check("seed accepted", world.seed() == 0);
+    check("one sub-step ran", world.step(HALF_STEP) == 0);
+    const va = body.vel(0, 0), vb = body.vel(1, 0);
+    check("no impulse: the bias alone moves each body (±0.24)",
+          nearly(va, -0.24, 1.0e-12) && nearly(vb, 0.24, 1.0e-12),
+          "va=" + va.toString() + " vb=" + vb.toString());
+    check("no angular velocity from a bias that never became an impulse",
+          body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0 &&
+          body.omega(1, 0) == 0.0 && body.omega(1, 1) == 0.0 && body.omega(1, 2) == 0.0);
+    check("the bias is capped at 1.0 m/s, so a 10 mm overlap gives 0.48",
+          abs(body.vel(0, 0)) < 1.0);
+    world.destroy();
   }
 
   // (b) head-on, e = 1, no bias.
   {
     const world = make_world(2, true, 0.0, 0.0);
-    check("world created for the head-on pair", world != null);
-    if (world != null) {
-      const body = world!.bodies();
-      world!.place(0, -0.095, 5.0, 0.0);
-      world!.place(1, 0.095, 5.0, 0.0);
-      world!.setVelocity(0, 0.5, 0.0, 0.0);
-      world!.setVelocity(1, -0.5, 0.0, 0.0);
-      world!.params.restitution[0] = 1.0;
-      world!.params.restitution[1] = 1.0;
-      check("seed accepted", world!.seed() == 0);
-      check("one sub-step ran", world!.step(HALF_STEP) == 0);
-      const va = body.vel(0, 0), vb = body.vel(1, 0);
-      check("an elastic head-on contact exchanges the velocities (−0.5 / +0.5)",
-            nearly(va, -0.5, 1.0e-12) && nearly(vb, 0.5, 1.0e-12),
-            "va=" + va.toString() + " vb=" + vb.toString());
-      check("a central contact applies no torque", body.omega(0, 2) == 0.0 &&
-            body.omega(1, 2) == 0.0);
-      world!.destroy();
-    }
+    if (world == null) { check("world created for the head-on pair", false); return; }
+    const body = world.bodies();
+    world.place(0, -0.095, 5.0, 0.0);
+    world.place(1, 0.095, 5.0, 0.0);
+    world.setVelocity(0, 0.5, 0.0, 0.0);
+    world.setVelocity(1, -0.5, 0.0, 0.0);
+    world.params.restitution[0] = 1.0;
+    world.params.restitution[1] = 1.0;
+    check("seed accepted", world.seed() == 0);
+    check("one sub-step ran", world.step(HALF_STEP) == 0);
+    const va = body.vel(0, 0), vb = body.vel(1, 0);
+    check("an elastic head-on contact exchanges the velocities (−0.5 / +0.5)",
+          nearly(va, -0.5, 1.0e-12) && nearly(vb, 0.5, 1.0e-12),
+          "va=" + va.toString() + " vb=" + vb.toString());
+    check("a central contact applies no torque", body.omega(0, 2) == 0.0 &&
+          body.omega(1, 2) == 0.0);
+    world.destroy();
   }
 }
 
@@ -200,53 +196,49 @@ function test_bias_does_not_spin_resting_box(): void {
   print("3. the bias does not spin a resting box");
   {
     const world = make_world(1, true, -9.81, 0.2, SHAPE_BOX);
-    check("box-inertia world created", world != null);
-    if (world != null) {
-      const body = world!.bodies();
-      world!.place(0, 0.0, 0.1 - 0.005, 0.0); // resting, 5 mm into the floor
-      world!.seed();
-      for (let frame: i32 = 0; frame < 300; frame++) {
-        if (world!.step(DT) != 0) break;
-      }
-      const angle = quat_angle(body.quat(0, 0), body.quat(0, 1), body.quat(0, 2), body.quat(0, 3));
-      check("300 frames of resting contact accumulate exactly 0.0 rad of rotation",
-            angle == 0.0, "angle=" + angle.toString());
-      check("the orientation is still exactly the identity",
-            body.quat(0, 0) == 0.0 && body.quat(0, 1) == 0.0 &&
-            body.quat(0, 2) == 0.0 && body.quat(0, 3) == 1.0);
-      check("and ω is exactly zero",
-            body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0);
-      world!.destroy();
+    if (world == null) { check("box-inertia world created", false); return; }
+    const body = world.bodies();
+    world.place(0, 0.0, 0.1 - 0.005, 0.0); // resting, 5 mm into the floor
+    world.seed();
+    for (let frame: i32 = 0; frame < 300; frame++) {
+      if (world.step(DT) != 0) break;
     }
+    const angle = quat_angle(body.quat(0, 0), body.quat(0, 1), body.quat(0, 2), body.quat(0, 3));
+    check("300 frames of resting contact accumulate exactly 0.0 rad of rotation",
+          angle == 0.0, "angle=" + angle.toString());
+    check("the orientation is still exactly the identity",
+          body.quat(0, 0) == 0.0 && body.quat(0, 1) == 0.0 &&
+          body.quat(0, 2) == 0.0 && body.quat(0, 3) == 1.0);
+    check("and ω is exactly zero",
+          body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0);
+    world.destroy();
   }
   {
     // The control: a sphere sliding on the floor must spin up, and reach
     // rolling — ω·r = −v — which a linear-only model cannot do at all.
     const world = make_world(1, true, -9.81, 0.2);
-    check("sliding-sphere world created", world != null);
-    if (world != null) {
-      const body = world!.bodies();
-      world!.place(0, 0.0, 0.1, 0.0);
-      world!.setVelocity(0, 1.0, 0.0, 0.0);
-      world!.params.friction[0] = 0.4;
-      world!.seed();
-      for (let frame: i32 = 0; frame < 30; frame++) {
-        if (world!.step(DT) != 0) break;
-      }
-      // Rolling along +x about −z: `ω_z · r = −v_x` at the contact.
-      const vx = body.vel(0, 0), wz = body.omega(0, 2);
-      check("friction spins the sliding sphere up", abs(wz) > 0.5, "wz=" + wz.toString());
-      check("it reaches rolling: ω·r = −v within 5 %",
-            abs(-wz * 0.1 - vx) < 0.05 * 1.0, "wz·r=" + (-wz * 0.1).toString() +
-            " v=" + vx.toString());
-      // Since chunk 9a there is rolling resistance, so the sphere is slower than
-      // the 5/7 a friction-only slide would leave it at: the point of this line
-      // is that it is *rolling* rather than parked, which is what the check
-      // above asserts — and that it has not been stopped dead by the term either.
-      check("and it is still rolling rather than parked", vx > 0.05,
-            "vx=" + vx.toString());
-      world!.destroy();
+    if (world == null) { check("sliding-sphere world created", false); return; }
+    const body = world.bodies();
+    world.place(0, 0.0, 0.1, 0.0);
+    world.setVelocity(0, 1.0, 0.0, 0.0);
+    world.params.friction[0] = 0.4;
+    world.seed();
+    for (let frame: i32 = 0; frame < 30; frame++) {
+      if (world.step(DT) != 0) break;
     }
+    // Rolling along +x about −z: `ω_z · r = −v_x` at the contact.
+    const vx = body.vel(0, 0), wz = body.omega(0, 2);
+    check("friction spins the sliding sphere up", abs(wz) > 0.5, "wz=" + wz.toString());
+    check("it reaches rolling: ω·r = −v within 5 %",
+          abs(-wz * 0.1 - vx) < 0.05 * 1.0, "wz·r=" + (-wz * 0.1).toString() +
+          " v=" + vx.toString());
+    // Since chunk 9a there is rolling resistance, so the sphere is slower than
+    // the 5/7 a friction-only slide would leave it at: the point of this line
+    // is that it is *rolling* rather than parked, which is what the check
+    // above asserts — and that it has not been stopped dead by the term either.
+    check("and it is still rolling rather than parked", vx > 0.05,
+          "vx=" + vx.toString());
+    world.destroy();
   }
 }
 
@@ -265,24 +257,23 @@ function test_spinning_body_does_not_sleep(): void {
   // reads 0.0 m/s and, before the angular signal existed, slept it at frame 30
   // and zeroed the spin with it — 0.5 rad of a second's rotation, measured.
   const world = make_world(1, true, 0.0, 0.0);
-  check("free-body world created", world != null);
-  if (world == null) return;
-  const body = world!.bodies();
+  if (world == null) { check("free-body world created", false); return; }
+  const body = world.bodies();
   check("a fresh angular world starts every body at the identity orientation",
         body.quat(0, 0) == 0.0 && body.quat(0, 1) == 0.0 &&
         body.quat(0, 2) == 0.0 && body.quat(0, 3) == 1.0);
-  world!.place(0, 0.0, 5.0, 0.0); // high above the floor: no contacts
-  world!.setAngularVelocity(0, 0.0, 1.0, 0.0);
-  world!.seed();
+  world.place(0, 0.0, 5.0, 0.0); // high above the floor: no contacts
+  world.setAngularVelocity(0, 0.0, 1.0, 0.0);
+  world.seed();
   for (let frame: i32 = 0; frame < 60; frame++) {
-    if (world!.step(DT) != 0) break;
+    if (world.step(DT) != 0) break;
   }
   const wy = body.omega(0, 1);
   const angle = quat_angle(body.quat(0, 0), body.quat(0, 1), body.quat(0, 2), body.quat(0, 3));
   const norm = Math.sqrt(body.quat(0, 0) * body.quat(0, 0) + body.quat(0, 1) * body.quat(0, 1) +
                          body.quat(0, 2) * body.quat(0, 2) + body.quat(0, 3) * body.quat(0, 3));
-  check("it does not sleep, though it displaces nothing", world!.asleepCount() == 0,
-        "asleep=" + world!.asleepCount().toString());
+  check("it does not sleep, though it displaces nothing", world.asleepCount() == 0,
+        "asleep=" + world.asleepCount().toString());
   check("ω is unchanged after 60 steps (1.0 rad/s)", nearly(wy, 1.0, 1.0e-6),
         "wy=" + wy.toString());
   // 1e-4 rather than the 1e-6 a clean 1.0 rad would suggest: the gap is
@@ -295,7 +286,7 @@ function test_spinning_body_does_not_sleep(): void {
         "|q|=" + norm.toString());
   check("no drift into the other axes",
         nearly(body.omega(0, 0), 0.0, 1.0e-9) && nearly(body.omega(0, 2), 0.0, 1.0e-9));
-  world!.destroy();
+  world.destroy();
 }
 
 /// The other half of the signal: a body turning below the threshold still
@@ -305,20 +296,19 @@ function test_spinning_body_does_not_sleep(): void {
 function test_slowly_spinning_body_sleeps(): void {
   print("5. a slowly spinning body sleeps");
   const world = make_world(1, true, 0.0, 0.0);
-  check("slow-spin world created", world != null);
-  if (world == null) return;
-  const body = world!.bodies();
-  world!.place(0, 0.0, 5.0, 0.0);
-  world!.setAngularVelocity(0, 0.0, 0.03, 0.0);
-  world!.seed();
+  if (world == null) { check("slow-spin world created", false); return; }
+  const body = world.bodies();
+  world.place(0, 0.0, 5.0, 0.0);
+  world.setAngularVelocity(0, 0.0, 0.03, 0.0);
+  world.seed();
   for (let frame: i32 = 0; frame < 30; frame++) {
-    if (world!.step(DT) != 0) break;
+    if (world.step(DT) != 0) break;
   }
-  check("it sleeps at frame 30 (the window's end)", world!.asleepCount() == 1);
+  check("it sleeps at frame 30 (the window's end)", world.asleepCount() == 1);
   const settled = new Float64Array(4);
   for (let k: i32 = 0; k < 4; k++) settled[k] = body.quat(0, k);
   for (let frame: i32 = 0; frame < 30; frame++) {
-    if (world!.step(DT) != 0) break;
+    if (world.step(DT) != 0) break;
   }
   let frozen = true;
   for (let k: i32 = 0; k < 4; k++) {
@@ -329,7 +319,7 @@ function test_slowly_spinning_body_sleeps(): void {
   check("it turned for half a second before it stopped (~0.015 rad)",
         nearly(angle, 0.015, 1.0e-4), "angle=" + angle.toString());
   check("and its spin was zeroed with it", body.omega(0, 1) == 0.0);
-  world!.destroy();
+  world.destroy();
 }
 
 /// The chunk-7 case in the angular model: a box resting on the floor, jittering
@@ -338,18 +328,17 @@ function test_slowly_spinning_body_sleeps(): void {
 function test_resting_box_still_sleeps(): void {
   print("6. a resting box still sleeps");
   const world = make_world(1, true, -9.81, 0.2, SHAPE_BOX);
-  check("box world created", world != null);
-  if (world == null) return;
-  world!.place(0, 0.0, 0.1 - 0.005, 0.0); // resting, 5 mm into the floor
-  world!.seed();
+  if (world == null) { check("box world created", false); return; }
+  world.place(0, 0.0, 0.1 - 0.005, 0.0); // resting, 5 mm into the floor
+  world.seed();
   for (let frame: i32 = 0; frame < 60; frame++) {
-    if (world!.step(DT) != 0) break;
+    if (world.step(DT) != 0) break;
   }
-  check("the resting box sleeps within 60 frames", world!.asleepCount() == 1);
-  const body = world!.bodies();
+  check("the resting box sleeps within 60 frames", world.asleepCount() == 1);
+  const body = world.bodies();
   check("and its angular signal never crossed the threshold",
         body.omega(0, 0) == 0.0 && body.omega(0, 1) == 0.0 && body.omega(0, 2) == 0.0);
-  world!.destroy();
+  world.destroy();
 }
 
 // ── 7. the linear model is unchanged ─────────────────────────────────────
@@ -364,17 +353,15 @@ function test_linear_model_unchanged(): void {
   // A single body dropped from y = 10 for 60 frames: 10 − ½·9.81 = 5.095.
   {
     const world = make_world(1, false, -9.81, 0.0);
-    check("linear world created", world != null);
-    if (world != null) {
-      const body = world!.bodies();
-      world!.place(0, 0.0, 10.0, 0.0);
-      world!.seed();
-      for (let frame: i32 = 0; frame < 60; frame++) world!.step(DT);
-      const y = body.pos(0, 1);
-      check("a drop still lands on the closed form (5.095)", nearly(y, 5.095, 1.0e-9),
-            "y=" + y.toString());
-      world!.destroy();
-    }
+    if (world == null) { check("linear world created", false); return; }
+    const body = world.bodies();
+    world.place(0, 0.0, 10.0, 0.0);
+    world.seed();
+    for (let frame: i32 = 0; frame < 60; frame++) world.step(DT);
+    const y = body.pos(0, 1);
+    check("a drop still lands on the closed form (5.095)", nearly(y, 5.095, 1.0e-9),
+          "y=" + y.toString());
+    world.destroy();
   }
 
   // Determinism, and the slept pile.
@@ -386,11 +373,11 @@ function test_linear_model_unchanged(): void {
     const world = make_world(4, false, -9.81, 0.2);
     if (world == null) { check("linear pile world created", false); return; }
     for (let i: i32 = 0; i < 4; i++) {
-      world!.place(i, -0.15 + <f64>i * 0.1, 0.1 + 0.05 + <f64>i * 0.21, 0.0);
+      world.place(i, -0.15 + <f64>i * 0.1, 0.1 + 0.05 + <f64>i * 0.21, 0.0);
     }
-    world!.seed();
-    for (let frame: i32 = 0; frame < 60; frame++) world!.step(DT);
-    const body = world!.bodies();
+    world.seed();
+    for (let frame: i32 = 0; frame < 60; frame++) world.step(DT);
+    const body = world.bodies();
     const into = run == 0 ? snapshot_a : snapshot_b;
     for (let i: i32 = 0; i < 4; i++) {
       for (let axis: i32 = 0; axis < 3; axis++) {
@@ -398,8 +385,8 @@ function test_linear_model_unchanged(): void {
         into[i * 6 + 3 + axis] = body.vel(i, axis);
       }
     }
-    if (run == 0) ke_a = world!.kineticEnergy(); else ke_b = world!.kineticEnergy();
-    world!.destroy();
+    if (run == 0) ke_a = world.kineticEnergy(); else ke_b = world.kineticEnergy();
+    world.destroy();
   }
   let identical = true;
   for (let i: i32 = 0; i < snapshot_a.length; i++) {
@@ -413,11 +400,11 @@ function test_linear_model_unchanged(): void {
   {
     const world = make_world(2, false, -9.81, 0.2);
     if (world == null) { check("sleep world created", false); return; }
-    const body = world!.bodies();
-    world!.place(0, -0.05, 0.1, 0.0);
-    world!.place(1, 0.05, 0.1, 0.0);
-    world!.seed();
-    for (let frame: i32 = 0; frame < 240; frame++) world!.step(DT);
+    const body = world.bodies();
+    world.place(0, -0.05, 0.1, 0.0);
+    world.place(1, 0.05, 0.1, 0.0);
+    world.seed();
+    for (let frame: i32 = 0; frame < 240; frame++) world.step(DT);
     const before = new Float64Array(12);
     for (let i: i32 = 0; i < 2; i++) {
       for (let axis: i32 = 0; axis < 3; axis++) {
@@ -425,7 +412,7 @@ function test_linear_model_unchanged(): void {
         before[i * 6 + 3 + axis] = body.vel(i, axis);
       }
     }
-    for (let frame: i32 = 0; frame < 30; frame++) world!.step(DT);
+    for (let frame: i32 = 0; frame < 30; frame++) world.step(DT);
     let same = true;
     for (let i: i32 = 0; i < 2; i++) {
       for (let axis: i32 = 0; axis < 3; axis++) {
@@ -434,10 +421,10 @@ function test_linear_model_unchanged(): void {
       }
     }
     check("a slept pile is bit-for-bit unchanged over 30 frames", same);
-    check("and its kinetic energy is exactly 0.0", world!.kineticEnergy() == 0.0,
-          "ke=" + world!.kineticEnergy().toString());
-    check("every body is asleep", world!.asleepCount() == 2);
-    world!.destroy();
+    check("and its kinetic energy is exactly 0.0", world.kineticEnergy() == 0.0,
+          "ke=" + world.kineticEnergy().toString());
+    check("every body is asleep", world.asleepCount() == 2);
+    world.destroy();
   }
 }
 
