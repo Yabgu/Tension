@@ -54,3 +54,6 @@ tension-audio.wav
 *.dylib
 *.exe
 *.log
+
+# Python
+__pycache__
