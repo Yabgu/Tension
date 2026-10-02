@@ -21,6 +21,8 @@
 
 #include <SDL3/SDL.h>
 
+#include <pthread.h>
+
 #include <cerrno>
 #include <chrono>
 #include <cmath>
@@ -45,7 +47,11 @@ const char *driver_for_kind(uint32_t kind) {
 
 } // namespace
 
-InputThread::~InputThread() { stop(); }
+InputThread::~InputThread() {
+    // No SDL_Quit here: see the header. The process is ending, and the teardown
+    // that matters ran in `input_close`.
+    stop(/*quit_sdl=*/false);
+}
 
 // ── the thread's life ───────────────────────────────────────────────────
 
@@ -72,7 +78,12 @@ int32_t InputThread::start() {
     return 0;
 }
 
-void InputThread::stop() {
+bool InputThread::running() const {
+    std::lock_guard<std::mutex> lock(mu_);
+    return started_;
+}
+
+void InputThread::stop(bool quit_sdl) {
     if (thread_.joinable() && thread_.get_id() == std::this_thread::get_id()) {
         // Called from the SDL thread itself (a teardown running on it, or a
         // platform error handler that exits from it): joining would be EDEADLK
@@ -97,6 +108,7 @@ void InputThread::stop() {
             req_done_ = true;
         }
     }
+    quitting_sdl_ = quit_sdl; /* the thread reads it in sdl_stop */
     work_cv_.notify_all();
     done_cv_.notify_all();
     if (thread_.joinable()) thread_.join();
@@ -112,6 +124,7 @@ std::string InputThread::driver() const {
 }
 
 void InputThread::thread_main() {
+    pthread_setname_np(pthread_self(), "tension-input");
     const int32_t rc = sdl_start();
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -173,7 +186,7 @@ void InputThread::thread_main() {
             refresh_pads();
         }
     }
-    sdl_stop();
+    sdl_stop(quitting_sdl_);
 }
 
 // ── SDL, on the SDL thread ──────────────────────────────────────────────
@@ -194,9 +207,9 @@ int32_t InputThread::sdl_start() {
     return 0;
 }
 
-void InputThread::sdl_stop() {
+void InputThread::sdl_stop(bool quit_sdl) {
     sdl_detach();
-    if (sdl_up()) {
+    if (quit_sdl && sdl_up()) {
         SDL_Quit();
         sdl_up_.store(false, std::memory_order_release);
     }

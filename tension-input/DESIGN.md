@@ -52,6 +52,14 @@ learns the other's name.
 - `shutdown` asks the thread to stop, joins it, and `SDL_Quit` runs on the
   thread that ran `SDL_Init` (the vtable's `shutdown` contract, and the reason
   the teardown is on that thread at all).
+- **`input_close` is the teardown that actually runs.** The host on `main`
+  never calls the vtable's `shutdown` or `destroy` (`SESSION.md` §11 M3: the
+  fix lives on `polish/loader-sibling-quiet`), so a capability that keeps a
+  thread must release it through a verb or the DSO's own destructor has to. It
+  tried the destructor and lost (below); `input_close` now detaches, stops the
+  thread, and quits SDL, and a later `input_open` starts it again — the device
+  precedent from `SESSION.md` §8, where a re-acquirable subsystem is exactly
+  what a handle is for.
 
 Round 21's probe measured this architecture as viable before it was written:
 SDL on a dedicated thread, OGRE pumping its own X connection on another, no
@@ -92,7 +100,8 @@ returns from `post_event` is kept as the state record's `seq`.
   window id) are served; kinds 2–4 answer `-ENOSYS` until a platform that makes
   them meaningful exists.
 - **Capacity one**, declared, with the handle in the first version anyway
-  (`INPUT.md` §3 Q2).
+  (`INPUT.md` §3 Q2). The handle is also the lifetime: `input_close` releases
+  the window, SDL, and the thread.
 
 ## 6. Verified
 
@@ -107,6 +116,11 @@ returns from `post_event` is kept as the state record's `seq`.
   of its own; `state` probe → 96; `state` → a 96-byte record with
   `version=1 flags=0x1`; `set_relative(1)` → 0; `pad(0)` → `-ENOENT`; `close` →
   0; `shutdown` → 0, thread joined.
+- `tests/run.sh` — three cases, all green: `with-display` (open, attach kind 0,
+  a 96-byte state record, eight `-ENOENT` pad slots, close), `no-driver`
+  (`SDL_VIDEODRIVER=` a name that cannot exist: `input_open` refuses `-ENODEV`
+  and the guest prints `OK headless -ENODEV`), and `no-env` (no `DISPLAY`, no
+  `WAYLAND_DISPLAY`).
 - **The driver-forcing path, for real.** The same test creates an X11 window
   with Xlib and attaches it as kind 1 on a Wayland session: the log shows
   `kind 1 needs 'x11', forcing it (was 'wayland')`, SDL comes back up on x11,
@@ -136,6 +150,32 @@ returns from `post_event` is kept as the state record's `seq`.
   token reaches SDL; it is not in v0 because it is platform code the skeleton
   does not need yet, and because the realistic producer of the token is
   `ogre::window_handle`, which hands out a real XID.
+- **The teardown hang, and why `input_close` owns the lifetime.** Measured: if
+  the SDL thread is still alive when the process unloads the DSO, the host's
+  `dlclose` runs the DSO's static destructor, which joined the thread and the
+  thread called `SDL_Quit` — and `SDL_Quit` never returned (both threads ended
+  in `futex_do_wait`; the process hung until killed). The destructor now stops
+  the thread *without* SDL_Quit (the process is ending; SDL's own threads die
+  with it), and the verb path does the real teardown. This is the one place the
+  DSO's lifetime and the host's differ, and it is why `input_close` is more
+  than a detach.
+- **A driver that cannot deliver events still attaches.** Measured with
+  `SDL_VIDEODRIVER=dummy` and `offscreen`: SDL comes up, the attach verifies at
+  320x200, and the state record even says `flags=0xd` — ATTACHED, FOCUSED and
+  POINTER_OVER, for a window that can never receive an event. The verify rule
+  catches a wrong *window*, not a fake *platform*. Two policies are named and
+  neither is chosen here: refuse those two driver names in `attach`, or give
+  the state a bit that says "this subsystem cannot deliver input". A test host
+  may legitimately want the first behaviour, which is why v0 records the
+  measurement instead of picking for it.
+- **`ret` is the guest's return value, not the shim's.** Measured by this
+  capability's own fixture: a refusal that only did `return -ENOENT;` made the
+  session log `adapter status -2` and answer the guest **0**
+  (`tension-core/src/adapter/ffi.rs` puts `ret` in the wasm result slot and
+  logs the status). Every shim here writes `ret` through `refuse()`. The same
+  shape in `tension-ogre`'s `job_state`/`job_release` — `return found; // -ENOENT`
+  — is invisible to guests today; that is a repair for the round that owns those
+  verbs, not this one.
 - **`-ENODEV` is outside the boundary's closed errno list.** Same deviation as
   `tension_ogre.h`'s, recorded in `include/tension_input.h`'s refusal section:
   none of `tension_adapter.h`'s codes names "no window or device yet". The
