@@ -136,20 +136,26 @@ returns from `post_event` is kept as the state record's `seq`.
   from wasm. The fixture in `tests/` is the first step, not the proof.
 - **Keys and edges end to end.** The pump's post path is exercised only by
   inspection: no test has moved a mouse or pressed a key through the DSO yet.
-- **An invalid token is dangerous on X11, and the DSO cannot make it safe.**
-  Measured: attaching a bogus XID (`0xdeadbeef`) raises `BadWindow` inside
-  SDL's `XGetWindowAttributes` call, and **Xlib's default error handler exits
-  the process** before the verb can answer — the design's `-ENOENT` never gets
-  to happen. With a quiet `XSetErrorHandler` installed in the test, SDL returns
-  a window whose geometry is uninitialized garbage (`-871452896x30600`), and
-  the attach's verify check is what refuses it (`-EIO`). Two consequences are
-  recorded rather than papered over: the verify check is the only thing
-  standing between a bad token and a garbage attachment, and a positive garbage
-  size would pass it. The owed follow-up is a Linux-side pre-check (a
-  `dlopen`'d `libX11` `XGetWindowAttributes` with a quiet handler) before the
-  token reaches SDL; it is not in v0 because it is platform code the skeleton
-  does not need yet, and because the realistic producer of the token is
-  `ogre::window_handle`, which hands out a real XID.
+- **An invalid token no longer reaches SDL, because it used to be fatal.**
+  Measured three ways, with the isolation test's bogus XID (`0xdeadbeef`):
+  1. against SDL alone, `BadWindow` inside its `XGetWindowAttributes` call
+     reached **Xlib's default error handler, which exits the process** from
+     SDL's thread — the verb never answered, and the DSO's destructor then
+     self-joined and aborted;
+  2. with a quiet `XSetErrorHandler` in the test, SDL *returned a window* built
+     from an uninitialized `XWindowAttributes`, and the attach's size check
+     refused it once (`-871452896x30600`) and accepted it once (the garbage was
+     a positive size) — so the verify is not a guard for this case at all;
+  3. either way the design's `-ENOENT` never happened.
+
+  `attach` now resolves a kind-1 token itself, before SDL sees it: a
+  `dlopen`'d `libX11` connection, a quiet handler for the probe and the
+  previous handler restored after it (SDL installs one at `SDL_Init`; putting
+  the default back would take its place), `XGetGeometry` plus `XSync` because
+  X errors are asynchronous. The measured result is now deterministic: the real
+  XID attaches at its true size, and the bogus one answers `-ENOENT` with the
+  process alive. `-ENOSYS` (no libX11, no X display) leaves SDL's own answer in
+  place, which is what a non-X platform gets.
 - **The teardown hang, and why `input_close` owns the lifetime.** Measured: if
   the SDL thread is still alive when the process unloads the DSO, the host's
   `dlclose` runs the DSO's static destructor, which joined the thread and the

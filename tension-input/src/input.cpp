@@ -21,6 +21,7 @@
 
 #include <SDL3/SDL.h>
 
+#include <dlfcn.h>
 #include <pthread.h>
 
 #include <cerrno>
@@ -44,6 +45,76 @@ namespace {
 const char *driver_for_kind(uint32_t kind) {
     return kind == 1 ? "x11" : nullptr; /* kind 1 is an X11 window id */
 }
+
+// ── resolving an X11 token before SDL does ──────────────────────────────
+//
+// Measured twice, with libtension_input's own isolation test and a bogus
+// token: Xlib's *default* error handler prints BadWindow and exits the process
+// from SDL's thread, so the verb never answers; and with a quiet handler
+// installed, SDL returns a window built from an uninitialized
+// `XWindowAttributes` — the attach's size check refused it once (a negative
+// garbage size) and accepted it once (a positive one). Either way the design's
+// `-ENOENT` ("no such window") never happened.
+//
+// So the token is resolved here first, on the capability's own X connection,
+// with a quiet handler for the probe and the previous handler restored after
+// it. `libX11` is `dlopen`ed, not linked: SDL already has it in the process on
+// this platform, and a build for one that does not must still load.
+#if defined(__linux__)
+bool g_x11_probe_saw_error = false;
+
+int x11_probe_error_handler(void *, void *) {
+    g_x11_probe_saw_error = true;
+    return 0;
+}
+
+/// 0 = the token names a window; -ENOENT = it does not; -ENOSYS = no way to
+/// ask (no libX11, or no X display), in which case SDL's own answer stands.
+int32_t x11_probe_window(uint64_t token) {
+    void *lib = dlopen("libX11.so.6", RTLD_NOW | RTLD_LOCAL);
+    if (lib == nullptr) return -ENOSYS;
+    using OpenDisplayFn = void *(*)(const char *);
+    using GetGeometryFn = int (*)(void *, unsigned long, unsigned long *, int *, int *, unsigned int *,
+                                  unsigned int *, unsigned int *, unsigned int *);
+    using SyncFn = int (*)(void *, int);
+    using ErrorHandlerFn = int (*)(void *, void *);
+    using SetHandlerFn = ErrorHandlerFn (*)(ErrorHandlerFn);
+    auto open_display = reinterpret_cast<OpenDisplayFn>(dlsym(lib, "XOpenDisplay"));
+    auto get_geometry = reinterpret_cast<GetGeometryFn>(dlsym(lib, "XGetGeometry"));
+    auto sync = reinterpret_cast<SyncFn>(dlsym(lib, "XSync"));
+    auto set_handler = reinterpret_cast<SetHandlerFn>(dlsym(lib, "XSetErrorHandler"));
+    auto close_display = reinterpret_cast<int (*)(void *)>(dlsym(lib, "XCloseDisplay"));
+    if (open_display == nullptr || get_geometry == nullptr || sync == nullptr ||
+        set_handler == nullptr || close_display == nullptr) {
+        dlclose(lib);
+        return -ENOSYS;
+    }
+    void *display = open_display(nullptr);
+    if (display == nullptr) {
+        dlclose(lib);
+        return -ENOSYS;
+    }
+    g_x11_probe_saw_error = false;
+    // Save what was there — SDL installs its own handler at SDL_Init, and
+    // installing the default back (`nullptr`) would take SDL's place and make
+    // the next asynchronous X error exit the process.
+    ErrorHandlerFn previous = set_handler(x11_probe_error_handler);
+    unsigned long root = 0;
+    int x = 0, y = 0;
+    unsigned int width = 0, height = 0, border = 0, depth = 0;
+    (void)get_geometry(display, static_cast<unsigned long>(token), &root, &x, &y, &width, &height,
+                       &border, &depth);
+    sync(display, 0); /* errors are asynchronous: the round-trip is the answer */
+    set_handler(previous);
+    const bool saw_error = g_x11_probe_saw_error;
+    close_display(display);
+    dlclose(lib);
+    if (saw_error || width < 1 || height < 1) return -ENOENT;
+    return 0;
+}
+#else
+int32_t x11_probe_window(uint64_t) { return -ENOSYS; }
+#endif
 
 } // namespace
 
@@ -243,6 +314,15 @@ int32_t InputThread::sdl_attach(uint32_t kind, uint64_t token) {
             if (sdl_start() != 0) return -ENODEV;
             refresh_pads();
         }
+    }
+
+    if (kind == 1) {
+        const int32_t probed = x11_probe_window(token);
+        if (probed == -ENOENT) {
+            input_log("input: attach: the token names no window (X11 probe)");
+            return -ENOENT;
+        }
+        /* -ENOSYS: no libX11 or no X display here; SDL's own answer stands. */
     }
 
     SDL_Window *window = nullptr;
