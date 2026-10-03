@@ -248,22 +248,35 @@ void render_main() {
 
 // ── the imports ──────────────────────────────────────────────────────────
 
+/// Answer a refusal so the *guest* sees it.
+///
+/// The session puts `ret` into the wasm result slot and only logs the shim's
+/// return value as a status (`ffi.rs`: `let mut ret = TensionValue::zero(); …
+/// results[0] = val_of_tension(ret)`, then `if status != 0 { log_line(…) }`).
+/// A `return -EINVAL;` that leaves `ret` alone answers the guest 0 — measured
+/// by tension-input's fixture against its own DSO. Every refusal and every
+/// value return therefore goes through here.
+int32_t refuse(tension_value *ret, int32_t errno_value) {
+    if (ret != nullptr) ret->i32 = errno_value;
+    return errno_value;
+}
+
 int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
 
     const uint32_t cfg_ptr = static_cast<uint32_t>(args[0].i32);
     const uint32_t cfg_len = static_cast<uint32_t>(args[1].i32);
     if (cfg_len == 0 || cfg_len > kMaxConfigBytes) {
         log_line(3, "ogre: init refused: the config length is out of range");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     uint8_t bytes[kMaxConfigBytes];
     if (s.api->guest_read(s.api->user, cfg_ptr, bytes, cfg_len) != 0) {
         log_line(3, "ogre: init refused: the config bytes are not readable");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     const ConfigDecodeResult decoded = decode_config(bytes, cfg_len);
@@ -271,14 +284,14 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         const std::string line = "ogre: init refused: " + decoded.message;
         s.status.note_message(line);
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if (s.initialized || s.shutting_down) {
             log_line(2, "ogre: init refused: the adapter is already running");
-            return -EBUSY;
+            return refuse(ret, -EBUSY);
         }
         s.config = decoded.config;
         s.stop_requested = false;
@@ -292,7 +305,7 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
 
 int32_t shim_shutdown(void *, const tension_value *, uint32_t, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr) return -EINVAL;
+    if (ret == nullptr) return refuse(ret, -EINVAL);
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if (!s.initialized) {
@@ -307,7 +320,7 @@ int32_t shim_shutdown(void *, const tension_value *, uint32_t, tension_value *re
 
 int32_t shim_last_error(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
 
     const uint32_t ptr = static_cast<uint32_t>(args[0].i32);
     const int32_t cap = args[1].i32;
@@ -329,9 +342,9 @@ int32_t shim_last_error(void *, const tension_value *args, uint32_t nargs, tensi
         ret->i32 = -1;
         return 0;
     }
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
     if (s.api->guest_write(s.api->user, ptr, scratch, static_cast<uint32_t>(taken)) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     ret->i32 = taken;
     return 0;
@@ -352,7 +365,7 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
                    uint32_t kind) {
     (void)ctx;
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 3) return refuse(ret, -EINVAL);
 
     const uint32_t name_ptr = static_cast<uint32_t>(args[0].i32);
     const uint32_t name_len = static_cast<uint32_t>(args[1].i32);
@@ -361,7 +374,7 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
     std::string name;
     if (!read_guest_name(s.api, name_ptr, name_len, name)) {
         log_line(3, "ogre: queue refused: the name is unreadable or too long");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
@@ -379,7 +392,7 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
 int32_t shim_submit_animation(void *, const tension_value *args, uint32_t nargs,
                               tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 4) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 4) return refuse(ret, -EINVAL);
     const uint32_t renderable_id = static_cast<uint32_t>(args[0].i32);
     const uint32_t clip_ptr = static_cast<uint32_t>(args[1].i32);
     const uint32_t clip_len = static_cast<uint32_t>(args[2].i32);
@@ -389,7 +402,7 @@ int32_t shim_submit_animation(void *, const tension_value *args, uint32_t nargs,
     if (!read_guest_name(s.api, clip_ptr, clip_len, clip) || clip.size() > kMaxClipNameBytes) {
         log_line(3, "ogre: submit_animation refused: the clip name is unreadable, empty, or longer "
                     "than 64 bytes");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     if (renderable_id == 0 || time_ms <= 0) {
         char line[160];
@@ -397,7 +410,7 @@ int32_t shim_submit_animation(void *, const tension_value *args, uint32_t nargs,
                       "ogre: submit_animation refused: renderable %u at %d ms",
                       renderable_id, time_ms);
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     {
@@ -418,7 +431,7 @@ int32_t shim_queue_mesh(void *ctx, const tension_value *args, uint32_t nargs, te
 /// touched exactly once per mount, here — reads never see it again.
 int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 4) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 4) return refuse(ret, -EINVAL);
 
     const uint32_t prefix_ptr = static_cast<uint32_t>(args[0].i32);
     const uint32_t prefix_len = static_cast<uint32_t>(args[1].i32);
@@ -430,7 +443,7 @@ int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tensio
     if (!read_guest_name(s.api, prefix_ptr, prefix_len, prefix) ||
         !read_guest_name(s.api, tns_ptr, tns_len, tns_path)) {
         log_line(3, "ogre: mount_tns refused: the prefix or the path is unreadable or too long");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     std::vector<uint8_t> bytes;
@@ -440,7 +453,7 @@ int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tensio
     if (opened != 0) {
         log_line(3, "ogre: mount_tns refused: " + tns_path + " could not be opened (" +
                          std::to_string(opened) + ")" + (err.empty() ? "" : ": " + err));
-        return opened;
+        return refuse(ret, opened);
     }
 
     const int32_t mounted = s.loader.add_mount(prefix, tns_path, std::move(bytes), res);
@@ -448,7 +461,7 @@ int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tensio
         log_line(3, "ogre: mount_tns refused: prefix \"" + prefix + "\" (" +
                          std::to_string(mounted) + ")");
         tension_res_free(res);
-        return mounted;
+        return refuse(ret, mounted);
     }
     log_line(1, "ogre: mounted \"" + prefix + "/\" from " + tns_path);
     ret->i32 = 0;
@@ -462,16 +475,16 @@ int32_t shim_queue_texture(void *ctx, const tension_value *args, uint32_t nargs,
 
 int32_t shim_job_state(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
     const uint32_t job_id = static_cast<uint32_t>(args[0].i32);
     const uint32_t out_ptr = static_cast<uint32_t>(args[1].i32);
 
     uint8_t record[TENSION_OGRE_JOB_RECORD_BYTES] = {};
     const int32_t found = s.loader.job_state(job_id, record);
-    if (found != 0) return found; // -ENOENT
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (found != 0) return refuse(ret, found); // -ENOENT
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
     if (s.api->guest_write(s.api->user, out_ptr, record, TENSION_OGRE_JOB_RECORD_BYTES) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     ret->i32 = 0;
     return 0;
@@ -479,9 +492,9 @@ int32_t shim_job_state(void *, const tension_value *args, uint32_t nargs, tensio
 
 int32_t shim_job_release(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 1) return refuse(ret, -EINVAL);
     const int32_t released = s.loader.job_release(static_cast<uint32_t>(args[0].i32));
-    if (released != 0) return released;
+    if (released != 0) return refuse(ret, released);
     ret->i32 = 0;
     return 0;
 }
@@ -491,11 +504,11 @@ int32_t shim_job_release(void *, const tension_value *args, uint32_t nargs, tens
 /// handed to the mirror, which is what the render thread will act on.
 int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 3) return refuse(ret, -EINVAL);
     const uint32_t kind = static_cast<uint32_t>(args[0].i32);
     const uint32_t id = static_cast<uint32_t>(args[1].i32);
     const uint32_t op = static_cast<uint32_t>(args[2].i32);
-    if (op != kSubmitUpsert && op != kSubmitRemove) return -EINVAL;
+    if (op != kSubmitUpsert && op != kSubmitRemove) return refuse(ret, -EINVAL);
     // The mirror is read by the render thread each frame; this is the one
     // writer, and the lock is what keeps the two from overlapping.
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
@@ -508,7 +521,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             case kSubmitLight: rc = s.scene.remove_light(id); break;
             case kSubmitMaterial: rc = s.scene.remove_material(id); break;
             case kSubmitRenderable: rc = s.scene.remove_renderable(id); break;
-            default: return -EINVAL;
+            default: return refuse(ret, -EINVAL);
         }
         if (rc != 0) return rc;
         ret->i32 = 0;
@@ -539,10 +552,10 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             capacity = kRenderableCapacity;
             break;
         default:
-            return -EINVAL;
+            return refuse(ret, -EINVAL);
     }
-    if (id == 0 || id > capacity) return -EINVAL;
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (id == 0 || id > capacity) return refuse(ret, -EINVAL);
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     // Sized by the *wire* record, not by the decoder struct: `MaterialRecord`
     // decodes the fields this adapter reads (through slot 0) and is 88 bytes,
@@ -552,31 +565,31 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     constexpr size_t kMaxRecordBytes = kMaterialRecordBytes;
     uint8_t record[kMaxRecordBytes] = {};
     const uint32_t at = base + table_offset + (id - 1) * record_bytes;
-    if (s.api->guest_read(s.api->user, at, record, record_bytes) != 0) return -EINVAL;
+    if (s.api->guest_read(s.api->user, at, record, record_bytes) != 0) return refuse(ret, -EINVAL);
 
     int32_t rc = 0;
     switch (kind) {
         case kSubmitNode: {
             SceneNodeRecord decoded;
-            if (!SceneMirror::decode_node_at(record, decoded)) return -EINVAL;
+            if (!SceneMirror::decode_node_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_node(id, decoded);
             break;
         }
         case kSubmitCamera: {
             CameraRecord decoded;
-            if (!SceneMirror::decode_camera_at(record, decoded)) return -EINVAL;
+            if (!SceneMirror::decode_camera_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_camera(id, decoded);
             break;
         }
         case kSubmitLight: {
             LightRecord decoded;
-            if (!SceneMirror::decode_light_at(record, decoded)) return -EINVAL;
+            if (!SceneMirror::decode_light_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_light(id, decoded);
             break;
         }
         case kSubmitMaterial: {
             MaterialRecord decoded;
-            if (!SceneMirror::decode_material_at(record, decoded)) return -EINVAL;
+            if (!SceneMirror::decode_material_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_material(id, decoded);
             break;
         }
@@ -586,11 +599,11 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
         // remove switch below already refuses by name for the same reason.
         case kSubmitRenderable: {
             RenderableRecord decoded;
-            if (!SceneMirror::decode_renderable_at(record, decoded)) return -EINVAL;
+            if (!SceneMirror::decode_renderable_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_renderable(id, decoded);
             break;
         }
-        default: return -EINVAL;
+        default: return refuse(ret, -EINVAL);
     }
     if (rc != 0) return rc;
     ret->i32 = 0;
@@ -612,36 +625,36 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
 /// the epoch's byte budget is untouched.
 int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 1) return refuse(ret, -EINVAL);
     const int32_t count = args[0].i32;
     if (count <= 0 || count > static_cast<int32_t>(kMotionCapacity)) {
         char line[160];
         std::snprintf(line, sizeof(line), "ogre: submit_motion refused: %d entries is not in 1..%u",
                       count, kMotionCapacity);
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     const size_t bytes = static_cast<size_t>(count) * kMotionRecordBytes;
     if (s.motion_size < bytes) {
         log_line(3, "ogre: submit_motion refused: the BUFFER_POOL region is smaller than "
                     "this batch");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     // One read for the whole table: this is the call the batch exists to make
     // cheap, and the copy is what makes the batch safe to validate first.
     std::vector<uint8_t> table(bytes);
     if (s.api->guest_read(s.api->user, s.motion_offset, table.data(),
                           static_cast<uint32_t>(bytes)) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
     std::vector<MotionUpdate> batch(static_cast<size_t>(count));
     for (int32_t i = 0; i < count; ++i) {
         const uint8_t *entry = table.data() + static_cast<size_t>(i) * kMotionRecordBytes;
-        if (!SceneMirror::decode_motion_at(entry, batch[static_cast<size_t>(i)])) return -EINVAL;
+        if (!SceneMirror::decode_motion_at(entry, batch[static_cast<size_t>(i)])) return refuse(ret, -EINVAL);
         const uint32_t id = batch[static_cast<size_t>(i)].renderable_id;
         if (id == 0 || id > kRenderableCapacity || !s.scene.renderable_live(id)) {
             char line[200];
@@ -650,7 +663,7 @@ int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, te
                           "not live",
                           i, id);
             log_line(3, line);
-            return -ENOENT;
+            return refuse(ret, -ENOENT);
         }
     }
     for (int32_t i = 0; i < count; ++i) {
@@ -676,34 +689,34 @@ int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, te
 /// guest thread, inside an import call. `publish` is not engaged.
 int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 1) return refuse(ret, -EINVAL);
     const int32_t count = args[0].i32;
     if (count <= 0 || count > static_cast<int32_t>(kBoneCapacity)) {
         char line[160];
         std::snprintf(line, sizeof(line), "ogre: submit_bones refused: %d entries is not in 1..%u",
                       count, kBoneCapacity);
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     const size_t bytes = static_cast<size_t>(count) * kBoneRecordBytes;
     if (s.motion_size < kBoneTableOffset + bytes) {
         log_line(3, "ogre: submit_bones refused: the BUFFER_POOL region is smaller than "
                     "the bone table");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     std::vector<uint8_t> table(bytes);
     if (s.api->guest_read(s.api->user, s.motion_offset + kBoneTableOffset, table.data(),
                           static_cast<uint32_t>(bytes)) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
     std::vector<BoneUpdate> batch(static_cast<size_t>(count));
     for (int32_t i = 0; i < count; ++i) {
         const uint8_t *entry = table.data() + static_cast<size_t>(i) * kBoneRecordBytes;
-        if (!SceneMirror::decode_bone_at(entry, batch[static_cast<size_t>(i)])) return -EINVAL;
+        if (!SceneMirror::decode_bone_at(entry, batch[static_cast<size_t>(i)])) return refuse(ret, -EINVAL);
     }
     // The mirror owns the liveness and rig checks, and owns the message that
     // names the entry that failed: it is the only thing holding both tables and
@@ -715,7 +728,7 @@ int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, ten
                       "ogre: submit_bones refused a batch of %d (errno %d); nothing applied",
                       count, applied);
         log_line(3, line);
-        return applied;
+        return refuse(ret, applied);
     }
     ret->i32 = count;
     return 0;
@@ -738,7 +751,7 @@ int32_t shim_submit_bones(void *, const tension_value *args, uint32_t nargs, ten
 int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t nargs,
                                   tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 1) return refuse(ret, -EINVAL);
     const int32_t count = args[0].i32;
     if (count <= 0 || count > static_cast<int32_t>(kSkinCapacity)) {
         char line[160];
@@ -746,20 +759,20 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
                       "ogre: submit_skin_matrices refused: %d entries is not in 1..%u", count,
                       kSkinCapacity);
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     const size_t table_bytes = static_cast<size_t>(count) * kSkinRecordBytes;
     if (s.motion_size < static_cast<size_t>(kSkinTableOffset) + table_bytes) {
         log_line(3, "ogre: submit_skin_matrices refused: the BUFFER_POOL region is smaller than "
                     "the skin table");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     std::vector<uint8_t> table(table_bytes);
     if (s.api->guest_read(s.api->user, s.motion_offset + kSkinTableOffset, table.data(),
                           static_cast<uint32_t>(table_bytes)) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
@@ -785,18 +798,18 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
                           "not 64..%u in steps of 64",
                           i, matrix_bytes, kSkinMaxBones * 64u);
             log_line(3, line);
-            return -EINVAL;
+            return refuse(ret, -EINVAL);
         }
         if (static_cast<size_t>(matrices_offset) + matrix_bytes > kSkinDataCapacity) {
             log_line(3, "ogre: submit_skin_matrices refused: an entry's matrices run past the "
                         "window");
-            return -EINVAL;
+            return refuse(ret, -EINVAL);
         }
         std::vector<float> matrices(static_cast<size_t>(matrix_bytes) / sizeof(float));
         if (s.api->guest_read(s.api->user,
                               s.motion_offset + kSkinDataOffset + matrices_offset,
                               matrices.data(), matrix_bytes) != 0) {
-            return -EINVAL;
+            return refuse(ret, -EINVAL);
         }
         s.scene.set_skin_matrices(renderable_id, matrices);
         char line[128];
@@ -830,7 +843,7 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
 /// value. `publish` is not engaged: this verb writes nothing to guest memory.
 int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 6) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 6) return refuse(ret, -EINVAL);
     const uint32_t vertex_offset = static_cast<uint32_t>(args[0].i32);
     const uint32_t vertex_bytes = static_cast<uint32_t>(args[1].i32);
     const uint32_t format = static_cast<uint32_t>(args[2].i32);
@@ -841,12 +854,12 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
     if (topology != kTopoTriangleList) {
         log_line(3, "ogre: create_mesh refused: topology " + std::to_string(topology) +
                         " is not TOPO_TRIANGLE_LIST");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     if ((format & kVfPosition) == 0 || (format & ~(kVfPosition | kVfNormal | kVfUv)) != 0) {
         log_line(3, "ogre: create_mesh refused: format " + std::to_string(format) +
                         " is not a set of VF_ bits that includes VF_POSITION");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     const size_t stride = 12 + ((format & kVfNormal) != 0 ? 12 : 0) +
                           ((format & kVfUv) != 0 ? 8 : 0);
@@ -854,12 +867,12 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
         log_line(3, "ogre: create_mesh refused: " + std::to_string(vertex_bytes) +
                         " vertex bytes is not a whole number of " + std::to_string(stride) +
                         "-byte vertices");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     if (index_bytes == 0 || index_bytes % 6 != 0) {
         log_line(3, "ogre: create_mesh refused: " + std::to_string(index_bytes) +
                         " index bytes is not a whole number of 16-bit triangles");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     const uint64_t window = static_cast<uint64_t>(s.motion_offset) + kProceduralBase;
@@ -877,21 +890,21 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
                       static_cast<unsigned long long>(window),
                       static_cast<unsigned long long>(window_end));
         log_line(3, line);
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     if (vertex_offset < index_end && index_offset < vertex_end) {
         log_line(3, "ogre: create_mesh refused: the vertex and index arrays overlap");
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
-    if (s.api == nullptr || s.api->guest_read == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
     std::vector<uint8_t> vertices(vertex_bytes);
     std::vector<uint8_t> indices(index_bytes);
     if (s.api->guest_read(s.api->user, vertex_offset, vertices.data(), vertex_bytes) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     if (s.api->guest_read(s.api->user, index_offset, indices.data(), index_bytes) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
 
     // Every index against the vertex count. Two lines, and they are the
@@ -908,7 +921,7 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
                           "vertices given",
                           i, static_cast<unsigned>(index), vertex_count);
             log_line(3, line);
-            return -EINVAL;
+            return refuse(ret, -EINVAL);
         }
     }
 
@@ -928,7 +941,7 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
 /// wants pixels asks at least one frame ahead of reading them.
 int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
 
     if (s.backend) s.backend->request_readback();
 
@@ -947,7 +960,7 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
         ret->i32 = static_cast<int32_t>(length);
         return 0;
     }
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
     // The copy is the backend's, under its own lock: the render thread owns
     // the frame buffer and must not be holding it while the guest reads.
     const size_t take = std::min(static_cast<size_t>(cap), length);
@@ -958,7 +971,7 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
         return 0;
     }
     if (s.api->guest_write(s.api->user, ptr, pixels.data(), static_cast<uint32_t>(copied)) != 0) {
-        return -EINVAL;
+        return refuse(ret, -EINVAL);
     }
     ret->i32 = static_cast<int32_t>(copied);
     return 0;
@@ -979,23 +992,23 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
 /// is.
 int32_t shim_window_handle(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 2) return -EINVAL;
+    if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
     const uint32_t lo_ptr = static_cast<uint32_t>(args[0].i32);
     const uint32_t hi_ptr = static_cast<uint32_t>(args[1].i32);
 
     uint64_t handle = 0;
     if (s.backend == nullptr || !s.backend->window_handle(&handle)) {
         log_line(1, "ogre: window_handle: no window yet");
-        return -ENODEV;
+        return refuse(ret, -ENODEV);
     }
-    if (s.api == nullptr || s.api->guest_write == nullptr) return -EBUSY;
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, -EBUSY);
     const uint32_t lo = static_cast<uint32_t>(handle & 0xFFFFFFFFull);
     const uint32_t hi = static_cast<uint32_t>(handle >> 32);
     // Two destinations, two writes: if the second is refused the first half is
     // already there, so the contract is that a caller seeing a non-zero return
     // must not use either — the doc block in tension_ogre.h says so.
-    if (s.api->guest_write(s.api->user, lo_ptr, &lo, sizeof(lo)) != 0) return -EINVAL;
-    if (s.api->guest_write(s.api->user, hi_ptr, &hi, sizeof(hi)) != 0) return -EINVAL;
+    if (s.api->guest_write(s.api->user, lo_ptr, &lo, sizeof(lo)) != 0) return refuse(ret, -EINVAL);
+    if (s.api->guest_write(s.api->user, hi_ptr, &hi, sizeof(hi)) != 0) return refuse(ret, -EINVAL);
     ret->i32 = 0;
     return 0;
 }
