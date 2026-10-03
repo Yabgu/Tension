@@ -21,6 +21,7 @@
 #include <OgreMesh2.h>
 #include <OgreMeshManager.h>
 #include <OgreMeshManager2.h>
+#include <OgreMesh2Serializer.h>
 #include <OgreMeshSerializer.h>
 #include <OgreArchiveManager.h>
 #include <OgreAxisAlignedBox.h>
@@ -106,6 +107,28 @@ std::string plugin_dir() {
 /// The one line the smoke test asserts on, and the only proof-by-log this
 /// milestone has that a real window came up.
 void log_line(const std::string &message) { backend_log(message); }
+
+/// Which reader a mesh file's opening asks for (chunk 22). The tag sits just
+/// past the file's first chunk header, and the loader's own `magic_ok` scans
+/// the first 512 bytes for the bare "[MeshSerializer" prefix — the same
+/// window, with the family narrowed: v1 files carry "[MeshSerializer_v1."
+/// (v1.8, v1.100, ...) and v2 files "[MeshSerializer_v2." (R2, R1, or plain
+/// 2.1). The minor version is deliberately not matched.
+enum class MeshFormat { V1, V2, Unknown };
+
+MeshFormat detect_mesh_format(const void *data, size_t len) {
+    static constexpr char kV1Tag[] = "[MeshSerializer_v1.";
+    static constexpr char kV2Tag[] = "[MeshSerializer_v2.";
+    constexpr size_t kTagLen = sizeof(kV1Tag) - 1;
+    static_assert(sizeof(kV2Tag) - 1 == kTagLen, "the two tags must be the same length");
+    const uint8_t *bytes = static_cast<const uint8_t *>(data);
+    const size_t window = std::min<size_t>(len, 512);
+    for (size_t at = 0; at + kTagLen <= window; ++at) {
+        if (std::memcmp(bytes + at, kV1Tag, kTagLen) == 0) return MeshFormat::V1;
+        if (std::memcmp(bytes + at, kV2Tag, kTagLen) == 0) return MeshFormat::V2;
+    }
+    return MeshFormat::Unknown;
+}
 
 /// Ogre-Next's RenderSystem_Vulkan.so has 36 undefined glslang symbols:
 /// upstream's CMakeLists links only OgreNextMain and the Vulkan libraries,
@@ -701,6 +724,17 @@ class BackendOgre final : public Backend {
     int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
                          uint32_t *out_bones) override {
         if (out_bones != nullptr) *out_bones = 0;
+        // Dual-read dispatch (chunk 22): the file's own [MeshSerializer tag
+        // chooses the reader. The v1 path below is unchanged — it stays the
+        // fallback for every asset that has not converted yet — and v2 assets
+        // go to the sibling reader. Bytes with neither tag are refused the
+        // way the loader refuses a non-mesh: the same -EIO.
+        const MeshFormat format = detect_mesh_format(bytes, len);
+        if (format == MeshFormat::V2) return realise_mesh_v2(bytes, len, out, out_bones);
+        if (format == MeshFormat::Unknown) {
+            return realisation_failed("mesh bytes carry neither [MeshSerializer_v1 nor "
+                                      "[MeshSerializer_v2 in their opening");
+        }
         try {
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
@@ -804,6 +838,77 @@ class BackendOgre final : public Backend {
             return realisation_failed(e.what());
         } catch (...) {
             return realisation_failed("an exception of unknown type escaped the mesh loader");
+        }
+    }
+
+    /// The v2 file-mesh reader (chunk 22). Same bytes, same job, same
+    /// ResourceEntry as the v1 branch; one format younger. `createManual`
+    /// makes the blank v2 mesh the serializer's contract asks for, the v2
+    /// `MeshSerializer` fills it from a MemoryDataStream, and `setToLoaded`
+    /// closes the state the way `Mesh::importV1` does at the end of the v1
+    /// conversion — without it, `Item`'s on-demand load would take the
+    /// manual-resource branch and warn.
+    ///
+    /// The one structural difference is the skeleton: the v2 serializer
+    /// resolves the mesh's link *during* the parse (`Mesh::setSkeletonName` ->
+    /// `SkeletonManager::getSkeletonDef` -> `OldSkeletonManager::load`), so
+    /// the sibling bytes must already be reachable through a resource
+    /// location — see `stage_skeleton_bytes`. No sibling bytes is a legal
+    /// realisation: the link resolves to nothing and the mesh draws through
+    /// the skin Hlms (the animated-character state).
+    int32_t realise_mesh_v2(const uint8_t *bytes, size_t len, ResourceHandle *out,
+                            uint32_t *out_bones) {
+        try {
+            const uint32_t handle = next_resource_++;
+            const Ogre::String name = "tension-mesh-" + std::to_string(handle);
+            log_line("ogre: mesh " + name + " is v2 ([MeshSerializer_v2 tag) — the v2 reader");
+
+            if (!skeleton_candidate_bytes_.empty()) {
+                const int32_t staged =
+                    stage_skeleton_bytes(skeleton_candidate_name_, skeleton_candidate_bytes_);
+                if (staged != 0) return staged;
+            }
+
+            Ogre::MeshPtr mesh =
+                Ogre::MeshManager::getSingleton().createManual(name, kResourceGroup);
+
+            Ogre::DataStreamPtr stream(new Ogre::MemoryDataStream(
+                const_cast<uint8_t *>(bytes), len, false, /* readOnly */ true));
+            Ogre::MeshSerializer serializer(render_system_->getVaoManager());
+            serializer.importMesh(stream, mesh.get());
+            mesh->setToLoaded();
+
+            const Ogre::String linked = mesh->getSkeletonName();
+            if (mesh->hasSkeleton() && mesh->getSkeleton() == nullptr) {
+                log_line("ogre: mesh \"" + name + "\" came back rigged with no skeleton def (it links \"" +
+                         std::string(linked) + "\") — no bone data; draws go through the skin Hlms");
+            }
+
+            ResourceEntry entry;
+            entry.kind = TENSION_OGRE_RES_KIND_MESH;
+            entry.name = name;
+            entry.mesh = mesh;
+            // No v1 intermediate: nothing in the v2 path reloads from one
+            // (`discard_resource` skips the v1 unload when it is null).
+            if (mesh->hasSkeleton()) {
+                entry.skeleton_name = mesh->getSkeletonName();
+                if (mesh->getSkeleton()) entry.bones = mesh->getSkeleton()->getBones().size();
+            }
+            log_line("ogre: realised mesh " + name + " (v2 file): " + std::to_string(entry.bones) +
+                     " bones" +
+                     (entry.skeleton_name.empty() ? std::string("")
+                                                  : " (\"" + entry.skeleton_name + "\")"));
+            entry.live = true;
+            resources_.push_back(entry);
+            if (out_bones != nullptr) *out_bones = entry.bones;
+            *out = handle;
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        } catch (...) {
+            return realisation_failed("an exception of unknown type escaped the v2 mesh loader");
         }
     }
 
@@ -1150,6 +1255,46 @@ class BackendOgre final : public Backend {
             log_line("ogre: registered skeleton \"" + name + "\" (" +
                      std::to_string(bytes.size()) + " bytes, manual, group " +
                      std::string(kResourceGroup) + ")");
+            return 0;
+        } catch (const Ogre::Exception &e) {
+            return realisation_failed(e.getFullDescription());
+        } catch (const std::exception &e) {
+            return realisation_failed(e.what());
+        }
+    }
+
+    /// Stage a sibling skeleton's bytes where the v2 loader will look for
+    /// them. Skeletons have no v2 format: OGRE-Next reads the same
+    /// [Serializer_v1.80] binary the v1 path reads, but the v2 mesh resolves
+    /// it through `OldSkeletonManager::load(name, group)` — a resource
+    /// *location* lookup — rather than through the manual resource the v1
+    /// path registers. Writing the file into the backend's own temp directory
+    /// and adding that directory to the group once is what makes the bytes
+    /// reachable without a v1 manual resource. The name must be exactly the
+    /// mesh's link (`getSkeletonName()`), same rule as the v1 registration.
+    int32_t stage_skeleton_bytes(const std::string &name, const std::vector<uint8_t> &bytes) {
+        try {
+            if (name.empty() || name.find('/') != std::string::npos ||
+                name.find('\\') != std::string::npos) {
+                return realisation_failed("skeleton candidate \"" + name + "\" is not a file name");
+            }
+            const std::filesystem::path target = temp_dir_ / name;
+            {
+                std::ofstream out(target, std::ios::binary | std::ios::trunc);
+                if (!out) return realisation_failed("could not open " + target.string() + " to write");
+                out.write(reinterpret_cast<const char *>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+                out.close();
+                if (!out) return realisation_failed("could not write " + target.string());
+            }
+            if (!skeleton_location_added_) {
+                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                    temp_dir_.string(), "FileSystem", kResourceGroup, false);
+                skeleton_location_added_ = true;
+                log_line("ogre: staged-skeleton resource location added: " + temp_dir_.string());
+            }
+            log_line("ogre: staged skeleton \"" + name + "\" (" + std::to_string(bytes.size()) +
+                     " bytes) at " + target.string());
             return 0;
         } catch (const Ogre::Exception &e) {
             return realisation_failed(e.getFullDescription());
@@ -2013,6 +2158,9 @@ class BackendOgre final : public Backend {
     std::vector<uint8_t> skeleton_candidate_bytes_;
     /// Manual skeleton loaders, kept for the life of their resources.
     std::vector<std::unique_ptr<ManualSkeletonBytes>> skeleton_loaders_;
+    /// True once the backend's temp directory has joined the resource group as
+    /// the staged-skeleton location (chunk 22).
+    bool skeleton_location_added_ = false;
     std::vector<ResourceEntry> resources_; ///< index 0 unused: handles are 1-based
     uint32_t next_resource_ = 1;
     Config config_;
