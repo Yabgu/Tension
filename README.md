@@ -230,7 +230,7 @@ That is the whole contract. Everything else is a capability.
 ## The `ogre` capability
 
 `tension-ogre/` is the renderer: a C++ DSO that wraps OGRE-Next and
-implements `tension_adapter_v1`. Its fifteen verbs cover bring-up and the
+implements `tension_adapter_v1`. Its sixteen verbs cover bring-up and the
 error surface (`init`, `shutdown`, `last_error`), loads through the job
 queue (`queue_mesh_load`, `queue_texture_load`, `job_state`,
 `job_release`), scene record submission (`submit` — materials, lights,
