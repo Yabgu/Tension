@@ -15,7 +15,7 @@ skeleton in another directory is a skeleton the importer never finds.
   *Animated Characters 3* (<https://kenney.nl/assets/animated-characters-3>),
   **CC0 1.0 Universal** (<https://creativecommons.org/publicdomain/zero/1.0/>;
   no attribution required). Conversion: FBX → Blender 5.2.2 LTS (io_ogre
-  0.9.0) → `.mesh.xml` + `.skeleton.xml` → `OgreMeshTool -V 1.10` →
+  0.9.0) → `.mesh.xml` + `.skeleton.xml` → `OgreMeshTool -v2` →
   `.mesh` + `.skeleton`; the recipe is `tension-ogre/tests/convert-kenney.py`.
   The rig is 58 bones (`LeftForeArm` 28, `Hips` 19) and the shape that replaced
   the OGRE-media `Stickman` in chunk 12. The skeleton also carries the pack's

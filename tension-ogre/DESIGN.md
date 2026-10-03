@@ -539,19 +539,30 @@ and OITD and nothing else — no PNG, JPEG or TGA — so a PNG texture fails as 
 *named job failure* (`Unable to identify codec`), not as a crash, and the
 fixtures use DDS.
 
-**How resources load.** OGRE-Next 3.0 ships its meshes in the *v1* format
-(`[MeshSerializer_v1.8]`, 35 of them in `Media/models`), so a load uses two
-managers: `v1::MeshSerializer::importMesh` parses the bytes into a v1 mesh, and
-`MeshManager::createByImportingV1` converts it into the `Mesh2` the rest of the
-engine wants. The conversion is deferred — a freshly converted `Mesh2` has no
-submeshes until `load()` is called (measured: 0 then 1) — which is convenient
-here, because it puts a clean boundary between "parse these bytes" and "make
-GPU buffers". One more measured detail: the shipped meshes carry two bytes of
-their own before the `[MeshSerializer` tag, so the loader's kind check *scans*
-the file's opening rather than testing offset zero — a prefix test is wrong
-about a file OGRE itself parses happily. Textures are already asynchronous inside OGRE: `TextureGpuManager`
-runs its own documented background thread, so this adapter does not spawn a
-second one for texture IO.
+**How resources load.** Two readers, chosen by the file's own `[MeshSerializer`
+version tag (`detect_mesh_format`, round 22b). V2 files — every repo mesh now,
+`[MeshSerializer_v2.1 R2]` — go through `MeshManager::createManual`, the v2
+`MeshSerializer::importMesh`, and `setToLoaded()`. V1 files still take the
+two-manager path: `v1::MeshSerializer::importMesh` parses the bytes into a v1
+mesh, and `MeshManager::createByImportingV1` converts it into the `Mesh2` the
+rest of the engine wants (deferred — a freshly converted `Mesh2` has no
+submeshes until `load()` is called; measured: 0 then 1). **Dual-read policy:**
+the v1 branch is *supported but unused by repo assets* — OGRE-Next's own
+`Media/models` remain v1, and external v1 supply may exist — and it is deleted
+when that supply is judged not worth keeping (round 22c). One more measured
+detail, unchanged: the files carry two bytes of their own before the
+`[MeshSerializer` tag, so the loader's kind check *scans* the file's opening
+rather than testing offset zero — a prefix test is wrong about a file OGRE
+itself parses happily. Textures are already asynchronous inside OGRE:
+`TextureGpuManager` runs its own documented background thread, so this adapter
+does not spawn a second one for texture IO.
+
+**Skeletons have no v2 format.** `.skeleton` files are `[Serializer_v1.80]` and
+OGRE-Next reads them internally through its v1 machinery (`SkeletonDef`'s only
+constructor takes a `v1::Skeleton*`). The adapter stages sibling skeleton bytes
+into a resource location so the v2 mesh's `setSkeletonName` resolves; it does
+not construct or register v1 skeleton objects itself. Removing our `v1::` uses
+does not remove the class from OGRE — it removes our dependence on it.
 
 **The capability's import surface, as registered.** Nine verbs: `ogre::init`,
 `ogre::shutdown`, `ogre::last_error`, `queue_mesh_load`, `queue_texture_load`,
@@ -1401,15 +1412,15 @@ The recipe is `tension-ogre/tests/convert-kenney.py`; the binary step is run by
 hand, because `io_ogre`'s converter autodetection knows only `OgreXMLConverter`
 — not installed here — and otherwise only warns. Three measured rules:
 
-  * **The mesh must be written with `OgreMeshTool -V 1.10`.** The adapter
-    imports with `Ogre::v1::MeshSerializer` and every shipped mesh is
-    `[MeshSerializer_v1.100]`. The tool's default for XML input is *v2.1*
-    (`[MeshSerializer_v2.1 R0 LEGACYV1]`, which that serializer cannot read),
-    and `-v1` — despite its help text ("Export the mesh as a v1 object") —
-    produces the same v2.1 file. Only `-V 1.10` yields the v1.100 magic,
-    measured on the same XML three times. Skeletons are unaffected: the tool's
-    skeleton path writes `[Serializer_v1.80]`, which the manual-registration
-    recipe loads.
+  * **The mesh is written with `OgreMeshTool -v2`** (round 22b; the v1-era rule
+    was `-V 1.10`). Every repo mesh is `[MeshSerializer_v2.1 R2]` and loads
+    through the v2 reader. History worth keeping: the tool's default for XML
+    input is the v1-family *v2.1 R0 LEGACYV1* magic, and `-v1` — despite its
+    help text ("Export the mesh as a v1 object") — produced that same file; in
+    the v1 era only `-V 1.10` yielded the v1.100 magic, measured on the same
+    XML three times. `-v2` is measured in round 22b on the tree's binary
+    assets. Skeletons are unaffected either way: the tool's skeleton path
+    writes `[Serializer_v1.80]`, which the staging path loads.
   * **`EX_ARMATURE_ANIMATION=True` is what enables skeleton export at all.**
     io_ogre gates `ogre/skeleton.py` on it; with it False the exporter writes a
     `.mesh.xml` whose `<skeletonlink>` points at a `.skeleton.xml` that never
@@ -2781,6 +2792,23 @@ shadow buffers enabled by default. Setting `useShadowBuffer = true` in
 `realise_mesh_from_arrays` allows `createByImportingV1` to read back the valid
 shadow copy on all backends, resolving the gap. Both GL3+ and Vulkan now render
 procedural meshes identically.
+
+**Pre-existing flakiness (predates the v2 migration; A/B-verified identical on
+v1 and v2 assets).**
+
+- The shutdown race: the render thread can exceed the 5 s join timeout under
+  load, the adapter detaches it, and the detached thread races the teardown
+  into an OGRE exception (`VaoManager::destroyVertexBuffer`). ~1/8 of heavy
+  windowed runs, measured identically on v1 and v2 rewrites of the same
+  fixture.
+- The skin-matrices grab race: `guest-skin-matrices`'s frame-count wait can be
+  satisfied by a download armed before the submit, so the two grabbed frames
+  can come back identical (delta 0.0). Its own round is owed: publish an
+  applied-submission generation and wait on that.
+- The bouncing-ball AS105 page-budget break: the framework's `session.json`
+  grants 132 pages and the framework assembly now needs 133, so the example
+  does not rebuild. Its own round is owed: raise `initial_pages`, coordinate
+  core + framework.
 
 # Appendix A — tension_adapter.h specification
 
