@@ -2765,11 +2765,23 @@ as defence.
 
 State under Vulkan: every tier pixel case runs and passes — triangle,
 motion, hierarchy, skinning, skin-matrices, skin-deform, noskel,
-render-check — with numbers equal to GL3+ within the bands. One gap
-remains: `procedural-gl3plus` (a mesh the guest builds at runtime) reads
-0 non-background pixels under Vulkan where GL3+ reads 10368 — nothing is
-drawn. That is a procedural-mesh rendering gap, not the readback; next
-round.
+render-check — with numbers equal to GL3+ within the bands.
+
+**The procedural-mesh gap (bounded, round 21f).** `procedural-gl3plus` — a
+mesh the guest builds at runtime — reads 0 non-background pixels under
+Vulkan where GL3+ reads 10368. Measured out: not winding (the same triangle
+with reversed vertex order also reads 0 under Vulkan, and 10368 under
+GL3+), not the attribute set (position-only, +UV and +normal variants all
+read 0 under Vulkan), not capture timing (extra waits of 60 and 240 frames
+before the grab change nothing). The file-loaded meshes reach the
+framebuffer under Vulkan through the *same* `createByImportingV1` door, so
+the divergence is how a **hand-built** v1 mesh's buffers reach Vulkan —
+inside Ogre-Next's import/VaoManager path, which is fork-level and out of
+scope. Consequence: the tier's `procedural-gl3plus` case is skipped when
+Vulkan is forced (`TENSION_RENDERER=vulkan|auto`) and runs as before on
+GL3+. **Removal condition:** a hand-built mesh draws under Vulkan — watch
+upstream's Vulkan import/VAO path, or route procedural meshes through a
+serialized v1 mesh first (the file path's shape) once someone needs it.
 
 # Appendix A — tension_adapter.h specification
 

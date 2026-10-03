@@ -389,7 +389,18 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         # And the tripwire, on the same window: both material kinds, in colour.
         render_check_case render-check-gl3plus --renderer=gl3plus
         # Chunk 5.5: the triangle the guest built, on a framebuffer.
-        procedural_case procedural-gl3plus --renderer=gl3plus
+        # The procedural mesh does not render under Vulkan: a hand-built v1
+        # mesh reaches the framebuffer on GL3+ only (measured; DESIGN.md §15's
+        # known-gap section). Skip the case when the environment forces Vulkan
+        # — `auto` may land on Vulkan too, so it skips as well.
+        case "${TENSION_RENDERER:-}" in
+            vulkan|auto)
+                echo "== procedural-gl3plus: skipped — the procedural mesh does not render under Vulkan (DESIGN.md §15)"
+                ;;
+            *)
+                procedural_case procedural-gl3plus --renderer=gl3plus
+                ;;
+        esac
         # Chunk 6: the pile, the floor line, and settled-versus-moving.
         physics_case physics-gl3plus --renderer=gl3plus
         angular_case angular-gl3plus --renderer=gl3plus

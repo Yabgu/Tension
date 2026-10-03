@@ -86,9 +86,11 @@ destroys and recreates the swapchain, racing the frame that still held the
 old one (`OgreVulkanWindow.cpp:722`). Armed on the render thread, and
 normalised to RGBA8 with `PixelFormatGpuUtils::bulkPixelConversion` (the
 Vulkan swapchain is BGRA where GL3+ is RGBA), every tier pixel case runs
-under Vulkan. One gap: the guest-built procedural mesh renders nothing
-under Vulkan (`procedural-gl3plus`: 0 px vs GL3+'s 10368) — next round's
-item.
+under Vulkan. One gap remains, documented in `tension-ogre/DESIGN.md` §15:
+a guest-built (hand-built v1) mesh renders under GL3+ but not Vulkan —
+winding, attribute set and capture timing are all measured out; the
+divergence is inside Ogre-Next's hand-built v1→v2 path under Vulkan. The
+tier's `procedural-gl3plus` case is GL3Plus-only until fixed upstream.
 
 ## What it does not buy
 
