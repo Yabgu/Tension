@@ -819,6 +819,14 @@ job for a file and the adapter's for a hand-built mesh:
   culling hygiene, and it is in the sequence because a mesh that is never culled
   is a scene that gets slower for reasons nobody can see.
 
+**Round 22d replaced this sequence.** `realise_mesh_from_arrays` now builds the
+v2 buffers directly (`VaoManager::createVertexBuffer` / `createIndexBuffer`,
+plus one `VertexArrayObject` aliased into both the normal and shadow passes),
+sets the bounds, and marks the mesh loaded. The two calls above have no
+successor: there is no import, no v1 shadow buffer, and no readback step at
+all. The bullets stay as the record of why the old sequence looked the way it
+did.
+
 **A submesh's material name must resolve, or the *PBS* Hlms must be
 registered.** `Item`'s constructor ends in `Renderable::setMaterialName`, which
 falls back to `HlmsManager::getDefaultDatablock()` when no `.material` script
@@ -2788,7 +2796,9 @@ File-loaded meshes worked because `MeshSerializer` creates v1 buffers with
 shadow buffers enabled by default. Setting `useShadowBuffer = true` in
 `realise_mesh_from_arrays` allows `createByImportingV1` to read back the valid
 shadow copy on all backends, resolving the gap. Both GL3+ and Vulkan now render
-procedural meshes identically.
+procedural meshes identically. **Round 22d later removed the v1 import from
+this path entirely** — the direct build has no readback step, so the
+shadow-buffer workaround above is history.
 
 **Pre-existing flakiness (predates the v2 migration; A/B-verified identical on
 v1 and v2 assets).**

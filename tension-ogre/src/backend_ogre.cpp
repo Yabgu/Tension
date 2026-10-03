@@ -17,19 +17,16 @@
 #include <OgreException.h>
 #include <OgreFrameListener.h>
 #include <OgreImage2.h>
-#include <OgreMesh.h>
 #include <OgreMesh2.h>
-#include <OgreMeshManager.h>
 #include <OgreMeshManager2.h>
 #include <OgreMesh2Serializer.h>
+#include <OgreSubMesh2.h>
+#include <Vao/OgreVaoManager.h>
+#include <Vao/OgreVertexBufferPacked.h>
+#include <Vao/OgreIndexBufferPacked.h>
+#include <Vao/OgreVertexArrayObject.h>
 #include <OgreArchiveManager.h>
-#include <OgreAxisAlignedBox.h>
 #include <OgreConfigFile.h>
-#include <OgreHardwareBufferManager.h>
-#include <OgreHardwareIndexBuffer.h>
-#include <OgreHardwareVertexBuffer.h>
-#include <OgreSubMesh.h>
-#include <OgreVertexIndexData.h>
 #include <OgreHlmsManager.h>
 #include <OgreHlmsDatablock.h>
 #include <OgreItem.h>
@@ -642,7 +639,6 @@ class BackendOgre final : public Backend {
     struct ResourceEntry {
         uint32_t kind = 0;
         std::string name;
-        Ogre::v1::MeshPtr v1_mesh; ///< procedural intermediate; kept: the Mesh2 reloads from it
         Ogre::MeshPtr mesh;
         Ogre::TextureGpu *texture = nullptr;
         /// A rigged mesh's bone count, and the skeleton's name — the probe's
@@ -804,14 +800,17 @@ class BackendOgre final : public Backend {
 
     /// A mesh built out of the guest's own arrays (chunk 5.5).
     ///
-    /// The probe's sequence (tests/probe_procedural.cpp; DESIGN.md §5.1): the
-    /// v1 mesh is made and filled by hand — `createManual` takes no arrays —
-    /// and then converted through the same `createByImportingV1` door the file
-    /// path uses. Two calls in it are the serializer's job for a file and this
-    /// function's for a hand-built mesh: `prepareForShadowMapping(false)`,
-    /// without which the conversion imports a pass-1 buffer that does not exist
-    /// and takes the process with it (measured: SIGSEGV), and `_setBounds`,
-    /// without which the mesh renders but is never culled.
+    /// Round 22d: the v2 buffers are built directly — `createManual`, a
+    /// `VertexElement2Vec` layout, `VaoManager::createVertexBuffer` /
+    /// `createIndexBuffer`, and one `VertexArrayObject` aliased into both the
+    /// normal and shadow passes — then the bounds are set and the mesh is
+    /// marked loaded. The v1 mesh and `createByImportingV1` are gone: they
+    /// existed only to feed the importer, and the import path is where the
+    /// earlier Vulkan workaround lived.
+    ///
+    /// The input contract is unchanged: interleaved vertices under `format`'s
+    /// element set (position first, then normal, then uv — the declaration
+    /// order defines the offsets), then 16-bit indices in whole triangles.
     int32_t realise_mesh_from_arrays(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
                                      const uint8_t *indices, size_t index_bytes, uint32_t topology,
                                      ResourceHandle *out, uint32_t *out_bones) override {
@@ -830,57 +829,66 @@ class BackendOgre final : public Backend {
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
 
-            Ogre::v1::MeshPtr v1 =
-                Ogre::v1::MeshManager::getSingleton().createManual(name + "-v1", kResourceGroup);
-            Ogre::v1::SubMesh *sub = v1->createSubMesh();
-            sub->useSharedVertices = false;
-            sub->operationType = Ogre::OT_TRIANGLE_LIST;
+            Ogre::MeshPtr mesh =
+                Ogre::MeshManager::getSingleton().createManual(name, kResourceGroup);
+            Ogre::SubMesh *sub = mesh->createSubMesh();
 
-            sub->vertexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::VertexData(
-                Ogre::v1::HardwareBufferManager::getSingletonPtr());
-            Ogre::v1::VertexData *vertex_data = sub->vertexData[Ogre::VpNormal];
-            vertex_data->vertexStart = 0;
-            vertex_data->vertexCount = vertex_count;
-
-            const size_t f3 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT3);
-            const size_t f2 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT2);
-            Ogre::v1::VertexDeclaration *declaration = vertex_data->vertexDeclaration;
-            size_t offset = 0;
-            declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_POSITION);
-            offset += f3;
+            Ogre::VertexElement2Vec elems;
+            elems.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_POSITION));
             if (has_normal) {
-                declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_NORMAL);
-                offset += f3;
+                elems.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_NORMAL));
             }
             if (has_uv) {
-                declaration->addElement(0, offset, Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES, 0);
-                offset += f2;
+                elems.push_back(
+                    Ogre::VertexElement2(Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES));
             }
 
-            Ogre::v1::HardwareVertexBufferSharedPtr vertex_buffer =
-                Ogre::v1::HardwareBufferManager::getSingleton().createVertexBuffer(
-                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
-            vertex_data->vertexBufferBinding->setBinding(0, vertex_buffer);
-            {
-                void *destination = vertex_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
-                std::memcpy(destination, vertices, vertex_bytes);
-                vertex_buffer->unlock();
+            // keepAsShadow transfers ownership of the pointer to the buffer,
+            // which frees it with OGRE_FREE_SIMD(MEMCATEGORY_GEOMETRY) — so the
+            // pointer must be an OGRE_MALLOC_SIMD block, and the guest's bytes
+            // get one copy. If creation throws, the constructor has not taken
+            // ownership and the block is freed here.
+            Ogre::VaoManager *vao_manager = render_system_->getVaoManager();
+
+            void *vertex_copy = OGRE_MALLOC_SIMD(vertex_bytes, Ogre::MEMCATEGORY_GEOMETRY);
+            std::memcpy(vertex_copy, vertices, vertex_bytes);
+            Ogre::VertexBufferPacked *vertex_buffer = nullptr;
+            try {
+                vertex_buffer = vao_manager->createVertexBuffer(
+                    elems, vertex_count, Ogre::BT_IMMUTABLE, vertex_copy, true);
+            } catch (...) {
+                OGRE_FREE_SIMD(vertex_copy, Ogre::MEMCATEGORY_GEOMETRY);
+                throw;
             }
 
-            sub->indexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::IndexData();
-            Ogre::v1::IndexData *index_data = sub->indexData[Ogre::VpNormal];
-            index_data->indexStart = 0;
-            index_data->indexCount = index_count;
-            Ogre::v1::HardwareIndexBufferSharedPtr index_buffer =
-                Ogre::v1::HardwareBufferManager::getSingleton().createIndexBuffer(
-                    Ogre::v1::HardwareIndexBuffer::IT_16BIT, index_count,
-                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
-            {
-                void *destination = index_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
-                std::memcpy(destination, indices, index_bytes);
-                index_buffer->unlock();
+            void *index_copy = OGRE_MALLOC_SIMD(index_bytes, Ogre::MEMCATEGORY_GEOMETRY);
+            std::memcpy(index_copy, indices, index_bytes);
+            Ogre::IndexBufferPacked *index_buffer = nullptr;
+            try {
+                index_buffer = vao_manager->createIndexBuffer(
+                    Ogre::IndexBufferPacked::IT_16BIT, index_count, Ogre::BT_IMMUTABLE, index_copy,
+                    true);
+            } catch (...) {
+                vao_manager->destroyVertexBuffer(vertex_buffer);
+                OGRE_FREE_SIMD(index_copy, Ogre::MEMCATEGORY_GEOMETRY);
+                throw;
             }
-            index_data->indexBuffer = index_buffer;
+
+            Ogre::VertexArrayObject *vao = nullptr;
+            try {
+                Ogre::VertexBufferPackedVec vertex_buffers;
+                vertex_buffers.push_back(vertex_buffer);
+                vao = vao_manager->createVertexArrayObject(vertex_buffers, index_buffer,
+                                                           Ogre::OT_TRIANGLE_LIST);
+            } catch (...) {
+                vao_manager->destroyIndexBuffer(index_buffer);
+                vao_manager->destroyVertexBuffer(vertex_buffer);
+                throw;
+            }
+            // One VAO for both passes: the same geometry casts shadows
+            // (SubMesh2.h: "mVao[1] = mVao[0] is valid").
+            sub->mVao[Ogre::VpNormal].push_back(vao);
+            sub->mVao[Ogre::VpShadow].push_back(vao);
 
             // The bounds: the first three floats of every vertex, which is where
             // `VF_POSITION` puts them.
@@ -896,20 +904,17 @@ class BackendOgre final : public Backend {
                 }
             }
 
-            v1->prepareForShadowMapping(false);
-            v1->_setBounds(
-                Ogre::AxisAlignedBox(minimum[0], minimum[1], minimum[2], maximum[0], maximum[1],
-                                     maximum[2]),
-                false);
-
-            Ogre::MeshPtr mesh = Ogre::MeshManager::getSingleton().createByImportingV1(
-                name, kResourceGroup, v1.get(), false, false, false);
-            mesh->load();
+            const Ogre::Vector3 bounds_min(minimum[0], minimum[1], minimum[2]);
+            const Ogre::Vector3 bounds_max(maximum[0], maximum[1], maximum[2]);
+            const Ogre::Aabb aabb((bounds_min + bounds_max) * 0.5f,
+                                  (bounds_max - bounds_min) * 0.5f);
+            mesh->_setBounds(aabb, false);
+            mesh->_setBoundingSphereRadius(aabb.getRadius());
+            mesh->setToLoaded();
 
             ResourceEntry entry;
             entry.kind = TENSION_OGRE_RES_KIND_MESH;
             entry.name = name;
-            entry.v1_mesh = v1;
             entry.mesh = mesh;
             entry.live = true;
             resources_.push_back(entry);
@@ -1078,14 +1083,12 @@ class BackendOgre final : public Backend {
                 render_system_->getTextureGpuManager()->destroyTexture(entry.texture);
             }
             if (entry.mesh) entry.mesh->unload();
-            if (entry.v1_mesh) entry.v1_mesh->unload();
         } catch (const std::exception &e) {
             backend_log(std::string("ogre: discarding a resource reported: ") + e.what());
         }
         entry.live = false;
         entry.texture = nullptr;
         entry.mesh.reset();
-        entry.v1_mesh.reset();
         return 0;
     }
 
