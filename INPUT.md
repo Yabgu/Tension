@@ -181,6 +181,12 @@ the unit of analysis is the aspect, not the capability, and input has two:
 | Input | the SDL subsystem: one `SDL_Init`, one event queue, one video driver per process | process | fatal | singleton | new — the shape SDL itself imposes, not a Tension limit |
 | Input | the attached surface: one window, its device set, its held state | caller | recoverable | session | the `input_open` handle; capacity 1 in v0 |
 
+**Zero gamepads is a normal state, not a failure.** Round 21's probe measured
+`SDL_GetGamepads` returning 0 with `SDL_WasInit(SDL_INIT_GAMEPAD)` set — the
+subsystem is ready and no device is attached. `input_open` and `input_attach`
+must succeed in that state (a game with no pad is still a game), and `input_pad`
+returns `-ENOENT` for every slot, per the slot record in Q5.
+
 **Recommended: (b), a DSO**, namespace `tension::input`, with the two aspects
 above. **Smallest viable first version**: `libtension_input.so` registering five
 verbs (§3 Q5), keyboard and mouse edges on the two classes the session already
@@ -313,6 +319,14 @@ licence covers the same pattern elsewhere. The second consequence is the reason
 attach is a *verb* and not part of `init` at all: the window may not exist yet,
 and rule 10 forbids assuming the capability that makes it is loaded.
 
+**Keyboard delivery, measured (round 21).** Key events arrive on the attached
+window, on the input thread, while the window holds X focus: the probe captured
+`SDL_EVENT_KEY_DOWN`/`KEY_UP` pairs for two Down-arrow presses with the window
+focused and no focus transitions in either direction. The `INPUT_KEY` path is
+real, not hypothetical. The precondition is the compositor's, not the DSO's —
+the window must hold X focus for the keys to arrive, and that is the window
+manager's decision; the capability can only make its window focusable and ask.
+
 ### Q5 — the wire and the record shapes
 
 **Verbs.** Namespace `tension::input`; every parameter and return is `i32`. That
@@ -368,6 +382,13 @@ Modifier state is deliberately not on the wire: it is derivable from the held
 keys in the state record, and duplicating it would create two answers to one
 question.
 
+**`which` is a device id, and zero is not a device.** Round 21's probe measured
+SDL attributing raw device motion to an XInput device id (7, which is
+`xwayland-relative-pointer:11` on this machine) and position-derived motion —
+the window moving under a stationary pointer — to `which == 0`. Events with
+`which == 0` are not device motion and must never enter the delta accumulator;
+the DSO drops them at the pump, before the mirror.
+
 **State** (`input_state`'s payload, `INPUT_STATE_SIZE = 96`, 4-byte alignment):
 
 | offset | size | field |
@@ -390,6 +411,15 @@ a touchpad produces `0.4`. **The truncation carries its remainder**: the adapter
 accumulates floats, publishes `(int, float)`, and keeps the remainder for the
 next epoch, so a slow subpixel drag degrades in resolution but never disappears —
 the same reason the X server keeps a fixed-point sprite.
+
+**A third rule, measured in round 21: the first accumulation window after
+`input_attach` is discarded.** The probe recorded 347 px over 137 ms (absolute
+mode) and 112 px over 343 ms (relative mode) of motion in the sub-second window
+right after attach, with the pointer provably stationary before and after — the
+window being placed under the pointer, and the pointer-confinement warp settling.
+It is not input. The DSO zeroes its accumulator after the attach settles and
+before the first snapshot it publishes, so a game never sees a phantom jump on
+its first frame.
 
 **Gamepads** (v1, specified now, built later) are state first: one 48-byte slot
 record per attached pad, read with `input_pad` — `version` u32, `flags` u32 (bit0
@@ -461,6 +491,13 @@ destroys the SDL window on it. `publish` is `NULL` in v0 — no regions
 
 **Events.** `INPUT_KEY` and `INPUT_MOUSE` exactly as specified in Q5, motion
 coalesced per epoch, posting skipped when `class_info` reports no subscriber.
+
+**The capability's lifetime is owned by `input_close`.** The host never calls
+the vtable's `shutdown` or `destroy` (`SESSION.md` §11 M3 is open), so a
+capability that owns background threads must tear down through a verb.
+`input_close` detaches, stops the thread, and re-arms for a later
+`input_open` — the DSO's destructor cannot do it: measured, `SDL_Quit` from a
+static destructor during `dlclose` never returns.
 
 **State.** `input_state` copies the mirror into the caller's buffer, validating
 the range first (the solver's pattern). Floats are authoritative; the integers
