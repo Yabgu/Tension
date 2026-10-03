@@ -41,6 +41,7 @@
 #include <OgreSceneManager.h>
 #include <OgreSceneNode.h>
 #include <OgreTextureBox.h>
+#include <OgrePixelFormatGpuUtils.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
 
@@ -436,6 +437,15 @@ class BackendOgre final : public Backend {
     int32_t frame(StatusWriter &status) override {
         try {
             if (root_ == nullptr || window_ == nullptr) return -EIO;
+            // Arm a pending screenshot's download between frames, on this
+            // thread. Vulkan's `setWantsToDownload(true)` destroys and
+            // recreates the swapchain, so it must not run concurrently with a
+            // frame that still holds the old one (measured; see
+            // request_readback).
+            if (readback_requested_.load() && !download_armed_) {
+                window_->setWantsToDownload(true);
+                download_armed_ = true;
+            }
             if (!root_->renderOneFrame()) {
                 // The guest (or the window manager) closed the window: a normal
                 // end, not a failure. Positive means "stop", and the adapter
@@ -1035,10 +1045,14 @@ class BackendOgre final : public Backend {
         return refused == 0 ? 0 : -EIO;
     }
 
-    /// Ask for the next frame to be downloaded. The probe proved the sequence
-    /// (setWantsToDownload + setManualSwapRelease, then convertFromTexture);
-    /// the NULL render system has no framebuffer, and says so rather than
-    /// pretending a frame came back.
+    /// Ask for the next frame to be downloaded. This runs on the guest's
+    /// thread, so it may only raise the request. `frame()` arms the window's
+    /// download on the render thread: on Vulkan, `setWantsToDownload(true)`
+    /// destroys and recreates the swapchain (that is how the images gain
+    /// VK_IMAGE_USAGE_TRANSFER_SRC_BIT), so calling it from here raced the
+    /// frame that was still using the old swapchain — measured as a SIGSEGV
+    /// inside `performLoadActions` / RADV. The NULL render system has no
+    /// framebuffer and says so rather than pretending a frame came back.
     int32_t request_readback() override {
         if (!supports_readback_ || is_null_rs_) {
             backend_log("ogre: screenshot refused: the NULL render system has no framebuffer");
@@ -1047,7 +1061,6 @@ class BackendOgre final : public Backend {
         // The download itself happens in `capture_if_ready`, on the render
         // thread, at the one moment the window's texture holds the frame that
         // was just drawn.
-        window_->setWantsToDownload(true);
         readback_requested_.store(true);
         return 0;
     }
@@ -1888,31 +1901,40 @@ class BackendOgre final : public Backend {
             const Ogre::TextureBox box = frame.getData(0);
             if (box.data == nullptr || box.bytesPerRow == 0) {
                 // The box can come back empty when the download did not
-                // produce a frame (guarded here so an empty box can never
-                // become a row-copy crash). Measured: this does NOT run for
-                // the Vulkan crash — that one happens a frame earlier, inside
-                // OGRE's render pass; see DESIGN.md §15.
+                // produce a frame; guarded so an empty box can never become a
+                // row-copy crash.
                 log_line("ogre: screenshot: the backbuffer download returned an empty box");
                 readback_requested_.store(false);
                 window_->setWantsToDownload(false);
+                download_armed_ = false;
                 return true;
             }
-            const size_t width = box.width, height = box.height, bpp = box.bytesPerPixel;
+            const size_t width = box.width, height = box.height;
             {
                 std::lock_guard<std::mutex> lock(readback_mutex_);
-                last_frame_.assign(width * height * bpp, 0);
-                // Row by row: a TextureBox's rows are padded, a frame the guest
-                // parses is not.
-                for (size_t y = 0; y < height; ++y) {
-                    const uint8_t *row =
-                        static_cast<const uint8_t *>(box.data) + y * box.bytesPerRow;
-                    std::memcpy(last_frame_.data() + y * width * bpp, row, width * bpp);
-                }
+                // The guest parses the frame as tightly-packed RGBA8, so the
+                // download is normalised here rather than leaving the channel
+                // order to whichever surface the render system picked.
+                // Measured: Vulkan's swapchain comes back BGRA (red and blue
+                // exchanged) where GL3+ is RGBA; bulkPixelConversion is
+                // OGRE's own way between the two (DESIGN.md §15).
+                last_frame_.assign(width * height * 4u, 0);
+                Ogre::TextureBox dst(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                     1u, 1u, 4u, static_cast<uint32_t>(width * 4u),
+                                     width * 4u * height);
+                dst.data = last_frame_.data();
+                Ogre::PixelFormatGpuUtils::bulkPixelConversion(
+                    box, backbuffer->getPixelFormat(), dst, Ogre::PFG_RGBA8_UNORM);
             }
             readback_requested_.store(false);
             window_->setWantsToDownload(false);
+            download_armed_ = false;
         } catch (const std::exception &e) {
             readback_requested_.store(false);
+            if (download_armed_) {
+                window_->setWantsToDownload(false);
+                download_armed_ = false;
+            }
             log_line(std::string("ogre: screenshot: the download reported: ") + e.what());
         }
         return true;
@@ -1977,6 +1999,9 @@ class BackendOgre final : public Backend {
     /// The flag is written by the guest thread and read by the render thread;
     /// the pixels themselves are copied under `readback_mutex_`.
     std::atomic<bool> readback_requested_{false};
+    /// The window's download flag is armed on the render thread only (arming
+    /// recreates the swapchain on Vulkan — see request_readback).
+    bool download_armed_ = false;
     bool supports_readback_ = false;
     std::vector<uint8_t> last_frame_;
     std::mutex readback_mutex_;

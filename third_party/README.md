@@ -80,12 +80,15 @@ config's choice is honored. An explicit choice — environment or guest —
 refuses rather than silently falling back; only `auto` chains. Every run logs
 `ogre: renderer = <name> (source: ...)`.
 
-Known gap, measured: the adapter's screenshot/readback path
-(`capture_if_ready` → `Image2::convertFromTexture`) **SIGSEGVs
- deterministically under Vulkan** — 3/3 runs, at the tier's first pixel case
-(`triangle-gl3plus`), while GL3Plus passes 8/8. The Vulkan renderer serves
-the rendering path (windows, scene, frames); the capture path is the next
-round's work.
+The readback works (round 21d): the earlier Vulkan crash was the adapter
+arming the window download from the guest's thread — on Vulkan that flag
+destroys and recreates the swapchain, racing the frame that still held the
+old one (`OgreVulkanWindow.cpp:722`). Armed on the render thread, and
+normalised to RGBA8 with `PixelFormatGpuUtils::bulkPixelConversion` (the
+Vulkan swapchain is BGRA where GL3+ is RGBA), every tier pixel case runs
+under Vulkan. One gap: the guest-built procedural mesh renders nothing
+under Vulkan (`procedural-gl3plus`: 0 px vs GL3+'s 10368) — next round's
+item.
 
 ## What it does not buy
 

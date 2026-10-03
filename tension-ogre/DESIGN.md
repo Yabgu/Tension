@@ -2749,31 +2749,27 @@ nonzero wins — so the token the guest hands to input is the same X11 window
 number either way (measured: 18874368 under Vulkan, 18874370 under GL3+, in
 the same session).
 
-**Known gap: the screenshot path under Vulkan (diagnosed, round 21c).**
-Requesting a readback (`setWantsToDownload(true)`) makes the *next frame's*
-render SIGSEGV — and not in the adapter. gdb, two runs: the crash frame is
-`Ogre::VulkanRenderPassDescriptor::performLoadActions`, called from
-`VulkanRenderSystem::executeRenderPassDescriptorDelayedActions` ←
-`SceneManager::_renderPhase02` ← `BackendOgre::frame`; the second run crashed
-inside RADV itself (`libvulkan_radeon.so`, null dereference, `si_addr 0xb0`).
-The adapter's row copy is never reached: a null/empty-box guard in
-`capture_if_ready` (kept, annotated) does not fire and the crash is
-unchanged — measured, so it is neither an empty `TextureBox` nor a null
-pointer at the copy site. Upstream's own
-`OGRE_ASSERT_LOW( mSharedFboItor != end() )` sits at the top of
-`performLoadActions` — a LOW assert, compiled out under the build's
-"Assert mode: standard" — so the risky reads in that function
-(`mSharedFboItor->second`, `mColour[0].texture`, `fboDesc.mFramebuffers[fboIdx]`)
-run unguarded. Upstream has not moved past the pin (that file's newest
-commit is `78a57047ce`, already in it), so there is no fix to bump to.
-Consequence: the tier's pixel cases cannot run under Vulkan yet — the
-forced-Vulkan tier stops at `triangle-gl3plus`, GL3Plus passes 8/8.
-**Removal condition:** the readback works under Vulkan. Instruments for the
-next round: rebuild Ogre-Next with `-DOGRE_ASSERT_MODE=1` (turns the
-compiled-out invariant into a named abort), and/or move the capture path off
-OGRE's window download entirely (render the frame into an adapter-owned
-render-target texture whose download Vulkan supports). Delete this note and
-the pixel-case caveat when it lands.
+**The Vulkan readback (fixed, round 21d).** On Vulkan,
+`setWantsToDownload(true)` destroys and recreates the swapchain — that is
+how the swapchain images gain `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`
+(`OgreVulkanWindow.cpp:450` and `:722`). The first version called it from
+the guest thread (the `screenshot` verb runs there), which raced the frame
+still using the old swapchain; round 21c's SIGSEGV (inside
+`VulkanRenderPassDescriptor::performLoadActions`, or inside RADV) was this
+race. The flag is now armed in `frame()`, on the render thread, between
+frames — the documented usage — and the copy normalises the download to
+tightly-packed RGBA8 with `PixelFormatGpuUtils::bulkPixelConversion`
+(Vulkan's swapchain comes back BGRA where GL3+ is RGBA: the first fixed
+Vulkan pixel case read red and blue exchanged). The empty-box guard stays
+as defence.
+
+State under Vulkan: every tier pixel case runs and passes — triangle,
+motion, hierarchy, skinning, skin-matrices, skin-deform, noskel,
+render-check — with numbers equal to GL3+ within the bands. One gap
+remains: `procedural-gl3plus` (a mesh the guest builds at runtime) reads
+0 non-background pixels under Vulkan where GL3+ reads 10368 — nothing is
+drawn. That is a procedural-mesh rendering gap, not the readback; next
+round.
 
 # Appendix A — tension_adapter.h specification
 
