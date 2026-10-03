@@ -333,7 +333,6 @@ skin_deform_case() {
         { rc=$?; echo "$stdout" | sed 's/^/    /'; \
           fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"; }
     echo "$stdout" | sed 's/^/    /'
-    echo "$stdout" | sed 's/^/    /'
     echo "$stdout" | grep -qE "^OK$" ||
         fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
     echo "== $name: ok — $(echo "$stdout" | grep '^DEFORM ' | tail -1)"

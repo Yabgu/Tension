@@ -113,6 +113,7 @@ MeshFormat detect_mesh_format(const void *data, size_t len) {
     static constexpr char kV2Tag[] = "[MeshSerializer_v2.";
     constexpr size_t kTagLen = sizeof(kV1Tag) - 1;
     static_assert(sizeof(kV2Tag) - 1 == kTagLen, "the two tags must be the same length");
+    if (data == nullptr || len < kTagLen) return MeshFormat::Unknown;
     const uint8_t *bytes = static_cast<const uint8_t *>(data);
     const size_t window = std::min<size_t>(len, 512);
     for (size_t at = 0; at + kTagLen <= window; ++at) {
@@ -519,6 +520,7 @@ class BackendOgre final : public Backend {
                 std::filesystem::remove_all(temp_dir_, ignored);
                 temp_dir_.clear();
             }
+            skeleton_location_added_ = false;
             return 0;
         } catch (const Ogre::Exception &e) {
             return refuse_final(e.getFullDescription());
@@ -752,6 +754,8 @@ class BackendOgre final : public Backend {
             if (!skeleton_candidate_bytes_.empty()) {
                 const int32_t staged =
                     stage_skeleton_bytes(skeleton_candidate_name_, skeleton_candidate_bytes_);
+                skeleton_candidate_bytes_.clear();
+                skeleton_candidate_name_.clear();
                 if (staged != 0) return staged;
             }
 
@@ -825,6 +829,7 @@ class BackendOgre final : public Backend {
             if (index_bytes == 0 || index_bytes % 6 != 0) return -EINVAL; // whole triangles
             const size_t vertex_count = vertex_bytes / stride;
             const size_t index_count = index_bytes / 2;
+            if (vertex_count > 65536) return -EINVAL;
 
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
