@@ -333,6 +333,26 @@ int32_t InputThread::sdl_attach(uint32_t kind, uint64_t token) {
             input_log(std::string("input: attach: SDL could not make a window: ") + SDL_GetError());
             return -ENODEV;
         }
+        // Ask for the keyboard. Measured before this: the window never held
+        // focus on Wayland, so the keyboard half of the edge test produced
+        // nothing (150 s of runs, `epochs focused = 0`). A client cannot force
+        // focus here — the compositor decides — so the ask is best-effort and
+        // the log line below is the honest answer, not an assumption.
+        if (!SDL_SetWindowFocusable(window, true)) {
+            input_log(std::string("input: attach: SDL_SetWindowFocusable refused: ") + SDL_GetError());
+        }
+        SDL_ShowWindow(window);
+        SDL_RaiseWindow(window);
+        {
+            const SDL_WindowFlags flags = SDL_GetWindowFlags(window);
+            char line[192];
+            std::snprintf(line, sizeof(line),
+                          "input: attach: window %u '%s' shown+raised; input-focus=%d (Wayland: "
+                          "the compositor decides, and this is the ask's first answer)",
+                          (unsigned)SDL_GetWindowID(window), SDL_GetWindowTitle(window),
+                          (flags & SDL_WINDOW_INPUT_FOCUS) != 0 ? 1 : 0);
+            input_log(line);
+        }
     } else {
         SDL_PropertiesID props = SDL_CreateProperties();
         SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X11_WINDOW_NUMBER, (Sint64)token);
@@ -466,6 +486,7 @@ void InputThread::pump_events() {
                 break;
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 focused_.store(true, std::memory_order_release);
+                input_log("input: window " + std::to_string((unsigned)e.window.windowID) + " focused");
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 focused_.store(false, std::memory_order_release);
