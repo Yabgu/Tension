@@ -539,23 +539,20 @@ and OITD and nothing else — no PNG, JPEG or TGA — so a PNG texture fails as 
 *named job failure* (`Unable to identify codec`), not as a crash, and the
 fixtures use DDS.
 
-**How resources load.** Two readers, chosen by the file's own `[MeshSerializer`
-version tag (`detect_mesh_format`, round 22b). V2 files — every repo mesh now,
+**How resources load.** One reader, chosen by the file's own `[MeshSerializer`
+version tag (`detect_mesh_format`). V2 meshes — every repo mesh,
 `[MeshSerializer_v2.1 R2]` — go through `MeshManager::createManual`, the v2
-`MeshSerializer::importMesh`, and `setToLoaded()`. V1 files still take the
-two-manager path: `v1::MeshSerializer::importMesh` parses the bytes into a v1
-mesh, and `MeshManager::createByImportingV1` converts it into the `Mesh2` the
-rest of the engine wants (deferred — a freshly converted `Mesh2` has no
-submeshes until `load()` is called; measured: 0 then 1). **Dual-read policy:**
-the v1 branch is *supported but unused by repo assets* — OGRE-Next's own
-`Media/models` remain v1, and external v1 supply may exist — and it is deleted
-when that supply is judged not worth keeping (round 22c). One more measured
-detail, unchanged: the files carry two bytes of their own before the
-`[MeshSerializer` tag, so the loader's kind check *scans* the file's opening
-rather than testing offset zero — a prefix test is wrong about a file OGRE
-itself parses happily. Textures are already asynchronous inside OGRE:
-`TextureGpuManager` runs its own documented background thread, so this adapter
-does not spawn a second one for texture IO.
+`MeshSerializer::importMesh`, and `setToLoaded()`. A v1 file is refused before
+OGRE sees it, with a message that names the fix ("this build reads only v2
+meshes; convert with `OgreMeshTool -v2`"): round 22c deleted the v1 branch
+(v1 `importMesh` into `createByImportingV1`) once every repo asset converted.
+OGRE-Next's own `Media/models` remain v1; the adapter no longer reads that
+tree. One more measured detail, unchanged: the files carry two bytes of their
+own before the `[MeshSerializer` tag, so the loader's kind check *scans* the
+file's opening rather than testing offset zero — a prefix test is wrong about
+a file OGRE itself parses happily. Textures are already asynchronous inside
+OGRE: `TextureGpuManager` runs its own documented background thread, so this
+adapter does not spawn a second one for texture IO.
 
 **Skeletons have no v2 format.** `.skeleton` files are `[Serializer_v1.80]` and
 OGRE-Next reads them internally through its v1 machinery (`SkeletonDef`'s only
