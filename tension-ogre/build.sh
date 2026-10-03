@@ -42,8 +42,11 @@ case "${1:-}" in
         else
             echo "tension-ogre: OGRE-Next not found via pkg-config"
         fi
+        if [ -f "$here/../third_party/ogre-next-install/lib/libOgreNextMain.so" ]; then
+            echo "tension-ogre: in-tree Ogre-Next at third_party/ogre-next-install (preferred)"
+        fi
         echo "tension-ogre: pinned against $pin"
-        echo "tension-ogre: backend=$backend (default; `none` opts out of OGRE)"
+        echo "tension-ogre: backend=$backend (default; 'none' opts out of OGRE)"
         exit 0
         ;;
     --test)
@@ -102,6 +105,18 @@ if [ "$backend" = ogre ]; then
         ogre_include="-isystem $TENSION_OGRE_PREFIX/include -isystem $TENSION_OGRE_PREFIX/include/OGRE-Next"
         ogre_lib="-L$TENSION_OGRE_PREFIX/lib -lOgreNextMain"
         plugin_dir="$TENSION_OGRE_PREFIX/lib/OGRE-Next"
+    elif [ -f "$here/../third_party/ogre-next-install/lib/libOgreNextMain.so" ]; then
+        # In-tree first: `third_party/bootstrap.sh` built Ogre-Next from the
+        # pinned submodule. Preferred over the system install because the
+        # source build is the one this project controls — and the one whose
+        # Media tree is installed for the Hlms. Remove or rename the
+        # directory to fall back to the system install below.
+        in_tree=$(CDPATH= cd -- "$here/../third_party/ogre-next-install" && pwd)
+        ogre_include="-isystem $in_tree/include -isystem $in_tree/include/OGRE-Next"
+        ogre_include="$ogre_include -isystem $in_tree/include/OGRE-Next/Hlms/Common -isystem $in_tree/include/OGRE-Next/Hlms/Unlit -isystem $in_tree/include/OGRE-Next/Hlms/Pbs"
+        ogre_lib="-L$in_tree/lib -lOgreNextMain -lOgreNextHlmsUnlit -lOgreNextHlmsPbs"
+        plugin_dir="$in_tree/lib/OGRE-Next"
+        media_dir="$in_tree/share/OGRE-Next/Media"
     elif command -v pkg-config >/dev/null 2>&1 && pkg-config --atleast-version=3.0.0 OGRE-Next; then
         # -isystem, not -I: OGRE's headers are not warning-clean, and its
         # warnings are not ours to answer for.

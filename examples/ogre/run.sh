@@ -29,6 +29,13 @@ core="${TENSION_CORE:-$root/tension-core/target/debug/tension-core}"
 adapter="${TENSION_OGRE_DSO:-$root/tension-ogre/build/libtension_ogre.so}"
 framework="$root/tension-framework"
 
+# An in-tree Ogre-Next (third_party/bootstrap.sh) lives outside the loader's
+# default search path; the adapter and its render systems resolve from there.
+in_tree_lib="$root/third_party/ogre-next-install/lib"
+if [ -d "$in_tree_lib" ]; then
+    export LD_LIBRARY_PATH="$in_tree_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 if [ ! -x "$core" ]; then
     echo "no interpreter at $core — build it with:" >&2
     echo "  cargo build --manifest-path $root/tension-core/Cargo.toml --no-default-features" >&2
