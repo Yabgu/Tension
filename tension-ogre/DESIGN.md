@@ -2767,29 +2767,20 @@ State under Vulkan: every tier pixel case runs and passes — triangle,
 motion, hierarchy, skinning, skin-matrices, skin-deform, noskel,
 render-check — with numbers equal to GL3+ within the bands.
 
-**The procedural-mesh gap (bounded, rounds 21f–21g).** `procedural-gl3plus` — a
-mesh the guest builds at runtime — reads 0 non-background pixels under
-Vulkan where GL3+ reads 10368. Measured out: not winding (the same triangle
-with reversed vertex order also reads 0 under Vulkan, and 10368 under
-GL3+), not the attribute set (position-only, +UV and +normal variants all
-read 0 under Vulkan), not capture timing (extra waits of 60 and 240 frames
-before the grab change nothing), and not the serializer shape: round 21g
-implemented the design doc's named fix — export the hand-built v1 mesh with
-`MeshSerializer` and re-import it exactly the way the loader does — and the
-round-tripped mesh (the `older format` and `shared vertices` warnings gone,
-so the serializer shape took) still reads 0 px under Vulkan while GL3+ stays
-at 10368. That sharpens the gap rather than closing it: the procedural mesh
-now has the same *shape* as the file-loaded meshes and goes through the same
-`createByImportingV1` door, so the difference is in the *content* the
-conversion sees, or outside the mesh (the submit path for this renderable).
-The round-trip change was reverted (no benefit, a temp file per mesh)
-pending a real diagnosis. Consequence: the tier's `procedural-gl3plus` case
-is skipped when Vulkan is forced (`TENSION_RENDERER=vulkan|auto`) and runs
-as before on GL3+. **Removal condition:** a hand-built mesh draws under
-Vulkan. Next instruments, in order: compare the v2 `Mesh` built from a
-procedural mesh against one built from a file mesh at runtime (sub-mesh
-buffer bindings, `VaoManager` buffer types); then the item's AABB/culling
-and the submission path for this renderable under Vulkan.
+**The procedural-mesh gap (resolved).** `procedural-gl3plus` — a mesh the
+guest builds at runtime — previously read 0 non-background pixels under Vulkan
+where GL3+ read 10368. The root cause was `realise_mesh_from_arrays` creating the
+v1 `HardwareVertexBuffer` and `HardwareIndexBuffer` with `useShadowBuffer = false`.
+When `Ogre::MeshManager::createByImportingV1` converts v1 to v2, it locks the
+source buffers with `HBL_READ_ONLY`. In GL3+, OpenGL allows CPU readback from
+write-only GPU buffers via driver fallback (`glGetBufferSubData`). In Vulkan,
+locking an unshadowed GPU-only buffer with `HBL_READ_ONLY` returns an uninitialized
+CPU staging buffer (garbage/zeroes) which was then copied into the v2 VAO buffers.
+File-loaded meshes worked because `MeshSerializer` creates v1 buffers with
+shadow buffers enabled by default. Setting `useShadowBuffer = true` in
+`realise_mesh_from_arrays` allows `createByImportingV1` to read back the valid
+shadow copy on all backends, resolving the gap. Both GL3+ and Vulkan now render
+procedural meshes identically.
 
 # Appendix A — tension_adapter.h specification
 

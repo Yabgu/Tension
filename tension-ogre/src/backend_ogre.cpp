@@ -864,7 +864,7 @@ class BackendOgre final : public Backend {
 
             Ogre::v1::HardwareVertexBufferSharedPtr vertex_buffer =
                 Ogre::v1::HardwareBufferManager::getSingleton().createVertexBuffer(
-                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
             vertex_data->vertexBufferBinding->setBinding(0, vertex_buffer);
             {
                 void *destination = vertex_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
@@ -879,7 +879,7 @@ class BackendOgre final : public Backend {
             Ogre::v1::HardwareIndexBufferSharedPtr index_buffer =
                 Ogre::v1::HardwareBufferManager::getSingleton().createIndexBuffer(
                     Ogre::v1::HardwareIndexBuffer::IT_16BIT, index_count,
-                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
             {
                 void *destination = index_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
                 std::memcpy(destination, indices, index_bytes);
