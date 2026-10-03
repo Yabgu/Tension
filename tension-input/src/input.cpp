@@ -196,12 +196,21 @@ std::string InputThread::driver() const {
 
 void InputThread::thread_main() {
     pthread_setname_np(pthread_self(), "tension-input");
-    // OGRE-Next 3.0's render window is X11/XWayland on Linux (its DSO links
-    // libX11/libGLX, not libwayland). SDL must speak the same protocol to
-    // receive its events. Forcing x11 with OVERRIDE priority means the DSO
-    // behaves identically whether the user's shell sets SDL_VIDEO_DRIVER or
-    // not.
-    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "x11", SDL_HINT_OVERRIDE);
+    // Which SDL video driver the capability speaks. TENSION_INPUT_DRIVER
+    // forces one with OVERRIDE priority (the user's shell cannot change the
+    // answer); unset or `auto` leaves the choice to the platform, and the
+    // per-kind rule in `sdl_attach` forces x11 where the token demands it —
+    // kind 1 is an X11 window id, and OGRE-Next 3.0's windows are
+    // X11/XWayland on Linux.
+    const char *want = std::getenv("TENSION_INPUT_DRIVER");
+    if (want != nullptr && want[0] != 0 && std::strcmp(want, "auto") != 0) {
+        SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, want, SDL_HINT_OVERRIDE);
+        std::snprintf(forced_, sizeof(forced_), "%s", want);
+        input_log(std::string("input: video driver '") + want +
+                  "' (source: TENSION_INPUT_DRIVER)");
+    } else {
+        input_log("input: video driver: auto (SDL's choice; kind 1 forces x11 at attach)");
+    }
     const int32_t rc = sdl_start();
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -270,13 +279,20 @@ void InputThread::thread_main() {
 
 int32_t InputThread::sdl_start() {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed with x11 forced: ") +
-                  SDL_GetError());
-        // x11 may be genuinely unavailable (no XWayland on this machine).
-        // Retry once with no hint at all, so SDL picks whatever the platform
-        // offers; only if that also fails is the subsystem down.
+        if (forced_[0] == 0) {
+            input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed: ") + SDL_GetError());
+            sdl_up_.store(false, std::memory_order_release);
+            return -ENODEV;
+        }
+        input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed with '") + forced_ +
+                  "' forced: " + SDL_GetError());
+        // The forced driver may be genuinely unavailable (no XWayland on this
+        // machine). Retry once with no hint at all, so SDL picks whatever the
+        // platform offers; only if that also fails is the subsystem down.
         SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
-        input_log("input: x11 unavailable, falling back to default video driver");
+        input_log(std::string("input: '") + forced_ +
+                  "' unavailable, falling back to the default video driver");
+        forced_[0] = 0;
         if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
             input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed: ") + SDL_GetError());
             sdl_up_.store(false, std::memory_order_release);
@@ -325,7 +341,8 @@ int32_t InputThread::sdl_attach(uint32_t kind, uint64_t token) {
                       "', forcing it (was '" + (have != nullptr ? have : "(none)") + "')");
             SDL_Quit();
             sdl_up_.store(false, std::memory_order_release);
-            SDL_SetHint(SDL_HINT_VIDEO_DRIVER, want);
+            SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, want, SDL_HINT_OVERRIDE);
+            std::snprintf(forced_, sizeof(forced_), "%s", want);
             if (sdl_start() != 0) return -ENODEV;
             refresh_pads();
         }

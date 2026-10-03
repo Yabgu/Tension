@@ -2721,6 +2721,67 @@ single session and asserts its own results, printing a pass/fail summary line �
 The cumulative acid test is the milestone gate at each chunk end: a chunk is
 done when the guest can say so itself.
 
+## 15. Renderer selection, the chain, and the glslang shim
+
+**The chain.** `TENSION_RENDERER` selects the renderer: `auto` (Vulkan →
+GL3Plus → Null, tried in order), or a single `vulkan` / `gl3plus` / `null`.
+Unset, the guest's config decides. An explicit choice — from the environment
+or the guest — refuses rather than silently falling back; only `auto` chains.
+Every attempt logs `ogre: renderer = <name> (source: ...)` (or
+`renderer chain = ...`), so a run's log names both the winner and why
+(measured: the tier's cases log `source: guest config`; the example under
+`TENSION_RENDERER=vulkan` logs that env value).
+
+**The shim.** Ogre-Next's `RenderSystem_Vulkan.so` has 36 undefined glslang
+symbols — upstream's `RenderSystems/Vulkan/CMakeLists.txt` links only
+`OgreNextMain` and the Vulkan libraries, never glslang (measured; the system
+package has the identical defect). The plugin resolves its symbols against
+the process's global scope when `Ogre::Root` installs it, so
+`ensure_glslang_global()` dlopens `libglslang` with `RTLD_NOW | RTLD_GLOBAL`
+before `Ogre::Root` is constructed — and only when the Vulkan renderer will
+be attempted. **Removal condition:** when upstream links glslang (a
+`DT_NEEDED` on the plugin), delete the call; the `readelf`/`ldd` probe in
+`third_party/README.md` is how to check.
+
+**One more measured difference:** the Vulkan/XCB window publishes its id as
+`"xcb_window_t"`, not GL3+'s `"WINDOW"`. `window_handle` reads both — first
+nonzero wins — so the token the guest hands to input is the same X11 window
+number either way (measured: 18874368 under Vulkan, 18874370 under GL3+, in
+the same session).
+
+**The Vulkan readback (fixed, round 21d).** On Vulkan,
+`setWantsToDownload(true)` destroys and recreates the swapchain — that is
+how the swapchain images gain `VK_IMAGE_USAGE_TRANSFER_SRC_BIT`
+(`OgreVulkanWindow.cpp:450` and `:722`). The first version called it from
+the guest thread (the `screenshot` verb runs there), which raced the frame
+still using the old swapchain; round 21c's SIGSEGV (inside
+`VulkanRenderPassDescriptor::performLoadActions`, or inside RADV) was this
+race. The flag is now armed in `frame()`, on the render thread, between
+frames — the documented usage — and the copy normalises the download to
+tightly-packed RGBA8 with `PixelFormatGpuUtils::bulkPixelConversion`
+(Vulkan's swapchain comes back BGRA where GL3+ is RGBA: the first fixed
+Vulkan pixel case read red and blue exchanged). The empty-box guard stays
+as defence.
+
+State under Vulkan: every tier pixel case runs and passes — triangle,
+motion, hierarchy, skinning, skin-matrices, skin-deform, noskel,
+render-check — with numbers equal to GL3+ within the bands.
+
+**The procedural-mesh gap (resolved).** `procedural-gl3plus` — a mesh the
+guest builds at runtime — previously read 0 non-background pixels under Vulkan
+where GL3+ read 10368. The root cause was `realise_mesh_from_arrays` creating the
+v1 `HardwareVertexBuffer` and `HardwareIndexBuffer` with `useShadowBuffer = false`.
+When `Ogre::MeshManager::createByImportingV1` converts v1 to v2, it locks the
+source buffers with `HBL_READ_ONLY`. In GL3+, OpenGL allows CPU readback from
+write-only GPU buffers via driver fallback (`glGetBufferSubData`). In Vulkan,
+locking an unshadowed GPU-only buffer with `HBL_READ_ONLY` returns an uninitialized
+CPU staging buffer (garbage/zeroes) which was then copied into the v2 VAO buffers.
+File-loaded meshes worked because `MeshSerializer` creates v1 buffers with
+shadow buffers enabled by default. Setting `useShadowBuffer = true` in
+`realise_mesh_from_arrays` allows `createByImportingV1` to read back the valid
+shadow copy on all backends, resolving the gap. Both GL3+ and Vulkan now render
+procedural meshes identically.
+
 # Appendix A — tension_adapter.h specification
 
 The content specification for `tension-core/include/tension_adapter.h`. Prose

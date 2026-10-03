@@ -175,6 +175,9 @@ class InputThread {
     std::atomic<bool> focused_{false};
     std::atomic<bool> pointer_over_{false};
     char driver_[32] = {0};
+    /// TENSION_INPUT_DRIVER, when one was requested: SDL_Init's failure text
+    /// names it, and its presence decides whether to retry without a hint.
+    char forced_[32] = {0};
 
     // ── the request slot, guarded by mu_ ────────────────────────────────
     Request request_ = Request::None;

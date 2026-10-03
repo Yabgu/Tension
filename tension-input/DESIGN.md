@@ -87,6 +87,18 @@ Keys, mouse buttons and wheel are edges and are posted on `INPUT_KEY` (6) and
 subscriber, which is what that flag is for. The sequence number the session
 returns from `post_event` is kept as the state record's `seq`.
 
+**Driver selection** is `TENSION_INPUT_DRIVER`. Unset or `auto`: no driver is
+forced at `SDL_Init`, and the per-kind rule decides at attach — kind 1 (an X11
+window id) forces x11, kind 0 (input's own surface) takes the platform's
+choice. Any other value (`x11`, `wayland`, …) forces that SDL driver up front
+with `OVERRIDE` priority, so the shell's `SDL_VIDEO_DRIVER` cannot change it;
+an init failure retries once with no hint and logs the fallback. Measured on
+this Wayland session: kind 0 under `auto` comes up on `wayland` and the
+compositor grants no input focus without a click (round 21's finding,
+unchanged); kind 0 under `TENSION_INPUT_DRIVER=x11` gets the X11 window whose
+focus arrives unprompted; the example's kind-1 attach logs
+`kind 1 needs 'x11', forcing it (was 'wayland')` and proceeds.
+
 ## 5. What v0 is and is not
 
 - **No regions.** The vtable's `publish` is `NULL` — the adapter owns none — so

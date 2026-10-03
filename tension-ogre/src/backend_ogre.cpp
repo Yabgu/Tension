@@ -41,6 +41,7 @@
 #include <OgreSceneManager.h>
 #include <OgreSceneNode.h>
 #include <OgreTextureBox.h>
+#include <OgrePixelFormatGpuUtils.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
 
@@ -61,6 +62,7 @@
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <cstring>
@@ -105,6 +107,24 @@ std::string plugin_dir() {
 /// milestone has that a real window came up.
 void log_line(const std::string &message) { backend_log(message); }
 
+/// Ogre-Next's RenderSystem_Vulkan.so has 36 undefined glslang symbols:
+/// upstream's CMakeLists links only OgreNextMain and the Vulkan libraries,
+/// never glslang (measured; third_party/README.md). The plugin resolves its
+/// symbols against the process's global scope when Ogre::Root installs it,
+/// so loading glslang into that scope beforehand is the whole fix. Called
+/// only for the Vulkan renderer — GL3+ never needs it.
+void ensure_glslang_global() {
+    if (dlopen("libglslang.so.16", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+        // The unversioned soname, for a glslang package that ships it.
+        if (dlopen("libglslang.so", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+            log_line(std::string("ogre: could not load glslang for the vulkan plugin: ") +
+                     dlerror());
+            return;  // the plugin's own load failure will name the symbol
+        }
+    }
+    log_line("ogre: glslang preloaded RTLD_GLOBAL for the vulkan plugin");
+}
+
 class BackendOgre;
 
 /// The frame listener that takes the picture. OGRE-Next downloads a window's
@@ -139,11 +159,14 @@ class BackendOgre final : public Backend {
         status_for_messages_ = &status;
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
+            const bool vulkan_rs = renderer_ == TENSION_OGRE_RENDERER_VULKAN;
             is_null_rs_ = null_rs;
-            plugin_name_ = null_rs ? "RenderSystem_NULL" : "RenderSystem_GL3Plus";
-            render_system_name_ =
-                null_rs ? "NULL Rendering Subsystem" : "OpenGL 3+ Rendering Subsystem";
-            name_ = null_rs ? "ogre-null" : "ogre-gl3plus";
+            plugin_name_ = null_rs ? "RenderSystem_NULL"
+                                   : (vulkan_rs ? "RenderSystem_Vulkan" : "RenderSystem_GL3Plus");
+            render_system_name_ = null_rs   ? "NULL Rendering Subsystem"
+                                  : vulkan_rs ? "Vulkan Rendering Subsystem"
+                                              : "OpenGL 3+ Rendering Subsystem";
+            name_ = null_rs ? "ogre-null" : (vulkan_rs ? "ogre-vulkan" : "ogre-gl3plus");
 
             // ── STAGE_PLUGIN ─────────────────────────────────────────────
             status.set_stage(TENSION_OGRE_STAGE_PLUGIN);
@@ -186,6 +209,12 @@ class BackendOgre final : public Backend {
                 // debuggerOutput = false keeps OGRE's chatter off stdout, where
                 // the guest's own evidence lives.
                 log_manager->createLog((temp_dir_ / "Ogre.log").string(), true, false);
+            }
+
+            if (vulkan_rs) {
+                // The plugin cannot load without glslang in the global scope;
+                // measured, and upstream's link line is why (see the function).
+                ensure_glslang_global();
             }
 
             root_ = std::make_unique<Ogre::Root>(nullptr, plugins_cfg,
@@ -245,6 +274,15 @@ class BackendOgre final : public Backend {
             {
                 unsigned long native = 0;
                 window_->getCustomAttribute("WINDOW", &native);
+                if (native == 0) {
+                    // The Vulkan/XCB window publishes its id as "xcb_window_t"
+                    // instead of GL3+'s "WINDOW" — it is the same X11 window
+                    // number, so the token the guest hands to input is
+                    // unchanged (measured; third_party/README.md).
+                    uint32_t xcb_window = 0;
+                    window_->getCustomAttribute("xcb_window_t", &xcb_window);
+                    native = xcb_window;
+                }
                 native_window_.store(static_cast<uint64_t>(native), std::memory_order_release);
                 if (native != 0) {
                     log_line("ogre: window handle " + std::to_string(native) +
@@ -399,6 +437,15 @@ class BackendOgre final : public Backend {
     int32_t frame(StatusWriter &status) override {
         try {
             if (root_ == nullptr || window_ == nullptr) return -EIO;
+            // Arm a pending screenshot's download between frames, on this
+            // thread. Vulkan's `setWantsToDownload(true)` destroys and
+            // recreates the swapchain, so it must not run concurrently with a
+            // frame that still holds the old one (measured; see
+            // request_readback).
+            if (readback_requested_.load() && !download_armed_) {
+                window_->setWantsToDownload(true);
+                download_armed_ = true;
+            }
             if (!root_->renderOneFrame()) {
                 // The guest (or the window manager) closed the window: a normal
                 // end, not a failure. Positive means "stop", and the adapter
@@ -817,7 +864,7 @@ class BackendOgre final : public Backend {
 
             Ogre::v1::HardwareVertexBufferSharedPtr vertex_buffer =
                 Ogre::v1::HardwareBufferManager::getSingleton().createVertexBuffer(
-                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
             vertex_data->vertexBufferBinding->setBinding(0, vertex_buffer);
             {
                 void *destination = vertex_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
@@ -832,7 +879,7 @@ class BackendOgre final : public Backend {
             Ogre::v1::HardwareIndexBufferSharedPtr index_buffer =
                 Ogre::v1::HardwareBufferManager::getSingleton().createIndexBuffer(
                     Ogre::v1::HardwareIndexBuffer::IT_16BIT, index_count,
-                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, false);
+                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
             {
                 void *destination = index_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
                 std::memcpy(destination, indices, index_bytes);
@@ -998,10 +1045,14 @@ class BackendOgre final : public Backend {
         return refused == 0 ? 0 : -EIO;
     }
 
-    /// Ask for the next frame to be downloaded. The probe proved the sequence
-    /// (setWantsToDownload + setManualSwapRelease, then convertFromTexture);
-    /// the NULL render system has no framebuffer, and says so rather than
-    /// pretending a frame came back.
+    /// Ask for the next frame to be downloaded. This runs on the guest's
+    /// thread, so it may only raise the request. `frame()` arms the window's
+    /// download on the render thread: on Vulkan, `setWantsToDownload(true)`
+    /// destroys and recreates the swapchain (that is how the images gain
+    /// VK_IMAGE_USAGE_TRANSFER_SRC_BIT), so calling it from here raced the
+    /// frame that was still using the old swapchain — measured as a SIGSEGV
+    /// inside `performLoadActions` / RADV. The NULL render system has no
+    /// framebuffer and says so rather than pretending a frame came back.
     int32_t request_readback() override {
         if (!supports_readback_ || is_null_rs_) {
             backend_log("ogre: screenshot refused: the NULL render system has no framebuffer");
@@ -1010,7 +1061,6 @@ class BackendOgre final : public Backend {
         // The download itself happens in `capture_if_ready`, on the render
         // thread, at the one moment the window's texture holds the frame that
         // was just drawn.
-        window_->setWantsToDownload(true);
         readback_requested_.store(true);
         return 0;
     }
@@ -1849,22 +1899,42 @@ class BackendOgre final : public Backend {
             Ogre::TextureGpu *backbuffer = window_->getTexture();
             frame.convertFromTexture(backbuffer, 0u, backbuffer->getNumMipmaps() - 1u);
             const Ogre::TextureBox box = frame.getData(0);
-            const size_t width = box.width, height = box.height, bpp = box.bytesPerPixel;
+            if (box.data == nullptr || box.bytesPerRow == 0) {
+                // The box can come back empty when the download did not
+                // produce a frame; guarded so an empty box can never become a
+                // row-copy crash.
+                log_line("ogre: screenshot: the backbuffer download returned an empty box");
+                readback_requested_.store(false);
+                window_->setWantsToDownload(false);
+                download_armed_ = false;
+                return true;
+            }
+            const size_t width = box.width, height = box.height;
             {
                 std::lock_guard<std::mutex> lock(readback_mutex_);
-                last_frame_.assign(width * height * bpp, 0);
-                // Row by row: a TextureBox's rows are padded, a frame the guest
-                // parses is not.
-                for (size_t y = 0; y < height; ++y) {
-                    const uint8_t *row =
-                        static_cast<const uint8_t *>(box.data) + y * box.bytesPerRow;
-                    std::memcpy(last_frame_.data() + y * width * bpp, row, width * bpp);
-                }
+                // The guest parses the frame as tightly-packed RGBA8, so the
+                // download is normalised here rather than leaving the channel
+                // order to whichever surface the render system picked.
+                // Measured: Vulkan's swapchain comes back BGRA (red and blue
+                // exchanged) where GL3+ is RGBA; bulkPixelConversion is
+                // OGRE's own way between the two (DESIGN.md §15).
+                last_frame_.assign(width * height * 4u, 0);
+                Ogre::TextureBox dst(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                                     1u, 1u, 4u, static_cast<uint32_t>(width * 4u),
+                                     width * 4u * height);
+                dst.data = last_frame_.data();
+                Ogre::PixelFormatGpuUtils::bulkPixelConversion(
+                    box, backbuffer->getPixelFormat(), dst, Ogre::PFG_RGBA8_UNORM);
             }
             readback_requested_.store(false);
             window_->setWantsToDownload(false);
+            download_armed_ = false;
         } catch (const std::exception &e) {
             readback_requested_.store(false);
+            if (download_armed_) {
+                window_->setWantsToDownload(false);
+                download_armed_ = false;
+            }
             log_line(std::string("ogre: screenshot: the download reported: ") + e.what());
         }
         return true;
@@ -1929,6 +1999,9 @@ class BackendOgre final : public Backend {
     /// The flag is written by the guest thread and read by the render thread;
     /// the pixels themselves are copied under `readback_mutex_`.
     std::atomic<bool> readback_requested_{false};
+    /// The window's download flag is armed on the render thread only (arming
+    /// recreates the swapchain on Vulkan — see request_readback).
+    bool download_armed_ = false;
     bool supports_readback_ = false;
     std::vector<uint8_t> last_frame_;
     std::mutex readback_mutex_;
@@ -1970,11 +2043,14 @@ bool ScreenshotListener::frameRenderingQueued(const Ogre::FrameEvent &) {
 }
 
 std::unique_ptr<Backend> make_backend(const Config &config) {
-    // The two render systems this build can bring up. Metal and Vulkan are in
-    // the SDK's enum but not in this install's plugins, so they are refused by
-    // the adapter with -ENOSYS at the plugin stage rather than pretended here.
+    // The render systems this build can bring up. Metal is in the SDK's enum
+    // but not in this install's plugins; it is refused with -ENOSYS at the
+    // plugin stage rather than pretended here. Vulkan is served: the plugin
+    // ships with the in-tree install and loads once glslang is in the global
+    // scope (ensure_glslang_global).
     if (config.renderer == TENSION_OGRE_RENDERER_NULL ||
-        config.renderer == TENSION_OGRE_RENDERER_GL3PLUS) {
+        config.renderer == TENSION_OGRE_RENDERER_GL3PLUS ||
+        config.renderer == TENSION_OGRE_RENDERER_VULKAN) {
         return std::make_unique<BackendOgre>(config.renderer);
     }
     return nullptr;
