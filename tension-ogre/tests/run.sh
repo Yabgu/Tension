@@ -137,11 +137,27 @@ stdout=$(env -u DISPLAY -u WAYLAND_DISPLAY "$core" --capability "$dso" \
     fail "no-display: the interpreter exited $? (stderr: $(cat "$out/no-display.err"))"
 echo "$stdout" | grep -q "^FAIL 0 -5" ||
     fail "no-display: expected 'FAIL 0 -5' (plugin stage: GLX init runs at plugin install), got: $stdout"
-grep -q "Couldn.t open X display\|window" "$out/no-display.err" ||
+# The diagnostic names the failure domain whichever renderer was forced:
+# GL3+ fails at GLX ("Couldn't open X display"), Vulkan at its XCB support
+# ("Malformed resolution string" — an empty display string).
+grep -qE "Couldn.t open X display|window|VulkanXcbSupport|resolution" "$out/no-display.err" ||
     fail "no-display: the diagnostic does not name the failure"
 echo "== no-display: ok — $stdout"
 
-case_run vulkan "^FAIL 0 -38" "" --renderer=vulkan --expect-fail
+# Vulkan: the plugin ships with the in-tree install and loads (the adapter
+# preloads glslang for it — third_party/README.md). The no-display
+# environment keeps this deterministic: the plugin's XCB support fails to
+# read a resolution off the empty display string, the window stage is never
+# reached, and the guest is told cleanly (the same -EIO shape as the GL3+
+# no-display case).
+stdout=$(env -u DISPLAY -u WAYLAND_DISPLAY "$core" --capability "$dso" \
+    "$out/guest-window.wasm" --renderer=vulkan --expect-fail 2>"$out/vulkan.err") ||
+    fail "vulkan: the interpreter exited $? (stderr: $(cat "$out/vulkan.err"))"
+echo "$stdout" | grep -q "^FAIL 0 -5" ||
+    fail "vulkan: expected 'FAIL 0 -5' (no display: the plugin's XCB support refuses), got: $stdout"
+grep -qiE "vulkan|resolution|display" "$out/vulkan.err" ||
+    fail "vulkan: the diagnostic does not name the failure"
+echo "== vulkan: ok — $stdout"
 
 # The 3a acid test: jobs, resources, release and reuse — the guest asserts its
 # own results and prints one summary line.
@@ -346,7 +362,9 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         echo "== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY"
     else
-        case_run windowed "^OK " "created (OpenGL 3+ Rendering Subsystem)" \
+        # Whichever renderer the environment forced (TENSION_RENDERER), a real
+        # one created the window: GL3+ by default, Vulkan when forced.
+        case_run windowed "^OK " 'created (OpenGL 3+ Rendering Subsystem\|created (Vulkan Rendering Subsystem' \
             --renderer=gl3plus --frames=5
         # The real texture path: GL3+ creates a TextureGpu; the null case above
         # goes through the same code with the NULL render system.

@@ -61,6 +61,7 @@
 #include <Compositor/OgreCompositorWorkspace.h>
 
 #include <unistd.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <cstring>
@@ -105,6 +106,24 @@ std::string plugin_dir() {
 /// milestone has that a real window came up.
 void log_line(const std::string &message) { backend_log(message); }
 
+/// Ogre-Next's RenderSystem_Vulkan.so has 36 undefined glslang symbols:
+/// upstream's CMakeLists links only OgreNextMain and the Vulkan libraries,
+/// never glslang (measured; third_party/README.md). The plugin resolves its
+/// symbols against the process's global scope when Ogre::Root installs it,
+/// so loading glslang into that scope beforehand is the whole fix. Called
+/// only for the Vulkan renderer — GL3+ never needs it.
+void ensure_glslang_global() {
+    if (dlopen("libglslang.so.16", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+        // The unversioned soname, for a glslang package that ships it.
+        if (dlopen("libglslang.so", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+            log_line(std::string("ogre: could not load glslang for the vulkan plugin: ") +
+                     dlerror());
+            return;  // the plugin's own load failure will name the symbol
+        }
+    }
+    log_line("ogre: glslang preloaded RTLD_GLOBAL for the vulkan plugin");
+}
+
 class BackendOgre;
 
 /// The frame listener that takes the picture. OGRE-Next downloads a window's
@@ -139,11 +158,14 @@ class BackendOgre final : public Backend {
         status_for_messages_ = &status;
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
+            const bool vulkan_rs = renderer_ == TENSION_OGRE_RENDERER_VULKAN;
             is_null_rs_ = null_rs;
-            plugin_name_ = null_rs ? "RenderSystem_NULL" : "RenderSystem_GL3Plus";
-            render_system_name_ =
-                null_rs ? "NULL Rendering Subsystem" : "OpenGL 3+ Rendering Subsystem";
-            name_ = null_rs ? "ogre-null" : "ogre-gl3plus";
+            plugin_name_ = null_rs ? "RenderSystem_NULL"
+                                   : (vulkan_rs ? "RenderSystem_Vulkan" : "RenderSystem_GL3Plus");
+            render_system_name_ = null_rs   ? "NULL Rendering Subsystem"
+                                  : vulkan_rs ? "Vulkan Rendering Subsystem"
+                                              : "OpenGL 3+ Rendering Subsystem";
+            name_ = null_rs ? "ogre-null" : (vulkan_rs ? "ogre-vulkan" : "ogre-gl3plus");
 
             // ── STAGE_PLUGIN ─────────────────────────────────────────────
             status.set_stage(TENSION_OGRE_STAGE_PLUGIN);
@@ -186,6 +208,12 @@ class BackendOgre final : public Backend {
                 // debuggerOutput = false keeps OGRE's chatter off stdout, where
                 // the guest's own evidence lives.
                 log_manager->createLog((temp_dir_ / "Ogre.log").string(), true, false);
+            }
+
+            if (vulkan_rs) {
+                // The plugin cannot load without glslang in the global scope;
+                // measured, and upstream's link line is why (see the function).
+                ensure_glslang_global();
             }
 
             root_ = std::make_unique<Ogre::Root>(nullptr, plugins_cfg,
@@ -245,6 +273,15 @@ class BackendOgre final : public Backend {
             {
                 unsigned long native = 0;
                 window_->getCustomAttribute("WINDOW", &native);
+                if (native == 0) {
+                    // The Vulkan/XCB window publishes its id as "xcb_window_t"
+                    // instead of GL3+'s "WINDOW" — it is the same X11 window
+                    // number, so the token the guest hands to input is
+                    // unchanged (measured; third_party/README.md).
+                    uint32_t xcb_window = 0;
+                    window_->getCustomAttribute("xcb_window_t", &xcb_window);
+                    native = xcb_window;
+                }
                 native_window_.store(static_cast<uint64_t>(native), std::memory_order_release);
                 if (native != 0) {
                     log_line("ogre: window handle " + std::to_string(native) +
@@ -1970,11 +2007,14 @@ bool ScreenshotListener::frameRenderingQueued(const Ogre::FrameEvent &) {
 }
 
 std::unique_ptr<Backend> make_backend(const Config &config) {
-    // The two render systems this build can bring up. Metal and Vulkan are in
-    // the SDK's enum but not in this install's plugins, so they are refused by
-    // the adapter with -ENOSYS at the plugin stage rather than pretended here.
+    // The render systems this build can bring up. Metal is in the SDK's enum
+    // but not in this install's plugins; it is refused with -ENOSYS at the
+    // plugin stage rather than pretended here. Vulkan is served: the plugin
+    // ships with the in-tree install and loads once glslang is in the global
+    // scope (ensure_glslang_global).
     if (config.renderer == TENSION_OGRE_RENDERER_NULL ||
-        config.renderer == TENSION_OGRE_RENDERER_GL3PLUS) {
+        config.renderer == TENSION_OGRE_RENDERER_GL3PLUS ||
+        config.renderer == TENSION_OGRE_RENDERER_VULKAN) {
         return std::make_unique<BackendOgre>(config.renderer);
     }
     return nullptr;

@@ -100,6 +100,64 @@ void log_line(int32_t level, const std::string &message) {
     s.api->log(s.api->user, level, message.data(), static_cast<uint32_t>(message.size()));
 }
 
+/// The name a renderer id is logged and spoken by (tension_ogre.h's enum).
+const char *renderer_name(uint32_t renderer) {
+    switch (renderer) {
+        case TENSION_OGRE_RENDERER_NULL: return "null";
+        case TENSION_OGRE_RENDERER_GL3PLUS: return "gl3plus";
+        case TENSION_OGRE_RENDERER_METAL: return "metal";
+        case TENSION_OGRE_RENDERER_VULKAN: return "vulkan";
+        default: return "?";
+    }
+}
+
+/// The renderer(s) to try, in order, and where the choice came from.
+struct RendererPlan {
+    uint32_t chain[3] = {0, 0, 0};
+    int count = 0;
+    std::string source;
+};
+
+/// Resolve TENSION_RENDERER against the guest's config. The operator's
+/// environment wins — it is the knob for experiments and debugging; unset, the
+/// guest's request stands alone. Only `auto` gets a chain: an explicit choice
+/// (guest or environment) refuses rather than silently landing on a different
+/// renderer, because the caller asked for that one.
+RendererPlan renderer_plan(uint32_t guest) {
+    RendererPlan plan;
+    const char *env = std::getenv("TENSION_RENDERER");
+    if (env != nullptr && env[0] != 0 && std::strcmp(env, "auto") != 0) {
+        uint32_t one = TENSION_OGRE_RENDERER_NULL;
+        if (std::strcmp(env, "vulkan") == 0) {
+            one = TENSION_OGRE_RENDERER_VULKAN;
+        } else if (std::strcmp(env, "gl3plus") == 0) {
+            one = TENSION_OGRE_RENDERER_GL3PLUS;
+        } else if (std::strcmp(env, "null") == 0) {
+            one = TENSION_OGRE_RENDERER_NULL;
+        } else {
+            plan.source = std::string("TENSION_RENDERER='") + env +
+                          "' is not one of auto|vulkan|gl3plus|null";
+            return plan;  // count == 0: the caller refuses with -EINVAL
+        }
+        plan.chain[0] = one;
+        plan.count = 1;
+        plan.source = std::string("TENSION_RENDERER=") + env;
+        return plan;
+    }
+    if (env != nullptr && std::strcmp(env, "auto") == 0) {
+        plan.chain[0] = TENSION_OGRE_RENDERER_VULKAN;
+        plan.chain[1] = TENSION_OGRE_RENDERER_GL3PLUS;
+        plan.chain[2] = TENSION_OGRE_RENDERER_NULL;
+        plan.count = 3;
+        plan.source = "TENSION_RENDERER=auto";
+        return plan;
+    }
+    plan.chain[0] = guest;
+    plan.count = 1;
+    plan.source = "guest config";
+    return plan;
+}
+
 /// Post one event. The only call in this file that a non-guest thread makes.
 void post_event(uint32_t class_id, uint32_t a, uint32_t b) {
     AdapterState &s = adapter_state();
@@ -140,37 +198,90 @@ void render_main() {
         s.status.set_state(TENSION_OGRE_RES_STATE_LOADING);
         s.status.set_stage(TENSION_OGRE_STAGE_PLUGIN);
 
-        s.backend = make_backend(s.config);
-        if (s.backend == nullptr) {
-            // Two ways to have no backend, and the guest deserves to know which:
-            // a renderer this build's enum has but its plugins do not, or a
-            // build with no OGRE at all.
-            const bool named_renderer = s.config.renderer == TENSION_OGRE_RENDERER_METAL ||
-                                        s.config.renderer == TENSION_OGRE_RENDERER_VULKAN;
-            char line[200];
-            std::snprintf(line, sizeof(line),
-                          "no backend for renderer %u: %s", s.config.renderer,
-                          named_renderer
-                              ? "metal and vulkan are not in this build's plugins"
-                              : "this build has no OGRE-Next; only renderer=null is available");
-            fail(TENSION_OGRE_STAGE_PLUGIN, -ENOSYS, line);
+        // Which renderer(s) to try, and where the choice came from. The
+        // operator's TENSION_RENDERER wins over the guest's config; unset, the
+        // guest's request stands alone. Only "auto" gets a chain — an explicit
+        // request refuses rather than silently landing on another renderer.
+        RendererPlan plan = renderer_plan(s.config.renderer);
+        if (plan.count == 0) {
+            fail(TENSION_OGRE_STAGE_PLUGIN, -EINVAL, plan.source);
             finish_thread();
             return;
         }
+        {
+            char line[256];
+            if (plan.count == 1) {
+                std::snprintf(line, sizeof(line), "ogre: renderer = %s (source: %s)",
+                              renderer_name(plan.chain[0]), plan.source.c_str());
+            } else {
+                std::snprintf(line, sizeof(line),
+                              "ogre: renderer chain = %s -> %s -> %s (source: %s)",
+                              renderer_name(plan.chain[0]), renderer_name(plan.chain[1]),
+                              renderer_name(plan.chain[2]), plan.source.c_str());
+            }
+            log_line(1, line);
+        }
 
-        // How the scene apply path turns a guest-visible resource id into one
-        // of this backend's handles: the loader's RESOURCE table is the only
-        // thing that knows both numbers.
-        s.backend->set_resource_lookup([](uint32_t resource_id) -> ResourceHandle {
-            return adapter_state().loader.resource_at(resource_id).handle;
-        });
+        int32_t last_error = -ENOSYS;
+        uint32_t last_stage = TENSION_OGRE_STAGE_PLUGIN;
+        for (int attempt = 0; attempt < plan.count; ++attempt) {
+            Config candidate = s.config;
+            candidate.renderer = plan.chain[attempt];
+            s.backend = make_backend(candidate);
+            if (s.backend == nullptr) {
+                // Two ways to have no backend, and the guest deserves to know
+                // which: a renderer this build's enum has but its plugins do
+                // not (metal), or a build with no OGRE at all.
+                char line[200];
+                std::snprintf(line, sizeof(line), "no backend for renderer %s: %s",
+                              renderer_name(candidate.renderer),
+                              candidate.renderer == TENSION_OGRE_RENDERER_METAL
+                                  ? "metal is not in this build's plugins"
+                                  : "this build has no OGRE-Next; only renderer=null is available");
+                log_line(3, line);
+                last_error = -ENOSYS;
+                last_stage = TENSION_OGRE_STAGE_PLUGIN;
+                continue;
+            }
 
-        const int32_t started = s.backend->start(s.config, s.status);
-        if (started != 0) {
+            // How the scene apply path turns a guest-visible resource id into
+            // one of this backend's handles: the loader's RESOURCE table is
+            // the only thing that knows both numbers.
+            s.backend->set_resource_lookup([](uint32_t resource_id) -> ResourceHandle {
+                return adapter_state().loader.resource_at(resource_id).handle;
+            });
+
+            const int32_t started = s.backend->start(candidate, s.status);
+            if (started == 0) {
+                if (attempt > 0) {
+                    char line[224];
+                    std::snprintf(line, sizeof(line),
+                                  "ogre: renderer = %s (source: fallback; %s failed)",
+                                  renderer_name(candidate.renderer),
+                                  renderer_name(plan.chain[0]));
+                    log_line(1, line);
+                }
+                break;
+            }
             // stop() even after a failed start: it unwinds whatever start
             // managed to create before it gave up.
-            fail(s.status.snapshot().stage, started, "the renderer failed to start");
+            last_error = started;
+            last_stage = s.status.snapshot().stage;
             s.backend->stop(s.status);
+            s.backend = nullptr;
+            if (attempt + 1 < plan.count) {
+                char line[224];
+                std::snprintf(line, sizeof(line),
+                              "ogre: %s failed (stage %u, errno %d); trying %s",
+                              renderer_name(candidate.renderer), last_stage, last_error,
+                              renderer_name(plan.chain[attempt + 1]));
+                log_line(3, line);
+            }
+        }
+        if (s.backend == nullptr) {
+            fail(last_stage, last_error, plan.count > 1
+                                             ? "no renderer in the chain could start"
+                                             : "the renderer failed to start");
             finish_thread();
             return;
         }
