@@ -1886,6 +1886,17 @@ class BackendOgre final : public Backend {
             Ogre::TextureGpu *backbuffer = window_->getTexture();
             frame.convertFromTexture(backbuffer, 0u, backbuffer->getNumMipmaps() - 1u);
             const Ogre::TextureBox box = frame.getData(0);
+            if (box.data == nullptr || box.bytesPerRow == 0) {
+                // The box can come back empty when the download did not
+                // produce a frame (guarded here so an empty box can never
+                // become a row-copy crash). Measured: this does NOT run for
+                // the Vulkan crash — that one happens a frame earlier, inside
+                // OGRE's render pass; see DESIGN.md §15.
+                log_line("ogre: screenshot: the backbuffer download returned an empty box");
+                readback_requested_.store(false);
+                window_->setWantsToDownload(false);
+                return true;
+            }
             const size_t width = box.width, height = box.height, bpp = box.bytesPerPixel;
             {
                 std::lock_guard<std::mutex> lock(readback_mutex_);

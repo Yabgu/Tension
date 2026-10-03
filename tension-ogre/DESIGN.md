@@ -2749,8 +2749,31 @@ nonzero wins — so the token the guest hands to input is the same X11 window
 number either way (measured: 18874368 under Vulkan, 18874370 under GL3+, in
 the same session).
 
-**Known gap:** the readback path (`capture_if_ready`) SIGSEGVs under Vulkan
-(3/3; the tier's first pixel case). GL3Plus is unaffected. Next round.
+**Known gap: the screenshot path under Vulkan (diagnosed, round 21c).**
+Requesting a readback (`setWantsToDownload(true)`) makes the *next frame's*
+render SIGSEGV — and not in the adapter. gdb, two runs: the crash frame is
+`Ogre::VulkanRenderPassDescriptor::performLoadActions`, called from
+`VulkanRenderSystem::executeRenderPassDescriptorDelayedActions` ←
+`SceneManager::_renderPhase02` ← `BackendOgre::frame`; the second run crashed
+inside RADV itself (`libvulkan_radeon.so`, null dereference, `si_addr 0xb0`).
+The adapter's row copy is never reached: a null/empty-box guard in
+`capture_if_ready` (kept, annotated) does not fire and the crash is
+unchanged — measured, so it is neither an empty `TextureBox` nor a null
+pointer at the copy site. Upstream's own
+`OGRE_ASSERT_LOW( mSharedFboItor != end() )` sits at the top of
+`performLoadActions` — a LOW assert, compiled out under the build's
+"Assert mode: standard" — so the risky reads in that function
+(`mSharedFboItor->second`, `mColour[0].texture`, `fboDesc.mFramebuffers[fboIdx]`)
+run unguarded. Upstream has not moved past the pin (that file's newest
+commit is `78a57047ce`, already in it), so there is no fix to bump to.
+Consequence: the tier's pixel cases cannot run under Vulkan yet — the
+forced-Vulkan tier stops at `triangle-gl3plus`, GL3Plus passes 8/8.
+**Removal condition:** the readback works under Vulkan. Instruments for the
+next round: rebuild Ogre-Next with `-DOGRE_ASSERT_MODE=1` (turns the
+compiled-out invariant into a named abort), and/or move the capture path off
+OGRE's window download entirely (render the frame into an adapter-owned
+render-target texture whose download Vulkan supports). Delete this note and
+the pixel-case caveat when it lands.
 
 # Appendix A — tension_adapter.h specification
 
