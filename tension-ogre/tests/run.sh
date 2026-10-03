@@ -329,11 +329,9 @@ skin_matrices_case() {
 skin_deform_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-skin-deform.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err")
-    rc=$?
-    echo "$stdout" | sed 's/^/    /'
-    [ "$rc" = 0 ] ||
-        fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-deform.wasm" "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
+        { rc=$?; echo "$stdout" | sed 's/^/    /'; \
+          fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"; }
     echo "$stdout" | sed 's/^/    /'
     echo "$stdout" | grep -qE "^OK$" ||
         fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
@@ -348,11 +346,10 @@ skin_deform_case() {
 noskel_case() {
     name=$1
     shift
-    stdout=$("$core" --capability "$dso" "$out/guest-skin-noskel.wasm" "--tns=$out/fixtures-noskel.tns" "$@" 2>"$out/$name.err")
-    rc=$?
+    stdout=$("$core" --capability "$dso" "$out/guest-skin-noskel.wasm" "--tns=$out/fixtures-noskel.tns" "$@" 2>"$out/$name.err") ||
+        { rc=$?; echo "$stdout" | sed 's/^/    /'; \
+          fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"; }
     echo "$stdout" | sed 's/^/    /'
-    [ "$rc" = 0 ] ||
-        fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"
     echo "$stdout" | grep -qE "^OK$" ||
         fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
     echo "== $name: ok — $(echo "$stdout" | grep '^NOSKEL ' | tail -1)"

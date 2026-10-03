@@ -11,16 +11,17 @@
 #      rigged mesh, `<armature>.skeleton.xml` plus the `<skeletonlink>` element
 #      the v1 importer reads.
 #
-# The mesh-tool version is pinned to **v1** and that is not a detail: the
-# adapter imports with `Ogre::v1::MeshSerializer`, and every shipped mesh is
-# `[MeshSerializer_v1.100]`. io_ogre's own default is v2; a v2 file is one the
-# loader cannot read.
+# The mesh-tool version is pinned to **v2**: every repo mesh is
+# `[MeshSerializer_v2.1 R2]` and the adapter's v2 reader reads it. (The v1-era
+# pin was `-V 1.10`; skeletons are unaffected either way — there is no v2
+# skeleton format, and the tool's skeleton path still writes
+# `[Serializer_v1.80]`.)
 #
 # The exporter's last step (XML -> binary) is done by the *converter* it
 # detects (OgreXMLConverter, or OgreMeshTool). This script deliberately does
 # not rely on it: the XMLs are kept (`EX_EXPORT_XML_DELETE=False`), the
 # converter runs with whatever it finds, and the second link is run by the
-# caller with the flags this install wants — `OgreMeshTool -v1` for the mesh
+# caller with the flags this install wants — `OgreMeshTool -v2` for the mesh
 # (see the README/DESIGN for the exact command). If no converter is on PATH,
 # io_ogre records it as an error and writes the XMLs anyway, which is the case
 # this recipe is written for.
@@ -106,8 +107,8 @@ def main() -> int:
         EX_EXPORT_XML_DELETE=False,
         EX_SCENE=False,
         EX_SELECTED_ONLY=True,
-        # The v1 pin (see the header comment).
-        EX_V2_MESH_TOOL_VERSION="v1",
+        # The v2 pin (see the header comment).
+        EX_V2_MESH_TOOL_VERSION="v2",
         # NOT optional, despite the name: io_ogre gates the whole skeleton
         # export on ARMATURE_ANIMATION (`ogre/skeleton.py`: `if arm and
         # config.get('ARMATURE_ANIMATION') is True`). Setting it False

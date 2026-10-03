@@ -82,13 +82,13 @@ class Backend {
         std::function<std::vector<uint8_t>(const std::string &name, int32_t *error)>;
     virtual void set_asset_resolver(AssetResolver resolver) { (void)resolver; }
 
-    /// The skeleton the loader found *before* the import, read from the mesh's
+    /// The skeleton the loader found *before* the parse, read from the mesh's
     /// own directory in the mount table (the sibling convention: a mesh
     /// `.../models/x.mesh` links `x.skeleton`). It has to arrive before the
-    /// parse because the v1 importer captures the skeleton resource it finds
-    /// at import time — a registration after the fact replaces the resource
-    /// the mesh already holds, and the conversion then builds a def with no
-    /// bones (measured). Empty bytes clear it.
+    /// parse because the v2 serializer resolves the mesh's skeleton link
+    /// during `importMesh` (`Mesh::setSkeletonName` ->
+    /// `SkeletonManager::getSkeletonDef`); bytes arriving after the parse are
+    /// bytes the mesh never sees. Empty bytes clear it.
     virtual void set_skeleton_candidate(const std::string &name, std::vector<uint8_t> bytes) {
         (void)name;
         (void)bytes;

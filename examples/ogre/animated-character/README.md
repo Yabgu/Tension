@@ -24,9 +24,9 @@ Two things about it are load-bearing, and neither is guessable:
 - **Clips are named, and the clock is the guest's.**
   `submitAnimation(renderableId, clipName, timeMs)` takes *absolute* time, not a
   delta: the guest computes `elapsed % duration`, and the adapter calls
-  `setTime` on the named clip. The durations are hardcoded from the probe that
-  converted the clips (idle 1.333 s, run 0.667 s, jump 0.500 s); a verb to ask
-  for them is a `§12` item.
+  `setTime` on the named clip. The durations come from the `.ozz` animation
+  archives as parsed (idle 1.375 s, run 0.7083333 s, jump 0.5416667 s in the
+  current archives); a verb to ask for them is a `§12` item.
 
 ## Run it
 
@@ -50,15 +50,17 @@ Both modes print the clip table; the windowed run also reports what the last
 frame held, and how much moved:
 
 ```
-clips: idle run jump run (1.333333s, 0.666667s, 0.5s, fourth offset +0.333s)
-rendered 19068.0 non-background pixels
-quadrants (back-left, back-right, front-left, front-right): q0=5952.0px rgb(183.4,184.7,183.5) q1=5669.0px rgb(213.8,216.4,214.7) q2=3900.0px rgb(157.6,161.7,161.9) q3=3547.0px rgb(198.2,199.9,200.2)
-motion: 6415.0 pixels changed between frame 150 and 300
+clips: idle run jump run (1.375s, 0.7083333s, 0.5416667s, fourth offset +0.35416666s)
+rendered 10994.0 non-background pixels
+quadrants (back-left, back-right, front-left, front-right): q0=3231.0px rgb(11.1,10.8,10.9) q1=1227.0px rgb(15.2,12.1,10.8) q2=3026.0px rgb(14.0,16.0,15.3) q3=3510.0px rgb(11.1,10.9,10.7)
+motion: 4696.0 pixels changed between frame 150 and 300
 animated 4 characters, 3 clips, 300 frames
 done: 4 characters, one mesh, four skins, three clips
 ```
 
-The numbers are one run's.
+The numbers are one run's — the isometric-camera rework (`71f7f66`) and the
+round-14d lighting change (intensity 20.0 → 1.5) moved them from the values
+earlier runs recorded. v1 and v2 assets produce byte-identical output.
 
 ## What to notice
 
@@ -89,10 +91,10 @@ The numbers are one run's.
   pixel count and mean colour is the check that all four were drawn *and* that
   they are wearing different textures — four counts, four different means.
 - **He is lit, and the light is placed where both sides of him can be seen.**
-  One white directional light at **intensity 20**, from the camera's upper
-  left. Intensity 20 and not 1 because `intensity` is a **power scale**, not a
-  normalised factor: at 1.0 a lit surface measures 26/255 — lit, and visually
-  black.
+  One white directional light at **intensity 1.5** (round 14d lowered it from
+  20.0, which blew the lit facets out to white), from the camera's upper left.
+  `intensity` is a **power scale**, not a normalised factor: at 1.0 a lit
+  surface measures 26/255 — lit, and visually black.
 
 ## Where the SDK surface is documented
 

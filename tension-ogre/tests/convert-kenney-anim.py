@@ -40,9 +40,9 @@
 # The clip's name in the export is therefore "my_animation" (the fallback
 # branch's fixed name) whatever the action was called. The binary keeps it.
 #
-# The mesh half of the export is unchanged from `convert-kenney.py`: v1 mesh
-# XML, `EX_V2_MESH_TOOL_VERSION='v1'` (and remember the mesh binary needs
-# `OgreMeshTool -V 1.10`, while the skeleton takes no version flag).
+# The mesh half of the export is unchanged from `convert-kenney.py`:
+# `EX_V2_MESH_TOOL_VERSION='v2'` (the mesh binary needs `OgreMeshTool -v2`,
+# while the skeleton takes no version flag).
 
 import os
 import sys
@@ -209,7 +209,7 @@ def main() -> int:
     result = bpy.ops.ogre.export(
         filepath=os.path.join(outdir, stem + ".scene"),
         EX_MESH=True, EX_MESH_OVERWRITE=True, EX_EXPORT_XML_DELETE=False,
-        EX_SCENE=False, EX_SELECTED_ONLY=True, EX_V2_MESH_TOOL_VERSION="v1",
+        EX_SCENE=False, EX_SELECTED_ONLY=True, EX_V2_MESH_TOOL_VERSION="v2",
         EX_ARMATURE_ANIMATION=True,
     )
     print("convert-kenney-anim.py: export -> %s" % (result,))
