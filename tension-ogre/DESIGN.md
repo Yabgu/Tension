@@ -2767,21 +2767,29 @@ State under Vulkan: every tier pixel case runs and passes — triangle,
 motion, hierarchy, skinning, skin-matrices, skin-deform, noskel,
 render-check — with numbers equal to GL3+ within the bands.
 
-**The procedural-mesh gap (bounded, round 21f).** `procedural-gl3plus` — a
+**The procedural-mesh gap (bounded, rounds 21f–21g).** `procedural-gl3plus` — a
 mesh the guest builds at runtime — reads 0 non-background pixels under
 Vulkan where GL3+ reads 10368. Measured out: not winding (the same triangle
 with reversed vertex order also reads 0 under Vulkan, and 10368 under
 GL3+), not the attribute set (position-only, +UV and +normal variants all
 read 0 under Vulkan), not capture timing (extra waits of 60 and 240 frames
-before the grab change nothing). The file-loaded meshes reach the
-framebuffer under Vulkan through the *same* `createByImportingV1` door, so
-the divergence is how a **hand-built** v1 mesh's buffers reach Vulkan —
-inside Ogre-Next's import/VaoManager path, which is fork-level and out of
-scope. Consequence: the tier's `procedural-gl3plus` case is skipped when
-Vulkan is forced (`TENSION_RENDERER=vulkan|auto`) and runs as before on
-GL3+. **Removal condition:** a hand-built mesh draws under Vulkan — watch
-upstream's Vulkan import/VAO path, or route procedural meshes through a
-serialized v1 mesh first (the file path's shape) once someone needs it.
+before the grab change nothing), and not the serializer shape: round 21g
+implemented the design doc's named fix — export the hand-built v1 mesh with
+`MeshSerializer` and re-import it exactly the way the loader does — and the
+round-tripped mesh (the `older format` and `shared vertices` warnings gone,
+so the serializer shape took) still reads 0 px under Vulkan while GL3+ stays
+at 10368. That sharpens the gap rather than closing it: the procedural mesh
+now has the same *shape* as the file-loaded meshes and goes through the same
+`createByImportingV1` door, so the difference is in the *content* the
+conversion sees, or outside the mesh (the submit path for this renderable).
+The round-trip change was reverted (no benefit, a temp file per mesh)
+pending a real diagnosis. Consequence: the tier's `procedural-gl3plus` case
+is skipped when Vulkan is forced (`TENSION_RENDERER=vulkan|auto`) and runs
+as before on GL3+. **Removal condition:** a hand-built mesh draws under
+Vulkan. Next instruments, in order: compare the v2 `Mesh` built from a
+procedural mesh against one built from a file mesh at runtime (sub-mesh
+buffer bindings, `VaoManager` buffer types); then the item's AABB/culling
+and the submission path for this renderable under Vulkan.
 
 # Appendix A — tension_adapter.h specification
 
