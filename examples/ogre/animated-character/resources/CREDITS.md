@@ -14,7 +14,7 @@ load path starts with that prefix.
   asset can be rebuilt by anyone, and the recipe is the interesting part.
 
   Conversion: FBX → Blender 5.2.2 LTS (io_ogre 0.9.0) → `.mesh.xml` +
-  `.skeleton.xml` → `OgreMeshTool -V 1.10` → `.mesh` + `.skeleton`. The recipe
+  `.skeleton.xml` → `OgreMeshTool -v2` → `.mesh` + `.skeleton`. The recipe
   is committed at `tension-ogre/tests/convert-kenney.py`, so a future character
   is a re-run, not archaeology. The converted rig is 58 bones (`LeftForeArm` at
   index 28, `Hips` at 19), 3.765 units tall at scale 1, resting in an A-pose,

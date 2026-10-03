@@ -17,19 +17,16 @@
 #include <OgreException.h>
 #include <OgreFrameListener.h>
 #include <OgreImage2.h>
-#include <OgreMesh.h>
 #include <OgreMesh2.h>
-#include <OgreMeshManager.h>
 #include <OgreMeshManager2.h>
-#include <OgreMeshSerializer.h>
+#include <OgreMesh2Serializer.h>
+#include <OgreSubMesh2.h>
+#include <Vao/OgreVaoManager.h>
+#include <Vao/OgreVertexBufferPacked.h>
+#include <Vao/OgreIndexBufferPacked.h>
+#include <Vao/OgreVertexArrayObject.h>
 #include <OgreArchiveManager.h>
-#include <OgreAxisAlignedBox.h>
 #include <OgreConfigFile.h>
-#include <OgreHardwareBufferManager.h>
-#include <OgreHardwareIndexBuffer.h>
-#include <OgreHardwareVertexBuffer.h>
-#include <OgreSubMesh.h>
-#include <OgreVertexIndexData.h>
 #include <OgreHlmsManager.h>
 #include <OgreHlmsDatablock.h>
 #include <OgreItem.h>
@@ -49,10 +46,6 @@
 #include <Animation/OgreBone.h>
 #include <Animation/OgreSkeletonDef.h>
 #include <Animation/OgreSkeletonInstance.h>
-#include <OgreOldSkeletonManager.h>
-#include <OgreResource.h>
-#include <OgreSkeleton.h>
-#include <OgreSkeletonSerializer.h>
 #include <Hlms/Pbs/OgreHlmsPbs.h>
 #include <Hlms/Pbs/OgreHlmsPbsDatablock.h>
 #include <Hlms/Unlit/OgreHlmsUnlit.h>
@@ -106,6 +99,29 @@ std::string plugin_dir() {
 /// The one line the smoke test asserts on, and the only proof-by-log this
 /// milestone has that a real window came up.
 void log_line(const std::string &message) { backend_log(message); }
+
+/// Which reader a mesh file's opening asks for (chunk 22). The tag sits just
+/// past the file's first chunk header, and the loader's own `magic_ok` scans
+/// the first 512 bytes for the bare "[MeshSerializer" prefix — the same
+/// window, with the family narrowed: v1 files carry "[MeshSerializer_v1."
+/// (v1.8, v1.100, ...) and v2 files "[MeshSerializer_v2." (R2, R1, or plain
+/// 2.1). The minor version is deliberately not matched.
+enum class MeshFormat { V1, V2, Unknown };
+
+MeshFormat detect_mesh_format(const void *data, size_t len) {
+    static constexpr char kV1Tag[] = "[MeshSerializer_v1.";
+    static constexpr char kV2Tag[] = "[MeshSerializer_v2.";
+    constexpr size_t kTagLen = sizeof(kV1Tag) - 1;
+    static_assert(sizeof(kV2Tag) - 1 == kTagLen, "the two tags must be the same length");
+    if (data == nullptr || len < kTagLen) return MeshFormat::Unknown;
+    const uint8_t *bytes = static_cast<const uint8_t *>(data);
+    const size_t window = std::min<size_t>(len, 512);
+    for (size_t at = 0; at + kTagLen <= window; ++at) {
+        if (std::memcmp(bytes + at, kV1Tag, kTagLen) == 0) return MeshFormat::V1;
+        if (std::memcmp(bytes + at, kV2Tag, kTagLen) == 0) return MeshFormat::V2;
+    }
+    return MeshFormat::Unknown;
+}
 
 /// Ogre-Next's RenderSystem_Vulkan.so has 36 undefined glslang symbols:
 /// upstream's CMakeLists links only OgreNextMain and the Vulkan libraries,
@@ -504,6 +520,7 @@ class BackendOgre final : public Backend {
                 std::filesystem::remove_all(temp_dir_, ignored);
                 temp_dir_.clear();
             }
+            skeleton_location_added_ = false;
             return 0;
         } catch (const Ogre::Exception &e) {
             return refuse_final(e.getFullDescription());
@@ -624,7 +641,6 @@ class BackendOgre final : public Backend {
     struct ResourceEntry {
         uint32_t kind = 0;
         std::string name;
-        Ogre::v1::MeshPtr v1_mesh; ///< kept: the Mesh2 reloads from it
         Ogre::MeshPtr mesh;
         Ogre::TextureGpu *texture = nullptr;
         /// A rigged mesh's bone count, and the skeleton's name — the probe's
@@ -688,11 +704,11 @@ class BackendOgre final : public Backend {
         }
     }
 
-    /// The sibling the loader found before the import (chunk 11). It has to be
-    /// registered here, before `importMesh`, because the v1 importer captures
-    /// the skeleton resource it finds at *import* time: registering afterwards
-    /// replaces a resource the mesh already holds, and the conversion then
-    /// builds a def with no bones (measured, 0 bones on a 19-bone rig).
+    /// The sibling the loader found for this job. The v2 reader stages the
+    /// bytes into a resource location *before* `importMesh`, because the v2
+    /// serializer resolves the mesh's skeleton link during the parse
+    /// (`Mesh::setSkeletonName` -> `SkeletonManager::getSkeletonDef`); bytes
+    /// arriving after the parse are bytes the mesh never sees.
     void set_skeleton_candidate(const std::string &name, std::vector<uint8_t> bytes) override {
         skeleton_candidate_name_ = name;
         skeleton_candidate_bytes_ = std::move(bytes);
@@ -701,76 +717,58 @@ class BackendOgre final : public Backend {
     int32_t realise_mesh(const uint8_t *bytes, size_t len, ResourceHandle *out,
                          uint32_t *out_bones) override {
         if (out_bones != nullptr) *out_bones = 0;
+        // Single reader (chunk 22c): v2 only. The tag scan stays — it is
+        // cheap, and it turns a v1 or unreadable file into a clear, actionable
+        // refusal instead of an OGRE-side serializer error.
+        const MeshFormat format = detect_mesh_format(bytes, len);
+        if (format == MeshFormat::V2) return realise_mesh_v2(bytes, len, out, out_bones);
+        if (format == MeshFormat::V1) {
+            return realisation_failed("mesh bytes are [MeshSerializer_v1 — this build reads "
+                                      "only v2 meshes; convert with `OgreMeshTool -v2`");
+        }
+        return realisation_failed("mesh bytes are not [MeshSerializer_v2 — this build reads "
+                                  "only v2 meshes; convert with `OgreMeshTool -v2`");
+    }
+
+    /// The v2 file-mesh reader (chunk 22). The one reader since 22c: same
+    /// bytes, same job, same ResourceEntry shape as the v1 reader that used
+    /// to sit ahead of it. `createManual` makes the blank v2 mesh the
+    /// serializer's contract asks for, the v2 `MeshSerializer` fills it from
+    /// a MemoryDataStream, and `setToLoaded` closes the state — without it,
+    /// `Item`'s on-demand load would take the manual-resource branch and warn.
+    ///
+    /// The one structural difference is the skeleton: the v2 serializer
+    /// resolves the mesh's link *during* the parse (`Mesh::setSkeletonName` ->
+    /// `SkeletonManager::getSkeletonDef` -> `OldSkeletonManager::load`), so
+    /// the sibling bytes must already be reachable through a resource
+    /// location — see `stage_skeleton_bytes`. No sibling bytes is a legal
+    /// realisation: the link resolves to nothing and the mesh draws through
+    /// the skin Hlms (the animated-character state).
+    int32_t realise_mesh_v2(const uint8_t *bytes, size_t len, ResourceHandle *out,
+                            uint32_t *out_bones) {
         try {
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
+            log_line("ogre: mesh " + name + " is v2 ([MeshSerializer_v2 tag) — the v2 reader");
 
-            // The probe's verified sequence: bytes -> v1 mesh -> Mesh2 -> load.
-            // The v1 -> v2 conversion is deferred, so `load()` is what makes
-            // the submeshes (and the buffers) real.
+            if (!skeleton_candidate_bytes_.empty()) {
+                const int32_t staged =
+                    stage_skeleton_bytes(skeleton_candidate_name_, skeleton_candidate_bytes_);
+                skeleton_candidate_bytes_.clear();
+                skeleton_candidate_name_.clear();
+                if (staged != 0) return staged;
+            }
+
+            Ogre::MeshPtr mesh =
+                Ogre::MeshManager::getSingleton().createManual(name, kResourceGroup);
+
             Ogre::DataStreamPtr stream(new Ogre::MemoryDataStream(
                 const_cast<uint8_t *>(bytes), len, false, /* readOnly */ true));
-            Ogre::v1::MeshPtr v1 =
-                Ogre::v1::MeshManager::getSingleton().createManual(name + "-v1", kResourceGroup);
-            // The skeleton the loader found beside the mesh, registered
-            // *before* the parse (chunk 11): the v1 importer captures the
-            // skeleton resource it finds at import time, so a registration
-            // after this line is a registration the mesh never sees.
-            if (!skeleton_candidate_bytes_.empty()) {
-                const int32_t prepared =
-                    register_manual_skeleton(skeleton_candidate_name_, skeleton_candidate_bytes_);
-                if (prepared != 0) return prepared;
-            }
+            Ogre::MeshSerializer serializer(render_system_->getVaoManager());
+            serializer.importMesh(stream, mesh.get());
+            mesh->setToLoaded();
 
-            Ogre::v1::MeshSerializer serializer;
-            serializer.importMesh(stream, v1.get());
-
-            // The parse now says what the mesh links. If the sibling
-            // convention covered it, the resource is loaded and this is a
-            // no-op; if the name is something else, the resolver gets one
-            // chance to bring it in from the volume — and if the volume does
-            // not carry it either, the job fails naming it. There is no
-            // fallback to the media tree: the models location retires in
-            // `add_resource_locations` so that the disk cannot answer.
-            const Ogre::String linked = v1->getSkeletonName();
-            if (!linked.empty()) {
-                const auto current = Ogre::v1::OldSkeletonManager::getSingleton().getResourceByName(
-                    linked, kResourceGroup);
-                if (!(current && current->isLoaded())) {
-                    if (!asset_resolver_) {
-                        return realisation_failed("mesh links \"" + std::string(linked) +
-                                                  "\" and no asset source is bound");
-                    }
-                    int32_t read_error = 0;
-                    std::vector<uint8_t> skeleton_bytes = asset_resolver_(linked, &read_error);
-                    if (read_error != 0 || skeleton_bytes.empty()) {
-                        // Absent is not an error — the loader's own contract
-                        // ("Absent is not an error: an unrigged mesh has no
-                        // sibling"). The mesh realises with hasSkeleton=true
-                        // and a null def; apply_renderables draws that state
-                        // through the skin Hlms, or refuses the datablock that
-                        // would crash the base fill. Note it, and carry on.
-                        log_line("ogre: mesh links \"" + std::string(linked) +
-                                 "\" but the volume has no such skeleton — realising without "
-                                 "bone data");
-                    } else {
-                        const int32_t registered = register_manual_skeleton(linked, skeleton_bytes);
-                        if (registered != 0) return registered;
-                    }
-                }
-            }
-
-            Ogre::MeshPtr mesh = Ogre::MeshManager::getSingleton().createByImportingV1(
-                name, kResourceGroup, v1.get(), false, false, false);
-            mesh->load();
-
-            // A rigged mesh whose def is missing is a legal realised state:
-            // hasSkeleton=true, no SkeletonInstance, blend data from the
-            // mesh's own bone assignments. apply_renderables routes it to the
-            // skin Hlms — whose fill reproduces the base's no-skeleton block —
-            // and refuses any other datablock before a frame can crash the
-            // base fill on the null instance. Note it as information, not a
-            // failure.
+            const Ogre::String linked = mesh->getSkeletonName();
             if (mesh->hasSkeleton() && mesh->getSkeleton() == nullptr) {
                 log_line("ogre: mesh \"" + name + "\" came back rigged with no skeleton def (it links \"" +
                          std::string(linked) + "\") — no bone data; draws go through the skin Hlms");
@@ -779,17 +777,14 @@ class BackendOgre final : public Backend {
             ResourceEntry entry;
             entry.kind = TENSION_OGRE_RES_KIND_MESH;
             entry.name = name;
-            entry.v1_mesh = v1;
             entry.mesh = mesh;
-            // The rig question, asked once, where the answer is: the skeleton
-            // is read from the mesh file's own chunk by the conversion above,
-            // and it is the conversion that keeps it (the probe measured all
-            // four shipped characters coming through with their bone lists).
+            // No v1 intermediate is set: the v2 reader parses the file
+            // directly.
             if (mesh->hasSkeleton()) {
                 entry.skeleton_name = mesh->getSkeletonName();
                 if (mesh->getSkeleton()) entry.bones = mesh->getSkeleton()->getBones().size();
             }
-            log_line("ogre: realised mesh " + name + ": " + std::to_string(entry.bones) +
+            log_line("ogre: realised mesh " + name + " (v2 file): " + std::to_string(entry.bones) +
                      " bones" +
                      (entry.skeleton_name.empty() ? std::string("")
                                                   : " (\"" + entry.skeleton_name + "\")"));
@@ -803,20 +798,23 @@ class BackendOgre final : public Backend {
         } catch (const std::exception &e) {
             return realisation_failed(e.what());
         } catch (...) {
-            return realisation_failed("an exception of unknown type escaped the mesh loader");
+            return realisation_failed("an exception of unknown type escaped the v2 mesh loader");
         }
     }
 
     /// A mesh built out of the guest's own arrays (chunk 5.5).
     ///
-    /// The probe's sequence (tests/probe_procedural.cpp; DESIGN.md §5.1): the
-    /// v1 mesh is made and filled by hand — `createManual` takes no arrays —
-    /// and then converted through the same `createByImportingV1` door the file
-    /// path uses. Two calls in it are the serializer's job for a file and this
-    /// function's for a hand-built mesh: `prepareForShadowMapping(false)`,
-    /// without which the conversion imports a pass-1 buffer that does not exist
-    /// and takes the process with it (measured: SIGSEGV), and `_setBounds`,
-    /// without which the mesh renders but is never culled.
+    /// Round 22d: the v2 buffers are built directly — `createManual`, a
+    /// `VertexElement2Vec` layout, `VaoManager::createVertexBuffer` /
+    /// `createIndexBuffer`, and one `VertexArrayObject` aliased into both the
+    /// normal and shadow passes — then the bounds are set and the mesh is
+    /// marked loaded. The v1 mesh and `createByImportingV1` are gone: they
+    /// existed only to feed the importer, and the import path is where the
+    /// earlier Vulkan workaround lived.
+    ///
+    /// The input contract is unchanged: interleaved vertices under `format`'s
+    /// element set (position first, then normal, then uv — the declaration
+    /// order defines the offsets), then 16-bit indices in whole triangles.
     int32_t realise_mesh_from_arrays(const uint8_t *vertices, size_t vertex_bytes, uint32_t format,
                                      const uint8_t *indices, size_t index_bytes, uint32_t topology,
                                      ResourceHandle *out, uint32_t *out_bones) override {
@@ -831,61 +829,71 @@ class BackendOgre final : public Backend {
             if (index_bytes == 0 || index_bytes % 6 != 0) return -EINVAL; // whole triangles
             const size_t vertex_count = vertex_bytes / stride;
             const size_t index_count = index_bytes / 2;
+            if (vertex_count > 65536) return -EINVAL;
 
             const uint32_t handle = next_resource_++;
             const Ogre::String name = "tension-mesh-" + std::to_string(handle);
 
-            Ogre::v1::MeshPtr v1 =
-                Ogre::v1::MeshManager::getSingleton().createManual(name + "-v1", kResourceGroup);
-            Ogre::v1::SubMesh *sub = v1->createSubMesh();
-            sub->useSharedVertices = false;
-            sub->operationType = Ogre::OT_TRIANGLE_LIST;
+            Ogre::MeshPtr mesh =
+                Ogre::MeshManager::getSingleton().createManual(name, kResourceGroup);
+            Ogre::SubMesh *sub = mesh->createSubMesh();
 
-            sub->vertexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::VertexData(
-                Ogre::v1::HardwareBufferManager::getSingletonPtr());
-            Ogre::v1::VertexData *vertex_data = sub->vertexData[Ogre::VpNormal];
-            vertex_data->vertexStart = 0;
-            vertex_data->vertexCount = vertex_count;
-
-            const size_t f3 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT3);
-            const size_t f2 = Ogre::v1::VertexElement::getTypeSize(Ogre::VET_FLOAT2);
-            Ogre::v1::VertexDeclaration *declaration = vertex_data->vertexDeclaration;
-            size_t offset = 0;
-            declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_POSITION);
-            offset += f3;
+            Ogre::VertexElement2Vec elems;
+            elems.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_POSITION));
             if (has_normal) {
-                declaration->addElement(0, offset, Ogre::VET_FLOAT3, Ogre::VES_NORMAL);
-                offset += f3;
+                elems.push_back(Ogre::VertexElement2(Ogre::VET_FLOAT3, Ogre::VES_NORMAL));
             }
             if (has_uv) {
-                declaration->addElement(0, offset, Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES, 0);
-                offset += f2;
+                elems.push_back(
+                    Ogre::VertexElement2(Ogre::VET_FLOAT2, Ogre::VES_TEXTURE_COORDINATES));
             }
 
-            Ogre::v1::HardwareVertexBufferSharedPtr vertex_buffer =
-                Ogre::v1::HardwareBufferManager::getSingleton().createVertexBuffer(
-                    stride, vertex_count, Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
-            vertex_data->vertexBufferBinding->setBinding(0, vertex_buffer);
-            {
-                void *destination = vertex_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
-                std::memcpy(destination, vertices, vertex_bytes);
-                vertex_buffer->unlock();
+            // keepAsShadow transfers ownership of the pointer to the buffer,
+            // which frees it with OGRE_FREE_SIMD(MEMCATEGORY_GEOMETRY) — so the
+            // pointer must be an OGRE_MALLOC_SIMD block, and the guest's bytes
+            // get one copy. If creation throws, the constructor has not taken
+            // ownership and the block is freed here.
+            Ogre::VaoManager *vao_manager = render_system_->getVaoManager();
+
+            void *vertex_copy = OGRE_MALLOC_SIMD(vertex_bytes, Ogre::MEMCATEGORY_GEOMETRY);
+            std::memcpy(vertex_copy, vertices, vertex_bytes);
+            Ogre::VertexBufferPacked *vertex_buffer = nullptr;
+            try {
+                vertex_buffer = vao_manager->createVertexBuffer(
+                    elems, vertex_count, Ogre::BT_IMMUTABLE, vertex_copy, true);
+            } catch (...) {
+                OGRE_FREE_SIMD(vertex_copy, Ogre::MEMCATEGORY_GEOMETRY);
+                throw;
             }
 
-            sub->indexData[Ogre::VpNormal] = OGRE_NEW Ogre::v1::IndexData();
-            Ogre::v1::IndexData *index_data = sub->indexData[Ogre::VpNormal];
-            index_data->indexStart = 0;
-            index_data->indexCount = index_count;
-            Ogre::v1::HardwareIndexBufferSharedPtr index_buffer =
-                Ogre::v1::HardwareBufferManager::getSingleton().createIndexBuffer(
-                    Ogre::v1::HardwareIndexBuffer::IT_16BIT, index_count,
-                    Ogre::v1::HardwareBuffer::HBU_STATIC_WRITE_ONLY, true);
-            {
-                void *destination = index_buffer->lock(Ogre::v1::HardwareBuffer::HBL_DISCARD);
-                std::memcpy(destination, indices, index_bytes);
-                index_buffer->unlock();
+            void *index_copy = OGRE_MALLOC_SIMD(index_bytes, Ogre::MEMCATEGORY_GEOMETRY);
+            std::memcpy(index_copy, indices, index_bytes);
+            Ogre::IndexBufferPacked *index_buffer = nullptr;
+            try {
+                index_buffer = vao_manager->createIndexBuffer(
+                    Ogre::IndexBufferPacked::IT_16BIT, index_count, Ogre::BT_IMMUTABLE, index_copy,
+                    true);
+            } catch (...) {
+                vao_manager->destroyVertexBuffer(vertex_buffer);
+                OGRE_FREE_SIMD(index_copy, Ogre::MEMCATEGORY_GEOMETRY);
+                throw;
             }
-            index_data->indexBuffer = index_buffer;
+
+            Ogre::VertexArrayObject *vao = nullptr;
+            try {
+                Ogre::VertexBufferPackedVec vertex_buffers;
+                vertex_buffers.push_back(vertex_buffer);
+                vao = vao_manager->createVertexArrayObject(vertex_buffers, index_buffer,
+                                                           Ogre::OT_TRIANGLE_LIST);
+            } catch (...) {
+                vao_manager->destroyIndexBuffer(index_buffer);
+                vao_manager->destroyVertexBuffer(vertex_buffer);
+                throw;
+            }
+            // One VAO for both passes: the same geometry casts shadows
+            // (SubMesh2.h: "mVao[1] = mVao[0] is valid").
+            sub->mVao[Ogre::VpNormal].push_back(vao);
+            sub->mVao[Ogre::VpShadow].push_back(vao);
 
             // The bounds: the first three floats of every vertex, which is where
             // `VF_POSITION` puts them.
@@ -901,20 +909,17 @@ class BackendOgre final : public Backend {
                 }
             }
 
-            v1->prepareForShadowMapping(false);
-            v1->_setBounds(
-                Ogre::AxisAlignedBox(minimum[0], minimum[1], minimum[2], maximum[0], maximum[1],
-                                     maximum[2]),
-                false);
-
-            Ogre::MeshPtr mesh = Ogre::MeshManager::getSingleton().createByImportingV1(
-                name, kResourceGroup, v1.get(), false, false, false);
-            mesh->load();
+            const Ogre::Vector3 bounds_min(minimum[0], minimum[1], minimum[2]);
+            const Ogre::Vector3 bounds_max(maximum[0], maximum[1], maximum[2]);
+            const Ogre::Aabb aabb((bounds_min + bounds_max) * 0.5f,
+                                  (bounds_max - bounds_min) * 0.5f);
+            mesh->_setBounds(aabb, false);
+            mesh->_setBoundingSphereRadius(aabb.getRadius());
+            mesh->setToLoaded();
 
             ResourceEntry entry;
             entry.kind = TENSION_OGRE_RES_KIND_MESH;
             entry.name = name;
-            entry.v1_mesh = v1;
             entry.mesh = mesh;
             entry.live = true;
             resources_.push_back(entry);
@@ -1083,14 +1088,12 @@ class BackendOgre final : public Backend {
                 render_system_->getTextureGpuManager()->destroyTexture(entry.texture);
             }
             if (entry.mesh) entry.mesh->unload();
-            if (entry.v1_mesh) entry.v1_mesh->unload();
         } catch (const std::exception &e) {
             backend_log(std::string("ogre: discarding a resource reported: ") + e.what());
         }
         entry.live = false;
         entry.texture = nullptr;
         entry.mesh.reset();
-        entry.v1_mesh.reset();
         return 0;
     }
 
@@ -1105,51 +1108,37 @@ class BackendOgre final : public Backend {
         return -EIO;
     }
 
-    /// The manual loader for a skeleton the render thread registered by hand
-    /// (chunk 11): OGRE may call it on any reload, so it must outlive the
-    /// resource — the backend keeps them all, and the process is their
-    /// lifetime.
-    struct ManualSkeletonBytes final : public Ogre::ManualResourceLoader {
-        std::vector<uint8_t> bytes;
-        void loadResource(Ogre::Resource *resource) override {
-            Ogre::v1::Skeleton *skeleton = static_cast<Ogre::v1::Skeleton *>(resource);
-            Ogre::DataStreamPtr stream(new Ogre::MemoryDataStream(
-                bytes.data(), bytes.size(), false, /* readOnly */ true));
-            Ogre::v1::SkeletonSerializer serializer;
-            serializer.importSkeleton(stream, skeleton);
-        }
-    };
-
-    /// Register `name` as a manual v1 skeleton over `bytes`. The name must be
-    /// exactly the mesh's own reference — `getSkeletonName()` returns
-    /// "Stickman.skeleton", not the file's stem — because that is the string
-    /// the conversion looks up: the probe measured that a near miss registers
-    /// nothing anyone reads, silently (hasSkeleton=true, null def).
-    int32_t register_manual_skeleton(const std::string &name, const std::vector<uint8_t> &bytes) {
+    /// Stage a sibling skeleton's bytes where the v2 loader will look for
+    /// them. Skeletons have no v2 format: OGRE-Next reads the
+    /// [Serializer_v1.80] binary and resolves it through
+    /// `OldSkeletonManager::load(name, group)` — a resource *location*
+    /// lookup. Writing the file into the backend's own temp directory and
+    /// adding that directory to the group once is what makes the bytes
+    /// reachable. The name must be exactly the mesh's link
+    /// (`getSkeletonName()`).
+    int32_t stage_skeleton_bytes(const std::string &name, const std::vector<uint8_t> &bytes) {
         try {
-            // Existence is not the test — *control* is. The v1 mesh import
-            // declares a skeleton resource the moment it parses a mesh that
-            // links one: an empty shell under the right name with no loader
-            // behind it (measured: it exists before this code runs). Anything
-            // already *loaded* is the manual resource from an earlier mesh; a
-            // shell is replaced with the volume's bytes, so the conversion
-            // below resolves against the volume rather than against nothing —
-            // or, with a media location registered, against the disk.
-            Ogre::v1::OldSkeletonManager &skeletons = Ogre::v1::OldSkeletonManager::getSingleton();
-            if (const auto existing = skeletons.getResourceByName(name, kResourceGroup)) {
-                if (existing->isLoaded()) {
-                    log_line("ogre: skeleton \"" + name + "\" is already registered and loaded");
-                    return 0;
-                }
-                skeletons.remove(name);
+            if (name.empty() || name.find('/') != std::string::npos ||
+                name.find('\\') != std::string::npos) {
+                return realisation_failed("skeleton candidate \"" + name + "\" is not a file name");
             }
-            std::unique_ptr<ManualSkeletonBytes> loader = std::make_unique<ManualSkeletonBytes>();
-            loader->bytes = bytes;
-            skeletons.create(name, kResourceGroup, /* isManual */ true, loader.get());
-            skeleton_loaders_.push_back(std::move(loader));
-            log_line("ogre: registered skeleton \"" + name + "\" (" +
-                     std::to_string(bytes.size()) + " bytes, manual, group " +
-                     std::string(kResourceGroup) + ")");
+            const std::filesystem::path target = temp_dir_ / name;
+            {
+                std::ofstream out(target, std::ios::binary | std::ios::trunc);
+                if (!out) return realisation_failed("could not open " + target.string() + " to write");
+                out.write(reinterpret_cast<const char *>(bytes.data()),
+                          static_cast<std::streamsize>(bytes.size()));
+                out.close();
+                if (!out) return realisation_failed("could not write " + target.string());
+            }
+            if (!skeleton_location_added_) {
+                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                    temp_dir_.string(), "FileSystem", kResourceGroup, false);
+                skeleton_location_added_ = true;
+                log_line("ogre: staged-skeleton resource location added: " + temp_dir_.string());
+            }
+            log_line("ogre: staged skeleton \"" + name + "\" (" + std::to_string(bytes.size()) +
+                     " bytes) at " + target.string());
             return 0;
         } catch (const Ogre::Exception &e) {
             return realisation_failed(e.getFullDescription());
@@ -2008,11 +1997,13 @@ class BackendOgre final : public Backend {
     Ogre::ArchiveVec library_;
     /// The loader's skeleton read path, bound per mesh job (chunk 11).
     AssetResolver asset_resolver_;
-    /// The sibling skeleton the loader found before this job's import.
+    /// The sibling skeleton the loader found before this job's parse; the v2
+    /// reader stages it into a resource location.
     std::string skeleton_candidate_name_;
     std::vector<uint8_t> skeleton_candidate_bytes_;
-    /// Manual skeleton loaders, kept for the life of their resources.
-    std::vector<std::unique_ptr<ManualSkeletonBytes>> skeleton_loaders_;
+    /// True once the backend's temp directory has joined the resource group as
+    /// the staged-skeleton location (chunk 22).
+    bool skeleton_location_added_ = false;
     std::vector<ResourceEntry> resources_; ///< index 0 unused: handles are 1-based
     uint32_t next_resource_ = 1;
     Config config_;
