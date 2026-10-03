@@ -84,4 +84,11 @@ fi
 # Anything left on the command line goes to the guest: `--bodies=N` and
 # `--angular` are the guest's own arguments, and this script's job is to hand
 # them over rather than to know what they mean.
-exec "$core" "${res[@]}" --capability "$adapter" build/game.wasm "${assets[@]}" --renderer="$renderer" "$@"
+# Some examples load a second capability (input-camera: the renderer plus the
+# input DSO). The host's --capability is repeatable; this is how an example
+# asks for another one without the harness knowing what it means.
+caps=(--capability "$adapter")
+if [ -n "${TENSION_EXTRA_CAPABILITY:-}" ]; then
+    caps+=(--capability "$TENSION_EXTRA_CAPABILITY")
+fi
+exec "$core" "${res[@]}" "${caps[@]}" build/game.wasm "${assets[@]}" --renderer="$renderer" "$@"
