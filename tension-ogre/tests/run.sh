@@ -24,6 +24,13 @@ core=${TENSION_CORE:-$repo/tension-core/target/debug/tension-core}
 dso=${TENSION_OGRE_DSO:-$root/build/libtension_ogre.so}
 out="$root/build"
 
+# Same rule as the examples' runner: when the in-tree Ogre-Next exists, the
+# adapter was built against it and its libraries must win at load time.
+in_tree_lib="$repo/third_party/ogre-next-install/lib"
+if [ -d "$in_tree_lib" ]; then
+    export LD_LIBRARY_PATH="$in_tree_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+fi
+
 fail() {
     echo "tension-ogre tests: $*" >&2
     exit 1
