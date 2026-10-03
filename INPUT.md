@@ -492,6 +492,13 @@ destroys the SDL window on it. `publish` is `NULL` in v0 — no regions
 **Events.** `INPUT_KEY` and `INPUT_MOUSE` exactly as specified in Q5, motion
 coalesced per epoch, posting skipped when `class_info` reports no subscriber.
 
+**The capability's lifetime is owned by `input_close`.** The host never calls
+the vtable's `shutdown` or `destroy` (`SESSION.md` §11 M3 is open), so a
+capability that owns background threads must tear down through a verb.
+`input_close` detaches, stops the thread, and re-arms for a later
+`input_open` — the DSO's destructor cannot do it: measured, `SDL_Quit` from a
+static destructor during `dlclose` never returns.
+
 **State.** `input_state` copies the mirror into the caller's buffer, validating
 the range first (the solver's pattern). Floats are authoritative; the integers
 are their truncation with the remainder carried.
