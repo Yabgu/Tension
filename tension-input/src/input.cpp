@@ -196,6 +196,12 @@ std::string InputThread::driver() const {
 
 void InputThread::thread_main() {
     pthread_setname_np(pthread_self(), "tension-input");
+    // OGRE-Next 3.0's render window is X11/XWayland on Linux (its DSO links
+    // libX11/libGLX, not libwayland). SDL must speak the same protocol to
+    // receive its events. Forcing x11 with OVERRIDE priority means the DSO
+    // behaves identically whether the user's shell sets SDL_VIDEO_DRIVER or
+    // not.
+    SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "x11", SDL_HINT_OVERRIDE);
     const int32_t rc = sdl_start();
     {
         std::lock_guard<std::mutex> lock(mu_);
@@ -264,9 +270,18 @@ void InputThread::thread_main() {
 
 int32_t InputThread::sdl_start() {
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
-        input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed: ") + SDL_GetError());
-        sdl_up_.store(false, std::memory_order_release);
-        return -ENODEV;
+        input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed with x11 forced: ") +
+                  SDL_GetError());
+        // x11 may be genuinely unavailable (no XWayland on this machine).
+        // Retry once with no hint at all, so SDL picks whatever the platform
+        // offers; only if that also fails is the subsystem down.
+        SDL_ResetHint(SDL_HINT_VIDEO_DRIVER);
+        input_log("input: x11 unavailable, falling back to default video driver");
+        if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMEPAD)) {
+            input_log(std::string("input: SDL_Init(VIDEO|GAMEPAD) failed: ") + SDL_GetError());
+            sdl_up_.store(false, std::memory_order_release);
+            return -ENODEV;
+        }
     }
     const char *drv = SDL_GetCurrentVideoDriver();
     {
