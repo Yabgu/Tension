@@ -141,8 +141,8 @@ function run_edge(): void {
   subscription.class_ = CLASS_INPUT_MOUSE;
   assert(RuntimeSession.subscribe(subscription) == 0, "subscribe INPUT_MOUSE refused");
 
-  print("EDGE: the probe's own window is 'tension-input' (320x200).");
-  print("EDGE: put the POINTER OVER THAT WINDOW, move the mouse, then press a few KEYS.");
+  print("EDGE: the probe's own window is 'tension-input' (320x200) and should take focus automatically;");
+  print("EDGE: if it does not, click it, then move the mouse and press a few KEYS.");
   print("EDGE: running for " + seconds.toString() + " s (" + (seconds * 63).toString() + " wait(16) iterations).");
 
   const state_buffer = heap.alloc(input.STATE_SIZE);
