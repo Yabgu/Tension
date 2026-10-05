@@ -107,13 +107,14 @@ const char *renderer_name(uint32_t renderer) {
         case TENSION_OGRE_RENDERER_GL3PLUS: return "gl3plus";
         case TENSION_OGRE_RENDERER_METAL: return "metal";
         case TENSION_OGRE_RENDERER_VULKAN: return "vulkan";
+        case TENSION_OGRE_RENDERER_D3D11: return "d3d11";
         default: return "?";
     }
 }
 
 /// The renderer(s) to try, in order, and where the choice came from.
 struct RendererPlan {
-    uint32_t chain[3] = {0, 0, 0};
+    uint32_t chain[4] = {0, 0, 0, 0};
     int count = 0;
     std::string source;
 };
@@ -128,7 +129,10 @@ RendererPlan renderer_plan(uint32_t guest) {
     const char *env = std::getenv("TENSION_RENDERER");
     if (env != nullptr && env[0] != 0 && std::strcmp(env, "auto") != 0) {
         uint32_t one = TENSION_OGRE_RENDERER_NULL;
-        if (std::strcmp(env, "vulkan") == 0) {
+        if (std::strcmp(env, "d3d11") == 0 || std::strcmp(env, "dx11") == 0 ||
+            std::strcmp(env, "directx") == 0) {
+            one = TENSION_OGRE_RENDERER_D3D11;
+        } else if (std::strcmp(env, "vulkan") == 0) {
             one = TENSION_OGRE_RENDERER_VULKAN;
         } else if (std::strcmp(env, "gl3plus") == 0) {
             one = TENSION_OGRE_RENDERER_GL3PLUS;
@@ -136,7 +140,7 @@ RendererPlan renderer_plan(uint32_t guest) {
             one = TENSION_OGRE_RENDERER_NULL;
         } else {
             plan.source = std::string("TENSION_RENDERER='") + env +
-                          "' is not one of auto|vulkan|gl3plus|null";
+                          "' is not one of auto|d3d11|vulkan|gl3plus|null";
             return plan;  // count == 0: the caller refuses with -EINVAL
         }
         plan.chain[0] = one;
@@ -145,10 +149,18 @@ RendererPlan renderer_plan(uint32_t guest) {
         return plan;
     }
     if (env != nullptr && std::strcmp(env, "auto") == 0) {
+#if defined(_WIN32)
+        plan.chain[0] = TENSION_OGRE_RENDERER_D3D11;
+        plan.chain[1] = TENSION_OGRE_RENDERER_VULKAN;
+        plan.chain[2] = TENSION_OGRE_RENDERER_GL3PLUS;
+        plan.chain[3] = TENSION_OGRE_RENDERER_NULL;
+        plan.count = 4;
+#else
         plan.chain[0] = TENSION_OGRE_RENDERER_VULKAN;
         plan.chain[1] = TENSION_OGRE_RENDERER_GL3PLUS;
         plan.chain[2] = TENSION_OGRE_RENDERER_NULL;
         plan.count = 3;
+#endif
         plan.source = "TENSION_RENDERER=auto";
         return plan;
     }
@@ -214,10 +226,14 @@ void render_main() {
                 std::snprintf(line, sizeof(line), "ogre: renderer = %s (source: %s)",
                               renderer_name(plan.chain[0]), plan.source.c_str());
             } else {
+                std::string chain_str;
+                for (int i = 0; i < plan.count; ++i) {
+                    if (i > 0) chain_str += " -> ";
+                    chain_str += renderer_name(plan.chain[i]);
+                }
                 std::snprintf(line, sizeof(line),
-                              "ogre: renderer chain = %s -> %s -> %s (source: %s)",
-                              renderer_name(plan.chain[0]), renderer_name(plan.chain[1]),
-                              renderer_name(plan.chain[2]), plan.source.c_str());
+                              "ogre: renderer chain = %s (source: %s)",
+                              chain_str.c_str(), plan.source.c_str());
             }
             log_line(1, line);
         }
@@ -1294,9 +1310,14 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         }
     } else {
 #ifdef TENSION_OGRE_MEDIA_DIR
-        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/models");
-        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/materials/textures");
-        paths.push_back(std::string(TENSION_OGRE_MEDIA_DIR) + "/packs");
+        // The macro is always defined; an empty value means the build baked
+        // nothing in (see backend_ogre.cpp), and no media paths are added.
+        const std::string baked = TENSION_OGRE_MEDIA_DIR;
+        if (!baked.empty()) {
+            paths.push_back(baked + "/models");
+            paths.push_back(baked + "/materials/textures");
+            paths.push_back(baked + "/packs");
+        }
 #endif
     }
     s.loader.set_search_paths(std::move(paths));
@@ -1453,8 +1474,11 @@ AdapterState::~AdapterState() {
     stop_render_thread();
 #endif
 }
-
 } // namespace tension_ogre
+
+#if defined(_MSC_VER)
+#pragma comment(linker, "/EXPORT:tension_adapter_v1")
+#endif
 
 extern "C" const tension_adapter *tension_adapter_v1(void) {
     using namespace tension_ogre;

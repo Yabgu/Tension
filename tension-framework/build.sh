@@ -160,9 +160,9 @@ asconfig_doc = {
     }
 }
 
-with open(layout_ts, "w", encoding="utf-8") as fh:
+with open(layout_ts, "w", encoding="utf-8", newline="\n") as fh:
     fh.write(layout)
-with open(asconfig, "w", encoding="utf-8") as fh:
+with open(asconfig, "w", encoding="utf-8", newline="\n") as fh:
     json.dump(asconfig_doc, fh, indent=2)
     fh.write("\n")
 

@@ -159,11 +159,11 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len) {
                 break;
 
             case TENSION_OGRE_KEY_RENDERER:
-                if (!in_range(value, TENSION_OGRE_RENDERER_NULL, TENSION_OGRE_RENDERER_VULKAN)) {
+                if (!in_range(value, TENSION_OGRE_RENDERER_NULL, TENSION_OGRE_RENDERER_D3D11)) {
                     char line[112];
                     std::snprintf(line, sizeof(line),
                                   "config refused: `renderer` is %u, and 0..%u are the renderer ids",
-                                  value, TENSION_OGRE_RENDERER_VULKAN);
+                                  value, TENSION_OGRE_RENDERER_D3D11);
                     return refuse(ConfigError::ValueOutOfRange, key, line);
                 }
                 config.renderer = value;

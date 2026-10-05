@@ -144,7 +144,8 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 #define TENSION_OGRE_RENDERER_NULL 0u    /* RenderSystem_NULL: no window, no GPU */
 #define TENSION_OGRE_RENDERER_GL3PLUS 1u /* RenderSystem_GL3Plus */
 #define TENSION_OGRE_RENDERER_METAL 2u   /* not in this chunk */
-#define TENSION_OGRE_RENDERER_VULKAN 3u  /* not in this chunk */
+#define TENSION_OGRE_RENDERER_VULKAN 3u  /* RenderSystem_Vulkan */
+#define TENSION_OGRE_RENDERER_D3D11 4u   /* RenderSystem_Direct3D11 */
 
 /* ── what the adapter tells the guest ────────────────────────────────── */
 

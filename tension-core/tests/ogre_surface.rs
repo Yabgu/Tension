@@ -183,7 +183,11 @@ fn dso_path() -> PathBuf {
 
 #[cfg(windows)]
 extern "system" {
-    fn LoadLibraryA(lpLibFileName: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn LoadLibraryExA(
+        lpLibFileName: *const std::ffi::c_char,
+        hFile: *mut std::ffi::c_void,
+        dwFlags: u32,
+    ) -> *mut std::ffi::c_void;
     fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const std::ffi::c_char) -> *mut std::ffi::c_void;
 }
 
@@ -196,10 +200,21 @@ fn load(path: &Path) -> Option<*const Vtable> {
         );
         return None;
     }
-    let c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no interior nul");
+    let _c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no interior nul");
     #[cfg(windows)]
     let (library, symbol) = unsafe {
-        let lib = LoadLibraryA(c_path.as_ptr());
+        // LOAD_WITH_ALTERED_SEARCH_PATH (0x8): the adapter's imports are OGRE-Next's
+        // DLLs, which the build copies beside it in tension-ogre/build — search
+        // that directory rather than the test's own.
+        const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+        let absolute = std::path::absolute(path).expect("an absolute path to the DSO");
+        let c_abs = std::ffi::CString::new(absolute.to_str().expect("utf-8 path"))
+            .expect("no interior nul");
+        let lib = LoadLibraryExA(
+            c_abs.as_ptr(),
+            std::ptr::null_mut(),
+            LOAD_WITH_ALTERED_SEARCH_PATH,
+        );
         let sym = if !lib.is_null() {
             GetProcAddress(lib, c"tension_adapter_v1".as_ptr())
         } else {
@@ -209,7 +224,7 @@ fn load(path: &Path) -> Option<*const Vtable> {
     };
     #[cfg(unix)]
     let (library, symbol) = unsafe {
-        let lib = libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        let lib = libc::dlopen(_c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
         let sym = if !lib.is_null() {
             libc::dlsym(lib, c"tension_adapter_v1".as_ptr())
         } else {

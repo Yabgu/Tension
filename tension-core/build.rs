@@ -39,10 +39,13 @@ fn main() {
 
     check_zig_version();
 
-    let status = Command::new("zig")
-        .current_dir(&res_dir)
-        .args(["build", "-Doptimize=ReleaseSafe"])
-        .status();
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let mut zig_cmd = Command::new("zig");
+    zig_cmd.current_dir(&res_dir).args(["build", "-Doptimize=ReleaseSafe"]);
+    if target.contains("windows-msvc") {
+        zig_cmd.arg("-Dtarget=x86_64-windows-msvc");
+    }
+    let status = zig_cmd.status();
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => panic!("`zig build -Doptimize=ReleaseSafe` failed in {res_dir:?} with {s}"),
@@ -81,43 +84,120 @@ fn main() {
 
     check_gfortran_version();
 
-    let script = solver_dir.join("build.sh");
-    let status = if cfg!(windows) {
-        Command::new("sh").arg(&script).status()
+    let solver_lib = solver_dir.join("build");
+    let solver_archive = solver_lib.join("libtension_solver.a");
+    // Always rebuild: the recipe is cheap, and an "archive exists" short-cut
+    // would let a changed Fortran source link stale objects (cargo reruns this
+    // script on a source change, but the archive would already be sitting
+    // there). `tension-solver/build.sh` carries the same unconditional-rebuild
+    // discipline.
+    if cfg!(windows) {
+        // Windows has no `sh` guarantee, so the recipe's steps run here; the
+        // flags are the pinned set from tension-solver/build.sh (DESIGN.md §2),
+        // restated because that file is the Linux entry point.
+        let out = &solver_lib;
+        let _ = std::fs::create_dir_all(out);
+        let fflags = [
+            "-O2",
+            "-fno-fast-math",
+            "-fPIC",
+            "-std=f2023",
+            "-Wall",
+            "-Wextra",
+            "-Wno-compare-reals",
+            "-Wno-unused-dummy-argument",
+        ];
+        let erk = solver_dir.join("src").join("tension_solver_erk.f90");
+        let sym = solver_dir.join("src").join("tension_solver_symplectic.f90");
+        let imp = solver_dir.join("src").join("tension_solver_implicit.f90");
+        let c_src = solver_dir.join("src").join("tension_solver.c");
+        let erk_o = out.join("tension_solver_erk.o");
+        let sym_o = out.join("tension_solver_symplectic.o");
+        let imp_o = out.join("tension_solver_implicit.o");
+        let c_o = out.join("tension_solver.o");
+
+        for (src, obj) in [(&erk, &erk_o), (&sym, &sym_o), (&imp, &imp_o)] {
+            let mut command = Command::new("gfortran");
+            command
+                .args(fflags)
+                .arg("-J").arg(out)
+                .arg("-I").arg(out)
+                .arg("-c").arg(src)
+                .arg("-o").arg(obj);
+            prefer_tool_own_dir(&mut command, "gfortran");
+            run_or_panic(command, &format!("compiling Fortran source {}", src.display()));
+        }
+        let mut command = Command::new("gcc");
+        command
+            .args(["-std=c99", "-O2", "-fno-fast-math", "-fPIC"])
+            .arg("-I").arg(solver_dir.join("include"))
+            .arg("-c").arg(&c_src)
+            .arg("-o").arg(&c_o);
+        prefer_tool_own_dir(&mut command, "gcc");
+        run_or_panic(command, &format!("compiling C source {}", c_src.display()));
+        let mut command = Command::new("ar");
+        command
+            .args(["rcs"])
+            .arg(&solver_archive)
+            .args([&erk_o, &sym_o, &imp_o, &c_o]);
+        prefer_tool_own_dir(&mut command, "ar");
+        run_or_panic(command, &format!("archiving {}", solver_archive.display()));
     } else {
-        Command::new(&script).status()
-    };
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => panic!("`build.sh` failed in {solver_dir:?} with {s}"),
-        Err(e) => panic!(
-            "could not run {script:?} ({e}) — tension-core links the solver core, so \
-             gfortran {PINNED_GFORTRAN}x must be on PATH (see tension-solver/DESIGN.md §2)"
-        ),
+        let script = solver_dir.join("build.sh");
+        let status = Command::new(&script).status();
+        match status {
+            Ok(s) if s.success() => {}
+            Ok(s) => panic!("`build.sh` failed in {solver_dir:?} with {s}"),
+            Err(e) => panic!(
+                "could not run {script:?} ({e}) — tension-core links the solver core, so \
+                 gfortran {PINNED_GFORTRAN}x must be on PATH (see tension-solver/DESIGN.md §2)"
+            ),
+        }
     }
 
-    let solver_lib = solver_dir.join("build");
-    if !solver_lib.join("libtension_solver.a").exists() {
-        panic!(
-            "expected {} after build.sh",
-            solver_lib.join("libtension_solver.a").display()
-        );
+    if !solver_archive.exists() {
+        panic!("expected {} after building the solver core", solver_archive.display());
+    }
+    // MSVC's linker resolves `static=tension_solver` to `tension_solver.lib`. The
+    // archive is GNU `ar` format, which link.exe reads (verified with `dumpbin`),
+    // so the copy below is only the name MSVC looks for.
+    let solver_msvc = solver_lib.join("tension_solver.lib");
+    if !solver_msvc.exists() {
+        std::fs::copy(&solver_archive, &solver_msvc)
+            .expect("copy the solver archive to the name MSVC's linker expects");
     }
     println!("cargo:rustc-link-search=native={}", solver_lib.display());
     println!("cargo:rustc-link-lib=static=tension_solver");
-    println!("cargo:rustc-link-lib=gfortran");
-    println!("cargo:rustc-link-lib=m");
 
-    // Test targets link the archive directly. The static library reaches
-    // executables through the lib's rlib (rustc bundles static native libs
-    // into it), but an integration test that only declares the bind(C)
-    // symbols — solver_p1.rs, which deliberately never touches the crate —
-    // would not carry the rlib into its link step. These are the same
-    // libraries the lib target receives, restated for test link steps; the
-    // search path above is already passed to every target.
-    println!("cargo:rustc-link-arg-tests=-ltension_solver");
-    println!("cargo:rustc-link-arg-tests=-lgfortran");
-    println!("cargo:rustc-link-arg-tests=-lm");
+    if target.contains("msvc") {
+        // The Fortran core and its C shim are compiled by gfortran/gcc, whose
+        // objects name the C runtime's printf family directly. UCRT moved those
+        // out of the default import libraries and into legacy_stdio_definitions,
+        // so the host must ask for it explicitly.
+        println!("cargo:rustc-link-lib=legacy_stdio_definitions");
+        // Test targets link the archive directly: a test that never touches
+        // this crate's rlib (solver_p1/p4) — or every ogre_* probe, which links
+        // midpoint.o — does not inherit the native lib through the rlib, so
+        // name the archive for those link steps. link.exe takes the archive
+        // path as an input file; `-ltension_solver` is not an option it knows.
+        //
+        // It goes last, after the archive: link.exe searches libraries in
+        // order and does not revisit one already scanned, so the `-l` form
+        // above (which rustc places before the inputs) would not satisfy the
+        // printf references the archive introduces.
+        println!("cargo:rustc-link-arg-tests={}", solver_archive.display());
+        println!("cargo:rustc-link-arg-tests=legacy_stdio_definitions.lib");
+    } else {
+        println!("cargo:rustc-link-lib=gfortran");
+        println!("cargo:rustc-link-lib=m");
+
+        // The same restatement for a linker that speaks `-l`: these are the
+        // libraries the lib target receives, repeated for test link steps that
+        // do not carry the rlib.
+        println!("cargo:rustc-link-arg-tests=-ltension_solver");
+        println!("cargo:rustc-link-arg-tests=-lgfortran");
+        println!("cargo:rustc-link-arg-tests=-lm");
+    }
 
     // ── the P7 sample plugin ──────────────────────────────────────────────
     //
@@ -140,22 +220,20 @@ fn main() {
         .join("include");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     let plugin_obj = out_dir.join("tension_plugin_midpoint.o");
-    let status = Command::new("cc")
+    let mut command = Command::new("cc");
+    command
         .args(["-std=c99", "-O2", "-fno-fast-math", "-fPIC"])
         .arg("-I")
         .arg(&plugin_include)
         .arg("-c")
         .arg(&plugin_src)
         .arg("-o")
-        .arg(&plugin_obj)
-        .status();
-    match status {
-        Ok(s) if s.success() => {}
-        Ok(s) => panic!("compiling {} failed with {s}", plugin_src.display()),
-        Err(e) => panic!(
-            "could not run `cc` ({e}) — the P7 sample plugin is compiled into the test link"
-        ),
-    }
+        .arg(&plugin_obj);
+    prefer_tool_own_dir(&mut command, "cc");
+    run_or_panic(
+        command,
+        &format!("compiling the P7 sample plugin {}", plugin_src.display()),
+    );
     println!("cargo:rustc-link-arg-tests={}", plugin_obj.display());
 
     // ---- the adapter ABI's reference fixture ------------------------------
@@ -183,14 +261,12 @@ fn main() {
         if let Some(define) = define {
             command.arg(define);
         }
-        match command.arg("-o").arg(&output).status() {
-            Ok(status) if status.success() => {}
-            Ok(status) => panic!("compiling {} failed with {status}", adapter_src.display()),
-            Err(error) => panic!(
-                "could not run `cc` ({error}) — the adapter ABI's reference fixture is built \
-                 by that toolchain"
-            ),
-        }
+        command.arg("-o").arg(&output);
+        prefer_tool_own_dir(&mut command, "cc");
+        run_or_panic(
+            command,
+            &format!("compiling the adapter fixture {}", adapter_src.display()),
+        );
     }
     println!(
         "cargo:rustc-env=TENSION_ECHO_ADAPTER={}",
@@ -211,22 +287,19 @@ fn main() {
     println!("cargo:rerun-if-changed={}", ogre_stub_src.display());
     println!("cargo:rerun-if-changed={}", adapter_header.display());
     let ogre_stub = out_dir.join("libtension_ogre_stub.so");
-    match Command::new("cc")
+    let mut command = Command::new("cc");
+    command
         .args(["-std=c11", "-O2", "-fPIC", "-shared"])
         .arg("-I")
         .arg(&include)
         .arg(&ogre_stub_src)
         .arg("-o")
-        .arg(&ogre_stub)
-        .status()
-    {
-        Ok(status) if status.success() => {}
-        Ok(status) => panic!("compiling {} failed with {status}", ogre_stub_src.display()),
-        Err(error) => panic!(
-            "could not run `cc` ({error}) — the capability ABI's stub fixture is built \
-             by that toolchain"
-        ),
-    }
+        .arg(&ogre_stub);
+    prefer_tool_own_dir(&mut command, "cc");
+    run_or_panic(
+        command,
+        &format!("compiling the capability stub {}", ogre_stub_src.display()),
+    );
     println!(
         "cargo:rustc-env=TENSION_OGRE_STUB_ADAPTER={}",
         out_dir.join("libtension_ogre_stub.so").display()
@@ -248,6 +321,44 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+/// On Windows the MSYS2 compilers can fail silently — exit status 1 with no
+/// diagnostics — when an earlier PATH entry shadows one of their own DLLs, as
+/// happens when a Visual Studio environment sits ahead of UCRT64. Re-running
+/// the tool with its own directory first on the child's PATH makes it
+/// self-consistent. A no-op off Windows.
+#[cfg(windows)]
+fn prefer_tool_own_dir(command: &mut Command, tool: &str) {
+    let Some(path) = std::env::var_os("PATH") else { return };
+    let executable = format!("{tool}.exe");
+    for dir in std::env::split_paths(&path) {
+        if dir.join(&executable).is_file() {
+            let mut combined = dir.into_os_string();
+            combined.push(";");
+            combined.push(&path);
+            command.env("PATH", combined);
+            return;
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn prefer_tool_own_dir(_command: &mut Command, _tool: &str) {}
+
+/// Run a command and, on failure, panic with the tool's own diagnostics — a
+/// bare exit status loses the one line that says what actually went wrong.
+fn run_or_panic(mut command: Command, what: &str) {
+    match command.output() {
+        Ok(out) if out.status.success() => {}
+        Ok(out) => panic!(
+            "{what} failed with {}:\n{}{}",
+            out.status,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        ),
+        Err(error) => panic!("could not run `{what}`: {error}"),
     }
 }
 

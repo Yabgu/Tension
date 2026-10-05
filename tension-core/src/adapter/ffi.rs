@@ -228,17 +228,36 @@ mod os_loader {
     use std::ffi::{c_char, c_void, CString};
     use std::path::Path;
 
+    /// `LOAD_WITH_ALTERED_SEARCH_PATH`: resolve the adapter's imports against
+    /// the directory it lives in, not the host's. A capability DSO sits beside
+    /// the libraries it links (the OGRE-Next DLLs, for `libtension_ogre`), so
+    /// this is what makes `--capability path/to/libtension_ogre.so` load with
+    /// no PATH edits. It requires an absolute path.
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
     extern "system" {
-        fn LoadLibraryA(lpLibFileName: *const c_char) -> *mut c_void;
+        fn LoadLibraryExA(
+            lpLibFileName: *const c_char,
+            hFile: *mut c_void,
+            dwFlags: u32,
+        ) -> *mut c_void;
         fn GetProcAddress(hModule: *mut c_void, lpProcName: *const c_char) -> *mut c_void;
         fn FreeLibrary(hModule: *mut c_void) -> i32;
         fn GetLastError() -> u32;
     }
 
     pub fn open(path: &Path) -> Result<*mut c_void, String> {
-        let c_path = CString::new(path.to_str().ok_or_else(|| "path is not valid UTF-8".to_string())?)
-            .map_err(|_| "the path contains a NUL byte".to_string())?;
-        let handle = unsafe { LoadLibraryA(c_path.as_ptr()) };
+        let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
+        let c_path =
+            CString::new(absolute.to_str().ok_or_else(|| "path is not valid UTF-8".to_string())?)
+                .map_err(|_| "the path contains a NUL byte".to_string())?;
+        let handle = unsafe {
+            LoadLibraryExA(
+                c_path.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_WITH_ALTERED_SEARCH_PATH,
+            )
+        };
         if handle.is_null() {
             let err = unsafe { GetLastError() };
             return Err(format!("LoadLibrary failed with error code {}", err));
