@@ -15,6 +15,12 @@
   //
   // `windows` overrides the program to `.exe`; a relative path without it
   // will not launch on Windows.
+  //
+  // preLaunchTask names the compound "debug" task in tasks.json, which chains
+  // the build (and pack, where the example packs a volume).
+  //
+  // Two configurations: the first opens a window (the guests only distinguish
+  // gl3plus from null), the second runs headless for a machine with no display.
   "version": "0.2.0",
   "configurations": [
     {
@@ -34,7 +40,38 @@
         "--capability",
         "${workspaceFolder}/../../../tension-ogre/build/libtension_ogre.so",
         "--capability",
-        "${workspaceFolder}/../../../tension-input/build/libtension_input.so",
+        "${workspaceFolder}/tension-input/build/libtension_input.so",
+        "${workspaceFolder}/build/game.wasm",
+        "--renderer=gl3plus"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    },
+    {
+      // The debug host: full Rust symbols are present, so you can step from the
+      // guest into the host ABI implementation and back if you want to.
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (input-camera example, headless)",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--capability",
+        "${workspaceFolder}/../../../tension-ogre/build/libtension_ogre.so",
+        "--capability",
+        "${workspaceFolder}/tension-input/build/libtension_input.so",
         "${workspaceFolder}/build/game.wasm",
         "--renderer=null"
       ],
@@ -45,7 +82,7 @@
         "settings set target.debug-file-search-paths ${workspaceFolder}"
       ],
       "sourceMap": { ".": "${workspaceFolder}" },
-      "preLaunchTask": "build:debug",
+      "preLaunchTask": "debug",
       "stopOnEntry": false
     }
   ]

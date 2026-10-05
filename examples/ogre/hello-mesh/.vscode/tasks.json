@@ -1,8 +1,8 @@
 {
-  // The pre-launch task(s): `asc` must emit the source map, because that map is
-  // the only thing that links a wasm instruction back to a source line. A
-  // release build carries no map, so the host has nothing to synthesize DWARF
-  // from and source breakpoints cannot resolve.
+  // The pre-launch tasks. `asc` must emit the source map, because that map is
+  // the only thing that links a wasm instruction back to a source line; a
+  // release build carries no map, so source breakpoints cannot resolve. The
+  // launch config names the compound "debug" task, which runs these in order.
   "version": "2.0.0",
   "tasks": [
     {
@@ -19,6 +19,11 @@
       "command": "node ../../../scripts/run-example.mjs --pack-only",
       "options": { "cwd": "${workspaceFolder}" },
       "problemMatcher": []
+    },
+    {
+      "label": "debug",
+      "dependsOn": ["build:debug", "pack"],
+      "dependsOrder": "sequence"
     }
   ]
 }

@@ -15,6 +15,9 @@
   //
   // `windows` overrides the program to `.exe`; a relative path without it
   // will not launch on Windows.
+  //
+  // preLaunchTask names the compound "debug" task in tasks.json, which chains
+  // the build (and pack, where the example packs a volume).
   "version": "0.2.0",
   "configurations": [
     {
@@ -43,7 +46,7 @@
         "settings set target.debug-file-search-paths ${workspaceFolder}"
       ],
       "sourceMap": { ".": "${workspaceFolder}" },
-      "preLaunchTask": "build:debug",
+      "preLaunchTask": "debug",
       "stopOnEntry": false
     }
   ]
