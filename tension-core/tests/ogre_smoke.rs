@@ -252,10 +252,6 @@ mod tension_core_adapter_probe {
     }
 
     pub fn load(path: &Path) -> Loaded {
-        let library = unsafe { libc::dlopen(c_path(path).as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-        assert!(!library.is_null(), "dlopen failed for {}", path.display());
-        let symbol = unsafe { libc::dlsym(library, c"tension_adapter_v1".as_ptr()) };
-        assert!(!symbol.is_null(), "no entry point in {}", path.display());
         #[cfg(windows)]
         let (library, symbol) = unsafe {
             let lib = LoadLibraryA(c_path(path).as_ptr());

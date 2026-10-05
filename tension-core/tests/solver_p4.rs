@@ -218,6 +218,7 @@ fn t1_fixture_exports() {
 
 #[test]
 fn t2_thread_local_discipline() {
+    let _g = lock();
     let y = [1.0f64];
     let mut dy = [0.0f64];
 

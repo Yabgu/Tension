@@ -34,9 +34,9 @@
 //! safety comments below assume it is not hostile. What they do *not* assume is
 //! that it is careful — every range that reaches guest memory is checked here.
 
-use std::ffi::{c_char, c_void, CStr, CString};
-use std::os::unix::ffi::OsStrExt;
 use std::ffi::{c_char, c_void, CStr};
+#[cfg(unix)]
+use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
 use wasmtime::{Caller, Engine, FuncType, Val, ValType};
@@ -221,6 +221,8 @@ const _: () = {
 /// registered, because those closures hold its function pointers.
 pub struct Library {
     handle: *mut c_void,
+}
+
 #[cfg(windows)]
 mod os_loader {
     use std::ffi::{c_char, c_void, CString};
@@ -261,11 +263,6 @@ mod os_loader {
     }
 }
 
-impl Library {
-    /// `dlopen(path, RTLD_NOW | RTLD_LOCAL)`. `RTLD_LOCAL` is deliberate: an
-    /// adapter's symbols are its own business, and nothing else should resolve
-    /// against them by accident.
-    pub fn open(path: &Path) -> Result<Library, String> {
 #[cfg(unix)]
 mod os_loader {
     use std::ffi::{c_void, CStr, CString};
@@ -279,17 +276,13 @@ mod os_loader {
         if handle.is_null() {
             return Err(dl_error());
         }
-        Ok(Library { handle })
         Ok(handle)
     }
 
-    /// `dlsym(handle, name)`.
-    pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
     pub fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
         let c_name = CString::new(name).expect("a symbol name has no NUL in it");
         // Clear any stale error first: dlsym only reports through dlerror.
         unsafe { libc::dlerror() };
-        let symbol = unsafe { libc::dlsym(self.handle, c_name.as_ptr()) };
         let symbol = unsafe { libc::dlsym(handle, c_name.as_ptr()) };
         if symbol.is_null() {
             return Err(dl_error());
@@ -315,33 +308,21 @@ mod os_loader {
     }
 }
 
-impl Drop for Library {
-    fn drop(&mut self) {
-        unsafe { libc::dlclose(self.handle) };
-pub struct Library {
-    handle: *mut c_void,
-}
-
 impl Library {
+    /// `dlopen(path, RTLD_NOW | RTLD_LOCAL)`. `RTLD_LOCAL` is deliberate: an
+    /// adapter's symbols are its own business, and nothing else should resolve
+    /// against them by accident.
     pub fn open(path: &Path) -> Result<Library, String> {
         let handle = os_loader::open(path)?;
         Ok(Library { handle })
     }
 
+    /// `dlsym(handle, name)`.
     pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
         os_loader::symbol(self.handle, name)
     }
 }
 
-/// The loader's last error, as a string.
-fn dl_error() -> String {
-    unsafe {
-        let error = libc::dlerror();
-        if error.is_null() {
-            "the loader reported no error".to_string()
-        } else {
-            CStr::from_ptr(error).to_string_lossy().into_owned()
-        }
 impl Drop for Library {
     fn drop(&mut self) {
         os_loader::close(self.handle);
