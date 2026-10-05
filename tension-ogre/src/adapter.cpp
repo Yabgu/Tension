@@ -1128,7 +1128,9 @@ int32_t shim_window_handle(void *, const tension_value *args, uint32_t nargs, te
 
 int32_t adapter_init(void *, const tension_core_api *core) {
     if (core == nullptr || core->abi_version != TENSION_ADAPTER_ABI_VERSION) return -EINVAL;
-    adapter_state().api = core;
+    AdapterState &s = adapter_state();
+    s.api = core;
+    s.loader.start();
     return 0;
 }
 
@@ -1359,6 +1361,7 @@ int32_t adapter_shutdown(void *) {
         s.shutting_down = true;
     }
     const int32_t rc = stop_render_thread();
+    s.loader.stop();
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.shutting_down = false;
@@ -1371,6 +1374,7 @@ void adapter_destroy(void *) {
     // static and the backend died with its thread. Reset the flags so a second
     // load-then-link cycle (a test harness, a future re-init) starts clean.
     AdapterState &s = adapter_state();
+    s.loader.stop();
     std::lock_guard<std::mutex> lock(s.mutex);
     s.backend.reset();
     s.api = nullptr;
@@ -1436,7 +1440,20 @@ int32_t stop_render_thread() {
 /// it, the members below are destroyed here — `backend`, and with it
 /// `Ogre::Root` and its scene — while the render thread is still drawing,
 /// which is the SIGSEGV (windowed) and SIGABRT (headless) the probe measured.
-AdapterState::~AdapterState() { stop_render_thread(); }
+AdapterState::~AdapterState() {
+#if defined(_WIN32)
+    if (thread.joinable()) {
+        stop_requested = true;
+        cv.notify_all();
+        thread.detach();
+    }
+    std::lock_guard<std::mutex> lock(mutex);
+    backend.reset();
+    initialized = false;
+#else
+    stop_render_thread();
+#endif
+}
 
 } // namespace tension_ogre
 

@@ -121,6 +121,9 @@ class Loader {
     Loader();
     ~Loader();
 
+    void start();
+    void stop();
+
     Loader(const Loader &) = delete;
     Loader &operator=(const Loader &) = delete;
 
