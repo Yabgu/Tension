@@ -93,15 +93,6 @@ const Mapped = struct {
         defer file.close(io);
         const st = try file.stat(io);
         if (st.size == 0) return error.EmptyPak;
-        const map = try std.posix.mmap(
-            null,
-            @intCast(st.size),
-            .{ .READ = true },
-            .{ .TYPE = .PRIVATE },
-            file.handle,
-            0,
-        );
-        return .{ .bytes = map };
         if (builtin.os.tag == .windows) {
             // PAGE_READONLY = 0x02, FILE_MAP_READ = 0x04
             const hMap = CreateFileMappingA(file.handle, null, 0x02, 0, 0, null) orelse return error.MapFailed;
@@ -123,7 +114,6 @@ const Mapped = struct {
     }
 
     fn close(self: *Mapped) void {
-        if (self.bytes.len > 0) std.posix.munmap(self.bytes);
         if (self.bytes.len > 0) {
             if (builtin.os.tag == .windows) {
                 _ = UnmapViewOfFile(self.bytes.ptr);
