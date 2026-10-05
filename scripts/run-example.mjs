@@ -10,6 +10,7 @@
 // Each example declares how it runs in a `tension` block in its package.json:
 //
 //   kind              "plain" | "io" | "ai" | "ogre" | "res" | "collision"
+//   wasm              the guest artifact, when it is not build/game.wasm
 //   stdin             text to feed the host (io)
 //   args              default guest arguments (io)
 //   model             model path for the ai example

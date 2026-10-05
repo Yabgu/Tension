@@ -14,6 +14,7 @@
   },
   "tension": {
     "kind": "ai",
+    "wasm": "build/story.wasm",
     "model": "models/Phi-3-mini-4k-instruct-q4.gguf"
   },
   "dependencies": {

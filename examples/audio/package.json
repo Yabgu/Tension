@@ -11,7 +11,8 @@
     "start": "node ../../scripts/run-example.mjs"
   },
   "tension": {
-    "kind": "plain"
+    "kind": "plain",
+    "wasm": "build/demo.wasm"
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework"
