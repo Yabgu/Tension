@@ -7,8 +7,17 @@
   "scripts": {
     "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
     "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap",
-    "run": "printf 'hello from the terminal\\n' | ../../tension-core/target/debug/tension-core build/game.wasm alpha beta gamma",
-    "start": "npm run build && npm run run"
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "io",
+    "stdin": "hello from the terminal\n",
+    "args": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework"

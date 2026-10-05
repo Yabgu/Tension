@@ -75,3 +75,23 @@ MSYS2 UCRT64 compilers fail *silently* when an earlier `PATH` entry shadows one
 of their DLLs. `tension-core/build.rs`'s `prefer_tool_own_dir` reruns each
 compiler with its own directory first on the child's `PATH` — keep that when
 touching the solver build, and don't "simplify" it away.
+
+## Examples (`npm start`)
+
+Each example's `npm start` runs `scripts/run-example.mjs`, a dependency-free
+Node runner that works in cmd/PowerShell: it resolves the host binary for the
+platform (`.exe` on Windows), builds the guest, packs what needs packing, and
+composes the host's arguments. Per-example specifics live in a `tension` block
+in that example's `package.json`. Steps that are the repo's own shell scripts
+(the framework session-config generator, `pack.sh`) run through
+`msys2_shell.cmd -ucrt64` on Windows or bash elsewhere (override with
+`TENSION_BASH`). `TENSION_OGRE_HEADLESS=1` runs the OGRE examples headless.
+External prerequisites are unchanged: SDL3 for `input-camera`, gnuplot for
+`solver/collision`, llama.cpp/libclang for `ai`.
+
+Each example also ships `.vscode/{launch,tasks,extensions}.json`. The launch
+config drives CodeLLDB over `tension-core --debug --symbol-path <example>` with
+the example's own arguments, and a `windows` override selects
+`tension-core.exe` (a relative program path without it will not launch on
+Windows). Its pre-launch task builds the debug guest (source map required) and,
+where the example packs a volume, runs `pack.sh` first.

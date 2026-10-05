@@ -1,7 +1,7 @@
 {
   // Debugging the AssemblyScript guest under tension-core — no Node, no
   // re-implementation of the ABI. `tension-core` *is* the runtime; the thing
-  // being debugged is io's source, exactly as a Python script is debugged
+  // being debugged is ai's source, exactly as a Python script is debugged
   // without debugging the python binary.
   //
   // How it works: `asc` emits no DWARF (only `name` + `sourceMappingURL`), so
@@ -22,7 +22,7 @@
       // guest into the host ABI implementation and back if you want to.
       "type": "lldb",
       "request": "launch",
-      "name": "lldb: tension-core --debug (io example)",
+      "name": "lldb: tension-core --debug (ai example)",
       "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
       "windows": {
         "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core.exe"
@@ -32,9 +32,7 @@
         "--symbol-path",
         "${workspaceFolder}",
         "${workspaceFolder}/build/game.wasm",
-        "alpha",
-        "beta",
-        "gamma"
+        "${workspaceFolder}/models/Phi-3-mini-4k-instruct-q4.gguf"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",

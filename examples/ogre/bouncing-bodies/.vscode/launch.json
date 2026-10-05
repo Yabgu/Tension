@@ -1,7 +1,7 @@
 {
   // Debugging the AssemblyScript guest under tension-core — no Node, no
   // re-implementation of the ABI. `tension-core` *is* the runtime; the thing
-  // being debugged is io's source, exactly as a Python script is debugged
+  // being debugged is bouncing-bodies's source, exactly as a Python script is debugged
   // without debugging the python binary.
   //
   // How it works: `asc` emits no DWARF (only `name` + `sourceMappingURL`), so
@@ -15,6 +15,9 @@
   //
   // `windows` overrides the program to `.exe`; a relative path without it
   // will not launch on Windows.
+  //
+  // `pack` runs this example's pack.sh first (via scripts/run-example.mjs),
+  // because the guest mounts build/assets.tns before its first load.
   "version": "0.2.0",
   "configurations": [
     {
@@ -22,19 +25,22 @@
       // guest into the host ABI implementation and back if you want to.
       "type": "lldb",
       "request": "launch",
-      "name": "lldb: tension-core --debug (io example)",
-      "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
+      "name": "lldb: tension-core --debug (bouncing-bodies example)",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
       "windows": {
-        "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core.exe"
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
       },
       "args": [
         "--debug",
         "--symbol-path",
         "${workspaceFolder}",
+        "--res",
+        "${workspaceFolder}/build/assets.tns",
+        "--capability",
+        "${workspaceFolder}/../../../tension-ogre/build/libtension_ogre.so",
         "${workspaceFolder}/build/game.wasm",
-        "alpha",
-        "beta",
-        "gamma"
+        "--tns=${workspaceFolder}/build/assets.tns",
+        "--renderer=null"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
@@ -43,7 +49,7 @@
         "settings set target.debug-file-search-paths ${workspaceFolder}"
       ],
       "sourceMap": { ".": "${workspaceFolder}" },
-      "preLaunchTask": "build:debug",
+      "preLaunchTask": ["build:debug", "pack"],
       "stopOnEntry": false
     }
   ]

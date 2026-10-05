@@ -6,9 +6,12 @@
   "description": "TensionCore example: an ECMA-208 (SIDF) resource pak read through the tension::res ABI",
   "scripts": {
     "build": "node ./node_modules/assemblyscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime stub --target release",
-    "pack": "./pack.sh",
-    "run": "./run.sh",
-    "start": "npm run build && npm run pack && npm run run"
+    "pack": "node ../../scripts/run-example.mjs --pack-only",
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "res"
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework"

@@ -12,6 +12,13 @@
       "options": { "cwd": "${workspaceFolder}" },
       "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
+    },
+    {
+      "label": "pack",
+      "type": "shell",
+      "command": "node ../../../scripts/run-example.mjs --pack-only",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
     }
   ]
 }
