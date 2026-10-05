@@ -123,6 +123,7 @@ class Loader {
 
     void start();
     void stop();
+    void stop_detach();
 
     Loader(const Loader &) = delete;
     Loader &operator=(const Loader &) = delete;

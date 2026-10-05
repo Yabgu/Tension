@@ -1447,8 +1447,7 @@ AdapterState::~AdapterState() {
         cv.notify_all();
         thread.detach();
     }
-    std::lock_guard<std::mutex> lock(mutex);
-    backend.reset();
+    loader.stop_detach();
     initialized = false;
 #else
     stop_render_thread();

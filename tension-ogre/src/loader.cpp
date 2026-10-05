@@ -127,6 +127,16 @@ void Loader::stop() {
     if (worker_.joinable()) worker_.join();
 }
 
+void Loader::stop_detach() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_) return;
+        stopping_ = true;
+    }
+    work_cv_.notify_all();
+    if (worker_.joinable()) worker_.detach();
+}
+
 Loader::~Loader() {
     stop();
 }
