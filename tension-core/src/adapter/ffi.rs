@@ -36,6 +36,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::os::unix::ffi::OsStrExt;
+use std::ffi::{c_char, c_void, CStr};
 use std::path::Path;
 
 use wasmtime::{Caller, Engine, FuncType, Val, ValType};
@@ -220,6 +221,44 @@ const _: () = {
 /// registered, because those closures hold its function pointers.
 pub struct Library {
     handle: *mut c_void,
+#[cfg(windows)]
+mod os_loader {
+    use std::ffi::{c_char, c_void, CString};
+    use std::path::Path;
+
+    extern "system" {
+        fn LoadLibraryA(lpLibFileName: *const c_char) -> *mut c_void;
+        fn GetProcAddress(hModule: *mut c_void, lpProcName: *const c_char) -> *mut c_void;
+        fn FreeLibrary(hModule: *mut c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    pub fn open(path: &Path) -> Result<*mut c_void, String> {
+        let c_path = CString::new(path.to_str().ok_or_else(|| "path is not valid UTF-8".to_string())?)
+            .map_err(|_| "the path contains a NUL byte".to_string())?;
+        let handle = unsafe { LoadLibraryA(c_path.as_ptr()) };
+        if handle.is_null() {
+            let err = unsafe { GetLastError() };
+            return Err(format!("LoadLibrary failed with error code {}", err));
+        }
+        Ok(handle)
+    }
+
+    pub fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+        let c_name = CString::new(name).expect("a symbol name has no NUL in it");
+        let sym = unsafe { GetProcAddress(handle, c_name.as_ptr()) };
+        if sym.is_null() {
+            let err = unsafe { GetLastError() };
+            return Err(format!("GetProcAddress for '{}' failed with error code {}", name, err));
+        }
+        Ok(sym)
+    }
+
+    pub fn close(handle: *mut c_void) {
+        unsafe {
+            FreeLibrary(handle);
+        }
+    }
 }
 
 impl Library {
@@ -227,6 +266,13 @@ impl Library {
     /// adapter's symbols are its own business, and nothing else should resolve
     /// against them by accident.
     pub fn open(path: &Path) -> Result<Library, String> {
+#[cfg(unix)]
+mod os_loader {
+    use std::ffi::{c_void, CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    pub fn open(path: &Path) -> Result<*mut c_void, String> {
         let c_path = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| "the path contains a NUL byte".to_string())?;
         let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
@@ -234,24 +280,56 @@ impl Library {
             return Err(dl_error());
         }
         Ok(Library { handle })
+        Ok(handle)
     }
 
     /// `dlsym(handle, name)`.
     pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
+    pub fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
         let c_name = CString::new(name).expect("a symbol name has no NUL in it");
         // Clear any stale error first: dlsym only reports through dlerror.
         unsafe { libc::dlerror() };
         let symbol = unsafe { libc::dlsym(self.handle, c_name.as_ptr()) };
+        let symbol = unsafe { libc::dlsym(handle, c_name.as_ptr()) };
         if symbol.is_null() {
             return Err(dl_error());
         }
         Ok(symbol)
+    }
+
+    pub fn close(handle: *mut c_void) {
+        unsafe {
+            libc::dlclose(handle);
+        }
+    }
+
+    fn dl_error() -> String {
+        unsafe {
+            let error = libc::dlerror();
+            if error.is_null() {
+                "the loader reported no error".to_string()
+            } else {
+                CStr::from_ptr(error).to_string_lossy().into_owned()
+            }
+        }
     }
 }
 
 impl Drop for Library {
     fn drop(&mut self) {
         unsafe { libc::dlclose(self.handle) };
+pub struct Library {
+    handle: *mut c_void,
+}
+
+impl Library {
+    pub fn open(path: &Path) -> Result<Library, String> {
+        let handle = os_loader::open(path)?;
+        Ok(Library { handle })
+    }
+
+    pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
+        os_loader::symbol(self.handle, name)
     }
 }
 
@@ -264,6 +342,9 @@ fn dl_error() -> String {
         } else {
             CStr::from_ptr(error).to_string_lossy().into_owned()
         }
+impl Drop for Library {
+    fn drop(&mut self) {
+        os_loader::close(self.handle);
     }
 }
 

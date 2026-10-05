@@ -55,6 +55,33 @@ fn writePattern(path: []const u8, len: u64) !void {
     }
 }
 
+const builtin = @import("builtin");
+
+extern "kernel32" fn CreateFileMappingA(
+    hFile: std.os.windows.HANDLE,
+    lpFileMappingAttributes: ?*anyopaque,
+    flProtect: u32,
+    dwMaximumSizeHigh: u32,
+    dwMaximumSizeLow: u32,
+    lpName: ?[*:0]const u8,
+) callconv(.winapi) ?std.os.windows.HANDLE;
+
+extern "kernel32" fn MapViewOfFile(
+    hFileMappingObject: std.os.windows.HANDLE,
+    dwDesiredAccess: u32,
+    dwFileOffsetHigh: u32,
+    dwFileOffsetLow: u32,
+    dwNumberOfBytesToMap: usize,
+) callconv(.winapi) ?*anyopaque;
+
+extern "kernel32" fn UnmapViewOfFile(
+    lpBaseAddress: *const anyopaque,
+) callconv(.winapi) std.os.windows.BOOL;
+
+extern "kernel32" fn CloseHandle(
+    hObject: std.os.windows.HANDLE,
+) callconv(.winapi) std.os.windows.BOOL;
+
 /// A pak mapped read-only. The walker uses the slice for its length; every byte
 /// is fetched through the `BlockReader`, which reads the same mapping — so a
 /// 100 MiB volume costs address space, not resident memory (§6.8).
@@ -75,10 +102,35 @@ const Mapped = struct {
             0,
         );
         return .{ .bytes = map };
+        if (builtin.os.tag == .windows) {
+            // PAGE_READONLY = 0x02, FILE_MAP_READ = 0x04
+            const hMap = CreateFileMappingA(file.handle, null, 0x02, 0, 0, null) orelse return error.MapFailed;
+            defer _ = CloseHandle(hMap);
+            const ptr = MapViewOfFile(hMap, 0x04, 0, 0, @intCast(st.size)) orelse return error.MapFailed;
+            const bytes: []align(page) const u8 = @alignCast(@as([*]const u8, @ptrCast(ptr))[0..@intCast(st.size)]);
+            return .{ .bytes = bytes };
+        } else {
+            const map = try std.posix.mmap(
+                null,
+                @intCast(st.size),
+                .{ .READ = true },
+                .{ .TYPE = .PRIVATE },
+                file.handle,
+                0,
+            );
+            return .{ .bytes = map };
+        }
     }
 
     fn close(self: *Mapped) void {
         if (self.bytes.len > 0) std.posix.munmap(self.bytes);
+        if (self.bytes.len > 0) {
+            if (builtin.os.tag == .windows) {
+                _ = UnmapViewOfFile(self.bytes.ptr);
+            } else {
+                std.posix.munmap(self.bytes);
+            }
+        }
         self.bytes = &.{};
     }
 };

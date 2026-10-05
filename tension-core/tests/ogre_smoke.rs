@@ -245,11 +245,43 @@ mod tension_core_adapter_probe {
 
     unsafe extern "C" fn quiet_log(_user: *mut c_void, _level: i32, _msg: *const c_char, _len: u32) {}
 
+    #[cfg(windows)]
+    extern "system" {
+        fn LoadLibraryA(lpLibFileName: *const c_char) -> *mut c_void;
+        fn GetProcAddress(hModule: *mut c_void, lpProcName: *const c_char) -> *mut c_void;
+    }
+
     pub fn load(path: &Path) -> Loaded {
         let library = unsafe { libc::dlopen(c_path(path).as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
         assert!(!library.is_null(), "dlopen failed for {}", path.display());
         let symbol = unsafe { libc::dlsym(library, c"tension_adapter_v1".as_ptr()) };
         assert!(!symbol.is_null(), "no entry point in {}", path.display());
+        #[cfg(windows)]
+        let (library, symbol) = unsafe {
+            let lib = LoadLibraryA(c_path(path).as_ptr());
+            let sym = if !lib.is_null() {
+                GetProcAddress(lib, c"tension_adapter_v1".as_ptr())
+            } else {
+                std::ptr::null_mut()
+            };
+            (lib, sym)
+        };
+        #[cfg(unix)]
+        let (library, symbol) = unsafe {
+            let lib = libc::dlopen(c_path(path).as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+            let sym = if !lib.is_null() {
+                libc::dlsym(lib, c"tension_adapter_v1".as_ptr())
+            } else {
+                std::ptr::null_mut()
+            };
+            (lib, sym)
+        };
+        assert!(!library.is_null(), "dlopen/LoadLibrary failed for {}", path.display());
+        assert!(
+            !symbol.is_null(),
+            "{} has no tension_adapter_v1 symbol — the one name the session looks up",
+            path.display()
+        );
         let entry: extern "C" fn() -> *const Vtable = unsafe { std::mem::transmute(symbol) };
         let adapter = entry();
         assert!(!adapter.is_null());

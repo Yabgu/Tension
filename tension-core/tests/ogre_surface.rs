@@ -181,6 +181,12 @@ fn dso_path() -> PathBuf {
         .join("libtension_ogre.so")
 }
 
+#[cfg(windows)]
+extern "system" {
+    fn LoadLibraryA(lpLibFileName: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+    fn GetProcAddress(hModule: *mut std::ffi::c_void, lpProcName: *const std::ffi::c_char) -> *mut std::ffi::c_void;
+}
+
 fn load(path: &Path) -> Option<*const Vtable> {
     if !path.exists() {
         eprintln!(
@@ -194,6 +200,27 @@ fn load(path: &Path) -> Option<*const Vtable> {
     let library = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     assert!(!library.is_null(), "dlopen failed for {}", path.display());
     let symbol = unsafe { libc::dlsym(library, c"tension_adapter_v1".as_ptr()) };
+    #[cfg(windows)]
+    let (library, symbol) = unsafe {
+        let lib = LoadLibraryA(c_path.as_ptr());
+        let sym = if !lib.is_null() {
+            GetProcAddress(lib, c"tension_adapter_v1".as_ptr())
+        } else {
+            std::ptr::null_mut()
+        };
+        (lib, sym)
+    };
+    #[cfg(unix)]
+    let (library, symbol) = unsafe {
+        let lib = libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL);
+        let sym = if !lib.is_null() {
+            libc::dlsym(lib, c"tension_adapter_v1".as_ptr())
+        } else {
+            std::ptr::null_mut()
+        };
+        (lib, sym)
+    };
+    assert!(!library.is_null(), "dlopen/LoadLibrary failed for {}", path.display());
     assert!(
         !symbol.is_null(),
         "{} has no tension_adapter_v1 symbol — the one name the session looks up",

@@ -53,8 +53,13 @@ fn main() {
     }
 
     let lib_dir = res_dir.join("zig-out").join("lib");
-    if !lib_dir.join("libtension_res.a").exists() {
-        panic!("expected {} after `zig build`", lib_dir.join("libtension_res.a").display());
+    let res_a = lib_dir.join("libtension_res.a");
+    let res_lib = lib_dir.join("tension_res.lib");
+    if !res_a.exists() && res_lib.exists() {
+        let _ = std::fs::copy(&res_lib, &res_a);
+    }
+    if !res_a.exists() && !res_lib.exists() {
+        panic!("expected {} after `zig build`", res_a.display());
     }
     println!("cargo:rustc-link-search=native={}", lib_dir.display());
     println!("cargo:rustc-link-lib=static=tension_res");
@@ -77,7 +82,11 @@ fn main() {
     check_gfortran_version();
 
     let script = solver_dir.join("build.sh");
-    let status = Command::new(&script).status();
+    let status = if cfg!(windows) {
+        Command::new("sh").arg(&script).status()
+    } else {
+        Command::new(&script).status()
+    };
     match status {
         Ok(s) if s.success() => {}
         Ok(s) => panic!("`build.sh` failed in {solver_dir:?} with {s}"),
@@ -222,6 +231,24 @@ fn main() {
         "cargo:rustc-env=TENSION_OGRE_STUB_ADAPTER={}",
         out_dir.join("libtension_ogre_stub.so").display()
     );
+
+    // ── llama.cpp build-info support for MinGW/Windows ─────────────────────
+    if std::env::var("CARGO_FEATURE_AI").is_ok() {
+        if let Some(build_dir) = out_dir.parent().and_then(|p| p.parent()) {
+            if let Ok(entries) = std::fs::read_dir(build_dir) {
+                for entry in entries.flatten() {
+                    if entry.file_name().to_string_lossy().starts_with("llama-cpp-sys-2-") {
+                        let common_dir = entry.path().join("out").join("build").join("common");
+                        if common_dir.join("libllama-common-base.a").exists() {
+                            println!("cargo:rustc-link-search=native={}", common_dir.display());
+                            println!("cargo:rustc-link-lib=static=llama-common-base");
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn check_zig_version() {
