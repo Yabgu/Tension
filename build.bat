@@ -27,8 +27,12 @@ set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 if not defined VCINSTALLDIR (
     set "PF86=%ProgramFiles(x86)%"
     set "VSWHERE=!PF86!\Microsoft Visual Studio\Installer\vswhere.exe"
+    if not exist "!VSWHERE!" set "VSWHERE=%ProgramFiles%\Microsoft Visual Studio\Installer\vswhere.exe"
     if exist "!VSWHERE!" (
-        for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+        for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -prerelease -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSDIR=%%i"
+        if not defined VSDIR (
+            for /f "usebackq tokens=*" %%i in (`"!VSWHERE!" -latest -prerelease -products * -property installationPath`) do set "VSDIR=%%i"
+        )
         if defined VSDIR if exist "!VSDIR!\VC\Auxiliary\Build\vcvars64.bat" call "!VSDIR!\VC\Auxiliary\Build\vcvars64.bat"
     )
 )
@@ -64,7 +68,16 @@ if errorlevel 1 (
 for %%t in (cargo zig cmake ninja gfortran gcc ar) do (
     where %%t >nul 2>&1 || (echo [ERROR] %%t is not on PATH. & exit /b 1)
 )
-if not exist "third_party\ogre-next-install\lib\OgreNextMain.lib" (
+set "OGRE_OK="
+for %%f in (
+    "third_party\ogre-next-install\lib\OgreNextMain.lib"
+    "third_party\ogre-next-install\lib\Release\OgreNextMain.lib"
+    "third_party\ogre-next-install\lib\libOgreNextMain.dll.a"
+    "third_party\ogre-next-install\lib\Release\libOgreNextMain.dll.a"
+) do (
+    if exist "%%~f" set "OGRE_OK=1"
+)
+if not defined OGRE_OK (
     echo [ERROR] OGRE-Next is not installed at third_party\ogre-next-install.
     echo         Build it first; third_party\README.md documents the bootstrap.
     exit /b 1
@@ -72,14 +85,16 @@ if not exist "third_party\ogre-next-install\lib\OgreNextMain.lib" (
 
 echo [1/3] tension-res
 pushd tension-res
-rem The MSVC host links this archive with link.exe, so it must be built for the
-rem msvc ABI (tension-core/build.rs passes the same flag) - a default-ABI
-rem build produces a MinGW archive link.exe rejects with LNK1143.
-zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc || (popd & exit /b 1)
+set "ZIG_FLAGS=-Doptimize=ReleaseSafe"
+rustc -vV 2>nul | findstr /i "msvc" >nul && set "ZIG_FLAGS=!ZIG_FLAGS! -Dtarget=x86_64-windows-msvc"
+zig build !ZIG_FLAGS! || (popd & exit /b 1)
 popd
 
 echo [2/3] tension-ogre
-cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release || exit /b 1
+set "OGRE_CMAKE_FLAGS="
+if exist "third_party\ogre-next-install\lib\Release\libOgreNextMain.dll.a" set "OGRE_CMAKE_FLAGS=-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++"
+if exist "third_party\ogre-next-install\lib\libOgreNextMain.dll.a" set "OGRE_CMAKE_FLAGS=-DCMAKE_C_COMPILER=gcc -DCMAKE_CXX_COMPILER=g++"
+cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release !OGRE_CMAKE_FLAGS! || exit /b 1
 cmake --build tension-ogre\build-cmake || exit /b 1
 
 echo [3/3] tension-core

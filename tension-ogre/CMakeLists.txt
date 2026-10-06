@@ -16,6 +16,9 @@ endif()
 
 set(OGRE_MEDIA_DIR "${OGRE_NEXT_PREFIX}/Media")
 set(OGRE_PLUGIN_DIR "${OGRE_NEXT_PREFIX}/bin")
+if(EXISTS "${OGRE_NEXT_PREFIX}/bin/Release")
+    set(OGRE_PLUGIN_DIR "${OGRE_NEXT_PREFIX}/bin/Release")
+endif()
 
 set(SOURCES
     src/config.cpp
@@ -85,9 +88,13 @@ if(TENSION_OGRE_BACKEND STREQUAL "ogre")
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Pbs
     )
 
-    find_library(OGRE_NEXT_MAIN_LIB NAMES OgreNextMain PATHS "${OGRE_NEXT_PREFIX}/lib" NO_DEFAULT_PATH)
-    find_library(OGRE_NEXT_HLMS_UNLIT_LIB NAMES OgreNextHlmsUnlit PATHS "${OGRE_NEXT_PREFIX}/lib" NO_DEFAULT_PATH)
-    find_library(OGRE_NEXT_HLMS_PBS_LIB NAMES OgreNextHlmsPbs PATHS "${OGRE_NEXT_PREFIX}/lib" NO_DEFAULT_PATH)
+    if(WIN32)
+        list(APPEND CMAKE_FIND_LIBRARY_SUFFIXES ".dll.a" ".a")
+    endif()
+
+    find_library(OGRE_NEXT_MAIN_LIB NAMES OgreNextMain libOgreNextMain PATHS "${OGRE_NEXT_PREFIX}/lib" "${OGRE_NEXT_PREFIX}/lib/Release" NO_DEFAULT_PATH)
+    find_library(OGRE_NEXT_HLMS_UNLIT_LIB NAMES OgreNextHlmsUnlit libOgreNextHlmsUnlit PATHS "${OGRE_NEXT_PREFIX}/lib" "${OGRE_NEXT_PREFIX}/lib/Release" NO_DEFAULT_PATH)
+    find_library(OGRE_NEXT_HLMS_PBS_LIB NAMES OgreNextHlmsPbs libOgreNextHlmsPbs PATHS "${OGRE_NEXT_PREFIX}/lib" "${OGRE_NEXT_PREFIX}/lib/Release" NO_DEFAULT_PATH)
 
     if(NOT OGRE_NEXT_MAIN_LIB OR NOT OGRE_NEXT_HLMS_UNLIT_LIB OR NOT OGRE_NEXT_HLMS_PBS_LIB)
         message(FATAL_ERROR "Could not find OGRE-Next libraries in ${OGRE_NEXT_PREFIX}/lib")
@@ -119,7 +126,7 @@ add_custom_command(TARGET tension_ogre POST_BUILD
 )
 
 if(TENSION_OGRE_BACKEND STREQUAL "ogre")
-    file(GLOB OGRE_RUNTIME_DLLS "${OGRE_NEXT_PREFIX}/bin/*.dll")
+    file(GLOB OGRE_RUNTIME_DLLS "${OGRE_NEXT_PREFIX}/bin/*.dll" "${OGRE_NEXT_PREFIX}/bin/Release/*.dll")
     if(OGRE_RUNTIME_DLLS)
         add_custom_command(TARGET tension_ogre POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${OGRE_RUNTIME_DLLS} "${TENSION_OGRE_ROOT}/build"
