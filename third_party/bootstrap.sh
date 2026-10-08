@@ -68,6 +68,8 @@ case "$(uname -s)" in
             "-DCMAKE_CXX_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600"
             "-DCMAKE_C_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600"
             -DOGRE_BUILD_RENDERSYSTEM_D3D11=OFF
+            -DVulkan_SHADERC_LIB_REL=/ucrt64/lib/libglslang.dll.a
+            -DVulkan_SHADERC_LIB_DBG=/ucrt64/lib/libglslang.dll.a
         )
         ;;
 esac
