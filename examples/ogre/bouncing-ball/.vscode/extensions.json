@@ -1,0 +1,5 @@
+{
+  // CodeLLDB drives lldb, which is where the guest's JIT image and its
+  // synthesized DWARF show up. A system `lldb` works too; this is the IDE half.
+  "recommendations": ["vadimcn.vscode-lldb"]
+}

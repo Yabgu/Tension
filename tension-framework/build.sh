@@ -55,7 +55,7 @@ import sys
 
 source, layout_ts, asconfig, expected_hash = sys.argv[1:5]
 
-with open(source) as fh:
+with open(source, encoding="utf-8") as fh:
     cfg = json.load(fh)
 
 PAGE = 64 * 1024
@@ -160,9 +160,9 @@ asconfig_doc = {
     }
 }
 
-with open(layout_ts, "w") as fh:
+with open(layout_ts, "w", encoding="utf-8", newline="\n") as fh:
     fh.write(layout)
-with open(asconfig, "w") as fh:
+with open(asconfig, "w", encoding="utf-8", newline="\n") as fh:
     json.dump(asconfig_doc, fh, indent=2)
     fh.write("\n")
 
@@ -172,6 +172,6 @@ PY
 
 echo "==> asc flags for a session guest:"
 printf '    importMemory=true memoryBase=%s initialMemory=%s maximumMemory=%s exportTable=true runtime=stub\n' \
-  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_arena_size"])' "$here/session.json")" \
-  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["initial_pages"])' "$here/session.json")" \
-  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["maximum_pages"])' "$here/session.json")"
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["max_arena_size"])' "$here/session.json")" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["initial_pages"])' "$here/session.json")" \
+  "$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["maximum_pages"])' "$here/session.json")"

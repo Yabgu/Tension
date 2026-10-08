@@ -1,0 +1,92 @@
+{
+  // Debugging the AssemblyScript guest under tension-core — no Node, no
+  // re-implementation of the ABI. `tension-core` *is* the runtime; the thing
+  // being debugged is bouncing-ball's source, exactly as a Python script is debugged
+  // without debugging the python binary.
+  //
+  // How it works: `asc` emits no DWARF (only `name` + `sourceMappingURL`), so
+  // `tension-core --debug` synthesizes DWARF for the guest from its source map
+  // before the module reaches wasmtime, and wasmtime registers the compiled
+  // guest with the debugger through the GDB JIT interface. That is what makes
+  // an ordinary source breakpoint resolve.
+  //
+  // `initCommands` turns the GDB JIT loader on: without that hook lldb never
+  // sees the JIT image, and every guest breakpoint stays unresolved.
+  //
+  // `windows` overrides the program to `.exe`; a relative path without it
+  // will not launch on Windows.
+  //
+  // preLaunchTask names the compound "debug" task in tasks.json, which chains
+  // the build (and pack, where the example packs a volume). This one
+  // packs build/assets.tns before the guest mounts it.
+  //
+  // Two configurations: the first opens a window (the guests only distinguish
+  // gl3plus from null), the second runs headless for a machine with no display.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // The debug host: full Rust symbols are present, so you can step from the
+      // guest into the host ABI implementation and back if you want to.
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (bouncing-ball example)",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--res",
+        "${workspaceFolder}/build/assets.tns",
+        "--capability",
+        "${workspaceFolder}/../../../tension-ogre/build/libtension_ogre.so",
+        "${workspaceFolder}/build/game.wasm",
+        "--tns=${workspaceFolder}/build/assets.tns",
+        "--renderer=gl3plus"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    },
+    {
+      // The debug host: full Rust symbols are present, so you can step from the
+      // guest into the host ABI implementation and back if you want to.
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (bouncing-ball example, headless)",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--res",
+        "${workspaceFolder}/build/assets.tns",
+        "--capability",
+        "${workspaceFolder}/../../../tension-ogre/build/libtension_ogre.so",
+        "${workspaceFolder}/build/game.wasm",
+        "--tns=${workspaceFolder}/build/assets.tns",
+        "--renderer=null"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    }
+  ]
+}

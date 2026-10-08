@@ -16,6 +16,8 @@ npm-debug.log*
 
 # Build output
 build/
+# Out-of-source CMake tree (Ninja)
+build-cmake/
 
 # The example's packed volume is a build product (pack.sh regenerates it), and
 # with the generated large asset inside it is far too big to commit.
@@ -37,6 +39,8 @@ tension-audio.wav
 # Editor / OS
 *.swp
 .DS_Store
+# Root editor config is machine-local; examples/*/.vscode are tracked on purpose
+/.vscode/
 
 # Adapter and capability binaries: built by build.sh and dlopen'd, never committed
 *.so
@@ -57,10 +61,18 @@ tension-audio.wav
 *.dylib
 *.exe
 *.log
+# MSVC link products (import/static libs, export tables, symbols)
+*.lib
+*.exp
+*.pdb
+*.ilk
+# Fortran module files (gfortran, tension-solver)
+*.mod
+*.mod0
 
 # Python
 __pycache__
 
 # third_party builds (see third_party/bootstrap.sh)
-third_party/ogre-next-build/
+third_party/ogre-next-build*/
 third_party/ogre-next-install/

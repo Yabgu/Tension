@@ -46,8 +46,12 @@ fi
 # 2. Idempotence: an install is a build; don't redo it unless asked.
 # The media tree is part of "installed": without it the Hlms has no
 # materials (see the OGRE_INSTALL_SAMPLES note below).
-if [ -f "$INSTALL/lib/libOgreNextMain.so" ] && [ -d "$INSTALL/share/OGRE-Next/Media" ] && [ "$FORCE" -eq 0 ]; then
-    echo "bootstrap: $INSTALL/lib/libOgreNextMain.so already exists — nothing to do."
+is_installed=0
+if [ -d "$INSTALL/share/OGRE-Next/Media" ] && { [ -f "$INSTALL/lib/libOgreNextMain.so" ] || [ -f "$INSTALL/lib/libOgreNextMain.dll.a" ] || [ -f "$INSTALL/bin/libOgreNextMain.dll" ]; }; then
+    is_installed=1
+fi
+if [ "$is_installed" -eq 1 ] && [ "$FORCE" -eq 0 ]; then
+    echo "bootstrap: in-tree Ogre-Next already exists — nothing to do."
     echo "bootstrap: use --force to rebuild."
     exit 0
 fi
@@ -55,6 +59,20 @@ fi
 if [ "$FORCE" -eq 1 ]; then
     echo "bootstrap: --force — reconfiguring and rebuilding"
 fi
+
+extra_flags=()
+case "$(uname -s)" in
+    *MINGW*|*MSYS*|*CYGWIN*|*Windows*)
+        extra_flags+=(
+            -G Ninja
+            "-DCMAKE_CXX_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600"
+            "-DCMAKE_C_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600"
+            -DOGRE_BUILD_RENDERSYSTEM_D3D11=OFF
+            -DVulkan_SHADERC_LIB_REL=/ucrt64/lib/libglslang.dll.a
+            -DVulkan_SHADERC_LIB_DBG=/ucrt64/lib/libglslang.dll.a
+        )
+        ;;
+esac
 
 FLAGS=(
     -DCMAKE_BUILD_TYPE=Release
@@ -96,7 +114,7 @@ FLAGS=(
 
 echo "bootstrap: configuring ($SRC -> $BUILD)"
 t0=$(date +%s)
-cmake -S "$SRC" -B "$BUILD" "${FLAGS[@]}"
+cmake -S "$SRC" -B "$BUILD" "${FLAGS[@]}" "${extra_flags[@]}"
 
 echo "bootstrap: building with $(nproc) jobs"
 cmake --build "$BUILD" -j"$(nproc)"

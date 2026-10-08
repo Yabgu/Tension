@@ -54,8 +54,15 @@
 #include "hlms_tension_skin.h"
 #include <Compositor/OgreCompositorWorkspace.h>
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <process.h>
+#define getpid _getpid
+#else
 #include <unistd.h>
 #include <dlfcn.h>
+#endif
 
 #include <algorithm>
 #include <cstring>
@@ -72,12 +79,20 @@
 #include "../include/tension_ogre.h"
 
 #ifndef TENSION_OGRE_MEDIA_DIR
+// The build bakes this in (tension-ogre/CMakeLists.txt passes
+// TENSION_OGRE_MEDIA_DIR; build.sh pkg-configs it). There is no standard
+// Windows media location, so the fallback is empty: unset means "no baked-in
+// path", and TENSION_OGRE_MEDIA_DIR at runtime is the override.
+#if defined(_WIN32)
+#define TENSION_OGRE_MEDIA_DIR ""
+#else
 #define TENSION_OGRE_MEDIA_DIR "/usr/share/OGRE-Next/Media"
+#endif
 #endif
 
 #ifndef TENSION_OGRE_PLUGIN_DIR
-// The build bakes this in from pkg-config's `plugindir`. Without it, the
-// runtime override is the only way to find plugins.
+// Same shape: the build bakes the plug-in directory in, and the runtime
+// override is the only other way to find plugins.
 #define TENSION_OGRE_PLUGIN_DIR ""
 #endif
 
@@ -130,6 +145,7 @@ MeshFormat detect_mesh_format(const void *data, size_t len) {
 /// so loading glslang into that scope beforehand is the whole fix. Called
 /// only for the Vulkan renderer — GL3+ never needs it.
 void ensure_glslang_global() {
+#if !defined(_WIN32)
     if (dlopen("libglslang.so.16", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
         // The unversioned soname, for a glslang package that ships it.
         if (dlopen("libglslang.so", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
@@ -139,6 +155,7 @@ void ensure_glslang_global() {
         }
     }
     log_line("ogre: glslang preloaded RTLD_GLOBAL for the vulkan plugin");
+#endif
 }
 
 class BackendOgre;
@@ -176,13 +193,25 @@ class BackendOgre final : public Backend {
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
             const bool vulkan_rs = renderer_ == TENSION_OGRE_RENDERER_VULKAN;
+            const bool d3d11_rs = renderer_ == TENSION_OGRE_RENDERER_D3D11;
             is_null_rs_ = null_rs;
-            plugin_name_ = null_rs ? "RenderSystem_NULL"
-                                   : (vulkan_rs ? "RenderSystem_Vulkan" : "RenderSystem_GL3Plus");
-            render_system_name_ = null_rs   ? "NULL Rendering Subsystem"
-                                  : vulkan_rs ? "Vulkan Rendering Subsystem"
-                                              : "OpenGL 3+ Rendering Subsystem";
-            name_ = null_rs ? "ogre-null" : (vulkan_rs ? "ogre-vulkan" : "ogre-gl3plus");
+            if (null_rs) {
+                plugin_name_ = "RenderSystem_NULL";
+                render_system_name_ = "NULL Rendering Subsystem";
+                name_ = "ogre-null";
+            } else if (d3d11_rs) {
+                plugin_name_ = "RenderSystem_Direct3D11";
+                render_system_name_ = "Direct3D11 Rendering Subsystem";
+                name_ = "ogre-d3d11";
+            } else if (vulkan_rs) {
+                plugin_name_ = "RenderSystem_Vulkan";
+                render_system_name_ = "Vulkan Rendering Subsystem";
+                name_ = "ogre-vulkan";
+            } else {
+                plugin_name_ = "RenderSystem_GL3Plus";
+                render_system_name_ = "OpenGL 3+ Rendering Subsystem";
+                name_ = "ogre-gl3plus";
+            }
 
             // ── STAGE_PLUGIN ─────────────────────────────────────────────
             status.set_stage(TENSION_OGRE_STAGE_PLUGIN);
@@ -196,7 +225,11 @@ class BackendOgre final : public Backend {
                               "no plugin directory: the build baked none in and "
                               "TENSION_OGRE_PLUGIN_DIR is unset");
             }
+#if defined(_WIN32)
+            const std::string library = dir + "/" + plugin_name_ + ".dll";
+#else
             const std::string library = dir + "/" + plugin_name_ + ".so";
+#endif
             if (!std::filesystem::exists(library)) {
                 return refuse(status, TENSION_OGRE_STAGE_PLUGIN, -EIO,
                               "plugin `" + library + "` is not there");
@@ -288,18 +321,25 @@ class BackendOgre final : public Backend {
             // A render system that does not publish the attribute leaves the
             // cache at 0, which the verb reports as -ENODEV.
             {
-                unsigned long native = 0;
-                window_->getCustomAttribute("WINDOW", &native);
-                if (native == 0) {
-                    // The Vulkan/XCB window publishes its id as "xcb_window_t"
-                    // instead of GL3+'s "WINDOW" — it is the same X11 window
-                    // number, so the token the guest hands to input is
-                    // unchanged (measured; third_party/README.md).
+                uint64_t native = 0;
+#if defined(_WIN32)
+                HWND hwnd = nullptr;
+                window_->getCustomAttribute("WINDOW", &hwnd);
+                if (hwnd == nullptr) {
+                    window_->getCustomAttribute("HWND", &hwnd);
+                }
+                native = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(hwnd));
+#else
+                unsigned long x11_window = 0;
+                window_->getCustomAttribute("WINDOW", &x11_window);
+                if (x11_window == 0) {
                     uint32_t xcb_window = 0;
                     window_->getCustomAttribute("xcb_window_t", &xcb_window);
-                    native = xcb_window;
+                    x11_window = xcb_window;
                 }
-                native_window_.store(static_cast<uint64_t>(native), std::memory_order_release);
+                native = x11_window;
+#endif
+                native_window_.store(native, std::memory_order_release);
                 if (native != 0) {
                     log_line("ogre: window handle " + std::to_string(native) +
                              " cached for window_handle");

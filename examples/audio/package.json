@@ -7,8 +7,12 @@
   "scripts": {
     "build": "asc demo.ts -o build/demo.wasm --runtime stub --target release",
     "build:debug": "asc demo.ts -o build/demo.wasm --runtime stub --target debug",
-    "run": "../../tension-core/target/debug/tension-core build/demo.wasm",
-    "start": "npm run build && npm run run"
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "plain",
+    "wasm": "build/demo.wasm"
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework"

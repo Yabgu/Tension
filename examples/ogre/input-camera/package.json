@@ -7,7 +7,12 @@
   "scripts": {
     "build": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
     "build:debug": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
-    "start": "./run.sh"
+    "start": "node ../../../scripts/run-example.mjs",
+    "run": "node ../../../scripts/run-example.mjs --no-build"
+  },
+  "tension": {
+    "kind": "ogre",
+    "extraCapability": "../../../tension-input/build/libtension_input.so"
   },
   "dependencies": {
     "tension-framework": "file:../../../tension-framework"

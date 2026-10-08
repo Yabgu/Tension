@@ -15,9 +15,13 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -O2 -fno-fast-math -fPIC -Wall -Wextra
 INCLUDE  = -I ../../../tension-solver/include
 
+ifeq ($(OS),Windows_NT)
+LDFLAGS += -L ../../../tension-solver/build -ltension_solver
+endif
+
 build/midpoint.so: midpoint.c
 	mkdir -p build
-	$(CC) $(CFLAGS) $(INCLUDE) -shared -o $@ midpoint.c
+	$(CC) $(CFLAGS) $(INCLUDE) -shared -o $@ midpoint.c $(LDFLAGS)
 
 clean:
 	rm -rf build

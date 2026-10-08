@@ -29,6 +29,10 @@ here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out="$here/build"
 backend=${TENSION_OGRE_BACKEND:-ogre}
 pin='v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)'
+ntdll_lib=
+case "$(uname -s)" in
+    *MINGW*|*MSYS*|*CYGWIN*|*Windows*) ntdll_lib="-lntdll" ;;
+esac
 
 case "${1:-}" in
     --print-pin)
@@ -55,6 +59,9 @@ case "${1:-}" in
         # reads through the mount table now (chunk 11), so these tests link
         # tension-res too — the same static archive tension-core links.
         res_dir="$here/../tension-res"
+        if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ] && [ -f "$res_dir/zig-out/lib/tension_res.lib" ]; then
+            cp "$res_dir/zig-out/lib/tension_res.lib" "$res_dir/zig-out/lib/libtension_res.a"
+        fi
         if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ]; then
             echo "tension-ogre: $res_dir/zig-out/lib/libtension_res.a is missing." >&2
             echo "  Build it first: (cd $res_dir && zig build -Doptimize=ReleaseSafe)" >&2
@@ -68,7 +75,7 @@ case "${1:-}" in
             -I"$res_dir/include" \
             "$here/src/loader.cpp" "$here/src/mounts.cpp" "$here/tests/loader_test.cpp" \
             -o "$out/tests/loader_test" \
-            "$res_dir/zig-out/lib/libtension_res.a" -lpthread || exit 1
+            "$res_dir/zig-out/lib/libtension_res.a" -lpthread $ntdll_lib || exit 1
         "${CXX:-c++}" -std=c++17 -O1 -Wall -Wextra -I"$here/include" -I"$here/src" \
             "$here/src/scene.cpp" "$here/tests/scene_test.cpp" \
             -o "$out/tests/scene_test" || exit 1
@@ -148,6 +155,9 @@ fi
 # dynamic table — the adapter's own entry points are the ones that must be
 # visible to dlopen.
 res_dir="$here/../tension-res"
+if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ] && [ -f "$res_dir/zig-out/lib/tension_res.lib" ]; then
+    cp "$res_dir/zig-out/lib/tension_res.lib" "$res_dir/zig-out/lib/libtension_res.a"
+fi
 if [ ! -f "$res_dir/zig-out/lib/libtension_res.a" ]; then
     echo "tension-ogre: $res_dir/zig-out/lib/libtension_res.a is missing." >&2
     echo "  Build it first: (cd $res_dir && zig build -Doptimize=ReleaseSafe)" >&2
@@ -175,7 +185,7 @@ mkdir -p "$out"
     -DTENSION_OGRE_BACKEND="${backend}" \
     $sources \
     -shared -o "$out/libtension_ogre.so" \
-    $ogre_lib $res_archive -Wl,--exclude-libs,ALL -lpthread
+    $ogre_lib $res_archive -Wl,--exclude-libs,ALL -lpthread $ntdll_lib
 
 echo "tension-ogre: $out/libtension_ogre.so (backend $backend)"
 if [ "$backend" = ogre ]; then
