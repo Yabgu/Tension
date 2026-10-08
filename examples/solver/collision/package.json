@@ -7,8 +7,11 @@
   "scripts": {
     "build": "asc game.ts -o build/game.wasm --runtime stub --target release --exportTable",
     "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap --exportTable",
-    "run": "../../../tension-core/target/debug/tension-core build/game.wasm",
-    "start": "./run.sh"
+    "run": "node ../../../scripts/run-example.mjs --no-build",
+    "start": "node ../../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "collision"
   },
   "dependencies": {
     "tension-framework": "file:../../../tension-framework"

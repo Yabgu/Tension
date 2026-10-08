@@ -34,7 +34,8 @@
 //! safety comments below assume it is not hostile. What they do *not* assume is
 //! that it is careful — every range that reaches guest memory is checked here.
 
-use std::ffi::{c_char, c_void, CStr, CString};
+use std::ffi::{c_char, c_void, CStr};
+#[cfg(unix)]
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
@@ -222,48 +223,128 @@ pub struct Library {
     handle: *mut c_void,
 }
 
-impl Library {
-    /// `dlopen(path, RTLD_NOW | RTLD_LOCAL)`. `RTLD_LOCAL` is deliberate: an
-    /// adapter's symbols are its own business, and nothing else should resolve
-    /// against them by accident.
-    pub fn open(path: &Path) -> Result<Library, String> {
+#[cfg(windows)]
+mod os_loader {
+    use std::ffi::{c_char, c_void, CString};
+    use std::path::Path;
+
+    /// `LOAD_WITH_ALTERED_SEARCH_PATH`: resolve the adapter's imports against
+    /// the directory it lives in, not the host's. A capability DSO sits beside
+    /// the libraries it links (the OGRE-Next DLLs, for `libtension_ogre`), so
+    /// this is what makes `--capability path/to/libtension_ogre.so` load with
+    /// no PATH edits. It requires an absolute path.
+    const LOAD_WITH_ALTERED_SEARCH_PATH: u32 = 0x0000_0008;
+
+    extern "system" {
+        fn LoadLibraryExA(
+            lpLibFileName: *const c_char,
+            hFile: *mut c_void,
+            dwFlags: u32,
+        ) -> *mut c_void;
+        fn GetProcAddress(hModule: *mut c_void, lpProcName: *const c_char) -> *mut c_void;
+        fn FreeLibrary(hModule: *mut c_void) -> i32;
+        fn GetLastError() -> u32;
+    }
+
+    pub fn open(path: &Path) -> Result<*mut c_void, String> {
+        let absolute = std::path::absolute(path).map_err(|e| e.to_string())?;
+        let c_path =
+            CString::new(absolute.to_str().ok_or_else(|| "path is not valid UTF-8".to_string())?)
+                .map_err(|_| "the path contains a NUL byte".to_string())?;
+        let handle = unsafe {
+            LoadLibraryExA(
+                c_path.as_ptr(),
+                std::ptr::null_mut(),
+                LOAD_WITH_ALTERED_SEARCH_PATH,
+            )
+        };
+        if handle.is_null() {
+            let err = unsafe { GetLastError() };
+            return Err(format!("LoadLibrary failed with error code {}", err));
+        }
+        Ok(handle)
+    }
+
+    pub fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
+        let c_name = CString::new(name).expect("a symbol name has no NUL in it");
+        let sym = unsafe { GetProcAddress(handle, c_name.as_ptr()) };
+        if sym.is_null() {
+            let err = unsafe { GetLastError() };
+            return Err(format!("GetProcAddress for '{}' failed with error code {}", name, err));
+        }
+        Ok(sym)
+    }
+
+    pub fn close(handle: *mut c_void) {
+        unsafe {
+            FreeLibrary(handle);
+        }
+    }
+}
+
+#[cfg(unix)]
+mod os_loader {
+    use std::ffi::{c_void, CStr, CString};
+    use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    pub fn open(path: &Path) -> Result<*mut c_void, String> {
         let c_path = CString::new(path.as_os_str().as_bytes())
             .map_err(|_| "the path contains a NUL byte".to_string())?;
         let handle = unsafe { libc::dlopen(c_path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
         if handle.is_null() {
             return Err(dl_error());
         }
-        Ok(Library { handle })
+        Ok(handle)
     }
 
-    /// `dlsym(handle, name)`.
-    pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
+    pub fn symbol(handle: *mut c_void, name: &str) -> Result<*mut c_void, String> {
         let c_name = CString::new(name).expect("a symbol name has no NUL in it");
         // Clear any stale error first: dlsym only reports through dlerror.
         unsafe { libc::dlerror() };
-        let symbol = unsafe { libc::dlsym(self.handle, c_name.as_ptr()) };
+        let symbol = unsafe { libc::dlsym(handle, c_name.as_ptr()) };
         if symbol.is_null() {
             return Err(dl_error());
         }
         Ok(symbol)
     }
+
+    pub fn close(handle: *mut c_void) {
+        unsafe {
+            libc::dlclose(handle);
+        }
+    }
+
+    fn dl_error() -> String {
+        unsafe {
+            let error = libc::dlerror();
+            if error.is_null() {
+                "the loader reported no error".to_string()
+            } else {
+                CStr::from_ptr(error).to_string_lossy().into_owned()
+            }
+        }
+    }
+}
+
+impl Library {
+    /// `dlopen(path, RTLD_NOW | RTLD_LOCAL)`. `RTLD_LOCAL` is deliberate: an
+    /// adapter's symbols are its own business, and nothing else should resolve
+    /// against them by accident.
+    pub fn open(path: &Path) -> Result<Library, String> {
+        let handle = os_loader::open(path)?;
+        Ok(Library { handle })
+    }
+
+    /// `dlsym(handle, name)`.
+    pub fn symbol(&self, name: &str) -> Result<*mut c_void, String> {
+        os_loader::symbol(self.handle, name)
+    }
 }
 
 impl Drop for Library {
     fn drop(&mut self) {
-        unsafe { libc::dlclose(self.handle) };
-    }
-}
-
-/// The loader's last error, as a string.
-fn dl_error() -> String {
-    unsafe {
-        let error = libc::dlerror();
-        if error.is_null() {
-            "the loader reported no error".to_string()
-        } else {
-            CStr::from_ptr(error).to_string_lossy().into_owned()
-        }
+        os_loader::close(self.handle);
     }
 }
 

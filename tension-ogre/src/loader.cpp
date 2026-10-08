@@ -106,16 +106,39 @@ bool magic_ok(uint32_t kind, const std::vector<uint8_t> &bytes) {
 
 Loader::Loader() : jobs_(kCapacity) {
     for (uint32_t index = 0; index < kCapacity; ++index) free_slots_.push_back(index);
-    worker_ = std::thread([this] { worker_main(); });
+    start();
 }
 
-Loader::~Loader() {
+void Loader::start() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!worker_.joinable()) {
+        stopping_ = false;
+        worker_ = std::thread([this] { worker_main(); });
+    }
+}
+
+void Loader::stop() {
     {
         std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_) return;
         stopping_ = true;
     }
     work_cv_.notify_all();
     if (worker_.joinable()) worker_.join();
+}
+
+void Loader::stop_detach() {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (stopping_) return;
+        stopping_ = true;
+    }
+    work_cv_.notify_all();
+    if (worker_.joinable()) worker_.detach();
+}
+
+Loader::~Loader() {
+    stop();
 }
 
 void Loader::set_sink(LoaderSink sink) {
