@@ -43,6 +43,7 @@ use wasmtime::{Caller, Engine, FuncType, Val, ValType};
 
 use super::signatures::{Signature, Slot, ValueType, MAX_PARAMS};
 use super::AdapterHost;
+use tension_core::logging::Level;
 use crate::session::posting::PostError;
 use crate::HostState;
 
@@ -104,6 +105,14 @@ pub type CallCallbackFn = unsafe extern "C" fn(
 ) -> i32;
 pub type ReleaseCallbackFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
 pub type LogFn = unsafe extern "C" fn(*mut c_void, i32, *const c_char, u32);
+
+/// The `log_named` / `log_structured` slots appended under rule 11. Both carry a
+/// logger name (NUL-terminated, or null for the legacy "session" channel,
+/// followed by a counted byte payload; `level` is a `tension_log_level_t`
+/// (0 trace .. 5 fatal), which is *not* the legacy 0..3 vocabulary `LogFn`
+/// carries. Structurally identical, kept as one alias.
+pub type LogNamedFn =
+    unsafe extern "C" fn(*mut c_void, i32, *const c_char, *const c_char, u32);
 pub type RegisterImportFn = unsafe extern "C" fn(
     *mut c_void,
     *const c_char,
@@ -153,6 +162,8 @@ pub struct TensionCoreApi {
     pub post_event: Option<PostEventFn>,
     pub class_info: Option<ClassInfoFn>,
     pub region_lookup: Option<RegionLookupFn>,
+    pub log_named: Option<LogNamedFn>,
+    pub log_structured: Option<LogNamedFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -187,7 +198,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 112);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 128);
     assert!(std::mem::size_of::<TensionAdapter>() == 72);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -203,6 +214,10 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, post_event) == 88);
     assert!(std::mem::offset_of!(TensionCoreApi, class_info) == 96);
     assert!(std::mem::offset_of!(TensionCoreApi, region_lookup) == 104);
+    // Appended under rule 11; the header's `_Static_assert` pins the same shape
+    // from the C side, so an append has to be deliberate in both places.
+    assert!(std::mem::offset_of!(TensionCoreApi, log_named) == 112);
+    assert!(std::mem::offset_of!(TensionCoreApi, log_structured) == 120);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -691,9 +706,11 @@ fn set_i32_result(results: &mut [Val], value: i32) -> anyhow::Result<()> {
 
 // ── the core API's Rust side ──────────────────────────────────────────────
 
-/// One line to stderr, prefixed the way the header's `log` slot documents.
+/// One line on the session channel, now routed through the host logger under
+/// the name `session` (the header's `log` slot documents the old prefix; the
+/// layout supplies it instead).
 pub(crate) fn log_line(message: &str) {
-    eprintln!("[tension:session] {message}");
+    tension_core::logging::log(tension_core::logging::Level::Info, "session", message);
 }
 
 /// Read a C string the adapter passed. `None` for a null pointer or invalid
@@ -785,25 +802,78 @@ pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
         .unwrap_or(0)
 }
 
+/// The legacy `log` slot: levels 0 debug, 1 info, 2 warning, 3 error, on the
+/// "session" channel.
+///
+/// Routed through the host's one logger, so the line carries the configured
+/// layout and filter instead of the old fixed `[tension:session]` prefix. The
+/// behaviour change is deliberate (a second layout would defeat the point), and
+/// it is what makes an adapter's DEBUG lines subject to `--log-level`. Kept
+/// populated for adapters built before the `log_named` append.
 pub(crate) unsafe extern "C" fn log(
-    user: *mut c_void,
+    _user: *mut c_void,
     level: i32,
     msg: *const c_char,
     len: u32,
 ) {
-    if msg.is_null() {
+    // SAFETY: the adapter promised `len` readable bytes at `msg`, or null.
+    let Some(text) = (unsafe { cstr_len(msg, len) }) else {
         return;
-    }
-    let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, len as usize) };
-    let text = String::from_utf8_lossy(bytes);
-    let label = match level {
-        0 => "debug",
-        1 => "info",
-        2 => "warning",
-        _ => "error",
     };
-    let _ = user; // the level and the text are all a line needs
-    log_line(&format!("{label}: {text}"));
+    tension_core::logging::log(Level::from_legacy_code(level), "session", &text);
+}
+
+/// The appended `log_named` slot: a logger name and a counted message.
+pub(crate) unsafe extern "C" fn log_named(
+    _user: *mut c_void,
+    level: i32,
+    name: *const c_char,
+    msg: *const c_char,
+    len: u32,
+) {
+    let name = adapter_logger_name(name);
+    let Some(text) = (unsafe { cstr_len(msg, len) }) else {
+        return;
+    };
+    tension_core::logging::log(Level::from_abi_code(level), &name, &text);
+}
+
+/// The appended `log_structured` slot: a logger name and a counted JSON payload.
+pub(crate) unsafe extern "C" fn log_structured(
+    _user: *mut c_void,
+    level: i32,
+    name: *const c_char,
+    json: *const c_char,
+    len: u32,
+) {
+    let name = adapter_logger_name(name);
+    let Some(payload) = (unsafe { cstr_len(json, len) }) else {
+        return;
+    };
+    tension_core::logging::emit(Level::from_abi_code(level), &name, "", Some(&payload));
+}
+
+/// The logger name for an adapter log call: the NUL-terminated name the adapter
+/// passed, or "session" when it passed none (the legacy channel the `log` slot
+/// used). An empty name is treated as absent, so a stray `""` does not produce a
+/// nameless column.
+fn adapter_logger_name(name: *const c_char) -> String {
+    match unsafe { cstr(name) } {
+        Some(text) if !text.is_empty() => text,
+        _ => "session".to_string(),
+    }
+}
+
+/// A counted UTF-8 slice from an adapter, lossily decoded. `None` for a null
+/// pointer with a non-zero length — a mistake, refused rather than read as an
+/// empty line.
+unsafe fn cstr_len(pointer: *const c_char, len: u32) -> Option<String> {
+    if pointer.is_null() {
+        return if len == 0 { Some(String::new()) } else { None };
+    }
+    // SAFETY: the caller promised `len` readable bytes at `pointer`.
+    let bytes = unsafe { std::slice::from_raw_parts(pointer as *const u8, len as usize) };
+    Some(String::from_utf8_lossy(bytes).into_owned())
 }
 
 pub(crate) unsafe extern "C" fn register_import(
@@ -977,8 +1047,9 @@ pub(crate) unsafe extern "C" fn post_event(
 
 /// Report a refused post on the adapter's channel and hand back its errno.
 ///
-/// The line is prefixed `[tension:session]` because that is the channel the
-/// `log` slot writes to; the message names the caller's mistake, which is what
+/// The line goes through the `log` slot at level 1 (info), which the host now
+/// routes through its logger under the name `session` — so the refusal carries
+/// the configured layout. The message names the caller's mistake, which is what
 /// an adapter author needs to see (`DESIGN.md` §7.2).
 fn log_refusal(host: &AdapterHost, error: PostError) -> i32 {
     if let Some(log) = host.api().log {
@@ -1059,7 +1130,10 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         register_import: Some(register_import),
         register_source: Some(register_source),
         post_event: Some(post_event),
-        class_info: Some(class_info),        region_lookup: Some(region_lookup),
+        class_info: Some(class_info),
+        region_lookup: Some(region_lookup),
+        log_named: Some(log_named),
+        log_structured: Some(log_structured),
     }
 }
 
@@ -1181,16 +1255,58 @@ mod tests {
         );
     }
 
+    // ── the logging slots (appended under rule 11) ────────────────────────
+
+    #[test]
+    fn the_appended_log_slots_and_the_legacy_one_are_all_populated() {
+        let api = *AdapterHost::new(test_posting()).api();
+        // A new adapter finds the named slots …
+        assert!(api.log_named.is_some(), "log_named must be populated");
+        assert!(api.log_structured.is_some(), "log_structured must be populated");
+        // … and an adapter built before the append still finds `log`.
+        assert!(api.log.is_some(), "the legacy slot stays populated");
+    }
+
+    #[test]
+    fn an_absent_logger_name_falls_back_to_the_session_channel() {
+        assert_eq!(adapter_logger_name(std::ptr::null()), "session");
+        let empty = std::ffi::CString::new("").expect("no nul");
+        assert_eq!(adapter_logger_name(empty.as_ptr()), "session");
+        let named = std::ffi::CString::new("ogre:loader").expect("no nul");
+        assert_eq!(adapter_logger_name(named.as_ptr()), "ogre:loader");
+    }
+
+    #[test]
+    fn the_log_slots_return_on_hostile_input() {
+        let api = *AdapterHost::new(test_posting()).api();
+        let named = api.log_named.expect("populated");
+        let structured = api.log_structured.expect("populated");
+        let legacy = api.log.expect("populated");
+        // Null name, null payload, and an out-of-range level: each returns
+        // rather than trapping. The lines reach the logger's fallback (stderr,
+        // since no global logger is installed in this test binary) — visible
+        // with `--nocapture`.
+        unsafe {
+            named(api.user, 2, std::ptr::null(), std::ptr::null(), 0);
+            named(api.user, 99, std::ptr::null(), std::ptr::null(), 5);
+            structured(api.user, 2, std::ptr::null(), std::ptr::null(), 0);
+            legacy(api.user, 1, std::ptr::null(), 0);
+        }
+    }
+
     #[test]
     fn layout_matches_the_c_compiler() {
         // The numbers come from compiling the same header with gcc -std=c11 on
         // x86-64 (quoted in this module's docs); the const assertions above are
-        // the compile-time half of this check.
+        // the compile-time half of this check. `log_named`/`log_structured`
+        // were appended under rule 11, so the size moved 112 -> 128.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 112);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 128);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 72);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
         }
         // `Option<fn>` must not have grown the field: the null optimisation is
