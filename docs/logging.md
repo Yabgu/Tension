@@ -254,9 +254,10 @@ nothing else changes. `SinkKind` is the CLI-visible selector (`stderr`, `file`,
 The host's own diagnostics — startup, capability loading, the session, and the
 in-process `ai` / `audio` / `solver` modules — go through the same logger as
 everything else, under the names `core`, `session`, `ai`, `audio` (`audio:real`,
-`audio:headless`), and `solver`. So a fully JSON run stays JSON: with
-`--log-format=json`, **every** line on stderr is one object, from the host, an
-adapter, or the guest alike.
+`audio:headless`), and `solver`. The capability adapters name themselves too:
+`ogre` and `input` (via the appended `log_named` slot). So a fully JSON run stays
+JSON: with `--log-format=json`, **every** line on stderr is one object, from the
+host, an adapter, or the guest alike.
 
 The acceptance check:
 
