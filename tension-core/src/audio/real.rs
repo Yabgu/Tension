@@ -226,7 +226,13 @@ where
     let channels = cfg.channels as usize;
     let mut pb = std::array::from_fn(|_| default_playback());
     let cb_shared = Arc::clone(&shared);
-    let err_fn = |e: cpal::Error| eprintln!("[tension:audio:real] stream error: {e}");
+    let err_fn = |e: cpal::Error| {
+        tension_core::logging::log(
+            tension_core::logging::Level::Warn,
+            "audio:real",
+            &format!("stream error: {e}"),
+        )
+    };
     let stream = device
         .build_output_stream::<T, _, _>(
             cfg,
@@ -413,14 +419,18 @@ impl AudioAdapter for RealAdapter {
     fn do_init(&mut self, sample_rate: i32, channels: i32) -> i32 {
         match self.start(sample_rate as u32, channels as u16) {
             Ok((shared, params)) => {
-                eprintln!(
-                    "[tension:audio:real] device=\"{}\" format={} rate={} channels={} (requested {}/{})",
-                    params.device,
-                    params.format,
-                    params.rate,
-                    params.channels,
-                    params.requested_rate,
-                    params.requested_channels
+                tension_core::logging::log(
+                    tension_core::logging::Level::Info,
+                    "audio:real",
+                    &format!(
+                        "device=\"{}\" format={} rate={} channels={} (requested {}/{})",
+                        params.device,
+                        params.format,
+                        params.rate,
+                        params.channels,
+                        params.requested_rate,
+                        params.requested_channels
+                    ),
                 );
                 self.shared = Some(shared);
                 self.session = Some(Session {
@@ -436,7 +446,11 @@ impl AudioAdapter for RealAdapter {
                 0
             }
             Err(e) => {
-                eprintln!("[tension:audio:real] init failed: {e}");
+                tension_core::logging::log(
+                    tension_core::logging::Level::Warn,
+                    "audio:real",
+                    &format!("init failed: {e}"),
+                );
                 -1
             }
         }

@@ -65,7 +65,7 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use tension_core::logging::{self, Config as LogConfig, ConfigError};
+use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
@@ -551,11 +551,15 @@ fn main() -> anyhow::Result<()> {
         augmented = match dwarf::augment(guest, &cli.symbol_paths) {
             dwarf::AugmentResult::Augmented(bytes) => Some(bytes),
             dwarf::AugmentResult::Unchanged(reason) => {
-                eprintln!("[tension-core] debug: {reason}");
+                logging::log(Level::Info, "core", &format!("debug: {reason}"));
                 None
             }
             dwarf::AugmentResult::Failed(err) => {
-                eprintln!("[tension-core] debug: {err}; running the game unchanged");
+                logging::log(
+                    Level::Warn,
+                    "core",
+                    &format!("debug: {err}; running the game unchanged"),
+                );
                 None
             }
         };
@@ -657,7 +661,11 @@ fn main() -> anyhow::Result<()> {
         |mut caller: Caller<'_, HostState>, msg: i32, file: i32, line: i32, col: i32| -> () {
             let m = read_as_string(&mut caller, msg);
             let f = read_as_string(&mut caller, file);
-            eprintln!("[tension-core] game aborted: {m} (in {f}, line {line}, col {col})");
+            logging::log(
+                Level::Error,
+                "core",
+                &format!("game aborted: {m} (in {f}, line {line}, col {col})"),
+            );
             std::process::exit(1);
         },
     )?;
@@ -1044,10 +1052,14 @@ fn main() -> anyhow::Result<()> {
     for path in &capability_paths {
         match adapter::load_adapter(path) {
             Ok(loaded) => {
-                eprintln!(
-                    "[tension-core] capability `{}` loaded from {}",
-                    loaded.name(),
-                    path.display()
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "capability `{}` loaded from {}",
+                        loaded.name(),
+                        path.display()
+                    ),
                 );
                 adapters.push(loaded);
             }
@@ -1160,9 +1172,13 @@ fn main() -> anyhow::Result<()> {
             )
         };
         match outcome {
-            Ok(()) => eprintln!(
-                "[tension-core] host open: arena {arena_size}, ceiling {max_arena_size}, \
-                 callbacks onBatch={on_batch} onEvent={on_event}"
+            Ok(()) => logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "host open: arena {arena_size}, ceiling {max_arena_size}, \
+                     callbacks onBatch={on_batch} onEvent={on_event}"
+                ),
             ),
             Err(error) => {
                 store.data_mut().session = Some(session);
@@ -1188,10 +1204,14 @@ fn main() -> anyhow::Result<()> {
                 1.5,
                 0.25,
             ) {
-                Ok(seq) => eprintln!(
-                    "[tension-core] --post-test-events: JOB_DONE a={} b={} seq={seq}",
-                    1 + index * 2,
-                    2 + index * 2
+                Ok(seq) => logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--post-test-events: JOB_DONE a={} b={} seq={seq}",
+                        1 + index * 2,
+                        2 + index * 2
+                    ),
                 ),
                 Err(error) => anyhow::bail!("--post-test-events: {error}"),
             }
@@ -1212,9 +1232,13 @@ fn main() -> anyhow::Result<()> {
     // is still pending rather than quietly dropping it.
     let pending_left = store.data().pending.len();
     if pending_left > 0 {
-        eprintln!(
-            "[tension-core] pending after the guest: {pending_left} submission(s) (R7: the \
-             queue survives a trap and is applied at the guest's next epoch)"
+        logging::log(
+            Level::Info,
+            "core",
+            &format!(
+                "pending after the guest: {pending_left} submission(s) (R7: the \
+                 queue survives a trap and is applied at the guest's next epoch)"
+            ),
         );
     }
 
@@ -1227,7 +1251,11 @@ fn main() -> anyhow::Result<()> {
             let memory = session.memory();
             let arena_bytes = memory.data_mut(&mut store);
             if let Err(error) = session.close(arena_bytes) {
-                eprintln!("[tension-core] session_close after the guest returned: {error}");
+                logging::log(
+                    Level::Warn,
+                    "core",
+                    &format!("session_close after the guest returned: {error}"),
+                );
             }
         }
         store.data_mut().session = Some(session);

@@ -19,9 +19,9 @@
 //! Module name `tension::ai` (a core-wasm import module name, like
 //! `tension::io`). Pointers are guest linear-memory offsets; strings are UTF-8
 //! bytes with explicit ptr+len; `-1` is error/unknown. Host events and
-//! failures log one line to stderr prefixed `[tension:ai]`; the hot poll verbs
-//! (`session_state`, `session_read`) are only traced when `TENSION_AI_TRACE` is
-//! set, so a guest's drain loop cannot bury those lines.
+//! failures log one line on the `ai` logger (`docs/logging.md`); the hot poll
+//! verbs (`session_state`, `session_read`) are only traced when
+//! `TENSION_AI_TRACE` is set, so a guest's drain loop cannot bury those lines.
 //!
 //!   session_create(cfg_ptr, cfg_len) -> i32
 //!       `> 0` session handle; `0` on failure (bad/empty dict, no model key,
@@ -78,8 +78,8 @@
 //! tag 5 = blob   : u32 byte_len, u32 guest_ptr   (guest linear memory)
 //! ```
 //!
-//! Duplicate keys: last wins. Unknown keys: ignored with a
-//! `[tension:ai] ignoring unknown key 'x'` note. Malformed or truncated
+//! Duplicate keys: last wins. Unknown keys: ignored with an `ai`-logger
+//! note. Malformed or truncated
 //! payloads fail the whole `session_create` (`0`). Blob bytes are copied into
 //! a `Vec<u8>` at the linker boundary — the host never holds a `Caller` past
 //! the call.
@@ -371,21 +371,28 @@ fn float(key: &str, value: &Value) -> Result<f64, String> {
     }
 }
 
-/// A host event line: `[tension:ai] <message>`. Always on — these are the
-/// low-volume lifecycle and failure lines (model loading, load timing, refused
-/// configs, template fallbacks, generation errors) that tell a user what the
-/// model is doing.
+/// A host event line on the `ai` logger. Always on — these are the low-volume
+/// lifecycle and failure lines (model loading, load timing, refused configs,
+/// template fallbacks, generation errors) that tell a user what the model is
+/// doing. Routed through the host logger, so the line carries the configured
+/// layout and the `ai` name's filter (`--log-level=ai:debug`).
 pub(crate) fn log(msg: &str) {
-    eprintln!("[tension:ai] {msg}");
+    tension_core::logging::log(tension_core::logging::Level::Info, "ai", msg);
 }
 
-/// A per-call ABI trace line: `[tension:ai] <verb>(<args>) -> <ret>`.
+/// A per-call ABI trace line: `<verb>(<args>) -> <ret>` on the `ai` logger.
 ///
 /// Off by default, because a guest draining a reply polls `session_state` /
 /// `session_read` in a tight loop — the example drain loop makes millions of
 /// calls over one generation — and tracing every one of them buries [`log`]'s
 /// lifecycle lines (and llama.cpp's model-loading output) under hundreds of
 /// megabytes of stderr. Set `TENSION_AI_TRACE=1` for the full per-call stream.
+///
+/// **`TENSION_AI_TRACE` stays the switch, so the line is emitted at `info`:**
+/// a per-call trace is really a `debug` line, but emitting it at `debug` would
+/// make the documented `TENSION_AI_TRACE=1` do nothing at the default level.
+/// The env var and the log level are two gates, and the env var is the one this
+/// channel's contract names.
 pub(crate) fn trace(call: &str) {
     use std::sync::OnceLock;
     static ENABLED: OnceLock<bool> = OnceLock::new();
@@ -396,7 +403,7 @@ pub(crate) fn trace(call: &str) {
         )
     });
     if enabled {
-        eprintln!("[tension:ai] {call}");
+        tension_core::logging::log(tension_core::logging::Level::Info, "ai", call);
     }
 }
 

@@ -318,7 +318,11 @@ fn table_func(table: &Table, caller: &mut Caller<'_, HostState>, index: i32) -> 
 fn create_world_solver(caller: &mut Caller<'_, HostState>, decoded: &DecodedConfig) -> i32 {
     let Some(yaml) = decoded.world.as_deref() else {
         // The decoder refuses this shape; the arm is defence, not a live path.
-        eprintln!("[tension-core] world-source config carries no world text");
+        tension_core::logging::log(
+            tension_core::logging::Level::Warn,
+            "solver",
+            "world-source config carries no world text",
+        );
         return EINVAL;
     };
     let compiled = match world::compile(yaml) {
@@ -326,7 +330,11 @@ fn create_world_solver(caller: &mut Caller<'_, HostState>, decoded: &DecodedConf
         Err(e) => {
             // Line and column ride in the Display form; the log is where
             // they surface.
-            eprintln!("[tension-core] world compile failed: {e}");
+            tension_core::logging::log(
+                tension_core::logging::Level::Warn,
+                "solver",
+                &format!("world compile failed: {e}"),
+            );
             return EINVAL;
         }
     };
@@ -335,14 +343,22 @@ fn create_world_solver(caller: &mut Caller<'_, HostState>, decoded: &DecodedConf
         Err(e) => {
             // Unreachable for bytes the compiler just produced; logged
             // rather than swallowed if it ever is not.
-            eprintln!("[tension-core] compiled world failed to load: {e}");
+            tension_core::logging::log(
+                tension_core::logging::Level::Warn,
+                "solver",
+                &format!("compiled world failed to load: {e}"),
+            );
             return EINVAL;
         }
     };
     if dim == 0 {
         // schema.yaml: a world that contributes no state is legal data, and
         // the source refuses to build a solver over it.
-        eprintln!("[tension-core] world derives dim 0; the solver builds over dim >= 1");
+        tension_core::logging::log(
+            tension_core::logging::Level::Warn,
+            "solver",
+            "world derives dim 0; the solver builds over dim >= 1",
+        );
         return EINVAL;
     }
     // The host synthesizes `dim` into the struct; the wire stated none (§12:
@@ -448,7 +464,11 @@ pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let decoded = match decode_wire(&wire) {
                 Ok(decoded) => decoded,
                 Err(e) => {
-                    eprintln!("[tension-core] config refused: {e}");
+                    tension_core::logging::log(
+                        tension_core::logging::Level::Warn,
+                        "solver",
+                        &format!("config refused: {e}"),
+                    );
                     return EINVAL;
                 }
             };
