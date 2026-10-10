@@ -83,11 +83,11 @@ JSON — one flat object per line, `jq`-parsable:
 {"ts":"2026-10-10T19:46:12.346Z","level":"INFO","logger":"game","msg":"","data":{"tick":1,"entities":7}}
 ```
 
-A structured payload that trims to a JSON container (`{...}` or `[...]`) is
-spliced as `data`; anything else is quoted as a string, so the object a `jq`
-filter receives is always parseable. In the text layout a payload-only record
-puts the payload in the message slot; when a record has both a message and a
-payload, the payload follows ` | `.
+A structured payload that **begins** with `{` or `[` (after leading whitespace)
+is spliced as `data` verbatim — the caller is trusted to have sent valid JSON,
+which is the contract. Anything else is quoted as a string. In the text layout a
+payload-only record puts the payload in the message slot; when a record has both
+a message and a payload, the payload follows ` | `.
 
 ## Emitting from C++ (adapters and native callers)
 
@@ -226,8 +226,10 @@ poisoned lock is recovered rather than propagated.
 
 Every `extern "C"` entry point runs under `catch_unwind`: a panic is swallowed
 and reported as a one-line fallback on stderr, so nothing unwinds across the
-FFI boundary. A log call never traps and never fails — a bad pointer or an
-out-of-range span drops the record.
+FFI boundary. A log call never traps and never fails. The guest import
+bounds-checks the spans it reads, so an out-of-range range drops the record; the
+C ABI trusts its caller's pointer and length, as a C function does, and a null
+message with a non-zero length drops the record rather than reading anything.
 
 ## Extension
 
