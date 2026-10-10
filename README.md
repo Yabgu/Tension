@@ -158,8 +158,8 @@ tag 2 i64    : 8 bytes LE     tag 5 blob   : u32 len, u32 guest_ptr
 tag 3 f64    : 8 bytes LE (IEEE-754 bits)
 ```
 
-Duplicate keys: last wins. Unknown keys are ignored with a
-`[tension:ai] ignoring unknown key '...'` note. Malformed or truncated payloads
+Duplicate keys: last wins. Unknown keys are ignored with an
+`ai`-logger note (`--log-level=ai:info` to see it). Malformed or truncated payloads
 fail the whole create (`0`). Keys, with host defaults in parentheses:
 `model.path`, `model.blob`, `model.gpu_layers` (0), `context.size` (2048),
 `context.threads` (0), `context.batch` (512), `sampler.temp` (0.8),
@@ -170,12 +170,12 @@ fail the whole create (`0`). Keys, with host defaults in parentheses:
 The blob source is adapter-dependent in v1. The headless stub accepts it; the
 llama.cpp adapter refuses a blob-only config, because the pinned `llama-cpp-2`
 exposes only `LlamaModel::load_from_file` and has no in-process loader for
-guest-supplied GGUF bytes. It answers `0` with the reason on the `[tension:ai]`
-trace rather than failing obscurely deeper in.
+guest-supplied GGUF bytes. It answers `0` with the reason on the `ai` logger
+rather than failing obscurely deeper in.
 
 ### stderr: host events vs the ABI trace
 
-The host reports its own events on stderr, prefixed `[tension:ai]`: the model
+The host reports its own events on the `ai` logger: the model
 loading and how long it took, the ready session with its context size, refused
 configs, template fallbacks and generation errors. The per-call trace of every
 ABI verb is **off by default**, because a guest draining a reply polls
@@ -222,8 +222,10 @@ capabilities, and lets the session be the meeting point. Nothing about a
 * Status tables are truth; events are advisory.
 * Adapter threads never touch guest memory — only `guest_read` /
   `guest_write` inside a host call.
-* Negative errno, one table per capability, prefix `[tension:session]` for
-  session messages; adapters self-identify in their own logs.
+* Negative errno, one table per capability. Diagnostics go through one logger
+  (`docs/logging.md`): the host, each adapter, and the guest name their records,
+  so `--log-level=ogre:debug` filters an adapter's lines and `--log-format=json`
+  renders every one of them as a single JSON object per line.
 
 That is the whole contract. Everything else is a capability.
 
@@ -528,7 +530,7 @@ diagnosis prints on stderr before any guest output.
   (`TENSION_AI_TRACE=1`), so by default a guest's poll loop cannot bury those
   lines.
 - llama.cpp's own logging is silenced at backend init, so a real session's
-  stderr carries only those `[tension:ai]` lines; `TENSION_AI_LLAMA_LOG=1`
+  stderr carries only those `ai` lines; `TENSION_AI_LLAMA_LOG=1`
   brings the loader dump back when a model misbehaves.
 - The OGRE capability renders, animates and simulates: five examples green
   in both windowed and headless modes.
