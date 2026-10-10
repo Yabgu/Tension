@@ -191,8 +191,21 @@ void fail(uint32_t stage, int32_t error, const std::string &what) {
 
 /// Mark the thread done and destroy the backend — on this thread, which is the
 /// only thread that may touch a render system's objects.
+///
+/// Once this returns the render thread is gone, and **no** queued job can ever
+/// be realised: a job's terminal state is set only by `drain_completions`, which
+/// only this thread runs. Every in-flight job is therefore failed here rather
+/// than left in `LOADING`. A guest that polls `jobState` (the SDK's `settle`
+/// shape) would otherwise wait for a thread that has already exited — measured:
+/// a renderer that fails to start leaves `examples/ogre/animated-character`
+/// blocked forever, and the executable with it. Doing it here rather than at
+/// each failure site means a future early return cannot forget it; the sweep is
+/// idempotent, so the frame loop's own exit path needs no sweep of its own.
 void finish_thread() {
     AdapterState &s = adapter_state();
+    // One call, not sweep-then-latch: the guest that queues right as the
+    // renderer dies must not slip between the two.
+    s.loader.stop_draining(-EIO);
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.backend.reset();
@@ -361,9 +374,8 @@ void render_main() {
             // idle loop does not spin.
             s.cv.wait_for(lock, period, [&s] { return s.stop_requested.load(); });
         }
-        // Whatever was still being read when the loop ended never gets
-        // realised: the renderer it was meant for is about to be torn down.
-        s.loader.sweep_failed(-EIO);
+        // `finish_thread` sweeps whatever was still being read when the loop
+        // ended: the renderer it was meant for is about to be torn down.
         s.backend->stop(s.status);
     } catch (const std::exception &e) {
         fail(s.status.snapshot().stage, -EIO, std::string("unhandled exception: ") + e.what());
@@ -423,6 +435,9 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         s.config = decoded.config;
         s.stop_requested = false;
         s.thread_exited = false;
+        // A drainer is about to exist again: jobs queued from here on can be
+        // realised, so undo whatever a previous thread's death latched.
+        s.loader.set_drain_state(0);
         s.thread = std::thread(render_main);
         s.initialized = true;
     }
@@ -505,7 +520,9 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
     }
 
     const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
-    if (job < 0) return job; // -ENOSPC: the table is full, and said so in the log
+    // Through `refuse`: a bare `return job` leaves the wasm result slot at 0,
+    // so a full table answered the guest "accepted" (see refuse's note).
+    if (job < 0) return refuse(ret, job);
     ret->i32 = job;
     return 0;
 }
@@ -650,7 +667,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             case kSubmitRenderable: rc = s.scene.remove_renderable(id); break;
             default: return refuse(ret, -EINVAL);
         }
-        if (rc != 0) return rc;
+        if (rc != 0) return refuse(ret, rc);
         ret->i32 = 0;
         return 0;
     }
@@ -732,7 +749,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
         }
         default: return refuse(ret, -EINVAL);
     }
-    if (rc != 0) return rc;
+    if (rc != 0) return refuse(ret, rc);
     ret->i32 = 0;
     return 0;
 }
@@ -1050,7 +1067,7 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
     const int32_t resource_id =
         s.loader.queue_procedural_mesh(vertices.data(), vertex_bytes, format, indices.data(),
                                        index_bytes, topology);
-    if (resource_id < 0) return resource_id;
+    if (resource_id < 0) return refuse(ret, resource_id);
     ret->i32 = resource_id;
     return 0;
 }
@@ -1290,32 +1307,11 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     sink.log = [](int32_t level, const std::string &message) { log_line(level, message); };
     s.loader.set_sink(std::move(sink));
 
-    // Where resource names are looked up: the media directory the build baked
-    // in, unless the environment names another one (a path list, ':').
-    std::vector<std::string> paths;
-    if (const char *from_env = std::getenv("TENSION_OGRE_MEDIA_DIR")) {
-        std::string list = from_env;
-        size_t start = 0;
-        while (start <= list.size()) {
-            const size_t colon = list.find(':', start);
-            const std::string piece = list.substr(start, colon - start);
-            if (!piece.empty()) paths.push_back(piece);
-            if (colon == std::string::npos) break;
-            start = colon + 1;
-        }
-    } else {
-#ifdef TENSION_OGRE_MEDIA_DIR
-        // The macro is always defined; an empty value means the build baked
-        // nothing in (see backend_ogre.cpp), and no media paths are added.
-        const std::string baked = TENSION_OGRE_MEDIA_DIR;
-        if (!baked.empty()) {
-            paths.push_back(baked + "/models");
-            paths.push_back(baked + "/materials/textures");
-            paths.push_back(baked + "/packs");
-        }
-#endif
-    }
-    s.loader.set_search_paths(std::move(paths));
+    // The loader resolves a name through its mounts and nowhere else
+    // (`read_sibling_asset` -> `mount_resolve`, -ENOENT when no mount carries
+    // it). It has no filesystem search paths, and must not grow any: a mesh or
+    // skeleton resolved off the disk media tree makes the guest's volume a
+    // decoration.
     return 0;
 }
 

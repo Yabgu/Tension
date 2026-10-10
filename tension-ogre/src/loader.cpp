@@ -146,11 +146,6 @@ void Loader::set_sink(LoaderSink sink) {
     sink_ = std::move(sink);
 }
 
-void Loader::set_search_paths(std::vector<std::string> paths) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    search_paths_ = std::move(paths);
-}
-
 int32_t Loader::add_mount(const std::string &prefix, const std::string &tns_path,
                           std::vector<uint8_t> bytes, tension_res *res) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -230,9 +225,27 @@ int32_t Loader::queue(uint32_t kind, const std::string &name, uint32_t name_offs
     slot.name_offset = name_offset;
     slot.name_length = name_length;
 
+    if (drain_error_ != 0) {
+        // No thread will ever realise this job: finish it now so the guest's
+        // poll sees FAILED with the errno rather than waiting on a drainer that
+        // is gone. Not queued to the worker, which would only overwrite this
+        // state with LOADING and push a completion nobody drains.
+        slot.state = TENSION_OGRE_JOB_FAILED;
+        slot.error = drain_error_;
+        slot.in_flight = false;
+        slot.dirty = true;
+        idle_cv_.notify_all();
+        return static_cast<int32_t>(slot.job_id);
+    }
+
     pending_slots_.push_back(index);
     work_cv_.notify_one();
     return static_cast<int32_t>(slot.job_id);
+}
+
+void Loader::set_drain_state(int32_t error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    drain_error_ = error;
 }
 
 int32_t Loader::job_state(uint32_t job_id, uint8_t out[TENSION_OGRE_JOB_RECORD_BYTES]) const {
@@ -478,8 +491,7 @@ void Loader::drain_completions(Backend &backend) {
     }
 }
 
-void Loader::sweep_failed(int32_t error) {
-    std::lock_guard<std::mutex> lock(mutex_);
+void Loader::sweep_locked(int32_t error) {
     for (JobSlot &slot : jobs_) {
         if (slot.free || !slot.in_flight) continue;
         slot.in_flight = false;
@@ -495,6 +507,18 @@ void Loader::sweep_failed(int32_t error) {
         }
     }
     idle_cv_.notify_all();
+}
+
+void Loader::sweep_failed(int32_t error) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    sweep_locked(error);
+}
+
+void Loader::stop_draining(int32_t error) {
+    // One lock: the latch and the sweep cannot be split (see the header).
+    std::lock_guard<std::mutex> lock(mutex_);
+    drain_error_ = error;
+    sweep_locked(error);
 }
 
 size_t Loader::mirror_to_region(const GuestWrite &write, uint32_t job_region_offset,

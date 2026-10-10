@@ -129,8 +129,6 @@ class Loader {
     Loader &operator=(const Loader &) = delete;
 
     void set_sink(LoaderSink sink);
-    /// Where names are looked up, in order. Paths are tried in the order given.
-    void set_search_paths(std::vector<std::string> paths);
 
     /// Mount a Tension Volume under `prefix` (chunk 11). The loader owns the
     /// bytes and borrows `res` over them (mounts.h). Returns 0, or the errno:
@@ -171,8 +169,31 @@ class Loader {
     /// JOB_DONE / JOB_FAILED as it goes.
     void drain_completions(Backend &backend);
 
-    /// Mark every in-flight job FAILED with `error` — the stop() path.
+    /// Mark every in-flight job FAILED with `error`, nothing else. `stop()`
+    /// uses it, and so do the loader's own tests; the render thread's death
+    /// wants `stop_draining`, which moves the drain latch in the same lock.
     void sweep_failed(int32_t error);
+
+    /// Set or clear the drain latch on its own: `0` when a render thread is
+    /// about to exist again. Non-zero should go through `stop_draining`
+    /// instead, which sweeps as it latches.
+    void set_drain_state(int32_t error);
+
+    /// The render thread is gone for good: **one** call that fails every
+    /// in-flight job with `error` *and* makes every job queued from here on fail
+    /// with it, under a single lock. Two calls cannot be split, because a guest
+    /// queueing between them would get a job neither path covers — which is the
+    /// bug this exists to prevent, and the guest that queues right as the
+    /// renderer dies is exactly this race.
+    ///
+    /// A job reaches a terminal state only through `drain_completions`, which
+    /// only the render thread calls. With no drainer, a job left in `PENDING`
+    /// makes a guest polling `jobState` (the SDK's `settle` shape) wait on a
+    /// thread that has already exited — measured: a renderer that fails to
+    /// start leaves the guest, and the executable, stuck. Failing the job on the
+    /// spot takes the same shape a real load failure does, so the guest needs
+    /// nothing new of it.
+    void stop_draining(int32_t error);
 
     // ── the publish face (guest thread, inside an epoch) ─────────────────
 
@@ -221,6 +242,10 @@ class Loader {
     const JobSlot *slot_for(uint32_t job_id) const;
     size_t in_flight_or_zero() const;
     uint32_t capacity_or_size() const;
+    /// Fail every in-flight slot with `error`. `mutex_` must be held — the
+    /// shared body of `sweep_failed` and `stop_draining`, which differ only in
+    /// whether the drain latch moves with it.
+    void sweep_locked(int32_t error);
 
     mutable std::mutex mutex_;
     std::condition_variable work_cv_;   ///< worker waits here
@@ -231,7 +256,9 @@ class Loader {
     std::deque<uint32_t> pending_slots_; ///< slots the worker should load
     std::deque<LoadCompletion> completions_;
     std::deque<ProceduralRequest> procedural_; ///< guest-built meshes, for this thread's next pass
-    std::vector<std::string> search_paths_;
+    /// 0 while a drainer may still run; the errno to fail new jobs with when it
+    /// is gone (see set_drain_state).
+    int32_t drain_error_ = 0;
     MountTable mounts_; ///< appended by the guest thread, read by the worker
     LoaderSink sink_;
     /// Resource ids are 1-based over the RESOURCE region, and **slot 1 belongs
