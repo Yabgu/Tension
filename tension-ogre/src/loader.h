@@ -129,8 +129,6 @@ class Loader {
     Loader &operator=(const Loader &) = delete;
 
     void set_sink(LoaderSink sink);
-    /// Where names are looked up, in order. Paths are tried in the order given.
-    void set_search_paths(std::vector<std::string> paths);
 
     /// Mount a Tension Volume under `prefix` (chunk 11). The loader owns the
     /// bytes and borrows `res` over them (mounts.h). Returns 0, or the errno:
@@ -231,7 +229,6 @@ class Loader {
     std::deque<uint32_t> pending_slots_; ///< slots the worker should load
     std::deque<LoadCompletion> completions_;
     std::deque<ProceduralRequest> procedural_; ///< guest-built meshes, for this thread's next pass
-    std::vector<std::string> search_paths_;
     MountTable mounts_; ///< appended by the guest thread, read by the worker
     LoaderSink sink_;
     /// Resource ids are 1-based over the RESOURCE region, and **slot 1 belongs

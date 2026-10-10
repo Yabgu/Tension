@@ -135,11 +135,30 @@ if [ "$backend" = ogre ]; then
         plugin_dir=$(pkg-config --variable=plugindir OGRE-Next 2>/dev/null || true)
         media_dir="$(pkg-config --variable=prefix OGRE-Next 2>/dev/null)/share/OGRE-Next/Media"
     else
-        echo "tension-ogre: OGRE-Next >= 3.0.0 not found via pkg-config." >&2
-        echo "  Remedies, in order of preference:" >&2
-        echo "    install the package            (Arch: pacman -S ogre-next)" >&2
-        echo "    point at a prefix you built    TENSION_OGRE_PREFIX=<prefix>" >&2
-        echo "    build without OGRE at all      TENSION_OGRE_BACKEND=none" >&2
+        # An OGRE-Next that pkg-config knows but that is older than the pin is
+        # "found, not usable", not missing: name the version so the reader does
+        # not go install the same one again.
+        pc_state="not found"
+        if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists OGRE-Next 2>/dev/null; then
+            pc_state="found $(pkg-config --modversion OGRE-Next 2>/dev/null || echo '?'), need >= 3.0.0"
+        fi
+        echo "tension-ogre: OGRE-Next >= 3.0.0 not found — cannot build the adapter." >&2
+        echo "  Looked for, in this order:" >&2
+        echo "    \$TENSION_OGRE_PREFIX               (unset)" >&2
+        echo "    third_party/ogre-next-install      (no lib/libOgreNextMain.so)" >&2
+        echo "    OGRE-Next >= 3.0.0 via pkg-config  ($pc_state)" >&2
+        echo "" >&2
+        echo "  Preferred: build the pinned Ogre-Next from the submodule —" >&2
+        echo "    third_party/bootstrap.sh" >&2
+        echo "  It installs into third_party/ogre-next-install, which this script" >&2
+        echo "  picks up ahead of any system package (see third_party/README.md)." >&2
+        echo "" >&2
+        echo "  Or install Ogre-Next >= 3.0.0 system-wide so pkg-config finds it" >&2
+        echo "  (Arch: pacman -S ogre-next)." >&2
+        echo "" >&2
+        echo "  Or build the adapter without OGRE — renderer=null is all it can" >&2
+        echo "  satisfy then:" >&2
+        echo "    TENSION_OGRE_BACKEND=none $0" >&2
         exit 1
     fi
 

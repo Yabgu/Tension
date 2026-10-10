@@ -1290,32 +1290,11 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     sink.log = [](int32_t level, const std::string &message) { log_line(level, message); };
     s.loader.set_sink(std::move(sink));
 
-    // Where resource names are looked up: the media directory the build baked
-    // in, unless the environment names another one (a path list, ':').
-    std::vector<std::string> paths;
-    if (const char *from_env = std::getenv("TENSION_OGRE_MEDIA_DIR")) {
-        std::string list = from_env;
-        size_t start = 0;
-        while (start <= list.size()) {
-            const size_t colon = list.find(':', start);
-            const std::string piece = list.substr(start, colon - start);
-            if (!piece.empty()) paths.push_back(piece);
-            if (colon == std::string::npos) break;
-            start = colon + 1;
-        }
-    } else {
-#ifdef TENSION_OGRE_MEDIA_DIR
-        // The macro is always defined; an empty value means the build baked
-        // nothing in (see backend_ogre.cpp), and no media paths are added.
-        const std::string baked = TENSION_OGRE_MEDIA_DIR;
-        if (!baked.empty()) {
-            paths.push_back(baked + "/models");
-            paths.push_back(baked + "/materials/textures");
-            paths.push_back(baked + "/packs");
-        }
-#endif
-    }
-    s.loader.set_search_paths(std::move(paths));
+    // The loader resolves a name through its mounts and nowhere else
+    // (`read_sibling_asset` -> `mount_resolve`, -ENOENT when no mount carries
+    // it). It has no filesystem search paths, and must not grow any: a mesh or
+    // skeleton resolved off the disk media tree makes the guest's volume a
+    // decoration.
     return 0;
 }
 

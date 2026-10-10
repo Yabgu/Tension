@@ -146,11 +146,6 @@ void Loader::set_sink(LoaderSink sink) {
     sink_ = std::move(sink);
 }
 
-void Loader::set_search_paths(std::vector<std::string> paths) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    search_paths_ = std::move(paths);
-}
-
 int32_t Loader::add_mount(const std::string &prefix, const std::string &tns_path,
                           std::vector<uint8_t> bytes, tension_res *res) {
     std::lock_guard<std::mutex> lock(mutex_);
