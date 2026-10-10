@@ -38,12 +38,6 @@ impl Filter {
         filter
     }
 
-    /// The fallback threshold.
-    #[cfg(test)]
-    pub fn global(&self) -> Threshold {
-        self.global
-    }
-
     /// Set (or replace) an override. The last write for a name wins, which is
     /// what makes a later `--log-level` flag override an earlier one.
     pub fn set(&mut self, name: &str, threshold: Threshold) {
