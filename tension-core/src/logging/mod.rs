@@ -47,6 +47,7 @@
 //! (`info`, `text`, stderr).
 
 mod config;
+pub mod ffi;
 mod filter;
 mod layout;
 mod level;
@@ -61,3 +62,8 @@ pub use level::{Level, Threshold};
 pub use logger::{emit, enabled, flush, init, is_initialized, log, LoggerCore};
 pub use record::Record;
 pub use sink::{Sink, SinkError, SinkKind};
+
+/// The logger name an unnamed record gets. A C caller that passes no name, a
+/// `NULL` pointer or an empty string, lands here rather than at an empty
+/// column.
+pub const DEFAULT_LOGGER: &str = "core";

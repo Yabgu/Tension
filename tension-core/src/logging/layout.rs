@@ -61,17 +61,15 @@ fn render_text(record: &Record) -> String {
     let ts = time::format_rfc3339(record.time);
     // The level tag is padded to five columns so the logger name starts in the
     // same place on every line — `INFO ` beside `DEBUG`, not a ragged column.
-    let mut line = format!(
-        "{ts} {:<5} {}: {}",
-        record.level.as_str(),
-        record.logger,
-        record.message
-    );
-    if let Some(payload) = &record.structured {
-        line.push_str(" | ");
-        line.push_str(payload);
+    let level = record.level.as_str();
+    let logger = &record.logger;
+    match &record.structured {
+        // A structured-only record has no message, so the payload takes the
+        // message slot rather than leaving a bare `logger: ` before a separator.
+        Some(payload) if record.message.is_empty() => format!("{ts} {level:<5} {logger}: {payload}"),
+        Some(payload) => format!("{ts} {level:<5} {logger}: {} | {payload}", record.message),
+        None => format!("{ts} {level:<5} {logger}: {}", record.message),
     }
-    line
 }
 
 fn render_json(record: &Record) -> String {
@@ -184,6 +182,17 @@ mod tests {
             line,
             "2023-11-14T22:13:20.345Z WARN  ogre: retry | {\"attempt\":2}"
         );
+    }
+
+    #[test]
+    fn a_structured_only_record_puts_the_payload_in_the_message_slot() {
+        // No message: the payload is the whole record, so there is no bare
+        // `logger: ` before a separator.
+        let line = render(
+            Format::Text,
+            &record(super::super::level::Level::Info, "ai", "").with_structured("{\"n\":1}"),
+        );
+        assert_eq!(line, "2023-11-14T22:13:20.345Z INFO  ai: {\"n\":1}");
     }
 
     #[test]
