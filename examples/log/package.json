@@ -1,0 +1,25 @@
+{
+  "name": "tension-example-log",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: the logging subsystem — levels, per-logger filtering, and the JSON layout",
+  "scripts": {
+    "build": "asc game.ts -o build/game.wasm --runtime stub --target release",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap",
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "plain",
+    "hostArgs": [
+      "--log-level=trace"
+    ]
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "assemblyscript": "~0.28.8"
+  }
+}
