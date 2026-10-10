@@ -195,6 +195,17 @@ Strings cross as **UTF-8 byte lengths** (`String.UTF8.byteLength` /
 `String.UTF8.encode`), never `message.length` — the host reads exactly the byte
 count it is given, and the UTF-16 length would truncate any non-ASCII message.
 
+### Why `LogLevel` and not `Level`
+
+The enum is `LogLevel` on purpose, and it has no `Level` alias. `assembly/index.ts`
+re-exports every module with `export *`, and TypeScript drops **both** sides of a
+duplicated name silently — the hazard `runtime/index.ts` already avoids by
+naming its session `RuntimeSession`. A bare `Level` is the most collision-prone
+export a game engine can offer (render levels, mip levels, tile levels), so the
+logger does not claim it. A game that wants the shorter spelling can alias it at
+its own call site: `import { LogLevel as Level } from "tension-framework"`.
+Do not "fix" this by adding a `Level` alias.
+
 Try it: `examples/log` logs at every level and both layouts. Its `package.json`
 requests `--log-level=trace` through the runner's `hostArgs`, so `npm start`
 shows every record:
@@ -238,15 +249,58 @@ is small: an in-game debug overlay's ring buffer is a `Vec` behind a lock, and
 nothing else changes. `SinkKind` is the CLI-visible selector (`stderr`, `file`,
 `null`).
 
-## Known gap
+## Host diagnostics
 
-The records above — guest, adapter, and `logging::*` — all share the one layout.
-The host's *own* startup diagnostics (the `[tension-core] ...` lines in
-`tension-core/src/main.rs` and the `[tension:ai]`, `[tension:audio]`,
-`[tension:input]`, `[tension-solver]` lines in the in-process modules) predate
-the logger and still use `eprintln!`. They are not records, but they do share
-stderr: with `--log-format=json` a capability run emits one plain
-`--capability ... loaded` line among the JSON. Routing them through
-`logging::log(Level::Info, "core", ...)` (and the module's own name) is a
-mechanical follow-up; it is not done here to keep this change's blast radius to
-the ABI and the record path.
+The host's own diagnostics — startup, capability loading, the session, and the
+in-process `ai` / `audio` / `solver` modules — go through the same logger as
+everything else, under the names `core`, `session`, `ai`, `audio` (`audio:real`,
+`audio:headless`), and `solver`. So a fully JSON run stays JSON: with
+`--log-format=json`, **every** line on stderr is one object, from the host, an
+adapter, or the guest alike.
+
+The acceptance check:
+
+```sh
+# a capability run with no game output: every stderr line must parse
+LD_LIBRARY_PATH=third_party/ogre-next-install/lib \
+  tension-core --log-format=json --capability libtension_ogre.so game.wasm \
+      --renderer=null --tns=fixtures.tns 2>err.log >/dev/null
+jq -c . err.log          # exit 0, no error output
+```
+
+Left on plain `eprintln!` deliberately: game output on **stdout** (`println!`);
+the `pack` / `layout-hash` subcommands and the `tension-core:` usage/refusal
+family (they run before `logging::init`, or exit 2 with `USAGE`); the `--debug`
+report (a formatted human block, not records); and one failure path, the pak-load
+warning in `res/mod.rs`. A *successful* run at `--log-format=json` is therefore
+all JSON; the pak warning and the `--debug` report are the two places a plain
+line can still appear, both on error/opt-in paths.
+
+The native `tension-input` / `tension-solver` C sources log through the C ABI like
+any other native code.
+
+## Running the tests
+
+```sh
+cargo test --manifest-path tension-core/Cargo.toml --no-default-features --features audio
+bash tension-framework/tests/run.sh
+```
+
+The `ogre_*` integration tests load the capability adapter, which links OGRE-Next
+from `third_party/ogre-next-install/lib`. Cargo does not put that directory on
+the loader path, so run them with an **absolute** `LD_LIBRARY_PATH` (a relative
+one resolves against `tension-core/`, not the repo root) and, where a display is
+absent, headless:
+
+```sh
+LD_LIBRARY_PATH="$PWD/third_party/ogre-next-install/lib" TENSION_OGRE_HEADLESS=1 \
+  cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+      --features audio --test ogre_jobs
+```
+
+Without it they fail with `libOgreNextMain.so.4.0: cannot open shared object
+file` from the child `tension-core`, not from a test assertion. One OGRE test,
+`test_ogre_vulkan_refused`, also fails in a tree whose OGRE-Next was built
+without the Vulkan RenderSystem plugin — the adapter then returns `-EIO` at the
+plugin stage where the test expects `-ENOSYS`; it fails identically on a
+pristine adapter and is environment, not code.

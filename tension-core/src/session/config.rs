@@ -5,8 +5,8 @@
 //! module validates what it reads and refuses — never guessing, never
 //! half-reading — anything that does not match. Every refusal is `-EINVAL` with
 //! a reason that names the failed check, because the wasm boundary has no error
-//! channel and the only diagnostic is the `[tension:session]` line the session
-//! prints from the returned [`ConfigError`].
+//! channel and the only diagnostic is the `session`-logger line the session
+//! prints from the returned [`ConfigError`] (`docs/logging.md`).
 //!
 //! # The wire
 //!

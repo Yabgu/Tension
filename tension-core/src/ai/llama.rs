@@ -73,7 +73,7 @@ fn backend() -> Result<&'static LlamaBackend, String> {
             // llama.cpp logs through one process-global callback -- llama_log_set
             // hands the same one to ggml_log_set -- so the library's own output
             // (the loader's per-tensor dump, sampler warnings) would otherwise
-            // share stderr with this host's `[tension:ai]` event lines. Silence
+            // share stderr with this host's `ai` event lines. Silence
             // it here, the one moment the hook can be installed.
             if !llama_logs_enabled() {
                 backend.void_logs();

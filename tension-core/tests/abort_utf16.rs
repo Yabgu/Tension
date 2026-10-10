@@ -6,8 +6,11 @@
 //! host decodes them into the line a failed run shows:
 //!
 //! ```text
-//! [tension-core] game aborted: <msg> (in <file>, line N, col M)
+//! <ts> ERROR core: game aborted: <msg> (in <file>, line N, col M)
 //! ```
+//!
+//! (The line is a `core`-logger record; this test matches the message from
+//! `game aborted:` on, which the host's layout does not change.)
 //!
 //! The decode used to walk the units one at a time through `char::from_u32`,
 //! so a **surrogate pair** — every character outside the BMP, an emoji among

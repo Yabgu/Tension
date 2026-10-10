@@ -19,9 +19,9 @@
 //! Module name `tension::ai` (a core-wasm import module name, like
 //! `tension::io`). Pointers are guest linear-memory offsets; strings are UTF-8
 //! bytes with explicit ptr+len; `-1` is error/unknown. Host events and
-//! failures log one line to stderr prefixed `[tension:ai]`; the hot poll verbs
-//! (`session_state`, `session_read`) are only traced when `TENSION_AI_TRACE` is
-//! set, so a guest's drain loop cannot bury those lines.
+//! failures log one line on the `ai` logger (`docs/logging.md`); the hot poll
+//! verbs (`session_state`, `session_read`) are only traced when
+//! `TENSION_AI_TRACE` is set, so a guest's drain loop cannot bury those lines.
 //!
 //!   session_create(cfg_ptr, cfg_len) -> i32
 //!       `> 0` session handle; `0` on failure (bad/empty dict, no model key,
@@ -78,8 +78,8 @@
 //! tag 5 = blob   : u32 byte_len, u32 guest_ptr   (guest linear memory)
 //! ```
 //!
-//! Duplicate keys: last wins. Unknown keys: ignored with a
-//! `[tension:ai] ignoring unknown key 'x'` note. Malformed or truncated
+//! Duplicate keys: last wins. Unknown keys: ignored with an `ai`-logger
+//! note. Malformed or truncated
 //! payloads fail the whole `session_create` (`0`). Blob bytes are copied into
 //! a `Vec<u8>` at the linker boundary — the host never holds a `Caller` past
 //! the call.
