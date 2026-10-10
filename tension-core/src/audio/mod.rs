@@ -238,7 +238,8 @@ fn clamp_gain(gain: f32) -> f32 {
     }
 }
 
-/// One line per verb call on stderr: `[tension:audio] <verb>(<args>) -> <ret>`.
+/// One line per verb call on the `audio` logger: `<verb>(<args>) -> <ret>`,
+/// routed through the host logger so it carries the configured layout.
 fn log(call: &str) {
-    eprintln!("[tension:audio] {call}");
+    tension_core::logging::log(tension_core::logging::Level::Info, "audio", call);
 }

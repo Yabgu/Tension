@@ -111,15 +111,20 @@ impl HeadlessAdapter {
         }
 
         match write_wav(&self.out_path, session.rate, channels as u16, &interleaved) {
-            Ok(()) => eprintln!(
-                "[tension:audio:headless] wrote {} ({} frames, {:.2} s)",
-                self.out_path.display(),
-                mono.len(),
-                mono.len() as f64 / session.rate as f64
+            Ok(()) => tension_core::logging::log(
+                tension_core::logging::Level::Info,
+                "audio:headless",
+                &format!(
+                    "wrote {} ({} frames, {:.2} s)",
+                    self.out_path.display(),
+                    mono.len(),
+                    mono.len() as f64 / session.rate as f64
+                ),
             ),
-            Err(e) => eprintln!(
-                "[tension:audio:headless] failed to write {}: {e}",
-                self.out_path.display()
+            Err(e) => tension_core::logging::log(
+                tension_core::logging::Level::Warn,
+                "audio:headless",
+                &format!("failed to write {}: {e}", self.out_path.display()),
             ),
         }
     }
