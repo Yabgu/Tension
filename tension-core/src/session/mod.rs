@@ -664,8 +664,13 @@ impl Session {
 /// One line per verb call and per refusal on stderr, prefixed the way every
 /// service in this repo prefixes its trace (`DESIGN.md` §6.1: the wasm boundary
 /// has no error channel, so this is where a refusal is explained).
+///
+/// Routed through the host logger under the name `session`, so the line carries
+/// the configured layout (text or JSON) and filter: the old fixed
+/// `[tension:session]` prefix is now the layout's logger column, and
+/// `--log-format=json` renders these the same way as every other record.
 fn log(message: &str) {
-    eprintln!("[tension:session] {message}");
+    tension_core::logging::log(tension_core::logging::Level::Info, "session", message);
 }
 
 /// A fresh nonce for one open. It is a *staleness witness* — it lets the host
