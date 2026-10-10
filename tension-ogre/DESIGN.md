@@ -19,8 +19,8 @@ else in the note is elaboration.
   `session::*` but declares no memory import is refused, and so is a session
   guest in the verb-level defence. `-EPROTO` was considered and deliberately
   **not** introduced: the information lives in the named diagnostic on the
-  `[tension:session]` channel, and the repo's discipline is one small declared
-  errno table per capability rather than a new code per failure.
+  `session` logger (`docs/logging.md`), and the repo's discipline is one small
+  declared errno table per capability rather than a new code per failure.
 - **Re-entrancy: `-EBUSY` for `session_wait` and `session_drain` called from
   inside a callback; `queue_*` verbs defer instead.** A deferred submission is
   *copied* at the moment of the call and applied after the batch, so a callback
@@ -1622,8 +1622,8 @@ being followed into the weeds.
 The reserved gap `[layout_end, memory_base)` is guarded by a sparse canary
 lattice: a 16-byte block every 4 KiB, carrying `(offset ^ magic)` and its
 complement, so a shifted write is not accidentally correct. A mismatch at any
-check means `FAULTED`, `faultState = FAULT_GUEST_OVERLAP`, a named
-`[tension:session]` diagnostic, and `-EIO`. The lattice **does not cover the
+check means `FAULTED`, `faultState = FAULT_GUEST_OVERLAP`, a named `session`
+diagnostic (`docs/logging.md`), and `-EIO`. The lattice **does not cover the
 always-arena range**: the session writes the header page itself and publishes
 into the region band later, so a lattice there would report the session's own
 work as corruption.
@@ -1819,12 +1819,17 @@ described in the capability's terms. With no adapters loaded the set is empty
 and the check is a no-op, which is the state every A1 test but the loading ones
 runs in.
 
-**The log channel's prefix names the module.** The `log` slot writes one stderr
-line on `[tension:session]` because it is the *session* that implements the
-slot — the prefix identifies the service, not the caller. An adapter's messages
-are its own to identify, and the reference adapter does (`echo: init`, then
-`echo: two imports registered`); a v2 additive field for a structured source id
-is listed in §12's future work.
+**The log channel's name identifies the module.** The legacy `log` slot writes
+one line on the `session` logger because it is the *session* that implements the
+slot — the logger name identifies the service, not the caller — and the host now
+renders it through its one layout (`docs/logging.md`) rather than a fixed prefix.
+An adapter names its own records: `tension-ogre` prefers the appended
+`log_named(user, level, "ogre", msg, len)` (rule 11), so
+`--log-level=ogre:debug` reaches its lines, and falls back to the legacy `log`
+slot when a host left the appended one NULL. The legacy slot stays populated for
+adapters built before the append. The append is additive under rule 11, not a v2:
+the identity §12's future work wanted from "a structured source id" is now carried
+by the logger *name*, so a dedicated v2 field is no longer needed for it.
 
 **The `JOB` region is what the guest reads.** The SDK's `jobState()`,
 `jobResult()` and `jobError()` do not call `job_state` — they range-check and
@@ -2908,8 +2913,17 @@ semantics:
   `-EIO`, with the slot already disabled and the fault already published.
 - `release_callback(user, fn)` → `int32_t` — idempotent; the session owns the
   storage.
-- `log(user, level, msg, len)` → `void` — one stderr line prefixed
-  `[tension:session]`; never blocks, never fails; any thread.
+- `log(user, level, msg, len)` → `void` — the legacy slot: one line on the
+  `session` logger (levels 0 debug .. 3 error), rendered by the host's
+  configured layout; never blocks, never fails; any thread. Kept for adapters
+  built before the append below.
+- `log_named(user, level, name, msg, len)` → `void` — appended under rule 11.
+  A named record (level 0 trace .. 5 fatal); an adapter's preferred slot, because
+  the name makes the host's per-logger filtering apply. Never blocks, never
+  fails; any thread.
+- `log_structured(user, level, name, json, len)` → `void` — appended under rule
+  11. As `log_named`, but the payload is spliced as JSON `data` in the JSON
+  layout.
 - `register_import(user, module, name, ret_type, param_types, nparams, fn,
   ctx, verb_id, flags)` → `int32_t` — valid only during `link`. Refuses an
   unknown value type, more than eight parameters, a duplicate `(module, name)`,
