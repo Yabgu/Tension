@@ -15,6 +15,17 @@
 //   arg_count() -> i32       number of extra CLI args passed to the game
 //   arg(i, ptr, cap) -> i32  write arg i as UTF-8; returns byte count (-1
 //                            OOB); cap == 0 probes the size without writing
+//   log(level, name_ptr, name_len, msg_ptr, msg_len)
+//                            hand one record to the host logger: `level` is a
+//                            tension_log_level_t (0 trace .. 5 fatal), the
+//                            logger name and message are UTF-8 byte ranges
+//   log_structured(level, name_ptr, name_len, json_ptr, json_len)
+//                            the same, with a JSON payload in place of the
+//                            message (the JSON layout splices it)
+//
+// Every string crosses as UTF-8 bytes with an explicit byte count
+// (`String.UTF8.byteLength` / `String.UTF8.encode`), never the UTF-16 code-unit
+// count `str.length` reports — the two differ for any non-ASCII text.
 //
 // Because the wrappers below probe the exact size before consuming, the
 // guest never requests a partial line, so UTF-8 codepoint-boundary
@@ -32,6 +43,24 @@ declare function hostArgCount(): i32;
 
 @external("tension::io", "arg")
 declare function hostArg(i: i32, ptr: usize, cap: i32): i32;
+
+@external("tension::io", "log")
+declare function hostLog(
+  level: i32,
+  namePtr: usize,
+  nameLen: i32,
+  msgPtr: usize,
+  msgLen: i32,
+): void;
+
+@external("tension::io", "log_structured")
+declare function hostLogStructured(
+  level: i32,
+  namePtr: usize,
+  nameLen: i32,
+  jsonPtr: usize,
+  jsonLen: i32,
+): void;
 
 /** Write text to stdout with no trailing newline. */
 export function write(text: string): void {
@@ -75,4 +104,44 @@ export function arg(i: i32): string {
   const n = hostArg(i, changetype<usize>(buf), need);
   if (n < 0) return "";
   return String.UTF8.decodeUnsafe(changetype<usize>(buf), n);
+}
+
+/**
+ * Hand one record to the host logger.
+ *
+ * `level` is a `tension_log_level_t` (0 trace .. 5 fatal); `name` and `message`
+ * cross as UTF-8 bytes. The host owns the level, the filter, the layout and the
+ * sink — this only carries what the guest knows. `Logger` in `./log` is the
+ * ergonomic wrapper; this is the raw binding under it.
+ *
+ * The byte lengths are `String.UTF8.byteLength`, not `message.length`: the host
+ * reads exactly that many bytes, so the UTF-16 count would truncate any message
+ * containing a non-ASCII character.
+ */
+export function log(level: i32, name: string, message: string): void {
+  const nameBytes = String.UTF8.encode(name);
+  const msgBytes = String.UTF8.encode(message);
+  hostLog(
+    level,
+    changetype<usize>(nameBytes),
+    nameBytes.byteLength,
+    changetype<usize>(msgBytes),
+    msgBytes.byteLength,
+  );
+}
+
+/**
+ * Hand one structured record to the host logger: `json` is expected to be a JSON
+ * object the JSON layout splices as `data`.
+ */
+export function logStructured(level: i32, name: string, json: string): void {
+  const nameBytes = String.UTF8.encode(name);
+  const jsonBytes = String.UTF8.encode(json);
+  hostLogStructured(
+    level,
+    changetype<usize>(nameBytes),
+    nameBytes.byteLength,
+    changetype<usize>(jsonBytes),
+    jsonBytes.byteLength,
+  );
 }
