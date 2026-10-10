@@ -64,15 +64,36 @@ int32_t refuse(tension_value *ret, int32_t errno_value) {
     return errno_value;
 }
 
+/// The legacy `log` level (0 debug, 1 info, 2 warning, 3 error) as its
+/// `tension_log_level_t` equivalent (1 DEBUG, 2 INFO, 3 WARN, 4 ERROR).
+constexpr int32_t named_level(int32_t legacy) {
+    return legacy <= 0 ? 1 : legacy == 1 ? 2 : legacy == 2 ? 3 : 4;
+}
+
+/// One line on the `input` logger.
+///
+/// Prefers the appended `log_named` slot, which carries the logger name, so the
+/// host's per-logger filtering (`--log-level=input:debug`) reaches these lines
+/// and the host applies its configured layout. A host that left the slot NULL
+/// falls back to the legacy `log` slot, which stays populated under rule 11.
+/// `level` stays the legacy vocabulary the call sites use (0..3) and is mapped
+/// to `tension_log_level_t` on the way out.
 void log_line(int level, const char *message) {
     AdapterState &s = adapter_state();
-    if (s.api != nullptr && s.api->log != nullptr && message != nullptr)
-        s.api->log(s.api->user, level, message, static_cast<uint32_t>(std::strlen(message)));
+    if (s.api == nullptr || message == nullptr) return;
+    const uint32_t len = static_cast<uint32_t>(std::strlen(message));
+    if (s.api->log_named != nullptr) {
+        s.api->log_named(s.api->user, named_level(level), "input", message, len);
+        return;
+    }
+    if (s.api->log != nullptr)
+        s.api->log(s.api->user, level, message, len);
 }
 
 } // namespace
 
-/// One `[tension:input]` line; src/input.cpp calls this and does not own the log.
+/// One line on the `input` logger; src/input.cpp calls this and does not own
+/// the log.
 void input_log(const std::string &message) { log_line(1, message.c_str()); }
 
 namespace {
