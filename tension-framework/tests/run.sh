@@ -22,6 +22,10 @@
 #                   and the rest pose over the same archive fixtures, against
 #                   reference values taken from the format's own runtime. A plain
 #                   module like the parser — no capability needed.
+#   guest-log.ts    the guest logger: every level, both `tension::io` log imports,
+#                   and the UTF-8 byte-length path a non-ASCII message exercises.
+#                   A plain module — the records go to the host's stderr, which
+#                   the runner prints.
 #
 # Steps, in the order the design fixes them:
 #
@@ -124,4 +128,28 @@ run_fixture guest-verlet.ts guest-verlet.wasm
 run_fixture guest-physics-units.ts guest-physics-units.wasm
 run_plain_fixture guest-anim-parser.ts guest-anim-parser.wasm
 run_plain_fixture guest-anim-eval.ts guest-anim-eval.wasm
+run_plain_fixture guest-log.ts guest-log.wasm
+echo "==> checking guest-log's records (trace)"
+# The compiled fixture's records must reach the host's layout and filter: at
+# `trace` every level is present, the structured payload lands in the message
+# slot, and a non-ASCII message is whole — which is what pins the UTF-8
+# byte-length path in `assembly/io.ts` (a UTF-16 length would truncate it).
+trace_err="$("$core" --log-level=trace "$root/build/guest-log.wasm" 2>&1 >/dev/null || true)"
+for needle in \
+  "TRACE game: trace:" \
+  "DEBUG game: debug:" \
+  "WARN  game: warn" \
+  "FATAL game: fatal" \
+  'INFO  game: {"tick":1,"ready":true}' \
+  "unicode: héllo wörld ✓"; do
+  case "$trace_err" in
+    *"$needle"*) : ;;
+    *)
+      echo "run.sh: guest-log: no record containing: $needle" >&2
+      printf '%s\n' "$trace_err" >&2
+      exit 1
+      ;;
+  esac
+done
+echo "    == guest-log records: OK"
 echo "==> all fixtures OK"
