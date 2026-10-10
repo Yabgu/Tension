@@ -53,6 +53,7 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
+use tension_core::logging::{Config as LogConfig, ConfigError};
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
@@ -200,6 +201,15 @@ options:
                          names an existing file is that file; anything else is
                          a name resolved as <dir>/libtension_<name>.so through
                          TENSION_CAPABILITY_PATH (colon-separated directories)
+  --log-level <SPEC>     the log threshold: a bare LEVEL sets the default, and
+                         NAME:LEVEL sets one logger (repeatable; a later flag
+                         wins). LEVEL is trace|debug|info|warn|error|fatal|off.
+                         e.g. --log-level=ai:debug,ogre:warn. Env fallback:
+                         TENSION_LOG_LEVEL
+  --log-format <FORMAT>  text (default, human-readable) or json (one jq-parsable
+                         object per line). Env fallback: TENSION_LOG_FORMAT
+  --log-file <PATH>      append log lines to PATH instead of stderr. Env
+                         fallback: TENSION_LOG_FILE
   --session-open         A1 test-only: open the session from the host before
                          `_start_game`, for a guest that does not call
                          `session_open` itself. Real guests open their own
@@ -289,6 +299,12 @@ struct Cli {
     /// Capability adapters to load: a path, or a bare name resolved through
     /// `TENSION_CAPABILITY_PATH` (`DESIGN.md` §7, r2 decision 3).
     capability_paths: Vec<String>,
+    /// `--log-level` values, in order. A later flag overrides an earlier one.
+    log_levels: Vec<String>,
+    /// `--log-format`.
+    log_format: Option<String>,
+    /// `--log-file`.
+    log_file: Option<PathBuf>,
     /// A1 test-only: open the session from the host before `_start_game`.
     session_open: bool,
     /// A2 test-only: open with these table slots registered as callbacks.
@@ -311,6 +327,9 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut symbol_paths = Vec::new();
     let mut res_paths = Vec::new();
     let mut capability_paths = Vec::new();
+    let mut log_levels = Vec::new();
+    let mut log_format: Option<String> = None;
+    let mut log_file: Option<PathBuf> = None;
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
@@ -328,6 +347,18 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         }
         if let Some(value) = arg.strip_prefix("--capability=") {
             capability_paths.push(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--log-level=") {
+            log_levels.push(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--log-format=") {
+            log_format = Some(value.to_string());
+            continue;
+        }
+        if let Some(value) = arg.strip_prefix("--log-file=") {
+            log_file = Some(PathBuf::from(value));
             continue;
         }
         if let Some(value) = arg.strip_prefix("--session-callbacks=") {
@@ -356,6 +387,18 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 let value = rest.next().ok_or("`--capability` needs a path or a name")?;
                 capability_paths.push(value);
             }
+            "--log-level" => {
+                let value = rest.next().ok_or("`--log-level` needs a spec")?;
+                log_levels.push(value);
+            }
+            "--log-format" => {
+                let value = rest.next().ok_or("`--log-format` needs `text` or `json`")?;
+                log_format = Some(value);
+            }
+            "--log-file" => {
+                let value = rest.next().ok_or("`--log-file` needs a path")?;
+                log_file = Some(PathBuf::from(value));
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -379,12 +422,46 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         symbol_paths,
         res_paths,
         capability_paths,
+        log_levels,
+        log_format,
+        log_file,
         session_open,
         session_callbacks,
         post_test_events,
         wasm_path,
         args: rest.collect(),
     })
+}
+
+/// Build the logger's config: environment first, then the CLI on top, so
+/// **CLI beats the environment beats the defaults** (`info`, `text`, stderr).
+///
+/// The flags are merged rather than replaced: a `--log-level` naming one logger
+/// does not discard an environment variable that named another.
+fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
+    let mut config = LogConfig::default();
+
+    if let Ok(value) = std::env::var("TENSION_LOG_LEVEL") {
+        config.set_level_spec(&value)?;
+    }
+    if let Ok(value) = std::env::var("TENSION_LOG_FORMAT") {
+        config.set_format(&value)?;
+    }
+    if let Ok(value) = std::env::var("TENSION_LOG_FILE") {
+        config.set_file(PathBuf::from(value));
+    }
+
+    for spec in &cli.log_levels {
+        config.set_level_spec(spec)?;
+    }
+    if let Some(format) = &cli.log_format {
+        config.set_format(format)?;
+    }
+    if let Some(path) = &cli.log_file {
+        config.set_file(path.clone());
+    }
+
+    Ok(config)
 }
 
 fn main() -> anyhow::Result<()> {
@@ -430,6 +507,22 @@ fn main() -> anyhow::Result<()> {
             "tension-core: {} does not exist\n\n{USAGE}",
             cli.wasm_path
         );
+        std::process::exit(2);
+    }
+
+    // Logging is installed first — before the debug report, the session, the
+    // linker, and every adapter — so a line the host or an adapter emits from
+    // here on goes through one layout. A bad `--log-file` or a malformed
+    // `--log-level` is a usage error and exits like the other flag refusals.
+    let log_config = match build_log_config(&cli) {
+        Ok(config) => config,
+        Err(err) => {
+            eprintln!("tension-core: {err}\n\n{USAGE}");
+            std::process::exit(2);
+        }
+    };
+    if let Err(err) = tension_core::logging::init(log_config) {
+        eprintln!("tension-core: {err}\n\n{USAGE}");
         std::process::exit(2);
     }
 
@@ -1737,6 +1830,107 @@ mod adapter_cli_tests {
         // A stream that ends before the magic does.
         assert!(!declares_start_section(&HEADER[..6]));
         assert!(!declares_start_section(&[]));
+    }
+}
+
+#[cfg(test)]
+mod log_cli_tests {
+    use super::*;
+    use std::sync::Mutex;
+    use tension_core::logging::{Format, Level, Threshold};
+
+    // Two tests touch the process environment; the lock keeps them from reading
+    // each other's variables while the harness runs the module in parallel.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn cli(args: &[&str]) -> Cli {
+        parse_cli(args.iter().map(|s| s.to_string()).collect()).expect("parses")
+    }
+
+    #[test]
+    fn log_flags_parse_in_both_spellings() {
+        let parsed = cli(&[
+            "--log-level",
+            "info",
+            "--log-level=ai:debug,ogre:warn",
+            "--log-format=json",
+            "--log-file",
+            "run.log",
+            "game.wasm",
+        ]);
+        assert_eq!(
+            parsed.log_levels,
+            vec!["info".to_string(), "ai:debug,ogre:warn".to_string()]
+        );
+        assert_eq!(parsed.log_format.as_deref(), Some("json"));
+        assert_eq!(parsed.log_file, Some(PathBuf::from("run.log")));
+        assert_eq!(parsed.wasm_path, "game.wasm");
+    }
+
+    #[test]
+    fn log_flags_after_the_guest_belong_to_the_game() {
+        let parsed = cli(&["game.wasm", "--log-level=debug"]);
+        assert!(parsed.log_levels.is_empty());
+        assert_eq!(parsed.args, vec!["--log-level=debug".to_string()]);
+    }
+
+    #[test]
+    fn a_log_flag_without_a_value_is_refused() {
+        for flag in ["--log-level", "--log-format", "--log-file"] {
+            let error = parse_cli(vec![flag.to_string()]).unwrap_err();
+            assert!(error.contains(flag), "{flag}: unexpected error: {error}");
+        }
+    }
+
+    #[test]
+    fn without_log_flags_the_config_is_the_default() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::remove_var("TENSION_LOG_LEVEL");
+        std::env::remove_var("TENSION_LOG_FORMAT");
+        std::env::remove_var("TENSION_LOG_FILE");
+        let config = build_log_config(&cli(&["game.wasm"])).expect("builds");
+        assert_eq!(config, LogConfig::default());
+    }
+
+    #[test]
+    fn cli_and_env_merge_with_cli_winning() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        std::env::set_var("TENSION_LOG_LEVEL", "warn,ai:error");
+        std::env::set_var("TENSION_LOG_FORMAT", "json");
+        let config = build_log_config(&cli(&[
+            "--log-level",
+            "ai:debug",
+            "--log-format=text",
+            "game.wasm",
+        ]))
+        .expect("builds");
+        std::env::remove_var("TENSION_LOG_LEVEL");
+        std::env::remove_var("TENSION_LOG_FORMAT");
+
+        // The environment set the global; no CLI bare level overrode it.
+        assert_eq!(config.global, Threshold::At(Level::Warn));
+        // The CLI named `ai`, which replaces the environment's `ai:error`.
+        assert_eq!(
+            config.overrides,
+            vec![("ai".to_string(), Threshold::At(Level::Debug))]
+        );
+        // The CLI format beats the environment's.
+        assert_eq!(config.format, Format::Text);
+    }
+
+    #[test]
+    fn a_malformed_level_spec_is_a_usage_error() {
+        let error = build_log_config(&cli(&["--log-level=verbose", "game.wasm"])).unwrap_err();
+        assert!(error.to_string().contains("is not a level"), "{error}");
+    }
+
+    #[test]
+    fn a_bad_format_is_a_usage_error() {
+        let error = build_log_config(&cli(&["--log-format=yaml", "game.wasm"])).unwrap_err();
+        assert!(
+            error.to_string().contains("expected `text` or `json`"),
+            "{error}"
+        );
     }
 }
 
