@@ -191,8 +191,21 @@ void fail(uint32_t stage, int32_t error, const std::string &what) {
 
 /// Mark the thread done and destroy the backend — on this thread, which is the
 /// only thread that may touch a render system's objects.
+///
+/// Once this returns the render thread is gone, and **no** queued job can ever
+/// be realised: a job's terminal state is set only by `drain_completions`, which
+/// only this thread runs. Every in-flight job is therefore failed here rather
+/// than left in `LOADING`. A guest that polls `jobState` (the SDK's `settle`
+/// shape) would otherwise wait for a thread that has already exited — measured:
+/// a renderer that fails to start leaves `examples/ogre/animated-character`
+/// blocked forever, and the executable with it. Doing it here rather than at
+/// each failure site means a future early return cannot forget it; the sweep is
+/// idempotent, so the frame loop's own exit path needs no sweep of its own.
 void finish_thread() {
     AdapterState &s = adapter_state();
+    // One call, not sweep-then-latch: the guest that queues right as the
+    // renderer dies must not slip between the two.
+    s.loader.stop_draining(-EIO);
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         s.backend.reset();
@@ -361,9 +374,8 @@ void render_main() {
             // idle loop does not spin.
             s.cv.wait_for(lock, period, [&s] { return s.stop_requested.load(); });
         }
-        // Whatever was still being read when the loop ended never gets
-        // realised: the renderer it was meant for is about to be torn down.
-        s.loader.sweep_failed(-EIO);
+        // `finish_thread` sweeps whatever was still being read when the loop
+        // ended: the renderer it was meant for is about to be torn down.
         s.backend->stop(s.status);
     } catch (const std::exception &e) {
         fail(s.status.snapshot().stage, -EIO, std::string("unhandled exception: ") + e.what());
@@ -423,6 +435,9 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         s.config = decoded.config;
         s.stop_requested = false;
         s.thread_exited = false;
+        // A drainer is about to exist again: jobs queued from here on can be
+        // realised, so undo whatever a previous thread's death latched.
+        s.loader.set_drain_state(0);
         s.thread = std::thread(render_main);
         s.initialized = true;
     }
@@ -505,7 +520,9 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
     }
 
     const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
-    if (job < 0) return job; // -ENOSPC: the table is full, and said so in the log
+    // Through `refuse`: a bare `return job` leaves the wasm result slot at 0,
+    // so a full table answered the guest "accepted" (see refuse's note).
+    if (job < 0) return refuse(ret, job);
     ret->i32 = job;
     return 0;
 }
@@ -650,7 +667,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             case kSubmitRenderable: rc = s.scene.remove_renderable(id); break;
             default: return refuse(ret, -EINVAL);
         }
-        if (rc != 0) return rc;
+        if (rc != 0) return refuse(ret, rc);
         ret->i32 = 0;
         return 0;
     }
@@ -732,7 +749,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
         }
         default: return refuse(ret, -EINVAL);
     }
-    if (rc != 0) return rc;
+    if (rc != 0) return refuse(ret, rc);
     ret->i32 = 0;
     return 0;
 }
@@ -1050,7 +1067,7 @@ int32_t shim_create_mesh(void *, const tension_value *args, uint32_t nargs, tens
     const int32_t resource_id =
         s.loader.queue_procedural_mesh(vertices.data(), vertex_bytes, format, indices.data(),
                                        index_bytes, topology);
-    if (resource_id < 0) return resource_id;
+    if (resource_id < 0) return refuse(ret, resource_id);
     ret->i32 = resource_id;
     return 0;
 }
