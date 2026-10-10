@@ -623,7 +623,13 @@ class BackendOgre final : public Backend {
     ///
     /// A path that is not on this install is skipped with a count rather than
     /// thrown on, so a media tree that ships without an optional pack still
-    /// starts — and says how many it skipped.
+    /// starts — and says how many it skipped. An archive **type** this build
+    /// cannot read is skipped the same way, for the same reason: the shipped
+    /// `resources2.cfg` names two `Zip=` packs, and an OGRE-Next built without
+    /// zziplib (`OgreBuildSettings.h`'s `OGRE_NO_ZIP_ARCHIVE`) has no Zip
+    /// factory to open them. That is a property of the *build*, not of whether
+    /// the packs are wanted, so it must not be the thing that ends the start
+    /// (see the catch below).
     void add_resource_locations(const std::string &root) {
         const std::string cfg_path = find_resources_config(root);
         if (!std::filesystem::exists(cfg_path)) {
@@ -642,7 +648,8 @@ class BackendOgre final : public Backend {
             log_line(std::string("ogre: ") + cfg_path + " could not be read: " + e.what());
             return;
         }
-        uint32_t added = 0, skipped = 0;
+        uint32_t added = 0, skipped = 0, unsupported = 0;
+        std::string unsupported_types;
         Ogre::ConfigFile::SectionIterator section = config.getSectionIterator();
         while (section.hasMoreElements()) {
             const Ogre::String section_name = section.peekNextKey();
@@ -669,13 +676,47 @@ class BackendOgre final : public Backend {
                     ++skipped;
                     continue;
                 }
-                Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
-                    path, type, kResourceGroup, false);
-                ++added;
+                try {
+                    Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
+                        path, type, kResourceGroup, false);
+                    ++added;
+                } catch (const Ogre::Exception &e) {
+                    // `addResourceLocation` loads the archive on the spot
+                    // (`ResourceGroupManager::addResourceLocation` ->
+                    // `ArchiveManager::load`), so an archive *type* this build
+                    // has no factory for throws here — and, before this catch,
+                    // took the whole start with it. Measured: this install's
+                    // `resources2.cfg` names two `Zip=` packs while its own
+                    // `OgreBuildSettings.h` says `OGRE_NO_ZIP_ARCHIVE 1` (the
+                    // pinned bootstrap found no zziplib), so the first `Zip`
+                    // entry ended the start at stage 3.
+                    //
+                    // `ArchiveManager::load` raises `ERR_ITEM_NOT_FOUND` for
+                    // exactly the missing-factory case, before it touches the
+                    // file at all; an archive that is present but will not load
+                    // fails later, inside its own factory, with a different
+                    // code (`ZipArchive` uses `ERR_INTERNAL_ERROR`). So that one
+                    // code is a skip, and anything else stays a real failure.
+                    // `OGRE_EXCEPT` passes its code as the exception's number
+                    // (`throwException(code, code, ...)`), which is what
+                    // `getNumber()` returns.
+                    if (e.getNumber() != Ogre::Exception::ERR_ITEM_NOT_FOUND) throw;
+                    ++unsupported;
+                    if (!unsupported_types.empty()) unsupported_types += ", ";
+                    unsupported_types += type;
+                }
             }
         }
-        log_line("ogre: resource locations from " + cfg_path + ": " + std::to_string(added) +
-                 " added, " + std::to_string(skipped) + " skipped, group " + kResourceGroup);
+        std::string summary = "ogre: resource locations from " + cfg_path + ": " +
+                              std::to_string(added) + " added, " + std::to_string(skipped) +
+                              " skipped";
+        if (unsupported > 0) {
+            summary += ", " + std::to_string(unsupported) +
+                       " skipped for an archive type this build cannot read (" +
+                       unsupported_types + ")";
+        }
+        summary += ", group " + std::string(kResourceGroup);
+        log_line(summary);
     }
 
     struct ResourceEntry {

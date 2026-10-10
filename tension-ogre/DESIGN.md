@@ -2210,16 +2210,12 @@ chunk 1 work, and each is additive:
   a compositor-workspace question for later.
 - **An Hlms template directory config key.** The templates' location is derived
   from OGRE's prefix today; when the SDK key space opens past 7, it belongs in
-  the config beside the media search paths.
+  the config.
 - **A `resource_release` verb.** `job_release` frees a *job* slot; nothing yet
   frees a realised *resource*. A guest that cycles jobs can fill the RESOURCE
   table (1024 records) and start failing jobs with `-ENOSPC`, which is a
   ceiling, not a policy. The submission sub-chunk is where a guest will have
   resources worth keeping, so the release verb belongs with it.
-- **A media search path config key.** The adapter's lookup paths come from the
-  build (`TENSION_OGRE_MEDIA_DIR`, derived from OGRE's prefix) with an
-  environment override, because the SDK's key space is fixed at 1–7. When that
-  space opens past 7, a `media_paths` key is the natural home for it.
 - **Dynamic region allocation.** Chunk 1's region table is fixed-layout (§5.2);
   a capability with its own regions needs either a schema bump or an allocator,
   and the required-regions check (§7.2) is the seam it would attach to.

@@ -97,6 +97,9 @@ asc="$framework/node_modules/.bin/asc"
 "$asc" "$here/guest-light.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-light.wasm" >/dev/null ||
     fail "guest-light.ts did not compile"
+"$asc" "$here/guest-resource-errors.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-resource-errors.wasm" >/dev/null ||
+    fail "guest-resource-errors.ts did not compile"
 
 # One volume for everything the fixtures load (chunk 11): they share
 # tests/resources, pack.sh packs it, and every case below hands the path in as
@@ -171,6 +174,37 @@ jobs_case() {
     echo "== $name: ok — $(echo "$stdout" | tail -1)"
 }
 jobs_case jobs --renderer=null
+
+# Error propagation: what a guest can learn when a resource cannot load. Every
+# clause polls a job's terminal state and errno, so a lost error is a failed
+# clause rather than a hang — the three failures (not found, present but not a
+# mesh, a renderable naming a mesh that never loaded) and one control that
+# proves the refusals are specific.
+resource_errors_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-resource-errors.wasm" \
+        "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
+        { rc=$?; echo "$stdout" | sed 's/^/    /'; \
+          fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"; }
+    echo "$stdout" | sed 's/^/    /'
+    echo "$stdout" | grep -qE "^OK$" ||
+        fail "$name: no OK line (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep '^RESERR ' | tail -1)"
+}
+resource_errors_case resource-errors --renderer=null
+
+# The renderer is gone: the render thread failed to start (an unknown
+# TENSION_RENDERER), so no job can ever be realised again. A load queued after
+# that failure must come back FAILED/-EIO rather than sit in PENDING — the case
+# that used to leave the guest, and the executable, waiting forever.
+stdout=$(TENSION_RENDERER=bogus "$core" --capability "$dso" \
+    "$out/guest-resource-errors.wasm" "--tns=$out/fixtures.tns" \
+    --renderer=gl3plus --dead-renderer 2>"$out/resource-errors-dead.err") ||
+    fail "resource-errors-dead: the interpreter exited $? (stderr: $(tail -2 "$out/resource-errors-dead.err"))"
+echo "$stdout" | grep -q "^RESERR 1 dead-renderer -5" ||
+    fail "resource-errors-dead: no 'RESERR 1 dead-renderer -5' (got: $stdout)"
+echo "== resource-errors-dead: ok — $(echo "$stdout" | grep '^RESERR ' | tail -1)"
 
 # The 3b acid test: the scene mirror, the submission verbs, and — where there
 # is a framebuffer — the pixels. Under renderer=null the first five clauses
@@ -366,6 +400,8 @@ if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
         # The real texture path: GL3+ creates a TextureGpu; the null case above
         # goes through the same code with the NULL render system.
         jobs_case jobs-gl3plus --renderer=gl3plus
+        # The same error-propagation clauses on a real renderer.
+        resource_errors_case resource-errors-gl3plus --renderer=gl3plus
         # And the visual tier: the same fixture with a framebuffer to read.
         triangle_case triangle-gl3plus --renderer=gl3plus
         # Chunk 4: one body for the pixel clauses, then sixty-four for the
