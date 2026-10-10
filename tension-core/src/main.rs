@@ -18,6 +18,18 @@
 //!   arg_count() -> i32       number of extra CLI args passed to the game
 //!   arg(i, ptr, cap) -> i32  write arg i as UTF-8 into buffer, return byte
 //!                            count (or -1 if out of range). cap==0 probes size.
+//!   log(level, name_ptr, name_len, msg_ptr, msg_len)
+//!                            hand one record to the host logger: `level` is a
+//!                            tension_log_level_t (0 trace .. 5 fatal), the
+//!                            name and message are UTF-8 byte ranges.
+//!   log_structured(level, name_ptr, name_len, json_ptr, json_len)
+//!                            the same, with a JSON payload in place of the
+//!                            message — the layout splices it.
+//!
+//! The host owns the logger (level, filter, layout, sink); `log` and
+//! `log_structured` carry only what the guest knows — a level, a logger name,
+//! and a message — and the host applies the one layout, so a guest line is
+//! byte-identical to the same record from C or from Rust.
 //!
 //! Host ABI (module `tension::res`, DESIGN.md §7):
 //!   res_open(path_ptr, path_len) -> fd | -errno
@@ -53,7 +65,7 @@
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
-use tension_core::logging::{Config as LogConfig, ConfigError};
+use tension_core::logging::{self, Config as LogConfig, ConfigError};
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
@@ -666,6 +678,43 @@ fn main() -> anyhow::Result<()> {
             let text = String::from_utf8_lossy(&bytes[start..end]);
             print!("{text}");
             let _ = io::stdout().flush();
+        },
+    )?;
+
+    // tension::io log imports -------------------------------------------
+    // The guest's logging: `log(level, name_ptr, name_len, msg_ptr, msg_len)`
+    // and `log_structured(...)` with a JSON payload in place of the message.
+    // Both hand a record to the host logger, which owns the layout — the guest
+    // never touches the terminal, exactly as with `print`. A level the guest
+    // invents is clamped, not refused, and a record that does not fit the
+    // guest's memory is dropped: a log call must not trap.
+    linker.func_wrap(
+        "tension::io",
+        "log",
+        |mut caller: Caller<'_, HostState>,
+         level: i32,
+         name_ptr: i32,
+         name_len: i32,
+         msg_ptr: i32,
+         msg_len: i32| {
+            let name = guest_text(&mut caller, name_ptr, name_len).unwrap_or_default();
+            let message = guest_text(&mut caller, msg_ptr, msg_len).unwrap_or_default();
+            logging::log(logging::Level::from_abi_code(level), &name, &message);
+        },
+    )?;
+
+    linker.func_wrap(
+        "tension::io",
+        "log_structured",
+        |mut caller: Caller<'_, HostState>,
+         level: i32,
+         name_ptr: i32,
+         name_len: i32,
+         json_ptr: i32,
+         json_len: i32| {
+            let name = guest_text(&mut caller, name_ptr, name_len).unwrap_or_default();
+            let payload = guest_text(&mut caller, json_ptr, json_len).unwrap_or_default();
+            logging::emit(logging::Level::from_abi_code(level), &name, "", Some(&payload));
         },
     )?;
 
@@ -1422,6 +1471,24 @@ fn guest_path(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<
         return None;
     }
     std::str::from_utf8(&data[start..end]).ok().map(str::to_owned)
+}
+
+/// Read a UTF-8 span out of guest memory, **lossily**: an invalid byte is
+/// replaced rather than refused, because a log call must not drop a record for
+/// its encoding. `None` only when the range does not fit the guest's memory, in
+/// which case the caller drops the record (`tension::io::log` never traps).
+fn guest_text(caller: &mut Caller<'_, HostState>, ptr: i32, len: i32) -> Option<String> {
+    if ptr < 0 || len < 0 {
+        return None;
+    }
+    let mem = caller.get_export("memory").and_then(|e| e.into_memory())?;
+    let data = mem.data(&*caller);
+    let start = ptr as usize;
+    let end = start.checked_add(len as usize)?;
+    if end > data.len() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&data[start..end]).into_owned())
 }
 
 /// Write bytes into guest memory; false when the range does not fit.
