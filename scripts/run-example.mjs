@@ -16,6 +16,9 @@
 //   model             model path for the ai example
 //   extraCapability   a second --capability (input-camera's input DSO)
 //   release           use target/release instead of target/debug
+//   hostArgs          extra host options placed before the guest path, as an
+//                     array (e.g. ["--log-level=trace", "--log-format=json"]);
+//                     the example's own flags, so a reader can see them
 //
 // Steps that belong to the repository's own build scripts — the framework's
 // session-config generator and `pack.sh` — are run through bash, because
@@ -244,6 +247,11 @@ if (kind === 'res') {
   args.push('--capability', adapter);
   if (extraCapability) args.push('--capability', extraCapability);
 }
+
+// Host options the example declares, before the guest path like every other
+// host option (everything after the guest path is the guest's, which is why an
+// example that wants `--log-level` cannot just put it in `args`).
+for (const option of cfg.hostArgs ?? []) args.push(option);
 
 args.push(join(exampleDir, wasm));
 
