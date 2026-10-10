@@ -15,6 +15,46 @@ export declare function readLine(): string | null;
 export declare function argCount(): i32;
 export declare function arg(i: i32): string;
 
+/**
+ * Hand one record to the host logger. `level` is a `tension_log_level_t`
+ * (see `LogLevel`); `name` and `message` cross as UTF-8 bytes. Prefer `Logger`.
+ */
+export declare function log(level: i32, name: string, message: string): void;
+
+/** Hand one structured (JSON payload) record to the host logger. */
+export declare function logStructured(level: i32, name: string, json: string): void;
+
+/** The guest logging level; the discriminants are the host ABI's. */
+export declare enum LogLevel {
+  Trace = 0,
+  Debug = 1,
+  Info = 2,
+  Warn = 3,
+  Error = 4,
+  Fatal = 5,
+}
+
+/**
+ * One named logger over the host's logging ABI. The host owns the level,
+ * filter, layout and sink; a name is a namespace, so `--log-level=a:warn`
+ * quiets `a:b` too.
+ */
+export declare class Logger {
+  /** The logger for `name` (the same instance for the same name). */
+  static get(name: string): Logger;
+  /** The name the host filters on. */
+  getName(): string;
+  log(level: LogLevel, message: string): void;
+  trace(message: string): void;
+  debug(message: string): void;
+  info(message: string): void;
+  warn(message: string): void;
+  error(message: string): void;
+  fatal(message: string): void;
+  /** Emit a structured record; `json` is a JSON object the layout splices. */
+  structured(level: LogLevel, json: string): void;
+}
+
 export declare function audioInit(sampleRate: i32, channels: i32): i32;
 export declare function audioPlay(pcm: Float32Array, rate: i32, gain: f32, looping: bool): i32;
 export declare function audioStop(voice: i32): i32;

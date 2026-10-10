@@ -305,6 +305,36 @@ fn main() {
         out_dir.join("libtension_ogre_stub.so").display()
     );
 
+    // ── the logging ABI's C harness ────────────────────────────────────────
+    //
+    // A C object that calls `tension_log` / `tension_log_structured`, linked
+    // into the `log_ffi` integration test. Compiling it here is what proves the
+    // host's exported symbols are resolvable from C, not just from Rust; the
+    // test then asserts the records reached the sink.
+    let log_harness_src = manifest
+        .join("tests")
+        .join("support")
+        .join("log_harness.c");
+    let logger_header = manifest.join("include").join("tension_logger.h");
+    println!("cargo:rerun-if-changed={}", log_harness_src.display());
+    println!("cargo:rerun-if-changed={}", logger_header.display());
+    let log_harness_obj = out_dir.join("tension_log_harness.o");
+    let mut command = Command::new("cc");
+    command
+        .args(["-std=c11", "-O2", "-fPIC"])
+        .arg("-I")
+        .arg(&include)
+        .arg("-c")
+        .arg(&log_harness_src)
+        .arg("-o")
+        .arg(&log_harness_obj);
+    prefer_tool_own_dir(&mut command, "cc");
+    run_or_panic(
+        command,
+        &format!("compiling the log harness {}", log_harness_src.display()),
+    );
+    println!("cargo:rustc-link-arg-tests={}", log_harness_obj.display());
+
     // ── llama.cpp build-info support for MinGW/Windows ─────────────────────
     if std::env::var("CARGO_FEATURE_AI").is_ok() {
         if let Some(build_dir) = out_dir.parent().and_then(|p| p.parent()) {

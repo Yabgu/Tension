@@ -1,0 +1,40 @@
+{
+  // Debugging the logging example under tension-core. `tension-core` *is* the
+  // runtime, so the thing being debugged is game.ts, exactly as a Python script
+  // is debugged without debugging the python binary; see examples/io/.vscode
+  // for how `--debug` synthesizes DWARF from the guest's source map.
+  //
+  // The args ask for `--log-level=trace` and `--log-format=json`, so the debug
+  // console shows every record the guest emits, one JSON object per line — a
+  // breakpoint on a `game.warn(...)` call and the line it produces are both in
+  // front of you.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (log example)",
+      "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--log-level=trace",
+        "--log-format=json",
+        "${workspaceFolder}/build/game.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    }
+  ]
+}

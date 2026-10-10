@@ -198,6 +198,13 @@ typedef struct tension_core_api {
      * One line to stderr, prefixed `[tension:session]`. Never blocks, never
      * fails, callable from any thread. Levels: 0 debug, 1 info, 2 warning,
      * 3 error.
+     *
+     * The host now routes this through its one logger under the name
+     * "session", so the line carries the configured layout (text or JSON) and
+     * the configured filter rather than a fixed prefix — see `log_named`
+     * below. The vocabulary is unchanged: the four legacy levels map onto
+     * DEBUG/INFO/WARN/ERROR. Kept populated for adapters built before the
+     * `log_named` append (rule 11).
      */
     void (*log)(void *user, int32_t level, const char *msg, uint32_t len);
 
@@ -256,6 +263,27 @@ typedef struct tension_core_api {
      */
     int32_t (*region_lookup)(void *user, uint32_t kind, uint32_t *out_offset,
                              uint32_t *out_size);
+
+    /*
+     * The logging slots appended under rule 11 (ABI version 1, 2026-10).
+     *
+     * Optional at the adapter: an adapter built before these fields existed
+     * cannot call them and calls `log` instead, so the host keeps that slot
+     * populated. An adapter built after should prefer these — they carry a
+     * logger name, so the host's per-logger filtering (`--log-level=ogre:debug`)
+     * applies to its lines.
+     *
+     * `level` is a `tension_log_level_t` (0 trace .. 5 fatal) — the *new*
+     * vocabulary, not the legacy 0..3 `log` uses. `name` is NUL-terminated and
+     * names the logger (e.g. "ogre"); a NULL name means the "session" channel,
+     * matching `log`. `msg` / `json` carry `len` bytes. Both are panic-free,
+     * never block, never fail, and are callable from any thread; the layout is
+     * applied once, in the host.
+     */
+    void (*log_named)(void *user, int32_t level, const char *name,
+                      const char *msg, uint32_t len);
+    void (*log_structured)(void *user, int32_t level, const char *name,
+                           const char *json, uint32_t len);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -424,6 +452,44 @@ static_assert(sizeof(tension_value) == 8,
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(tension_value) == 8,
                "tension_value must be one 8-byte slot");
+#endif
+
+/*
+ * tension_core_api's shape, made mechanical on both sides of the boundary.
+ *
+ * Rule 11 lets fields be appended, never removed, reordered, or retyped; these
+ * assertions are what make an append *deliberate*. The first fails if a slot is
+ * inserted or removed before the last one; the second fails if the trailing
+ * count changes. Either way the fix is the same and names both halves: update
+ * this assertion together with the Rust `TensionCoreApi` and the matching
+ * `const _` block in `tension-core/src/adapter/ffi.rs`.
+ *
+ * (The count is expressed against `offsetof(user)` and `sizeof(void *)` so it
+ * holds on 32- and 64-bit alike; every slot after `abi_version` is
+ * pointer-sized.)
+ */
+#if defined(__cplusplus)
+static_assert(offsetof(tension_core_api, log_structured)
+                      + sizeof(((tension_core_api *)0)->log_structured)
+                  == sizeof(tension_core_api),
+              "tension_core_api: log_structured must stay the last slot; an "
+              "append updates this assertion and the Rust table together");
+static_assert(sizeof(tension_core_api)
+                  == offsetof(tension_core_api, user) + 15 * sizeof(void *),
+              "tension_core_api: expected 15 pointer-sized slots after "
+              "abi_version; update this count, the Rust TensionCoreApi, and its "
+              "size assertion together");
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(offsetof(tension_core_api, log_structured)
+                       + sizeof(((tension_core_api *)0)->log_structured)
+                   == sizeof(tension_core_api),
+               "tension_core_api: log_structured must stay the last slot; an "
+               "append updates this assertion and the Rust table together");
+_Static_assert(sizeof(tension_core_api)
+                   == offsetof(tension_core_api, user) + 15 * sizeof(void *),
+               "tension_core_api: expected 15 pointer-sized slots after "
+               "abi_version; update this count, the Rust TensionCoreApi, and its "
+               "size assertion together");
 #endif
 
 /*

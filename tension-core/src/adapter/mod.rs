@@ -586,10 +586,12 @@ pub(crate) fn run_publish_hooks(
     ran
 }
 
-/// The `[tension:session]` channel, named here because this module is where the
-/// publish hook's failures are reported (`DESIGN.md` §7.2).
+/// The session channel, named here because this module is where the publish
+/// hook's failures are reported (`DESIGN.md` §7.2). Routed through the host
+/// logger under the name `session`, so the line carries the configured layout —
+/// the old fixed `[tension:session]` prefix is now the layout's logger column.
 fn log_line(message: &str) {
-    eprintln!("[tension:session] {message}");
+    tension_core::logging::log(tension_core::logging::Level::Info, "session", message);
 }
 
 /// A loaded adapter and what its `link` registered.

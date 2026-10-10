@@ -92,11 +92,31 @@ void put_u64(uint8_t *at, size_t offset, uint64_t value) {
     for (size_t i = 0; i < 8; ++i) at[offset + i] = static_cast<uint8_t>(value >> (8 * i));
 }
 
-/// One line to the session's log. The session prefixes its own channel name, so
-/// the message names the module: `[tension:session] ogre: ...` (DESIGN.md §6.1).
+/// The legacy `log` level (0 debug, 1 info, 2 warning, 3 error) as its
+/// `tension_log_level_t` equivalent (1 DEBUG, 2 INFO, 3 WARN, 4 ERROR).
+constexpr int32_t named_level(int32_t legacy) {
+    return legacy <= 0 ? 1 : legacy == 1 ? 2 : legacy == 2 ? 3 : 4;
+}
+
+/// One line on the `ogre` logger.
+///
+/// Prefers the appended `log_named` slot: it carries the logger name, so the
+/// host's per-logger filtering (`--log-level=ogre:debug`) reaches these lines
+/// and the host applies its configured layout. A host that left the slot NULL
+/// falls back to the legacy `log` slot, which stays populated under rule 11.
+///
+/// `level` stays the legacy vocabulary the call sites and `sink.log` use (0..3)
+/// and is mapped to the named slot's 0..5 on the way out, so the ~40
+/// `log_line(3, ...)` calls below are untouched.
 void log_line(int32_t level, const std::string &message) {
     AdapterState &s = adapter_state();
-    if (s.api == nullptr || s.api->log == nullptr) return;
+    if (s.api == nullptr) return;
+    if (s.api->log_named != nullptr) {
+        s.api->log_named(s.api->user, named_level(level), "ogre", message.data(),
+                         static_cast<uint32_t>(message.size()));
+        return;
+    }
+    if (s.api->log == nullptr) return;
     s.api->log(s.api->user, level, message.data(), static_cast<uint32_t>(message.size()));
 }
 
