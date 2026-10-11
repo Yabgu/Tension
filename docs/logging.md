@@ -149,6 +149,32 @@ fn warn(msg: []const u8) void {
 Both are panic-free, never block, and may be called from any thread; the host
 serialises the write.
 
+### Statically linked native code that also runs without the host
+
+The free symbols assume the host is linkable — true for a tool, false for an
+archive that is *also* linked on its own. `libtension_solver.a` is the case:
+`tension-solver/tests/probe_physics.cpp` links it directly, and
+`examples/plugins/midpoint/Makefile` links it into a plugin, neither with the
+host present. Requiring `tension_log` would break those links (or force
+`-rdynamic`, which rule 8 forbids).
+
+The solver therefore reaches the logger through a **bound callback**, mirroring
+`tension_solver_bind_callbacks` (which exists for exactly the same reason):
+
+```c
+/* tension_solver.h */
+typedef void (*tension_solver_log_fn)(int32_t level, const char *msg, uint32_t len);
+void tension_solver_set_log(tension_solver_log_fn fn); /* NULL restores stderr */
+```
+
+The shim's diagnostics are `fprintf(stderr, …)` by default — byte-for-byte the
+standalone behaviour — and go through the installed callback when there is one.
+`tension-core` installs a forwarding callback once in `solver::link_solver`, so
+in the host they arrive as records on the `solver` logger (level 0 debug .. 3
+error on the shim's side, mapped to the logger's vocabulary by the host). If you
+add a native subsystem with the same "must link without the host" constraint,
+follow this pattern rather than the free symbols.
+
 ## Emitting from Rust
 
 ```rust
@@ -305,3 +331,17 @@ file` from the child `tension-core`, not from a test assertion. One OGRE test,
 without the Vulkan RenderSystem plugin — the adapter then returns `-EIO` at the
 plugin stage where the test expects `-ENOSYS`; it fails identically on a
 pristine adapter and is environment, not code.
+
+The `solver_*` tests need no special environment; `solver_log` builds a `.wat`
+guest inline and runs the interpreter, so it exercises the bound callback the
+solver installs.
+
+## Known gaps
+
+* **The `log_named == NULL` fallback is correct by construction, but untested.**
+  An adapter's `log_line` prefers the appended `log_named` and falls back to the
+  legacy `log` slot when a host left it NULL; every host `core_api()` populates
+  `log_named`, so no test reaches the fallback. The cheapest test is a small C
+  fixture that fills a `tension_core_api` with `log_named = NULL` and a live
+  `log`, and calls an adapter's `log_line` through it. Worth adding when the next
+  ABI slot lands, so the fallback does not rot before a pre-append host ships.
