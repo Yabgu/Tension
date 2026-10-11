@@ -198,6 +198,11 @@ typedef struct {
 static TsSolver g_solvers[TS_MAX_SOLVERS];
 static TsPlugin g_plugins[TS_MAX_PLUGINS];
 
+/* The installed log sink, or NULL for the default stderr path. Process-wide,
+ * like the solver's own registration tables; installed by
+ * tension_solver_set_log. */
+static tension_solver_log_fn g_log = NULL;
+
 static TsSolver *handle(int32_t id)
 {
     if (id < 1 || id > TS_MAX_SOLVERS)
@@ -358,6 +363,14 @@ static int32_t params_from_config(const tension_solver_config *cfg,
     return params_validate(out);
 }
 
+/* Install (or clear) the log sink. See the header: NULL restores the default
+ * stderr path, which is what keeps a standalone link byte-for-byte the same.
+ */
+void tension_solver_set_log(tension_solver_log_fn fn)
+{
+    g_log = fn;
+}
+
 /* A stated parameter the method does not read: warn, do not refuse. The
  * plugin case (`builtin < 0`) has no declared list, so nothing is warned. */
 static void warn_ignored_parameters(int builtin, uint32_t bits)
@@ -369,11 +382,27 @@ static void warn_ignored_parameters(int builtin, uint32_t bits)
         return;
     read = TS_METHOD_PARAMETERS[builtin];
     for (i = 0; i < TS_PARAMETER_COUNT; i++)
-        if ((bits & (1u << i)) != 0 && (read & (1u << i)) == 0)
-            fprintf(stderr,
-                    "[tension-solver] parameter '%s' is not read by method "
-                    "'%s'; ignored\n",
-                    TS_PARAMETERS[i], TS_BUILTINS[builtin]);
+        if ((bits & (1u << i)) != 0 && (read & (1u << i)) == 0) {
+            if (g_log != NULL) {
+                /* Level 2 is the solver's "warning". The host maps it. */
+                char line[256];
+                int n = snprintf(line, sizeof(line),
+                                 "parameter '%s' is not read by method "
+                                 "'%s'; ignored",
+                                 TS_PARAMETERS[i], TS_BUILTINS[builtin]);
+                if (n > 0) {
+                    size_t len = (size_t)n < sizeof(line)
+                                     ? (size_t)n
+                                     : sizeof(line) - 1;
+                    g_log(2, line, (uint32_t)len);
+                }
+            } else {
+                fprintf(stderr,
+                        "[tension-solver] parameter '%s' is not read by method "
+                        "'%s'; ignored\n",
+                        TS_PARAMETERS[i], TS_BUILTINS[builtin]);
+            }
+        }
 }
 
 /* ── registration ────────────────────────────────────────────────────── */
