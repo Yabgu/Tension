@@ -60,6 +60,7 @@
 
 use std::cell::Cell;
 use std::collections::HashMap;
+use std::ffi::c_char;
 use std::sync::Arc;
 
 use tension_core::world::{self, World};
@@ -90,6 +91,7 @@ extern "C" {
         derivative: Option<DerivFn>,
         validate: Option<ValidateFn>,
     ) -> i32;
+    fn tension_solver_set_log(f: Option<LogFn>);
 }
 
 /// The derivative the shim stores (P4's signature, unchanged).
@@ -97,6 +99,9 @@ type DerivFn = unsafe extern "C" fn(*const f64, i32, f64, *mut f64, i32) -> i32;
 /// The validate callback (unused by classical backends; NULL here).
 type ValidateFn =
     unsafe extern "C" fn(*const f64, i32, *const f64, i32, f64, *mut u8, i32) -> i32;
+/// The log sink the shim calls for its own diagnostics: a host service
+/// installed by [`install_solver_log`], mirroring `bind_callbacks`.
+type LogFn = unsafe extern "C" fn(i32, *const c_char, u32);
 
 /// A guest's bound callbacks for one wasm-source solver, resolved once at
 /// create from the three table indices the guest passed. The typed handles
@@ -445,7 +450,45 @@ fn write_guest_f64s(caller: &mut Caller<'_, HostState>, ptr: i32, values: &[f64]
 
 /// Register the five `tension::solver` imports. `tension::io`, `tension::res`,
 /// `tension::audio` and `tension::ai` are untouched.
+/// The host sink for the solver shim's diagnostics, installed once by
+/// [`link_solver`]. Maps the shim's 0..3 level (debug/info/warning/error) onto
+/// the logger's vocabulary and forwards to `logging::log(level, "solver", ..)`.
+///
+/// `extern "C"` and context-free, matching the callback the shim stores; the
+/// shim's diagnostics carry no per-solver identity, so no bridge is needed
+/// (unlike [`derivative_trampoline`], whose context is the guest's memory).
+unsafe extern "C" fn solver_log_callback(level: i32, msg: *const c_char, len: u32) {
+    if msg.is_null() {
+        return;
+    }
+    // SAFETY: the shim passes a pointer to `len` bytes it owns; the borrow ends
+    // with this call.
+    let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, len as usize) };
+    let text = String::from_utf8_lossy(bytes);
+    tension_core::logging::log(
+        tension_core::logging::Level::from_legacy_code(level),
+        "solver",
+        &text,
+    );
+}
+
+/// Install [`solver_log_callback`]. Idempotent; called once from `link_solver`.
+fn install_solver_log() {
+    // SAFETY: the function pointer has the shim's `tension_solver_log_fn`
+    // signature and outlives every call the shim makes (a `fn` item is `'static`).
+    unsafe { tension_solver_set_log(Some(solver_log_callback)) };
+}
+
 pub fn link_solver(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
+    // Install the solver's log sink once, before any solver exists. The shim's
+    // diagnostics (currently one ignored-parameter warning) then arrive here and
+    // go through the one logger under the name `solver`, exactly as an adapter's
+    // lines go through its named slot. A standalone consumer of
+    // `libtension_solver.a` (probe_physics, a plugin) never calls this and keeps
+    // the shim's own stderr path — the property that keeps the archive linkable
+    // without the host.
+    install_solver_log();
+
     linker.func_wrap(
         "tension::solver",
         "solver_create",
