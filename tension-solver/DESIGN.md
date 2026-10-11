@@ -402,11 +402,24 @@ or derives dim 0, is also `-EINVAL`.
 
 **Known limitation (recorded, not hidden): world compile errors are logged,
 not returned.** World-source compile errors carry line/column information
-from the YAML parser; that information is logged to the debug channel
-(`[tension-core]`-prefixed, stderr) but not returned across the wasm
-boundary, because the create entry point has no err buffer (unlike the
-resource loader's `tension_res_load`). Adding an err buffer is a future
-change if the diagnostic quality becomes important.
+from the YAML parser; that information is logged to the `solver` logger
+(`docs/logging.md`; formerly a `[tension-core]`-prefixed stderr line) but not
+returned across the wasm boundary, because the create entry point has no err
+buffer (unlike the resource loader's `tension_res_load`). Adding an err buffer
+is a future change if the diagnostic quality becomes important.
+
+**The shim's own diagnostics go through a bound callback, not a host symbol.**
+`tension_solver.c` warns (never refuses) about a stated parameter a method does
+not read; that warning must reach the host's logger in a host build, while
+`libtension_solver.a` must still link on its own (`tests/probe_physics.cpp`, and
+the Windows `-ltension_solver` in `examples/plugins/midpoint/Makefile`). The two
+requirements rule out a direct call into a host symbol, so `tension_solver_set_log(fn)`
+installs a sink — the same pattern as `tension_solver_bind_callbacks`, which
+exists for exactly this "links anywhere" reason. The default is NULL: the shim
+`fprintf`s to stderr itself, unchanged. `tension-core` installs a forwarding
+callback once in `solver::link_solver`, so in a host run the warning arrives as
+a `solver`-logger record at WARN. A native subsystem with the same constraint
+should follow this pattern rather than `tension_log`.
 
 **What phase 5 does not deliver:** the YAML world compiler (P8; `source:
 "world"` answered `-ENOSYS` until P8e wired it); verlet, implicit_euler and

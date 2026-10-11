@@ -105,6 +105,20 @@ typedef int32_t (*tension_solver_validate_fn)(
     const double *next, int32_t next_len,
     double dt, uint8_t *out, int32_t out_cap);
 
+/*
+ * A host log sink. The solver calls this for its own diagnostics when one is
+ * installed; with none installed it writes them to stderr itself, which is the
+ * standalone behaviour (`probe_physics.cpp`, the sample plugin). `level` is the
+ * solver's own vocabulary — 0 debug, 1 info, 2 warning, 3 error — and the host
+ * maps it to its logger's. `msg` carries `len` bytes and is not NUL-terminated.
+ *
+ * This is the same shape of dependency as `tension_solver_bind_callbacks`: the
+ * numerical core links anywhere, and a host that wants the diagnostics supplies
+ * the sink. It is deliberately **not** a direct call into a host symbol — that
+ * would make `libtension_solver.a` unlinkable without the host.
+ */
+typedef void (*tension_solver_log_fn)(int32_t level, const char *msg, uint32_t len);
+
 /* ── native backend registration ─────────────────────────────────────── */
 
 /*
@@ -326,6 +340,17 @@ int32_t tension_solver_bind_callbacks(
     int32_t id,
     tension_solver_derivative_fn derivative,
     tension_solver_validate_fn   validate);
+
+/*
+ * Install the process-wide log sink, or remove it (`fn == NULL`) so the solver
+ * writes its diagnostics to stderr itself.
+ *
+ * Process-wide, not per-solver: the solver's diagnostics are not tied to one id
+ * and there is one host. The default is NULL. The host (tension-core) installs
+ * a forwarding callback once at startup; a standalone consumer leaves it NULL
+ * and gets the `fprintf` path unchanged.
+ */
+void tension_solver_set_log(tension_solver_log_fn fn);
 
 /*
  * Advance the solver by `dt`. Returns 0 on success, a negative errno on

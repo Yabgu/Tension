@@ -22,8 +22,8 @@
 
 namespace tension_input {
 
-/// One `[tension:input]` line, implemented by the adapter, which owns the API
-/// table. The thread formats diagnostics; it does not own the log.
+/// One line on the `input` logger, implemented by the adapter, which owns the
+/// API table. The thread formats diagnostics; it does not own the log.
 void input_log(const std::string &message);
 
 /// `class_info`'s flags word, bit 0: the class has a subscriber, so a producer
