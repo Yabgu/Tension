@@ -34,9 +34,21 @@
 #include "tension_adapter.h"
 
 #if defined(ECHO_BAD_ABI_VERSION)
-#define ECHO_ABI_VERSION 2u
+/* A version this build does not load. Kept distinct from both the current
+ * version and the old-v1 fixture below, so the version refusal is proven
+ * against a value that is simply wrong, not one that collides with either. */
+#define ECHO_ABI_VERSION 3u
 #else
 #define ECHO_ABI_VERSION TENSION_ADAPTER_ABI_VERSION
+#endif
+
+/* A second refusal probe (C4.1c): the same object, built with a layout hash the
+ * host will not match, so `load_adapter`'s preflight refuses it before anything
+ * is called. */
+#if defined(ECHO_BAD_LAYOUT_HASH)
+#define ECHO_LAYOUT_HASH (TENSION_ADAPTER_LAYOUT_HASH ^ 0xFFFFFFFFu)
+#else
+#define ECHO_LAYOUT_HASH TENSION_ADAPTER_LAYOUT_HASH
 #endif
 
 /*
@@ -320,8 +332,34 @@ static void echo_destroy(void *ctx)
     (void)ctx;
 }
 
-static const tension_adapter ECHO_ADAPTER = {
-    .abi_version = ECHO_ABI_VERSION,
+#if defined(ECHO_OLD_V1)
+/*
+ * The ABI version 1 vtable: the pre-C4 layout, exactly 72 bytes, with **no**
+ * `layout_hash`. This is a genuinely different object from `tension_adapter` as
+ * this header defines it (80 bytes) — the fixture builds the old shape on
+ * purpose, so `load_adapter` is handed a pointer to a shorter struct and the
+ * version check has to refuse it *before* offset 72 is read. Reading offset 72
+ * of this object would be an out-of-bounds read; that the load returns
+ * `AbiVersion` (not `LayoutHash`, and not a crash) is the proof the gate works.
+ */
+struct echo_v1_adapter {
+    uint32_t abi_version;
+    const char *name;
+    uint32_t flags;
+    int32_t (*init)(void *ctx, const tension_core_api *core);
+    int32_t (*link)(void *ctx, const tension_core_api *core);
+    int32_t (*publish)(void *ctx, const tension_core_api *core);
+    int32_t (*apply)(void *ctx, uint32_t verb_id, const void *record, uint32_t len);
+    int32_t (*shutdown)(void *ctx);
+    void (*destroy)(void *ctx);
+};
+
+/* The old size is the point: 9 pointer-sized fields, no `layout_hash`. */
+_Static_assert(sizeof(struct echo_v1_adapter) == 9 * sizeof(void *),
+               "the v1 fixture must be the old 72-byte shape");
+
+static const struct echo_v1_adapter ECHO_V1_ADAPTER = {
+    .abi_version = 1u,
     .name = "echo",
     .flags = 0,
     .init = echo_init,
@@ -334,5 +372,24 @@ static const tension_adapter ECHO_ADAPTER = {
 
 const tension_adapter *tension_adapter_v1(void)
 {
+    return (const tension_adapter *)&ECHO_V1_ADAPTER;
+}
+#else
+static const tension_adapter ECHO_ADAPTER = {
+    .abi_version = ECHO_ABI_VERSION,
+    .name = "echo",
+    .flags = 0,
+    .init = echo_init,
+    .link = echo_link,
+    .publish = echo_publish,
+    .apply = echo_apply,
+    .shutdown = echo_shutdown,
+    .destroy = echo_destroy,
+    .layout_hash = ECHO_LAYOUT_HASH,
+};
+
+const tension_adapter *tension_adapter_v1(void)
+{
     return &ECHO_ADAPTER;
 }
+#endif

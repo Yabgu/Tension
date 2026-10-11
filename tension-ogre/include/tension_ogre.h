@@ -13,9 +13,13 @@
  * they cannot leak into the wire contract — DESIGN.md §0: the version pin is a
  * build-time concern that the wire format does not depend on.
  *
- * Sub-chunk 1 registers three imports: init, shutdown and last_error. The
- * submission verbs (queue_mesh_load, queue_texture_load, job_state,
- * job_release) belong to the sub-chunk that has submissions to queue.
+ * The adapter registers sixteen imports. The first three — init, shutdown and
+ * last_error — are the bring-up and error surface; the rest are the load,
+ * query and per-frame submission verbs: queue_mesh_load, queue_texture_load,
+ * job_state, job_release, submit, screenshot, submit_motion, submit_bones,
+ * submit_skin_matrices, create_mesh, mount_tns, submit_animation and
+ * window_handle. `tension-ogre/src/adapter.cpp`'s `registrations[]` is the
+ * authoritative list; this header documents each one below.
  *
  * SPDX-License-Identifier: MIT
  */

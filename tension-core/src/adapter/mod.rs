@@ -53,6 +53,7 @@ pub(crate) fn probe_adapter(name: &str, apply: ApplyFn, user: *mut c_void) -> Ad
         apply: Some(apply),
         shutdown: None,
         destroy: None,
+        layout_hash: crate::session::arena::layout_hash(),
     }));
     AdapterCall {
         vtable,
@@ -64,7 +65,7 @@ pub(crate) fn probe_adapter(name: &str, apply: ApplyFn, user: *mut c_void) -> Ad
 use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use wasmtime::{Caller, Linker};
@@ -91,6 +92,14 @@ pub enum AdapterError {
     NullVtable { path: PathBuf },
     /// The adapter was built against a different ABI.
     AbiVersion {
+        path: PathBuf,
+        found: u32,
+        expected: u32,
+    },
+    /// The adapter's vtable `layout_hash` does not match the arena layout this
+    /// build requires: a vtable field added or reordered, or a region moved
+    /// (C4.1c). Caught at load, before any slot is called.
+    LayoutHash {
         path: PathBuf,
         found: u32,
         expected: u32,
@@ -151,6 +160,18 @@ impl std::fmt::Display for AdapterError {
             } => write!(
                 f,
                 "{} was built against adapter ABI {found}; this build is {expected}",
+                path.display()
+            ),
+            AdapterError::LayoutHash {
+                path,
+                found,
+                expected,
+            } => write!(
+                f,
+                "{} was built against arena layout {found:#010x}; this build requires \
+                 {expected:#010x} — a vtable field moved or an arena region changed shape. \
+                 Rebuild the capability against this tension-core (`tension-core layout-hash` \
+                 prints the value its header must carry)",
                 path.display()
             ),
             AdapterError::NoHost => write!(
@@ -258,6 +279,13 @@ pub struct AdapterHost {
     /// raw pointer is not `Send`. The value is only ever read on the guest
     /// thread, inside the call that installed it.
     caller: Mutex<usize>,
+    /// The id of the thread that installed `caller`, or 0 when the slot is
+    /// empty (C4.1b). Set and cleared with `caller`, and compared by the
+    /// guest-memory shims so a call from any other thread is refused rather
+    /// than dereferenced. The ABI's any-thread slots (`post_event`,
+    /// `class_info`) run on producer threads, which must never reach guest
+    /// memory; this is what makes that rule mechanical instead of a comment.
+    caller_thread: AtomicU64,
     /// The guest memory's size, refreshed whenever a caller is installed.
     memory_size: AtomicU32,
     /// The posting face (`session::posting`): what `post_event` reaches, and
@@ -291,6 +319,21 @@ const _: fn() = || {
     assert_send_sync::<PostingSide>();
 };
 
+/// A process-unique, non-zero token per thread, for the C4.1b caller-thread
+/// check. `std::thread::ThreadId` carries no stable numeric accessor, so a
+/// token assigned on first use is how the id is made comparable; the exact value
+/// is irrelevant, only that it distinguishes threads and that 0 means "none"
+/// (the counter starts at 1).
+static NEXT_THREAD_TOKEN: AtomicU64 = AtomicU64::new(1);
+thread_local! {
+    static THREAD_TOKEN: u64 = NEXT_THREAD_TOKEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// This thread's token.
+pub(crate) fn current_thread_id() -> u64 {
+    THREAD_TOKEN.with(|token| *token)
+}
+
 impl AdapterHost {
     /// A host whose API table points back at itself, carrying `posting`.
     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
@@ -298,6 +341,7 @@ impl AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
             link: Mutex::new(LinkState::default()),
             caller: Mutex::new(0),
+            caller_thread: AtomicU64::new(0),
             memory_size: AtomicU32::new(0),
             posting,
             in_publish: std::sync::atomic::AtomicBool::new(false),
@@ -379,6 +423,14 @@ impl AdapterHost {
         address as *mut Caller<'static, HostState>
     }
 
+    /// Whether the caller slot belongs to *this* thread (C4.1b). False when the
+    /// slot is empty (tid 0) or was installed by another thread — either way, a
+    /// guest-memory shim must refuse rather than trust the pointer.
+    pub(crate) fn caller_is_this_thread(&self) -> bool {
+        let tid = self.caller_thread.load(Ordering::Relaxed);
+        tid != 0 && tid == current_thread_id()
+    }
+
     pub(crate) fn memory_size(&self) -> u32 {
         self.memory_size.load(Ordering::Relaxed)
     }
@@ -395,10 +447,16 @@ impl AdapterHost {
         }
         *self.caller.lock().expect("the caller mutex is never poisoned") =
             caller as *mut Caller<'static, HostState> as usize;
+        // Publish the thread id *after* the pointer, so a shim that sees a
+        // non-zero tid also sees the matching pointer.
+        self.caller_thread.store(current_thread_id(), Ordering::Relaxed);
     }
 
     /// Clear the slot. The guard in `ffi` calls this however a call ends.
     pub(crate) fn leave(&self) {
+        // Clear the thread id *first*, so a racing shim stops trusting the slot
+        // before the pointer goes.
+        self.caller_thread.store(0, Ordering::Relaxed);
         *self.caller.lock().expect("the caller mutex is never poisoned") = 0;
     }
 
@@ -605,6 +663,10 @@ pub struct LoadedAdapter {
     name: String,
     imports: Vec<RegisteredImport>,
     required_regions: Vec<u32>,
+    /// Set once [`LoadedAdapter::teardown`] has run. `shutdown` is idempotent by
+    /// contract, but `destroy` is "called once", and both the clean and the
+    /// trapping exit paths can reach teardown.
+    torn_down: bool,
 }
 
 impl LoadedAdapter {
@@ -622,6 +684,60 @@ impl LoadedAdapter {
     /// The region kinds it asked about during `link`.
     pub fn required_regions(&self) -> &[u32] {
         &self.required_regions
+    }
+
+    /// Tear this adapter down: `shutdown` then `destroy`, at most once.
+    ///
+    /// The vtable's contract (`tension_adapter.h`) is what makes the order and
+    /// the call site safe. `shutdown` stops background threads and releases
+    /// their resources, **is idempotent**, and **must not touch guest memory**;
+    /// `destroy` frees the adapter's own storage and is "called once, after
+    /// `shutdown`". Joining is inside `shutdown` ("a render thread tears down
+    /// its own engine objects before exiting, on its own thread: that is what
+    /// joining buys"), so when `destroy` runs nothing is still inside the
+    /// adapter.
+    ///
+    /// Runs on the interpreter thread, outside any guest call — the only place
+    /// the ABI permits `shutdown`/`destroy` (rule 4), and therefore a place
+    /// where no `publish`/`apply` is in flight. `ctx` is null because the vtable
+    /// has no context accessor and adapters keep their own state; `init` and
+    /// `link` are called with null `ctx` the same way (`link_adapters`).
+    fn teardown(&mut self) {
+        if self.torn_down {
+            return;
+        }
+        self.torn_down = true;
+        // SAFETY: `self.adapter` points into this adapter's own library, which
+        // `self._library` keeps open until after this runs; the two calls go
+        // through the vtable the library published.
+        unsafe {
+            if let Some(shutdown) = (*self.adapter).shutdown {
+                let rc = shutdown(std::ptr::null_mut());
+                if rc != 0 {
+                    crate::logging::log(
+                        crate::logging::Level::Warn,
+                        "core",
+                        &format!("capability `{}`: shutdown returned {rc}", self.name),
+                    );
+                }
+            }
+            if let Some(destroy) = (*self.adapter).destroy {
+                destroy(std::ptr::null_mut());
+            }
+        }
+    }
+}
+
+/// Tear down every loaded adapter, in **reverse of link order**.
+///
+/// Reverse order mirrors `link`: the adapter linked last — the one built on top
+/// of the imports the earlier ones established — comes apart first. Called on
+/// every exit path from the run, so a clean return and a guest trap both reach
+/// it (`main.rs`); a trapping guest cannot leave an adapter's threads running.
+/// [`LoadedAdapter::teardown`] is idempotent, so a second call is a no-op.
+pub fn teardown_adapters(adapters: &mut [LoadedAdapter]) {
+    for adapter in adapters.iter_mut().rev() {
+        adapter.teardown();
     }
 }
 
@@ -650,12 +766,31 @@ pub fn load_adapter(path: &Path) -> Result<LoadedAdapter, AdapterError> {
         });
     }
 
+    // The ABI version is read first, and it is what makes the `layout_hash` read
+    // below safe. A version-1 adapter has a 72-byte `tension_adapter` with no
+    // `layout_hash`; reading offset 72 of it would be an out-of-bounds read of
+    // the shorter object. This gate refuses a v1 adapter before that read is
+    // reached, so the ordering here is load-bearing, not cosmetic.
     let abi_version = unsafe { (*adapter).abi_version };
     if abi_version != ffi::ADAPTER_ABI_VERSION {
         return Err(AdapterError::AbiVersion {
             path: path.to_path_buf(),
             found: abi_version,
             expected: ffi::ADAPTER_ABI_VERSION,
+        });
+    }
+
+    // C4.1c: the layout hash, checked here — after the version gate above (which
+    // guarantees this field exists) and before `init`, before `link`, before any
+    // vtable slot is called. `abi_version` answers "is this the right shape of
+    // contract"; this answers "is this the right build of it", catching a vtable
+    // field appended or an arena region moved while the version stayed the same.
+    let layout_hash = unsafe { (*adapter).layout_hash };
+    if layout_hash != crate::session::arena::layout_hash() {
+        return Err(AdapterError::LayoutHash {
+            path: path.to_path_buf(),
+            found: layout_hash,
+            expected: crate::session::arena::layout_hash(),
         });
     }
 
@@ -675,6 +810,7 @@ pub fn load_adapter(path: &Path) -> Result<LoadedAdapter, AdapterError> {
         name,
         imports: Vec::new(),
         required_regions: Vec::new(),
+        torn_down: false,
     })
 }
 
@@ -804,6 +940,11 @@ mod tests {
     /// The two objects `build.rs` compiles from the same source.
     const ECHO: &str = env!("TENSION_ECHO_ADAPTER");
     const ECHO_BAD_ABI: &str = env!("TENSION_ECHO_BADABI_ADAPTER");
+    /// A third build of the same source, carrying a layout hash the host will
+    /// not match (C4.1c).
+    const ECHO_BAD_LAYOUT: &str = env!("TENSION_ECHO_BADLAYOUT_ADAPTER");
+    /// A fourth: the pre-C4 ABI version 1 shape, 72 bytes and no `layout_hash`.
+    const ECHO_V1: &str = env!("TENSION_ECHO_V1_ADAPTER");
 
     fn test_store(engine: &Engine) -> Store<HostState> {
         Store::new(
@@ -844,12 +985,44 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 2);
-                assert_eq!(expected, 1);
+                assert_eq!(found, 3, "the fixture declares a version this build does not load");
+                assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
+                assert_eq!(expected, 2);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 2"));
+        assert!(error.to_string().contains("ABI 3"));
+    }
+
+    #[test]
+    fn a_version_1_adapter_is_refused_by_the_version_check_not_a_layout_read() {
+        // The pre-C4 adapter: `sizeof(tension_adapter) == 72`, with no
+        // `layout_hash`. If the loader read offset 72 to fetch a layout hash
+        // before checking the version, that read would be out of bounds of the
+        // object — an OOB read, not a refusal. The version gate runs first, so
+        // the refusal is `AbiVersion` (found 1), and the layout read is never
+        // reached. This is the C4c amendment: refine the earlier "fail-closed"
+        // claim, which was wrong, into a gate that actually holds.
+        let error = load_adapter(Path::new(ECHO_V1))
+            .err()
+            .expect("the v1 build is refused");
+        match error {
+            AdapterError::AbiVersion {
+                found,
+                expected,
+                ..
+            } => {
+                assert_eq!(found, 1, "the fixture is a version-1 adapter");
+                assert_eq!(expected, 2);
+            }
+            AdapterError::LayoutHash { .. } => panic!(
+                "a v1 adapter was refused for its layout hash — that means the host read \
+                 offset 72 of a 72-byte struct, an out-of-bounds read; the version check must \
+                 run first"
+            ),
+            other => panic!("expected an ABI-version refusal, got {other:?}"),
+        }
+        assert!(error.to_string().contains("ABI 1"));
     }
 
     #[test]
@@ -859,6 +1032,57 @@ mod tests {
             .expect("a missing file is refused");
         assert!(matches!(error, AdapterError::Open { .. }));
         assert!(error.to_string().contains("libtension_nope.so"));
+    }
+
+    // ── C4.1c / C4.1d: the load-time preflight ────────────────────────────
+
+    #[test]
+    fn a_layout_hash_mismatch_is_refused_at_load() {
+        // The same adapter at the *current* ABI version, built against a
+        // different arena layout. `abi_version` matches, so this is exactly the
+        // drift the version check alone cannot catch — it must be refused
+        // before `init`/`link` run. (An *older*-version adapter is a different
+        // case, refused earlier and by version: see
+        // `a_version_1_adapter_is_refused_by_the_version_check_not_a_layout_read`.)
+        let error = load_adapter(Path::new(ECHO_BAD_LAYOUT))
+            .err()
+            .expect("the wrong-layout build is refused");
+        match error {
+            AdapterError::LayoutHash {
+                found, expected, ..
+            } => {
+                assert_ne!(found, expected);
+                assert_eq!(
+                    expected,
+                    crate::session::arena::layout_hash(),
+                    "the expected hash is this build's arena layout"
+                );
+            }
+            other => panic!("expected a layout-hash refusal, got {other:?}"),
+        }
+        assert!(
+            error.to_string().contains("arena layout"),
+            "the message names the mismatch: {error}"
+        );
+    }
+
+    #[test]
+    fn a_file_that_is_not_a_shared_object_is_refused_by_name() {
+        // The preflight's first gate: a file that is not a loadable object at
+        // all. `dlopen` refuses it and the refusal names the path, rather than
+        // the failure surfacing later as a null vtable.
+        let dir = std::env::temp_dir().join(format!("tension-preflight-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a scratch dir");
+        let path = dir.join("not-an-adapter.so");
+        std::fs::write(&path, b"this is not an ELF shared object\n").expect("write the decoy");
+
+        let error = load_adapter(&path).err().expect("a non-DSO is refused");
+        assert!(matches!(error, AdapterError::Open { .. }), "{error:?}");
+        assert!(
+            error.to_string().contains("not-an-adapter.so"),
+            "the refusal names the file: {error}"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -1040,5 +1264,101 @@ mod tests {
         // A kind this chunk does not define is a named refusal, not a guess.
         let missing = unsafe { ffi::region_lookup(host.api().user, 99, &mut offset, &mut size) };
         assert_eq!(missing, ffi::ENOENT);
+    }
+
+    // ── C3: the adapter teardown ───────────────────────────────────────────
+
+    /// Markers the recording vtables below push. A `Mutex`, not an atomic, so
+    /// the *order* is asserted, not just the counts.
+    static TEARDOWN_LOG: std::sync::Mutex<Vec<&'static str>> = std::sync::Mutex::new(Vec::new());
+
+    /// Serialises the teardown tests. They share `TEARDOWN_LOG`, and cargo runs
+    /// tests in parallel, so without this the `is_empty` assertion in one can
+    /// observe a `push` from the other — a flake, not a real failure.
+    static TEARDOWN_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    unsafe extern "C" fn sh_a(_: *mut c_void) -> i32 {
+        TEARDOWN_LOG.lock().expect("not poisoned").push("shutdown:a");
+        0
+    }
+    unsafe extern "C" fn dt_a(_: *mut c_void) {
+        TEARDOWN_LOG.lock().expect("not poisoned").push("destroy:a");
+    }
+    unsafe extern "C" fn sh_b(_: *mut c_void) -> i32 {
+        TEARDOWN_LOG.lock().expect("not poisoned").push("shutdown:b");
+        0
+    }
+    unsafe extern "C" fn dt_b(_: *mut c_void) {
+        TEARDOWN_LOG.lock().expect("not poisoned").push("destroy:b");
+    }
+
+    /// A leaked vtable carrying the given teardown slots.
+    fn vtable(shutdown: Option<ffi::ShutdownFn>, destroy: Option<ffi::DestroyFn>) -> *const TensionAdapter {
+        Box::leak(Box::new(TensionAdapter {
+            abi_version: ffi::ADAPTER_ABI_VERSION,
+            name: std::ptr::null(),
+            flags: 0,
+            init: None,
+            link: None,
+            publish: None,
+            apply: None,
+            shutdown,
+            destroy,
+            layout_hash: crate::session::arena::layout_hash(),
+        }))
+    }
+
+    /// A `LoadedAdapter` around a vtable the test owns. The `_library` is a real
+    /// object (the echo fixture `build.rs` compiles) only so the field is
+    /// satisfied; the vtable is the test's, so its `shutdown`/`destroy` are what
+    /// run.
+    fn loaded(name: &str, adapter: *const TensionAdapter) -> LoadedAdapter {
+        let library = ffi::Library::open(std::path::Path::new(env!("TENSION_ECHO_ADAPTER")))
+            .expect("the echo fixture opens");
+        LoadedAdapter {
+            _library: library,
+            adapter,
+            name: name.to_string(),
+            imports: Vec::new(),
+            required_regions: Vec::new(),
+            torn_down: false,
+        }
+    }
+
+    #[test]
+    fn teardown_runs_reverse_order_once_each() {
+        let _serial = TEARDOWN_TEST_LOCK.lock().expect("not poisoned");
+        TEARDOWN_LOG.lock().expect("not poisoned").clear();
+        let mut adapters = vec![
+            loaded("a", vtable(Some(sh_a), Some(dt_a))),
+            loaded("b", vtable(Some(sh_b), Some(dt_b))),
+        ];
+
+        teardown_adapters(&mut adapters);
+        assert_eq!(
+            *TEARDOWN_LOG.lock().expect("not poisoned"),
+            vec!["shutdown:b", "destroy:b", "shutdown:a", "destroy:a"],
+            "reverse of link order, and shutdown before destroy within each adapter"
+        );
+
+        // A second call changes nothing: `destroy` is "called once".
+        teardown_adapters(&mut adapters);
+        assert_eq!(
+            TEARDOWN_LOG.lock().expect("not poisoned").len(),
+            4,
+            "teardown is idempotent — a second pass calls nothing"
+        );
+    }
+
+    #[test]
+    fn teardown_tolerates_slots_that_are_null() {
+        let _serial = TEARDOWN_TEST_LOCK.lock().expect("not poisoned");
+        // The ABI says `shutdown`/`destroy` must be present, but the loader does
+        // not enforce it, so a NULL slot must be a no-op rather than a crash.
+        TEARDOWN_LOG.lock().expect("not poisoned").clear();
+        let mut adapters = vec![loaded("nullish", vtable(None, None))];
+        teardown_adapters(&mut adapters);
+        assert!(TEARDOWN_LOG.lock().expect("not poisoned").is_empty());
+        assert!(adapters[0].torn_down, "the once-guard is still set");
     }
 }

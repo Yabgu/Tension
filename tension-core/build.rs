@@ -8,13 +8,16 @@
 //! and the integration tests alike).
 //!
 //! Zig is pinned to the 0.16 series (tension-res/build.zig targets that
-//! toolchain); a different version is reported as a warning rather than
-//! silently accepted, because a mismatch changes the ABI's codegen, not just
-//! its taste.
+//! toolchain); a different version is a hard error, because a mismatch changes
+//! the ABI's codegen, not just its taste. `TENSION_ALLOW_UNPINNED=1` demotes
+//! both this pin and the gfortran one below to a warning.
 //!
 //! The same pattern runs for tension-solver: its Fortran core is built by
 //! `tension-solver/build.sh` (which pins the determinism flags) and linked
 //! as `libtension_solver.a`, with the Fortran runtime on the link line.
+//! gfortran is pinned to the 16 series for the same reason: the numerical
+//! core's results are compiled, and a different compiler is a different
+//! contract (DESIGN.md §5).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -250,6 +253,11 @@ fn main() {
     for (name, define) in [
         ("libtension_echo.so", None),
         ("libtension_echo_badabi.so", Some("-DECHO_BAD_ABI_VERSION=1")),
+        // C4.1c: the same source with a layout hash the host will refuse.
+        ("libtension_echo_badlayout.so", Some("-DECHO_BAD_LAYOUT_HASH=1")),
+        // The pre-C4 ABI-version-1 shape: 72 bytes, no `layout_hash`, so the
+        // version gate must refuse it before offset 72 is read (C4c amendment).
+        ("libtension_echo_v1.so", Some("-DECHO_OLD_V1=1")),
     ] {
         let output = out_dir.join(name);
         let mut command = Command::new("cc");
@@ -275,6 +283,14 @@ fn main() {
     println!(
         "cargo:rustc-env=TENSION_ECHO_BADABI_ADAPTER={}",
         out_dir.join("libtension_echo_badabi.so").display()
+    );
+    println!(
+        "cargo:rustc-env=TENSION_ECHO_BADLAYOUT_ADAPTER={}",
+        out_dir.join("libtension_echo_badlayout.so").display()
+    );
+    println!(
+        "cargo:rustc-env=TENSION_ECHO_V1_ADAPTER={}",
+        out_dir.join("libtension_echo_v1.so").display()
     );
 
     // ── tension-ogre's stub adapter ───────────────────────────────────────
@@ -303,6 +319,36 @@ fn main() {
     println!(
         "cargo:rustc-env=TENSION_OGRE_STUB_ADAPTER={}",
         out_dir.join("libtension_ogre_stub.so").display()
+    );
+
+    // ── the teardown probe adapter (C3) ───────────────────────────────────
+    //
+    // A capability whose `shutdown`/`destroy` record their own invocation to a
+    // file, so `adapter_teardown.rs` can prove the host tears an adapter down
+    // even when the guest traps. It registers nothing and needs no service.
+    let teardown_probe_src = manifest
+        .join("tests")
+        .join("support")
+        .join("teardown_probe_adapter.c");
+    println!("cargo:rerun-if-changed={}", teardown_probe_src.display());
+    println!("cargo:rerun-if-changed={}", adapter_header.display());
+    let teardown_probe = out_dir.join("libtension_teardown_probe.so");
+    let mut command = Command::new("cc");
+    command
+        .args(["-std=c11", "-O2", "-fPIC", "-shared"])
+        .arg("-I")
+        .arg(&include)
+        .arg(&teardown_probe_src)
+        .arg("-o")
+        .arg(&teardown_probe);
+    prefer_tool_own_dir(&mut command, "cc");
+    run_or_panic(
+        command,
+        &format!("compiling the teardown probe {}", teardown_probe_src.display()),
+    );
+    println!(
+        "cargo:rustc-env=TENSION_TEARDOWN_PROBE_ADAPTER={}",
+        teardown_probe.display()
     );
 
     // ── the logging ABI's C harness ────────────────────────────────────────
@@ -399,10 +445,20 @@ fn check_zig_version() {
     };
     let version = String::from_utf8_lossy(&out.stdout);
     let version = version.trim();
-    if !version.starts_with(PINNED_ZIG) {
+    if version.starts_with(PINNED_ZIG) {
+        return;
+    }
+    if unpinned_allowed() {
         println!(
-            "cargo:warning=tension-res is pinned to Zig {PINNED_ZIG}x but `zig version` reports \
-             {version}; the C ABI is compiled by that toolchain"
+            "cargo:warning=tension-res is built with Zig {version}, not the pinned \
+             {PINNED_ZIG}x — TENSION_ALLOW_UNPINNED=1 is set, so the pin is a warning"
+        );
+    } else {
+        panic!(
+            "tension-res is pinned to Zig {PINNED_ZIG}x but `zig version` reports {version}. \
+             The Zig toolchain compiles the resource ABI, so a mismatch is refused rather than \
+             compiled silently. Install Zig {PINNED_ZIG}x, or set TENSION_ALLOW_UNPINNED=1 to \
+             build with the toolchain you have."
         );
     }
 }
@@ -414,11 +470,28 @@ fn check_gfortran_version() {
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.lines().next().unwrap_or("").trim().to_string();
-    if !first.contains(PINNED_GFORTRAN) {
+    if first.contains(PINNED_GFORTRAN) {
+        return;
+    }
+    if unpinned_allowed() {
         println!(
-            "cargo:warning=tension-solver is pinned to gfortran {PINNED_GFORTRAN}x but \
-             `gfortran --version` reports: {first}; the numerical core's results are \
-             compiled by that toolchain"
+            "cargo:warning=tension-solver is built with gfortran '{first}', not the pinned \
+             {PINNED_GFORTRAN}x — TENSION_ALLOW_UNPINNED=1 is set, so the pin is a warning"
+        );
+    } else {
+        panic!(
+            "tension-solver is pinned to gfortran {PINNED_GFORTRAN}x but `gfortran --version` \
+             reports: {first}. The numerical core's results are compiled by that toolchain, so a \
+             mismatch is refused rather than linked silently. Install gfortran {PINNED_GFORTRAN}x, \
+             or set TENSION_ALLOW_UNPINNED=1 to build with the toolchain you have."
         );
     }
+}
+
+/// The escape hatch for the two version pins above. A machine that must build
+/// with what it has — a distro Zig, a system gfortran, `build.sh` on a CI image
+/// that does not stock the pinned toolchain — sets `TENSION_ALLOW_UNPINNED=1`
+/// and the pins demote from a refusal to a `cargo:warning`.
+fn unpinned_allowed() -> bool {
+    matches!(std::env::var("TENSION_ALLOW_UNPINNED").as_deref(), Ok("1"))
 }

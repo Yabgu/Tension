@@ -1,6 +1,6 @@
-# Tension CI / Docker tooling
+# Tension container tooling
 
-A single Arch Linux image serves both CI and development. It carries the
+A single Arch Linux image serves both continuous integration and development. It carries the
 full toolchain (zig, rustup, node/npm, gcc-fortran, clang), a headless
 graphics stack (Xvfb, Mesa software GL, lavapipe) and locally built
 OGRE-Next + freeimage packages. Everything runs under Xvfb, so the OGRE
@@ -36,11 +36,14 @@ ci/docker.sh dev ./build.sh # run one development command
 ci/docker.sh clean          # remove the image
 ```
 
-## CI
+## Continuous integration
 
 `ci/docker.sh test` mounts the repository at `/app` and runs `./test.sh`,
-which executes all four suites (tension-core, tension-res, tension-ogre,
-tension-framework) under Xvfb. In rootless podman the container runs as
+which builds and runs all six suites (tension-framework, the tension-ogre
+guest suite, tension-input, tension-core, the tension-ogre unit tests,
+tension-res) under Xvfb. The run is strict — a missing fixture fails the test
+rather than skipping it (`tension-core/tests/support/ci.rs`) — so a green run
+means the fixtures were built. In rootless podman the container runs as
 root, which maps to the invoking host user — build artifacts written into
 the checkout (`target/`, `zig-out/`, etc.) stay host-owned.
 

@@ -1,4 +1,4 @@
-# Tension development / CI image (Arch Linux).
+# Tension development image (Arch Linux).
 #
 # Build context is ci/ (see ci/docker.sh build), so the locally built
 # OGRE-Next packages live next to this file in ci/ogre-next-pkg/.
@@ -14,6 +14,7 @@ RUN pacman -Syu --noconfirm && \
         xorg-server-xvfb \
         mesa \
         libglvnd \
+        sdl3 \
         vulkan-swrast \
         vulkan-icd-loader \
         vulkan-headers \
@@ -29,7 +30,7 @@ RUN pacman -Syu --noconfirm && \
 COPY ogre-next-pkg/*.pkg.tar.zst /tmp/
 RUN pacman -U --noconfirm /tmp/*.pkg.tar.zst && rm /tmp/*.pkg.tar.zst
 
-# Rust toolchain. Installed under /opt so root (CI runs) and the dev user
+# Rust toolchain. Installed under /opt so a root run and the dev user
 # share a single toolchain.
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo
 RUN rustup toolchain install stable && rustup default stable

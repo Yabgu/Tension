@@ -916,6 +916,13 @@ impl Session {
     /// The second half of `session_open`: everything after the guest's bytes are
     /// in hand and the callbacks are resolved. Split out so it is testable
     /// without a guest — `arena_bytes` is the memory's own slice.
+    ///
+    /// On success, [`Session::ring_capacities`] holds the guest's live
+    /// capacities and the ring headers and `SessionInfo` carry them. This method
+    /// does not own the posting face — it lives in `HostState` — so a caller
+    /// that holds one must adopt them there with
+    /// [`posting::PostingSide::set_capacities`]; `session_open` does, and the
+    /// face and the rings must not be allowed to disagree.
     pub fn apply_open(
         &mut self,
         arena_bytes: &mut [u8],
@@ -1245,6 +1252,13 @@ fn open_with_caller(
             // woken; a re-open clears it, or the fresh session would answer every
             // wait as if it were closing.
             caller.data().posting.clear_shutdown();
+            // `apply_open` has just written the ring headers and `SessionInfo`
+            // from `decoded.ring_capacities`, and `session.ring_capacities()`
+            // now holds those live capacities. The posting face was built once
+            // at startup from the defaults, so adopt the live ones here — the
+            // guest cannot post until this verb returns, and an adapter thread
+            // that posts concurrently reads one value or the other, never both.
+            caller.data().posting.set_capacities(*session.ring_capacities());
             log(&format!(
                 "session_open(cfg_len={cfg_len}, arena={}, ceiling={}) -> 0",
                 decoded.arena_size, decoded.max_arena_size
@@ -1259,6 +1273,18 @@ fn open_with_caller(
 }
 
 /// `session::close() -> i32`. Idempotent from every state; the only verb that is.
+///
+/// **This does not tear the capability adapters down, and that is deliberate
+/// (C3).** `shutdown`/`destroy` are the *adapter's* disposal, and an adapter is
+/// process-scoped — loaded once, `init`/`link` once (SESSION.md §7) — while a
+/// session may close and re-open: `open_state_check` accepts `Closed`, and
+/// `test_open_after_close_succeeds` pins it. An adapter's `destroy` frees its
+/// storage and nulls the state a re-open would need (`tension-ogre`'s
+/// `adapter_destroy` resets `api`/`initialized`), and the host does not re-run
+/// `init`/`link` on a re-open, so tearing down here would leave the next open
+/// with a dead capability. The adapters are torn down when the *run* ends —
+/// clean return or guest trap — in `main.rs`; that is the point at which no
+/// further open can follow.
 pub fn session_close(caller: &mut Caller<'_, HostState>) -> i32 {
     let Some(mut session) = caller.data_mut().session.take() else {
         log("session_close -> -EBADF (no session is installed)");
@@ -2244,6 +2270,25 @@ mod verbs {
 )
 "#;
 
+    /// [`GUEST_CALLS_OPEN`] with the config length read from `LEN` rather than
+    /// baked in, so a test can hand `session_open` a config of any size — the
+    /// ring-capacity override below makes the TLV longer than 82 bytes.
+    const GUEST_CALLS_OPEN_SIZED: &str = r#"
+(module
+  (import "env" "memory" (memory 132 4096))
+  (import "session" "open" (func $open (param i32 i32) (result i32)))
+  (import "session" "close" (func $close (result i32)))
+  (func (export "_start_game")
+    (i32.store (i32.const 8388608)
+      (call $open (i32.const 8389632) (i32.load (i32.const 8388616))))
+    (i32.store (i32.const 8388612) (call $close))
+  )
+)
+"#;
+
+    /// Where [`GUEST_CALLS_OPEN_SIZED`] reads its config length from.
+    const LEN: usize = 8_388_616;
+
     /// Where the guest in [`GUEST_CALLS_OPEN`] leaves its two return codes.
     const RESULT: usize = 8_388_608;
     /// Where the host writes the TLV for that guest.
@@ -2774,6 +2819,78 @@ mod verbs {
             store.data().session.as_ref().expect("session").state(),
             SessionState::Closed
         );
+    }
+
+    #[test]
+    fn test_guest_open_syncs_posting_capacities() {
+        // The regression this guards: `apply_open` writes the ring headers and
+        // `SessionInfo` from the guest's decoded capacities, but the posting
+        // face is built once at startup from the defaults. A guest that
+        // overrides a class (here class 3, 64 → 128) was told one depth and had
+        // its events queued at another. This runs the real verb, so it fails on
+        // the old code and passes only if the face adopts the live capacities.
+        let engine = Engine::default();
+        let module = Module::new(&engine, GUEST_CALLS_OPEN_SIZED).expect("module");
+        let mut store = store(&engine);
+        let mut session = Session::create_from_module(&mut store, &module).expect("session");
+        session.prepare_arena(&mut store).expect("prepare");
+        let memory = session.memory();
+        let mut linker: Linker<HostState> = Linker::new(&engine);
+        session.install(&mut store, &mut linker).expect("install");
+        link_session(&mut linker).expect("the verbs register");
+        store.data_mut().arena = Some(memory);
+        store.data_mut().session = Some(session);
+
+        let mut entries = config_entries(CALLBACKS as u32);
+        entries.push((config::KEY_RING_CAPACITY_BASE + 3, 128));
+        let bytes = config::encode(&entries);
+        let memory = store.data().session.as_ref().expect("session").memory();
+        memory.write(&mut store, CFG, &bytes).expect("the config lands");
+        let len = (bytes.len() as u32).to_le_bytes();
+        memory.write(&mut store, LEN, &len).expect("the length lands");
+        let mut record = [0u8; arena::CALLBACKS_SIZE];
+        record[0..2].copy_from_slice(&arena::ABI_VERSION.to_le_bytes());
+        memory
+            .write(&mut store, CALLBACKS, &record)
+            .expect("the callbacks record lands");
+
+        let instance = linker.instantiate(&mut store, &module).expect("instantiate");
+        store
+            .data()
+            .session
+            .as_ref()
+            .expect("session")
+            .verify_post_instantiate(&store)
+            .expect("the arena survives instantiation");
+
+        let start = instance
+            .get_typed_func::<(), ()>(&mut store, "_start_game")
+            .expect("_start_game");
+        start.call(&mut store, ()).expect("the guest runs");
+
+        let mut out = [0u8; 8];
+        memory.read(&store, RESULT, &mut out).expect("read the results");
+        let open_rc = i32::from_le_bytes(out[0..4].try_into().expect("four bytes"));
+        assert_eq!(open_rc, 0, "the guest's session_open succeeded");
+
+        // The guest's own view: the ring header it can walk says 128.
+        let decoded = config::decode(&bytes).expect("decode");
+        assert_eq!(decoded.ring_capacities[3], 128);
+        assert!(decoded.ring_stated[3]);
+        let arena_bytes = memory.data(&store);
+        let header =
+            arena::ring_header(arena_bytes, arena::ring_offset(&decoded.ring_capacities, 3));
+        assert_eq!(header.capacity, 128, "the ring the guest reads says 128");
+
+        // The producer's view: the face must agree, class by class.
+        for class in 0..arena::CLASS_COUNT as u32 {
+            assert_eq!(
+                store.data().posting.class_capacity(class),
+                Some(decoded.ring_capacities[class as usize]),
+                "posting face class {class}"
+            );
+        }
+        assert_eq!(store.data().posting.class_capacity(3), Some(128));
     }
 
     // ── §7.2: the required regions the loaded capabilities declared ────────

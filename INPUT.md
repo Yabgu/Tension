@@ -3,12 +3,15 @@
 What an input capability is allowed to assume, what it owes the rest of the
 engine, and the shape it should take.
 
-**This is a design statement, not a description of the code.** Nothing here is
-implemented: there is no `tension-input/`, no `libtension_input.so`, no adapter
-registering a `tension::input` module. Where the design leans on something that
-*is* implemented it cites file and line; where it leans on measurement it cites
-round 20's feasibility probe (raw output in `/tmp/sdl-probe/`); where it leans on
-judgment it says so.
+**This is a design statement for the shape of the capability; the code is
+described in `tension-input/DESIGN.md`.** The design has since been built:
+`tension-input/` exists, builds `libtension_input.so`, and registers the
+`tension::input` module (`tension-input/tests/run.sh` exercises it). Where
+the two disagree, `INPUT.md` is the argument and `tension-input/DESIGN.md` is
+the bug. Where the design leans on something that *is* implemented it cites
+file and line; where it leans on measurement it cites round 20's feasibility
+probe (raw output in `/tmp/sdl-probe/`); where it leans on judgment it says
+so.
 
 **The measured base**, because the rest of the doc leans on it:
 

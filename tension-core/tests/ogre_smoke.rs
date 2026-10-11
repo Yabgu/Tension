@@ -17,6 +17,9 @@
 //! it, and this test re-runs the same binary when it is there so a regression
 //! shows up in both places.
 
+#[path = "support/ci.rs"]
+mod support_ci;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -71,11 +74,11 @@ fn test_ogre_adapter_loads_and_registers() {
 fn test_ogre_stub_end_to_end() {
     let guest = framework_build("guest-ogre.wasm");
     if !guest.exists() {
-        eprintln!(
+        support_ci::skip_or_fail(format_args!(
             "ogre_smoke: {} is not built — run `npm test` in tension-framework (it needs asc); \
              skipping the end-to-end leg",
             guest.display()
-        );
+        ));
         return;
     }
 
@@ -300,7 +303,7 @@ mod tension_core_adapter_probe {
             region_lookup: Some(record_region),
         };
 
-        assert_eq!(api.abi_version, 1, "the stub is built against ABI 1");
+        assert_eq!(api.abi_version, 2, "the stub is built against ABI 2");
         unsafe {
             if let Some(init) = (*adapter).init {
                 assert_eq!(init(std::ptr::null_mut(), &api), 0, "init");

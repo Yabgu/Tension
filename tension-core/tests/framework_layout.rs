@@ -86,6 +86,35 @@ fn the_as_runtime_agrees_with_this_builds_layout_hash() {
     );
 }
 
+/// The adapter header's `TENSION_ADAPTER_LAYOUT_HASH`, parsed from the macro the
+/// C side compiles against.
+fn adapter_header_layout_hash() -> u32 {
+    let header = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_LAYOUT_HASH "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_LAYOUT_HASH", header.display()))
+}
+
+#[test]
+fn the_adapter_header_agrees_with_this_builds_layout_hash() {
+    // C4.1c: an adapter bakes this macro into its vtable, and the host refuses
+    // the adapter at load when the two disagree. If the macro drifts from the
+    // host's own `arena::layout_hash()`, *every* adapter in this tree would be
+    // refused at the first `--capability`, so the drift is caught here instead.
+    assert_eq!(
+        adapter_header_layout_hash(),
+        host_layout_hash(),
+        "tension_adapter.h's TENSION_ADAPTER_LAYOUT_HASH disagrees with \
+         `tension-core layout-hash`: update the macro when the arena layout moves"
+    );
+}
+
 #[test]
 fn the_runtime_states_the_arena_constants_the_manifest_does() {
     // The relation, not just the hash: a guest whose arena_size exceeded its
