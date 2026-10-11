@@ -599,7 +599,14 @@ fn load_raw(bytes: *const u8, len: usize, borrow: bool) -> Load {
             let end = msg.iter().position(|b| *b == 0).unwrap_or(msg.len());
             let text = String::from_utf8_lossy(&msg[..end]);
             if !text.is_empty() {
-                eprintln!("[tension-core] pak load failed: {}", text);
+                // A resource the guest asked for should have loaded: the
+                // failure is a warning on the `core` logger, so it shares the
+                // one layout (and `--log-format=json` stays JSON).
+                crate::logging::log(
+                    crate::logging::Level::Warn,
+                    "core",
+                    &format!("pak load failed: {text}"),
+                );
             }
         }
         Load::Failed(Errno(if rc == 0 { -22 } else { rc }))

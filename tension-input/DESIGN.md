@@ -31,7 +31,11 @@ learns the other's name.
   the header's sizes) and `InputThread`.
 - `src/input.cpp` — the only file that includes SDL. The thread, the pump, the
   pad table, the mirror.
-- `src/adapter.cpp` — the vtable and the six shims. No SDL here either.
+- `src/adapter.cpp` — the vtable and the six shims. No SDL here either. It
+  logs through the host's logger, preferring the appended
+  `log_named(user, level, "input", msg, len)` and falling back to the legacy
+  `log` slot, so `--log-level=input:debug` filters its lines and
+  `--log-format=json` renders each as one object (`docs/logging.md`).
 - `build.sh` — `pkg-config sdl3`, `-shared -fPIC`, and it prints the DSO's
   `DT_NEEDED` so a reviewer can see `libSDL3.so.0` without asking.
 
