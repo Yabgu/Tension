@@ -138,23 +138,43 @@ MeshFormat detect_mesh_format(const void *data, size_t len) {
     return MeshFormat::Unknown;
 }
 
-/// Ogre-Next's RenderSystem_Vulkan.so has 36 undefined glslang symbols:
-/// upstream's CMakeLists links only OgreNextMain and the Vulkan libraries,
-/// never glslang (measured; third_party/README.md). The plugin resolves its
-/// symbols against the process's global scope when Ogre::Root installs it,
-/// so loading glslang into that scope beforehand is the whole fix. Called
-/// only for the Vulkan renderer — GL3+ never needs it.
-void ensure_glslang_global() {
-#if !defined(_WIN32)
-    if (dlopen("libglslang.so.16", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
+/// Where the Vulkan plugin gets its glslang depends on how it was built, and
+/// that decides whether this process has to supply it. Upstream's link line
+/// names only OgreNextMain and the Vulkan libraries, so the distro packages
+/// leave 36 glslang symbols undefined in the plugin, and those resolve
+/// against the process's global scope when Ogre::Root installs it.
+/// bootstrap.sh instead answers OGRE's shaderc_combined probe with libglslang
+/// (third_party/README.md), and a plugin built that way carries the symbols
+/// itself and needs nothing.
+///
+/// The plugin file says which it is, and the loader reads it for us: RTLD_NOW
+/// is a strictly stronger resolution requirement than the RTLD_LAZY |
+/// RTLD_LOCAL OGRE loads plugins with (OgreDynLib.h), so a plugin that loads
+/// under it resolves every symbol on its own — OGRE's lazy load will too, and
+/// there is nothing to preload. Only when the probe fails does glslang go
+/// into the global scope. OGRE's own flags cannot be the test: against them a
+/// plugin with undefined glslang still loads, the references binding lazily,
+/// so the failure would simply move to the first shader compile. A failed
+/// dlopen leaves nothing behind; a successful one leaves the plugin mapped,
+/// and OGRE's load returns that same handle.
+///
+/// Called only for the Vulkan renderer — GL3+ never needs glslang. The
+/// Windows build (bootstrap.sh's MSYS2 branch) links libglslang.dll.a the
+/// same way, so the plugin is self-contained there too and this did nothing
+/// on that platform even before.
+void ensure_glslang_global(const std::string &plugin_path) {
+#if defined(_WIN32)
+    (void)plugin_path;
+#else
+    if (dlopen(plugin_path.c_str(), RTLD_NOW | RTLD_LOCAL) != nullptr) return;
+    void *preloaded = dlopen("libglslang.so.16", RTLD_NOW | RTLD_GLOBAL);
+    if (preloaded == nullptr) {
         // The unversioned soname, for a glslang package that ships it.
-        if (dlopen("libglslang.so", RTLD_NOW | RTLD_GLOBAL) == nullptr) {
-            log_line(std::string("ogre: could not load glslang for the vulkan plugin: ") +
-                     dlerror());
-            return;  // the plugin's own load failure will name the symbol
-        }
+        preloaded = dlopen("libglslang.so", RTLD_NOW | RTLD_GLOBAL);
     }
-    log_line("ogre: glslang preloaded RTLD_GLOBAL for the vulkan plugin");
+    if (preloaded != nullptr) {
+        log_line("ogre: glslang preloaded RTLD_GLOBAL for the vulkan plugin");
+    }
 #endif
 }
 
@@ -261,9 +281,10 @@ class BackendOgre final : public Backend {
             }
 
             if (vulkan_rs) {
-                // The plugin cannot load without glslang in the global scope;
-                // measured, and upstream's link line is why (see the function).
-                ensure_glslang_global();
+                // Hands glslang to a plugin that cannot resolve it on its
+                // own; this repo's in-tree plugin resolves its own — see
+                // the function.
+                ensure_glslang_global(library);
             }
 
             root_ = std::make_unique<Ogre::Root>(nullptr, plugins_cfg,
