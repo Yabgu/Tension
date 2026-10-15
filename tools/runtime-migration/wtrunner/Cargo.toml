@@ -1,0 +1,10 @@
+[package]
+name = "wtrunner"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasmtime = "=24.0.13"
+
+[profile.release]
+opt-level = 3
