@@ -20,9 +20,9 @@
 //     skeleton with a joint count in the hundreds of millions.
 //   * **No throws.** A parse that goes wrong sets `error` once and leaves the
 //     rest of the reads as no-ops, so a caller can inspect the failure instead
-//     of trapping. AS with `--runtime stub` has no exception unwinding worth
-//     relying on, and a guest parsing a resource it was handed should not die
-//     on a truncated file.
+//     of trapping. AS has no exception unwinding worth relying on — `try`/`catch`
+//     is `AS100: Not implemented` — and a guest parsing a resource it was handed
+//     should not die on a truncated file.
 //
 // Reads go through `load<T>` on the array's data pointer rather than through
 // bounds-checked indexing: the `need()` in front of every read is the bounds

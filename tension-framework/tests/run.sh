@@ -102,7 +102,7 @@ run_plain_fixture() {
   local entry="$1" out="$2"
   echo "==> compiling $entry (plain module: no session, no capability)"
   ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
-      --runtime stub --target release -o "build/$out" )
+      --runtime incremental --target release -o "build/$out" )
   echo "==> running $out"
   set +e
   local stdout

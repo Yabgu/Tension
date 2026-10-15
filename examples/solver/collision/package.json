@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: two soft spheres in a square wall (rk45, source: \"wasm\") with a gnuplot animation",
   "scripts": {
-    "build": "asc game.ts -o build/game.wasm --runtime stub --target release --exportTable",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime stub --debug --sourceMap --exportTable",
+    "build": "asc game.ts -o build/game.wasm --runtime incremental --target release --exportTable",
+    "build:debug": "asc game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportTable",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs"
   },

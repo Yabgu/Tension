@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: guest-synthesised PCM playback over the tension::audio ABI",
   "scripts": {
-    "build": "asc demo.ts -o build/demo.wasm --runtime stub --target release",
-    "build:debug": "asc demo.ts -o build/demo.wasm --runtime stub --target debug",
+    "build": "asc demo.ts -o build/demo.wasm --runtime incremental --target release",
+    "build:debug": "asc demo.ts -o build/demo.wasm --runtime incremental --target debug",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
   },

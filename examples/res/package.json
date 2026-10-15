@@ -5,7 +5,7 @@
   "type": "module",
   "description": "TensionCore example: an ECMA-208 (SIDF) resource pak read through the tension::res ABI",
   "scripts": {
-    "build": "node ./node_modules/assemblyscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime stub --target release",
+    "build": "node ./node_modules/assemblyscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime incremental --target release",
     "pack": "node ../../scripts/run-example.mjs --pack-only",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
