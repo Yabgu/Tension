@@ -14,9 +14,12 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 1 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
+ * Frozen at ABI version 2 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
  * struct and the `tension_adapter` vtable are append-only within a version;
  * changing the meaning of an existing field requires a new entry-point symbol.
+ * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
+ * the vtable; a version-1 adapter is refused at load by the version check, so
+ * the host never reads the vtable past where a version-1 struct ends.
  *
  * Design note: tension-ogre/DESIGN.md, Appendix A.
  *
@@ -72,7 +75,22 @@ extern "C" {
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 1u
+#define TENSION_ADAPTER_ABI_VERSION 2u
+
+/*
+ * The arena layout this build's `tension_core_api` is shaped against, as a
+ * hash. It is the same value `tension-core layout-hash` prints and the guest
+ * SDK is generated from (`arena::layout_hash()`); a vtable field added or
+ * reordered — or an arena region moved — moves it. It is checked at **load
+ * time** (`tension-core/src/adapter/mod.rs`), before the vtable is ever called,
+ * against the adapter's own `tension_adapter.layout_hash`. See the struct field
+ * below for what a mismatch means.
+ *
+ * An adapter sets `.layout_hash = TENSION_ADAPTER_LAYOUT_HASH` in its vtable.
+ * If the host's value disagrees, the load is refused by name rather than the
+ * process corrupting later.
+ */
+#define TENSION_ADAPTER_LAYOUT_HASH 3451714980u
 
 /** The most scalar parameters a registered import may take. */
 #define TENSION_ADAPTER_MAX_PARAMS 8u
@@ -265,7 +283,8 @@ typedef struct tension_core_api {
                              uint32_t *out_size);
 
     /*
-     * The logging slots appended under rule 11 (ABI version 1, 2026-10).
+     * The logging slots appended under rule 11 (they landed at ABI version 1,
+     * 2026-10).
      *
      * Optional at the adapter: an adapter built before these fields existed
      * cannot call them and calls `log` instead, so the host keeps that slot
@@ -284,6 +303,27 @@ typedef struct tension_core_api {
                       const char *msg, uint32_t len);
     void (*log_structured)(void *user, int32_t level, const char *name,
                            const char *json, uint32_t len);
+
+    /*
+     * The bounds-checked `guest_read`, appended under rule 11 at ABI version 2
+     * (C4.1a).
+     *
+     * Identical to `guest_read` except that the adapter also states the capacity
+     * of its own `dst` buffer. The host refuses `-EINVAL` when `len > dst_capacity`
+     * instead of copying — the guarantee `guest_read` cannot give, because it
+     * only knows `len`, which the adapter also supplied. An adapter that
+     * overstates its buffer is the "not careful" case rule 11's neighbours keep
+     * naming; this slot is where that becomes a refusal rather than a write past
+     * the destination.
+     *
+     * `guest_read` stays populated and unchanged for adapters built before this
+     * slot: they cannot call it and keep calling `guest_read`, which is still a
+     * correct enough check against the *source* span (`ptr + len <= memory`).
+     * A new adapter should prefer this slot. Same thread and phase rules as
+     * `guest_read`.
+     */
+    int32_t (*guest_read_checked)(void *user, uint32_t ptr, void *dst,
+                                  uint32_t len, uint32_t dst_capacity);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -340,6 +380,28 @@ typedef struct tension_adapter {
 
     /* Free the adapter's own storage. Called once, after `shutdown`. */
     void (*destroy)(void *ctx);
+
+    /*
+     * The arena layout this adapter was built against, appended under rule 11.
+     * Set it to `TENSION_ADAPTER_LAYOUT_HASH`.
+     *
+     * The host checks it at **load time**, before `init`/`link` and before any
+     * vtable slot is called: a mismatch is refused with a message naming both
+     * hashes. This is what `abi_version` alone cannot do — a vtable field added
+     * or reordered while the version stayed the same would otherwise be accepted
+     * and then read at the wrong offset. Where `abi_version` answers "is this the
+     * right *shape of contract*", `layout_hash` answers "is this the right
+     * *build of it*".
+     *
+     * This field is reached only by a **version-2** adapter. A version-1 adapter
+     * has a 72-byte `tension_adapter` with no `layout_hash`; reading offset 72
+     * here would be an out-of-bounds read of the shorter object, so it is the
+     * **version check** — run first, in `load_adapter` — that refuses a v1
+     * adapter (`-EINVAL`, "built against adapter ABI 1"), not this field. The
+     * two checks are ordered for exactly that reason: version first, then
+     * layout. `sizeof(tension_adapter)` grew from 72 to 80 bytes at version 2.
+     */
+    uint32_t layout_hash;
 } tension_adapter;
 
 /*
@@ -469,32 +531,60 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, log_structured)
-                      + sizeof(((tension_core_api *)0)->log_structured)
+static_assert(offsetof(tension_core_api, guest_read_checked)
+                      + sizeof(((tension_core_api *)0)->guest_read_checked)
                   == sizeof(tension_core_api),
-              "tension_core_api: log_structured must stay the last slot; an "
+              "tension_core_api: guest_read_checked must stay the last slot; an "
               "append updates this assertion and the Rust table together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 15 * sizeof(void *),
-              "tension_core_api: expected 15 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 16 * sizeof(void *),
+              "tension_core_api: expected 16 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, log_structured)
-                       + sizeof(((tension_core_api *)0)->log_structured)
+_Static_assert(offsetof(tension_core_api, guest_read_checked)
+                       + sizeof(((tension_core_api *)0)->guest_read_checked)
                    == sizeof(tension_core_api),
-               "tension_core_api: log_structured must stay the last slot; an "
+               "tension_core_api: guest_read_checked must stay the last slot; an "
                "append updates this assertion and the Rust table together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 15 * sizeof(void *),
-               "tension_core_api: expected 15 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 16 * sizeof(void *),
+               "tension_core_api: expected 16 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif
 
 /*
- * Frozen at ABI version 1. Additive fields are appended; the version check in
- * `init` is mandatory rather than advisory.
+ * tension_adapter's shape, likewise mechanical. `layout_hash` is a u32 appended
+ * after nine pointer-sized slots, so its offset is what the assertion pins (a
+ * trailing u32 is followed by tail padding, so `offset + sizeof == sizeof`
+ * would not hold). The Rust `const _` block asserts the same offset and the
+ * 80-byte size from its side.
+ */
+#if defined(__cplusplus)
+static_assert(offsetof(tension_adapter, layout_hash) == 9 * sizeof(void *),
+              "tension_adapter: layout_hash must sit after the nine leading "
+              "fields; an append or reorder updates this assertion and the Rust "
+              "TensionAdapter offset asserts together");
+static_assert(sizeof(tension_adapter) == 10 * sizeof(void *),
+              "tension_adapter: expected ten pointer-sized slots (the nine "
+              "leading fields plus layout_hash); update this count, the Rust "
+              "TensionAdapter, and its size assertion together");
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(offsetof(tension_adapter, layout_hash) == 9 * sizeof(void *),
+               "tension_adapter: layout_hash must sit after the nine leading "
+               "fields; an append or reorder updates this assertion and the Rust "
+               "TensionAdapter offset asserts together");
+_Static_assert(sizeof(tension_adapter) == 10 * sizeof(void *),
+               "tension_adapter: expected ten pointer-sized slots (the nine "
+               "leading fields plus layout_hash); update this count, the Rust "
+               "TensionAdapter, and its size assertion together");
+#endif
+
+/*
+ * Frozen at ABI version 2. Additive fields are appended; the version check in
+ * `init` is mandatory rather than advisory, and it is what refuses a
+ * version-1 adapter before its shorter vtable is read as if it were longer.
  */
 
 #ifdef __cplusplus

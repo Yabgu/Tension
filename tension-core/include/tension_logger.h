@@ -44,7 +44,7 @@ extern "C" {
 #endif
 
 /*
- * Severity, least severe first. The discriminants are frozen for ABI version 1:
+ * Severity, least severe first. The discriminants are frozen: a seventh level is
  * they are the level the host's `Level` enum uses and the level the guest's
  * AssemblyScript `Level` uses.
  */

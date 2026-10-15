@@ -488,6 +488,7 @@ static const tension_adapter OGRE_STUB_ADAPTER = {
     .apply = NULL,
     .shutdown = ogre_shutdown_hook,
     .destroy = ogre_destroy,
+    .layout_hash = TENSION_ADAPTER_LAYOUT_HASH,
 };
 
 const tension_adapter *tension_adapter_v1(void)

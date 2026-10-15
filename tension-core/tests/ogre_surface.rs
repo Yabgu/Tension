@@ -12,6 +12,9 @@
 //! `tension-ogre/build/libtension_ogre.so` beside this crate. Absent, the test
 //! says so and returns — `cargo test` must not require a C++ toolchain.
 
+#[path = "support/ci.rs"]
+mod support_ci;
+
 use std::ffi::{c_char, c_void, CStr};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -79,7 +82,7 @@ struct Vtable {
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-const TENSION_ADAPTER_ABI_VERSION: u32 = 1;
+const TENSION_ADAPTER_ABI_VERSION: u32 = 2;
 const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;
@@ -193,11 +196,11 @@ extern "system" {
 
 fn load(path: &Path) -> Option<*const Vtable> {
     if !path.exists() {
-        eprintln!(
+        support_ci::skip_or_fail(format_args!(
             "ogre_surface: {} is not built — run `tension-ogre/build.sh` (it needs no OGRE-Next); \
              skipping the surface test",
             path.display()
-        );
+        ));
         return None;
     }
     let _c_path = std::ffi::CString::new(path.to_str().expect("utf-8 path")).expect("no interior nul");
@@ -286,14 +289,14 @@ fn test_ogre_adapter_surface() {
     };
 
     let refused = unsafe { init(std::ptr::null_mut(), &table) };
-    assert_eq!(refused, 0, "init accepts an ABI-1 table");
+    assert_eq!(refused, 0, "init accepts an ABI-2 table");
     assert!(
         with_recorded(|recorded| recorded.imports.is_empty()),
         "init registers nothing: registration is valid only while link runs"
     );
 
     // A wrong ABI version is refused rather than tolerated.
-    let wrong = ApiTable { abi_version: 2, ..table };
+    let wrong = ApiTable { abi_version: 1, ..table };
     assert_eq!(
         unsafe { init(std::ptr::null_mut(), &wrong) },
         -22,

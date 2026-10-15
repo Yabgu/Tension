@@ -1,4 +1,4 @@
-// The adapter shim: the vtable the session loads, the three imports the guest
+// The adapter shim: the vtable the session loads, the sixteen imports the guest
 // calls, and the render thread they start.
 //
 // The split this file implements is the ABI's: `init`/`link`/`publish`/`apply`/
@@ -1503,6 +1503,7 @@ extern "C" const tension_adapter *tension_adapter_v1(void) {
         nullptr,                     /* apply: no deferrable verb in this sub-chunk */
         adapter_shutdown,            /* shutdown */
         adapter_destroy,             /* destroy */
+        TENSION_ADAPTER_LAYOUT_HASH, /* layout_hash: the arena layout this was built against */
     };
     return &adapter;
 }

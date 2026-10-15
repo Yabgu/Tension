@@ -14,13 +14,16 @@
 //!
 //!   headless       RenderSystem_NULL: a window object, a frame loop, an event
 //!                  from the render thread, a status record the guest reads —
-//!                  with no display at all. The CI gate.
+//!                  with no display at all. The headless gate.
 //!   no display     GL3+ with DISPLAY unset: OGRE throws on the X connection
 //!                  and the adapter catches it. Before the catch this aborted
 //!                  the process (exit 134, measured).
 //!   vulkan         A renderer this build's plugins cannot provide: refused by
 //!                  name with -ENOSYS rather than pretended.
 //!   shutdown-only  ogre::shutdown before any init: 0, not an error.
+
+#[path = "support/ci.rs"]
+mod support_ci;
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -41,11 +44,11 @@ fn fixture() -> Option<PathBuf> {
     if path.exists() {
         return Some(path);
     }
-    eprintln!(
+    support_ci::skip_or_fail(format_args!(
         "ogre_window: {} is not built — run `tension-ogre/tests/run.sh` (it needs asc); \
          skipping the window tests",
         path.display()
-    );
+    ));
     None
 }
 
@@ -57,10 +60,10 @@ fn adapter() -> Option<PathBuf> {
     if path.exists() {
         return Some(path);
     }
-    eprintln!(
+    support_ci::skip_or_fail(format_args!(
         "ogre_window: {} is not built — run `tension-ogre/build.sh`; skipping the window tests",
         path.display()
-    );
+    ));
     None
 }
 
@@ -132,12 +135,19 @@ fn test_ogre_gl3plus_no_display_refused() {
 #[test]
 fn test_ogre_vulkan_refused() {
     let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
-    let run = run(&fixture, &adapter, &["--renderer=vulkan", "--expect-fail"], false);
+    // No display, and that is what makes the case deterministic: *with* one,
+    // Vulkan comes up through the software ICD (lavapipe) and there is no
+    // refusal to assert at all. This mirrors `tension-ogre/tests/run.sh`'s
+    // `vulkan` case, which pins the same plugin-stage refusal. A build without
+    // Vulkan answers -ENOSYS instead, so both refusals are accepted; either
+    // way the diagnostic must name the renderer.
+    let run = run(&fixture, &adapter, &["--renderer=vulkan", "--expect-fail"], true);
 
     assert_eq!(run.code, Some(0), "stderr: {}", run.stderr);
+    let first = run.stdout.trim_start();
     assert!(
-        run.stdout.trim_start().starts_with("FAIL 0 -38"),
-        "expected -ENOSYS for a renderer this build cannot provide: {}",
+        first.starts_with("FAIL 0 -5") || first.starts_with("FAIL 0 -38"),
+        "expected a refusal (-EIO at the plugin stage, or -ENOSYS with no Vulkan): {}",
         run.stdout
     );
     assert!(

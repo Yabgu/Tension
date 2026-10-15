@@ -12,6 +12,9 @@
 //! Both skip with a printed reason when the fixture or the shared object has not
 //! been built.
 
+#[path = "support/ci.rs"]
+mod support_ci;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -30,11 +33,11 @@ fn fixture() -> Option<PathBuf> {
     if path.exists() {
         return Some(path);
     }
-    eprintln!(
+    support_ci::skip_or_fail(format_args!(
         "ogre_skinning: {} is not built — run `tension-ogre/tests/run.sh` (it needs asc); \
          skipping the acid test",
         path.display()
-    );
+    ));
     None
 }
 
@@ -46,11 +49,11 @@ fn volume() -> Option<PathBuf> {
     if path.exists() {
         return Some(path);
     }
-    eprintln!(
+    support_ci::skip_or_fail(format_args!(
         "FIXTURE: {} is not built — run `tension-ogre/tests/run.sh` (it packs the shared \
          fixture volume); skipping the acid test",
         path.display()
-    );
+    ));
     None
 }
 
@@ -61,8 +64,8 @@ fn adapter() -> Option<PathBuf> {
     if path.exists() {
         return Some(path);
     }
-    eprintln!("ogre_skinning: {} is not built — run `tension-ogre/build.sh`; skipping",
-              path.display());
+    support_ci::skip_or_fail(format_args!("ogre_skinning: {} is not built — run `tension-ogre/build.sh`; skipping",
+              path.display()));
     None
 }
 

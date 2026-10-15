@@ -381,12 +381,15 @@ layout hash covers the catalogue, adding an entry is a schema change: it moves
 the hash, bumps `schemaVersion`, and requires the guest SDK to be regenerated
 from the same table.
 
-**The pin (chunk 2).** OGRE-Next **v3.0.0**, commit
-`75643c3997f5b6d2aa1d7bd8400b9be6736d9908`
-(<https://github.com/OGRECave/ogre-next>). Verified against the Arch package
-`ogre-next 3.0.0-2`; the build checks the version with
-`pkg-config --atleast-version=3.0.0 OGRE-Next`, and the SHA is documentation
-and the source-build recipe's checkout ref — the wire format never reads it.
+**The pin (chunk 2).** OGRE-Next, commit
+`475f783d76f21b530e718aab4a548cdd9a222e50`
+(<https://github.com/OGRECave/ogre-next>) — 788 commits past the **v3.0.0**
+tag (`75643c3997f5b6d2aa1d7bd8400b9be6736d9908`), which is what every
+measurement in this repository ran against (`third_party/README.md`). The
+version floor the build enforces is still
+`pkg-config --atleast-version=3.0.0 OGRE-Next`, which the Arch package
+`ogre-next 3.0.0-2` satisfies; `tension-ogre/build.sh --check` compares the
+submodule's HEAD to this commit, and no wire format reads either.
 The condition this section named is therefore satisfied: the submission
 sub-chunk may write the capability catalogue that
 `assembly/ogre/wire.ts` already implements.
@@ -561,10 +564,13 @@ into a resource location so the v2 mesh's `setSkeletonName` resolves; it does
 not construct or register v1 skeleton objects itself. Removing our `v1::` uses
 does not remove the class from OGRE — it removes our dependence on it.
 
-**The capability's import surface, as registered.** Nine verbs: `ogre::init`,
+**The capability's import surface, as registered.** Sixteen verbs: `ogre::init`,
 `ogre::shutdown`, `ogre::last_error`, `queue_mesh_load`, `queue_texture_load`,
-`job_state`, `job_release`, `submit` (id 8) and `screenshot` (id 9, the
-reentrant-readonly flag, as `last_error` and `job_state` carry). Registering a
+`job_state`, `job_release`, `submit` (id 8), `screenshot` (id 9, the
+reentrant-readonly flag, as `last_error` and `job_state` carry),
+`submit_motion` (id 10), `submit_bones` (11), `submit_skin_matrices` (12),
+`create_mesh` (13), `mount_tns` (14), `submit_animation` (15) and
+`window_handle` (16, also reentrant-readonly). Registering a
 verb the SDK declares but a guest never calls is harmless, and Binaryen drops
 an unused import anyway (measured in 3b-i: seven declared, one called, one
 import in the compiled module) — the registration is what lets a guest that
@@ -2200,7 +2206,7 @@ chunk 1 work, and each is additive:
   The rule for the next one: **read `getDefaultPaths()` (or the equivalent)
   from the pinned OGRE-Next source whenever a new Hlms is added, and prefer
   fetching the list programmatically over hard-coding it.** The pin is
-  `75643c3997f5b6d2aa1d7bd8400b9be6736d9908`; a list copied from it is a
+  `475f783d76f21b530e718aab4a548cdd9a222e50`; a list copied from it is a
   snapshot, and the commit that moves the pin is the commit that re-checks
   every list taken from it. Resource locations follow the same rule against
   OGRE's own `resources2.cfg` — the adapter reads that file now instead of

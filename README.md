@@ -8,8 +8,8 @@ The host is **capability-agnostic**. A capability is either built into the
 host (I/O, audio, AI, and the ODE solver and resource cores, statically
 linked in) or shipped as a **DSO adapter** — a shared library `dlopen`'d at
 runtime, speaking a single adapter ABI (`tension_adapter_v1`). The renderer
-is the DSO one today. Adding a DSO capability does not change the host; it
-adds a `.so`.
+and input are the DSOs today. Adding a DSO capability does not change the
+host; it adds a `.so`.
 
 The split is the point: **the host owns the machine, the guest owns the
 world.**
@@ -33,7 +33,7 @@ world.**
 │                          │ tension_adapter_v1        │
 │  ┌───────────────────────┴────────────────────────┐  │
 │  │        Capability DSOs (dlopen, runtime)       │  │
-│  │                  ogre   …                      │  │
+│  │                  ogre · input                  │  │
 │  └────────────────────────────────────────────────┘  │
 │                                                      │
 │  built into the host (no DSO): io · audio · ai ·     │
@@ -64,12 +64,14 @@ through `guest_read`/`guest_write` inside a host call. The ABI lives in
 | Solver | `tension::solver` | ODE integration (Fortran core) | `tension-solver/`, linked into `tension-core/` |
 | Resources | `tension::res` | `.tns` archives (ECMA-208 SIDF profile) | `tension-res/`, linked into `tension-core/` |
 | Renderer | `ogre` | OGRE-Next: scenes, materials, animation, motion, physics-driven pose | `tension-ogre/`, a DSO adapter |
+| Input | `tension::input` | SDL3 keyboard, pointer and gamepad state and events | `tension-input/`, a DSO adapter |
 
 The first five are **built into the host**: their Rust implementations live
 in `tension-core/`, and the solver's Fortran core and the resource library's
-Zig core are statically linked into it. `ogre` is the **DSO adapter** — the
-host finds it through `--capability` (a path, or a name resolved as
-`libtension_<name>.so` in the capability directories) and `dlopen`s it.
+Zig core are statically linked into it. `ogre` and `input` are the **DSO
+adapters** — the host finds each through `--capability` (a path, or a name
+resolved as `libtension_<name>.so` in the capability directories) and
+`dlopen`s it.
 
 Each capability has its own `DESIGN.md` recording its wire catalogue, its
 error surface, and its verified/unverified facts. Read those first for
@@ -296,6 +298,7 @@ tension-framework/   AssemblyScript guest SDK
   assembly/runtime/  session verbs, arena view, config, callbacks
   assembly/ogre/     OGRE wire records, verbs, batches, factories
 tension-ogre/        the OGRE capability (C++ DSO)
+tension-input/       the input capability (C++ DSO, SDL3)
 tension-res/         the resource capability (Zig)
 tension-solver/      the ODE solver capability (Fortran)
 examples/            one folder per example

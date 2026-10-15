@@ -176,7 +176,7 @@ fn test_missing_memory_export_refused() {
     );
 }
 
-/// The bad-ABI twin of the reference adapter: same source, `abi_version = 2`.
+/// The bad-ABI twin of the reference adapter: same source, `abi_version = 3`.
 /// The loader refuses it at load — before `init`, before `link`, before any
 /// function pointer from its vtable is called — and the diagnostic names the
 /// file and both versions.
@@ -188,7 +188,7 @@ fn test_bad_abi_adapter_refused() {
     assert!(!output.status.success(), "the run must fail");
     let err = stderr(&output);
     assert!(
-        err.contains("was built against adapter ABI 2") && err.contains("this build is 1"),
+        err.contains("was built against adapter ABI 3") && err.contains("this build is 2"),
         "the diagnostic must name both versions\nstderr: {err}"
     );
     assert!(
