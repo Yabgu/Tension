@@ -5,12 +5,17 @@
 # Produces: tension-ogre/build/libtension_ogre.so, the shared object
 # tension-core dlopens for `--capability`.
 #
-# OGRE_NEXT_REF = v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)
-#   https://github.com/OGRECave/ogre-next
-#   Verified against the Arch package ogre-next 3.0.0-2. The build checks the
-#   version with `pkg-config --atleast-version=3.0.0 OGRE-Next`; the SHA is
-#   documentation and the source-build recipe's checkout ref — no wire format
-#   reads it (DESIGN.md §5.1).
+# OGRE_NEXT_PIN = 475f783d76f21b530e718aab4a548cdd9a222e50
+#   https://github.com/OGRECave/ogre-next — the submodule gitlink
+#   `third_party/ogre-next` is checked out at, and what `bootstrap.sh` builds
+#   (it builds the submodule as checked out; it does not read this file).
+#   Deliberately *not* the v3.0.0 tag's commit (75643c3997f5…): the pin is 788
+#   commits past it, and every measurement in this repository ran against it
+#   (third_party/README.md). Moving the pin is a `git checkout` in the
+#   submodule plus an update here.
+#   The version floor the build enforces is separate and unchanged:
+#   `pkg-config --atleast-version=3.0.0 OGRE-Next`. No wire format reads either
+#   (DESIGN.md §5.1).
 #
 # Modes: --print-pin, --check, --clean, or the build itself.
 #
@@ -28,7 +33,8 @@ set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 out="$here/build"
 backend=${TENSION_OGRE_BACKEND:-ogre}
-pin='v3.0.0 (75643c3997f5b6d2aa1d7bd8400b9be6736d9908)'
+pin_sha='475f783d76f21b530e718aab4a548cdd9a222e50'
+pin="$pin_sha (v3.0.0-788-g475f783d76)"
 ntdll_lib=
 case "$(uname -s)" in
     *MINGW*|*MSYS*|*CYGWIN*|*Windows*) ntdll_lib="-lntdll" ;;
@@ -48,6 +54,23 @@ case "${1:-}" in
         fi
         if [ -f "$here/../third_party/ogre-next-install/lib/libOgreNextMain.so" ]; then
             echo "tension-ogre: in-tree Ogre-Next at third_party/ogre-next-install (preferred)"
+        fi
+        # The submodule is what `bootstrap.sh` builds, so its HEAD is the revision
+        # the measurements were taken against. Comparing the gitlink is an exact,
+        # cheap check — and the drift it catches is real: this file used to name
+        # the v3.0.0 tag commit while the submodule sat 788 commits past it.
+        sub="$here/../third_party/ogre-next"
+        if [ -e "$sub/.git" ]; then
+            head_sha=$(git -C "$sub" rev-parse HEAD 2>/dev/null || true)
+            if [ -n "$head_sha" ]; then
+                if [ "$head_sha" != "$pin_sha" ]; then
+                    echo "tension-ogre: MISMATCH — submodule HEAD is $head_sha" >&2
+                    echo "               but the pin in this file is $pin_sha" >&2
+                    echo "               (update the pin here, or check that commit out in the submodule)" >&2
+                    exit 1
+                fi
+                echo "tension-ogre: submodule HEAD matches the pin ($pin_sha)"
+            fi
         fi
         echo "tension-ogre: pinned against $pin"
         echo "tension-ogre: backend=$backend (default; 'none' opts out of OGRE)"

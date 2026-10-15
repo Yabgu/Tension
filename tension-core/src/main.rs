@@ -1219,12 +1219,28 @@ fn main() -> anyhow::Result<()> {
     }
 
     // Entrypoint: prefer the Tension-specific `_start_game`, else WASI `_start`.
-    if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start_game") {
-        func.call(&mut store, ())?;
+    // The result is held, not propagated with `?`: a guest trap must still reach
+    // the adapter teardown below (C3). With `?` here, a trap returned before it
+    // and left the adapters — and any thread they own — to the DSO's own static
+    // destructor, which is the only teardown they got.
+    let guest_result = if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start_game") {
+        func.call(&mut store, ())
     } else if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
-        func.call(&mut store, ())?;
+        func.call(&mut store, ())
     } else {
-        anyhow::bail!("game.wasm did not export `_start_game` or `_start`");
+        Err(anyhow::anyhow!(
+            "game.wasm did not export `_start_game` or `_start`"
+        ))
+    };
+
+    // Tear the adapters down on the trapping path *before* the error propagates.
+    // `shutdown` (stop and join threads) then `destroy` (free), reverse of link
+    // order; `shutdown` must not touch guest memory, so running it with the
+    // session still open is the contract. The clean path tears down at the very
+    // end of this function instead, after the host's own session close.
+    if let Err(error) = guest_result {
+        adapter::teardown_adapters(&mut adapters);
+        return Err(error);
     }
 
     // What a trapping epoch left behind: a deferred submission belongs to the
@@ -1260,6 +1276,12 @@ fn main() -> anyhow::Result<()> {
         }
         store.data_mut().session = Some(session);
     }
+
+    // The adapters are done: `shutdown` then `destroy`, reverse of link order,
+    // once. This runs after the host's own session close above, so the guest's
+    // session ends before its capabilities are torn down. (A guest that closed
+    // the session itself, or that never opened one, reaches the same place.)
+    adapter::teardown_adapters(&mut adapters);
 
     Ok(())
 }

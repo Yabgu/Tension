@@ -101,7 +101,13 @@ const ENOSPC: i32 = -28;
 #[derive(Debug)]
 pub struct ClassQueue {
     class: u32,
-    capacity: u32,
+    /// The queue depth, and **interior-mutable on purpose**: the posting face is
+    /// built once at startup from the default capacities, but a guest may
+    /// override any class's ring capacity at `session_open`. The face is an
+    /// `Arc` shared with `AdapterHost`, so the object an adapter thread already
+    /// holds is the object that must change — see
+    /// [`PostingSide::set_capacities`].
+    capacity: AtomicU32,
     events: Mutex<VecDeque<EventFields>>,
     dropped: AtomicU64,
     delivered: AtomicU64,
@@ -111,7 +117,7 @@ impl ClassQueue {
     fn new(class: u32, capacity: u32) -> ClassQueue {
         ClassQueue {
             class,
-            capacity: capacity.max(1),
+            capacity: AtomicU32::new(capacity.max(1)),
             events: Mutex::new(VecDeque::new()),
             dropped: AtomicU64::new(0),
             delivered: AtomicU64::new(0),
@@ -125,7 +131,17 @@ impl ClassQueue {
 
     /// How many events the queue holds before it stops accepting them.
     pub fn capacity(&self) -> u32 {
-        self.capacity
+        self.capacity.load(Ordering::Relaxed)
+    }
+
+    /// Adopt a new depth. `session_open` is the one caller, and it only ever
+    /// runs on the guest thread, so this never races another `set_capacity`;
+    /// a producer reading concurrently sees the old or the new value, never a
+    /// torn one. Zero is clamped to one, the same rule [`ClassQueue::new`]
+    /// applies (the config layer refuses a zero capacity before this is
+    /// reached, so the clamp is belt-and-braces).
+    fn set_capacity(&self, capacity: u32) {
+        self.capacity.store(capacity.max(1), Ordering::Relaxed);
     }
 
     /// How many events are waiting.
@@ -157,7 +173,7 @@ impl ClassQueue {
         mut fields: EventFields,
     ) -> Result<u64, PostError> {
         let mut events = self.events.lock().expect("the queue mutex is never poisoned");
-        if events.len() >= self.capacity as usize {
+        if events.len() >= self.capacity() as usize {
             drop(events);
             self.dropped.fetch_add(1, Ordering::Relaxed);
             return Err(PostError::QueueFull { class: self.class });
@@ -447,6 +463,29 @@ impl PostingSide {
         self.queues.get(class_id as usize).map(|queue| queue.capacity())
     }
 
+    /// Adopt a session's **live** ring capacities, one per class.
+    ///
+    /// `session_open` calls this after a successful `apply_open`: that is the
+    /// moment the arena's ring headers and `SessionInfo` are written from the
+    /// guest's decoded config, and the queue a producer fills must agree with
+    /// the ring the guest was told about. The face is constructed once at
+    /// startup from [`arena::DEFAULT_RING_CAPACITIES`], so without this a guest
+    /// that overrides a capacity gets a ring of one depth and a queue of
+    /// another.
+    ///
+    /// It updates in place rather than rebuilding: the face is an `Arc` shared
+    /// with `AdapterHost` (and so with adapter threads that post through
+    /// `post_event`), and the object a producer already holds has to be the one
+    /// that changes. Events already queued are left alone — a queue that shrinks
+    /// below its current length stops accepting new posts (a counted drop) until
+    /// the epoch drains it, which is the same no-overwrite rule a full queue
+    /// already follows.
+    pub fn set_capacities(&self, capacities: [u32; CLASS_COUNT]) {
+        for (queue, capacity) in self.queues.iter().zip(capacities) {
+            queue.set_capacity(capacity);
+        }
+    }
+
     /// A class's queue, for the epoch's flush.
     pub fn queue(&self, class_id: u32) -> Option<&ClassQueue> {
         self.queues.get(class_id as usize)
@@ -577,6 +616,36 @@ mod tests {
         // A wide posting face reports its own numbers, not the table's.
         let wide = wide();
         assert_eq!(wide.class_capacity(0), Some(4096));
+    }
+
+    #[test]
+    fn test_set_capacities_adopts_live_capacities() {
+        // What `session_open` does with a guest's decoded rings: the face is
+        // built from the defaults, then adopts the live numbers. Before the
+        // fix, only the arena's ring headers moved and this face kept the
+        // defaults — the divergence this test would have caught.
+        let posting = PostingSide::new([8; CLASS_COUNT]);
+        assert_eq!(posting.class_capacity(3), Some(8));
+
+        let mut live = arena::DEFAULT_RING_CAPACITIES;
+        live[3] = 128;
+        posting.set_capacities(live);
+        assert_eq!(posting.class_capacity(3), Some(128), "the override is adopted");
+        for class in 0..CLASS_COUNT as u32 {
+            assert_eq!(posting.class_capacity(class), Some(live[class as usize]), "class {class}");
+        }
+
+        // Shrinking below what is already queued stops new posts rather than
+        // overwriting the queue: the same no-overwrite rule a full queue keeps.
+        let mut small = arena::DEFAULT_RING_CAPACITIES;
+        small[3] = 2;
+        posting.set_capacities(small);
+        assert!(posting.post(1, 3, 0, 0, 0, 0.0, 0.0).is_ok());
+        assert!(posting.post(1, 3, 0, 0, 0, 0.0, 0.0).is_ok());
+        let refused = posting.post(1, 3, 0, 0, 0, 0.0, 0.0).expect_err("the new depth is 2");
+        assert_eq!(refused, PostError::QueueFull { class: 3 });
+        assert_eq!(posting.queue(3).expect("class 3").len(), 2, "nothing was overwritten");
+        assert_eq!(posting.queue(3).expect("class 3").dropped(), 1);
     }
 
     #[test]

@@ -337,6 +337,7 @@ extern "C" const tension_adapter *tension_adapter_v1(void) {
         nullptr,                     /* apply: no deferrable verb */
         adapter_shutdown,            /* shutdown */
         adapter_destroy,             /* destroy */
+        TENSION_ADAPTER_LAYOUT_HASH, /* layout_hash: the arena layout this was built against */
     };
     return &adapter;
 }

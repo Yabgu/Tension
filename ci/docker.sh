@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tension container tooling: build the dev/CI image and run it.
+# Tension container tooling: build the development image and run it.
 #
 # Commands:
 #   ci/docker.sh build          build the image (OGRE-Next packages in ci/ogre-next-pkg)

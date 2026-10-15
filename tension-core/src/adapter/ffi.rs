@@ -8,16 +8,17 @@
 //! ```text
 //! $ gcc -std=c11 -I tension-core/include … && ./sizes
 //! value                   8      (tension_value)
-//! core_api              112      abi_version 0, user 8, guest_read 16,
+//! core_api              136      abi_version 0, user 8, guest_read 16,
 //!                                guest_write 24, guest_size 32,
 //!                                resolve_callback 40, call_callback 48,
 //!                                release_callback 56, log 64,
 //!                                register_import 72, register_source 80,
 //!                                post_event 88, class_info 96,
-//!                                region_lookup 104
-//! adapter                72      abi_version 0, name 8, flags 16, init 24,
+//!                                region_lookup 104, log_named 112,
+//!                                log_structured 120, guest_read_checked 128
+//! adapter                80      abi_version 0, name 8, flags 16, init 24,
 //!                                link 32, publish 40, apply 48, shutdown 56,
-//!                                destroy 64
+//!                                destroy 64, layout_hash 72
 //! ```
 //!
 //! Two conventions this module implements rather than describes:
@@ -48,7 +49,16 @@ use crate::session::posting::PostError;
 use crate::HostState;
 
 /// `TENSION_ADAPTER_ABI_VERSION` — the only version this build loads.
-pub const ADAPTER_ABI_VERSION: u32 = 1;
+///
+/// **Version history.** 1 was the frozen v1 contract (the logging slots appended
+/// under rule 11 still shipped inside it). 2 is v1 plus `layout_hash` on the
+/// adapter vtable and `guest_read_checked` on the core API (C4) — the first
+/// change that moved the *contract shape* enough to require the loader to refuse
+/// an older adapter rather than read it. A v1 adapter is now refused by the
+/// version check below in `load_adapter`, **before** the vtable is read past
+/// where a v1 struct ends, which is what makes the refusal fail-closed instead
+/// of an out-of-bounds read of the missing `layout_hash`.
+pub const ADAPTER_ABI_VERSION: u32 = 2;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -92,8 +102,7 @@ pub type ImportFn =
 // ── A.4: the core API ─────────────────────────────────────────────────────
 
 pub type GuestReadFn = unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32) -> i32;
-pub type GuestWriteFn = unsafe extern "C" fn(*mut c_void, u32, *const c_void, u32) -> i32;
-pub type GuestSizeFn = unsafe extern "C" fn(*mut c_void) -> u32;
+pub type GuestWriteFn = unsafe extern "C" fn(*mut c_void, u32, *const c_void, u32) -> i32;pub type GuestSizeFn = unsafe extern "C" fn(*mut c_void) -> u32;
 pub type ResolveCallbackFn =
     unsafe extern "C" fn(*mut c_void, u32, u32, *const u32, u32, *mut *mut c_void) -> i32;
 pub type CallCallbackFn = unsafe extern "C" fn(
@@ -164,6 +173,10 @@ pub struct TensionCoreApi {
     pub region_lookup: Option<RegionLookupFn>,
     pub log_named: Option<LogNamedFn>,
     pub log_structured: Option<LogNamedFn>,
+    /// Appended under rule 11 (C4.1a): `guest_read` plus the destination's
+    /// capacity, so the host can refuse rather than overwrite. `guest_read`
+    /// stays populated for adapters built before this slot.
+    pub guest_read_checked: Option<GuestReadCheckedFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -174,6 +187,9 @@ pub type PublishFn = unsafe extern "C" fn(*mut c_void, *const TensionCoreApi) ->
 pub type ApplyFn = unsafe extern "C" fn(*mut c_void, u32, *const c_void, u32) -> i32;
 pub type ShutdownFn = unsafe extern "C" fn(*mut c_void) -> i32;
 pub type DestroyFn = unsafe extern "C" fn(*mut c_void);
+/// The bounds-checked read appended under rule 11 (C4.1a).
+pub type GuestReadCheckedFn =
+    unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32;
 
 /// Mirrors `tension_adapter`. `publish` and `apply` may be NULL, which is why
 /// every function-pointer field here is an `Option`.
@@ -189,6 +205,9 @@ pub struct TensionAdapter {
     pub apply: Option<ApplyFn>,
     pub shutdown: Option<ShutdownFn>,
     pub destroy: Option<DestroyFn>,
+    /// The arena layout this adapter was built against, appended under rule 11
+    /// (C4.1c). Checked at **load time**, before any vtable slot is called.
+    pub layout_hash: u32,
 }
 
 /// The layout checks. The numbers are the C compiler's, quoted in the module
@@ -198,8 +217,8 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 128);
-    assert!(std::mem::size_of::<TensionAdapter>() == 72);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 136);
+    assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
     assert!(std::mem::offset_of!(TensionCoreApi, guest_read) == 16);
@@ -218,6 +237,7 @@ const _: () = {
     // from the C side, so an append has to be deliberate in both places.
     assert!(std::mem::offset_of!(TensionCoreApi, log_named) == 112);
     assert!(std::mem::offset_of!(TensionCoreApi, log_structured) == 120);
+    assert!(std::mem::offset_of!(TensionCoreApi, guest_read_checked) == 128);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -227,6 +247,7 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionAdapter, apply) == 48);
     assert!(std::mem::offset_of!(TensionAdapter, shutdown) == 56);
     assert!(std::mem::offset_of!(TensionAdapter, destroy) == 64);
+    assert!(std::mem::offset_of!(TensionAdapter, layout_hash) == 72);
 };
 
 // ── the loader ────────────────────────────────────────────────────────────
@@ -729,20 +750,62 @@ pub(crate) unsafe extern "C" fn guest_read(
     dst: *mut c_void,
     len: u32,
 ) -> i32 {
+    // No capacity claim: the legacy slot, kept working for adapters built before
+    // `guest_read_checked` (rule 11).
+    unsafe { guest_read_into(user, ptr, dst, len, None) }
+}
+
+/// The bounds-checked `guest_read` appended under rule 11 (C4.1a). Same as
+/// `guest_read`, plus the adapter's own `dst` capacity: a `len` that exceeds it
+/// is refused with `-EINVAL` rather than copied past the destination.
+pub(crate) unsafe extern "C" fn guest_read_checked(
+    user: *mut c_void,
+    ptr: u32,
+    dst: *mut c_void,
+    len: u32,
+    dst_capacity: u32,
+) -> i32 {
+    unsafe { guest_read_into(user, ptr, dst, len, Some(dst_capacity)) }
+}
+
+/// The shared body of the two read slots.
+unsafe fn guest_read_into(
+    user: *mut c_void,
+    ptr: u32,
+    dst: *mut c_void,
+    len: u32,
+    dst_capacity: Option<u32>,
+) -> i32 {
     let Some(host) = AdapterHost::from_user(user) else {
         return EBADF;
     };
+    // C4.1b: the caller slot is installed by the guest thread, inside a call.
+    // A shim reached from any other thread — `post_event` is any-thread, and an
+    // adapter may run its own worker — would otherwise dereference a `Caller`
+    // that thread does not own. Refuse it (-EBUSY), never dereference it, never
+    // panic. This subsumes the null-caller case: a null slot has tid 0.
+    if !host.caller_is_this_thread() {
+        return EBUSY;
+    }
     let caller = host.caller();
     if caller.is_null() {
         return EBUSY; // outside a guest call: rule 6
     }
-    // SAFETY: installed by CallerGuard for the duration of the call in flight.
+    // SAFETY: installed by CallerGuard for the duration of the call in flight,
+    // and now checked to be this thread's.
     let caller = unsafe { &mut *caller };
     let Some(memory) = caller.data().arena else {
         return EBADF;
     };
     if dst.is_null() {
         return EINVAL;
+    }
+    // C4.1a: the adapter said its buffer holds `dst_capacity`; a `len` past that
+    // is its own mistake, refused before the copy rather than trusted.
+    if let Some(capacity) = dst_capacity {
+        if len > capacity {
+            return EINVAL;
+        }
     }
     let data = memory.data(&*caller);
     let Some(end) = (ptr as usize).checked_add(len as usize) else {
@@ -766,6 +829,10 @@ pub(crate) unsafe extern "C" fn guest_write(
     let Some(host) = AdapterHost::from_user(user) else {
         return EBADF;
     };
+    // C4.1b: same thread rule as the read path.
+    if !host.caller_is_this_thread() {
+        return EBUSY;
+    }
     let caller = host.caller();
     if caller.is_null() {
         return EBUSY;
@@ -1134,6 +1201,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         region_lookup: Some(region_lookup),
         log_named: Some(log_named),
         log_structured: Some(log_structured),
+        guest_read_checked: Some(guest_read_checked),
     }
 }
 
@@ -1295,19 +1363,47 @@ mod tests {
     }
 
     #[test]
+    fn the_header_abi_version_matches_the_hosts_constant() {
+        // `TENSION_ADAPTER_ABI_VERSION` (the C macro every adapter bakes into its
+        // vtable) and `ADAPTER_ABI_VERSION` (what the loader checks) are the same
+        // number in two files. If they drift, every adapter in the tree is
+        // refused at load, so the drift is caught here instead of at the first
+        // `--capability`.
+        let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("include")
+            .join("tension_adapter.h");
+        let text = std::fs::read_to_string(&header).expect("the header is readable");
+        let value: u32 = text
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+            .map(|rest| rest.trim().trim_end_matches('u'))
+            .and_then(|number| number.parse().ok())
+            .expect("the header defines TENSION_ADAPTER_ABI_VERSION");
+        assert_eq!(
+            value, ADAPTER_ABI_VERSION,
+            "tension_adapter.h's TENSION_ADAPTER_ABI_VERSION and the loader's \
+             ADAPTER_ABI_VERSION must agree"
+        );
+    }
+
+    #[test]
     fn layout_matches_the_c_compiler() {
         // The numbers come from compiling the same header with gcc -std=c11 on
         // x86-64 (quoted in this module's docs); the const assertions above are
         // the compile-time half of this check. `log_named`/`log_structured`
-        // were appended under rule 11, so the size moved 112 -> 128.
+        // were appended under rule 11, moving the size 112 -> 128;
+        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and the adapter's
+        // `layout_hash` (C4.1c) moved that one 72 -> 80.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 128);
-            assert_eq!(std::mem::size_of::<TensionAdapter>(), 72);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 136);
+            assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
+            assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }
         // `Option<fn>` must not have grown the field: the null optimisation is
         // what keeps this struct layout-identical to the C one.
@@ -1740,5 +1836,149 @@ mod tests {
         // is the header's rule 6, checked rather than assumed.
         let status = unsafe { guest_read(std::ptr::null_mut(), 0, std::ptr::null_mut(), 0) };
         assert_eq!(status, EBADF, "a null host is refused");
+    }
+
+    // ── C4: the guest-memory shims' new refusals ──────────────────────────
+
+    /// A guest that calls one `probe` import: `(len, capacity, cross_thread)` →
+    /// the shim's status. `ptr` is fixed to a spot in the guest's heap; the
+    /// import reads it back into a stack buffer.
+    const GUEST_PROBES: &str = r#"
+(module
+  (import "env" "memory" (memory 132 4096))
+  (import "test" "probe" (func $probe (param i32 i32 i32 i32) (result i32)))
+  (func (export "run") (param i32 i32 i32) (result i32)
+    (call $probe (i32.const 8388608) (local.get 0) (local.get 1) (local.get 2)))
+)
+"#;
+
+    /// The probe import: call `guest_read_checked` with the guest's args, on the
+    /// guest thread or on a freshly spawned one (arg 3), and report the shim's
+    /// status. The 64-byte stack buffer is the "adapter's own" destination whose
+    /// stated capacity the test varies.
+    unsafe extern "C" fn probe_read_checked(
+        ctx: *mut c_void,
+        args: *const TensionValue,
+        nargs: u32,
+        ret: *mut TensionValue,
+    ) -> i32 {
+        if nargs != 4 || args.is_null() || ret.is_null() {
+            return EINVAL;
+        }
+        let Some(host) = (unsafe { AdapterHost::from_user(ctx) }) else {
+            return EINVAL;
+        };
+        let api = host.api_table();
+        let Some(read) = api.guest_read_checked else {
+            return ENOSYS;
+        };
+        let ptr = unsafe { (*args).i32_ } as u32;
+        let len = unsafe { (*args.offset(1)).i32_ } as u32;
+        let capacity = unsafe { (*args.offset(2)).i32_ } as u32;
+        let cross_thread = unsafe { (*args.offset(3)).i32_ } != 0;
+        let mut dst = [0u8; 64];
+        let status = if cross_thread {
+            // The caller slot is installed on the guest thread; this thread is a
+            // different one, which is exactly the case C4.1b refuses.
+            let user = api.user as usize;
+            let dst = dst.as_mut_ptr() as usize;
+            std::thread::spawn(move || unsafe {
+                read(user as *mut c_void, ptr, dst as *mut c_void, len, capacity)
+            })
+            .join()
+            .expect("the probe thread does not panic")
+        } else {
+            unsafe { read(api.user, ptr, dst.as_mut_ptr() as *mut c_void, len, capacity) }
+        };
+        unsafe { (*ret).i32_ = status };
+        0
+    }
+
+    /// Build the store/session/linker the probe guest needs, register `probe`,
+    /// and instantiate. Returns the store, the host (kept alive for the import's
+    /// ctx), and the instance — the same substrate `guest_memory_round_trips`
+    /// builds, factored out.
+    fn probe_setup(engine: &Engine) -> (Store<HostState>, Box<AdapterHost>, wasmtime::Instance) {
+        let module = Module::new(engine, GUEST_WITH_MEMORY).expect("module");
+        let mut store = test_store(engine);
+        let mut session =
+            session::Session::create_from_module(&mut store, &module).expect("session");
+        session.prepare_arena(&mut store).expect("prepare");
+        let mut linker: Linker<HostState> = Linker::new(engine);
+        session.install(&mut store, &mut linker).expect("install");
+        store.data_mut().arena = Some(session.memory());
+        store.data_mut().session = Some(session);
+
+        let host = a_host();
+        let handle = HostHandle(&*host as *const AdapterHost as *mut AdapterHost);
+        let raw = [ValueType::I32 as u32; 4];
+        let signature = Signature::new(ValueType::I32 as u32, &raw).expect("signature");
+        let import = RegisteredImport {
+            module: "test".to_string(),
+            name: "probe".to_string(),
+            signature,
+            func: probe_read_checked,
+            ctx: AdapterCtx(&*host as *const AdapterHost as *mut c_void),
+            verb_id: 9,
+            flags: 0,
+            adapter_index: 0,
+        };
+        let ty = import_func_type(engine, &import.signature);
+        linker
+            .func_new("test", "probe", ty, import_closure(handle, import))
+            .expect("register");
+
+        let caller_module = Module::new(engine, GUEST_PROBES).expect("caller module");
+        let instance = linker
+            .instantiate(&mut store, &caller_module)
+            .expect("instantiate");
+        (store, host, instance)
+    }
+
+    #[test]
+    fn guest_read_checked_refuses_an_overstated_destination() {
+        let engine = Engine::default();
+        let (mut store, _host, instance) = probe_setup(&engine);
+        let run = instance
+            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "run")
+            .expect("run");
+
+        // The adapter claims a 64-byte buffer but asks for 128 bytes: the shim
+        // refuses -EINVAL before the copy, which is the guarantee `guest_read`
+        // (no capacity) cannot give.
+        assert_eq!(
+            run.call(&mut store, (128, 64, 0)).expect("call"),
+            EINVAL,
+            "a destination smaller than the requested read is refused"
+        );
+        // The honest claim — the read fits the stated capacity — goes through.
+        assert_eq!(
+            run.call(&mut store, (64, 64, 0)).expect("call"),
+            0,
+            "a read that fits is honoured"
+        );
+        assert_eq!(
+            run.call(&mut store, (8, 64, 0)).expect("call"),
+            0,
+            "a smaller read fits too"
+        );
+    }
+
+    #[test]
+    fn guest_memory_shims_refuse_a_cross_thread_call() {
+        let engine = Engine::default();
+        let (mut store, _host, instance) = probe_setup(&engine);
+        let run = instance
+            .get_typed_func::<(i32, i32, i32), i32>(&mut store, "run")
+            .expect("run");
+
+        // cross_thread = 1: the shim is reached from a spawned thread while the
+        // caller slot belongs to the guest thread. Refused -EBUSY, never
+        // dereferenced — the corruption C4.1b closes.
+        assert_eq!(
+            run.call(&mut store, (8, 8, 1)).expect("call"),
+            EBUSY,
+            "a guest-memory read from the wrong thread is refused"
+        );
     }
 }
