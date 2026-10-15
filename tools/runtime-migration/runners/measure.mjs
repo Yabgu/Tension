@@ -156,11 +156,23 @@ switch (cmd) {
   }
   case "scale": {
     const [op, a, b] = rest;
-    const r = once(() => op === "forced" ? ex.build(Number(a)) : ex.churn(Number(a), Number(b)));
-    if (r.trap) { out.results = { trap: r.trap, op }; break; }
-    out.results = op === "forced"
-      ? { op, live: ex.live(), forced_full_gc_ms: r.value, heap_pages: ex.heapPages() }
-      : { op, live: Number(a), allocs: Number(b), worst_alloc_stall_ms: r.value, heap_pages: ex.heapPages() };
+    if (op === "forced") {
+      // build() returns void, so time the two phases separately.
+      const built = once(() => ex.build(Number(a)));
+      if (built.trap) { out.results = { trap: built.trap, op, phase: "build" }; break; }
+      const g = once(() => ex.forcedFullGC());
+      out.results = {
+        op, live: ex.live(), forced_full_gc_ms: g.value ?? null,
+        heap_pages: ex.heapPages(), trap: g.trap,
+      };
+    } else {
+      const r = once(() => ex.churn(Number(a), Number(b)));
+      if (r.trap) { out.results = { trap: r.trap, op }; break; }
+      out.results = {
+        op, live: Number(a), allocs: Number(b),
+        worst_alloc_stall_ms: r.value ?? null, heap_pages: ex.heapPages(),
+      };
+    }
     break;
   }
   default:
