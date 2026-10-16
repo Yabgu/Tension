@@ -9,7 +9,7 @@
 // Memory flags this file implies (also generated, as an asconfig):
 //   --importMemory --memoryBase 8388608 \
 //   --initialMemory 132 --maximumMemory 512 \
-//   --exportTable --runtime stub
+//   --exportTable --runtime incremental
 // `--noExportMemory` is forbidden (F2) and `--lowMemoryLimit` likewise.
 
 export const ABI_VERSION: u32 = 1;

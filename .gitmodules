@@ -1,3 +1,6 @@
 [submodule "third_party/ogre-next"]
 	path = third_party/ogre-next
 	url = https://github.com/OGRECave/ogre-next.git
+[submodule "third_party/assemblyscript"]
+	path = third_party/assemblyscript
+	url = git@github.com:Yabgu/TensionScript.git

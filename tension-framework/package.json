@@ -6,7 +6,7 @@
   "ascMain": "assembly/index.ts",
   "types": "index.d.ts",
   "scripts": {
-    "build": "asc index.ts -o build/index.wasm --runtime stub --target release",
+    "build": "asc index.ts -o build/index.wasm --runtime incremental --target release",
     "test": "bash tests/run.sh",
     "build:fixture": "bash tests/run.sh"
   },
@@ -28,6 +28,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "assemblyscript": "~0.28.8"
+    "@yabgu_gm/tensionscript": "^0.1.0"
   }
 }

@@ -17,8 +17,23 @@ import { ABI_VERSION } from "./layout";
  * The table index of a function reference. See this file's header: the index is
  * the i32 the reference points at, which is how the solver bindings read their
  * callbacks too.
+ *
+ * A reference that carries an environment is refused here, because the host
+ * cannot deliver it. A function value that captures `this` keeps the captured
+ * receiver in its environment word -- the word after the index, at the target's
+ * pointer size -- and the compiler hands that word to the callee at each of the
+ * guest's own indirect call sites. The host has no such site: `session_open`
+ * resolves the table entry and calls it directly, so the handler would read
+ * whatever its environment global last held, i.e. someone else's receiver
+ * rather than none at all. Refusing is the safe answer, and it is the answer
+ * the day this framework wants bound handlers: a guest binds them itself, with
+ * an explicit `this` parameter or a function that closes over what it needs.
+ * The word is zero for every function value that does not capture, so an
+ * ordinary handler is unaffected.
  */
 function callbackIndex(fn: usize): u32 {
+  assert(load<usize>(fn, sizeof<usize>()) == 0,
+    "makeCallbacks: a handler that captures `this` cannot be called by the host");
   return <u32>load<i32>(fn);
 }
 
