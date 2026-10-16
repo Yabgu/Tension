@@ -1,158 +1,329 @@
-# Async/await in TensionScript — PLAN v2
+# Async/await in TensionScript — PLAN v2 (revised)
 
-**Status:** proposal, awaiting architect review. **No code written. No lowering
-implemented. No commits beyond the fork setup commit.**
-**Supersedes:** `docs/async-await-plan.md` (v1). v1 assumed the fork would stay a
-thin layer over upstream; that constraint is withdrawn. v2 is a detached-fork plan.
+**Status:** proposal, revised after independent review. **No code written. No
+lowering implemented.**
+**Supersedes:** `docs/async-await-plan-v2.md` as originally written (the reviewed
+text). This file *is* that document, revised in place.
+**Review addressed:** `docs/async-await-plan-v2-review.md` (written against the
+arrow-`this` landing). §0.0 maps every finding to its disposition.
 
-Date of evidence: 2026-10-15.
+**Cited revision.** Fork `Yabgu/TensionScript` at submodule
+`third_party/assemblyscript` = `92809069` ("test: rebaseline fixtures after ~env
+delivery"), which contains the arrow-`this` work (`c4a16531` resolver,
+`6aece91a`+`1dc6e395` codegen, `92809069` fixtures). Host tree at `c66f07f`
+(main). Every citation below was re-resolved against these revisions — the
+review measured drift of +8…+176 from the line numbers the first draft used, so
+**do not trust a line number in the reviewed text; the ones here are current.**
+Date of evidence: 2026-10-16.
+
+---
+
+## 0.0 Revision record — what the review changed
+
+Ten findings from the task's list, plus the review's own sub-findings. Every one
+is addressed; none is dropped. "No change" means the reviewed text survives
+inspection and is now better cited.
+
+| Review finding | Severity | Disposition | Where |
+|---|---|---|---|
+| 1.1 §5.3 does not encode a language rule | pass | **No change** — conclusion kept verbatim in intent | §4.6 |
+| 1.2 §5.3 rationale rests on unpinned TS semantics; thin constructor contradicts it | major | **Revised** — semantics pinned (§1.2); the restriction is re-derived from stated rules, not from an unstated TS behaviour; the constructor now *invokes* the resume function so the synchronous prefix is real | §1.2, §4.1, §4.6 |
+| 2.1 `a`/`b` offsets exist and are free *as bytes* | pass | **No change** for the offset fact | §3.1 |
+| 2.2 `a`/`b` are not free *in meaning* — JOB_DONE/JOB_FAILED/RESOURCE_READY/DEVICE_LOST/INPUT carry assigned payloads | blocker | **Revised** — correlation scheme replaced; the runtime mints no ids and repurposes no words | §3.1, §6.2 |
+| 2.3 the recommended encoding is circular (host cannot echo an id it was never told) | blocker | **Revised** — the id is the producer's submit-time id, which the guest already holds | §3.1, §6.2, D1 |
+| 2.4 pointer-typed results contradict the adapter contract | major | **Revised** — `await` yields scalars; references come from the capability's own readers | §3.3, §6.2 |
+| 3.1 the host uses neither epoch interruption nor fuel | major | **Revised** — §9.3 rewritten; the real preemption/yield model stated | §6.6, §9.3 |
+| 3.2 `#14644` closed | minor | **Revised** — dated and dropped from the gate text | §9.3, §9.6 |
+| 3.3 pinned wasmtime 24.0.13 has no stack switching; M3 is not "time only" | major | **Revised** — M3's gate is an engine re-pin plus three upstream items | §5.7, §9.6, §11 |
+| 4.1 `Awaitable<T>` with `value: T` cannot be copied into by a dispatcher | major | **Revised** — the record is `T`-free and fixed-layout; `Task<T>` is a one-word handle; the typed read is emitted at the await site | §3.2, §3.3, §10.2 |
+| 4.2 error/zero-value rules unpinned | major | **Revised** — result and error rules pinned, including null-for-reference-T excluded by 3.3 | §3.4 |
+| 4.3 no reconciliation with `queueMeshLoad` + region readers | major | **Revised** — the async surface is registration over the shipped job id; the region readers stay the truth | §3.3, §7.2 |
+| 4.4 five task semantics unpinned | major | **Revised** — sync prefix, floating tasks, double-await, re-await, ordering all pinned | §1.2, §3.4, §6.5 |
+| 5.1 AST shape is right for both backends | pass | **No change** — citations refreshed | §2.1, §5.5 |
+| 5.2 the resolver needs **two** cases; both switches `assert(false)` | blocker | **Revised** | §2.4 |
+| 5.3 D10's custom-pass seam is post-codegen and cannot synthesize a managed class | blocker | **Revised** — the lowering moves to the `afterParse` AST stage; the core edit set shrinks | §0.2, §4.5, D9 |
+| 5.4 parser table drift (`parseClassMember` line) | minor | **Revised** — table re-verified | §2.3 |
+| 6.1 D9 contradicts the closures plan's single-storage rule | major | **Revised** — environment is referenced, never lifted | §4.4, §10.4 |
+| 6.2 §4.3 "lift `this`" contradicts the shipped `capturesThis`/`~env` mechanism | major | **Revised** — `this` lives in the environment | §4.4, §10.4 |
+| 6.3 task table must be a traced root | major | **Revised** — root chain stated as a requirement | §4.4, §10.4 |
+| 6.4 closure deferral is explicit | pass | **No change** | §10.4, D7 |
+| 6.5 §6.4's compile-time check duplicates the shipped runtime guard | minor | **Revised** — the shipped guard is the site; the async dispatcher must be a plain function because of it | §4.6, §6.7 |
+| 7.1 `onBatch` contiguity / dispatch analysis | pass | **No change** — kept | §6.1 |
+| 7.2 dropped completions hang a task | major | **Revised** — a rule exists, with a testable control | §6.4 |
+| 7.3 the reentrancy rule is enforceable | pass | **No change** | §6.3 |
+| 7.4 negative control 1 asserts a session error nothing produces | minor | **Revised** — the control asserts the named refusal in the transcript | §8.4 |
+| 8.1 no new import/export needed | pass | **No change** — now an enumeration | §7.1 |
+| 8.2 the harness cannot post a delayed completion without production code | blocker | **Revised** — the harness targets the OGRE pipeline; no production change | §7.3, §8.1, §8.2 |
+| 8.3 payload capture is a dispatch obligation | pass | **No change** — kept as a rule | §3.1, §6.5 |
+| 8.4 the ABI claim holds only while the convention is producer-defined | minor | **Resolved by construction** — the plan no longer assigns meaning to `a`/`b` | §3.1 |
+| 9.1 OGRE ships a tested job pipeline; "nothing to await" is false | major | **Revised** — OGRE jobs are the target; M2 stops being a prerequisite | §7.2, §7.3, §11 |
+| 9.2 stale `pending` doc comment used as evidence | minor | **Revised** — the claim is corrected against `adapter/ffi.rs` | §1.1 |
+| 10.1 the harness compiles with the published npm package, not the submodule | major | **Revised** — §0.4 adds the publish-and-re-pin critical path, with the arrow-`this` precedent | §0.4, §11 |
+| 10.2 fixture details (`process.stdout.write`, `frame_layout.rs`, skip policy) | minor | **Revised** | §8.3 |
+| 10.3 Backend B is contingent on an engine bump, not on Windows alone | major | **Revised** | §5.7, §9.6 |
+| 11.1 citations drifted after the plan was written | minor | **Revised** — all re-resolved; policy added | §0.5 |
+| 11.2 external facts verified | pass | **No change** except `#14644` | §9 |
+| 11.3 no build was run by the reviewer | note | **Stated** as a limit of this plan too | §12 |
 
 ---
 
 ## 0. Fork model and repository setup — DONE
 
-Executed and verified. This section is a record, not a proposal.
+Record, not proposal, except §0.4 which is new.
 
-**Fork identity.** Detached fork of `AssemblyScript/assemblyscript`.
+**Fork identity.** Detached fork of `AssemblyScript/assemblyscript`; `origin` =
+`git@github.com:Yabgu/TensionScript.git`; upstream fetch-only with its push URL
+disabled — mechanical, not a comment.
 
-**Remotes, as configured:**
-
-```
-origin    git@github.com:Yabgu/TensionScript.git          (fetch + push)
-upstream  https://github.com/AssemblyScript/assemblyscript.git   (fetch only)
-upstream  DISABLED_no_prs_back_to_upstream                (push)
-```
-
-Upstream's push URL is deliberately set to a dead value. That is the mechanical
-enforcement of "reference only — no PRs back, no proposals back, no compatibility
-patches to preserve mergeability." It is not a comment in a document; it is
-configuration that makes an accidental push fail.
-
-**Initial commit.** Upstream `main` @ `b6bda05c29c9eb7d07d7f6cb2703508483b30493`
-("chore: Update Binaryen and other dependencies (#3035)", 2026-07-21) pushed as
-`refs/heads/main`. Verified:
+**Consumed by Tension** as a submodule at `third_party/assemblyscript`
+(`.gitmodules` entry verified). **Current submodule HEAD is `92809069`** — three
+commits past the base `b6bda05c` the reviewed draft named in its header:
 
 ```
-$ git ls-remote origin
-b6bda05c29c9eb7d07d7f6cb2703508483b30493	HEAD
-b6bda05c29c9eb7d07d7f6cb2703508483b30493	refs/heads/main
+92809069 test: rebaseline fixtures after ~env delivery — footprint reviewed
+1dc6e395 codegen: deliver a captured `this` through a hidden environment global
+6aece91a codegen: deliver a captured `this` through a hidden environment global
+c4a16531 resolver: `this` in an arrow is the receiver of the enclosing function
+b6bda05c chore: Update Binaryen and other dependencies (#3035)
 ```
 
-**Consumed by Tension** as a submodule at `third_party/assemblyscript` (architect's
-chosen location). `.gitmodules` entry:
-
-```
-[submodule "third_party/assemblyscript"]
-	path = third_party/assemblyscript
-	url = git@github.com:Yabgu/TensionScript.git
-```
-
-Submodule state: added and staged in Tension, **not committed** (AGENTS.md rule 2
-— the architect commits). Submodule HEAD is the same `b6bda05c`, matching origin.
+`git diff --stat b6bda05c..92809069 -- src std cli lib` touches exactly four
+files: `src/compiler.ts` (248 changed), `src/resolver.ts` (100), `src/program.ts`
+(+4), `src/builtins.ts` (+1). That is the whole drift surface for citations, and
+it is why §0.5 exists.
 
 ### 0.1 The AGENTS.md rule 1 conflict — restated, with the resolution
 
 `AGENTS.md` rule 1 says `third_party/` is read-only, including "never generate
 into". Building AssemblyScript requires `npm ci`, which writes `node_modules/`
-**inside** the checkout. The architect chose this location knowingly (the
-tradeoff was stated when the choice was offered), so the plan resolves it rather
-than re-litigating it:
+**inside** the checkout. Resolution (unchanged from the reviewed draft):
 
-> **The submodule holds source only and is never built in place.**
-> `npm ci && npm run build` runs in an out-of-tree scratch copy under
-> `build/assemblyscript/`, which is already covered by Tension's `.gitignore`.
-> The submodule tree stays byte-identical to what the fork's `main` says.
+> **The submodule holds source only and is never built in place.** The build runs
+> in an out-of-tree scratch copy under `build/assemblyscript/`, already covered by
+> `.gitignore`.
 
-Measured cost: a full AS build is ~7 seconds (`npm ci` then `npm run build`),
-so a scratch build per invocation is not a burden.
+### 0.2 What commits are additions, and what commits touch core — REVISED
 
-### 0.2 What commits are additions, and what commits touch core
-
-This is the fork's whole maintenance surface. Everything the async work needs
-falls into the first column except where noted.
+The reviewed draft put the lowering in `src/compiler.ts`'s custom-pass block.
+The review showed that site is post-codegen, and that a state-struct **managed
+class** cannot be synthesized there (§5.3 of the review; §4.5 below). The
+lowering therefore moves to the **AST stage**, which changes both columns.
 
 **Pure additions (new files, no upstream file modified):**
 
-- `src/passes/async_lower.ts` — Backend A. New file.
-- `src/passes/async_ir.ts` — the backend-agnostic intermediate (see §5.4). New file.
-- `src/passes/wasmfx_lower.ts` — Backend B skeleton, not implemented in v2. New file.
-- `tests/compiler/async_*.ts` + generated `.wat`/`.js`/`.d.ts` fixtures — new.
-- `tests/parser/async_*.ts.fixture.ts` — new.
+- `src/async/lower.ts` — Backend A, an AST→AST transform (§4.5). New file.
+- `src/async/ir.ts` — the backend-agnostic intermediate record types (`AwaitSite`,
+  `LiftedLocal`, `ResumePoint`) as *analysis results*, never AST fields (§5.5).
+- `src/async/wasmfx.ts` — Backend B skeleton, not implemented in v2. New file.
+- `std/assembly/task.ts` — the `Task<T>` handle class (§3.2). New std file, and
+  the reason is precedent: the compiler already relies on a std generic wrapper
+  for function values (`Function<T>`, `std/assembly/function.ts`, reached through
+  `program.functionPrototype` / `Type.getClassOrWrapper`), so a std generic
+  wrapper for task handles is the same shape, not a new mechanism.
+- `tests/compiler/async_*.ts` + fixtures; `tests/parser/async_*.ts.fixture.ts`;
+  `tests/transform/async_*.ts` — new.
+- `tension-framework/tests/guest-async.ts`; `tension-core/tests/async_await.rs`
+  (test-only, per §7.3) — new.
 
-**Modifies core files (the irreducible set):**
+**Modifies core files (the irreducible set, now smaller):**
 
 | File | Nature of edit | Why it cannot be additive |
 |---|---|---|
-| `src/ast.ts` | `NodeKind.Await`; `AwaitExpression` class; `isAsync` field on `FunctionDeclaration`; `Node.createAwaitExpression` factory | A new expression kind is *by definition* an AST change. |
-| `src/parser.ts` | Consume `async` as a function modifier; parse `await` as a prefix expression; contextual diagnostics | Parsing requires parser edits. This is explicitly authorized. |
-| `src/resolver.ts` | One `case NodeKind.Await` in the expression switch | `await` must propagate a want-type like any other expression. |
-| `src/compiler.ts` | One `case NodeKind.Await`; register the lowering backend in the existing custom-pass block | Codegen needs to know the node; backend registration has one existing site. |
-| `src/extra/ast.ts` | `case NodeKind.Await` in the `ASTBuilder` serializer | **Required companion edit** — without it the parser round-trip fixture fails immediately. Easy to miss; called out deliberately. |
+| `src/ast.ts` | `NodeKind.Await`; `AwaitExpression`; `isAsync` on `FunctionDeclaration`; `Node.createAwaitExpression` | A new expression kind is *by definition* an AST change. |
+| `src/parser.ts` | Consume `async` before `function`; parse `await` as a prefix expression; contextual diagnostics | Parsing requires parser edits. |
+| `src/resolver.ts` | **Two** `case NodeKind.Await` arms (not one — §2.4) plus the call-site return-type transformation | `await` must propagate a want-type like any expression, and both expression switches assert on an unknown kind. |
+| `src/extra/ast.ts` | `case NodeKind.Await` in the `ASTBuilder` serializer (`src/extra/ast.ts:109`, `:122`) | **Required companion edit** — without it the parser round-trip fixture fails immediately. |
 | `src/diagnosticMessages.json` | New message keys | Backing for new diagnostics. |
+| `cli/index.js` | **One line**: register the in-tree transform when the compiler option is set, in the existing transforms collection (`cli/index.js:403-449`) | Zero if the architect prefers `--transform <file>` per consumer (§0.2's note below). |
 
-**Not touched:** `src/tokenizer.ts` (see §2.2 — the tokens already exist and are
-already reserved), `std/assembly/**`, `src/types.ts` *except* for the synthesized
-`Task<T>` registration site, `cli/**`.
+**Not touched, and this is the review's biggest structural win:**
+`src/compiler.ts` **loses** its lowering role. What remains there is a defensive
+diagnostic — a `case NodeKind.Await` in `compileIdentifierExpression`-adjacent
+dispatch that reports "the async lowering transform did not run" instead of
+silently emitting garbage — and that is a diagnostic, not codegen. The reviewed
+draft's `compiler.ts` row (lowering registration, state-struct construction,
+resume-dispatch codegen) is gone.
 
-Non-ASCII identifiers, the std lib, and the CLI are untouched, which matters for
-§0.3: those are the surfaces most likely to churn.
+**Alternative with zero `cli/` edits.** Ship the transform file inside the
+published package and select it with `--transform` — resolvable through
+`require.resolve(filename, { paths: [process.cwd(), baseDir] })`
+(`cli/index.js:405-436`) — and have `tension-framework/build.sh` emit it into the
+generated `session.asconfig.json` (which `build.sh:130-165` already writes, and
+which every OGRE example consumes via `--config`). The five non-`--config`
+examples (`examples/{ai,audio,io,log,res}/package.json:8`) would each need one
+flag. **Recommendation: the in-tree registration** (one line, versioned with the
+compiler, covered by the fork's own `test:transform` script) — recorded as D9.
 
-**A note on `CommonFlags`.** `src/common.ts:7-87` is a `const enum` whose last
-bit is `InternallyNullable = 1 << 31` — **there is no free bit**. Two
-consequences: (a) `async` cannot be a `CommonFlags` bit without widening the
-flag word, and (b) `async` must therefore be a dedicated field (§2.1). This is
-verified, not assumed; it is exactly the kind of thing v1 would have gotten wrong.
+**A note on `CommonFlags`.** `src/common.ts:7-87` is a `const enum` whose last bit
+is `InternallyNullable = 1 << 31` — **there is no free bit**. So `async` is a
+dedicated field, not a flag (§2.1). Verified; unchanged from the reviewed draft.
 
 ### 0.3 Maintenance posture
 
-**We do not track upstream.** We are not obligated to cherry-pick, and we will
-not carry compatibility patches whose only purpose is to keep a future rebase
-easy. Where upstream's design and async coverage conflict, async wins.
+We do not track upstream; we do not carry mergeability patches. The relevant
+measured facts stand (upstream commits: 2022: 178, 2023: 77, 2024: 23, 2025: 32,
+2026 to 2026-07-21: 22 — verified against the GitHub API). Naming (D11 in the
+reviewed draft) is now partly settled in *practice*: the published package is
+`@yabgu_gm/tensionscript`, while the fork's own `package.json` still says
+`"name": "assemblyscript"`, `"version": "0.0.0"` — see §0.4.
 
-The relevant upstream facts, measured, for when the question comes up:
+### 0.4 NEW — Compiler provenance and the publish-and-re-pin critical path
 
-| Year | Upstream commits (all paths) |
-|---|---|
-| 2022 | 178 |
-| 2023 | 77 |
-| 2024 | 23 |
-| 2025 | 32 |
-| 2026 (to 2026-07-21) | 22 |
+The review's finding 10.1, and the reason this section exists: **the compiler the
+harness uses is not the submodule.** It is a published npm artifact.
 
-Upstream moved 60 commits in two years and has been silent since 2026-07-21.
-Cherry-picking remains *available* — `upstream` fetches fine — but the fork does
-not depend on it. This is a posture decision, not a forecast: the fork is viable
-even if upstream never accepts anything again, because we never need anything
-from it.
+**Measured, on this tree:**
 
-**Naming.** The origin repository is `TensionScript`. Whether the *package*
-renames (`package.json` name, the `asc` binary name, `lib/asc.js` self-references)
-is an implementation milestone, not a plan item, and is listed in §10 as a
-question rather than decided here.
+- Every consumer declares a dependency on the published package:
+  **15 `package.json` files** (`examples/ai`, `audio`, `io`, `log`, `res`;
+  `examples/ogre/{animated-character,bouncing-ball,bouncing-bodies,hello-mesh,
+  hello-triangle,input-camera}`; `examples/solver/{collision,wasm,world}`;
+  `tension-framework`) and **15 matching `package-lock.json` files**, each
+  resolving `https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.1.0.tgz`.
+- The framework's own harness compiles with
+  `./node_modules/.bin/asc` (`tension-framework/tests/run.sh:85-86`), which is
+  that package's `bin/asc.js`.
+- The **published tarball already carries the arrow-`this` mechanism**:
+  `@yabgu_gm/tensionscript@0.1.0` was published **2026-10-16T16:54:58Z** (a
+  `0.0.0-stage` tag at 16:52:18Z), and its `dist/assemblyscript.js` has
+  sha256 `fc79e90f…`, **byte-identical** to the copy in
+  `tension-framework/node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js`.
+- The fork's own `package.json` still says `assemblyscript` / `0.0.0`; the publish
+  renames and versions the artifact (`publishConfig: { access: public }`,
+  description "TensionScript: a TypeScript-shaped language for WebAssembly, forked
+  from AssemblyScript for the Tension engine"). The fork has
+  `scripts/prepublish.js`, which strips `scripts`/`devDependencies` from the
+  published manifest.
+- The published `files` list includes `bin/`, `dist/`, `std/`, `util/` — so a new
+  std file (§0.2's `std/assembly/task.ts`) ships with the publish, and needs no
+  per-consumer path.
+
+**The critical path for every compiler change in this plan:**
+
+| # | Step | Where | By whom |
+|---|---|---|---|
+| 0 | Land the change in the fork; submodule HEAD moves | `third_party/assemblyscript`, `Yabgu/TensionScript` | implementation agent (no commit — AGENTS.md rule 2) |
+| 1 | Build the fork out-of-tree, publish a new version | `build/assemblyscript/` scratch; `npm publish` under `@yabgu_gm/tensionscript` | **architect only** — publishing is an external action |
+| 2 | Bump the dependency in the 15 consumers; refresh the 15 lockfiles | `examples/**`, `tension-framework` | implementation agent (working tree) |
+| 3 | Fresh installs so `node_modules` matches | each consumer | implementation agent |
+| 4 | Only now can the harness run — against the *published* artifact | §8 | implementation agent |
+
+**Precedent, verified (this is the arrow-`this` landing):** publish at step 1
+happened before the repo commit that adopted it — `c66f07f` ("submodule bump,
+consumers on @yabgu_gm/tensionscript", 2026-10-16T17:50Z) followed the
+16:54Z publish, and its message records both halves. So the pattern is not
+hypothetical; it is the pattern that shipped yesterday.
+
+**Reproducibility requirement.** Because the harness tests the *published*
+artifact, the harness must record **which compiler it tested**: `asc --version`
+plus the fork SHA the artifact was built from, written into the guest's first
+transcript line (the guest already has `print`, `io.ts:35`, and the host asserts
+on captured stdout — §8.3). Without this, a green harness proves the artifact, not
+the reviewed revision.
+
+**Authorization note.** Step 1 is external publication. Per this project's
+constraints it is the architect's action and is never taken unilaterally by an
+implementation agent; the plan lists it because a plan that omits it would be
+wrong about the critical path, not because an agent may do it.
+
+### 0.5 Citation policy (new)
+
+Every claim in this plan cites a file and, where the file is in this tree, a line
+at the revisions named in the header. Where a line number could drift again, the
+claim names the *symbol* as well as the line (e.g. "`declaredByFlow` sites,
+`compiler.ts:5762`/`:7738`"). Any future revision of this plan re-resolves
+citations at the then-current submodule SHA and records the SHA — the reviewed
+draft's header named `b6bda05c` while citing a tree that had already moved to
+`92809069`, which is exactly the failure this policy prevents.
 
 ---
 
-## 1. Host-side non-negotiables this plan composes with
+## 1. Constraints this plan composes with
 
-Restated so the design can be checked against them line by line. Every one is a
-property of `tension-core` and none is proposed for change.
+### 1.1 Host-side non-negotiables — corrected
 
-- **Two callback slots, resolved by table index.** `caller.get_export("table")`
-  (`session/mod.rs:1233`); `onBatch: (i32,i32,i32)->i32`, `onEvent: (i32,i32)->i32`
-  (`callbacks.ts:26,28`); `CALLBACK_SLOTS = 2` (`arena.rs:197`).
-- **No `_tension_event`.** Verified absent from the tree.
-- **The session is not reentrant.** `run_epoch_verb` takes the session out of the
-  store; a nested `wait`/`drain`/`close`/`open` from inside a callback finds no
-  session and returns **`-EBADF`**. Verbs that do not take it out (`subscribe`,
-  `unsubscribe`, `pending`) hit the depth guard and return **`-EBUSY`**
-  (`session/mod.rs:1346-1350`; `EBUSY = -16`).
-- **Jobs are a stub.** `REGION_JOB` (kind 3, `arena.rs:295`), `JOB_SIZE = 48 KiB`
-  (`arena.rs:341`); classes `JOB_FAILED = 1`, `JOB_DONE = 4`; submission does not
-  exist — `apply::sweep_jobs_to_failed` is a stub (`apply.rs:263`) and the apply
-  phase is documented "Not implemented in A2b".
+Every item below is a property of `tension-core`, `tension-ogre`,
+`tension-input` or `tension-framework`. None is proposed for change.
+
+- **Two callback slots, resolved by table index.**
+  `caller.get_export("table")` (`session/mod.rs:1233`); signatures
+  `onBatch: (class_: u32, ptr: u32, count: u32) => i32` and
+  `onEvent: (class_: u32, ptr: u32) => i32` (`runtime/callbacks.ts:41`, `:43`);
+  `CALLBACK_SLOTS = 2` (`runtime/wire.ts:73`) and `CALLBACKS_SLOTS = 2`
+  (`arena.rs:197`); the record's slot words at `CALLBACKS_ON_BATCH = 8` /
+  `CALLBACKS_ON_EVENT = 12` (`arena.rs:192-193`); `CALLBACKS_SIZE = 64`
+  (`arena.rs:431`).
+- **No `_tension_event`.** Absent from the tree.
+- **The session is not reentrant, and the two refusals differ.**
+  `run_epoch_verb` takes the session out of the store and returns **`-EBADF`**
+  when it is gone (`mod.rs:1321-1332`, `EBADF = -9` at `mod.rs:80`); verbs that
+  do not take it out hit the depth guard and return **`-EBUSY`**
+  (`depth_refusal`, `mod.rs:1345-1353`; `EBUSY = -16` at `mod.rs:78`). `EINVAL`
+  is `-22` (`mod.rs:76`), `EIO` is `-5` (`mod.rs:82`). The reviewed draft wrote
+  `-EBADF` as `-8` in one place; the value is **`-9`**.
+- **`wait(0)` is the non-blocking drain, by definition.**
+  `mod.rs:1370-1385`: "A zero timeout is exactly `EpochMode::DrainAll` … there is
+  no verb for it, because `wait(0)` is one."
+- **Jobs — restated precisely, because the reviewed draft conflated two things.**
+  The *core's generic job machinery* is a stub: `apply::sweep_jobs_to_failed`
+  (`apply.rs:263`) reports zero and says why, and the core has no job submission
+  path. The *capability-owned job pipeline* is real, tested, and is what this plan
+  targets (§7). Separately, the reviewed draft cited "the pending list is always
+  empty" from a stale doc comment (`mod.rs:1476-1479`); deferrable adapter imports
+  *called from inside a callback* are queued and applied
+  (`adapter/ffi.rs:614-651`), so the comment is not evidence for anything.
 - **The guest owns the frame loop.** The host calls `_start_game` once
-  (`main.rs:1226`) and returns. The loop is
-  `while (...) { RuntimeSession.wait(16); ... }`.
+  (`main.rs:1226`) and returns.
+- **No preemption and no metering.** The only production engine is configured
+  with `debug_info` and nothing else (`main.rs:573-575`); there is no
+  `epoch_deadline`, `epoch_interruption`, `increment_epoch`, `set_fuel` or
+  `consume_fuel` anywhere in `tension-core/src`. See §6.6 — this is a design
+  input, not a footnote.
+
+### 1.2 Language semantics this plan pins (new)
+
+The review's finding 1.2 is that the reviewed draft derived a restriction from
+TypeScript behaviour it never wrote down. These are written down. Each is a
+language rule: true under both backends, enforced (or not) in the front-end, and
+not a backend capability artefact.
+
+1. **Synchronous prefix.** `async function f(): T` runs its body synchronously
+   until the first `await` that actually suspends; only then does control return
+   to `f`'s caller. A body with no `await` — or whose `await` operands are already
+   completed (§2) — runs to completion before the call returns, and the returned
+   `Task<T>` is already settled (`status == 0`). This is TypeScript's rule, and
+   the reason to adopt it is the standing direction that TensionScript follows
+   TypeScript: an author who writes `async function` and then observes that the
+   first statement ran before the call returned is seeing TypeScript, not an
+   approximation of it.
+2. **Call-site type.** A call to `f` yields `Task<T>`; a call to a
+   `Task<T>`-returning plain function yields `Task<T>`. `await` on `Task<T>` has
+   type `T`.
+3. **Floating tasks run.** An `async` call whose handle is never awaited still
+   runs; `await` observes, it does not start. A settled, unreferenced task is
+   garbage (§3.2).
+4. **`await` is idempotent on a settled handle.** `await h` on a handle whose task
+   is already settled returns the value immediately and does not suspend — which
+   is what makes the no-`await`-in-the-prefix case above coherent, and what makes
+   `await h; await h;` well-defined.
+5. **One outstanding registration per key.** A second `await` on a *parked* task
+   (reachable only if two awaits on one handle are in flight at once, which
+   sequential source cannot express) is refused with a named error rather than
+   producing two resumes.
+6. **Deterministic order.** Within an epoch, deliveries are invoked class by
+   class, ascending class id (`epoch.rs:14-22`), and a batch is contiguous in
+   ring order (`epoch.rs:192-216`, `:237-240`). `runReady()` resumes in that
+   order (§6.5).
+7. **The callback-slot contract.** A function registered as `onBatch`/`onEvent`
+   must return the ABI's synchronous status `i32` (`callbacks.ts:41`, `:43`) and
+   must not be an `async` function — an `async` function's wasm-level result is a
+   `Task<T>` handle (a reference), so registering one would hand the host a
+   handle where it reads a status. This is a *host-ABI* rule, not a backend
+   capability limit, and it is true under Backend A and Backend B alike (§4.6).
+
+**Things this plan does not pin, and says so:** `nextTick()`/`nextFrame()`
+ordering relative to each other within a tick (§6.5 names the rule it will need
+when they are implemented), and cancellation (out of scope, §10.6).
 
 ---
 
@@ -161,8 +332,8 @@ property of `tension-core` and none is proposed for change.
 ### 2.1 New AST nodes
 
 **`AwaitExpression` — a new expression kind.** Modelled on
-`UnaryPrefixExpression` (`src/ast.ts:1618-1628`), which is the existing precedent
-for "one operator token + one operand":
+`UnaryPrefixExpression` (`ast.ts:1618-1629`), which is the existing precedent for
+"one operator token + one operand":
 
 ```ts
 /** Represents an `await` expression. */
@@ -178,12 +349,12 @@ export class AwaitExpression extends Expression {
 }
 ```
 
-- `NodeKind.Await` is added to the `const enum NodeKind` (`src/ast.ts:46-126`,
-  currently 67 values, grouped by comment block; `Await` belongs in the
-  `// expressions` block).
-- Factory: `Node.createAwaitExpression(operand, range)` alongside the ~60
-  existing `Node.createXxx` factories (`src/ast.ts:100-900`). AS never `new`s AST
-  nodes from the parser; the factory pattern is the rule.
+- `NodeKind.Await` is added to the `const enum NodeKind` (`ast.ts:46-126`,
+  currently 67 values; the `// expressions` block begins at `:58`).
+- Factory: `Node.createAwaitExpression(operand, range)` alongside the existing
+  factories (`ast.ts:139-762`, 76 of them — the reviewed draft said "~60 at
+  100-900"; that was approximate and is corrected here). AS never `new`s AST nodes
+  from the parser; the factory pattern is the rule.
 
 **`isAsync` is a field, not a node kind, and not a flag bit.**
 
@@ -192,408 +363,697 @@ export class FunctionDeclaration extends DeclarationStatement {
   // ... existing fields ...
   /** Whether this function is `async`. */
   public isAsync: bool = false;
+}
 ```
 
 Why this shape, verified against the class hierarchy:
 
-- `MethodDeclaration extends FunctionDeclaration` (`src/ast.ts:2215`) — so **one
-  field covers functions and methods**.
+- `MethodDeclaration extends FunctionDeclaration` (`ast.ts:2215`) — one field
+  covers functions and methods.
 - `FunctionExpression` merely *wraps* a `FunctionDeclaration`
-  (`src/ast.ts:1351-1359`) — so **arrow functions and function expressions are
-  covered too**, since they carry `arrowKind` on the same node.
-- `CommonFlags` has no free bit (§0.2) — so a flag bit would require widening the
-  word and touching every `is`/`isAny`/`set` site. A field is strictly cheaper and
-  far more readable.
+  (`ast.ts:1351-1359`) — arrow functions and function expressions are covered
+  too, since they carry `arrowKind` (`ArrowKind` at `ast.ts:2080-2088`, field at
+  `ast.ts:2105`) on the same node.
+- `CommonFlags` has no free bit (§0.2) — a flag bit would require widening the
+  word and touching every `is`/`isAny`/`set` site.
 
 **What the AST deliberately does NOT carry.** No state ids, no resume-point
-numbers, no lifted-local lists, no transition tables. Those are *lowering*
-artifacts and belong to a backend. Baking them into the AST is precisely the
-mistake that would make Backend B a rewrite instead of a swap. See §5.4 for where
-they live instead.
+numbers, no lifted-local lists, no transition tables, no capture sets. Those are
+lowering artifacts; they live in the transform's side tables keyed by node
+identity (§5.5). This is the same discipline the closures plan reached
+independently (`closures-plan.md` §2.1: "Closures add no new AST node and no new
+AST field"), and it is what makes Backend B a swap rather than a rewrite.
 
 ### 2.2 Parser changes
 
-**The tokenizer needs no change — and this is verified, not assumed.**
+**The tokenizer needs no change — verified, not assumed.**
 
-- `Token.Async` and `Token.Await` already exist: `src/tokenizer.ts:48-49`
-  (`Async,` / `Await, // ES2017`).
-- `tokenFromKeyword` already produces them: `src/tokenizer.ts:191-192`.
-- **They are already reserved identifiers**: `tokenIsAlsoIdentifier`
-  (`src/tokenizer.ts:356-378`) does *not* list them, so `IdentifierHandling.Prefer`
-  sites already reject them.
+- `Token.Async` and `Token.Await` exist: `tokenizer.ts:48-49`.
+- `tokenFromKeyword` produces them: `tokenizer.ts:185-192`.
+- They are already reserved: `tokenIsAlsoIdentifier` (`tokenizer.ts:356-378`)
+  does not list them, so `let await = 5;` fails today. We add a *consumer* for
+  tokens that currently produce parse errors.
 
-This has a user-visible consequence worth stating plainly: **`async` and `await`
-are already unusable as variable names.** `let await = 5;` fails today with
-`TS1003: Identifier expected.` No new breakage is introduced by reserving them —
-they were already reserved. We are adding a *consumer* for tokens that currently
-produce parse errors.
-
-**Parser hook points, with the exact sites:**
+**Parser hook points, re-verified at `92809069`:**
 
 | What | Where | Edit |
 |---|---|---|
-| Function modifier | `parseTopLevelStatement` modifier loop `src/parser.ts:221-258`, `Token.Function` case `:287-290` | Consume `Token.Async` before `function`; set `isAsync` |
-| Method modifier | `parseClassMember` `src/parser.ts:2209-2211`, params `:2249` | Same, for class members |
-| Declaration build | `parseFunction` `src/parser.ts:1475-1607` (node built `:1593`) | Accept + record `isAsync` |
-| Expression parse | `parseExpressionStart` prefix group `src/parser.ts:3700-3713` | Add `case Token.Await:` → `parseAwaitExpression` at `Precedence.UnaryPrefix` |
-| Statement fallthrough | `parseStatement` `:3028-3030` | Unchanged — `await` is an expression, reached via the prefix path |
+| Function modifier | `parseTopLevelStatement` modifier loop `parser.ts:221-258`; `Token.Function` case `:287-292` | Consume `Token.Async` before `function`; set `isAsync` |
+| Method modifier | `parseClassMember` `parser.ts:1916`; its modifier chain `:1983-2151`; params at `:2249` | Same, for class members |
+| Declaration build | `parseFunction` `parser.ts:1475`, node built at `:1593` | Accept + record `isAsync` |
+| Expression parse | `parseExpressionStart` prefix group `parser.ts:3695-3713` | Add `case Token.Await:` → `parseAwaitExpression` at `Precedence.UnaryPrefix` |
+| Statement fallthrough | `parseStatement` `:2941`, default `:3028-3030` | Unchanged — `await` is an expression |
 
-The prefix group at `:3700-3713` is where `Token.TypeOf` / `Token.Void` /
-`Token.New` are already handled; `await` joins that group. Note the adjacent
-`Token.Yield` fallthrough at `:3701` — **we are not adding generators**, so that
-path stays exactly as it is.
+The reviewed draft's table pointed at `parser.ts:2209-2211` for the method
+modifier; that range is the class-member *name* fetch (`Identifier_expected` at
+`:2211`). The modifier chain is `:1983-2151`. Corrected here.
 
-**Error paths that change.** Today `async`/`await` produce
-`Expression_expected` (`:4046`) or `Identifier_expected` (`:1009`). After the
-change they parse, and these new diagnostics apply:
+The prefix group at `:3695-3713` is where `Token.TypeOf`/`Void`/`Delete` are
+handled; `await` joins it. `Token.Yield`'s fallthrough (`:3701`) stays exactly as
+it is — we are not adding generators. `Token.New` is a separate case at `:3734`.
 
-- `await` used outside an `async` function.
-- `async` on a construct that cannot be async (e.g. a class constructor).
-- Missing operand after `await`.
+**Error paths that change.** Today `async`/`await` produce `Expression_expected`
+(`parser.ts:4046`) or `Identifier_expected` (`parser.ts:1009`). After the change
+they parse, and these diagnostics apply: `await` outside an `async` function; a
+missing operand after `await`; `async` on a construct that cannot be async
+(constructors, `declare`d functions — D12). Message keys go in
+`src/diagnosticMessages.json` (`"Not implemented: {0}": 100` at `:2` is the
+existing shape), and the generated enum is produced by `scripts/build.js`.
 
-Diagnostics live in `src/diagnosticMessages.json` (message → number); the
-`DiagnosticCode` enum is generated by `scripts/build.js:135-165` into a
-gitignored `src/diagnosticMessages.generated.ts`. Adding a code therefore means
-editing the JSON and letting the generator run — no hand-maintained enum.
+**Where "await outside async" is diagnosed — still an open implementation
+choice,** and still recommended as (b) a backend-agnostic AST validation walk,
+because the parser class keeps no context stack (`class Parser` at
+`parser.ts:106`; its fields are source bookkeeping only: `backlog` `:109`,
+`seenlog` `:111`, `donelog` `:113`, `currentSource` `:117`, `dependees` `:119`,
+`currentModuleName` `:123`). But note the revision: that walk now has a natural
+home — it is a *second pass of the same transform infrastructure* (§4.5), which
+is a smaller change than the reviewed draft's separate mechanism.
 
-**Where "await outside async" is diagnosed — an open implementation choice.**
-The parser has **no context-tracking precedent**: `class Parser` keeps no
-scope/depth/context stack (verified: no `breakableDepth`, `switchDepth`,
-`loopDepth`, or `flowContext` field exists; the class fields are source
-bookkeeping only: `backlog`, `seenlog`, `donelog`, `currentSource`, `dependees`,
-`sources`, `currentModuleName`, `options`). Two options:
+### 2.3 Resolver changes — TWO cases, not one
 
-- **(a) Parser context flag.** A single `asyncContext: bool` saved/restored
-  around function bodies, checked at `await`. Cheap; but puts a semantic rule in
-  the parser.
-- **(b) A dedicated AST validation walk before lowering.** A small function that
-  walks function bodies tracking async-ness. More code, but it is
-  **backend-agnostic** — which matters a great deal, because whether `await` is
-  legal in a given position is *not* the same question under Backend B (§5.3).
+The reviewed draft said "exactly one new expression case". There are **two**
+expression-kind switches over `NodeKind`, and **both end in `assert(false)`**:
 
-**Recommendation: (b)**, precisely because it keeps a backend-sensitive rule out
-of the parser. Surfaced in §10 as a decision.
+- `lookupExpression` — `resolver.ts:935`, switch at `:948`, `assert(false);
+  return null;` at `:1049-1050`.
+- `doResolveExpression` — reached from `resolveExpression` (`:1057`), defined at
+  `:1076`, switch at `:1085`, `assert(false); return null;` at `:1186-1187`.
 
-### 2.3 Resolver changes
+`lookupExpression` is called on the *target* of property and element access
+(`:1322`), on assertion operands (`:1719`), on element-access bases (`:1768`), and
+from the compiler's own property paths (`:2568`, `:2634`). So `(await h).value` —
+the most ordinary thing an author writes — reaches `lookupExpression` with a
+`NodeKind.Await` node and **aborts the compiler** if the second arm is missing.
 
-**Structural fact, verified, that shapes this section: the resolver resolves
-expressions and types, not statements.** `grep -c "NodeKind.$K" src/resolver.ts`
-for `Return`, `If`, `While`, `For`, `Break`, `Continue`, `Block`,
-`ExpressionStatement`, `Throw` all return **0**. The resolver's switch handles 22
-kinds, all expressions or types (`Assertion`, `Binary`, `Call`, `Comma`,
-`ElementAccess`, `False`, `Function`, `FunctionType`, `Identifier`,
-`InstanceOf`, `Literal`, `NamedType`, `New`, `Null`, `PropertyAccess`, `Super`,
-`Ternary`, `This`, `True`, `TupleType`, `UnaryPostfix`, `UnaryPrefix`).
-
-So the resolver edit is **exactly one new expression case**:
+**Both arms are mandatory**, and M1a's task list carries both. The arms are
+small:
 
 ```
 case NodeKind.Await:
-  // the awaited type of the operand's type; the call-result type for a task handle
+  // operand resolves to Task<T> (or any Task<T>-typed expression);
+  // the await's type is T; propagate T as the operand's want-type.
 ```
 
-It participates in the same want-type propagation every other expression case
-uses: `await` sits in a context expecting `T`, so the resolver pushes `T` down as
-the want-type of the operand, and the operand (a `Task<T>`-typed expression)
-checks against it.
+**The return-type transformation is a resolver concern, not a backend concern**
+(unchanged from the reviewed draft, and worth restating): `async function f(): T`
+*declares* `T`; a call to `f` yields `Task<T>`; `await` on a `Task<T>` yields `T`.
+This mirrors TypeScript (`async function f(): T` is callable as `() => Promise<T>`).
 
-**The return-type transformation is a resolver concern, not a backend concern** —
-both backends need it, so it must not live in either:
+**Verified mechanics note.** Function types are `Signature` (`types.ts:934-1200`),
+interned by `signature.toString()` in `program.uniqueSignatures`
+(`program.ts:484`). The `async` trait must therefore **not** be encoded in the
+`Signature` string — two functions differing only in `async`-ness would collide in
+the intern table.
 
-- An `async function f(): T` **declares** return type `T`.
-- A **call** to `f` yields `Task<T>`.
-- `await` on a `Task<T>` yields `T`.
+### 2.4 Type checker: `Task<T>` and no `Promise`
 
-This mirrors TypeScript exactly (`async function f(): T` is callable as
-`() => Promise<T>`), which is the mental model authors already have. The resolver
-synthesizes the `Task<T>` result type at the call site while leaving the
-declaration's `signature.returnType` as `T`.
+AS has no `Promise`. `Task<T>` is the handle type, and — revised from the
+reviewed draft — it is **std source, not a synthesized built-in**:
 
-### 2.4 Type checker: what replaces `Promise`
+- `std/assembly/task.ts` declares `@final export class Task<T>` with a single
+  **managed reference** to `TaskRecord` — §3.2's wording governs, not the
+  reviewed draft's "single opaque `usize` field". The change is a correctness
+  one, not a cosmetic one: a `usize` field is not traced by the
+  compiler-generated visitor (the `fieldType.isManaged` arm,
+  `builtins.ts:10951-10962`), so a handle the guest keeps across a suspension
+  would be the only path to the record and the collector could not see through
+  it — the record, its state struct and its environment could be collected while
+  the task was parked. `TaskRecord` is an empty managed base class in std, and a
+  capability subclasses it (`class JobTaskRecord extends TaskRecord { … }`), so
+  one handle type still covers every `T` (§3.2). Its runtime layout is
+  **identical for every `T`**; the
+  type argument exists for the type checker, exactly as `Function<T>`'s does
+  (`std/assembly/function.ts`: `_index`, `_env`, with `_env` traced by `__visit`).
+- Per-instantiation memoization is the existing class machinery: `instanceKey`
+  and `getResolvedInstance` for functions (`resolver.ts:2878`, `:2885`, `:2902`,
+  `:3022`) and the class path (`resolver.ts:3222` `resolveClass`, `:3232-3247`).
+- Because it is source, the resolver needs **no class-synthesis entry point** —
+  the reviewed draft's "synthesized built-in generic class" would have needed one,
+  and the fork does not have one (§4.5).
 
-**AS has no `Promise` type** — verified: a grep for `Promise` across `src/`
-returns one hit, in generated JS glue (`bindings/tsd.ts:240`), not a type.
+**`Awaitable<T>` is deleted from the design.** One handle type, one name. The
+reviewed draft's two names for one job (a `Task<T>` for call results and an
+`Awaitable<T>` with `value: T` for handles) is what produced the
+"generic field in a fixed-layout record" error the review caught.
 
-**`Task<T>` — a synthesized built-in generic class.** AS's generic machinery
-supports this: class instantiation is memoized per `instanceKey`
-(`resolver.ts:2789,2810`), type arguments propagate into `ctxTypes`
-(`resolver.ts:2804-2816`), and builtin types register through
-`builtinTypes = new Map<string, (ctx) => Type | null>()` (`builtins.ts:824`).
-`Task<T>` is registered the same way `Array<T>`/`Map<K,V>` are.
-
-Three types, all backend-agnostic, all synthesized in the shared front-end:
-
-- **`Task<T>`** — the call-result type of an async function.
-- **`Awaitable<T>`** — the operand type of `await`. `Task<T>` satisfies
-  `Awaitable<T>`; so do the runtime's own handles (§3).
-- **`AsyncStatus`** — the error channel (§3.3).
-
-`await x` has type `T` where `x: Awaitable<T>`.
-
-**Verified mechanics note:** function types are `Signature`
-(`src/types.ts:934-1200`), not a `FunctionType` class, and are interned by
-`signature.toString()` in `program.uniqueSignatures` (`program.ts:484`). The
-`async` trait must therefore **not** be encoded in the `Signature` string — two
-functions differing only in `async`-ness would otherwise collide in the intern
-table. This is a real trap; it is why `isAsync` lives on the *declaration* and the
-call-site type is transformed in the resolver rather than being part of the
-signature key.
+**`AsyncStatus` is not a type.** It is the errno vocabulary the `status` field
+carries (§3.4): the same values the capability's own readers return
+(`jobError`, `ogre/index.ts:280-283`), unchanged.
 
 ---
 
-## 3. Await operand and result semantics
+## 3. Await operand and result semantics — rewritten
 
-### 3.1 The handle: what `load_mesh(...)` returns
+### 3.1 The correlation scheme, chosen and justified
 
-An async-capable host operation returns an **awaitable handle** — a managed AS
-class instance, not a `Promise`.
+**Chosen: the runtime mints no ids. A task is keyed on the producer's
+submit-time id, which the guest already holds.**
+
+Concretely, for the classes this plan awaits:
+
+- `JOB_DONE` / `JOB_FAILED`: `a` = the job id, and it is exactly the id the queue
+  verb returned to the guest (`loader.cpp:439` for `JOB_DONE`; `:433-436`,
+  `:504-507`, `:718-720` for `JOB_FAILED`; the queue verbs at
+  `ogre/index.ts:230-241`).
+- `RESOURCE_READY`: `a` = the renderer's resource id (`adapter.cpp:340`).
+- `b`, `f0`, `f1`, `flags` are copied verbatim and interpreted by nobody at copy
+  time (§6.2).
+
+The runtime's task table is keyed `(class-family, a)` where the job family is the
+pair `{JOB_DONE, JOB_FAILED}` — so a failure resolves the same await, which is the
+reviewed draft's own good idea ("failure is carried by the class id, not by a
+flag") now grounded in real payloads.
+
+**Why the alternatives were rejected, against the frozen layout:**
+
+- **(a) A new completion class — rejected.** An 11th class breaks the
+  `SessionInfo` layout: capacities occupy `48..88` and the nonce sits at `88`
+  (`SESSION_INFO_CLASS_CAPACITY = 48`, `SESSION_INFO_OPEN_NONCE = 88`,
+  `arena.rs:96-97`), pinned by the assertion
+  `SESSION_INFO_CLASS_CAPACITY + CLASS_COUNT * 4 == SESSION_INFO_OPEN_NONCE`
+  (`arena.rs:1326`, comment: "The ten capacities and the nonce fit, with eight
+  reserved words"). A class count of 11 forces the nonce to move — a `SessionInfo`
+  *field offset* change, and field offsets are hashed into `layout_hash` by the
+  field tables `CONTROL_FIELDS` (`arena.rs:1131`), `SESSION_INFO_FIELDS` (`:1149`)
+  and `EVENT_FIELDS` (`:1099-1107`). That is a format/ABI bump,
+  a `tension-framework` layout regeneration and a capability rebuild — precisely
+  the host change this plan must not require. Worse, a class nothing produces
+  would never fire: the ten classes are the *producers'* vocabulary.
+- **(b) A correlation word in padding — impossible.** The record is exactly 32
+  bytes with no padding: `seq` 8, `class` 4, `flags` 4, `a` 4, `b` 4, `f0` 4,
+  `f1` 4 (`arena.rs:124`, `:147-150`; guest-side asserts at `wire.ts:351-358`).
+  Every word is producer-owned: `a`/`b` as above, `flags` by input
+  (`INPUT.md:377-382`, and `flags` offsets are hashed) and `f0`/`f1` by any float
+  producer.
+- **(c) A host-assigned task id — circular as stated, and unnecessary as
+  realized.** For the *host* to echo a runtime-minted id, something must carry
+  that id inward. Nothing does: `post_event` is producer→queue
+  (`adapter/ffi.rs:1082-1120`), and no import lets a guest bind a key to a future
+  completion. The workable form of (c) is "the id is assigned by the party that
+  will report it — the capability, at submit time" — which is exactly the chosen
+  scheme.
+
+**Justification against the frozen layout.** The chosen scheme reads only fields
+the layout already defines and hashes; it adds no field, no class, no schema bump
+and no ABI change, and it requires no change to any producer. The runtime's
+obligation stays what the reviewed draft correctly stated it must be — copy the
+words out of the record during dispatch (§3.2, §6.5) — with the type-free
+extension that the words' *meanings* belong to the producer.
+
+**One honest limitation, stated:** today's producers emit at most one terminal
+completion per key (the loader's job has one terminal transition,
+`loader.cpp:427-440`; the renderer's `RESOURCE_READY` is posted once,
+`adapter.cpp:340`). A future capability that completes one key more than once
+would need a discriminator, and — because `flags` and the payload words are
+producer-owned — the discriminator belongs *guest-side*, in the task record's
+await tag (§3.2), not in the record.
+
+### 3.2 The on-heap representation the dispatcher can copy
+
+This is the review's finding 4.1 answered concretely.
+
+**`TaskRecord` — fixed layout, `T`-free, one per task** (framework source; the
+fields mirror the record's payload words verbatim plus the runtime's own state):
+
+| Field | Offset | Meaning |
+|---|---|---|
+| `class_` | 0 | the class the completion arrived as |
+| `key` | 4 | = the record's `a`; the producer's id |
+| `payload` | 8 | = the record's `b`, verbatim |
+| `status` | 12 | 0, or the errno (§3.4) |
+| `f0` | 16 | = the record's `f0` |
+| `f1` | 20 | = the record's `f1` |
+| `tag` | 24 | the await tag (§3.1's limitation); 0 today |
+| `done` | 28 | 0 = parked, 1 = settled |
+
+**The dispatcher's copy is therefore type-free and total:** for each delivered
+record, `class_ ← record.class_`, `key ← record.a`, `payload ← record.b`,
+`f0 ← record.f0`, `f1 ← record.f1`, then `status ← ` derived from the class
+(§3.4) and `done ← 1`. No `T` is known or needed. This is what makes the copy
+cheap enough to be a dispatch obligation rather than a deferred read (§6.5) — and
+deferring it is exactly the corruption §3.1 of the review's finding 8.3 confirms.
+
+**`Task<T>` is a one-word handle** (`std/assembly/task.ts`): a managed reference
+to the owning `TaskRecord`. Instantiations differ only in the type argument; the
+layout is identical for every `T` (precedent: `Function<T>`).
+
+**Where the typed value comes from — the typed read is emitted at the await
+site**, because that is the only place `T` is known:
+
+| `T` | Emitted read |
+|---|---|
+| `i32` / `u32` / `bool` | `rec.payload` (reinterpreted) |
+| `f32` | `rec.f0` |
+| `f64` / `i64` / `u64` | `rec.f0`/`rec.f1` as a 64-bit pair |
+| reference types | **not supported in v2** — see §3.3 |
+
+**Ownership and lifetime.** The `TaskRecord` is a *managed* object; the runtime's
+task table holds the only strong reference while the task is parked (a managed
+global — the root chain is §4.4), and the awaiting state struct holds a reference
+too. A settled task with no remaining reference is ordinary garbage. Nothing here
+is `@unmanaged`: an unmanaged record would not be traced, and the environment it
+must keep alive (§4.4) would be collected under a suspended task.
+
+### 3.3 The API surface, reconciled with what ships
+
+The reviewed draft introduced `load_mesh(...)` and an `Awaitable` with no stated
+relation to the shipped job API. The revision is a *registration over the
+existing id*:
 
 ```ts
-// Framework-provided. Backend-agnostic: the zero-allocation base is the same
-// under Backend A and Backend B.
-export class Awaitable<T> {
-  /** Which completion this is waiting for. Opaque to the user. */
-  class_: u32 = 0;
-  /** Correlation id the runtime assigned. */
-  taskId: u32 = 0;
-  /** 0 = completed successfully; non-zero = an errno (§3.3). */
-  status: i32 = 0;
-  /** The value, valid only when status == 0. */
-  value: T;
+// Shipped today, unchanged (ogre/index.ts:230-241, :268-283):
+const job: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0); // id, or -errno
+
+// The async surface — a thin registration over that id (framework):
+const h: Task<u32> = rt.job(job);        // parks the caller on {JOB_DONE, JOB_FAILED} @ a == job
+const resource: u32 = await h;           // suspends; resumes at runReady() with jobResult(job)
+if (h.status != 0) { /* recover */ }     // or Async.expect(h), which traps
+
+// The region readers remain the truth (DESIGN.md:1840-1848):
+ogre.jobState(job); ogre.jobResult(job); ogre.jobError(job);
+```
+
+And the sugar is a plain function, not a second truth:
+
+```ts
+export function loadMesh(name: string, priority: i32 = 0): Task<u32> {
+  const job = ogre.queueMeshLoad(name, priority);
+  return rt.job(job);   // a refused queue call becomes an already-settled failed task
 }
 ```
 
-Two families, and the distinction is load-bearing for §6:
+`loadMesh` is *not* `async` — it returns a `Task<u32>` directly — which has a
+useful consequence for the milestones: `await` must work on any `Task<T>`-typed
+expression, not only on a call to an `async` function, and that is testable before
+Backend A's function lowering is complete (§11, M1b).
 
-- **Event awaitables** — completed by a host-delivered record. `class_` names the
-  event class (JOB_DONE, RESOURCE_READY, …). These are what `await job()` and
-  `await loadMesh()` produce.
-- **Tick awaitables** — completed by the scheduler itself with no host event at
-  all: `nextTick()`, `nextFrame()`. No class, no ring slot. These exist because
-  `FRAME` is `MODE_POLLED` (§6.1), so frame delivery is not a callback at all —
-  a tick awaitable is both cheaper and more honest than subscribing to FRAME
-  purely to get a callback.
+**Reference-typed results — the ruled-out path, stated.** The producers cannot
+supply guest pointers: an adapter must not call the guest and must not touch guest
+memory outside `publish`/`apply`/an import call (`tension-ogre/DESIGN.md:1850-1853`),
+and the shipped loader reports a *host* resource id, which the guest maps to a
+record and a handle (`ogre/index.ts:268-283`). So `await` yields a scalar, and a
+reference is obtained from the capability's own reader at the await site. If a
+future capability wants `await` to yield a reference directly, the mechanism is a
+per-capability reader registry consulted by the lowering — named here as a
+future extension, not smuggled in.
 
-### 3.2 What `await handle` evaluates to, and where it is read from
+### 3.4 Error model: rejection is a status on the result
 
-`await h` evaluates to `h.value`, typed `T`.
+AS has no `try`/`catch` (`AS100: Not implemented: Exceptions`; `try`/`catch`
+fails to compile in this fork). The model is unchanged in shape from the reviewed
+draft — **(b) status on the handle, value is the type's zero on failure** — and
+pinned where the review found it unpinned:
 
-**Where the value is read from — and the correctness rule that goes with it.**
-The completion payload arrives in the **32-byte `EventRecord`** the callback
-points at. Verified guest-side layout (`wire.ts:215-222`, with offsets asserted at
-`wire.ts:351-358`):
+- **Where the status lives.** `TaskRecord.status` @ 12 (§3.2), read through the
+  handle: `h.status`.
+- **Where it comes from.** Derived by the dispatcher from the class: the failure
+  classes are `JOB_FAILED` (1), `RESOURCE_FAILED` (2), `SUBMISSION_REJECTED` (3),
+  `DEVICE_LOST` (0) — class ids at `arena.rs:202-213` — and for the job family the
+  errno is the producer's `b` (`loader.cpp:433-436` posts `-ENOSPC`;
+  `:504-507`, `:718-720` post the sweep's errno). `status` is therefore a
+  capability errno, the same vocabulary `jobError` returns
+  (`ogre/index.ts:280-283`) — no new error type.
+- **The value on failure.** For scalar `T`, the zero of `T` (§3.3's read table).
+  Reference-typed `T` does not exist in v2, so the review's "null dereference"
+  hazard is removed by construction rather than documented.
+- **The named cost is unchanged and restated:** the model is forgettable. A caller
+  who ignores `status` proceeds with a zero. Mitigations: the runtime logs every
+  non-zero status at the moment it is set (through the framework's logger, which
+  the host routes — `io.ts:47-56`); `Async.expect(h)` traps with a diagnostic and
+  is the documented default in the framework's examples.
+- **Lifetime of `status`.** `status` is per-task and is not cleared by `await`;
+  re-awaiting a settled handle (§1.2 rule 4) returns the same value and the same
+  status. A *new* await reuses the record only after the previous one is settled
+  and read (§6.5's parking rules), and the runtime zeroes `status` at park time.
 
-| Field | Offset | Size | Meaning |
-|---|---|---|---|
-| `seq` | 0 | 8 | host sequence number |
-| `class_` | 8 | 4 | class id |
-| `flags` | 12 | 4 | record flags |
-| `a` | 16 | 4 | **generic payload word 1** |
-| `b` | 20 | 4 | **generic payload word 2** |
-| `f0` | 24 | 4 | **generic payload float 1** |
-| `f1` | 28 | 4 | **generic payload float 2** |
+### 3.5 What `await` costs
 
-The host writes these through `write_event_record` (`arena.rs:840-853`), and
-`a`/`b`/`f0`/`f1` are carried verbatim from whatever the producer posted
-(`posting.rs` `EventFields`). They are generic payload words with no assigned
-meaning today.
-
-> **Rule: the runtime copies the payload out of the record during dispatch, into
-> the awaitable, and `await` reads the awaitable.**
->
-> The ring slot is *transient*. It is a bounded sub-ring that later epochs
-> overwrite. A runtime that deferred reading the payload until resume time would
-> read a slot that may already hold a different event. This is a silent data
-> corruption bug waiting to happen, which is why it is stated as a rule rather
-> than a detail.
-
-**For pointer-typed results** (a `Mesh`, an `Array<f32>`): the producer writes the
-guest address of the result object into `a`. The runtime copies `a` into the
-awaitable and `await` hands back the reference. This is why the state struct and
-the awaitable must be **managed** objects — see §4.4.
-
-### 3.3 Error model for rejection
-
-**Constraint restated: AS has no `try`/`catch`.** Verified in this fork:
-`try { throw ... } catch (e) { ... }` fails with
-**`AS100: Not implemented: Exceptions`**, and there is no `--enable exceptions`
-flag to unlock it. So an error model built on rejection-throwing is not merely
-awkward — it is unavailable.
-
-Four candidates:
-
-- **(a) Trap on failure.** A failed await traps the guest. Simple, and matches
-  the trap-based fault handling the session already has. But it makes *expected*
-  failures (`file not found`) fatal, which is wrong for a game engine.
-- **(b) Status on the handle, value is zero on failure.** `await h` yields `T`;
-  on failure `h.status` is the errno and the value is the type's zero. The caller
-  checks when it cares.
-- **(c) A `Result<T>`-shaped class.** Explicit, forces unwrapping — but allocates
-  per await on the happy path and adds a generic instantiation per T.
-- **(d) Out-of-band channel** (a per-task error slot the scheduler surfaces at
-  the next tick). Least invasive to the expression's type, but the error's
-  association with *which* await produced it is implicit — bad for debugging.
-
-**Recommendation: (b), with an opt-in trap helper.**
-
-```ts
-const h = loadMesh("bunny");
-const m = await h;
-if (h.status != 0) { /* recoverable: log, substitute a fallback mesh */ }
-```
-
-Rationale: no allocation on the happy path; no new syntax; no generics
-instantiation per result type; and it keeps the *decision* about fatality with
-the game author rather than the runtime. A library helper
-`Async.expect(h)` covers the "this must not fail" case by trapping with a
-diagnostic naming the await.
-
-The honest cost, stated plainly: **this model is forgettable.** A caller who
-ignores `status` silently proceeds with a zero value. That is the price of having
-no exceptions, and it is better to name it than to pretend the API prevents it.
-Two partial mitigations, both recommended: the runtime logs every non-zero status
-at the moment it sets it, so a forgotten check still leaves a trace; and
-`Async.expect` is the documented default in the framework's own examples, so the
-checked path is the one people copy.
-
-If the fork ever gains `try`/`catch` (see §9's note on btc-vision, and §10) the
-model can be *extended* — a `try { await h } catch` form — without changing the
-lowering, because the status field is already on the handle.
+One registration (`rt.park`), one comparison at resume, and — for the common
+scalar case — one load. No allocation per await on the happy path: the
+`TaskRecord` belongs to the task (allocated once, with its state struct), and
+`Task<T>` handles are per-await only if the source creates one. The framework's
+`rt.job(job)` does create one small managed object per registration; that is
+stated as the honest cost rather than hidden behind "zero-allocation".
 
 ---
 
 ## 4. Lowering Backend A: state machines
 
-### 4.1 Shape
+### 4.1 Shape, with the synchronous prefix made real
 
 An `async function f(): T` with body `B` lowers to three artifacts:
 
-1. **A resume-point enum** — one value per suspension point in `B`, plus an entry
-   and a terminal value. Numbered by the backend, stored in a side table (§5.4),
+1. **A resume-point enum** — one value per suspension point in `B`, plus entry and
+   terminal values. Numbered by the transform, stored in its side table (§5.5),
    **not** on the AST.
-2. **A state struct** — one field per lifted local, one per live parameter, plus
-   `resumePoint: u32` and `status: i32`.
-3. **A resume function** — `f_resume(state: StateStruct): void`, whose body is
-   `B` with each `await` replaced by a state transition:
+2. **A state struct** — one field per lifted local, one per live parameter, the
+   environment reference (§4.4), the `TaskRecord` reference, plus `resumePoint`
+   and `status`.
+3. **A resume function** — `f_resume(state: StateStruct): void`, whose body is `B`
+   with each `await` replaced by a state transition:
 
 ```
 state.resumePoint = K
-rt.suspend(state, awaitable)     // registers the task; returns immediately
-return                            // back to the scheduler
+rt.park(state.record, awaitable)     // registers (class-family, key) → record
+return                               // back to the caller of f_resume
 // ... re-entry here on resume:
 // dispatch jumps to case K
-case K:                           // operand's value now lives in state.tmp_K
+case K:                              // the value now lives in state.record
   <continue with the await's value>
 ```
 
-The switch on `state.resumePoint` at function entry is what makes re-entry work.
-This is the standard C#/Rust/Babel-without-generators lowering, and it is what
-the direct async→state-machine decision (v1's D1) produces.
+**The entry function, and the reconciliation the review demanded.** The reviewed
+draft called `f` "a thin constructor … and returns the handle", which contradicted
+the synchronous-prefix semantics it relied on elsewhere. Under §1.2 rule 1 the
+entry is:
+
+```
+f(args): Task<T> {
+  state = new StateStruct(args)      // resumePoint = 0
+  rt.register(state)                 // the task table takes the strong reference
+  f_resume(state)                    // ← the synchronous prefix runs HERE, inline
+  return state.handle                // may already be settled (rule 1)
+}
+```
+
+So `f` is thin in the sense that *the body is not in it* — and not lazy in the
+sense that matters: the prefix executes before `f` returns, and if it suspends,
+the task is parked and `f` returns the handle. That single change is what makes
+§1.2 rule 1 true of this lowering, and it is why the §5.3 rationale in the
+reviewed draft could be re-derived (now §4.6) rather than merely re-asserted.
 
 ### 4.2 How awaits become state transitions
 
-Each `await` expression becomes, in order: evaluate the operand → store it in a
-temporary slot in the state struct → set `resumePoint` → suspend → return → on
-re-entry, read the temporary (now filled from the awaitable) as the value of the
-`await` expression.
-
-The await's *result* is deliberately routed through the state struct rather than a
-wasm local. Wasm locals do not survive the return to the scheduler; only memory
-does. This is the single most important mechanical fact of Backend A, and it is
-why the harness's "lifted locals survive" assertion (§8) exists.
+Unchanged from the reviewed draft, and still the single most important mechanical
+fact: the await's *result* is routed through the state struct, not a wasm local.
+Wasm locals do not survive the return to the scheduler; only memory does. Each
+`await` becomes: evaluate the operand → store its record reference in the state
+struct → set `resumePoint` → park → return → on re-entry, read the record (typed
+read at the await site, §3.2) as the value of the `await` expression.
 
 ### 4.3 How locals are lifted
 
-**Precedent exists in the codebase, which is why this is tractable rather than
-speculative.** `ShadowStackPass` (`src/passes/shadowstack.ts`) already moves
-locals into a per-function memory frame:
-
-- `slotMaps: Map<FunctionRef, SlotMap>` where `SlotMap = Map<LocalIndex, SlotIndex>`
-  (`shadowstack.ts:157, 190`)
-- `noteSlot(func: FunctionRef, localIndex: Index): i32` (`shadowstack.ts:222`)
-  assigns each wasm local a slot and returns it
-- its header comment documents the frame layout in detail (`shadowstack.ts:18-77`)
-
-That pass is a *stack* transform for a different purpose, but the mechanism —
-enumerate locals, assign slots, spill through memory — is exactly what lifting
-needs, and it proves AS's own IR layer can do it.
+**Precedent exists in the codebase.** `ShadowStackPass`
+(`src/passes/shadowstack.ts`) already moves locals into a per-function memory
+frame: `SlotMap = Map<LocalIndex,SlotIndex>` (`shadowstack.ts:157`), `slotMaps`
+(`:190`), `noteSlot(func, localIndex)` (`:222`), and a header comment documenting
+the frame layout (`shadowstack.ts:18-77`). It is a *stack* transform for a
+different purpose, but the mechanism — enumerate locals, assign slots, spill
+through memory — is what lifting needs.
 
 **Lifting rule for Backend A:**
 
-- A local is lifted if it is **live across any `await`** in the function.
-- Start with the **conservative** rule — lift every local declared before the
-  first `await` in its scope. Correct, possibly wasteful. Tighten to a real
-  liveness analysis later, as a pure optimization with the harness as the guard.
-- Parameters live across an `await` are lifted too; the resume function's
-  parameter list is empty and it reads them from the state struct.
-- `this`, in a method: AS has no `arguments` object, and `this` is a value like
-  any other — lift it.
+- A local is lifted if it is live across any `await`; start conservative (every
+  local declared before the first `await` in its scope), tighten later as a pure
+  optimization.
+- Parameters live across an `await` are lifted; the resume function's parameter
+  list is empty and it reads them from the state struct.
+- **`this` is NOT lifted** — §4.4. The reviewed draft's "lift it" bullet is
+  struck: `this` in a capturing function already has a home in the environment.
 
-The conservative-first order is deliberate: a wrong liveness analysis produces
-*silently wrong values*, which is the worst failure mode, while an over-lifted
-local produces only slower code.
+### 4.4 Storage: one home per binding, and the root chain
 
-### 4.4 Where the lowered code lives, and the state struct's home
+This is the closures plan's rule, adopted here because the two features must be
+designed once (`closures-plan.md` §0.4, §2.3):
 
-**The state struct lives on the guest heap. Not the arena, not the wasm stack,
-not a static.**
+> **A captured binding's storage *is* the environment.** A local that is captured
+> by any closure has exactly one home — an environment field — and is therefore
+> never a wasm local and never a state-struct field.
 
-- **Wasm stack: impossible.** The frame is gone the moment the resume function
-  returns to the scheduler. This is the whole reason lifting exists.
-- **Static / global: rejected.** It would permit exactly one live instance per
-  async function, so two concurrent awaits of the same operation would corrupt
-  each other. That is not a restriction a game engine can accept.
-- **Arena: rejected**, on two independent grounds. (i) The arena's regions are
-  fixed-size and part of a **layout hash** — any change is an ABI change, and this
-  plan must not require host changes. (ii) The only region that could plausibly
-  hold task state is `JOB`, which is **48 KiB** (`arena.rs:341`) and is
-  specifically the job-submission region, not a general allocator. Putting task
-  state there would couple the compiler's lowering to the job system's layout.
-- **Guest heap: recommended.** No host involvement, no ABI change, no fixed
-  capacity, and — decisively — AS's own allocator gives it a lifetime.
+The storage rule for every binding, decided once, in one place:
 
-**The state struct must be a *managed* AS object, not `@unmanaged`.** This is not
-a style choice. Lifted locals may be reference-typed (a `String`, an `Array<f32>`,
-a `Mesh`). If the state struct is an unmanaged heap buffer, AS's runtime will not
-trace those fields, and a lifted reference can be reclaimed while the task is
-suspended. The task would resume holding a dangling pointer. A managed class
-makes the fields traced; the runtime's task table holds the only strong
-reference, so completing or cancelling a task frees its state by dropping that
-reference.
+| Condition | Home |
+|---|---|
+| captured by any closure (`this` in an arrow included) | **environment** (guest heap, managed) |
+| else live across an `await` | **state struct** (guest heap, managed) |
+| else | **wasm local** |
 
-**Lowered code placement.** The resume function is a synthesized function in the
-same module (the original `f` becomes a thin constructor that allocates the state
-struct, fills parameters, registers the task, and returns the `Task<T>` handle).
-The state struct is a synthesized class. Both are ordinary IR — no new wasm
-constructs, so Backend A needs nothing from Binaryen beyond what AS already uses.
+**Capture wins over lifting, so the two never overlap.** The state struct holds a
+*managed reference* to the environment — never a copy of a captured binding. The
+reviewed draft's D9 said the captured environment "would also have to be lifted";
+that is struck, and it is the specific change that keeps
+`let n = 0; const f = () => ++n; await x; f();` from having two `n`s.
 
-### 4.5 Correctness cases that must be covered and tested
+**`this` — the shipped mechanism, cited.** In the current fork, `this` in a
+capturing arrow is delivered through the environment, not lifted: the resolver
+marks `capturesThis` on the prototype (`resolver.ts:2208-2217`), the field is
+declared on `Function` (`program.ts:3698`), consumed at `compiler.ts:1919`,
+`:7462` and `:7613`, and the indirect-call site hands the callee's `_env` through
+a hidden global (`makeCallIndirect`, `compiler.ts:7150`; the global is declared at
+`builtins.ts:129`). So the async rule is simply: `this` is a captured binding
+under the storage table above, and it needs nothing async-specific.
 
-| # | Case | Why it is a distinct hazard |
+**The root chain — a requirement, not an implementation note.** Under
+`--runtime incremental` — which is what Tension's guests build with
+(`tension-framework/build/session.asconfig.json`: `"runtime": "incremental"`) —
+the collector's roots are `__visit_globals(cookie)` plus the pin space
+(`std/assembly/rt/itcms.ts:155-164`) and a conservative word-by-word scan of
+`[__stack_pointer, __heap_base)` (`:167-173`). A suspended task's wasm frame is
+gone, so:
+
+> **task table (a managed global, traced by `__visit_globals`) → `TaskRecord`
+> (managed) → state struct (managed) → environment (managed) → captures.**
+
+Every link must be a managed field or the collector cannot see through it. This
+rule is backend-neutral for the reason the closures plan gives
+(`closures-plan.md` §0.5): under Backend B the frame exists but is a fiber stack
+that `visitStack` does not cover, so roots are still the only way.
+
+**Where the state struct lives — unchanged from the reviewed draft, and still
+right.** Guest heap, managed, never `@unmanaged` (a lifted reference would be
+collected under a parked task otherwise). Rejected: wasm stack (the frame is
+gone); static (one live instance per function — two concurrent awaits of the same
+operation would corrupt each other); arena (fixed regions under a layout hash —
+`layout_hash()` hashes the region table and the field offsets, and the only
+plausible region is `JOB`, 48 KiB, `arena.rs:295`, `:341`, which belongs to the
+capabilities, not the compiler).
+
+### 4.5 The seam: the `afterParse` AST stage, not the custom-pass block — REVISED
+
+**What the review found.** D10 of the reviewed draft recommended registering the
+lowering in `src/compiler.ts`'s custom-pass block, described as a place where
+"both backends operate on resolved, typed code". That block is:
+
+```
+// Run custom passes
+if (hasShadowStack) {
+  this.shadowStack.walkModule();
+}
+if (program.lookup("ASC_RTRACE") != null) {
+  new RtraceMemory(this).walkModule();
+}
+```
+
+(`compiler.ts:778-784`) — the *end* of `Compiler#compile()`, over the finished
+Binaryen `Module`. Its two occupants are Binaryen passes (`Pass` base constructed
+from a `Module`, `src/passes/pass.ts:1257`; `ShadowStackPass.walkModule`,
+`shadowstack.ts:575`). At that point there is no AST, no `Local` element, no
+`Flow`, and no `Signature`, and there is **no supported entry point to synthesize
+a new managed class**: `Node.createClassDeclaration` (`ast.ts:464`) is used only
+by the parser (`parser.ts:1820`, `:1880`); `new ClassPrototype(` appears once, in
+the parser path (`program.ts:2046`); `Resolver#resolveClass`
+(`resolver.ts:3222`) materializes *instances of existing prototypes*
+(`:3232-3247`). Hand-writing a state struct at the Binaryen stage would mean
+reproducing AS's object header, mmInfo, typeid and `__visit` linkage by hand.
+
+**The seam this plan uses: an `afterParse` AST→AST transform.**
+
+- The hook exists and runs **before** the program is instantiated: `Transform`
+  with `afterParse(parser)` / `afterInitialize(program)` / `afterCompile(module)`
+  (`cli/index.d.ts:246-284`; `afterParse` at `:277`), applied at
+  `cli/index.js:697-701`, and `initializeProgram` runs after it (`:708-719`).
+- It sees the **whole parsed program**: `parseBacklog` drains the import backlog
+  transitively (`cli/index.js:612-633`, re-reading `getBacklog()` each iteration),
+  and the hook sits after that first drain (`:691-701`). The CLI then runs
+  `parseBacklog` once more (`:703-706`, commented "Parse additional files, if any")
+  before `initializeProgram` (`:708-719`) — so a transform that queues sources of
+  its own is also covered, and one that only rewrites what it was handed (this
+  plan's lowering) is unaffected.
+- **Injected declarations are resolved and compiled by the normal pipeline**:
+  `program.initialize()` walks every source's `statements` in order
+  (`program.ts:1102-1113`, "initialize relevant declaration-like statements of the
+  entire program"), so a class and function synthesized into a source before
+  initialization become ordinary elements with ordinary layout, `__visit` and
+  typeinfo. The factories the parser itself uses are available to a transform:
+  `Node.createClassDeclaration` (`ast.ts:464`),
+  `Node.createFunctionDeclaration` (`ast.ts:633`),
+  `Node.createMethodDeclaration` (`ast.ts:655`).
+- Function *bodies* are resolved lazily at compile time, and
+  `maybeCompileEnclosingSource` (`compiler.ts:7552-7561`) finds the enclosing file
+  through `node.range.source.internalPath` — so injected nodes must carry a range
+  whose `source` is a registered `Source` (use the file being lowered).
+
+**Consequences, stated as consequences:**
+
+- The lowering is `src/async/lower.ts` — a pure addition, versioned with the
+  compiler, selectable by a compiler option (D9). The in-tree registration is one
+  line in the existing transforms collection (`cli/index.js:403-449`).
+- **`src/compiler.ts` is no longer a lowering site** (§0.2). What remains is a
+  defensive diagnostic for a surviving `Await` node.
+- Backend B is a sibling transform (or a codegen-side switch), selected by the
+  same option — the swap story is now structural, not aspirational.
+- **Implementation trap, recorded:** `program.initialize()` walks statements in
+  array order, so the synthesized state-struct class must be inserted *before*
+  the function that uses it in that source's `statements`.
+
+### 4.6 What is a Backend A capability restriction, and what is not — re-derived
+
+The reviewed draft's conclusion was right and is kept: **"await is illegal inside
+a callback" must NOT become a language rule** (reviewed text, and the review
+confirmed it as a pass). What changes is the derivation. It no longer rests on
+"you cannot suspend a wasm frame the host called into" — which does not describe a
+state machine, whose suspension is a *return*, not a stack suspension. Under the
+semantics pinned in §1.2, the honest derivation is:
+
+1. **A suspension is a return from `f_resume`.** No wasm frame is ever left
+   suspended: the caller's frames unwind normally, and the task's state lives on
+   the heap. A task may therefore be parked while a host-invoked callback is on
+   the stack — the callback returns normally, the host completes its epoch, and
+   the resumed portion runs later, outside the callback.
+2. **What the runtime forbids is resuming inside a callback** — not awaiting in
+   one. `runReady()` refuses while `inCallback` is set (§6.3), because a resume
+   that ran inside a callback would put the session's epoch machinery under a
+   callback's verb calls, which the reentrancy rules refuse anyway
+   (`-EBADF`/`-EBUSY`, §1.1).
+3. **What a callback cannot do is be `async`** — §1.2 rule 7. Its wasm-level
+   result would be a `Task<T>` reference where the host reads a status. That is a
+   host-ABI contract, true under both backends.
+4. **What the synchronous prefix inherits is its caller's context** — so a prefix
+   that runs inside a callback sees the callback's reentrancy refusals. That is a
+   consequence of §1.2 rule 1 plus §1.1's reentrancy, not a new rule.
+
+**Therefore, for the front-end:** nothing about `await`'s *legality* differs by
+backend, and no `await`-specific diagnostic may be encoded in the parser or the
+resolver (D6(iii) of the reviewed draft, retained). The checks that do exist live
+where the fact exists: the framework's callback record guard
+(`callbacks.ts:33-35`, §6.7), and the runtime's `inCallback` guard (§6.3). Backend
+B's difference — `suspend` transfers control to the suspension's handler rather
+than unwinding the frame, so the timing of the host's `callback.call(...)` return
+is the handler's business — is named but **not decided here**, which is precisely
+what keeps this a capability question rather than a language one.
+
+---
+
+### 4.7 The seam: what the transform names, and who implements it — NEW
+
+§4.1 writes `rt.register(state)` and `rt.park(state.record, awaitable)` without
+saying where `rt` lives, and §6 describes the runtime's behaviour without saying
+which file it is in. This section pins that, because commit 3 emits the first
+these calls and the shape must not be chosen by accident.
+
+#### 4.7.1 What the transform needs
+
+Four entry points, one of them problematic (§4.7.4):
+
+- **`register`** — create the task's record, root it, hand back the handle
+  (§4.1 artifact 3).
+- **`park`** — register `(family, key) → the task's record` in the table and mark
+  the task parked (§6.5).
+- **`settled`** — §1.2 rule 4's check on an awaited record, so a settled handle
+  does not suspend.
+- **the value read** — the awaited value, at the await site.
+
+#### 4.7.2 The module, and why it is top-level in `std`
+
+**`std/assembly/task-rt.ts`** — internal path `~lib/task-rt.ts`, a *top-level*
+standard-library file, not `~lib/task/rt.ts` as the plan's prose has been
+assuming. The reason is mechanical, not stylistic:
+
+- Top-level `std/assembly/*.ts` files are parsed by every build before anything
+  else (`cli/index.js:471-479`), and their exports resolve as bare identifiers
+  in any source through the program's global element index
+  (`resolver.ts:1301`, the same fallback that makes `Task` itself resolvable —
+  `program.ts:559-567`). Measured: a guest calling a function exported by a
+  top-level std file compiles with no import statement.
+- A sub-directory module is parsed only on demand, and **demand cannot be
+  created from the transform**: an import injected into an already-parsed source
+  is not queued, and the CLI's second `parseBacklog` drains only what the parser
+  queued (`cli/index.js:703-706`). Measured: an injected import naming an
+  unparsed `~lib/` module does not resolve, and the compiler trips an assertion
+  instead of reporting a diagnostic.
+
+**How the transform references the symbols: by their declared global names, with
+no import.** The alternative — injecting `import * as rt from "~lib/task-rt"`
+into every lowered source — works for a *parsed* module but buys nothing the bare
+name does not, and costs an observable AST edit per file. The cost of bare names
+is shadowing, and the transform already refuses a synthesized name a user
+declaration took (commit 2); the same check extends to these names.
+
+#### 4.7.3 The symbols, and the split of work
+
+| Symbol | Implemented by | Called by |
 |---|---|---|
-| 1 | `await` in a loop | Re-entry must resume *inside* the loop body with the induction variable intact. The resume-point dispatch must land after the right iteration's await. |
-| 2 | `await` in a conditional | Only one branch's suspension points are reachable per execution; the dispatch must handle a resume point that the current path did not set. |
-| 3 | Multiple awaits per function | Distinct resume points must not alias. Cheapest bug to write, hardest to notice. |
-| 4 | `await` in nested functions | Each async function gets its own state struct. An inner async function called without `await` must still produce a `Task<T>` the outer one can await. |
-| 5 | `await` with early return | The terminal resume point and the cleanup path must agree; a task that returns must not also stay registered. |
-| 6 | `await` in a loop with `break`/`continue` | Break/continue targets are `string` wasm block labels in this version (`flow.ts:251,253`), pushed/popped via `pushControlFlowLabel` (`flow.ts:634`) / `popControlFlowLabel` (`flow.ts:644`). A state transition crossing a loop boundary must not leave a label dangling. **This is the case most likely to be wrong**, and it is not in the architect's list — added here. |
-| 7 | `await` inside `try`/`catch` | **Not applicable.** `try`/`catch` does not exist in this fork (`AS100: Not implemented: Exceptions`). There is nothing to lift across. |
-| 8 | `await` inside a closure | **Not applicable today** — see below. |
+| `__taskRegister<S>(state: S): TaskRecord` | std | the entry, once |
+| `__taskPark(record: TaskRecord, awaited: TaskRecord): void` | std | `f$resume`, at each suspension |
+| `__taskSettled(record: TaskRecord): bool` | std | `f$resume`, before suspending |
+| `__taskDeliver(class_: i32, a: i32, b: i32, f0: i32, f1: i32): void` | std | the framework's dispatcher (§6.1) |
+| `__taskTick(): void` | std | the framework's frame loop (§6.3) |
+| `__taskBindRecordFactory(f: () => TaskRecord)` | std (hook) | the framework, at startup |
+| `__taskBindFamily(class_: i32, family: i32)` | std (hook) | the framework, at startup |
+| `__taskValue<T>(handle: Task<T>): T` | std | wherever a `Task<T>`-typed expression exists |
 
-**On case 8, stated plainly because the task asks about it.** Closures do not
-exist in this fork. A capturing arrow function fails with
-**`AS100: Not implemented: Closures`**. Notably the *flag* exists
-(`CommonFlags.Closure = 1 << 29`, `src/common.ts:79`) but the implementation does
-not. Non-capturing function values do work — they lower to table indices, which is
-how the existing `onBatch`/`onEvent` callbacks are passed at all
-(`callbacks.ts:21-23`).
+**std implements the machine**: the task table (`Map<i64, TaskRecord>`, keyed by
+family in the high word and the producer's `a` in the low one — §3.1), the
+per-record reads and writes at §3.2's byte offsets, the ready queue and its
+ordering (§1.2 rule 6, §6.5), the dropped-completion rule (§6.4), and the
+`__taskValue` read (§3.2's kind table implemented once, with `load<T>`).
 
-So "await inside closures" is vacuous in v2, and would be strictly harder than
-await-in-function if closures were added later, because a closure's *captured
-environment* would also have to be lifted, and the environment is shared between
-the closure and its creating scope. **Adding closures is a separate, large feature
-with its own plan; it is not smuggled in here.** There is a reference
-implementation to study if it is ever wanted (§9). Surfaced in §10.
+**The framework connects it to the host**: it owns the record subclass (the
+subclass *is* §3.2's layout — std only depends on the offsets), the class→family
+map for its capabilities (bound through `__taskBindFamily`; unbound classes are
+their own family, which is correct for a class that completes once), and the two
+call sites — `onBatch`/`onEvent` decode the 32-byte record from the arena and
+call `__taskDeliver` (§6.1, §6.2), and the guest loop calls `__taskTick` (§6.3).
+
+**Deviation from D9's parenthetical, reported.** D9 says the framework provides
+the implementation. It cannot: a `declare`d function in std with no body is an
+*import*, which §7.1 forbids; and there is no linking mechanism for "std declares,
+the framework defines" other than the name-based one the compiler itself uses for
+`__new` (`program.requireFunction(CommonNames.new_)`, `program.ts:734`), which
+needs the *implementer's* source in the program — fine for `__new`, but it would
+make every lowered program depend on the framework being linked, and the
+compiler's own tests (§8.1's first harness) must compile lowered code without a
+framework. So std carries the machine and the framework supplies what only it
+knows. The *contract* half of D9 is kept: the transform names symbols, never a
+path or an implementation.
+
+#### 4.7.4 The typed read — the one thing this revision got wrong
+
+§3.2 and §4.2 say the typed read is emitted "at the await site, because that is
+the only place `T` is known". That is true of *resolution* and false of an
+`afterParse` transform, which runs before `program.initialize()`. And `T` cannot
+be recovered syntactically where it is needed:
+
+- The transform cannot write a field type for the awaited handle, because the
+  only type-erased form is not writable: `Task<any>` does not exist (measured:
+  `TS2304: Cannot find name 'any'`), a bare `Task` requires its type argument
+  (measured: `TS2558`), and class instantiations are nominal, so `Task<u32>` is
+  not assignable to a `Task<usize>` field.
+- The transform cannot delegate the inference back to the resolver either: AS has
+  no contextual-type inference for calls (measured: `let x: i32 = ret()` with
+  `ret<T>(): T` is refused with `TS1140: Type argument expected`). Inference runs
+  from *arguments*, so the read must be handed a genuinely `Task<T>`-typed
+  expression — which is exactly what does not exist after a suspension.
+
+**Resolution: the read is codegen's.** The lowered `AwaitExpression` node
+survives into compilation, and `compiler.ts` compiles it: `T` from the resolver's
+type (§2.3's rule, already implemented), the value from the task's record through
+§3.2's offsets, and the pointer from the lowering. Two consequences, both
+intended:
+
+- §0.2's row for `src/compiler.ts` is now wrong: the file is not "a defensive
+diagnostic" only — it keeps the **typed read** of a lowered `await`. The state
+machine stays out (§4.5), which is what the review's finding 6 forced; the read
+was never a state-machine question.
+- The state struct carries **no per-await value slot**. The bearer of a delivered
+  value is the task's own record (§3.2's copy), which is why §3.2's copy has to be
+  total rather than lazy. A per-site slot would need `T` at the transform, which
+  §4.7.4 just showed does not exist there.
+
+**What this costs, stated:** `compiler.ts` grows one expression case, and the
+transform must hand that case the pointer it reads from. Everything else in
+§4.5's argument — the AST stage, the synthesized managed class, one registration
+line in `cli/index.js` — is unaffected.
 
 ---
 
@@ -601,652 +1061,745 @@ implementation to study if it is ever wanted (§9). Surfaced in §10.
 
 ### 5.1 The same AST, lowered differently
 
-Under Backend B, `await` emits a suspension of a real continuation instead of a
-state transition:
-
 | Backend A | Backend B |
 |---|---|
 | allocate state struct, switch on `resumePoint` | `cont.new` over the async function body |
-| `rt.suspend(state, awaitable); return` | `suspend $tension_await` with the awaitable as payload |
-| scheduler calls `f_resume(state)` | scheduler/host `resume`s the continuation |
+| `rt.park(record, …); return` | `suspend $tension_await` with the handle as payload |
+| scheduler calls `f_resume(state)` from `runReady()` | scheduler/host `resume`s the continuation |
 | task table holds state structs | continuation queue holds continuations |
 | lifted locals | the continuation's own stack — **no lifting at all** |
 
-Instruction set, verified against the proposal's own Explainer
-(`proposals/stack-switching/Explainer.md`), with occurrence counts:
+### 5.2 Instruction set, verified
 
-| Instruction | Count | Role |
-|---|---|---|
-| `cont.new` | 13 | create a continuation from a function reference |
-| `suspend` | 94 | suspend the current continuation to its handler |
-| `resume` | 110 | resume a continuation |
-| `switch` | 107 | symmetric transfer to a peer continuation |
-| `resume_throw` | 39 | resume while raising a tag at the suspension point |
-| `cont.bind` | 20 | partial application |
-| **`cont.drop`** | **0** | **does not exist** |
+Counts in the proposal's own Explainer (verified today):
+`cont.new` 13, `cont.bind` 20, **`cont.drop` 0**, `suspend` 94, `resume` 110,
+`resume_throw` 39, `switch` 107. Two consequences:
 
-Two consequences the design must respect:
-
-- **No deallocation.** `cont.drop` has zero occurrences; wasmtime's tracking issue
-  #10248 lists "Support for deallocating continuations" as explicitly *not* in the
-  initial implementation. Every continuation stays alive for the store's lifetime
-  (wasmtime's own `StoreOpaque::allocate_continuation` says so in its doc comment:
-  "we currently don't support deallocating them... all continuations remain
-  allocated throughout the store's lifetime"). A long-running game with a task per
-  frame would leak continuations without bound. **This is a real design constraint
-  on Backend B, not a footnote.**
+- **No deallocation.** `cont.drop` does not exist; Wasmtime's tracking issue
+  `#10248` lists "Support for deallocating continuations" as *not* in the initial
+  implementation, and the engine's own doc says continuations remain allocated for
+  the store's lifetime (`crates/wasmtime/src/runtime/store.rs:2156` on `main`). A
+  long-running game with a task per frame would leak continuations without bound.
+  A real design constraint on Backend B, not a footnote.
 - **The scheduler is outside the instruction set.** The Explainer's reference
-  `$scheduler1`/`$scheduler2` are written *in wasm*; the bag-of-stacks design notes
-  describe a *tree* of arena schedulers, with the root yielding to the embedder's
-  event loop. So a host-owned continuation queue is **permitted but not
-  mandated**.
+  `$scheduler1`/`$scheduler2` are written *in wasm* (`Explainer.md:281`, `:358`),
+  and the bag-of-stacks design notes describe a tree of arena schedulers with the
+  root yielding to the embedder's event loop — so a host-owned continuation queue
+  is permitted but not mandated.
 
-### 5.2 What changes in the runtime when Backend B lands
+### 5.3 What changes in the runtime when Backend B lands
 
-- **The suspend/resume mechanism.** State structs disappear; the task table becomes
-  a continuation queue.
-- **The resume-queue owner may move.** Guest-side `runReady()` (Backend A) can
-  become a host-owned continuation queue driven by the same event classes.
-- **Lifted locals disappear entirely** — this is the bulk of Backend A's
-  complexity, and Backend B deletes it.
-- **The "no await inside a callback" restriction can be lifted** (§5.3).
+Unchanged from the reviewed draft: the suspend/resume mechanism; state structs
+disappear and the task table becomes a continuation queue; the resume-queue owner
+may move; lifted locals disappear. **What does not change:** the AST, `Task<T>`,
+the handle representation, `await`'s type and value semantics, the error model,
+the classes used, and every line of game code.
 
-**What does not change:** the AST, the `Task<T>`/`Awaitable<T>`/`AsyncStatus`
-types, the handle fields, `await`'s type and its value semantics, the error model,
-the event classes used, and every line of game code.
+### 5.4 The one thing that would break Backend B
 
-### 5.3 The one thing that would break Backend B — and it is a front-end decision
+Sustained from the reviewed draft, and now derived rather than asserted (§4.6):
+an over-eager *diagnostic* is the risk, not the AST nodes. The front-end must not
+encode "await is illegal here" for any position whose legality is a backend
+capability; the language rules are the seven in §1.2.
 
-Under Backend A, `await` **cannot** occur where a host-invoked callback is on the
-stack: you cannot suspend a wasm frame the host called into via `call_indirect`,
-and the session is not reentrant anyway, so there is nothing to return to.
+### 5.5 What in the AST design makes Backend B a drop-in
 
-Under Backend B, that restriction **could** be relaxed: `suspend` inside a
-callback transfers control back to the suspend point's handler, and the host's
-`callback.call(...)` returns normally at that point. A game could then
-`await` inside a callback — which is a genuinely different programming model.
+- **Syntax only in the AST** (§2.1).
+- **Backend metadata in side tables keyed by node identity** — the transform's
+  `Map<NodeRef, BackendRecord>`; a backend can be deleted without touching a node.
+- **Shared concerns shared:** the return-type transformation, `Task<T>`, the
+  record layout, the error model and the diagnostics are front-end concerns.
+- **The seam is a transform** (§4.5), so Backend B is another transform or a
+  codegen switch selected by the same option.
 
-> **Therefore: "await is illegal inside a callback" must NOT become a language
-> rule in the parser or the resolver.** It is a **Backend A capability
-> restriction**, reported by Backend A, not by the front-end.
->
-> If the front-end hard-rejects it, Backend B inherits a restriction it does not
-> have, and lifting it later means a second front-end change — i.e. exactly the
-> "bake in state-machine assumptions" failure the architect warned about.
+### 5.6 What Backend B inherits from closures
 
-This is the concrete answer to "what would break it": not the AST *nodes*, but an
-over-eager *diagnostic*. It is listed in §10 as a decision with a recommendation.
+Only the rooting rule (§4.4) — for the different reason that a fiber stack is not
+scanned. Nothing else.
 
-### 5.4 What in the AST design makes Backend B a drop-in
+### 5.7 Backend B's real gate: the engine, not a bug list — REVISED
 
-- **Syntax only in the AST.** `AwaitExpression` carries an operand and a range.
-  `isAsync` is a bool on the declaration. Nothing about lowering is encoded.
-- **Backend metadata lives in side tables, keyed by node identity.** Each backend
-  owns a `Map<NodeRef, BackendRecord>` (resume points, lifted-local sets,
-  continuation descriptors). A backend can be deleted without touching a single
-  node. This is the structural guarantee that makes "swappable" real rather than
-  aspirational.
-- **Shared concerns are shared.** Return-type transformation (`async f(): T` →
-  call yields `Task<T>`), the awaitable types, the error model, and diagnostics
-  are all backend-agnostic and live in the front-end.
-- **The backend hook is a proper seam.** Two options, both verified to exist:
-  - the `afterParse` transform (`Transform` at `cli/index.d.ts:247`, loaded by
-    `--transform`), which runs before resolution (`cli/index.js:697`);
-  - the custom-pass block in `src/compiler.ts:765-772`, which already gates
-    `ShadowStackPass` on an option and `RtraceMemory` on a define — the existing
-    precedent for "a compiler extension selected at build time".
-  
-  **Recommendation:** register Backend A and Backend B through the custom-pass
-  block, selected by a compiler option, so switching is a build flag rather than
-  a code edit. Rationale: both backends operate on resolved, typed code, and the
-  custom-pass site is where AS already does exactly this.
+`tension-core/Cargo.toml:20` pins `wasmtime = "=24.0.13"`. **That version has no
+stack switching at all**: the crate contains no `wasm_stack_switching`,
+`Continuation` or stack-switching symbol, and `Config` has no such method. The
+feature appears only in later releases (`Config::wasm_stack_switching` on `main`
+at `crates/wasmtime/src/config.rs:1277`, documented "This feature is `false` by
+default"). So M3's gate is:
+
+1. **A wasmtime re-pin in `tension-core`** to a release that exposes
+   `wasm_stack_switching` — a host change the architect schedules, and one that
+   drags whatever else that bump carries.
+2. **x64-Linux only**: the stability table's `stack-switching` row is
+   ❌/🚧/🚧/❌/❌/❌ with the footnote "Currently the implementation is only for
+   x86\_64 Linux".
+3. **No continuation deallocation** (`#10248` limitation).
+4. **Windows support** (`#10248` limitation, unchecked).
+
+`#14644` is closed and `#14509` open (both **fuel accounting**, relevant only if
+the architect introduces metering — §9.3). The revised framing: **Backend A is the
+only backend that can run on the current pin, on any platform**; Backend B ships
+when the engine moves and the three upstream items clear.
 
 ---
 
 ## 6. Guest async runtime
 
-### 6.1 Dispatch: which callbacks participate, and why both must
+### 6.1 Dispatch: which callbacks participate
 
-**This is settled by the code, not by preference.** Every class's default delivery
-mode, from `DEFAULT_CLASS_MODES` (`arena.rs:249-259`):
+Sustained from the reviewed draft — this section was confirmed by the review and
+is kept, with citations refreshed.
 
-| Class | id | Mode | Async relevance |
-|---|---|---|---|
-| DEVICE_LOST | 0 | DIRECT → `onEvent` | fatal path |
-| JOB_FAILED | 1 | DIRECT → `onEvent` | **job failure** |
-| RESOURCE_FAILED | 2 | DIRECT → `onEvent` | **load failure** |
-| SUBMISSION_REJECTED | 3 | DIRECT → `onEvent` | submit failure |
-| **JOB_DONE** | **4** | **BATCHED → `onBatch`** | **job completion** |
-| **RESOURCE_READY** | **5** | **BATCHED → `onBatch`** | **load completion** |
-| INPUT_KEY | 6 | BATCHED → `onBatch` | not async-relevant |
-| INPUT_MOUSE | 7 | BATCHED → `onBatch` | not async-relevant |
-| LOG | 8 | BATCHED → `onBatch` | not async-relevant |
-| FRAME | 9 | **POLLED** | tick awaitables only |
+Every class's default delivery mode, from `DEFAULT_CLASS_MODES`
+(`arena.rs:250-260`): `DEVICE_LOST` 0 DIRECT; `JOB_FAILED` 1 DIRECT;
+`RESOURCE_FAILED` 2 DIRECT; `SUBMISSION_REJECTED` 3 DIRECT;
+**`JOB_DONE` 4 BATCHED**; **`RESOURCE_READY` 5 BATCHED**; `INPUT_KEY` 6 BATCHED;
+`INPUT_MOUSE` 7 BATCHED; `LOG` 8 BATCHED; `FRAME` 9 **POLLED** (class ids at
+`arena.rs:202-213`; capacities at `:241`).
 
-> **`onBatch` must participate in async dispatch. There is no alternative.**
-> `JOB_DONE` and `RESOURCE_READY` are `MODE_BATCHED` (`arena.rs:255-256`), so
-> awaiting a job or a resource load *completes through `onBatch`*. `onEvent`
-> carries only the failure paths (JOB_FAILED, RESOURCE_FAILED) plus input and the
+> **`onBatch` must participate. There is no alternative.** `JOB_DONE` and
+> `RESOURCE_READY` are `MODE_BATCHED`, so job and resource completions arrive
+> through `onBatch`; `onEvent` carries the failure classes plus input and the
 > device/submission errors. A design that hooked only `onEvent` would never see a
 > successful completion of anything the async runtime exists to await.
 
 `FRAME` being `MODE_POLLED` is the second useful fact: frame delivery is not a
-callback at all, which is exactly why `nextFrame()` is a tick awaitable (§3.1)
-rather than an event awaitable.
+callback at all, which is why `nextFrame()` is a tick awaitable (§6.5).
 
-### 6.2 How wakeups encode into the two i32 arguments
+**Mechanics, verified at the invoke site** (`epoch.rs:192-216` for `onBatch`,
+`:237-240` for `onEvent`): `onBatch(class, ptr, count)` receives `count`
+**contiguous** records — append never wraps (a full sub-ring returns `Full`,
+`subring.rs:181-183`), compaction happens once before appending (`:267-273`), and
+overflow is counted rather than written (`:290-295`). A batch can mix several
+tasks' completions, so the dispatcher is per-record: `ptr + i*32`, stride
+`EVENT_RECORD_SIZE = 32` (`arena.rs:124`).
 
-**They do not — and that is the good news.** `onEvent(class, ptr)` and
-`onBatch(class, ptr, count)` consume both arguments already: `class` is the class
-id, `ptr` is the arena address of the record. There is nothing left in them.
+**Correction to a popular assumption, worth stating:** delivery is *not* gated on
+subscription — the epoch flushes every class queue (`epoch.rs:142-165`) and the
+invoke phase consults only the mode and the slot-disabled flag
+(`epoch.rs:196-197`). Classes 4/5 are subscribed by default
+(`posting.rs:280-282`). What *is* required is a registered `onBatch`: with no
+callback, records stay in the ring and the delivery still counts
+(`epoch.rs:198-203`) — i.e. a guest with no `onBatch` never sees a completion.
 
-The wakeup correlation rides in the **record's existing generic payload words**,
-which are already part of the frozen 32-byte layout (§3.2): `a` @ 16, `b` @ 20.
+### 6.2 Wakeup encoding — the scheme chosen
 
-**Recommended encoding (Backend A and B identical):**
+**`a` = the producer's id; the runtime echoes nothing.** From §3.1: the task table
+is keyed `(class-family, a)`. The dispatcher, per delivered record:
 
-- `a` = **task id** — the runtime's correlation handle for the suspended task.
-- `b` = **await-point discriminator** — which suspension of that task the
-  completion belongs to. Guards against a late completion waking the wrong await.
-- **Failure is carried by the class id**, not by a flag: JOB_DONE vs JOB_FAILED,
-  RESOURCE_READY vs RESOURCE_FAILED. This is strictly better than overloading a
-  bit, because it reuses the host's own semantics and needs no convention on the
-  `flags` word.
-- `f0`/`f1` carry float payloads; `b` may instead carry a guest pointer when the
-  result is a heap object (§3.2), in which case the await-point discriminator
-  moves to the `flags` word.
+```
+switch (record.class_) {
+  case JOB_DONE:   case JOB_FAILED:     family = JOBS;   break;
+  case RESOURCE_READY: case RESOURCE_FAILED: family = RESOURCES; break;
+  default: ignore (INPUT_*, LOG, …)      // other classes are not ours
+}
+task = table.get(family, record.a)
+```
 
-**Scope caveat, stated honestly:** this convention is only *half ours*. `a`/`b`
-are also the fields the host's job system will use to report job identity. The
-final convention must be defined **jointly with the job-system milestone** (§7),
-not fixed unilaterally by the compiler. For the M1 harness the convention is
-test-only and fully under the harness's control on both sides, which is why the
-harness can proceed without the job system.
+and on a hit, the type-free copy of §3.2. On a miss, the record is ignored —
+which is the correct behaviour for the input and log classes that ride the same
+batched path.
 
-**`onBatch` dispatch mechanics.** `onBatch(class, ptr, count)` delivers `count`
-records contiguous from `ptr`, stride `EVENT_RECORD_SIZE = 32`. The dispatcher
-loops `count` times at `ptr + i*32`, reading `a`/`b` per record. A batched
-delivery can mix several tasks' completions in one callback, so the dispatcher
-must be per-record, not per-callback.
+**What this costs, and what it buys.** It costs nothing in the record, nothing in
+the schema, nothing in any producer, and no host change — the only thing that
+would otherwise require all three (review 2.2, 2.3). It buys a design whose
+identity half is *already implemented* in the shipped capability
+(`loader.cpp:439`), so M2 (§7.4) shrinks from a prerequisite to a separate,
+optional plan about generic job submission.
+
+**Not ours to reinterpret.** `flags` and `b`/`f0`/`f1` are producer-owned
+(`INPUT.md:377-382` for `flags`; `loader.cpp:433-439` for `a`/`b`); the runtime
+copies them and assigns no meaning beyond §3.4's status derivation.
 
 ### 6.3 The scheduler tick, inside the guest-owned frame loop
 
-No new host import is needed, because the yield primitive already exists.
-`RuntimeSession.wait(timeoutMs)` is the yield; and — verified — `wait(0)` is
-defined to be exactly the non-blocking drain (`session/mod.rs` documents
-`EpochMode::DrainAll` as "there is no verb for it, because `wait(0)` is one").
-
-Shape:
+No new host import; the yield primitive exists. `RuntimeSession.wait(timeoutMs)`
+is the yield, and `wait(0)` is by definition the non-blocking drain
+(`mod.rs:1370-1385`). Shape:
 
 ```ts
 export function _start_game(): void {
   // ... existing setup ...
   while (!done) {
-    // If tasks are runnable, do not block; otherwise wait for work.
     const timeout = rt.hasRunnable() ? 0 : frameTimeoutMs;
     RuntimeSession.wait(timeout);   // ← the yield. Host delivers here.
-    rt.runReady();                  // ← the scheduler tick
+    rt.runReady();                  // ← the scheduler tick: resume + drop rule
     game.update();                  // ← the game's own frame logic
   }
 }
 ```
 
-Three properties worth noting:
+Properties, unchanged from the reviewed draft and now grounded:
 
-- **Composing with the existing loop is an insertion, not a rewrite.** The
-  existing loop already calls `wait`; the change is the timeout argument and one
-  call. Every existing example keeps working unchanged if `rt` is present but idle.
+- **Composition is an insertion, not a rewrite** — the loop already calls `wait`.
 - **`rt.runReady()` sits after `wait` returns, never before.** That position is
-  what makes §6.4 true.
-- **The tick is where resume happens**, so by construction the session is idle and
-  every verb is legal — the reentrancy rule is satisfied by ordering, not by a
-  guard.
+  what makes §6.4's guard true, and it is where a resumed task's session verbs are
+  legal (`run_epoch_verb` only takes the session for the duration of an epoch,
+  `mod.rs:1321-1332`; after `wait` returns, the session is back in the store).
+- **The tick is where resume happens**, so by construction the session is idle:
+  the reentrancy rule is satisfied by ordering, not by a guard.
 
-### 6.4 "A callback records a wakeup; it never resumes a task"
+### 6.4 Dropped and lost completions — a rule, with a control (new)
 
-**The rule.** Enforced three ways, deliberately more than one, because a silent
-violation here produces a `-EBADF` storm that is hard to trace back to its cause.
+**The problem the review found.** The reviewed draft covered a completion that
+arrives carrying failure, and covered resuming in the wrong place, but not a
+completion that never arrives. Two paths lose one:
 
-1. **Runtime (primary).** The dispatcher writes into a *pending-wakeup* list and
-   sets a flag while inside a callback. `runReady()` refuses to run while
-   `inCallback` is true. A resume attempted in the wrong place is a loud,
-   named failure, not a mysterious errno.
-2. **Compile-time (partial, best-effort).** Where statically detectable, the
-   front-end reports it — a function literal with an `await` inside it passed
-   directly as a `Callbacks` slot, or an `async` function reference assigned into
-   one. Coverage is necessarily partial, because the callback table index is
-   assembled at runtime (`callbacks.ts:21-23`); this check is a convenience, not
-   the guarantee. Consistent with §5.3, this must be a **Backend A** diagnostic,
-   not a language rule.
-3. **Harness (negative control).** §8's control 1 asserts the failure is
-   *detected*, so a regression in (1) or (2) is caught rather than shipped.
+- `post_event` refused with `PostError::QueueFull → -ENOSPC` (`posting.rs:47-68`);
+  the loader already handles its own case by failing the job explicitly
+  (`loader.cpp:433-436`) and by saying plainly that a post is best-effort
+  (`:501-507`).
+- A record that reaches the class queue but finds the sub-ring full is counted as
+  `dropped` and discarded, never overwritten (`subring.rs:290-295`).
 
-### 6.5 Payload capture is part of dispatch, not of resume
+Either way a parked task would hang forever while the frame loop spins.
 
-Restating §3.2 as a runtime obligation, because it is easy to get wrong while
-implementing the callback:
+**The mechanism already exists, and is already mirrored to the guest:**
+per-class `dropped`/`delivered` in the ring header (`TABLE_DROPPED` at
+`arena.rs:136`, `TABLE_DELIVERED` at `:135`; written each epoch at
+`epoch.rs:162-164`) and the cross-class rollup `FrameState.droppedEvents`
+(`FRAME_DROPPED_EVENTS = 4`, `arena.rs:179`; written at `epoch.rs:171-179`;
+counter sum at `posting.rs:417-420`).
 
-During dispatch — inside the callback, cheaply, without resuming anything — the
-runtime copies `a`/`b`/`f0`/`f1` out of each delivered record into the matching
-awaitable, and marks the task ready. The ring slot is never referenced again.
+**The rule:**
+
+> At each tick, `rt.runReady()` compares the drop rollup against the last value it
+> observed. If it advanced, the runtime **cannot attribute the loss to a key** —
+> drops are counted per class, not per record (`subring.rs:290-295`) — so it wakes
+> every task parked on a class whose counter advanced, with
+> `status = -EIO` ("completion lost"), and logs the class and the delta once. The
+> game recovers through the capability's readers, which the design names as the
+> truth: "events are advisory, the status table is the truth, and a dropped
+> `JOB_DONE` costs a guest nothing it cannot read from the record"
+> (`tension-ogre/DESIGN.md:1840-1848`).
+
+**Why this rule and not another.** Waking with a distinguishable status is the
+only option that neither hangs nor lies: the alternative — leaving tasks parked
+and hoping — makes a lost record indistinguishable from a slow job, and per-key
+attribution would require the host to keep the payload of a record it is
+deliberately discarding (a host change, and one the frozen path does not need).
+The failure is *loud* (a status and a log line) and *recoverable* (the region
+readers), which is exactly the trade the design already makes everywhere else.
+
+**Tested, not asserted.** The guest can shrink a class's ring at open —
+`ConfigBuilder.ringCapacity(class_, capacity)` (`config.ts:67-69`,
+`KEY_RING_CAPACITY_BASE = 0x0100` at `:25`), which `session_open` adopts
+(`PostingSide::set_capacities`, `posting.rs:483`). So the harness's third control sets `JOB_DONE`'s capacity
+to 1 and queues more loads than the ring can hold without a tick (§8.4, NC3).
+
+### 6.5 Parking, resume, and ordering
+
+- **Parking** registers `(family, key) → TaskRecord` in the task table and stores
+  the task's resume state; the state struct holds the record reference (§4.4).
+- **Resume** happens only in `runReady()`, in delivery order: class ascending, and
+  within a class the order the records were flushed (§1.2 rule 6, §6.1). A task is
+  moved out of the parked set before its resume function is called, so a resume
+  that parks again (the next `await`) re-registers cleanly.
+- **Idempotence**: `await` checks `record.done` first (§1.2 rule 4); a settled
+  record resumes nothing.
+- **Tick awaitables** (`nextTick()`, `nextFrame()`) have no class and no record;
+  they are completed by the tick itself. Their relative order within one tick is
+  the one thing this plan leaves to the implementation (§1.2's note), and it must
+  be documented before they ship.
+- **Double registration**: refused with a named error (§1.2 rule 5).
+- **Floating tasks**: a task whose handle nobody awaits still runs; on settlement
+  the runtime clears its parked entry and (if nothing references the record)
+  ordinary GC reclaims it. Nothing needs to be awaited for a job to complete.
+
+### 6.6 Preemption, metering, and what the runtime actually relies on — NEW
+
+**Measured:** the host provides no preemption of any kind. The only production
+engine is configured with `debug_info` and nothing else (`main.rs:573-575`); there
+is no epoch deadline, no epoch-interrupting watchdog, no fuel budget anywhere in
+`tension-core/src`. `_start_game` runs on the interpreter thread until it returns
+or traps (`main.rs:1226`).
+
+**Therefore the async runtime is fully cooperative, and this plan states the
+contract:**
+
+- **Yield points:** (i) `RuntimeSession.wait(timeoutMs)` — the guest's blocking
+  yield, and the host's only delivery point (`mod.rs:1370-1385`); (ii)
+  `RuntimeSession.wait(0)` — the non-blocking drain; (iii) a task's suspension
+  (the `return` from `f_resume`, §4.1); (iv) `wait` returning on timeout, which
+  still runs the epoch.
+- **Resumption only at `runReady()`**, i.e. only outside an epoch's callbacks
+  (§6.3). This is not a policy choice on top of the design; it is the only place
+  resumption can be correct given §1.1's reentrancy.
+- **Guest responsibility:** keep the loop's timeout bounded
+  (`rt.hasRunnable() ? 0 : frameTimeout`); never block inside a callback (the
+  reentrancy rules already refuse the verbs that would —
+  `-EBADF`/`-EBUSY`, §1.1); never rely on the runtime to interrupt a runaway
+  computation. A guest that never yields starves delivery, and the host will not
+  rescue it because it has nothing to rescue it with.
+- **What is not promised:** fairness beyond FIFO registration order; timeout
+  enforcement by the runtime (a parked task with no completion stays parked unless
+  §6.4's rule fires); any protection against a guest that loops forever — that is
+  the status quo for every Tension guest today, and async neither worsens nor
+  fixes it.
+
+**If preemption is wanted later**, it is a host decision taken in the host's own
+terms — `Config::epoch_interruption` with a watchdog, or fuel — and it interacts
+with the async runtime only in one way worth naming now: a preemption that lands
+*inside* a task's resume function must leave the task parked with a valid
+`resumePoint` (the state machine makes that true by construction, because the
+state is in memory before any suspension), and a preemption that lands inside a
+*host callback* is already the session's fault path (`epoch.rs:283-296`).
+Neither requires anything of this plan's design.
+
+### 6.7 The dispatcher must be a plain function (consequence of a shipped guard)
+
+`makeCallbacks` refuses any handler whose environment word is non-zero
+(`runtime/callbacks.ts:33-35`), because the host resolves the table entry and
+calls it directly with no call site to hand the environment over. The async
+runtime's `onBatch`/`onEvent` dispatchers are therefore **module-level functions
+with no captures** — a capturing arrow as a handler would abort at
+`makeCallbacks`, which is the correct and already-tested behaviour
+(`tension-framework/tests/guest-callbacks-guard.ts`). The async runtime keeps its
+state in module-level managed globals (the task table, §4.4) rather than in a
+closure, and that is a design requirement, not a style.
 
 ---
 
-## 7. Host-side dependency: the job system
+## 7. Host ABI and the job target
 
-**Jobs are a stub, so awaiting a host job has nothing to await yet.** Measured:
+### 7.1 Every host import and export the async runtime uses — enumerated
 
-- `REGION_JOB` exists as a region kind (`arena.rs:295`), `JOB_SIZE = 48 KiB`
-  (`arena.rs:341`).
-- Classes `JOB_DONE = 4` and `JOB_FAILED = 1` exist, with the modes in §6.1.
-- **Completion delivery works**: `--post-test-events` posts three JOB_DONE records
-  through the posting face before the guest runs (`main.rs:1191-1216`).
-- **Submission does not exist**: `apply::sweep_jobs_to_failed` is a stub
-  (`apply.rs:263`) and the apply phase is documented "**Not implemented in A2b**:
-  the call site exists and the pending list is always empty."
-- There is no general worker pool in the host. The only real worker thread is
-  capability-owned inside the OGRE DSO.
+**Guest → host, complete list** (all existing, none added):
 
-**Scope decision, recommended: the job system is a prerequisite the architect
-must schedule separately, not part of this plan.**
+- `session::open`, `close`, `wait`, `drain`, `subscribe`, `unsubscribe`,
+  `pending` — `runtime/session.ts:18-35`; registered at `mod.rs:1519-1523` and
+  neighbours.
+- `tension::io::print`, `read_line`, `arg_count`, `arg`, `log`,
+  `log_structured` — `assembly/io.ts:35-56`.
+- The capability verbs that do the work: for the harness, `ogre::init`,
+  `queue_mesh_load`, `mount_tns`, `job_state`, `job_release`, `last_error` —
+  `ogre/index.ts:78-99`.
 
-Reasons:
+**Host → guest, complete list** (all existing, none added):
 
-1. It is **host-side Rust** in `tension-core` — the compiler plan explicitly does
-   not propose `tension-core` changes, and this plan should not breach that by the
-   back door.
-2. It is a **different discipline**: thread pool sizing, back-pressure, queue-full
-   policy (`PostError::QueueFull` already exists and returns `-ENOSPC`), job
-   cancellation, and the pending/apply machinery. None of that is compiler work.
-3. It has its **own ABI question**: what `a`/`b` mean for a job completion is the
-   other half of §6.2.
+- The exported function table, resolved at `session_open` (`mod.rs:1233`).
+- `_start_game` (or `_start`, `main.rs:1226-1232`).
+- The two callback slots (`arena.rs:192-197`), invoked from the epoch
+  (`epoch.rs:192-240`).
 
-**What this plan delivers without it, and why that is enough to prove the design:**
-the M1 harness drives await/resume using host-*posted* events on a real host
-thread. That exercises suspension, resume, lifted-local survival, wakeup
-dispatch, and both negative controls — everything the compiler and runtime must
-get right — while touching **zero production code in `tension-core`**.
+**No new import, no new export, no new record field, no class, no schema bump.**
+That is the claim the review checked and confirmed (finding 8.1), and §3.1's
+chosen correlation scheme is what keeps it true (§6.2).
 
-**Recommended milestone split** (architect to schedule):
+### 7.2 The jobs target: the OGRE capability's pipeline — REVISED
 
-| | Repo | Deliverable | Depends on |
+The review's finding 9.1: the reviewed draft said "awaiting a host job has
+nothing to await yet" and made a generic job system a prerequisite. That premise
+was false for the capability path. What ships and works today:
+
+| Piece | Evidence |
+|---|---|
+| Queue verbs returning a job id, or an errno | `ogre/index.ts:230-241`; `queueMeshLoad` returns `-ENOSPC` when the string half is full |
+| A loader with a real worker thread | `loader.cpp:114-116` (`worker_ = std::thread([this]{ worker_main(); })`), `:634` |
+| Completion posted from the render thread's drain | `adapter.cpp:347` (`loader.drain_completions` in the render loop), `:340` (`RESOURCE_READY`), `loader.cpp:427-440` (`JOB_DONE` / `JOB_FAILED`) |
+| Failure paths that keep the process alive | `loader.cpp:433-436` (`-ENOSPC`), `:504-507`, `:718-720` (sweeps) |
+| A JOB-region mirror the guest reads directly | `ogre/index.ts:213-215` (`jobRecord`, `JOB_SIZE = 64` at `ogre/wire.ts:656`), `:268-283` (`jobState`/`jobResult`/`jobError`) |
+| The model: events advisory, region the truth | `tension-ogre/DESIGN.md:1840-1848` |
+| A two-sided end-to-end test | `tension-ogre/tests/guest-jobs.ts` (5 clauses) asserted by `tension-core/tests/ogre_jobs.rs` ("ACID 5/5 passed", `:86-87`) |
+| The exact awaited shape, already working as a *poll* | `guest-jobs.ts:47-53` (`settle()` loops `RuntimeSession.wait(10)` on `jobState`) |
+| And as an *event*, with the payload the plan keys on | `tension-framework/tests/guest-ogre.ts:11-13` (the doc comment: "onEvent(JOB_DONE) -> job id in `a`, resource id in `b`") and `:47-51` (the code that reads them) |
+
+So the honest statement is: **a generic, capability-agnostic job system does not
+exist; a capability-owned job system does, and it is enough to prove this design.**
+The core's `apply::sweep_jobs_to_failed` stub (`apply.rs:263`) is not on the
+critical path.
+
+### 7.3 What this removes
+
+- **The harness's fabricated-completion problem** (review 8.2): the completion
+  comes from the loader's worker through the render thread, so a test needs no new
+  flag in `main.rs` and no production code. `--post-test-events` (`main.rs:1191-1216`)
+  posts *before* the guest runs and remains what it is — a delivery test, not a
+  suspension test.
+- **The M2a blocker** (review 9.1): nothing depends on generic job submission.
+- **D8 of the reviewed draft** (the request to add a test file to
+  `tension-core`) **shrinks to a test file only** — `tension-core/tests/async_await.rs`
+  following `ogre_jobs.rs`'s shape, with no production change of any kind.
+
+### 7.4 What remains a separate plan
+
+Generic job submission — a capability-agnostic queue, worker pool, back-pressure
+policy, and job cancellation — is still a real, separate piece of host work with a
+different discipline (threads, queues, `PostError::QueueFull`, the JOB region's
+ownership). The revision's point is only that **this plan does not depend on it**.
+If the architect wants it, it is M2, scheduled independently; the only interface
+it must respect is §6.2's ("the identity word is the producer's id"), which is a
+one-sentence contract, not a joint design.
+
+---
+
+## 8. Test harness — REVISED
+
+### 8.1 Two harnesses, each for what it can prove
+
+| Harness | Producer | Proves | Does not prove |
 |---|---|---|---|
-| M2a | `tension-core` | job submission: fill `apply.rs`'s pending path, real worker pool, `-ENOSPC` back-pressure | independent |
-| M2b | `tension-core` + `tension-framework` | the `a`/`b` completion convention, agreed with §6.2 | M2a, and this plan's §6.2 |
+| `tension-framework/tests/guest-async.ts` (via `tests/run.sh` against the **stub adapter**, `run.sh:173`) | `ogre_stub_adapter.c` — same-thread, completes pending jobs and posts JOB_DONE during **publish** (`ogre_stub_adapter.c:382-400`; the file's own comment contrasts itself with "a real adapter [whose] render thread [would] fill the resource and hand the completion back") | ordering, payload mapping, both callbacks, the negative controls, the drop rule | **not suspension**: a busy-waiting guest would pass |
+| `tension-core/tests/async_await.rs` (against **`libtension_ogre.so`**, `--renderer=null`, `--tns=fixtures.tns`) | the loader's worker thread + the render thread (`loader.cpp:114-116`, `adapter.cpp:347`) | suspension and resume across a **genuine cross-thread, delayed** completion | — |
 
-**The one place this plan touches `tension-core`** is a new test file
-(`tension-core/tests/async_await.rs`) plus a guest fixture. It adds **no
-production code and no ABI change** — it is a test that uses the existing
-`PostingSide` from a spawned thread. Flagged explicitly in §10 for the architect's
-approval, since "do not propose changes to tension-core" is a constraint I would
-rather ask about than quietly interpret in my own favour.
+The second is the meaningful one, and it is exactly `ogre_jobs.rs`'s shape
+(`tension-core/tests/ogre_jobs.rs:63-88`: run the interpreter as a subprocess,
+assert the guest's own transcript). The first is the fast loop, and it is honest
+about what it cannot show. Both compile with the published compiler (§0.4).
 
----
+### 8.2 Pass criteria for the meaningful harness
 
-## 8. Test harness
+All four must hold, asserted by the guest (self-asserting, so the host's
+assertion is one line) and by the host:
 
-### 8.1 Fixture and shape
+1. **Ordering.** The pre-await line precedes the post-await line, and the
+   post-await line appears only after the epoch that carried the completion.
+2. **Genuine yield, not spin.** The guest's loop advanced at least one tick while
+   the task was parked (`frames-while-suspended >= 1`).
+3. **Lifted locals survive.** A local assigned before the await and read after it
+   holds its value — the assertion that catches the most likely Backend A bug.
+4. **No reentrancy refusal in the normal path.** No `-EBADF` and no `-EBUSY` from
+   any session verb during the run.
 
-Guest fixture: `tension-framework/tests/guest-async.ts` (matching the existing
-`guest-*.ts` + `run.sh` convention in that directory).
+Plus the two cross-checks that make it *this* feature rather than a synthetic one:
+`jobResult(job) == the awaited value`, and `jobState(job) == JOB_DONE` — the
+same pair the shipped fixture already asserts (`tension-framework/tests/guest-ogre.ts:124`:
+`assert(ogre.jobResult(job) == seenResource, "the record and the event disagree")`).
+
+### 8.3 The fixture, and the details the review corrected
 
 ```ts
-// The smallest program that can be wrong in each interesting way.
-let resumedValue: u32 = 0;
-let framesWhileSuspended = 0;
-let errnoFromCallback = 0;
+// tension-framework/tests/guest-async.ts — the smallest program that can be
+// wrong in each interesting way, against a real loader.
+let resumed: u32 = 0;
+let framesWhileParked = 0;
+let nestedVerbResult = 0;
 
-async function awaitedTask(): u32 {
-  let local: u32 = 41;                 // live across the await → must be lifted
-  process.stdout.write("A:before\n");
-
-  // Negative control 2: a nested verb from inside a callback is refused.
-  // (recorded by the callback below; asserted by the host)
-
-  local = await rt.jobHandle(1);       // ← suspends here
-  process.stdout.write("B:after " + local.toString() + "\n");
-  return local;                        // 42 iff the lifted local survived
+async function awaitedTask(job: i32): u32 {
+  let local: u32 = 41;                    // live across the await → must be lifted
+  print("A:before");
+  local = await rt.job(job);              // ← parks here; resumes at runReady()
+  print("B:after " + local.toString());
+  return local;
 }
+
+function onBatch(class_: u32, ptr: u32, count: u32): i32 { … }   // plain function (§6.7)
+function onEvent(class_: u32, ptr: u32): i32 { … }
 
 export function _start_game(): void {
-  rt.start(awaitedTask());
-
-  let ticks = 0;
-  while (ticks < 500) {
+  // … open, mount, ogre init, queue the load, rt.start(awaitedTask(job)) …
+  while (ticks < limit) {
     RuntimeSession.wait(rt.hasRunnable() ? 0 : 16);
     rt.runReady();
-    if (rt.isSuspended()) framesWhileSuspended++;
-    if (rt.isFinished()) break;
-    ticks++;
+    if (rt.isParked()) framesWhileParked++;
+    if (rt.isDone()) break;
   }
-  process.stdout.write("C:frames-while-suspended=" + framesWhileSuspended.toString() + "\n");
-  process.stdout.write("D:value=" + resumedValue.toString() + "\n");
+  print("C:frames-while-parked=" + framesWhileParked.toString());
+  print("D:value=" + resumed.toString());
 }
 ```
 
-Host test: `tension-core/tests/async_await.rs`, following the existing
-`tests/log_guest.rs` / `tests/frame_layout.rs` conventions.
+Corrected against the review's finding 10.2:
 
-**The critical harness property: the completion is posted from a *separate host
-thread, after a delay*.** `--post-test-events` posts *before* the guest runs
-(`main.rs:1191`), which proves delivery but **not suspension** — a busy-waiting
-guest would pass such a test. Posting from a spawned thread that holds a cloned
-`PostingSide` (`posting.rs` is `Sync` by design, and `main.rs:1196` already clones
-it) is what makes the test meaningful: the guest is provably *inside* `wait` when
-the completion arrives.
+- **The transcript uses `print`** (`assembly/io.ts:35`), which every existing
+  fixture uses — **not** `process.stdout.write`. The AS `process` binding exposes
+  only `argv` and `exit` (`std/assembly/bindings/node.ts:2-5`), and no Tension
+  guest writes through `process.*`.
+- **The harness records its compiler** (§0.4): `asc --version` plus the fork SHA,
+  printed first and asserted by the host.
+- **Missing fixtures panic by default.** `tests/support/ci.rs:26-45` refuses to
+  skip unless `TENSION_TEST_ALLOW_SKIP=1`; the plan states this so a harness that
+  "passes" in a CI without the DSO cannot be mistaken for coverage. The DSO,
+  volume and `asc` prerequisites are named in the harness's own failure message.
 
-### 8.2 Pass criteria
+### 8.4 Negative controls
 
-All four must hold.
+- **NC1 — resuming inside a callback is refused by the runtime's own guard.** A
+  variant whose `onEvent` calls `rt.runReady()` directly. Asserted: the guard
+  refuses with a **named error in the transcript** — *not* a session fault. The
+  host turns only a **trap** into a session failure (`fault_from_trap`,
+  `epoch.rs:283-296`; policy stated at `DESIGN.md:1874-1879`), so a control that
+  expected a session error would be asserting something no code produces.
+- **NC2 — a nested session verb from inside a callback returns `-EBADF`.** The
+  callback calls `RuntimeSession.wait(0)` and records the return; the host asserts
+  **`-9`**. `run_epoch_verb` finds no session because the epoch took it
+  (`mod.rs:1325-1328`), `EBADF = -9` (`mod.rs:80`) — not `-EBUSY` (which is what
+  `subscribe`/`unsubscribe`/`pending` return via the depth guard, `mod.rs:1345-1353`).
+- **NC3 — a dropped completion does not hang (new, §6.4).** The guest sets
+  `JOB_DONE`'s ring to capacity 1 (`config.ts:67-69`), queues two loads, and does
+  not tick between them. Asserted: the completion that was dropped wakes its task
+  with `status = -EIO`, the runtime logs the class and delta, and the guest
+  recovers through `jobState`/`jobResult` — i.e. the run *ends*, with a
+  documented outcome, rather than spinning. This control is the reason §6.4's rule
+  is testable rather than aspirational.
+- **NC4 — the callback guard still refuses an environment-carrying handler.**
+  Already shipped (`callbacks.ts:33-35`, `guest-callbacks-guard.ts`); re-asserted
+  so the async runtime's dispatchers cannot quietly become closures (§6.7).
 
-1. **Ordering.** `A:before` precedes `B:after`, and `B:after` appears only after
-   the epoch that carried the completion. A resume that happened before the
-   completion arrived fails here.
-2. **Genuine yield, not spin.** `frames-while-suspended >= 1` — the guest loop
-   advanced at least one tick while the task was parked. A busy-wait reports zero.
-3. **Lifted locals survive.** `D:value=42` — a local assigned *before* the await
-   and read *after* it holds its value. This is the assertion that catches the
-   most likely Backend A bug.
-4. **No reentrancy refusal in the normal path.** The run produces no `-EBADF` and
-   no `-EBUSY` from any session verb. A runtime that resumed inside a callback
-   fails here.
+### 8.5 Platform
 
-### 8.3 Negative controls
-
-**Control 1 — resuming inside a callback must fail.**
-A variant whose `onEvent` body calls `rt.runReady()` directly. The harness asserts
-the runtime's own guard fires (the `inCallback` refusal from §6.4), and that the
-session subsequently returns an error rather than silently corrupting state.
-**Asserted:** the guard triggers, and the run is reported as failed rather than
-producing a wrong-but-plausible transcript.
-
-**Control 2 — a nested verb from inside a callback must return `-EBADF`.**
-The guest calls a session verb from inside a callback and records the return
-value; the host asserts **`-EBADF`** — the value `run_epoch_verb` actually
-produces when the session has been taken out of the store (`session/mod.rs`,
-`caller.data_mut().session.take()`), **not** `-EBUSY`.
-
-This distinction is worth the explicit control. `-EBUSY` is what `subscribe` /
-`unsubscribe` / `pending` return via the depth guard (`mod.rs:1346-1350`) and what
-the unit tests observe when they set `depth = 1` by hand with the session still
-installed. A real guest inside a real callback normally sees **`-EBADF`**. A
-harness that asserted `-EBUSY` would encode the wrong contract and would pass
-against a host that behaved differently.
-
-### 8.4 Platform
-
-**Must run on Windows**, and the design is arranged so it can:
-
-- The guest builds with the fork's `asc`; no POSIX-only tooling in the path.
-- The host test is a normal `cargo test` under MSVC
-  (`cargo test --no-default-features --features audio`), following `AGENTS.md`.
-- The fixture writes its transcript with `process.stdout.write` (already used by
-  the existing fixtures), so the host asserts on captured output, not on a file.
-- **The build step runs out-of-tree** (§0.1), so the Windows path never writes into
-  the submodule.
-- No WasmFX, no threads-in-wasm, no platform-specific syscalls.
+**Must run on Windows**, and the arrangement is unchanged from the reviewed draft:
+the guest builds with the fork's `asc` (published, §0.4); the host test is a
+normal `cargo test --no-default-features --features audio` (`AGENTS.md`); the
+fixture prints and the host asserts on captured output; the AS build runs
+out-of-tree (`build/assemblyscript/`); no WasmFX, no wasm threads, no
+platform-specific syscalls. The **stub-adapter** harness (8.1, first row) is the
+one that runs anywhere with no volume; the **DSO + volume** harness is the
+Windows/Linux shared one and needs `tension-ogre/build.sh` and `pack.sh` to have
+run.
 
 ---
 
-## 9. Verification of the claims from v1
+## 9. Verification of the claims from v1, and of this revision
 
-Each claim re-checked against primary sources. Two are confirmed as stated, one is
-confirmed with a correction of *emphasis*, and two need nuance.
+### 9.1 `moonbitlang/async` ships its own event loop — CONFIRMED
 
-**9.1 `moonbitlang/async` ships its own event loop — CONFIRMED.**
-Its README states "Currently, this library only supports native/LLVM backends on
-Linux/MacOS", but the repository does carry a wasm path: `src/internal/event_loop/`
-contains `event_loop.wasm.mbt`, `event_bus.wasm.mbt`, `io.wasm.mbt`,
-`network.wasm.mbt`, `thread_pool.wasm.mbt`, plus `src/process/wasm.mbt`, and there
-is a `nightly-wasm-test.yml` CI job. The event loop is unambiguously its own:
-`event_loop.wasm.mbt` defines `PlatformEventLoopExtra` with `Unix`/`Windows`
-variants and `UnixEventLoopExtra::new()` / `WindowsEventLoopExtra::new()`.
+Unchanged from the reviewed draft: the wasm path exists (`event_loop.wasm.mbt`,
+`event_bus.wasm.mbt`, …) and the event loop is unambiguously its own
+(`PlatformEventLoopExtra` with `Unix`/`Windows` variants). It has per-platform
+backends and **no integration point for an embedder-owned host loop**, which is
+why it cannot solve this problem: there is no way to say "this task's completion
+will be delivered by *my* host at *my* frame boundary."
 
-So the accurate summary is: **it has its own event loop with per-platform backends
-(epoll/kqueue/IOCP/JS-fetch) and no integration point for an embedder-owned host
-loop.** It can run on a wasm1 target; it simply cannot solve this problem, because
-there is no way to say "this task's completion will be delivered by *my* host at
-*my* frame boundary." Relevant as prior art for the scheduler's
-structured-concurrency design; not a dependency.
+### 9.2 Wasmtime `#13584` is closed — CONFIRMED
 
-**9.2 Wasmtime #13584 is closed — CONFIRMED.**
 `state: closed`, `state_reason: completed`, closed 2026-07-28, 3 comments.
 
-**9.3 Wasmtime #14644 and #14509 are open — CONFIRMED, with corrected emphasis.**
-- #14644 "cranelift: preserve fuel across stack-switching instructions" — **open**,
-  updated 2026-10-10, 0 comments.
-- #14509 "Stack-switching ops loses fuel accounting" — **open**, updated
+### 9.3 `#14644`/`#14509`, and the preemption claim — REVISED
+
+- **`#14644` "cranelift: preserve fuel across stack-switching instructions" is
+  CLOSED** — `closed_at: 2026-10-15T18:03:23Z`, 0 comments. (The reviewed draft
+  said open, updated 2026-10-10.) It is struck from the gate text.
+- **`#14509` "Stack-switching ops loses fuel accounting" is open** — updated
   2026-10-09, 0 comments.
+- **The reviewed draft's reasoning is withdrawn.** It said these matter because
+  "Tension, whose host uses **epoch interruption** for latency-critical
+  preemption". The host uses neither epoch interruption nor fuel; the only
+  production engine sets `debug_info` and nothing else (`main.rs:573-575`, §6.6).
+  Fuel accounting can therefore not make "an epoch-driven preemption budget
+  silently wrong" — there is no such budget. These issues matter only in a
+  hypothetical where the architect introduces preemption, and they are listed as
+  such: a note about a future option, not a present constraint.
 
-Both are *open*, as v1 said. The correction is to emphasis: these are **fuel
-accounting** issues, not correctness-of-unwinding issues. They matter for
-determinism and for Wasmtime's fuel-based preemption — which is directly relevant
-to Tension, whose host uses **epoch interruption** for latency-critical
-preemption. Losing fuel accounting across a suspend/resume means an epoch-driven
-preemption budget can be silently wrong for a guest that switches stacks. That is
-a real reason to keep Backend B behind Backend A, stated in the engine's own
-terms rather than as a vague "experimental".
+### 9.4 WasmFX instruction set and `cont.drop` absence — CONFIRMED
 
-**9.4 WasmFX instruction set and `cont.drop` absence — CONFIRMED.**
-Counts in the Explainer: `cont.new` 13, `cont.bind` 20, `suspend` 94,
-`resume_throw` 39, `resume` 110, `switch` 107, **`cont.drop` 0**. `cont.bind` is
-present and was missing from v1's list. The Explainer's proposed type math
-(`cont.new $ct : [(ref null $ft)] -> [(ref $ct)]`) is consistent with one-shot
-continuations. Schedulers are written in wasm; a host-owned queue is permitted,
-not mandated.
+Counts verified today in the proposal's Explainer: `cont.new` 13, `cont.bind` 20,
+`suspend` 94, `resume_throw` 39, `resume` 110, `switch` 107, **`cont.drop` 0**.
+Schedulers are written in wasm (`Explainer.md:281`, `:358`); a host-owned queue is
+permitted, not mandated.
 
-**9.5 WasmFX Windows support is a roadmap item per #10248 — CONFIRMED.**
-Tracking issue #10248 "Tracking issue: Stack switching proposal implementation
-status" is **open**, updated 2026-10-05. Its "Limitations of initial
-implementation" list, quoted verbatim:
+### 9.5 WasmFX Windows support is a roadmap item per `#10248` — CONFIRMED
 
-```
-- [ ] Support for ISAs other than x64
-- [ ] Support for resume.throw instructions (requires exception handling)
-- [ ] Support for deallocating continuations
-- [ ] Integration with GC (i.e., allowing continuation references to appear in GC objects, such as arrays an structs)
-- [ ] Windows support
-- [ ] Pulley support
-- [ ] Winch support
-```
+`#10248` is open (updated 2026-10-05); its limitations list is quoted verbatim in
+the reviewed draft and verified: "Support for ISAs other than x64", "Support for
+`resume.throw` instructions", "Support for deallocating continuations",
+"Integration with GC", **"Windows support"**, "Pulley support", "Winch support" —
+all unchecked. The stability table's `stack-switching` row is ❌/🚧/🚧/❌/❌/❌ with
+the footnote "Currently the implementation is only for x86\_64 Linux". Corroborated
+by `Config::wasm_stack_switching`'s own doc, "This feature is `false` by default"
+(`crates/wasmtime/src/config.rs:1277`, `main`).
 
-`Windows support` is unchecked. Corroborated independently by Wasmtime's stability
-table (`docs/stability-wasm-proposals.md`): `stack-switching` = ❌/🚧/🚧/❌/❌/❌ with
-the footnote "Currently the implementation is only for x86\_64 Linux", and
-`Config::wasm_stack_switching` documented "This feature is `false` by default"
-(`crates/wasmtime/src/config.rs:1269-1280`).
+**And the correction this revision adds:** none of that matters until the engine
+moves at all, because the pinned `wasmtime =24.0.13` (`Cargo.toml:20`) has no
+stack switching (§5.7). See §11's M3 gate.
 
-**The architect's framing is correct and the plan adopts it: this is a roadmap
-item, not a bug.** Three checklist items are Windows- or constraint-relevant
-(`Windows support`, `deallocating continuations`, and the fuel-accounting issues
-#14509/#14644), and
-Backend B ships when they clear. Backend A is not a compromise — it is what runs
-today on the actual target platform, and §5.4 is the structural guarantee that
-swapping costs nothing in the AST or the guest API.
+### 9.6 The preemption model as it exists — NEW
+
+Stated once, here, so no reader has to reconstruct it from the sections:
+
+| Question | Answer | Evidence |
+|---|---|---|
+| Does the host preempt the guest? | No. | `main.rs:573-575`; no fuel/epoch symbols in `tension-core/src` |
+| Is there metering? | No. | same |
+| What yields? | `session::wait(timeout)` (and `wait(0)`), and a task's suspension. | `mod.rs:1370-1385`; §4.1 |
+| Where do tasks resume? | Only in the guest's own tick, after `wait` returns. | `epoch.rs:192-240` + §6.3 |
+| What must the guest do? | Bound the frame timeout; never block inside a callback. | §6.6 |
+| What does Backend B need? | An engine re-pin exposing stack switching, plus three upstream items. | §5.7, `Cargo.toml:20`, `#10248` |
+| If preemption is wanted later? | A host decision (epoch or fuel), independent of this plan. | §6.6 |
 
 ---
 
-## 10. Open decisions requiring architect approval
+## 10. Open decisions requiring architect approval — updated
 
-Each with a recommendation. None decided unilaterally.
+Each with a recommendation. Decisions the review's findings settle are marked
+**settled by revision**, with the reasoning, so the architect can overrule with
+full information rather than re-derive.
 
-**D1 — Error model for await rejection.**
-*Options:* (a) trap; (b) status on the handle, zero value on failure; (c)
-`Result<T>` class; (d) out-of-band channel.
-**Recommend (b)**, plus an `Async.expect(h)` trap helper. No allocation on the
-happy path, no new syntax, and — decisively — it is the only option that does not
-require `try`/`catch`, which does not exist in this fork.
-*Named cost:* it is forgettable. Mitigated by runtime logging of every non-zero
-status and by making `Async.expect` the documented default in examples.
+**D1 — Payload correlation.** ~~task id in `a`, await-point discriminator in `b`~~
+**Settled by revision:** the runtime mints no ids; the key is the producer's
+submit-time id, read from `a` (`loader.cpp:439`), with the failure class resolving
+the same family. Justified against the frozen layout in §3.1: a new class breaks
+`SessionInfo`'s field offsets (`arena.rs:96-97`, `:1326`), and the record has no
+spare word (`arena.rs:147-150`).
 
-**D2 — How wakeups encode into the two i32 arguments.**
-**They do not; both are already consumed by `(class, ptr)`.** The correlation rides
-in the 32-byte record's generic payload words: `a` @ 16 = task id, `b` @ 20 =
-await-point discriminator, failure carried by class id (JOB_DONE vs JOB_FAILED).
-**Recommend this**, and note that the convention is only half ours — it must be
-finalized jointly with the job system (§7). The M1 harness uses a test-only
-convention it controls on both sides.
+**D2 — Whether `onBatch` participates in async dispatch.** **Yes, and it is not
+optional** — `JOB_DONE`/`RESOURCE_READY` are `MODE_BATCHED` (`arena.rs:250-260`),
+and a guest with no `onBatch` never sees a completion (`epoch.rs:198-203`).
+Sub-decision: batched dispatch is per-record, stride 32 (`arena.rs:124`).
 
-**D3 — Whether `onBatch` participates in async dispatch.**
-**Recommend yes, and it is not really optional.** `JOB_DONE` (4) and
-`RESOURCE_READY` (5) are `MODE_BATCHED` (`arena.rs:255-256`), so job and resource
-completions *arrive through `onBatch`*. A design that ignored `onBatch` could never
-see a successful completion. `onEvent` handles the failure classes (1, 2) plus
-device/submission errors.
-*Sub-decision:* batched dispatch is per-record (stride 32 from `ptr`, `count`
-times), since one callback can carry several tasks' completions.
+**D3 — Error model.** `status` on the handle, zero value on failure, plus
+`Async.expect(h)`; errno vocabulary is the capability's; runtime logs non-zero
+statuses; `status` is not cleared by `await` (§3.4).
 
-**D4 — How the scheduler yields for completion delivery without a new host import.**
-**Recommend `RuntimeSession.wait(timeout)` — it already exists.** `wait(0)` is
-already defined to be the non-blocking drain, so the loop can pass `0` when tasks
-are runnable and a frame timeout otherwise. Zero new imports; a two-line insertion
-into the existing guest loop.
+**D4 — How the scheduler yields.** `RuntimeSession.wait(timeout)`; `wait(0)` is
+the drain (`mod.rs:1370-1385`). No new import.
 
-**D5 — Where the state struct lives.**
-**Recommend the guest heap, as a managed AS object.**
-*Rejected:* wasm stack (the frame is gone at suspension); static (one live instance
-per function — two concurrent awaits of the same operation would corrupt each
-other); arena (fixed regions under a layout hash → ABI change, and the only
-candidate region is the 48 KiB `JOB` region, which belongs to the job system).
-*Requirement:* managed, not `@unmanaged`, so lifted *reference-typed* locals are
-traced. An unmanaged buffer would let a lifted reference be reclaimed while the
-task is suspended.
+**D5 — Where the state struct and the record live.** Guest heap, managed;
+`TaskRecord` fixed-layout and `T`-free; `Task<T>` a one-word handle in the std lib
+(`std/assembly/task.ts`), precedent `Function<T>`. Rejected: wasm stack, static,
+arena (§4.4).
 
-**D6 — How the AST supports Backend B without baking in Backend A.**
-**Recommend three structural rules**, all in §5.4:
-(i) AST carries syntax only — `AwaitExpression(operand, range)`, `isAsync: bool`;
-(ii) backend metadata lives in per-backend side tables keyed by node, never on the
-node; (iii) **"await inside a callback" is a Backend A capability diagnostic, not a
-language rule** — hard-coding it in the parser or resolver would give Backend B a
-restriction it does not have and force a second front-end change later.
+**D6 — Backend-B-safe AST.** Three structural rules (i) syntax only in the AST;
+(ii) backend metadata in side tables keyed by node identity; (iii) **no
+`await`-legality rule in the parser or resolver** — §4.6's derivation. Retained
+from the reviewed draft, with (iii) now resting on §1.2's stated rules.
 
-**D7 — Where "await outside async" is diagnosed.**
-*Options:* (a) a parser context flag; (b) a dedicated backend-agnostic AST
-validation walk.
-**Recommend (b).** The parser has **no context-tracking precedent** (verified: no
-depth/scope/context fields on `class Parser`), and (b) keeps backend-sensitive
-rules out of the parser — which is D6(iii) applied consistently.
+**D7 — `await` inside closures.** Out of scope; closures are unimplemented
+(`AS100: Not implemented: Closures`; the `CommonFlags.Closure` bit exists at
+`common.ts:79` and is dead). **Revised**: the environment is *referenced* by the
+state struct, never lifted or copied (`closures-plan.md` §0.4/§2.3/§7.1) — the
+reviewed draft said otherwise and was struck (§4.4).
 
-**D8 — The one place this plan touches `tension-core`.**
-The harness needs `tension-core/tests/async_await.rs` (test file) plus a guest
-fixture, to run a real host with a completion posted from a spawned thread.
-**Recommend approving it explicitly**, because it adds no production code and no
-ABI change, but the constraint said not to propose `tension-core` changes and I
-would rather ask than interpret that in my own favour.
+**D8 — The one place this plan touches `tension-core`.** A test file only:
+`tension-core/tests/async_await.rs`, following `ogre_jobs.rs`, against the OGRE
+DSO. **Revised**: no new host flag, no production code, and the reviewed draft's
+"approved explicitly" ask is now simply "approved as a test file" (§7.3).
 
-**D9 — `await` inside closures.**
-**Recommend declaring it out of scope**, on the facts: closures are not implemented
-in this fork (`AS100: Not implemented: Closures`); the `CommonFlags.Closure` bit
-exists (`common.ts:79`) but no implementation does. Non-capturing function values
-do work (they lower to table indices). If closures are ever wanted, they are a
-separate feature with a separate plan, and `await` inside a closure is strictly
-harder than `await` in a function because the captured environment must be lifted
-too — and the environment is shared with the creating scope.
-*Reference implementation if ever wanted:* `@btc-vision/assemblyscript` carries
-`closures`, `closures-pr`, `closure-pr`, `hybrid-closure-approch`, and
-`experimental-try-catch-finally` branches. Adopting it is not recommended (it is a
-third-party rebase of a moving upstream, on a different version line), but its
-branches are the design to study.
+**D9 — The lowering seam.** **`afterParse` AST transform** (`cli/index.d.ts:277`,
+`cli/index.js:697-701`), implemented as an in-tree module (`src/async/lower.ts`)
+registered in the existing transforms collection (`cli/index.js:403-449`, one
+line); alternative with zero `cli/` edits: ship the transform and select it with
+`--transform`. **Revised** from the reviewed draft's custom-pass recommendation,
+which the review showed cannot synthesize a managed class (§4.5).
 
-**D10 — Whether the backend hook is the `--transform` plugin or the in-tree
-custom-pass block.**
-**Recommend the in-tree custom-pass block** (`src/compiler.ts:765-772`), selected
-by a compiler option, so switching backends is a build flag. Both backends operate
-on resolved, typed code; the custom-pass site is where AS already does exactly
-this (it gates `ShadowStackPass` on an option and `RtraceMemory` on a define).
-Backend A may *additionally* want an `afterParse` transform step for AST-to-AST
-prep; if so, that is additive via the existing `--transform` flag.
+**D10 — Where "await outside async" and friends are diagnosed.** A
+backend-agnostic validation walk, now naturally a second pass of the same
+transform infrastructure (§2.2). Retained.
 
-**D11 — Package renaming.**
-The origin is named `TensionScript`. Whether to rename `package.json`'s name,
-`package.json`'s `version`, the `asc` binary, and the `lib/asc.js` self-references
-is a product decision with a real cost (the CLI test suite asserts on the binary
-name and its help output). **Recommend deferring** until Backend A compiles the
-harness, so a rename never blocks progress on lowering. Not decided here.
+**D11 — Package renaming.** **Revised, and mostly already answered in practice**:
+the published artifact is `@yabgu_gm/tensionscript@0.1.0` while the fork's own
+`package.json` says `name: assemblyscript`, `version: 0.0.0` — so the rename is
+done by the publish step, and the `asc` binary keeps its name. What remains open
+is only whether to rename in-tree (§0.4). **Recommend deferring**; it buys nothing
+the publish does not already provide. (Whether anything in `lib/asc.js`'s
+self-references needs attention at publish time is an implementation check for the
+first publish of a lowering change, not a design decision: the published 0.1.0
+tarball's `dist/asc.js` imports `../dist/asc.js` relatively and carries no bare
+`assemblyscript` specifier, so that check is a confirmation, not an expected
+repair.)
 
-**D12 — Whether `async` is permitted on declarations that are ambient or
-`declare`d.** An `async declare function` has no body to lower.
-**Recommend disallowing** with a clear diagnostic, and treating the equivalent for
-methods and constructors the same way (constructors can never be async in TS
-either).
+**D12 — `async` on ambient/`declare`d declarations and constructors.**
+**Disallow** with a clear diagnostic, as in the reviewed draft (there is no body
+to lower, and constructors can never be async in TS).
+
+**D13 — Reference-typed await results.** **Out of scope for v2**; a reference is
+obtained through the capability's reader (§3.3). A future extension would need a
+per-capability reader registry — named, not smuggled.
+
+**D14 — Tick-awaitable ordering** (`nextTick` vs `nextFrame` within one tick).
+Left to implementation, must be documented before shipping (§6.5). Recorded so it
+is a decision rather than an accident.
 
 ---
 
-## 11. Milestones and dependency graph
+## 11. Milestones and dependency graph — REVISED
 
 ```
    [DONE] M0  fork: origin=TensionScript, upstream=reference-only,
-   │          initial commit b6bda05c, submodule at third_party/assemblyscript
+   │          initial commit b6bda05c, arrow-this landed (HEAD 92809069),
+   │          published as @yabgu_gm/tensionscript@0.1.0 (2026-10-16T16:54Z)
    │
    ├─ M1a  AST + parser + resolver + types
-   │        NodeKind.Await, AwaitExpression, isAsync field, factories,
-   │        parser modifier + prefix-expression hooks, one resolver case,
-   │        Task<T>/Awaitable<T>/AsyncStatus synthesis, extra/ast.ts serializer
+   │        NodeKind.Await, AwaitExpression, isAsync field, factory,
+   │        parser modifier + prefix hooks, TWO resolver cases, the
+   │        call-site return-type transformation, std/assembly/task.ts,
+   │        extra/ast.ts serializer case
    │        ├── gate: tests/parser/async_*.ts.fixture.ts round-trips
-   │        └── gate: `async`/`await` parse; `await h` type-checks to T
+   │        ├── gate: `await h` type-checks to T, including `(await h).x`
+   │        └── gate: `await` outside async is a diagnostic, not an assert
    │
-   ├─ M1b  Backend A lowering            (depends on M1a)
-   │        state structs, lifted locals (conservative first), resume dispatch,
-   │        custom-pass registration, terminal/cleanup path
-   │        └── gate: compiler fixtures land for correctness cases §4.5 #1-#6
+   ├─ M1b  Backend A lowering   (depends on M1a)
+   │        src/async/lower.ts: state structs (synthesized class), lifted
+   │        locals (conservative first), the entry/resume split with the
+   │        synchronous prefix, parking/registration, terminal/cleanup
+   │        └── gate: compiler fixtures for correctness cases §4.5 #1-#6
    │
-   ├─ M1c  Guest runtime                 (depends on M1a; parallel with M1b)
-   │        task table, ready queue, inCallback guard, payload capture,
-   │        onBatch + onEvent dispatch, runReady(), tick awaitables
-   │        └── gate: unit-testable independently of lowering
+   ├─ M1c  Guest runtime   (depends on M1a; parallel with M1b)
+   │        task table (managed global), TaskRecord, onBatch + onEvent
+   │        dispatch, payload capture, inCallback guard, runReady(),
+   │        tick awaitables, the drop rule
+   │        └── gate: unit tests independent of lowering; NC4 re-asserted
    │
-   ├─ M1d  Harness                       (depends on M1b AND M1c)
-   │        guest fixture + tension-core/tests/async_await.rs (D8),
-   │        completion posted from a spawned thread
-   │        └── gate: §8.2 criteria 1-4 all pass, on Windows
-   │        └── gate: §8.3 negative controls 1 and 2 pass
+   ├─ M1d  Harness   (depends on M1b AND M1c AND the publish step)
+   │        guest-async.ts (stub adapter) + tension-core/tests/async_await.rs
+   │        (libtension_ogre.so, --renderer=null, --tns=fixtures.tns)
+   │        └── gate: §8.2 criteria 1-4, on Windows
+   │        └── gate: NC1 (-EBADF is -9), NC2, NC3 (no hang), NC4
    │
-   ├─ M2a  Job submission in tension-core   (SEPARATE PLAN — not this one)
-   │        apply.rs pending path, worker pool, back-pressure
+   ├─ M2   Generic job system in tension-core   (SEPARATE PLAN, OPTIONAL)
+   │        queue, worker pool, back-pressure, cancellation. NOT a
+   │        prerequisite of M1d, and the only interface it must respect
+   │        is "the identity word is the producer's id" (§6.2)
    │
-   ├─ M2b  a/b completion convention        (depends on M2a + this plan's §6.2)
-   │
-   └─ M3   Backend B / WasmFX               (depends on NOTHING here but time)
-            blocked on: Windows support, continuation deallocation, and the
-            fuel/epoch issues #14509/#14644 clearing upstream (wasmtime #10248)
+   └─ M3   Backend B / WasmFX   (BLOCKED on the engine, not on time)
+            (1) tension-core re-pins wasmtime past =24.0.13 to a release
+                exposing Config::wasm_stack_switching
+            (2) x64-Linux only (stability table)
+            (3) no continuation deallocation   (#10248)
+            (4) Windows support                (#10248)
 ```
 
-**Blocking summary.** M0 done. M1a blocks both M1b and M1c, which are independent
-and can proceed in parallel. M1d needs both. M2a is a separate plan in a separate
-repo. M3 depends on upstream, not on us.
+**The publish step sits inside every milestone that changes the compiler**, and
+it is not optional: the harness compiles with the published artifact (§0.4). The
+sequence for M1b/M1d is: land in the fork → **publish (architect)** → bump the 15
+consumers + lockfiles → reinstall → run the harness. A green run before the
+bump proves the old artifact.
+
+**Blocking summary.** M0 done. M1a blocks M1b and M1c, which are independent. M1d
+needs both plus the publish. M2 is optional and independent. M3 depends on the
+engine.
 
 **What M1d proves and what it does not.** It proves suspension, resume,
-lifted-local survival, wakeup dispatch through both callback slots, and both
-negative controls — with zero production changes to `tension-core`. It does **not**
-prove a real host job round-trips, because no job system exists. That is M2, and
-saying so plainly is the difference between a green harness and a working feature.
+lifted-local survival, wakeup dispatch through both slots, the drop rule, and
+three negative controls — **against a real worker thread and a real loader**, with
+zero production changes to `tension-core`. It does not prove a *generic* job round
+trip, because no generic job system exists — and, per §7, it no longer needs to.
 
 ---
 
-## 12. Risks
+## 12. Risks — revised
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Local liveness for lifted locals is the real engineering risk, not the syntax | High | Conservative-first lifting (lift everything live before the first await); tighten only as an optimization; §8.2 assertion 3 guards it |
-| State transition crossing a loop boundary leaves a dangling block label (`flow.ts:251,253,634,644`) | High | §4.5 case 6 — added beyond the architect's list; explicit compiler fixtures |
-| A forgotten `status` check silently proceeds with a zero value (D1's named cost) | Medium | Runtime logs every non-zero status; `Async.expect` is the documented default |
-| `onBatch` dispatch appears to work but misses batched completions | Medium | §6.1 is code-grounded; harness asserts a batched completion path, not only a direct one |
-| The `a`/`b` convention is fixed unilaterally and later conflicts with the job system | Medium | Explicitly deferred to M2b; M1 uses a test-only convention |
-| `await` becomes a language rule illegal in callbacks, blocking Backend B | Medium | D6(iii): it is a Backend A diagnostic only |
-| Reading a completion payload lazily (after the ring slot is reused) | High if it happens | §3.2/§6.5 state payload capture as a dispatch obligation |
-| AGENTS.md rule 1 vs building in `third_party/` | Medium | Out-of-tree build in `build/assemblyscript/` (§0.1) |
-| Backend B's lack of `cont.drop` leaks continuations in a long-running game | Medium (future) | Noted as a real constraint in §5.1; a reason M3 is gated on deallocation, not merely on Windows |
-| Renaming the package breaks the CLI test suite | Low | D11 defers renaming until after M1d |
+| Local liveness for lifted locals is the real engineering risk | High | Conservative-first lifting; §8.2 assertion 3 guards it |
+| A state transition crossing a loop boundary leaves a dangling block label (`flow.ts:251`, `:253`, `:634`, `:644`) | High | §4.5 case 6 — explicit compiler fixtures |
+| The transform's injected class must precede its users in `source.statements` (`program.ts:1102-1113`) | Medium | §4.5's recorded trap; a compiler fixture where the async function is the file's first declaration |
+| A dropped completion would hang a task without the rule | High | §6.4's rule; NC3 drives it deterministically through `ringCapacity` |
+| A forgotten `status` check proceeds with a zero | Medium | Runtime logs every non-zero status; `Async.expect` is the documented default |
+| The typed read at the await site is wrong about `T`'s width | Medium | §3.2's read table is closed (scalars only, §3.3); a compiler fixture per scalar width |
+| `onBatch` dispatch appears to work but misses batched completions | Medium | §6.1 is code-grounded; the harness asserts a batched completion |
+| A split identity (`{JOB_DONE, JOB_FAILED}` family) misses a class | Medium | §6.2's switch is explicit; NC3 asserts the failure path resolves the same await |
+| The environment is copied into the state struct (double storage) | High | §4.4's storage table; the closures plan's §8.1 case 6 fails if it happens |
+| The environment is not rooted across suspension | High | §4.4's root chain; NC3 and a suspension test with a captured binding |
+| The publish step is skipped and the harness tests the old artifact | Medium | §0.4's transcript requirement (compiler version + fork SHA, asserted) |
+| A capturing arrow becomes the dispatcher and `makeCallbacks` aborts | Low | §6.7; NC4 |
+| Backend B's lack of `cont.drop` leaks continuations | Medium (future) | §5.2; a reason M3 is gated on deallocation, not merely on Windows |
+| Backend B is unavailable on the pinned engine at all | High (future) | §5.7's gate is honest rather than optimistic |
+
+**Not verified by this revision, and stated plainly:** no build was run and no
+wasm executed, so every claim here is a *code* fact (file, line, structure) rather
+than a measured runtime behaviour. The plan's own measurements are the ones it
+cites from the tree and from the reviewed documents; the review's audit of those
+is what this revision is built on.
 
 ---
 
 ## 13. What happens on approval (nothing before)
 
-Nothing until the architect reviews this document. On approval, M1a is the first
-implementation milestone, and it is dispatched as a separate implementation agent —
-not by the plan author, and not in this turn.
+Nothing until the architect reviews this revision. On approval, M1a is the first
+implementation milestone, and it is dispatched as a separate implementation agent
+— not by the plan author, and not in this turn. The publish step (§0.4) is the
+architect's, and each of M1b/M1c/M1d is a separate dispatch after review.
 
-**No code has been written for this plan. No lowering exists. No commits beyond the
-fork setup commit.** The Tension working tree contains exactly two changes: the
-staged submodule addition (`.gitmodules` + the gitlink, uncommitted per AGENTS.md
-rule 2) and this document.
+**No code has been written for this plan. No lowering exists. No commit was made
+in this revision** — the working tree contains this file and the review beside it,
+both uncommitted, per `AGENTS.md` rule 2.
