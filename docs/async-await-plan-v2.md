@@ -135,14 +135,28 @@ lowering therefore moves to the **AST stage**, which changes both columns.
 | `src/extra/ast.ts` | `case NodeKind.Await` in the `ASTBuilder` serializer (`src/extra/ast.ts:109`, `:122`) | **Required companion edit** — without it the parser round-trip fixture fails immediately. |
 | `src/diagnosticMessages.json` | New message keys | Backing for new diagnostics. |
 | `cli/index.js` | **One line**: register the in-tree transform when the compiler option is set, in the existing transforms collection (`cli/index.js:403-449`) | Zero if the architect prefers `--transform <file>` per consumer (§0.2's note below). |
+| `src/compiler.ts` | **One** `case NodeKind.Await`: the typed read of a lowered `await` (§4.7.4) and the diagnostic for an `Await` the lowering did not transform | `T` is a resolved type, and an `afterParse` transform cannot type the read (§4.7.4) |
 
-**Not touched, and this is the review's biggest structural win:**
-`src/compiler.ts` **loses** its lowering role. What remains there is a defensive
-diagnostic — a `case NodeKind.Await` in `compileIdentifierExpression`-adjacent
-dispatch that reports "the async lowering transform did not run" instead of
-silently emitting garbage — and that is a diagnostic, not codegen. The reviewed
-draft's `compiler.ts` row (lowering registration, state-struct construction,
-resume-dispatch codegen) is gone.
+**`src/compiler.ts` keeps one expression case, and it is not the state machine.**
+The file **loses** its lowering role — no lowering registration, no state-struct
+construction, no resume-dispatch codegen; the reviewed draft's `compiler.ts` row
+is gone. What remains is a single `case NodeKind.Await`, doing two narrow things:
+
+- **The typed read of a lowered `await`.** The value must come out of the task's
+  record as `T`, and `T` is a *resolved* type: an `afterParse` transform neither
+  has it nor can write it (§4.7.4 — `Task<any>` is not nameable, a bare `Task`
+  requires its argument, and AS infers a call's type argument from arguments,
+  not from context). So the lowered `AwaitExpression` survives to codegen: `T`
+  from the resolver's Phase-2 arm, the value from the record at §3.2's offsets,
+  the record pointer from the lowering (a side table keyed by node identity,
+  §5.5). That is *reading*, not lowering — the parking, the resume-point
+  bookkeeping and the state struct all belong to the transform.
+- **A defensive diagnostic** for an `Await` node with no side-table entry — the
+  case reports that the async lowering transform did not run instead of emitting
+  garbage.
+
+So `src/compiler.ts` is a member of the modifies list above for exactly this one
+case, and for nothing else.
 
 **Alternative with zero `cli/` edits.** Ship the transform file inside the
 published package and select it with `--transform` — resolvable through
@@ -811,8 +825,17 @@ the collector's roots are `__visit_globals(cookie)` plus the pin space
 `[__stack_pointer, __heap_base)` (`:167-173`). A suspended task's wasm frame is
 gone, so:
 
-> **task table (a managed global, traced by `__visit_globals`) → `TaskRecord`
-> (managed) → state struct (managed) → environment (managed) → captures.**
+> **task table (a managed global, traced by `__visit_globals`) → the task's state
+> struct (`TaskState`, managed) → its record (managed, through the state's
+> `record` field or the handle's `_record`) and its environment (managed) →
+> captures.**
+>
+> The middle of that chain is stated the way it is implementable: the table's
+> element is the *state* (§4.7.3), because §3.2's record has no spare word for a
+> state reference, and the record is reached from the state. What matters is
+> unchanged — every link is a managed field, so the collector sees through all of
+> them, and the handle a guest holds is itself a second traced path to the record
+> (`Task<T>._record`, §2.4).
 
 Every link must be a managed field or the collector cannot see through it. This
 rule is backend-neutral for the reason the closures plan gives
@@ -983,14 +1006,25 @@ declaration took (commit 2); the same check extends to these names.
 
 | Symbol | Implemented by | Called by |
 |---|---|---|
-| `__taskRegister<S>(state: S): TaskRecord` | std | the entry, once |
-| `__taskPark(record: TaskRecord, awaited: TaskRecord): void` | std | `f$resume`, at each suspension |
+| `TaskState` (base class, `record!: TaskRecord`) | std | every lowered state struct extends it |
+| `__taskRegister(state: TaskState): TaskRecord` | std | the entry, once |
+| `__taskPark(state: TaskState, awaited: TaskRecord): void` | std | `f$resume`, at each suspension |
 | `__taskSettled(record: TaskRecord): bool` | std | `f$resume`, before suspending |
 | `__taskDeliver(class_: i32, a: i32, b: i32, f0: i32, f1: i32): void` | std | the framework's dispatcher (§6.1) |
 | `__taskTick(): void` | std | the framework's frame loop (§6.3) |
-| `__taskBindRecordFactory(f: () => TaskRecord)` | std (hook) | the framework, at startup |
+| `__taskBindRecordFactory(factory: () => TaskRecord)` | std (hook) | the framework, at startup |
 | `__taskBindFamily(class_: i32, family: i32)` | std (hook) | the framework, at startup |
-| `__taskValue<T>(handle: Task<T>): T` | std | wherever a `Task<T>`-typed expression exists |
+
+**Three corrections to the table, made against the frozen record.** `__taskPark`
+takes the *state*, not the record: the runtime's table must hold something a
+resume can be dispatched to, and §3.2's record is `T`-free and fixed-layout with
+no spare word for a state reference — so the table's element is the state struct,
+not the record. That requires a common base type for the state structs (the table
+cannot be generic per function), hence **`TaskState`**: an ordinary managed class
+with the one field every state struct needs, and the reason every lowered state
+struct is `class f$State extends TaskState`. And **`__taskValue<T>` is deleted**:
+§4.7.4 moved the typed read into codegen, because `T` is a resolved type that no
+`afterParse` transform can name, so nothing calls it.
 
 **std implements the machine**: the task table (`Map<i64, TaskRecord>`, keyed by
 family in the high word and the producer's `a` in the low one — §3.1), the
@@ -1381,9 +1415,26 @@ closure, and that is a design requirement, not a style.
 - The two callback slots (`arena.rs:192-197`), invoked from the epoch
   (`epoch.rs:192-240`).
 
-**No new import, no new export, no new record field, no class, no schema bump.**
-That is the claim the review checked and confirmed (finding 8.1), and §3.1's
-chosen correlation scheme is what keeps it true (§6.2).
+**No new import, no new export, no new record field, no new completion class,
+no schema bump.** That is the claim the review checked and confirmed (finding
+8.1), and §3.1's chosen correlation scheme is what keeps it true (§6.2). "No new
+class" means no new **completion** class among the arena's ten (§3.1 rejects an
+eleventh on `SessionInfo` layout grounds); the guest-side classes this plan adds
+— `TaskRecord` in `std/assembly/task.ts`, the state structs, the framework's
+record subclass — are ordinary guest classes and never appear at this boundary.
+
+**Where the guest-side halves live (the D9 split, as implemented).** The task
+machine is std source — `std/assembly/task-rt.ts`: the table keyed `(family, a)`,
+the record reads and writes at §3.2's offsets, the ready queue and its order
+(§1.2 rule 6), and §6.4's dropped-completion rule. The framework supplies what
+only it knows: the record subclass, the class→family map, and the two call sites
+— its `onBatch`/`onEvent` decode a delivered record into `__taskDeliver`, and its
+frame loop calls `__taskTick`. The lower half of D9 ("std declares, the framework
+provides the implementation") was not implementable: a bodiless `declare` in std
+is a host import, and the compiler's only name-based linking path
+(`requireFunction`, `program.ts:734`) would make every lowered program depend on
+the framework being linked. The contract half holds: the transform names symbols,
+never a path or an implementation.
 
 ### 7.2 The jobs target: the OGRE capability's pipeline — REVISED
 
