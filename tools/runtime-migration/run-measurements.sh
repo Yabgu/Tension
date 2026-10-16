@@ -9,7 +9,7 @@
 #   bash run-measurements.sh [--stub] [--incremental] [--minimal] [--engines node,wasmtime]
 #
 # Environment:
-#   ASC        path to the AssemblyScript compiler's asc.js (or an `asc` on PATH)
+#   ASC        path to the compiler's asc.js (or an `asc` on PATH)
 #   WTRUNNER   path to the wasmtime-based runner binary
 #   OUT_DIR    where the report and per-run JSON land (default: ./out)
 #   RUNTIMES   space-separated runtimes (default: stub incremental minimal)
@@ -50,10 +50,10 @@ if [ -n "${ASC:-}" ] && [ -f "$ASC" ]; then :;
 elif command -v asc >/dev/null 2>&1; then ASC=$(command -v asc);
 else
   for c in \
-    "$root/examples/io/node_modules/assemblyscript/bin/asc.js" \
-    "$root/examples/log/node_modules/assemblyscript/bin/asc.js" \
-    "$root/examples/ogre/bouncing-ball/node_modules/assemblyscript/bin/asc.js" \
-    "$root/tension-framework/node_modules/assemblyscript/bin/asc.js"; do
+    "$root/examples/io/node_modules/@acakar/tensionscript/bin/asc.js" \
+    "$root/examples/log/node_modules/@acakar/tensionscript/bin/asc.js" \
+    "$root/examples/ogre/bouncing-ball/node_modules/@acakar/tensionscript/bin/asc.js" \
+    "$root/tension-framework/node_modules/@acakar/tensionscript/bin/asc.js"; do
     [ -f "$c" ] && { ASC="$c"; break; }
   done
 fi
@@ -101,7 +101,7 @@ compile() {          # compile <workload-basename> <runtime>
 if [ -z "${ASC:-}" ] || [ ! -f "${ASC:-/nonexistent}" ]; then
   say ""
   say "No AssemblyScript compiler found; cannot compile workloads."
-  say "Set ASC=/path/to/assemblyscript/bin/asc.js and re-run."
+  say "Set ASC=/path/to/@acakar/tensionscript/bin/asc.js and re-run."
   exit 2
 fi
 
