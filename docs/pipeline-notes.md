@@ -70,6 +70,32 @@ unrelated to `src`/`cli` but still fail the command).
 
 ## Gotchas
 
+- **The `~env` global is dead-code-eliminated in release output when no arrow
+  in the module captures `this`.** That is the expected shape, not a missing
+  feature: the global is only ever *read* by a capturing arrow's prologue, so
+  with no such arrow every store to it is dead, and Binaryen removes the stores
+  and the declaration. A load cannot be removed safely, so the callee's `_env`
+  read survives as a `drop` — a few frames in the release output of such a
+  module carry a dead `i32.load offset=4` from it.
+  The consequence for fixtures is that **adding one capturing arrow changes the
+  release output shape of the whole module**: the global reappears, and frame
+  sizes and offsets shift back to the sizes the mechanism needs. So when a test
+  starts capturing `this`, expect its *release* fixture to change in places that
+  have nothing to do with the arrow itself, and re-read the diff before
+  assuming a regression.
+- **Use `local.tee`, never `local.set` + a double read, when emitting a value
+  that has to be read twice.** The `~env` delivery needs the callee value for
+  both its `_env` and its `_index`, and binding it with a separate `local.set`
+  statement and then reading the local twice trips an assertion in Binaryen's
+  stack IR optimizer (`local2Stack` in
+  `wasm-stack-opts.cpp`: `assert(values.size() > 0)`). That is not a warning: it
+  **aborts the compiler in every release build** (`optimizeLevel >= 2` turns
+  stack IR on, and the release test run uses `-O`) for several ordinary call
+  shapes — a module-level function value called once is enough to reproduce it.
+  The `local.tee` shape (`module.local_tee(index, functionArg, true)` as the
+  base of the `_env` load, then `local.get` for the index) compiles and is what
+  `makeCallIndirect` emits. Treat this as the rule for any future call-site
+  emission too, not just this one.
 - **`npm run build` exit 0 is not enough.** The `dts` step type-checks with
   stricter settings than the `src` build and can fail the whole command while
   `dist/assemblyscript.js` was written correctly. Check the per-target lines.
