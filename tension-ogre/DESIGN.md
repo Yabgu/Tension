@@ -1965,7 +1965,8 @@ build (non-zero, nothing emitted, the offending number named) when a request
 violates the relation.
 
 Flag rules: `--importMemory`, `--memoryBase = max_arena_size`, page counts for
-`--initialMemory` / `--maximumMemory`, `--exportTable`, `--runtime stub`, and
+`--initialMemory` / `--maximumMemory`, `--exportTable`, `--runtime incremental`,
+and
 **`--exportStart __start`** — the last one learned by building. AssemblyScript
 0.28 emits a `start` *section* by default, and the load-time check refuses one —
 **in a session guest, which is what this pipeline builds**: a start section runs

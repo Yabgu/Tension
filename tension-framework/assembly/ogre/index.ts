@@ -184,9 +184,17 @@ export class ConfigBuilder {
 export function windowHandle(): u64 {
   const staging = heap.alloc(8);
   const rc = windowHandleRaw(<u32>staging, <u32>(staging + 4));
-  if (rc !== 0) return 0;
+  if (rc !== 0) {
+    // The adapter writes and forgets — it does not retain this pointer — so
+    // the scratch block is ours to release on every path out.  AS has no
+    // try/finally, so each return frees explicitly.
+    heap.free(staging);
+    return 0;
+  }
   const lo = <u64>load<u32>(staging);
   const hi = <u64>load<u32>(staging + 4);
+  // Read the halves first, then release: the free must not precede the loads.
+  heap.free(staging);
   return lo | (hi << 32);
 }
 

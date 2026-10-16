@@ -26,6 +26,15 @@
 #                   and the UTF-8 byte-length path a non-ASCII message exercises.
 #                   A plain module — the records go to the host's stderr, which
 #                   the runner prints.
+#   guest-callbacks.ts         the callback record as the host accepts it: a
+#                   plain handler carries a zero environment word, so
+#                   `makeCallbacks` takes it, and the slots an absent or
+#                   present handler leaves behind are what the ABI says.
+#   guest-callbacks-guard.ts   the other half: a handler carrying a non-zero
+#                   environment word is refused with a named abort, because the
+#                   host cannot deliver an environment to a callback it invokes
+#                   itself. A refusal fixture — it aborts, and the runner checks
+#                   for the guard's message rather than for `OK`.
 #
 # Steps, in the order the design fixes them:
 #
@@ -102,7 +111,7 @@ run_plain_fixture() {
   local entry="$1" out="$2"
   echo "==> compiling $entry (plain module: no session, no capability)"
   ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
-      --runtime stub --target release -o "build/$out" )
+      --runtime incremental --target release -o "build/$out" )
   echo "==> running $out"
   set +e
   local stdout
@@ -122,6 +131,44 @@ run_plain_fixture() {
   esac
 }
 
+# A fixture whose contract is a **refusal**, not `OK`: the callback guard stops
+# it before it can register a handler that carries an environment. The runner
+# asserts the signature rather than the exit alone -- a non-zero exit, the
+# guard's own message on stderr, and no `OK` -- because "the guest aborted" is
+# only evidence when it aborted for the right reason.
+run_guard_fixture() {
+  local entry="$1" out="$2"
+  echo "==> compiling $entry (plain module: no session, no capability)"
+  ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
+      --runtime incremental --target release -o "build/$out" )
+  echo "==> running $out (expecting the guard's abort)"
+  set +e
+  local stdout
+  stdout="$("$core" "$root/build/$out" 2>"$root/build/$out.err")"
+  local status=$?
+  set -e
+  local err
+  err="$(cat "$root/build/$out.err")"
+  local guard_msg
+  guard_msg='makeCallbacks: a handler that captures `this` cannot be called by the host'
+  if [ "$status" -eq 0 ]; then
+    echo "run.sh: $entry: the interpreter exited 0 — the guard did not refuse" >&2
+    printf '%s\n' "$err" >&2
+    exit 1
+  fi
+  case "$stdout" in
+    *OK*) echo "run.sh: $entry: the fixture printed OK — it was supposed to be refused" >&2; exit 1 ;;
+  esac
+  case "$err" in
+    *"$guard_msg"*) echo "    == $entry: refused by the guard (exit $status)" ;;
+    *)
+      echo "run.sh: $entry: the abort was not the guard's message; stderr:" >&2
+      printf '%s\n' "$err" >&2
+      exit 1
+      ;;
+  esac
+}
+
 run_fixture guest-open.ts guest-open.wasm
 run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
@@ -129,6 +176,8 @@ run_fixture guest-physics-units.ts guest-physics-units.wasm
 run_plain_fixture guest-anim-parser.ts guest-anim-parser.wasm
 run_plain_fixture guest-anim-eval.ts guest-anim-eval.wasm
 run_plain_fixture guest-log.ts guest-log.wasm
+run_plain_fixture guest-callbacks.ts guest-callbacks.wasm
+run_guard_fixture guest-callbacks-guard.ts guest-callbacks-guard.wasm
 echo "==> checking guest-log's records (trace)"
 # The compiled fixture's records must reach the host's layout and filter: at
 # `trace` every level is present, the structured payload lands in the message
