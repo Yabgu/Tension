@@ -9,8 +9,8 @@ refused, and what Phase 4 owns. It adds no design; the plan is the design.
 - Phase 3 commits 1–6: `feat/async-phase3` @ `ccf888c6`.
 - Closures C1–C4 (the interaction Phase 3's commit 5 case 6 needed):
   `feat/closures-c1` … `feat/closures-c4` @ `df53b863`.
-- Phase 3 commits 7, 7b, 8: `feat/async-phase3b` @ `27ec8e0b`, cut from
-  `df53b863` so the walk could reflect C4's un-refusals.
+- Phase 3 commits 7, 7b, 8, and the §8.3(a) follow-up: `feat/async-phase3b` @
+  `75dc74a9`, cut from `df53b863` so the walk could reflect C4's un-refusals.
 - Byte-identity baseline: `ccf888c6` (`/tmp/as-closure-base`).
 
 ## What each commit delivered
@@ -35,15 +35,17 @@ traced record.
 | `11cae2ee` | The this-env class gains the constructor the entry's `new` requires, so called async methods compile. |
 | `ac72bd11` | The parser's five `AS100: Not implemented: Async functions` sites are deleted; the transforms refuse by name (commit 7b). |
 | `27ec8e0b` | One top-level fixture composes async with closures through the whole pipeline (commit 8). |
+| `75dc74a9` | §8.3(a): an async function that *is* a closure value carries its environment into `f$resume` through `state.$env`; the two-environment collision is refused. |
 
-## Verification, as of `27ec8e0b`
+## Verification, as of `75dc74a9`
 
 - `npm run build`: four targets SUCCESS.
 - `npm test` — the consolidated invocation: parser, async (resolver then
   lowering), closure, compiler, browser, asconfig, transform, cli. Exit 0.
-- Async: 30 resolver + 188 lowering checks. Closures: 92 of 92.
-- Compiler: **248** fixtures, 0 mismatches, `[ SUCCESS ]`, same 7
-  feature-gated skips. 247 before commit 8's fixture; none re-baselined.
+- Async: 30 resolver + 201 lowering checks. Closures: 92 of 92.
+- Compiler: **249** fixtures, 0 mismatches, `[ SUCCESS ]`, same 7
+  feature-gated skips. 247 before commit 8's fixture, 248 after it, 249 after
+  `75dc74a9`; none re-baselined.
 - Byte-identity against `ccf888c6`: 10/10 probes (plain and optimized).
 - Probes: this-only arrow 7, indirect `this` 8.
 - `Not implemented: Async functions`: 0 occurrences in the built
@@ -78,14 +80,17 @@ validation walk.
 4. **D10 / D11** — inferred-type and type-parameter captures are refused, as
    ruled for v1. The fix is architectural (analysis in the resolver, or types
    carried on the AST) and is a joint follow-up with the async untyped-local gap.
-5. **§8.3(a) is not implemented — an async function that is *itself* a closure
-   value.** Measured while building commit 8's fixture: a nested
-   `async function` that captures an outer local fails with `TS2304: Cannot
-   find name '$closureEnvIn'`, because §8.3(a)'s two statements — `state.$env =
-   $closureEnvIn` in the entry and the `changetype` re-declaration at the top of
-   `f$resume` — are not emitted. Case (b), an async function that *contains* a
-   closure, works and is what commit 8's fixture pins.
-6. **Parent-chain captures (C5).** A capture across more than one environment is
+5. **§8.3(a) — resolved at `75dc74a9`.** It was found non-compiling while
+   building commit 8's fixture (`TS2304` on `$closureEnvIn`); the entry now
+   stores the received environment in `state.$env` and the resume function
+   re-declares it from there, for an async function that is itself a closure
+   value. Pinned by `tests/compiler/async-closure-value.ts` and the async
+   suite's §8.3(a) section.
+6. **Two-environment captures — a capturing function with an explicit `this:`**
+   are refused by name (pending C5's parent-chain design): `$env` holds one
+   reference and cannot carry both a this-struct and a captured environment.
+   `tests/async/lower.js` §8.3(a) asserts the message.
+7. **Parent-chain captures (C5).** A capture across more than one environment is
    refused by the closure transform.
 
 ## What Phase 4 delivers
