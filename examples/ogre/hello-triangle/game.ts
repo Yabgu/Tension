@@ -14,7 +14,7 @@
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
+import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 
@@ -110,6 +110,7 @@ class Game {
     while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
       if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the mesh was never built");
       RuntimeSession.wait(5);
+      rt.runReady();
     }
 
     // Unlit is the simplest material: a colour, and no lights required.
@@ -136,9 +137,9 @@ class Game {
   /// waiting on something real. A screenshot is probe/consume: ask, wait, read.
   private captureFrame(): void {
     const from = ogre.frameCount();
-    while (ogre.frameCount() < from + 300) RuntimeSession.wait(16);
+    while (ogre.frameCount() < from + 300) { RuntimeSession.wait(16); rt.runReady(); }
     ogre.screenshot(0, 0);
-    while (ogre.frameCount() < from + 340) RuntimeSession.wait(16);
+    while (ogre.frameCount() < from + 340) { RuntimeSession.wait(16); rt.runReady(); }
     const bytes = ogre.screenshot(0, 0);
     if (bytes <= 0) fail("no frame was downloaded");
     const frame = new ArrayBuffer(bytes);

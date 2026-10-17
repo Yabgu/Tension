@@ -15,7 +15,7 @@
 //   TENSION_OGRE_HEADLESS=1 ./run.sh    refuses: no window means no input
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
+import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 // The input capability's SDK: the six verbs and the state record.
@@ -120,6 +120,7 @@ class Game {
     while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
       if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the marker mesh was never built");
       RuntimeSession.wait(5);
+      rt.runReady();
     }
 
     const warm = ogre.Material.unlit(0.95, 0.45, 0.15);
@@ -149,7 +150,10 @@ class Game {
     let token: u64 = 0;
     for (let waited: i32 = 0; waited < 600 && token == 0; waited++) {
       token = ogre.windowHandle();
-      if (token == 0) RuntimeSession.wait(16);
+      if (token == 0) {
+        RuntimeSession.wait(16);
+        rt.runReady();
+      }
     }
     if (token == 0) fail("no window handle arrived within ~10 s");
 
@@ -171,6 +175,7 @@ class Game {
     let frames: u32 = 0;
     while (true) {
       RuntimeSession.wait(16);
+      rt.runReady();
       if (input.state(this.handle, this.stateBuffer) <= 0) {
         fail("input_state refused — is the capability still attached?");
       }

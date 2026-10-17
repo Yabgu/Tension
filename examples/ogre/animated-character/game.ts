@@ -36,6 +36,7 @@ import {
   mat4Multiply,
   print,
   resReadFile,
+  rt,
   restPose,
   sample,
 } from "tension-framework";
@@ -88,6 +89,7 @@ function grab(): ArrayBuffer | null {
   ogre.screenshot(0, 0);
   for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed_at + 3; guard++) {
     RuntimeSession.wait(5);
+    rt.runReady();
   }
   const length = ogre.screenshot(0, 0);
   if (length <= 0) return null;
@@ -295,6 +297,7 @@ function mat4AffineInverseInto(src: Float32Array, src_at: i32, dst: Float32Array
 function settle(job: i32, what: string): u32 {
   while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
     RuntimeSession.wait(10);
+    rt.runReady();
   }
   if (ogre.jobState(job) != ogre.JOB_DONE) {
     fail(what + " did not load (state " + ogre.jobState(job).toString() + ", error " +
@@ -577,6 +580,7 @@ class Game {
       }
       if (batch.commit() != CHARACTERS) fail("submit_skin_matrices refused the batch");
       RuntimeSession.wait(16);
+      rt.runReady();
       // Halfway through, a second frame is kept: the last one is compared
       // against it below, and the difference is the animation.
       if (this.options.windowed && frames == FRAMES / 2) mid_frame = grab();

@@ -13,7 +13,7 @@
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession } from "tension-framework";
+import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 
@@ -97,6 +97,7 @@ class Game {
     if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
     while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
       RuntimeSession.wait(10);
+      rt.runReady();
     }
     if (ogre.jobState(job) != ogre.JOB_DONE) fail(path + " did not load");
     return ogre.jobResult(job);
@@ -142,9 +143,9 @@ class Game {
   /// waiting on something real. A screenshot is probe/consume: ask, wait, read.
   private captureFrame(): void {
     const from = ogre.frameCount();
-    while (ogre.frameCount() < from + 300) RuntimeSession.wait(16);
+    while (ogre.frameCount() < from + 300) { RuntimeSession.wait(16); rt.runReady(); }
     ogre.screenshot(0, 0);
-    while (ogre.frameCount() < from + 340) RuntimeSession.wait(16);
+    while (ogre.frameCount() < from + 340) { RuntimeSession.wait(16); rt.runReady(); }
     const bytes = ogre.screenshot(0, 0);
     if (bytes <= 0) fail("no frame was downloaded");
     const frame = new ArrayBuffer(bytes);
