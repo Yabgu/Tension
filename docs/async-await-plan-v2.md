@@ -1109,6 +1109,79 @@ transform must hand that case the pointer it reads from. Everything else in
 §4.5's argument — the AST stage, the synthesized managed class, one registration
 line in `cli/index.js` — is unaffected.
 
+### 4.8 The validation walk (Phase 3, commit 7) — NEW
+
+§4.5's transform reaches a source's top level, a namespace's members, a class
+body, and the statements of the async bodies it lowers. It does not reach the
+inside of a non-async function body, an object literal, a class-field initializer
+beyond its root expression, a top-level `try`/`catch`/`switch`, a top-level
+`if`/`while`/`do`/`for` body, an `export default` declaration, or a decorator
+argument. Until commit 7, the parser's Phase 1 guard (`AS100: Not implemented:
+Async functions`) was the only diagnostic for an `async` construct written in one
+of those places. Commit 7b deletes that guard, so commit 7 adds a second,
+read-only walk at `afterParse` (`src/async/validate.ts`), after the lowering
+pass, that refuses an unreached construct by name.
+
+**The load-bearing case (Finding G).** `if (true) { async function f() {} }` at
+the top level parses — the declaration is an expression statement wrapping a
+function expression (measured; `lower.ts`'s `Plan.nestedFunction` records the
+same shape) — and neither the parser guard's position nor the lowering pass's
+statement switch reaches it. With the guard suppressed, the program yields no
+artifact and no refusal. Deleting the guard before the walk would silently
+compile it; the walk is what makes 7b safe.
+
+**Refusal list as implemented.** Every `async` construct the lowering pass leaves
+`isAsync` gets exactly one message:
+
+| construct the lowering pass never reached | message |
+|---|---|
+| a function declaration (in a block, a non-async body, a top-level loop/`if`, `try`, `catch`, `switch`, or `export default`) | the new message |
+| a method of an unreached class | the new message |
+| a function expression or arrow in any unreached expression position | the lowering pass's `async function expressions` / `async arrow functions` |
+
+The new message: `an async function nested in a non-async body (async
+lowering)`. An unreached *expression* reuses the lowering pass's wording, because
+"nested in a non-async body" names a container and an object literal is not a
+body. `export default` is the one shape the wording fits imperfectly — an
+unreached declaration outside the statement switch rather than inside a body; the
+message is kept single, as ruled.
+
+**The refused set.** `isAsync` alone cannot distinguish "lowered" from
+"refused": the lowering pass clears it only on success (after every artifact is
+built) and leaves it set on every refusal. The walk therefore consults a
+per-source `Set<i32>` of construct starts the lowering pass recorded. The map and
+its sets are allocated only when a refusal happens. The key is the *construct's*
+start, never the diagnostic's:
+
+| shape | construct start | diagnostic start |
+|---|---|---|
+| async generic function | 0 | 0 |
+| async with an optional parameter | 0 | 17 |
+| async with no declared return type | 0 | 15 |
+| async static method | 10 | 10 |
+| async arrow | 10 | 10 |
+
+Two of five refusals report at the parameter or declaration *name*, which is
+where the user should look. A key built from the diagnostic would miss those, and
+the walk would report the same function a second time. The lowering pass records
+the construct on **every** abort path — a wrapper around the lowering body tracks
+the current construct — so a `this` in the body, a declarator without a type, or
+a nested function's failure all record the enclosing declaration too. String keys
+were rejected: building one per walk lookup would allocate, violating the
+invariant below.
+
+**The allocation invariant, and its guard.** The walk runs on every non-library
+source, including programs that declare no `async`. The byte-identity guarantee
+is about the emitted module: identity is a property of output, not of work
+performed. The walk therefore allocates nothing — no node creation, no `new`, no
+`.clone`, no `.push` into anything reachable from the program, no string keys —
+and reports only through `Parser#error`, only when a construct is refused.
+`tests/async/lower.js` enforces the four forbidden constructs at source level,
+with a stated limitation: it guards the common allocation paths; a new traversal
+written with a different allocation pattern must be caught by review, not by the
+test. Measured: 10/10 probes (five sources, plain and `-O`) are byte-identical to
+`ccf888c6`.
+
 ---
 
 ## 5. Lowering Backend B: WasmFX (design only)
