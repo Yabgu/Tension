@@ -34,8 +34,8 @@ fail() {
 hash=$("$core" layout-hash)
 bash "$framework/build.sh" --hash "$hash" >/dev/null ||
     fail "the framework's generator refused the layout hash ($hash)"
-asc="$framework/node_modules/.bin/asc"
-[ -x "$asc" ] || fail "asc is not installed in tension-framework/node_modules"
+asc="$framework/node_modules/.bin/tensionscript"
+[ -x "$asc" ] || fail "tensionscript is not installed in tension-framework/node_modules"
 
 "$asc" "$here/guest-input.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-input.wasm" ||

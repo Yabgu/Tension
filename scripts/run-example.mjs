@@ -177,7 +177,7 @@ if (!existsSync(host)) {
 }
 
 // ── the guest's build dependencies and its wasm ──────────────────────────────
-const asc = join(exampleDir, 'node_modules', '.bin', WIN ? 'asc.cmd' : 'asc');
+const asc = join(exampleDir, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript');
 if (!existsSync(asc)) {
   console.log(`${pkg.name}: installing the guest's build dependencies...`);
   npm(['install', '--silent']);
