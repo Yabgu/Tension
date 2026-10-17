@@ -842,6 +842,26 @@ rule is backend-neutral for the reason the closures plan gives
 (`closures-plan.md` §0.5): under Backend B the frame exists but is a fiber stack
 that `visitStack` does not cover, so roots are still the only way.
 
+**Case 6 (`await` inside a closure) and `this`: unexercisable today, and why.**
+The storage table's first row is the one no lowered program can reach yet. A
+captured binding's home is the environment, and the state struct is to reference
+the environment — but nothing in this fork can put a capture into an async body:
+
+- **`this`** is supplied only by a method, and async methods are refused by name
+  ("async methods (async lowering)"); an `async function` body that writes `this`
+  is refused too ("this in an async function body"), because a free function has
+  no `this` to capture.
+- **A closure** inside an async body is refused by name ("a nested function in an
+  async function body"), because closures are unimplemented — `CommonFlags.Closure`
+  exists and is dead (§D7), and the only capturing construct that resolves today
+  is an arrow inside a *non-async* function (the shipped `capturesThis` path).
+
+So case 6 is deferred to the phase after closures land, and the deferral is
+mechanical rather than editorial: when a capture becomes possible, the state
+struct gains one managed reference to the environment (never a copy of a binding,
+per the rule above), and `this` continues to need nothing async-specific. The
+commit that lands closures is also the commit that makes this row testable.
+
 **Where the state struct lives — unchanged from the reviewed draft, and still
 right.** Guest heap, managed, never `@unmanaged` (a lifted reference would be
 collected under a parked task otherwise). Rejected: wasm stack (the frame is
