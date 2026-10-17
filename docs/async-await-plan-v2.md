@@ -607,6 +607,16 @@ record, `class_ ← record.class_`, `key ← record.a`, `payload ← record.b`,
 cheap enough to be a dispatch obligation rather than a deferred read (§6.5) — and
 deferring it is exactly the corruption §3.1 of the review's finding 8.3 confirms.
 
+**Where the layout lives (Phase 4 ruling).** Those eight fields are declared on
+`TaskRecord` in **`std/assembly/task.ts`**, not in the framework. §7.1 gives the
+task machine to std and §3.2 gives it these offsets; a machine that must read
+`payload` at 8 cannot be written over a class that declares no fields. A
+capability that needs more subclasses `TaskRecord` — a subclass's fields start
+after the base's, so the offsets above are unchanged — and
+`__taskBindRecordFactory` is the hook that makes `__taskRegister` allocate that
+subclass. This also lets the compiler's own test suite exercise the runtime
+without the framework linked.
+
 **`Task<T>` is a one-word handle** (`std/assembly/task.ts`): a managed reference
 to the owning `TaskRecord`. Instantiations differ only in the type argument; the
 layout is identical for every `T` (precedent: `Function<T>`).
@@ -1034,6 +1044,20 @@ declaration took (commit 2); the same check extends to these names.
 | `__taskTick(): void` | std | the framework's frame loop (§6.3) |
 | `__taskBindRecordFactory(factory: () => TaskRecord)` | std (hook) | the framework, at startup |
 | `__taskBindFamily(class_: i32, family: i32)` | std (hook) | the framework, at startup |
+| `__taskHasRunnable(): bool` | std | the framework's frame loop (§6.3), to choose `wait(0)` over `wait(timeout)` |
+| `TaskState.resume: (state: TaskState) => void` | std (field) | the entry, before the synchronous prefix; `__taskTick`, on resume |
+
+**Phase 4 rulings on the carrier (architect).** A parked task has no way back into
+its own body: the entry calls `f$resume` directly and returns, and the state struct
+holds no reference to it, so `__taskTick` had nothing to call. The carrier is a
+**managed `TaskState.resume` field**, assigned by the entry immediately before the
+first `f$resume(state)` — one lowering emission, and the seam's signatures stay as
+they are. A `__taskRegister(state, resume)` parameter was the alternative and was
+not taken: the pointer belongs with the task's other state, and a field is traced
+by the generated visitor like every other managed reference in the chain (§4.4).
+
+`__taskHasRunnable` was missing from this table: §6.3's loop tests
+`rt.hasRunnable()` to decide whether to block, and the seam had no symbol for it.
 
 **Three corrections to the table, made against the frozen record.** `__taskPark`
 takes the *state*, not the record: the runtime's table must hold something a
@@ -1471,12 +1495,18 @@ counter sum at `posting.rs:417-420`).
 > At each tick, `rt.runReady()` compares the drop rollup against the last value it
 > observed. If it advanced, the runtime **cannot attribute the loss to a key** —
 > drops are counted per class, not per record (`subring.rs:290-295`) — so it wakes
-> every task parked on a class whose counter advanced, with
-> `status = -EIO` ("completion lost"), and logs the class and the delta once. The
+> every task parked on a **family** whose counter advanced, with
+> `status = -EIO` ("completion lost"), and logs the family and the delta once. The
 > game recovers through the capability's readers, which the design names as the
 > truth: "events are advisory, the status table is the truth, and a dropped
 > `JOB_DONE` costs a guest nothing it cannot read from the record"
-> (`tension-ogre/DESIGN.md:1840-1848`).
+> (`tension-ogre/DESIGN.md:1842-1844`).
+
+**Per family, not per class (Phase 4 ruling).** A parked task records the family
+it awaits, because the thing that parks it — a job id — does not say whether the
+completion will arrive as `JOB_DONE` or `JOB_FAILED`; the record's `class_` is 0
+until delivery. Per-class attribution is therefore not executable, and per-family
+is the same set of tasks: the family *is* the union of its classes (§3.1).
 
 **Why this rule and not another.** Waking with a distinguishable status is the
 only option that neither hangs nor lies: the alternative — leaving tasks parked
@@ -1506,6 +1536,11 @@ to 1 and queues more loads than the ring can hold without a tick (§8.4, NC3).
   they are completed by the tick itself. Their relative order within one tick is
   the one thing this plan leaves to the implementation (§1.2's note), and it must
   be documented before they ship.
+- **One resume per task per tick (Phase 4 ruling)**: `__taskTick` drains the
+  entries present when it starts, each at most once. A task delivered again
+  during the tick queues for the next one. This keeps a resumed task from being
+  resumed repeatedly inside a single frame, and makes a tick's ordering a
+  function of the deliveries that preceded it rather than of the tick's own work.
 - **Double registration**: refused with a named error (§1.2 rule 5).
 - **Floating tasks**: a task whose handle nobody awaits still runs; on settlement
   the runtime clears its parked entry and (if nothing references the record)
@@ -1666,7 +1701,13 @@ one-sentence contract, not a joint design.
 
 The second is the meaningful one, and it is exactly `ogre_jobs.rs`'s shape
 (`tension-core/tests/ogre_jobs.rs:63-88`: run the interpreter as a subprocess,
-assert the guest's own transcript). The first is the fast loop, and it is honest
+assert the guest's own transcript). **Phase 4 ruling: this is the harness** —
+`tension-core/tests/async_await.rs`, against `libtension_ogre.so`, with
+`--renderer=null` and the packed fixture volume. It exists because a subprocess
+test cannot inject a delayed post (review 8.2) and the adapter is the producer
+that does exist. Its skip policy must be stated: `tests/support/ci.rs` panics
+unless `TENSION_TEST_ALLOW_SKIP=1`, so a missing DSO or volume is a skip only for
+local runs and a failure in CI. The first is the fast loop, and it is honest
 about what it cannot show. Both compile with the published compiler (§0.4).
 
 ### 8.2 Pass criteria for the meaningful harness
