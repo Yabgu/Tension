@@ -17,6 +17,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@acakar/tensionscript": "file:../../../../../../tmp/pack031/acakar-tensionscript-0.3.1.tgz"
+    "@acakar/tensionscript": "^0.3.0"
   }
 }
