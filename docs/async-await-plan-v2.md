@@ -1135,16 +1135,21 @@ compile it; the walk is what makes 7b safe.
 
 | construct the lowering pass never reached | message |
 |---|---|
-| a function declaration (in a block, a non-async body, a top-level loop/`if`, `try`, `catch`, `switch`, or `export default`) | the new message |
-| a method of an unreached class | the new message |
+| a function declaration in a block, a non-async body, a top-level loop/`if`, `try`, `catch`, or `switch` | `an async function nested in a non-async body (async lowering)` |
+| an `async export default function` | `an async export default function (async lowering)` |
+| a method of an unreached class | `an async function nested in a non-async body (async lowering)` |
 | a function expression or arrow in any unreached expression position | the lowering pass's `async function expressions` / `async arrow functions` |
 
-The new message: `an async function nested in a non-async body (async
-lowering)`. An unreached *expression* reuses the lowering pass's wording, because
-"nested in a non-async body" names a container and an object literal is not a
-body. `export default` is the one shape the wording fits imperfectly — an
-unreached declaration outside the statement switch rather than inside a body; the
-message is kept single, as ruled.
+`an async function nested in a non-async body (async lowering)` is new in commit
+7. An unreached *expression* reuses the lowering pass's wording, because "nested
+in a non-async body" names a container and an object literal is not a body.
+`export default` was originally folded into the nested-body message; commit 7b
+(ruling A) gave it its own, because the shape is a top-level declaration the
+lowering pass's statement switch does not visit, not a function inside a body.
+The two are disjoint by grammar, not by precedence: `export default` at non-top
+level is `TS1109: Expression expected.` (measured), and an export-default arrow
+or function expression is `TS1005`/`TS1003` (measured) — so no shape can produce
+both messages, and there is no precedence question to settle.
 
 **The refused set.** `isAsync` alone cannot distinguish "lowered" from
 "refused": the lowering pass clears it only on success (after every artifact is
