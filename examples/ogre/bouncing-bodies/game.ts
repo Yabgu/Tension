@@ -47,7 +47,7 @@
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import {
-  ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession,
+  ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt,
 } from "tension-framework";
 // The physics layer: bodies, contacts, impulses, and the cadence.
 import { World, WorldConfig } from "tension-framework/assembly/physics";
@@ -113,6 +113,7 @@ function submit_material(id: u32, r: f64, g: f64, b: f64, lit: bool,
 function settle(job: i32, what: string): i32 {
   while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
     RuntimeSession.wait(10);
+    rt.runReady();
   }
   if (ogre.jobState(job) != ogre.JOB_DONE) fail(what + " did not load");
   return ogre.jobResult(job);
@@ -124,6 +125,7 @@ function grab(): ArrayBuffer | null {
   ogre.screenshot(0, 0);
   for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed + 3; guard++) {
     RuntimeSession.wait(5);
+    rt.runReady();
   }
   const length = ogre.screenshot(0, 0);
   if (length <= 0) return null;
@@ -389,6 +391,7 @@ class Game {
     let contacts_this_frame = 0, total_contacts = 0, contacts_measured = 0;
     while (frame < FRAMES) {
       RuntimeSession.wait(16);
+      rt.runReady();
       const now = ogre.frameCount();
       const advance = now - last;
       if (advance == 0) continue; // the renderer has not drawn a new frame yet

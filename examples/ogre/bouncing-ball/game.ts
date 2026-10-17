@@ -10,7 +10,7 @@
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import {
-  ConfigBuilder, Solver, SolverConfig, arg, argCount, makeCallbacks, print, RuntimeSession,
+  ConfigBuilder, Solver, SolverConfig, arg, argCount, makeCallbacks, print, RuntimeSession, rt,
 } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
@@ -141,6 +141,7 @@ class Game {
     if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
     while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
       RuntimeSession.wait(10);
+      rt.runReady();
     }
     if (ogre.jobState(job) != ogre.JOB_DONE) fail("Barrel.mesh did not load");
     const mesh = ogre.jobResult(job);
@@ -184,6 +185,7 @@ class Game {
 
     while (ogre.frameCount() < first + FRAMES && bounces < BOUNCES) {
       RuntimeSession.wait(16);
+      rt.runReady();
       const now = ogre.frameCount();
       const advance = now - last;
       if (advance == 0) continue; // the renderer has not drawn a new frame yet

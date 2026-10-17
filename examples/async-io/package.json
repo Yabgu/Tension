@@ -1,0 +1,22 @@
+{
+  "name": "tension-example-async-io",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: await guest tasks, tick the scheduler in a real frame loop",
+  "scripts": {
+    "build": "tensionscript game.ts --config ../../tension-framework/build/session.asconfig.json -o build/game.wasm",
+    "build:debug": "tensionscript game.ts --config ../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "io"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework"
+  },
+  "devDependencies": {
+    "@acakar/tensionscript": "file:../../../../../../tmp/pack031/acakar-tensionscript-0.3.1.tgz"
+  }
+}

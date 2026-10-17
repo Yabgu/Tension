@@ -5,12 +5,13 @@
 // `__taskDeliver`, and `rt.runReady()` resuming the parked task — the whole
 // path a real completion takes, minus the host.
 //
-// **Compiler selection, stated:** the guest here links the *framework*, and the
-// framework's build uses the published package. This test needs the std task
-// machine (4a) and the completion symbol (4b), which ship in 0.3.0 — so it
-// compiles with `TENSIONSCRIPT_BIN` when that points at a compiler which has
-// `__taskComplete`, and otherwise with the local fork checkout. If neither is
-// available the test skips with a printed reason rather than pretending.
+// **Compiler requirement, stated as a gate:** the guest here links the
+// *framework*, and the framework's build uses the published package. This test
+// needs the std task machine (4a) and the completion symbol (4b), which ship in
+// 0.3.0. A compiler without them is a **failure**, not a skip: the consumer
+// dependency is `^0.3.0`, so an older compiler on disk means the install is
+// wrong, and silently skipping is how that goes unnoticed. `TENSIONSCRIPT_BIN`
+// may point at another build of 0.3.x.
 //
 // Run: node tests/rt-dispatch.mjs
 
@@ -42,8 +43,8 @@ function check(name, actual, expected) {
 function findCompiler() {
   const candidates = [
     process.env.TENSIONSCRIPT_BIN,
-    join(here, "..", "..", "..", "as-inspect", "assemblyscript", "bin", "tensionscript.js"),
-    join(framework, "node_modules", "@acakar", "tensionscript", "bin", "tensionscript.js")
+    join(framework, "node_modules", "@acakar", "tensionscript", "bin", "tensionscript.js"),
+    join(here, "..", "..", "..", "as-inspect", "assemblyscript", "bin", "tensionscript.js")
   ].filter(Boolean);
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
@@ -57,8 +58,11 @@ function findCompiler() {
 
 const compiler = findCompiler();
 if (!compiler) {
-  console.log("SKIP: no compiler with __taskComplete (publish 0.3.0, or set TENSIONSCRIPT_BIN)");
-  process.exit(0);
+  console.log("FAIL: no compiler with __taskComplete.");
+  console.log("      The framework depends on @acakar/tensionscript@^0.3.0, whose std has");
+  console.log("      the task machine and the completion symbol. Run `npm install` here,");
+  console.log("      or set TENSIONSCRIPT_BIN to a 0.3.x build.");
+  process.exit(1);
 }
 
 const source = `
