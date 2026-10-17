@@ -793,6 +793,35 @@ to `this` inside the arrow are rewritten to `env.$this`; the resolver never sees
 A struct is created only when there is at least one non-`this` capture to justify
 it, so a `$this`-only struct cannot occur.
 
+### 7.1a Owner kinds — what may own an environment
+
+The rules above say where `$this` lives; this says *whose* environment it can
+live in. An **owner** is a function whose body declares bindings that a nested
+function captures, and therefore allocates the environment.
+
+| Owner kind | May own an environment | Why |
+|---|---|---|
+| a top-level `function` declaration | **yes** | its body declares the captured bindings |
+| an instance or prototype **method** | **yes** | its body declares the bindings, and its `this` is `param 0`, so `$this` has a value to hold at scope entry |
+| a function with an explicit **`this:` parameter** | **yes** | the explicit parameter supplies the receiver (`signature.explicitThisType`) |
+| a **static method** | **no** | `this` there is the class object, not a receiver parameter; there is no value to store, and its members are globals |
+| a function expression at the top level | **no** (C1 scope) | the environment's owner would be the module, whose "entry" is the start function; deferred |
+| a nested function that is neither a method nor an arrow | **no** (refused) | its own frame is where the environment would be allocated, but its body is compiled as a separate closure value — the shape needs the parent chain (§2.2), deferred |
+
+Two consequences, both implemented:
+
+- **`$this` is initialized at the owning scope's entry** from whatever the
+  owner's `this` is — the method's `param 0`, or the explicit `this:` parameter.
+  A block-scoped owner initializes it at the block's entry, where `this` is
+  still in scope, so no parent chain is needed.
+- **`$this` is field 0 whenever the environment carries a receiver.** It is the
+  only field whose position is fixed; the captured bindings follow in
+  declaration order, then the `$init$` flags.
+
+A method that owns no environment is unchanged: the transform only rewrites the
+bodies of methods that declare captured bindings, and a static method is skipped
+entirely.
+
 ### 7.2 Arrows nested in arrows
 
 The `this` walk stops at the nearest **non-arrow** function
