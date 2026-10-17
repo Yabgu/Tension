@@ -856,14 +856,37 @@ its own. Per the architect's ruling:
 - The async transform synthesizes `f$ThisEnv extends TaskEnv { $this: C }`.
 - The entry populates `state.$env = new f$ThisEnv(this)` **unconditionally** —
   before `f$resume(state)` — so the sync prefix runs with it in place.
-- `this` in the method body is rewritten to
-  `changetype<f$ThisEnv>(state.$env!).$this` (or through a local hoisted at the
-  top of `f$resume`; C1 picks the cheaper emission).
+- `this` in the method body is rewritten, at each occurrence, to
+  `changetype<f$ThisEnv>(state.$env).$this`. **A read per occurrence, not a
+  hoisted local**: a local would have to be lifted across every await to stay
+  correct, and the field read is always current by construction.
+- The same mechanism serves a free `async function` with an explicit `this:`
+  parameter — the receiver is `param 0` there too, and the this-struct holds it
+  (§7.1a).
 
 This removes the need for a dedicated `$this` state field and keeps `$env`'s
-meaning single: *the environment the suspended frame needs*. It is an
-async-transform change, scheduled with case 6 (§8.4), not part of the closure
-transform.
+meaning single: *the environment the suspended frame needs*.
+
+**What C4 implemented, which is broader than the ruling's minimum.** The ruling
+covers async *methods*. Two adjacent cases fell out of the same mechanism and are
+now lowered too:
+
+| shape | `$env` holds | how `this` reaches the resume body |
+|---|---|---|
+| async instance method | `f$ThisEnv { $this: C }` | `changetype<f$ThisEnv>(state.$env).$this` per occurrence |
+| async function with explicit `this:` | the same | the same |
+| async static method | — | **refused by name**: `this` there is the class object, not a receiver parameter (§7.1a) |
+
+**Two shapes remain refused, and the reason is the transform order (§3.1).**
+Closures lower *before* async, so a nested arrow in an async body that captures
+`this` was already classified by the closure transform — as `Receiver`, with no
+environment. That arrow's prologue then reads `~env`, and the function creating
+it is `f$resume`, which has no `this` to store there. The result is a clean
+compile error (`TS2332`), not a miscompile, and it is reported as a known
+limitation rather than worked around. The fix, when it is wanted, is to let an
+async body's `this` be an ordinary captured binding of the enclosing scope —
+which needs the same treatment for `this` that C2b gave a method's `this`, and a
+decision about which pass owns it.
 
 ### 7.5 `super`
 
@@ -940,6 +963,17 @@ there because nothing needs to cross a function boundary.
 For an **async method**, the entry populates `state.$env` with the this-struct
 (§7.4). A method is not a closure value, so it has no `$closureEnvIn`.
 
+**Case (b) is what C4 relies on, and it needed one addition to the async
+transform.** When the async body creates a closure *before* an await, the
+creation is a `function`-statement plan, which the resume function emits
+**unguarded** (§4.2's `nestedFunction` rule) — so it re-reads its environment
+local on every entry, including a resumed one. A local declared inside a guarded
+region is out of scope there. The async transform therefore lifts the environment
+local whenever a closure creation in the body reads it
+(`AsyncLowerTransform#liftCreationEnvs`), and the creation reads the copy-in.
+That is the same rule as any other cross-await local, applied to a local the
+closure transform introduced.
+
 The `$env` field type stays `TaskEnv | null`; `changetype` at read-back is the one
 cast, and it is the same cast the plan already uses for `record!`-style
 non-nullable fields.
@@ -968,6 +1002,24 @@ scheduler exists (Phase 4).
 
 Until Gate 2, `this` and nested functions in async bodies stay refused by name;
 the closure plan does not weaken those refusals itself.
+
+**Gate 2 landed with C4**, with two limits stated here so they are not
+rediscovered as bugs:
+
+- A **closure written as a value** (`const f = (): i32 => x;`) inside an async
+  body must be lifted across an await, and lifting needs a declared type. With an
+  explicit annotation (`const f: () => i32 = …`) it works; without one it is
+  refused by name ("a local without a declared type that crosses an await"),
+  which is the same gap as D10 in a second place.
+- **Nested arrows capturing `this`** in an async body remain refused by the
+  mechanism described in §7.4 (a `TS2332` from the resolver), because the closure
+  transform classified them before the async transform moved the body.
+
+**Parent-chain captures (C5).** A capture that crosses more than one environment
+is still refused by name. It is deferred to C5 — after the async interaction,
+because C4's cases all need at most one environment layer, and the chain is a
+separate mechanism (a `$parent` link with statically decided depth) rather than a
+consequence of composition.
 
 ### 8.5 The async contract this plan requires
 
@@ -1018,6 +1070,17 @@ function onBatchShim(class_: u32, ptr: u32, count: u32): i32 { /* uses pending *
 The shim's `_env` is 0, so the guard passes; the closure that produced the state
 is not the handler. This is a language-level consequence of the host ABI (no
 environment word crosses it) and is documented in §9.4's "no ABI change".
+
+**How the compile-time half is detected (C3).** The transform recognises a
+registration call by the callee name `makeCallbacks` — the name the framework
+exports and every guest uses (`tension-framework/assembly/runtime/callbacks.ts:56`).
+It is the one place the closure transform names a framework symbol rather than a
+std one, and it is what makes the refusal a compile-time message instead of the
+runtime `assert`. **The coupling is real:** renaming that function would silently
+drop the refusal back to the runtime guard. The test asserts both halves — the
+transform's message for a capturing closure, and the acceptance of a
+non-capturing handler — so the coupling is visible in a failing test rather than
+discovered at run time.
 
 ### 9.2 The unsafe `call_indirect` builtin
 
