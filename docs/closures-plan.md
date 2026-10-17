@@ -1,1442 +1,1195 @@
-# Closures in TensionScript — PLAN
+# Closures in TensionScript — PLAN (v2, revised against `ccf888c6`)
 
-**Status:** proposal, awaiting architect review. **No code written. No lowering
-implemented. No commits beyond this document.**
-**Consistent with:** `docs/async-await-plan-v2.md` (v2). Where this plan changes a
-v2 decision, it says so and says why.
-
-Date of evidence: 2026-10-15. Fork state: `origin` = `git@github.com:Yabgu/TensionScript.git`,
-initial commit `b6bda05c`, submodule at `third_party/assemblyscript`.
+**Status:** proposal, awaiting architect review. **No implementation. No code
+commits.**
+**Supersedes:** the 2026-10-15 revision of this file, written against
+`b6bda05c` (the pre-arrow-this, pre-runtime-migration, pre-async tree). This
+revision answers `docs/closures-plan-review.md` finding by finding; the
+disposition table is §0.2 and no finding is dropped.
+**Evidence basis:** the fork at `~/work/as-inspect/assemblyscript`, branch
+`feat/async-phase3`, HEAD `ccf888c6`; the Tension tree at `main`. Every
+`file:line` citation below is against `ccf888c6`. Measurements marked
+**measured** were run through `dist/asc.js` at that commit during this revision.
 
 ---
 
-## 0. The four things that had to be established — all four are settled
+## 0. Revision record
 
-The mission listed four risks to resolve before designing anything. Three
-resolved cleanly. **One resolved into a blocker that is not about the compiler at
-all, and it changes the shape of what comes next.**
+### 0.1 The three facts that changed since the plan was written
 
-### 0.1 Risk 1 — FunctionExpression and arrows today: **partial mechanism, not a clean slate**
+1. **Arrow `this` shipped.** `Function<T>` gained no fields — `_index: u32`,
+   `_env: usize` (`std/assembly/function.ts:3-5`), `__visit` tracing `_env`
+   (`:34-37`) — but the compiler now *fills* `_env`: a this-capturing arrow is a
+   heap `Function<T>` value whose `_env` is the creating function's **receiver**
+   (`Compiler.makeCapturingFunctionValue`, `src/compiler.ts:7534-7558`), and every
+   indirect call hands that word to the callee through a hidden mutable global
+   `~env` (`BuiltinNames.env`, `src/builtins.ts:129`;
+   `Compiler.ensureEnvGlobal`, `src/compiler.ts:6637-6650`;
+   delivery in `makeCallIndirect`, `:7212-7227`). The callee's prologue reads the
+   global into the `this` local the resolver created
+   (`src/compiler.ts:1921-1934`; `Resolver.markCapturingArrows`,
+   `src/resolver.ts:2284-2291`). The discriminator is `capturesThis` on the
+   **prototype** (`src/program.ts:3722`) — a compile-time fact, not a bit in the
+   word.
+2. **The runtime migration landed.** `incremental` is the compiler default
+   (`src/compiler.ts:244`), the framework's generated config
+   (`tension-framework/build.sh:149-160`,
+   `tension-framework/build/session.asconfig.json:3`), and all five examples
+   (`examples/{ai,audio,io,log,res}/package.json:8`). The old plan's §0.3 blocker
+   is history; the 32 B/closure measurement stays as the *reason* the migration
+   was necessary.
+3. **Async phases 1-6 landed.** A `TaskRecord` class (managed, traced,
+   `std/assembly/task.ts:22`), `Task<T>._record` as a managed reference (`:53-55`),
+   `TaskState` and `TaskEnv` (`std/assembly/task-rt.ts:54-59`), and **one**
+   `$env: TaskEnv | null` field on every lowered state struct, emitted and never
+   populated (`src/async/lower.ts:175`, `:375-397`). The lowering transform runs
+   at `afterParse` (`cli/index.js:448-451`, `:705-707`), before
+   `initializeProgram` (`:715-719`), and refuses the three constructs that could
+   supply a capture: `this` in an async body (`src/async/lower.ts:1332`), a nested
+   plain function in an async body (`:1993-1999`), async methods (`:1463`).
 
-This is the single best piece of news in the plan, so it goes first.
+### 0.2 Finding disposition — every review finding, addressed
 
-**First-class functions are already implemented.** Upstream commit
-`7de4745e feat: Implement first-class functions (#1384)` (verified via
-`git log -S"_env" -- std/assembly/function.ts`). Function values exist today.
+| # | Finding | Disposition in this revision |
+|---|---|---|
+| **F1** | Staging: analysis at codegen cannot compose with the async transform at `afterParse`. | **Revised.** Closures are lowered at `afterParse`, **before** async, as an AST rewrite (§3). The async transform then sees ordinary code: an env local and ordinary field accesses. §8.5 lists the async-side contract. |
+| **F2** | `_env` already means "the receiver"; the plan gave it a second meaning with no discriminator. | **Revised.** `envKind ∈ {None, Receiver, Struct}` on the function prototype, set at resolution time from a transform side table (§4.5, §7.1). `this` occupies field 0 of an env class **only when a struct exists**; a this-only arrow keeps the shipped `Receiver` path untouched. |
+| **F3** | Direct calls to capturing function declarations have no environment delivery. | **Revised, and measured into a smaller problem than feared.** In this compiler a nested `function inner(){}` is *not* a direct-call target: it parses as `ExpressionStatement(FunctionExpression)` and is called through `call_indirect` (measured; §6.5). Every genuine `ElementKind.Function` direct call is either a top-level function (no enclosing locals to capture) or a method (`this` is `param 0`; block-scoped classes are refused, `src/compiler.ts:3608`). **No `compileCallDirect` change is required.** A fallback refusal by name is specified for any counterexample C1 finds. |
+| **F4** | The shipped `$env` shape and the resume-function assumption. | **Revised.** One `$env` field of type `TaskEnv` or null, per state struct (§8.3). It is populated for async **methods** (a this-struct at field 0, Decision 4) and is the carrier of a capturing async function's env into `f$resume`. `f$resume(state)` takes only `state`; nothing is threaded as a parameter. |
+| **F5** | The plan's call convention is not the shipped one; the host-callback restriction is missing. | **Revised.** §6.4 states the shipped `~env` save/set/restore and the prologue; §9 states that `makeCallbacks` refuses any capturing closure and specifies the shim pattern, the `call_indirect` builtin gap, and the "`~env` is not a root" rule. |
+| **F6** | Analysis placement vs scope-entry allocation. | **Revised.** Analysis is compile-time only; **allocation happens at the scope entry of the scope that owns the captured bindings** (§5.3). One rule, one place. |
+| **F7** | Per-iteration loop lowering was a requirement, not a design. | **Revised.** §2.3 and §5.4 specify the rule: a body block allocates its env at the top of the block (per iteration); a `for`-header binding clones its env at the *end* of the body, before the incrementor, so the increment mutates the next iteration's binding; `continue` runs the incrementor and therefore the clone. |
+| **F8** | Case 6's deferral gate is understated. | **Revised.** §8.4 states the chain: closures → the async transform's refusals removed and `$env` populated → case 6 testable. The async-side changes are enumerated (§8.5) and are a separate dispatch. |
+| **F9** | Case 3 asserts a bound method value; TS has none. | **Revised.** §7.3: method values are **unbound** (measured `TS2685` on `f()`), `Function<T>` has no `bind` (grep), and `f.call(c)` is the explicit-receiver path (measured ok). Case 3 is replaced. |
+| **F10** | `super` in arrows is unaddressed. | **Revised.** §7.5: `super` in a capturing arrow is refused by name; the general fix stays with arrow-this D8. |
+| **F11** | §0.1's mechanism claims and all citations are stale. | **Revised.** §1 replaces the old §0.1 with the shipped mechanism; every citation is at `ccf888c6`. The old plan's "writes `_env` exactly once, always zero" and "capture detected at exactly two sites" are marked historical in §1.2. |
+| **F12** | D1 and D8 are resolved by the runtime migration. | **Revised.** §12 marks D1 and D8 resolved with citations; `stub` references are historical. |
+| **F13** | Platform: the plan says Windows; the working host is Linux. | **Revised.** §13.3: Linux first gate, Windows second, as the runtime migration did. |
+| **F14** | TDZ's runtime guard needs a concrete mechanism. | **Revised.** §2.5: the demotion removes AS's definite-assignment check, so an initialization flag plus `abort()`/`unreachable()` is **mandatory** for declarations without an initializer — not optional. The flag is emitted only for those declarations. |
+| **F15** | `CommonFlags.Closure` is dead. | **Revised.** §12 D6: delete it; `envKind` in the side table is the fact, and a dead flag named `Closure` beside this feature misleads. |
+| **F16** | §7.1's `_env`/`$env` naming is wrong. | **Revised.** §8.3 distinguishes `_env` (the `Function<T>` word), `$env` (the state-struct field), and the env locals (`$closureEnv`, `$closureEnvIn`). |
+| **F17** | The plan's cost classification is two-way; the shipped mechanism has three cases. | **Revised.** §4.5's three-way table (`None` / `Receiver` / `Struct`) and the case-11 assertions. |
+| **F18** | `TaskEnv` is not named as the environment base. | **Revised.** §5.2: **every synthesized env class extends `TaskEnv`**, because `$env` is typed `TaskEnv` or null and a single base keeps that carrier assignable without a per-function field type. |
 
-The AST is already the right shape and needs **no new nodes**:
+### 0.3 What this revision keeps from the original plan
 
-- `FunctionExpression` (`src/ast.ts:1351-1359`) is a thin wrapper:
-  ```ts
-  export class FunctionExpression extends Expression {
-    constructor(public declaration: FunctionDeclaration) {
-      super(NodeKind.Function, declaration.range);
-    }
-  }
-  ```
-- `FunctionDeclaration extends DeclarationStatement` (`src/ast.ts:2090`, base at
-  `:1753`) and carries `typeParameters`, `signature: FunctionTypeNode`,
-  `body: Statement | null`, **`arrowKind: ArrowKind`**.
-- `ArrowKind` (`src/ast.ts:2080-2088`) is `None | Parenthesized | Single` — so
-  **arrow-ness is already a first-class AST fact**, which is exactly what the
-  `this`-binding rule needs.
-- `MethodDeclaration extends FunctionDeclaration` (`src/ast.ts:2215`) — one
-  representation covers methods.
+The central rule survives unchanged: **a captured binding's storage is the
+environment** — one home per binding, never a second copy in the state struct
+(original §0.4; adopted by `docs/async-await-plan-v2.md` §4.4, which strikes the
+reviewed draft's "the environment would also have to be lifted" at
+`async-await-plan-v2.md:807`). Also kept: capture by reference including `const`
+(§2.1), per-scope-instance environments with a parent chain (§2.2), no hoisting
+(§2.5), no new AST nodes (§3.5), no new `TypeKind` and no capture-ness in the
+`Signature` string (§11), and the backend-neutrality argument (§10).
 
-**The runtime value representation for closures already exists, and the compiler
-never fills it in.** `std/assembly/function.ts` in full:
+---
+
+## 1. Ground truth — the mechanism this plan composes with
+
+### 1.1 `Function<T>` and `_env`
 
 ```ts
-@final export abstract class Function<T> {
-  private _index: u32;
-  private _env: usize;
-
-  get index(this: T): u32 {
-    return load<u32>(changetype<usize>(this), offsetof<Function<T>>("_index"));
-  }
-  // ... name, length, call ...
-  @unsafe private __visit(cookie: u32): void {
-    // Env is either `null` (nop) or compiler-generated
-    __visit(this._env, cookie);
-  }
+@final export abstract class Function<T> {   // std/assembly/function.ts:3
+  private _index: u32;                       // :4
+  private _env: usize;                       // :5
+  ...
+  @unsafe private __visit(cookie: u32): void { __visit(this._env, cookie); }  // :34-37
 }
 ```
 
-Three things follow, all verified:
+- `_index` is written by `ensureRuntimeFunction` into a **static, memoized**
+  memory segment for every ordinary function value (`src/compiler.ts:2194-2210`).
+- `_env` is written as `0` there (`:2203`) and as a real value by
+  `makeCapturingFunctionValue` for a this-capturing arrow (`:7534-7558`).
+- The indirect call site reads `_env` and hands it to the callee
+  (`:7212-7227`). The load is at `offset = usizeType.byteSize` — **4 on
+  wasm32**, 8 on wasm64 — and `assertFunctionLayout` checks both offsets against
+  the resolved class (`:7517-7520`).
+- Non-capturing function values stay **static and allocation-free**; only
+  capturing ones are heap instances. That distinction is preserved here.
 
-1. **`_env` is the environment slot.** It exists, it is `usize`, and the
-   collector already traces it — the comment says so: *"Env is either `null`
-   (nop) or **compiler-generated**"*. The std lib was written in anticipation of
-   this feature.
-2. **The compiler writes it exactly once, always as zero.** `ensureRuntimeFunction`
-   (`src/compiler.ts:2154-2177`) pushes the function onto a function table, resolves
-   the `Function<T>` wrapper class, and writes `_index` = table index and
-   **`_env` = 0** into a **static, memoized** memory segment
-   (`compiler.ts:2168-2174`, memoized via `instance.memorySegment`). Grepping
-   `src/` for `_env` returns that one write and nothing else.
-3. **Capture is already *detected*, at exactly two sites.** Both are guarded by
-   `declaredByFlow(flow)`:
-   - `src/compiler.ts:5708` — the assignment-target path
-   - `src/compiler.ts:7562` — the read path
+### 1.2 The shipped `this` delivery (and the two stale claims it replaced)
 
-   and `declaredByFlow` (`src/program.ts:3687`) is one line:
-   ```ts
-   declaredByFlow(flow: Flow): bool {
-     return this.parent == flow.targetFunction;
-   }
-   ```
+`Resolver.markCapturingArrows` (`src/resolver.ts:2284-2291`) marks every arrow a
+`this` lookup escaped, and gives each one a `this` local. `lookupThisExpression`
+(`:2295-2402`) walks outward through arrows and stops at the nearest enclosing
+**non-arrow** function. Codegen then:
 
-   That is the whole closure test: *does this `Local` belong to the function I am
-   currently compiling?* If not, it is captured, and today that is an error.
+1. emits a **prologue** at body start: `local.set this = global.get ~env`
+   (`src/compiler.ts:1921-1934`), and
+2. materialises a **heap** `Function<T>` with `_env` = the creating function's
+   receiver (`makeCapturingFunctionValue`, `:7534-7558`).
 
-**Exact current behaviour, measured:**
+`makeCallIndirect` saves the caller's `~env`, stores the callee's `_env`, calls,
+and restores (`:7212-7227`). The `local.tee` shape at `:7223` is load-bearing:
+a `local.set` + double read trips Binaryen's stack-IR assertion at
+`optimizeLevel >= 2` (`docs/pipeline-notes.md`). Any new delivery code follows
+the same shape.
 
-```
-let x: i32 = 1; let f = (): i32 => x + 1;
-  → ERROR TS2454: Variable 'x' is used before being assigned.
-  → ERROR AS100: Not implemented: Closures
-    FAILURE 2 compile error(s)
-```
+**Historical, no longer true** (old plan §0.1:71-90): "the compiler writes `_env`
+exactly once, always as zero" and "capture is detected at exactly two sites".
+`_env` is now written per creation for capturing arrows, and `this` capture is
+detected in the resolver, not only at the two `declaredByFlow` sites
+(`src/compiler.ts:5771`, `:7747`, which still report `AS100: Not implemented:
+Closures` for general capture).
 
-`AS100` is `DiagnosticCode.Not_implemented_0` (`"Not implemented: {0}": 100` in
-`src/diagnosticMessages.json:2`) with `"Closures"` as the argument. Note the
-**companion spurious diagnostic**: `TS2454` is misleading and should be
-suppressed once capture is supported — a small correctness point for the
-implementation.
+### 1.3 What a "nested function declaration" is in this compiler — measured
 
-Non-capturing uses **already work**: a nested `function` declaration assigned to
-a function-typed variable compiles clean, and a non-capturing arrow
-(`const f = (v: i32): i32 => v + 1`) compiles and runs clean. So only *capture* is
-missing.
+**A nested `function inner() {}` is a function *expression*, not a declaration.**
+`parseStatement` has no `Token.Function` case (`src/parser.ts:3083-3178`), so the
+statement falls to `parseExpressionStatement`, and `parseExpression`'s
+`Token.Function` arm calls `parseFunctionExpression` (`:4274-4278`). The
+compiler then materialises a `Function<T>` value and binds the name as a scoped
+local (`src/compiler.ts:7476-7505`).
 
-**`CommonFlags.Closure = 1 << 29` (`src/common.ts:79`) exists and is dead** —
-grep for it across `src/` returns zero uses. Another piece of groundwork with no
-implementation behind it.
+Measured at `ccf888c6`:
 
-**One semantic bug to fix, not just a missing feature:** arrow functions do **not**
-lexically bind `this` today. Measured:
-
-```
-class C { x: i32 = 7; arrow(): () => i32 { return (): i32 => this.x; } }
-  → ERROR TS2339: Property 'x' does not exist on type 'C#arrow'
+```ts
+export function outer(): i32 {
+  let x: i32 = 1;
+  function inner(): i32 { return 2; }
+  return inner() + x;
+}
 ```
 
-`this` inside the arrow resolves to the arrow's *own* function type. My first
-test of this appeared to pass; it was dead-code elimination — `arrow` was never
-called, so its body was never resolved. When the closure is actually used, the
-non-lexical binding shows. That is the first thing in this plan that is a
-*divergence from TypeScript* rather than an absence of a feature.
+emits `call $outer` for the outer call and **`call_indirect (type $0)` inside
+`outer`**, preceded by the `~env` save/set/restore block. The call to `inner()` is
+an **indirect** call through a `Function<T>` value.
 
-Resolution path: `resolveThisExpression` (`src/resolver.ts:2234`) →
-`lookupThisExpression`. There is already an `isInline` precedent for "`this`
-belongs to an enclosing function": `lookupSuperExpression`
-(`src/resolver.ts:2261-2275`) begins with `if (ctxFlow.isInline) { let superLocal =
-ctxFlow.lookupLocal(CommonNames.super_); ... }`, i.e. inline flows look up `this`
-and `super` as locals of the *target* function's flow. Arrow `this` needs the
-same idea, keyed on `arrowKind != ArrowKind.None` instead of `isInline`.
+This is the fact that shrinks F3 to nothing (§6.5).
 
-**Verdict on Risk 1: partial mechanism.** The value representation, the type-system
-hook, the GC tracing, the arrow-ness fact, and the capture *detector* all exist.
-What is missing is capture *analysis*, environment synthesis, and the codegen that
-fills `_env`.
+### 1.4 The async state struct and the storage rule
 
-### 0.2 Risk 2 — arena vs closure lifetime: **the premise is wrong, and the real answer is elsewhere**
+`docs/async-await-plan-v2.md` §4.4 (adopted from the original closures plan):
 
-The mission states: *"JS/TS semantics require captured bindings to outlive the
-enclosing function. The arena sweeps."*
+> **A captured binding's storage *is* the environment.** … The storage rule for
+> every binding: captured → **environment**; else live across an `await` →
+> **state struct**; else **wasm local**. Capture wins over lifting, so the two
+> never overlap.
 
-**The arena does not sweep. The arena is not an allocator at all.** I went looking
-for the sweep and there isn't one. What is there:
+The lowered shape is one `$env: TaskEnv | null` field per state struct
+(`src/async/lower.ts:175`, `:375-397`), typed `TaskEnv` from
+`std/assembly/task-rt.ts:54`. `f$resume` takes **one** parameter, the state
+(`src/async/lower.ts:620`); the entry allocates the state, assigns the handle and
+record, calls `f$resume(state)`, and returns the handle (`:517-560`).
 
-`tension-core/src/session/arena.rs:1-10` (module doc):
+This revision keeps the rule and changes *how the reference is carried*: the
+closure transform produces an ordinary local of the synthesized env class, and the
+async transform's existing lifting moves that local into a state field when it
+crosses an await — a managed field of the concrete env class, which is the
+"state struct references the environment" the rule requires. `$env` remains the
+carrier for async **methods** (Decision 4) and for a capturing async function's
+env as it crosses into `f$resume` (§8.3).
 
-> The layout is **frozen**: the twelve region kinds are `kind == index`, every
-> region's offset is a compile-time constant, and `arena_size` only selects how
-> much of the band is live.
+### 1.5 Memory model
 
-`tension-framework/assembly/runtime/arena.ts:1-20` (guest-side doc), verbatim:
-
-> **Nothing here allocates.** `changetype<T>(offset)` is a view: it costs nothing
-> and it holds no reference, which is why these are functions and not a memoized
-> global — a cached view would be a cached pointer into memory the guest may write.
-
-The only thing in the arena that resembles reclamation is named a "reclaim
-counter" and is something else entirely — `set_ring_tail` (`arena.rs:647-655`):
-
-> Set a sub-ring's `tail` — **the guest's reclaim counter**. Called by
-> `subring::compact_subring` and nowhere else: *the tail is the guest's to
-> advance*, and the only reason the session ever writes it is to zero it when it
-> has just consumed the reclaim by sliding records down.
-
-That is a **consumer position in the event-delivery ring**, not memory
-reclamation. Events, not objects.
-
-What the arena *does* do is get **zeroed once per session open**, as the baseline
-for a clever overlap test — `zero_band` (`arena.rs:969-978`), called from
-`prepare_arena` (`session/mod.rs:514`):
-
-> The session zeroes the whole band the module claims before instantiation, which
-> is what turns "is the band still zero" into a complete test for a guest data
-> segment landing in the arena.
-
-So the arena's lifetime is the **session**, its content is **reset at open**, and
-nothing inside it is per-object. It is a fixed, hand-partitioned, session-scoped
-scratch band.
-
-**The actual memory map**, verified, which is what makes the closure answer clean:
-
-```
-0x000000 .. 0x5F6020     the frozen arena layout (LAYOUT_FLOOR = 6,250,528)
-0x5F6020 .. 0x800000     the canary lattice — a guard band, not usable memory
-0x800000 ..              the guest heap  (memory_base = DEFAULT_MAX_ARENA_SIZE = 8 MiB)
-```
-
-- `LAYOUT_FLOOR = BUFFER_POOL_OFFSET + BUFFER_POOL_SIZE` (`arena.rs:366`),
-  asserted `== 0x5F6020 == 6_250_528` (`arena.rs:1342-1343`).
-- `mem.base` default is `DEFAULT_MAX_ARENA_SIZE = 8 * 1024 * 1024` (`arena.rs`,
-  and the field is documented as *"The default reserved ceiling, and therefore the
-  default `memoryBase`"*).
-- `write_canary_lattice(data, LAYOUT_FLOOR, memory_base)` (`session/mod.rs:535`) —
-  the lattice covers exactly the gap, so an overrun of the arena is *detected*
-  rather than silent.
-
-**Therefore: the closure environment lives on the guest heap, above
-`memory_base`, exactly where v2 §4.4/D5 already put the async state struct.**
-It does not touch the arena, and this is not a workaround — the arena was never a
-candidate, because it has no allocation mechanism to lend.
-
-Two consequences worth stating explicitly, because the mission asked:
-
-- **The 32-byte completion record: untouched.** That record is event delivery, it
-  is transient, and its ring slot is owned by the session. The async plan already
-  restricts guest use of it to two generic payload words (`a` @ 16, `b` @ 20);
-  closures add nothing and must not.
-- **`BUFFER_POOL`: untouched, and must stay untouched.** Region 11
-  (`arena.rs:311`, 4 MiB, `RD_GUEST_WRITES | RD_BYTES`) is not a pool with slots —
-  it is a **hand-carved static sub-layout**: the motion table at its first byte,
-  the bone table after it, then a procedural window at `PROCEDURAL_BASE` = 256 KiB
-  (`tension-ogre/DESIGN.md:633, 648, 779, 1595`). Positions are compile-time
-  constants. **There is no slot allocator, and therefore no "who owns slots"** —
-  the question presupposes a mechanism that does not exist.
-
-**So the honest answer to Risk 2 is: the arena is irrelevant to closure lifetime,
-and the real question is which *guest runtime* manages the heap the environment
-lives on.** Which brings us to the blocker.
-
-### 0.3 Risk 2 continued — **the blocker: Tension's guests are built with `--runtime stub`**
-
-This is the sharpest finding in the plan. It is not in the mission's list of
-risks, and it is not a compiler problem.
-
-Every example builds its guest with a **stub runtime**:
-
-```
-examples/ai/package.json:8      "build": "asc story.ts -o build/story.wasm --runtime stub --target release"
-examples/audio/package.json:8   "build": "asc demo.ts -o build/demo.wasm --runtime stub --target release"
-examples/io/package.json:8      ... --runtime stub ...
-examples/log/package.json:8     ... --runtime stub ...
-examples/res/package.json:8     ... --runtime stub ...
-```
-
-`std/assembly/rt/index-stub.ts` is exactly `import "./stub"`. And `stub.ts` is:
-
-- `__alloc` — a **bump allocator**; it advances `offset` and never looks back.
-- `__free(ptr)` — **only** discards when the block is the topmost one:
-  ```ts
-  if (ptr + block.mmInfo == offset) { // last block: discard
-    offset = changetype<usize>(block);
-  }
-  ```
-- `__link` — `// nop`
-- `__collect` — `// nop`
-- `__pin` — `return ptr`; `__unpin` — `// nop`
-- **no reference counting anywhere.** Verified broadly: `__retain`/`__release`
-  appear only in `src/bindings/js.ts` (JS-host glue), and nowhere in
-  `std/assembly` or `src/`. AS's collectors are *tracing*, not refcounting:
-  `itcms.ts` is *"An incremental Tri-Color Mark & Sweep garbage collector"*,
-  `tcms.ts` is a two-color one.
-
-**So under `--runtime stub`, nothing a closure allocates is ever reclaimed.**
-Where the flag comes from, verified: `tension-framework/build.sh:149` generates
-`tension-framework/build/session.asconfig.json` with `"runtime": "stub"` in its
-`asconfig_doc`, and the OGRE examples build with
-`asc game.ts --config ../../../tension-framework/build/session.asconfig.json`
-(`examples/ogre/*/package.json:8`) — so they inherit it. The non-OGRE examples
-state it directly (`examples/{ai,audio,io,log,res}/package.json:8`). Full detail
-and the exact edit list are in D1.
-
-I measured it rather than reasoning about it. A managed class with one `i32`
-field — the smallest possible closure environment — allocated 100,000 times:
-
-```
-runtime=stub          grew 3,202,832 bytes  →  32.03 bytes per object
-runtime=incremental   grew    36,960 bytes  →  all but a trace reclaimed
-```
-
-(The 32 bytes matches the arithmetic exactly: `BLOCK_OVERHEAD` 4 + `OBJECT_OVERHEAD`
-16-aligned + a 4-byte payload → `computeSize` rounds to 32.)
-
-**The arithmetic that makes this fatal**, using the session's own numbers:
-
-- `tension-framework/session.json`: `maximum_pages: 512` → **32 MiB** ceiling;
-  `memory_base` 8 MiB → **~24 MiB of heap**.
-- 24 MiB ÷ 32 bytes = **~786,000 environments** before `memory.grow` fails. And
-  `maybeGrowMemory` calls `unreachable()` on failure — so the failure mode is a
-  wasm trap → session fault, not a quiet degradation.
-- A game allocating **100 closures per frame** at 60 fps: 786,432 ÷ 6,000 ≈
-  **131 seconds**.
-- **One** closure per frame: ≈ **3.6 hours**.
-
-So the mission's motivating examples — `array.map(x => x*f)`,
-`events.on('click', e => handle(e))` — are not merely missing; **under the current
-build configuration they are an unbounded leak that ends a session in minutes.**
-Closures are a correctness feature *and* a memory-model change, and shipping the
-compiler work without the runtime change would ship a footgun.
-
-**The fix requires no host change and no ABI change.** `--runtime incremental` is
-`import "./tlsf"; import "./itcms"` — a per-module compile flag:
-
-- **No shadow stack needed, no host cooperation needed.** `visitStack`
-  (`itcms.ts:167-173`) is a **conservative linear scan**:
-  ```ts
-  function visitStack(cookie: u32): void {
-    let ptr = __stack_pointer;
-    while (ptr < __heap_base) { __visit(load<usize>(ptr), cookie); ptr += sizeof<usize>(); }
-  }
-  ```
-  It walks every word of the linear stack and asks `__visit` whether each looks
-  like a traced object. `visitRoots` (`itcms.ts:155-164`) adds `__visit_globals`
-  and the pin space. Collection self-triggers: `__new` does
-  `if (total >= threshold) interrupt();` (`itcms.ts:262`).
-- **The `stackSize`/`ShadowStackPass` path is separate** and the dependency runs
-  the *other* way — `compiler.ts:540`: `let hasShadowStack = options.stackSize > 0;
-  // implies runtime=incremental`. Shadow stack implies incremental; incremental
-  does not imply shadow stack.
-- **No codegen change is needed to benefit.** Write barriers are already emitted:
-  I counted 3 `__link` call sites in a test module compiled under `stub` and 3 in
-  the same module under `incremental` — identical, because the codegen path is
-  shared. Under stub they are nops; under incremental they become real. A
-  synthesized environment class with managed fields therefore gets correct
-  barriers for free.
-- **Cost, measured:** 932 bytes → 5,620 bytes of wasm on a trivial program. That
-  is a fixed ~4.7 KB (the ITCMS runtime plus generated `~visit` per managed
-  class), and it shrinks as a share of a real game module. Plus per-allocation
-  cost and incremental collection pauses.
-- **Bonus:** ITCMS has a real `__finalize` (`itcms.ts:250`) and `__pin`/`__unpin`
-  (`:334, :348`) — useful later for closures holding external resources or for
-  objects whose pointers cross to the host.
-
-**This is an architect decision, not a plan detail** (it changes the build
-configuration and the runtime cost of every guest), so it is D1 in §10. But the
-direction is not in doubt: closures cannot be correct under `stub`.
-
-### 0.4 Risk 3 — the async state struct: **designed together, and the hard case dissolves**
-
-The mission calls this the hard case: *"A closure inside an async function whose
-captured variables must survive suspension — the state struct must carry the
-environment across suspend points, not just locals."*
-
-There is a decision that makes this go away, and it is the central design idea of
-this plan:
-
-> **A captured binding's storage *is* the environment.**
-> A local that is captured by any closure has exactly one home — an environment
-> field — and is therefore never a wasm local and never a state-struct field.
-
-This is not a trick to dodge the problem; it is what JS semantics require
-anyway. JS captures the *binding*, not a copy of the value: the closure and the
-enclosing function must observe each other's mutations. Two storage locations
-would be a bug, not an implementation choice.
-
-So the **storage rule for every binding**, one home each:
-
-1. captured by any closure → **environment** (guest heap, managed object)
-2. else live across an `await` → **state struct** (guest heap, managed) — v2 §4.3
-3. else → **wasm local** (cheapest)
-
-**Capture wins over lifting, so capture and lifting never overlap.** The async
-state struct never needs to copy captured variables, because captured variables
-have already left the lifting problem.
-
-What the state struct *does* need is a **managed reference to the environment**,
-because:
-
-> Under Backend A, when a task is suspended its wasm frame is **gone**. The
-> conservative stack scan (`visitStack`) only sees live stack. So anything a
-> suspended task needs must be reachable from a **root**.
-
-The chain is then: task table (a **managed global**, traced by `__visit_globals`)
-→ state struct (managed, managed fields) → environment (managed) → captured
-references (managed fields, `__visit`-traced). Every link must be a managed field
-or the collector cannot see through it. This is why v2 D5's "managed, not
-`@unmanaged`" requirement matters, and it extends to the environment.
-
-**Async function inside a closure** is the easy direction and needs nothing new:
-an `async` function is just a function; whether it is reached directly or through
-a `Function<T>` value, the async lowering is unchanged. What it does need is that
-the implicit environment parameter survives into the resume function — a one-line
-consequence of the call convention in §5.
-
-### 0.5 Risk 4 — closure × WasmFX: one genuine hazard, and it is not about lowering
-
-Covered in full in §9 (Backend B compatibility), but the finding belongs here
-because it is a *memory-model* interaction rather than a lowering one:
-
-Under WasmFX, a suspended continuation's frames live on an **engine-managed fiber
-stack**, not in the region `visitStack` scans (`[__stack_pointer, __heap_base)`).
-So the conservative scan cannot see them. A reference held **only** on a suspended
-continuation's stack would be invisible to the collector and could be reclaimed
-while still live.
-
-This does **not** break the design — but it does mean the rooting rule from §0.4
-is required under *both* backends, for different reasons:
-
-- Backend A: the frame is gone, so roots are the only way.
-- Backend B: the frame exists but is not scanned, so roots are *still* the only way.
-
-That is a nice property: a rule that would otherwise look like a Backend A
-artifact is in fact backend-neutral, so it can be enforced everywhere without
-baking in an assumption. It is written up as such in §9.
+- Guests build with `--runtime incremental`: the compiler default
+  (`src/compiler.ts:244`), the generated framework config
+  (`tension-framework/build.sh:154`), and all five examples.
+- The guest heap starts at `MEMORY_BASE = 8388608`
+  (`tension-framework/assembly/runtime/layout.ts:21`,
+  `tension-framework/build/session.asconfig.json:6`). The arena below it is a
+  fixed, session-scoped band with no allocator (original §0.2; unchanged).
+- The collector's roots are `__visit_globals` plus the pin space plus a
+  conservative scan of `[__stack_pointer, __heap_base)`
+  (`std/assembly/rt/itcms.ts:155-173`, as cited by
+  `docs/async-await-plan-v2.md` §4.4).
+- Therefore the environment lives on the guest heap, managed, and every link that
+  must survive a suspension is a managed field.
 
 ---
 
-## 1. Semantics: match TypeScript
+## 2. Semantics — match TypeScript
 
-### 1.1 Capture by reference — one mechanism, not two
+### 2.1 Capture by reference — one mechanism
 
-The mission says *"mutable bindings captured by reference, const captured by
-value"*. I want to correct that precisely, because implementing it literally
-would be extra machinery for no observable difference:
+All captured bindings are shared by reference, `const` included. The binding's
+one home is an environment field; the owner and every closure read and write that
+field. `const` is enforced at compile time by the transform (see §2.6), not by a
+copy.
 
-**In JS, `const` is captured by reference too.** The binding is immutable, so
-nothing can observe the difference — but the mechanism is the same one.
-Implementing a separate by-value path for `const` would be wasted work that adds
-a second code path to test, and it would be *wrong* the moment someone wants
-`const` in a class field or a destructuring pattern.
+### 2.2 Environment granularity: per scope instance, chained
 
-One nuance worth stating because it is the one place "by value" could bite:
-`const o = {}; const f = () => { o.x = 1; }` — mutations *through* the reference
-must be visible. By-reference sharing gives that for free; a copied reference also
-gives it (same object). So there is no divergence either way, which is exactly why
-the simpler single mechanism is the right call.
+One environment per **scope instance** that owns at least one captured binding.
+Every closure created in that instance shares it, so `inc`/`get` observe each
+other's writes. Nested scopes chain via a `$parent` field, typed as the parent
+env class.
 
-**Decision: all captured bindings are shared by reference, for `let` and `const`
-alike. `const`'s immutability is enforced at compile time by AS's existing
-const-assignment check, which already exists.**
+Rejected, with reasons: **per-closure** environments (two closures in one scope
+would not share mutations); a **flat** env per closure (transitive capture needs
+the chain).
 
-### 1.2 Environment granularity: per scope instance, chained
+### 2.3 Per-iteration bindings — the rule, not a hope
 
-The granularity choice is load-bearing, and the obvious alternative is wrong:
+TypeScript creates a fresh binding per iteration for a `let`/`const` declared in
+a `for` header. This plan matches it, with one rule:
 
-- **Per closure** (each closure gets its own env holding only its captures) —
-  **wrong**. Two closures in one scope capturing the same variable would each get
-  their own copy, so mutations would not be shared:
-  ```ts
-  let n = 0;
-  const inc = () => ++n;
-  const get = () => n;      // per-closure envs: get() never sees inc()'s write
-  ```
-- **Per scope instance** — correct. One env per scope instance that has any
-  captured binding, shared by every closure created in that instance.
+> **A `for`-header binding that is captured lives in an environment; a fresh
+> environment is created at the end of each iteration, before the incrementor
+> runs, and the incrementor mutates the fresh one.**
 
-Nested capture across scopes needs a chain: each environment carries a **parent
-link** to the environment of the enclosing scope. A captured reference compiles
-to a statically-known **(depth, fieldIndex)** pair — walk `depth` parent links,
-load field `fieldIndex`. Both numbers are known at compile time, so a capture
-read costs a bounded number of loads and no search.
+Trace for `for (let i = 0; i < 3; i++) fns.push(() => i)`:
 
-### 1.3 Per-iteration bindings — the case that breaks on the third call site
+| step | env | `i` at body | closure captures |
+|---|---|---|---|
+| init | E1 | 0 | — |
+| iter 1 body | E1 | 0 | E1 (i=0) |
+| end of iter 1: clone → E2, `i++` on E2 | E2 | 1 | — |
+| iter 2 body | E2 | 1 | E2 (i=1) |
+| end of iter 2: clone → E3, `i++` on E3 | E3 | 2 | — |
+| iter 3 body | E3 | 2 | E3 (i=2) |
 
-This is the single most important correctness obligation in the plan, and it is
-exactly the kind of thing that fails late if it is not designed in:
+Result `0,1,2`. The clone before the increment is what keeps iteration *k*'s
+closure from observing iteration *k*'s increment.
 
-```ts
-const fns: (() => i32)[] = [];
-for (let i = 0; i < 3; i++) fns.push(() => i);
-// JS/TS: fns[0]() == 0, fns[1]() == 1, fns[2]() == 2
-```
+`continue` runs the incrementor, so it must also run the clone; the transform
+rewrites a `continue` that targets such a loop to `{ $clone; incr; continue; }`.
+`break` skips both, correctly.
 
-A `let` in a `for` header creates a **fresh binding per iteration**. One shared
-environment for the whole loop yields `3, 3, 3` — the classic bug.
+A binding declared **inside** a loop body is naturally per-iteration: the body is
+a block, its env is allocated at the top of the block, and each iteration is a
+new block instance. No clone is needed there.
 
-**Requirement: for bindings declared in a loop header (`for (let i = ...)`,
-`for (const x of ...)`) that are captured, a fresh environment is allocated at the
-top of each iteration, with the current value of the iteration variable copied
-in.** This applies to the loop *body*'s env for those bindings; non-loop captured
-bindings in the same scope still allocate once at scope entry.
+`for…of`/`for…in` bind a fresh value per iteration: the transform allocates the
+env at the top of the body and assigns the iteration value into it, using an
+internal iteration variable when the user's binding is the captured one. If C1
+finds this desugaring interacts badly with the iterator protocol, `for…of` captures
+are refused by name ("a captured for-of binding (closures lowering)") and the gap
+is documented — the rule is not weakened, the shape is refused.
 
-Note the asymmetry that makes this subtle: the iteration variable needs copying
-per iteration, but a binding declared *inside* the body is naturally per-iteration
-because its scope instance is per-iteration. So the loop-header case is the one
-that needs the explicit copy, and it gets its own test (§8).
+### 2.4 `this` binding
 
-### 1.4 `this` binding
+- **Arrows bind `this` lexically.** The shipped resolver suffices for the
+  `this`-only case; see §7.1 for the two-way split.
+- **Regular function expressions have their own dynamic `this`.** Unchanged: the
+  transform never rewrites `this` inside a non-arrow function.
 
-TypeScript's rule, which we match:
+### 2.5 Hoisting and TDZ
 
-- **Arrow functions bind `this` lexically.** In AS, a method's `this` is a local
-  (`thisLocal`), so **`this` inside an arrow is simply another captured binding** —
-  the same mechanism, no special case in the environment, no special call
-  convention.
-- **Regular `function` expressions have their own dynamic `this`.** That is what
-  AS does today for all functions, so regular function expressions need **no
-  change**.
+**AS has no hoisting of any kind.** Names resolve strictly in declaration order
+(measured and unchanged from the original plan §1.5). This plan does not add
+hoisting (D4).
 
-So the whole `this` fix is: in an arrow (`arrowKind != ArrowKind.None`), `this`
-must resolve to the enclosing function's `this` and be captured, instead of
-resolving to the arrow's own. Measured today it resolves to the arrow's own
-(`TS2339: Property 'x' does not exist on type 'C#arrow'`), which is both
-non-lexical and, for a bare arrow, effectively unusable. This is a **semantic
-bug**, not merely an absent feature.
+The demotion changes what the compiler can check statically. A captured binding
+is no longer a local, so:
 
-### 1.5 Hoisting and TDZ — what AS actually does, and what we do about it
+- AS's definite-assignment analysis
+  (`Variable_0_is_used_before_being_assigned`) no longer sees it;
+- its field is zero-initialized by the env's constructor, so an unassigned read
+  would silently return a zero.
 
-**AS has no hoisting of any kind.** Measured, all three:
+**Rule.** For every captured binding declared **without an initializer**
+(`let x: T;`), the env class gains an initialization flag field
+`$init$<name>: bool`. The (rewritten) declaration sets it after the value is
+stored; every read emits:
 
 ```ts
-// nested function declaration, called before its declaration
-let r = inner(); function inner(): i32 { return 5; }   → TS2304: Cannot find name 'inner'
-// arrow assigned to let, called before
-let r = f(1); let f = (x: i32): i32 => x + 1;           → TS2304: Cannot find name 'f'
-// var read before its declaration
-let r = x; var x: i32 = 3;                              → TS2304: Cannot find name 'x'
+if (!$closureEnv.$init$x) abort("closures: read before assignment: x");
 ```
 
-Names resolve **strictly in declaration order**. There is no function hoisting, no
-`var` hoisting, and therefore no TDZ either — a name simply does not exist until
-its declaration is reached.
+`abort` is the language's existing failure path (no exceptions; `Not implemented:
+Exceptions`). For declarations **with** an initializer no flag is emitted: a
+closure can only capture a binding declared before it, and a read can only follow
+the declaration in declaration order, so the field is assigned before any read.
 
-**Decision: this plan does not add hoisting.** Reasons:
+Cost: one `bool` field and one branch per read, only for the `let x: T;` shape.
 
-1. It is **orthogonal to closures.** Nothing about capture requires it.
-2. It is a **much larger change** than it looks: the resolver resolves in
-   declaration order, so hoisting means a per-scope pre-pass that collects
-   declarations before resolving bodies, plus the JS `var`-vs-`let` distinction
-   (initialised-`undefined` vs TDZ), plus the error paths. That is a resolver
-   rework with a whole plan of its own.
-3. It is not a closure-specific divergence — **all** AS code behaves this way
-   today. Fixing it belongs with the broader "be TypeScript-shaped" work, not
-   smuggled into the closures plan.
+### 2.6 Checks the demotion moves
 
-**Consequences for closures, stated plainly:**
+| Check | Today | After demotion |
+|---|---|---|
+| assign to a captured `const` | `TS2540` from the resolver | emitted by the transform (`DiagnosticCode.Cannot_assign_to_0_because_it_is_a_constant_or_a_read_only_property`, `src/diagnosticMessages.json:186`) at every assignment site it rewrites |
+| read before assignment | `TS2454` (definite assignment) | runtime flag + `abort`, §2.5 |
+| duplicate declaration / shadowing | resolver | unchanged — the transform mirrors the resolver's declaration-order scoping |
+| captured binding without a declared type | n/a | refused by name (§4.6) |
 
-- A closure can only capture bindings **textually declared before it**. Stricter
-  than TS, but consistent with every other name reference in the language.
-- `var` behaves like `let` in AS (no hoisting, no pre-initialised `undefined`).
-  Pre-existing divergence, documented, not introduced here.
-
-**The residual TDZ hole, and what to do about it.** Because there is no
-declaration-before-use, the only remaining case is:
-
-```ts
-let x: i32;                 // declared, not yet assigned
-const f = (): i32 => x;     // captured — legal
-f();                        // reads x before its assignment
-x = 1;
-```
-
-Three options:
-
-- **(a)** Rely on AS's existing flow-based definite-assignment analysis
-  (`CommonFlags.DefinitelyAssigned`, `LocalFlags.Initialized` — the mechanism
-  behind the existing `Variable_0_is_used_before_being_assigned` diagnostic).
-  Cheap, already there, but the closure body is compiled in its **own flow**, so
-  it will not always see the enclosing flow's facts.
-- **(b)** An **initialization flag per captured `let`/`const` slot** in the
-  environment, checked on read. Costs one word per captured mutable slot plus a
-  branch per captured read, and turns the residual case into a **defined runtime
-  error** instead of a silent zero.
-- **(c)** Ignore it and read the zero value. **Rejected** — that is the plan
-  silently lying about what it does, which the mission explicitly forbids.
-
-**Recommendation: (a) + (b).** Use the existing flow analysis to reject every
-statically-detectable case, and put the runtime guard on the remainder so the
-residual case is loud. It is D3 in §10.
-
-### 1.6 What breaks — the honest list
-
-Things from JS/TS that will **not** work, with the reason:
+### 2.7 What does not match TypeScript — the honest list
 
 | Not supported | Why |
 |---|---|
-| Hoisting (function declarations, `var`) | AS resolves in declaration order; orthogonal to closures; §1.5 |
-| TDZ as a throw | No exceptions in the language (`AS100: Not implemented: Exceptions`); §1.5 uses a runtime guard + static rejection instead |
-| `arguments` object | Does not exist in AS; arrow/function params are the interface |
-| `try`/`catch` around a closure call | No exceptions; a failure inside a closure cannot be caught by its caller — this is v2 §3.3's checked-status model, unchanged |
-| `Function.prototype.call`/`apply` with a dynamic `this` on an **arrow** | Arrows bind `this` lexically by design — matching TS, where this is also disallowed |
-| `bind` | Not implemented in AS; not added here |
-| `eval`, `new Function` | No runtime compilation |
-| Generators / `yield` in closures | AS has `Token.Yield` reserved but `yield` is unimplemented (`parser.ts:3699-3701`); not in scope |
-| Closures over `with` | `with` is reserved but unsupported |
+| Hoisting of function declarations and `var` | AS resolves in declaration order; orthogonal to closures (D4) |
+| TDZ as a throw | no exceptions; §2.5's `abort` is the defined failure |
+| `arguments` | does not exist in AS |
+| `try`/`catch` across a closure call | no exceptions (async plan v2 §3.3's status model is unchanged) |
+| `bind` | not implemented in AS and not added here (§7.3) |
+| `eval`, `new Function` | no runtime compilation |
+| generators / `yield` | unimplemented in AS |
+| captured binding with an **inferred** type (`let n = 0`) | the transform runs before resolution and cannot name the field type — **refused by name** (§4.6). This is the plan's most visible divergence and is called out as D10. |
+| captured binding whose type mentions a type parameter or a function-local type alias | not expressible as a top-level env field — refused by name (§4.6) |
 
 ---
 
-## 2. AST changes
+## 3. Staging and transform architecture
 
-### 2.1 What captures look like in the AST: **nothing**
+### 3.1 `afterParse`, closures first, async second
 
-This is a deliberate, evidence-backed decision, and it is the answer to
-"new node? field on existing node?" — **neither.**
-
-**Closures add no new AST node and no new AST field.** The AST already carries
-everything syntactic that closures need:
-
-- function-as-an-expression → `FunctionExpression` wrapping `FunctionDeclaration`
-  (`ast.ts:1351`, `:2090`)
-- arrow-ness → `arrowKind: ArrowKind` (`ast.ts:2080-2088`)
-- the body and signature → `FunctionDeclaration.body`, `.signature`
-- identifiers → `IdentifierExpression` (already reused for `this`)
-
-**The capture set is not syntax, and putting it on a node would be wrong for three
-concrete reasons:**
-
-1. **The AST gets cloned.** `compileFunctionExpression` begins with
-   `let declaration = expression.declaration.clone(); // generic contexts can have
-   multiple` (`compiler.ts:7223`). Metadata hung on the node is stale or wrong
-   after a clone, and generic contexts produce several instances of one node.
-2. **An unresolved AST has no elements to name.** Which binding is captured is a
-   fact about *resolved* `Local` elements, which do not exist until resolution.
-   The AST node is the wrong layer.
-3. **Both backends need the same resolved fact, and neither owns it.** Hang it on
-   a node and it becomes a place for a backend to write state-machine assumptions
-   — precisely the failure v2 §5.3 warns about.
-
-**Where capture information lives instead:** in the **resolved model**, keyed by
-the `Function` element, as a **side table** — the same discipline as v2 §5.4's
-"backend metadata lives in side tables keyed by node identity, never on the node."
-Concretely, per closure-shaped `Function`:
+Both transforms are AST rewrites at the same seam:
 
 ```
-CaptureInfo {
-  captures:      (Local element, defining Function, fieldIndex)[]
-  envChainDepth: how many parent links to walk            // for resolution
-  envClass:      the synthesized environment class
-  isCapturing:   bool                                     // false → zero-cost path
-}
+parse → afterParse[ ClosureLowerTransform → AsyncLowerTransform ] → initialize → compile
 ```
 
-with, per reference site, a resolved `(depth, fieldIndex)` pair.
+The reason is structural, not stylistic: the async transform refuses every
+construct that could supply a capture (`src/async/lower.ts:293, :1332, :1463,
+:1473-1480, :1993-1999`), and its lifting decision is made before resolution. If
+closures ran later (or at codegen, as the original plan proposed), the async
+transform would either refuse the capture or lift a captured binding into the
+state struct — the double-storage bug §1.4 exists to prevent.
 
-**What the AST must carry so Backend B can lower it later without a rewrite:** the
-same thing it carries for Backend A — the syntax, and nothing else. Because the
-environment is a plain managed object whose layout is fixed at analysis time, and
-the call convention is `(tableIndex, env, args…)`, neither backend needs anything
-extra in the AST. §9 makes this argument in full.
-
-### 2.2 FunctionExpression and ArrowFunction today → what they become
-
-They **keep their current shape**. What changes is not the node but three things
-downstream:
-
-1. `declaredByFlow` stops being an error condition and becomes a **query**
-   (`is this local captured?`) that the capture analysis answers.
-2. `ensureRuntimeFunction`'s static-instance path gains a **heap-instance path**
-   for capturing functions (§5).
-3. `this` inside an arrow resolves to the enclosing function (§1.4).
-
-### 2.3 The async state struct extension
-
-Per §0.4, the extension is minimal and is a *consequence* of the storage rule:
-
-- The state struct gains one field per **live environment** (usually one, plus one
-  per distinct enclosing scope whose environment is needed after a suspension).
-- Those fields are **managed references**, so the collector traces
-  state → env → captured bindings while the task is suspended.
-- **No captured binding is copied into the state struct.** Ever. That is the rule
-  that keeps the two features from fighting.
-- The resume function's implicit environment parameter is threaded through, so a
-  closure that resumes after a suspension still has its env (§5.2).
-
-The storage rule from §0.4 is the thing to design once:
-
-```
-                    ┌────────────────────────────────────────────┐
-   is the binding   │ captured by any closure?                   │──yes──▶ ENVIRONMENT
-   used where?      └────────────────────────────────────────────┘        (guest heap, managed)
-                              │ no
-                              ▼
-                    ┌────────────────────────────────────────────┐
-                    │ live across an await?                      │──yes──▶ STATE STRUCT
-                    └────────────────────────────────────────────┘        (guest heap, managed)
-                              │ no
-                              ▼
-                          WASM LOCAL
-```
-
-One home per binding, decided once, at one place in the pipeline. If async had
-been designed to lift locals and closures designed to copy captures, the two would
-disagree about `let n = 0; const f = () => ++n; await x; f();` — the state struct
-would hold a stale `n` and the env a second one. Designing them together is what
-removes the case the mission flagged as the hard one.
-
----
-
-## 3. Capture analysis
-
-### 3.1 The algorithm
-
-Per closure-shaped function (a nested `FunctionExpression`/arrow **used as a
-value** — see §3.4), in two steps:
-
-**Step 1 — collect free variables.** Walk the function's resolved body; for every
-reference to a `Local` element `L`, if `L.parent != thisFunction`, then `L` is
-free in this function. This is the **same test** that `declaredByFlow`
-(`program.ts:3687`) already performs, and the same `resolver.lookupIdentifier`
-call the compiler already makes at `compiler.ts:5708` and `:7562` — so the
-analysis resolves identifiers exactly the way codegen does, and cannot disagree
-with it.
-
-**Step 2 — build the environment chain.** Group free variables by their defining
-`Function`. For each defining scope that contributes captures, that scope owns an
-environment; deeper scopes' environments link to shallower ones. Assign each
-captured binding a `fieldIndex` within its own scope's environment, and each
-reference a `(depth, fieldIndex)`.
-
-Both steps are **syntactic-plus-resolved** — no type inference, no liveness. The
-only ordering concern is that the environment's **field layout must be stable for
-a given scope** even though closures are discovered in source order, so field
-assignment is by declaration order of the captured bindings, not by discovery
-order.
-
-**Transitivity:** if an inner closure captures `x`, and the middle function also
-references `x`, then the middle function is itself a capturer of `x` — it needs
-`x` in *its* environment too (or, if the middle function is itself not a closure
-but its child is, the middle function still owns an environment). The analysis must
-propagate captures **outward**: a binding captured at depth *n* must be reachable
-through every environment between its defining scope and the closure. This is the
-standard upvalue propagation and it is the part most likely to be got wrong
-subtly, so it is a dedicated test case (§8).
-
-### 3.2 Where in the compiler it runs
-
-**A per-function pass, immediately before that function's body is compiled**, not
-a global pre-pass. Reasons:
-
-- AS compiles lazily and per-function; a global pre-pass would have to walk the
-  whole program for a fact that is needed one function at a time.
-- It must run **before** `compileFunctionExpression` materializes a closure value
-  (§5.1), because that is where the environment is allocated.
-- It must run **before** the two `declaredByFlow` checks, because those become
-  lookups into its results.
-
-Natural home: a new `src/passes/closure.ts` (a pure addition) exposing something
-like `analyze(function, flow): CaptureInfo | null`, called from `compileFunction`
-and consulted by the capture sites. It is *not* a Binaryen pass — it operates on
-the resolved AST/element model, before codegen — so it is a sibling of
-`src/passes/*` in spirit, not in interface.
-
-### 3.3 Fitting AS's index-based variable model
-
-AS's model, precisely:
-
-- A `Local` has `index: i32` — *"Zero-based index within the enclosing function"*
-  (`src/program.ts:3667`) — i.e. a **wasm local index**.
-- Locals are created by `flow.targetFunction.addLocal(type, name, declaration)`
-  (`program.ts:3933-3947`), which appends to `localsByIndex`.
-- Name resolution reaches them through the flow's scope chain
-  (`ctxFlow.lookupLocal`).
-
-**Capture does not change this model; it adds a second addressing form beside
-it.** Recommendation:
-
-- **Leave `Local.index` alone.** Do not overload it to mean "environment field
-  when captured" — that would poison every existing `local_get`/`local_set` path
-  with a conditional, and it is exactly the kind of edit that breaks on the third
-  call site.
-- **Add a resolved capture descriptor per reference site**, in a side table: for a
-  captured reference, `(depth, fieldIndex)`; the codegen emits env-walk + load
-  instead of `local_get`. Non-captured references are untouched.
-- The environment's own fields are modelled as an ordinary **synthesized managed
-  class** (one per scope shape), so its field offsets come from AS's existing
-  class layout machinery rather than a parallel layout scheme. That also gets
-  `__visit` generation and `__link` barriers for free (§0.3).
-
-There is a partial precedent worth knowing: AS's **inline** mechanism
-(`Flow.createInline(targetFunction, inlineFunction)`, `flow.ts:219-234`) compiles
-one function's body *into another function's flow*, so the inlined body sees the
-target's locals directly — the compiler already has the notion of "this body
-belongs to another function's variable space", just in the opposite direction.
-And `lookupSuperExpression` (`resolver.ts:2261`) shows the resolver consulting
-`ctxFlow.isInline` to decide that `this`/`super` belong to the enclosing function.
-That is the closest existing analogue to what closure resolution needs.
-
-### 3.4 Which functions are closures
-
-Not every nested function needs an environment. The analysis classifies:
-
-- **No free variables** → *not* a closure. Zero allocation: the value stays the
-  **static** per-function instance (`ensureRuntimeFunction`, `_env = 0`) exactly as
-  today. This is the common case and it must stay free — `arr.map(x => x * 2)`
-  allocates nothing.
-- **Has free variables** → a closure. Heap-allocated instance + one environment
-  allocation at creation time.
-
-The classification is also what makes the optimization story honest: the cost of
-closures is paid only where capture actually happens.
-
----
-
-## 4. Memory model
-
-### 4.1 Where the environment lives
-
-**The guest heap, above `memory_base`, as a managed AS object.**
-
-Rejected, with reasons, because each of these is a plausible-sounding wrong answer:
-
-- **The arena.** Not an allocator (§0.2); no allocation mechanism, fixed regions
-  under a layout hash, reset per session open. There is nothing to allocate from.
-- **`BUFFER_POOL`.** A hand-carved static sub-layout with compile-time positions
-  (§0.2). No slots, and adding a slot allocator to it would be a host-side ABI
-  change.
-- **The 32-byte completion record / event ring.** Transient event delivery, owned
-  by the session. Nothing to do with object storage.
-- **A static segment.** Would permit one live environment per closure *shape* —
-  two closures of the same shape would alias each other. Fatal for any real use
-  (two callbacks in one scope).
-- **The wasm stack.** The environment must outlive the frame by definition. This
-  is the entire reason the feature exists.
-
-Managed (not `@unmanaged`) is **required, not preferred**: captured bindings can
-be reference-typed (`String`, `Array<f32>`, a handle), and the collector must trace
-them. An unmanaged buffer would let a captured reference be reclaimed while the
-closure is still live — a dangling pointer that resumes the game with garbage.
-
-### 4.2 When it is freed
-
-**By AS's collector on the guest heap, which is chosen by the `--runtime` flag
-(§0.3, D1).**
-
-- Under `--runtime incremental` (ITCMS): a tracing mark-&-sweep collector, self
-  triggered by a threshold, finds unreachable environments and frees them. An
-  environment stays alive exactly as long as something reachable references it:
-  the stack (conservative scan), a managed global, a traced field of another
-  object, or a state struct rooted by the task table.
-- Under `--runtime stub`: **never**. 32 bytes per environment, forever (§0.3).
-
-There is **no reference counting** in AS to reason about — verified: `__retain`/
-`__release` exist only in the JS-host bindings glue, and the collectors are
-tracing (`itcms.ts`, `tcms.ts`). So any design that assumed "the env is freed when
-its last reference drops" would be reasoning about a mechanism that does not
-exist. This is worth stating because it is a very natural wrong assumption.
-
-### 4.3 What happens if a closure outlives its scope
-
-**It works, and that is the point of the design.** A returned closure holds its
-environment alive through the normal trace chain:
+Running closures first turns the problem into ordinary code:
 
 ```ts
-export function counter(): () => i32 {
-  let n: i32 = 0;
-  return (): i32 => ++n;      // env allocated at scope entry; survives the return
+// user writes                          // after ClosureLowerTransform
+function outer(): () => i32 {           function outer(): () => i32 {
+  let n: i32 = 0;                         let $closureEnv: outer$Env = new outer$Env();
+  return () => ++n;                       $closureEnv.n = 0;
+}                                         return () => ++$closureEnvIn.n;
+                                        }
+```
+
+(`$closureEnv` is the owner's env; the arrow reads the delivered one,
+`$closureEnvIn` — §6.1.) The async transform then sees a local of a synthesized
+class and ordinary field accesses; its existing rule lifts `$closureEnv` across an
+await and leaves everything else alone. §8 works the composition through.
+
+### 3.2 Registration and ordering — expressible today
+
+`cli/index.js` builds a `transforms` array, instantiates each constructor
+(`:455-472`), and `applyTransform` calls the hook **in array order**
+(`:475-493`). The async transform is pushed at `:451`. The closure transform is
+pushed on the line before it:
+
+```js
+transforms.push(assemblyscript.ClosureLowerTransform);   // new
+transforms.push(assemblyscript.AsyncLowerTransform);     // existing, :451
+```
+
+and exported the same way as the async one (`src/index-js.ts:18` does
+`export * from "./async/lower"`; a sibling `export * from "./closure/lower"` is
+added). **No CLI machinery changes** — only one push and one export.
+
+`afterParse` runs once, before `initializeProgram` (`cli/index.js:705-719`), so
+both transforms are inside the same hook application and the ordering above is
+the ordering that executes.
+
+### 3.3 The side table
+
+Capture facts are not AST facts (the clone hazard at
+`src/compiler.ts:7331`+ and the generic-instantiation path make node metadata
+unsafe). They live in a program-level table keyed by the function's declaration
+node, mirroring the async transform's `src/async/ir.ts`
+(`Map<AwaitExpression, AwaitSite>`, consulted by `src/compiler.ts`):
+
+```ts
+// src/closure/ir.ts
+export const enum EnvKind { None, Receiver, Struct }
+
+export class EnvInfo {
+  kind: EnvKind = EnvKind.None;
+  envClass: string | null = null;   // synthesized class name
+  ownEnv: bool = false;             // this function declares an env
+  receivesEnv: bool = false;        // this function is a closure value (~env)
+  parentClass: string | null = null;
+  captures: Array<{ name: string; field: string; type: TypeNode }> = [];
+}
+
+export const envInfoOf = new Map<FunctionDeclaration, EnvInfo>();  // program-scoped
+```
+
+The resolver copies `kind`/`ownEnv`/`receivesEnv` onto the `FunctionPrototype` when
+the function is initialized (the same place `capturesThis` lives,
+`src/program.ts:3722`), and codegen branches on the prototype. The table is keyed
+by the **original** declaration; generic clones inherit through the prototype.
+
+A second map records, per **creation site**, which local holds the environment to
+store in the value's `_env`:
+
+```ts
+export const creationEnvOf = new Map<FunctionExpression, string>();
+```
+
+The same function can be created in more than one scope (a nested arrow inside a
+block, the block executed twice), and the env local is the *innermost owning
+scope at the site*, not necessarily the function's own — so the site is the key,
+not the declaration.
+
+### 3.4 What the transform does, in one pass over each source
+
+1. **Detect.** If a source declares no function expression or arrow with a
+   non-`this` capture, it is left byte-identical (§3.6). This is the fast path
+   and the reason non-closure programs do not change.
+2. **Analyse** free variables per function (§4).
+3. **Synthesize** one env class per owning scope, hoisted to the source's top
+   level (a class declaration inside a function body is block-scoped and refused
+   by the compiler — `src/compiler.ts:3608` — so the class must be top-level).
+4. **Rewrite**: allocations at scope entries, declarations into field
+   assignments, references into `env.field` accesses, `this` into
+   `env.$this` for Struct arrows, loop headers per §2.3.
+5. **Mark**: record `EnvInfo` per function in the side table.
+
+### 3.5 No new AST nodes and no new AST fields
+
+The transform emits only existing node kinds (`ClassDeclaration`,
+`FieldDeclaration`, `VariableStatement`, `PropertyAccess`, `CallExpression`,
+a call to `abort`, `CommaExpression`). This keeps
+`src/extra/ast.ts` untouched and keeps the AST free of lowering metadata, which
+is what makes Backend B a swap (§10). The one structural addition is the
+**side table**, which is program-level, not AST.
+
+### 3.6 Byte-identity guarantee
+
+A program with no non-`this` capture must compile to the same bytes as
+`bb2dde70`. That includes this-only arrows, which stay on the shipped `Receiver`
+path. The transform's fast path guarantees it structurally: it returns before
+mutating anything when no function has a non-`this` capture. Verified in C2 with
+the same three-program × plain/`--optimize` check the async work uses.
+
+---
+
+## 4. Capture analysis
+
+### 4.1 Free variables
+
+For each function expression/arrow `F`, walk its body with a scope stack that
+mirrors the resolver's declaration-order rules and collect identifiers that
+resolve to a binding declared in an **enclosing function scope** (parameter or
+local, in an enclosing block or loop header).
+
+Not free variables:
+- module-level globals, imports, enum values, namespace members;
+- class members (a method's `this` — handled separately);
+- `F`'s own parameters and locals, including its own name for a named
+  function expression.
+
+Property names are not references: only `PropertyAccessExpression.expression` is
+walked, never `.property` (the async transform's walker does the same,
+`src/async/lower.ts:1429-1431`).
+
+### 4.2 Scoping and shadowing
+
+AS has no hoisting, so a name is visible only after its declaration in the same
+or an enclosing block. The analysis mirrors that exactly:
+
+- statements are walked in order; a declaration extends the current scope from
+  that point onward;
+- a nested block pushes/pops a scope;
+- an inner declaration shadows an outer one from its declaration onward —
+  references before it still resolve outward, because that is what the resolver
+  does.
+
+The transform does not attempt to re-implement type resolution; if its scoping
+disagrees with the resolver, the rewritten AST fails to compile (an undefined
+`$closureEnv`/field) rather than silently miscompiling. The test matrix includes
+the shadowing cases so a disagreement is caught.
+
+### 4.3 Transitivity
+
+A function is **env-needing** if it captures at least one binding, or if any
+function nested inside it is env-needing (it must pass the env along). Computed
+bottom-up.
+
+A function gets:
+- `ownEnv` if it declares any captured binding (including `this` per §4.4),
+- `receivesEnv` if it is env-needing but does not own the bindings it reaches —
+  i.e. it is a closure value that must be handed an environment.
+
+A function that is env-needing only because a descendant is, and that owns no
+captures, still receives and forwards the env (its `_env` is the creating
+scope's).
+
+### 4.4 `this` attribution
+
+`this` inside an arrow denotes the nearest enclosing **non-arrow** function's
+receiver. The transform attributes a `$this` field to that function's env:
+
+- If the arrow captures `this` and nothing else → **`Receiver`**, untouched by
+  this transform (the shipped path).
+- If the arrow captures `this` and at least one other binding → **`Struct`**,
+  with `$this` at field 0 of the env owned by the nearest enclosing non-arrow
+  function, initialized from that function's `this` at its scope entry.
+- A `this` reference inside an arrow nested in another arrow resolves to the same
+  nearest non-arrow function; the chain walk reaches its env.
+
+A regular function expression's `this` is dynamic and is never captured.
+
+### 4.5 Classification — three cases, not two
+
+| Case | `envKind` | Value representation | Allocation |
+|---|---|---|---|
+| no capture | `None` | static `Function<T>`, `_env = 0` | none |
+| `this` only (arrow) | `Receiver` | heap `Function<T>`, `_env` = receiver (shipped) | one heap value, **no env struct** |
+| any non-`this` capture | `Struct` | heap `Function<T>`, `_env` = env object | one heap value + one env per scope instance |
+
+`isCapturing` is not a boolean: a this-only arrow is a closure in the semantic
+sense and still costs no environment. The cost table is what test case 11
+asserts (§13).
+
+### 4.6 v1 refusals (named, never silent)
+
+- **A captured binding without a declared type** — `let n = 0;` — refused:
+  `Not implemented: a captured local without a declared type (closures lowering)`.
+  The transform runs before resolution and cannot name the field's type. This is
+  the plan's sharpest divergence from TS and is D10.
+- **A captured binding whose declared type mentions a type parameter** of an
+  enclosing function — refused by name (a top-level env class cannot be generic
+  in v1; the extension is a generic env class, deferred).
+- **A captured binding whose declared type is a function-local type alias** —
+  refused by name (the env class is top-level; the alias is not visible there).
+- **A user declaration named `$closureEnv`, `$closureEnvIn`, `$this`,
+  `$parent`, or `$init$…`** — refused by name (the transform's reserved names).
+
+Each refusal is a `DiagnosticCode.Not_implemented_0` with the shape named, so a
+program never reaches codegen with a half-rewritten body.
+
+---
+
+## 5. The environment
+
+### 5.1 Where it lives
+
+The guest heap above `MEMORY_BASE`, as a managed AS object. Rejected: the arena
+(no allocator), `BUFFER_POOL` (a hand-carved static layout), the completion
+record (transient), a static segment (aliases two live envs), the wasm stack (the
+frame is gone by definition).
+
+### 5.2 Layout and class synthesis
+
+For each owning scope, the transform emits one class at the source's top level:
+
+```ts
+class outer$Env extends TaskEnv {
+  $this: C = changetype<C>(0);         // field 0, only if a Struct arrow captures `this`
+  $parent: parent$Env | null = null;   // next, only if the owner is itself a closure
+  n: i32 = 0;                          // one field per captured binding, declaration order
+  $init$x: bool = false;               // only for declarations without initializer (§2.5)
 }
 ```
 
-The environment is a heap object; the returned `Function<T>` value holds `_env`;
-the value is on the caller's stack or in a managed field; the collector traces it.
-The enclosing frame returning is irrelevant because the environment never lived in
-the frame.
+Field order is fixed: `$this` first (field 0, per Decision 1), then `$parent`,
+then the captured bindings in declaration order, then the `$init$` flags. The
+order must be stable because every environment of the same scope shape shares
+one class.
 
-This is also the **positive** memory control in §8: the env must be reclaimed once
-the last reference to it is gone — which is observable under `incremental` and
-demonstrably absent under `stub`.
+- **Base: `TaskEnv`** (`std/assembly/task-rt.ts:54`). This is deliberate: the
+  state struct's `$env` field is typed `TaskEnv | null`, and the environment must
+  be assignable to it when an async method or a resumed async function carries
+  it (§8.3). One base class serves both the closure env and the async-method
+  this-struct; `TaskEnv` declares no fields, so it costs nothing but a type.
+- **Managed.** Every field is traced by the generated visitor; a reference-typed
+  capture and the `$parent` link are both reachable while a task is suspended.
+- **Field types** are the bindings' declared types, copied verbatim. The env
+  class is emitted at top level, so those types must be nameable there (§4.6).
+- **Names** are `<ownerName>$Env`; a counter disambiguates anonymous owners, and
+  the transform checks the synthesized name against the source's declarations
+  (the async transform's rule, `src/async/lower.ts:354`).
 
-### 4.4 Interaction with the frozen completion record and `BUFFER_POOL`
+### 5.3 Allocation: at scope entry, not at analysis time
 
-**None, and it should be none.** Restating §0.2 as a design constraint:
+Analysis is a compile-time fact; allocation is a runtime event. The transform
+inserts the allocation at the **entry of the scope instance that owns the
+bindings**:
 
-- **Environments never cross the host boundary.** `_env` is a guest address inside
-  the guest heap; nothing in the ABI carries it, and nothing should. There is no
-  new export, no new import, no new record field.
-- **The 32-byte completion record is not touched.** Its payload words (`a` @ 16,
-  `b` @ 20) remain, as v2 §6.2 assigns them, the async correlation channel. A
-  closure completing a task does so through the ordinary runtime path, not through
-  new record semantics.
-- **`BUFFER_POOL` is not touched, and no slots are claimed from it** — because it
-  has no slots to claim (§0.2). Stating it as a prohibition rather than a decision,
-  since nothing about closures creates a reason to go near it.
+- function body → first statement of the body;
+- block → first statement of the block;
+- `for` header → before the loop (plus the per-iteration clone, §2.3);
+- `for…of` body → first statement of the body.
 
-### 4.5 The one place a closure's memory could still surprise you
+One allocation per scope instance. Fields are zero-initialized by the env's
+constructor; the rewritten declarations assign real values at their declaration
+points. A closure created before a later declaration cannot occur (no hoisting).
 
-The environment allocation happens at **scope entry** (§1.2), not at closure
-creation. So a function whose *scope* declares a captured binding pays the
-allocation even if the closure is never created on that path. For a hot function
-that declares a captured binding and rarely makes the closure, that is a wasted
+### 5.4 Loop environments — the concrete rewrite
+
+**Header binding (`for (let i = …; cond; incr) body`), when `i` is captured:**
+
+```ts
+// before
+for (let i: i32 = 0; i < n; i++) body(i)
+// after — schematically
+let $closureEnv: f$Env = new f$Env();
+$closureEnv.i = 0;
+for (; $closureEnv.i < n; $closureEnv = new f$Env($closureEnv), $closureEnv.i++) body($closureEnv.i)
+```
+
+`new f$Env($closureEnv)` is the copy constructor the transform synthesizes (one
+per env class: copies every value field, sets `$parent`). Because the clone is
+part of the incrementor, a `continue` executes it (the language already runs the
+incrementor on `continue`), and a `break` skips it. (The local is shown as
+`$closureEnv`; a loop whose header scope is nested inside another owning scope
+uses `$closureEnv$<n>`, §5.6.)
+
+**Body binding (`for (…) { let x: i32 = …; const f = () => x; }`)** — the block's
+env is allocated at the top of the body, so each iteration allocates its own:
+no clone and no special case.
+
+**`for…of`:** allocate at the top of the body and assign the iteration value
+(§2.3).
+
+### 5.5 Lifetime and GC
+
+Under `incremental`, an environment is collected when nothing reachable refers to
+it. The chains that keep one alive:
+
+- a closure value's `_env` (traced by `Function<T>.__visit`,
+  `std/assembly/function.ts:34-37`);
+- a state struct's lifted `$closureEnv` field (a managed field, generated
+  visitor);
+- a stack local (conservative scan);
+- a parent env's `$parent` link (child → parent; the child is alive only through
+  a closure or a local, so the parent follows).
+
+A returned closure works: the heap value holds `_env`, the caller holds the
+value, the collector follows it (case 7).
+
+### 5.6 Names
+
+- **`$closureEnv`** — the env owned by a function's **body** scope.
+- **`$closureEnv$<n>`** — the env owned by a nested scope (block or loop body) of
+  the same function, numbered in source order. Every owning scope needs its own
+  local; a function may own several.
+- **`$closureEnvIn`** — the env a function **received** (one per function, added
+  by the resolver).
+- **`$parent`**, **`$this`**, **`$init$<name>`** — fields of an env class.
+- **`<owner>$Env`** / **`<owner>$Env$<n>`** — the synthesized classes.
+
+All of these are reserved: a user parameter, local, or declaration using one is
+refused by name.
+
+---
+
+## 6. Lowering
+
+### 6.1 The two locals
+
+- **`$closureEnv`** — the environment this function owns. Declared by the
+  transform at the scope entry: `let $closureEnv: f$Env = new f$Env();`.
+- **`$closureEnvIn`** — the environment this function received. Added by the
+  **resolver** to a `receivesEnv` function's flow before its body is resolved
+  (the same mechanism as the `this` local, `src/resolver.ts:2284-2291`), and
+  filled by a **codegen prologue** from `~env` (the same shape as
+  `src/compiler.ts:1921-1934`).
+
+A function may have both (it owns bindings and is itself nested). Its
+`$closureEnv.$parent` is assigned from `$closureEnvIn` immediately after the
 allocation.
 
-This is the honest cost of choosing per-scope-instance environments (which
-correctness requires, §1.2). The escape hatches, in order of preference: keep the
-binding *uncaptured* where possible (a non-capturing arrow allocates nothing);
-and, as a future optimization, **escape analysis** — if a closure provably does
-not escape its scope, its environment can be a stack slot instead of a heap
-object, eliminating the allocation entirely. Not in v1; listed so the cost is
-known rather than discovered later.
+The compiler reads the creator's env local for a given creation site from
+`creationEnvOf` (§3.3): it is the innermost owning scope's local at that site
+(`$closureEnv`, a `$closureEnv$<n>`, or — from inside a closure — `$closureEnvIn`).
 
----
+### 6.2 Reference rewrite
 
-## 5. Lowering
-
-### 5.1 How a closure lowers to wasm
-
-**Creation** (one site: where `compileFunctionExpression` materializes the value,
-around `compiler.ts:7352` `let offset = this.ensureRuntimeFunction(instance);`):
-
-1. If the function has no captures (§3.4) → today's path, unchanged: return the
-   static, memoized `Function<T>` instance with `_env = 0`. **Zero allocation.**
-2. If it has captures →
-   a. allocate the **environment** (managed instance of the synthesized env class)
-      — at scope entry for the scope in question, or per-iteration for a loop
-      header (§1.3);
-   b. populate it: for each captured binding, store the current value of the
-      enclosing binding (which has itself been demoted into the environment — same
-      slot, so this is a same-object store for outer-scope captures, and the
-      iteration copy for loop headers);
-   c. allocate a **heap** `Function<T>`-shaped instance (not the static one, since
-      `_env` differs per closure instance);
-   d. write `_index` = the entry function's table index, `_env` = the environment
-      pointer.
-
-Step (c) is a real design consequence worth naming: the static per-function
-instance that `ensureRuntimeFunction` builds (`compiler.ts:2168-2174`) is memoized
-per function and therefore cannot carry a per-instance environment. **Closure
-values must be heap instances.** That is also what makes the trace chain work —
-a heap instance is a recognized collector object, so its `__visit` actually runs
-and `_env` is traced.
-
-**Capture read/write** (the two sites that currently error):
-
-- `compiler.ts:7562` (read) → walk `(depth, fieldIndex)` from the environment
-  pointer and load. This replaces the error.
-- `compiler.ts:5708` (assignment target) → same walk, then store.
-- **The enclosing function's own accesses to a captured binding take the same
-  path.** A captured binding is demoted: every access, inside or outside the
-  closure, goes through the environment. That is what makes sharing work and is
-  not an optimization opportunity to skip. (It *is* an optimization opportunity
-  later: keep a wasm-local mirror inside a single function and sync at closure
-  creation and call boundaries. Not v1 — it is where aliasing bugs live.)
-
-**Call** — the closure call convention is:
+A reference to a binding owned by scope `S` becomes, inside function `F`:
 
 ```
-call_indirect(tableIndex, env, arg0, arg1, …)
+envExpr(F) ($parent! × k) . field
 ```
 
-i.e. a capturing function's signature gains **one implicit leading `usize`
-parameter**, the environment. Its body reads captures from it, so there is no
-search, no per-call allocation, and no closure-vs-function special case at the
-callee beyond the extra parameter. `this` in an arrow is captured like any binding
-(§1.4), so no separate receiver plumbing is needed.
+where `k` is the number of env layers between `F`'s env and `S`'s env, known
+statically. Because each env class types its `$parent` as the concrete parent
+class, the walk needs no casts — only a non-null assertion per hop (the transform
+emits `!`, a normal AS expression).
 
-### 5.2 How it lowers under Backend A (state machines) and Backend B (WasmFX)
+Assignments, compound assignments, and `++`/`--` are rewritten to the same
+target, which is what makes `let n: i32 = 0; const f = () => ++n;` share one
+storage.
 
-**The creation, capture, and call machinery in §5.1 is backend-independent** — it
-is ordinary data movement and an ordinary indirect call, and neither backend
-changes it. What differs is only what happens at an `await`:
+### 6.3 Creation site
 
-| | Backend A (state machines) | Backend B (WasmFX) |
-|---|---|---|
-| An `await` becomes | a state transition + `return` to the scheduler | `suspend $tension_await` |
-| Environment storage | guest heap, managed | guest heap, managed — **identical** |
-| Environment reachability across suspension | state struct holds a managed env reference; the task table (a managed global) roots it | the continuation's stack holds it, **but that stack is not conservatively scanned** (§0.5), so it must *also* be rooted by the task/continuation table |
-| Capture access | env walk `(depth, fieldIndex)` | env walk `(depth, fieldIndex)` — **identical** |
-| Call convention | `(tableIndex, env, args…)` | **identical** |
-| Lowered code | synthesized env class + entry function with implicit env param + resume function | same env class + entry function; no resume function, the continuation supplies the frames |
-
-Two things follow that matter:
-
-- The **environment layout, allocation policy, capture walk, and call ABI are all
-  backend-neutral by construction.** They are solved in the front-end/resolved
-  model (§2.1, §3.3), so neither backend owns them.
-- The **rooting rule is also backend-neutral** (§0.5) — it looks like a Backend A
-  artifact but Backend B needs it too, for the different reason that continuation
-  stacks are not scanned. So it can be enforced unconditionally without baking in
-  an assumption.
-
----
-
-## 6. Type system
-
-### 6.1 What type does an arrow/closure have
-
-**A function type — the same type a function value has today. No new
-`TypeKind`.**
-
-The mechanism, verified:
-
-- A function type is a **`Signature`** (`src/types.ts:934-1200`), created by
-  `Signature.create(...)` and interned by `signature.toString()` in
-  `program.uniqueSignatures` (`program.ts:484`).
-- Its **value** type is obtained by `Type.getClassOrWrapper(program)`
-  (`types.ts:301-323`), which for a signature resolves
-  `program.resolver.resolveClass(program.functionPrototype, [type])` — i.e. the
-  std `~lib/function/Function` prototype (`program.ts:539`) instantiated over the
-  signature. So a function-typed value is `Function<T>` where `T` encodes the
-  signature.
-
-**Therefore a closure's type is `Function<T>`, exactly like a non-capturing
-function value.** The difference between the two is a *representation* difference
-(heap instance with `_env` set vs. static instance with `_env = 0`), and the type
-system does not need to know about it. That is a good property: a closure is
-assignable wherever a function is, with no new assignability rules, no new
-`isAssignableTo` cases, and no new wrapper class.
-
-Two consequences:
-
-- **Do not subclass `Function<T>`.** It is `@final abstract`
-  (`std/assembly/function.ts:3`). Recommendation: keep one representation for all
-  function values and put the difference in `_env`. A distinct closure type would
-  break assignability (a closure could not be passed where a function is expected)
-  for no gain.
-- **`this`-typed arrows.** An arrow capturing `this` has an enclosing `thisType`;
-  for type-checking purposes the arrow's `thisType` must be the **enclosing**
-  function's, not its own (§1.4). That is a resolver fix in
-  `lookupThisExpression`, not a new type. `Signature` already carries
-  `thisType: Type | null` (`types.ts`, the `Signature` constructor), so the
-  machinery is present.
-
-### 6.2 Does the type system need a new kind of type?
-
-**No.** `TypeKind` (`types.ts:28-99`) is untouched. No new `TypeFlags`
-(`types.ts:102-132`). The only type-system-adjacent work is:
-
-1. the arrow `this` fix (§1.4, §6.1), and
-2. synthesizing the **environment class** — one managed class per captured-scope
-   shape, registered through the ordinary class machinery so its field offsets,
-   `__visit`, and `__link` barriers are generated the normal way (§3.3).
-
-Neither is a new *kind* of type.
-
-One trap to record, carried over from v2 §2.4 and now with a second reason to
-respect it: **do not encode closure-ness in the `Signature` string.** `Signature`
-interning keys on `signature.toString()` (`types.ts:959-975`), so two functions
-differing only in whether they capture would collide in the intern table. Capture
-state lives in the side table (§2.1), keyed by the `Function` element — never in
-the signature.
-
----
-
-## 7. Interaction with async — the hard cases, concretely
-
-### 7.1 A closure inside an async function, captures surviving suspension
+One site: `compileFunctionExpression` (`src/compiler.ts:7331`), where the value
+is materialised (`:7470-7475`). Today:
 
 ```ts
-async function run(): void {
-  let ticks = 0;
-  const bump = (): i32 => ++ticks;      // captures `ticks`
-  await frameHandle();                  // ← suspends; the wasm frame is gone
-  bump();                               // must see ticks == 1
-}
+if (instance.prototype.capturesThis) expr = this.makeCapturingFunctionValue(instance);
+else expr = <static instance from ensureRuntimeFunction(instance)>;
 ```
 
-What happens, step by step, under Backend A:
-
-1. **Storage decision** (§0.4): `ticks` is captured → it lives in an environment.
-   It is *not* lifted into the state struct.
-2. **Environment allocation** at `run`'s scope entry; `ticks` lives at
-   `env.field0`.
-3. **`bump` creation**: heap `Function<T>` instance with `_env` = that environment.
-4. **`await`**: the task suspends. The state struct holds `_env` as a **managed
-   reference**; the state struct is rooted by the runtime's task table, which must
-   be a **managed global** (`__visit_globals`). So the trace chain reaches
-   `env.field0` while the frame is gone.
-5. **Resume**: the state struct is re-entered; `bump`'s captured `_env` (or the
-   state struct's copy) still points at the same environment, whose `field0` still
-   reads `1`. The mutation is visible.
-
-**The failure this design prevents:** if `ticks` had been lifted into the state
-struct *and* copied into an environment, step 4's mutation through `bump` would
-write the env while the resume read the struct — `ticks` would appear to reset, or
-`bump()` would appear to do nothing. That is the bug the mission predicted, and the
-single-storage rule is what removes it.
-
-### 7.2 An async function inside a closure
+This revision adds the `Struct` branch:
 
 ```ts
-const fetchAndStore = async (): i32 => {
-  const v = await loadHandle();
-  return v * 2;
-};
+if (instance.prototype.envKind == EnvKind.Struct) expr = this.makeEnvFunctionValue(instance, envLocalName);
+else if (instance.prototype.capturesThis) expr = this.makeCapturingFunctionValue(instance);
+else /* static */;
 ```
 
-Nothing new is required. The closure is an ordinary `Function<T>`; calling it
-invokes the async function; the async function's own lowering is unchanged from
-v2. Two details:
+`makeEnvFunctionValue` is `makeCapturingFunctionValue` with the environment
+expression sourced from the local recorded for **this creation site** in
+`creationEnvOf` (§3.3) instead of from the `this` local. The `Receiver` path is
+untouched, which is what keeps the shipped arrow-this output byte-identical.
 
-- The **implicit environment parameter is part of the async function's signature**,
-  so the resume function must thread it through — a direct consequence of the call
-  convention in §5.1, not a special case.
-- **A task is not awaited inside a callback** (v2 §6.4): resuming happens in the
-  guest's loop, after `wait` returns, never inside `onBatch`/`onEvent`. An async
-  closure changes nothing about this — and per §9, "await in a callback" must
-  remain a Backend A capability diagnostic, not a language rule.
+### 6.4 Delivery at the call
 
-### 7.3 What the runtime does across a suspend/resume
+**No change to `makeCallIndirect` is needed.** It already saves `~env`, stores
+the callee's `_env` (offset `usizeType.byteSize`), calls, and restores
+(`src/compiler.ts:7212-7227`) — for every indirect call, capturing or not. A
+`Struct` closure's `_env` therefore arrives in `~env` exactly as a `Receiver`
+arrow's receiver does.
 
-The runtime's obligations, all of which already exist in v2's design:
+The only new codegen is the **prologue** for a `Struct` function:
 
-- The **task table** must be a managed global (so `__visit_globals` reaches it).
-- The **state struct** must be managed with managed fields (v2 D5) — now also
-  because it holds the environment reference.
-- The scheduler's `runReady()` (v2 §6.3) resumes tasks **after** a callback has
-  returned, never inside one.
-- **Payload capture stays in dispatch** (v2 §6.5) — a completion's words are
-  copied out of the transient ring slot during the callback, not at resume time.
-  Closures do not change this and must not be used to defer it.
+```wat
+local.set $closureEnvIn (global.get $~env)
+```
 
----
+emitted at body start, after the body is compiled, mirroring the `capturesThis`
+prologue (`:1921-1934`). It runs once on entry, so a nested call inside the body
+cannot clobber the binding — the same property the `this` prologue has.
 
-## 8. Test harness
+### 6.5 Direct calls — measured, and the fallback
 
-### 8.1 Pass criteria — every closure shape
+**Finding: there is no direct call to a capturing function.** The three ways a
+function can be called in this compiler:
 
-All of these must compile with the fork and produce the exact stated values,
-running on Windows.
-
-| # | Case | What it proves |
+| call shape | target | can it capture? |
 |---|---|---|
-| 1 | **Function expression** capturing a local | the base case; `_env` is filled |
-| 2 | **Arrow** capturing a local | arrows go through the same path |
-| 3 | **Method reference** used as a value | `MethodDeclaration extends FunctionDeclaration`; a bound method value keeps its receiver |
-| 4 | **Closure capturing mutable state** | two closures sharing one binding see each other's writes (`inc`/`get` from §1.2) — this is the shared-environment test the per-closure design would fail |
-| 5 | **Closure in a loop** | `for (let i…){ fns.push(() => i) }` yields `0,1,2` — the per-iteration requirement (§1.3) |
-| 6 | **Closure across an async suspend point** | §7.1: a capture mutated before `await` is visible after resume |
-| 7 | **Environment outliving its frame** | §4.3: the returned counter increments across calls |
-| 8 | **Environment reclaimed** | under `incremental`, an unreachable environment is collected — the leak check. (Not testable as stated under `stub`; see 8.3) |
-| 9 | **Arrow `this`** | the arrow sees the enclosing method's `this` (§1.4) |
-| 10 | **Transitive capture** | a binding captured two levels deep resolves through the env chain (§3.1) |
-| 11 | **Non-capturing value allocates nothing** | `arr.map(x => x * 2)` — the optimization from §3.4, verified not to regress |
+| `f(args)` where `f` is a top-level declaration | `ElementKind.Function` direct (`src/compiler.ts:6234-6244`, `:7110-7117`) | **No** — no enclosing function scope |
+| `obj.m(args)` | `ElementKind.Function` direct with `thisArg` | **No** — `this` is `param 0`; a method cannot be inside a function scope (block-scoped classes are refused, `:3608`) |
+| `g(args)` where `g` is a local/field/parameter holding a function value | indirect (`compileCallIndirect`) | **Yes**, and `~env` is delivered |
 
-Cases 1–3 are the shapes; 4–6 are the ones that break if the design is casual;
-7–8 are the memory model; 9–11 guard semantics and cost.
+Nested `function inner(){}` declarations are the third row, **measured** (§1.3).
+So Decision 3's sub-problems dissolve:
 
-### 8.2 Negative controls
+- **(a) Static instance**: only relevant if a capturing function were reachable
+  as a *static* value. It is not: every capturing function is created by
+  `compileFunctionExpression`, which takes the `Struct` branch and builds a heap
+  instance. No declaration-codegen rework.
+- **(b) Direct-call delivery**: no site needs it. `compileCallDirect` is
+  unchanged.
 
-**NC1 — capture of an uninitialized binding.** The §1.5 case: a captured `let`
-declared, captured, then read *before assignment*, from inside the closure. Asserts
-the **defined** error (the static diagnostic first, then the runtime TDZ guard on
-the residual case) — and specifically asserts **not** a silent zero.
+**Fallback.** If C1's implementation finds a `ElementKind.Function` call whose
+callee is `Struct` (the only way: a future construct that puts a function scope
+inside a class body, or block-scoped classes landing), the transform **refuses it
+by name** — `Not implemented: a direct call to a capturing function (closures
+lowering)` — and the gap is recorded. It does not silently pass a stale `~env`.
 
-**NC2 — use of `this` in a regular function expression vs an arrow.** A bare
-`function` expression referencing `this` must **fail** (it has its own dynamic
-`this` with no receiver — the existing `This_cannot_be_referenced` path), while
-the arrow in the same position **succeeds** and sees the enclosing `this`. This is
-the control that keeps §1.4 honest, and it is symmetric: asserting only the success
-case would not prove the distinction exists.
+### 6.6 Codegen that is *not* needed
 
-**NC3 — the "call after the arena sweep" control, honestly reformulated.**
-The mission asks for a negative control calling a closure after the arena sweeps.
-**There is no arena sweep** (§0.2), so that control cannot be written as stated. The
-meaningful pair, which is what I will implement:
-
-- **NC3a (nothing is wrongly freed):** a closure held across a suspension point,
-  and across an epoch boundary, is callable afterwards and its environment is
-  intact. Asserts the env is *not* reclaimed while reachable — the failure mode
-  the conservative-scan gap (§0.5) would cause.
-- **NC3b (nothing is wrongly retained):** an environment whose last reference is
-  dropped **is** reclaimed under `incremental` (the §8.1 case 8 leak check, as a
-  control rather than a criterion).
-
-`NC3b` is explicitly **not runnable under `--runtime stub`**, and that is the
-point: it is the control that would have caught the §0.3 blocker.
-
-### 8.3 Platform: Windows
-
-Same constraints as v2 §8.4, and the same answer:
-
-- The guest builds with the fork's `asc`; the build runs **out-of-tree** in
-  `build/assemblyscript/` so nothing writes into `third_party/` (v2 §0.1).
-- Closure-only cases (1–5, 7, 9–11) are **pure guest logic** and need **no host
-  changes at all** — they run under the existing guest fixture harness
-  (`tension-framework/tests/`, `guest-*.ts` + `run.sh`), emitting a transcript.
-- Case 6 (closure across a suspend point) and NC3a need the host to deliver an
-  event from a thread, so they reuse **v2's D8 harness request**
-  (`tension-core/tests/async_await.rs`). This plan adds **no additional
-  tension-core request** — it inherits exactly one, already on the table.
-
-That contrast is worth noting explicitly: unlike v2, **this plan needs no
-test-only code in `tension-core` of its own.** The one host-side test it depends on
-is the one v2 already asked for. If D8 in v2 was not approved, case 6 and NC3a are
-the only casualties; cases 1–5 and 7–11 still run.
+Because the transform rewrites captures into ordinary field accesses before
+resolution, the two `declaredByFlow` error sites
+(`src/compiler.ts:5771`, `:7747`) never fire for a lowered program, and no
+capture-walk codegen is required at either site. The `AS100: Not implemented:
+Closures` diagnostics there are deleted in C2's own commit once the transform
+proves it handles the shapes (D7).
 
 ---
 
-## 9. Backend B compatibility check
+## 7. `this`, `super`, and methods
 
-### 9.1 Does the closure design support both backends, or does it bake in state machines?
+### 7.1 `Receiver` vs `Struct`
 
-**It supports both, and the reason is structural rather than a promise.**
+| arrow captures | `envKind` | `_env` holds | prologue |
+|---|---|---|---|
+| `this` only | `Receiver` | the receiver | reads `~env` into the `this` local (shipped) |
+| `this` + a local | `Struct` | the env object | reads `~env` into `$closureEnvIn` |
+| a local only | `Struct` | the env object | reads `~env` into `$closureEnvIn` |
 
-The things a closure needs are: (a) an environment object with a fixed layout,
-(b) an allocation policy, (c) a way to reach a captured binding from inside the
-closure, and (d) a call convention. Under both backends:
+In the `Struct` case, `this` is field 0 (`$this`) of the env owned by the nearest
+enclosing non-arrow function, initialized at that function's scope entry from its
+`this` (a parameter, so always available where a `this` exists at all). References
+to `this` inside the arrow are rewritten to `env.$this`; the resolver never sees a
+`ThisExpression` there, so `capturesThis` is not also set — no double storage.
 
-| Closure concern | Where it is solved | Backend-specific? |
+A struct is created only when there is at least one non-`this` capture to justify
+it, so a `$this`-only struct cannot occur.
+
+### 7.2 Arrows nested in arrows
+
+The `this` walk stops at the nearest **non-arrow** function
+(`src/resolver.ts:2295-2402`), so nested arrows share one `$this` field, reached
+through the env chain. A nested arrow that captures a binding from its own
+enclosing arrow's block gets that block's env; the chain links it to the outer
+env that holds `$this`.
+
+### 7.3 Methods are unbound — measured
+
+```ts
+class C { x: i32 = 7; m(): i32 { return this.x; } }
+export function main(): i32 { const c = new C(); const f = c.m; return f(); }
+```
+
+**measured:** `TS2685: The 'this' types of each signature are incompatible.` —
+the compiler refuses to call a detached method value without a receiver, which is
+the TypeScript behaviour (unbound method, `this` undefined under strict mode).
+`Function<T>` has **no `bind`** (grep: no occurrence in `std/assembly/` or
+`src/builtins.ts`); `f.call(c)` is the supported explicit-receiver path and
+**measured** to compile (`Function#call`, `src/builtins.ts:745`, `:3888-3921`,
+which routes to `compileCallIndirect` and therefore delivers `~env`).
+
+**Rule.** Method values are unbound; no receiver-binding mechanism is added.
+Case 3 asserts the diagnostic and the `.call(c)` path (§13).
+
+### 7.4 Async methods — `$env` populated unconditionally (Decision 4)
+
+An async method's `this` must survive suspension, and a method has no `_env` of
+its own. Per the architect's ruling:
+
+- The async transform synthesizes `f$ThisEnv extends TaskEnv { $this: C }`.
+- The entry populates `state.$env = new f$ThisEnv(this)` **unconditionally** —
+  before `f$resume(state)` — so the sync prefix runs with it in place.
+- `this` in the method body is rewritten to
+  `changetype<f$ThisEnv>(state.$env!).$this` (or through a local hoisted at the
+  top of `f$resume`; C1 picks the cheaper emission).
+
+This removes the need for a dedicated `$this` state field and keeps `$env`'s
+meaning single: *the environment the suspended frame needs*. It is an
+async-transform change, scheduled with case 6 (§8.4), not part of the closure
+transform.
+
+### 7.5 `super`
+
+`super` in a capturing arrow is **refused by name**:
+`Not implemented: super in a capturing arrow (closures lowering)`. The shipped
+resolver's `lookupSuperExpression` (`src/resolver.ts:2420`) has the same
+`isInline`-then-parent shape that `this` had, and fixing it is arrow-this D8's
+job, not this plan's. Non-capturing arrows are left exactly as they are today,
+including whatever behaviour they have now; the negative control records it.
+
+---
+
+## 8. Interaction with async
+
+### 8.1 The rule, restated with the new mechanism
+
+A captured binding lives in the environment. The async state struct holds a
+managed reference to the environment when the frame that owns it can be
+suspended:
+
+- **closure env local crosses an await** → the async transform's existing lifting
+  rule moves `$closureEnv` into a state field of the env class type (managed,
+  traced). This *is* §4.4's "state struct references the environment".
+- **a capturing async function's entry hands the env to `f$resume`** → the entry
+  stores it in `state.$env`; `f$resume` reads it back (§8.3).
+- **a struct is never copied into a state field**; there is exactly one env
+  object per scope instance.
+
+### 8.2 What the async transform sees after the closure transform
+
+| user code | after closures | after async |
 |---|---|---|
-| Environment layout | synthesized managed class (§3.3) | No — ordinary class machinery |
-| Allocation policy | scope entry / per iteration (§1.2, §1.3) | No — a front-end decision |
-| Capture reach | resolved `(depth, fieldIndex)` walk (§3.3) | No — just loads |
-| Call convention | `(tableIndex, env, args…)` (§5.1) | No — ordinary `call_indirect` |
-| Rooting across suspension | task/continuation table (§7.3) | No — required under both (§0.5) |
-| What an `await` becomes | backend | **Yes — and it is the only thing** |
+| `let n: i32 = 0; const f = () => ++n; await h; f();` | `let $closureEnv: f$Env = new f$Env(); $closureEnv.n = 0; const f = () => ++$closureEnv.n; await h; f();` | `$closureEnv` lifted into a managed state field; `f`'s `_env` still points at that same object; the call after resume sees the same `n` |
+| a nested function in an async body | an ordinary function value with `_env` | unchanged shape; the value is a heap `Function<T>` |
 
-The single backend-specific element is the lowering of `await` itself, which is
-v2's design and stays v2's design. Closures do not add a second one.
+The async transform's walker already accepts `NewExpression`, `PropertyAccess`,
+`CallExpression`, `Identifier`, `Binary`, `Unary`, and `Assertion`
+(`src/async/lower.ts:1308-1455`), so the rewritten bodies are walkable. The
+transform's `planStatement` already accepts a bare function-expression statement
+(`:686-705`); a closure in a `const` initializer is still refused there
+(`:1993-1999`) and becomes case 6's un-refusal item.
 
-### 9.2 What is a Backend A capability diagnostic, and what is a language rule
+### 8.3 `$env`: the carrier, and the naming
 
-Applying v2 §5.3's discipline:
+Three different words, now named distinctly:
 
-**Language rules** (true of the language, enforced in the front-end, valid under
-both backends):
-
-- capture is by reference, one binding one home (§1.1)
-- per-iteration environments for loop-header bindings (§1.3)
-- arrow `this` is lexical; regular function `this` is not (§1.4)
-- names resolve in declaration order; no hoisting (§1.5)
-- the TDZ rule and its residual runtime guard (§1.5)
-- environments never cross the host boundary (§4.4)
-
-**Backend A capability diagnostics** (must NOT become language rules):
-
-- **"`await` is illegal inside a callback"** — v2 §5.3 already flagged this as
-  Backend A only, because under WasmFX `suspend` inside a callback is meaningful.
-  It stays a Backend A diagnostic and must not be moved into the parser or
-  resolver.
-- **Any diagnostic of the form "you cannot do X across a suspension."** Nothing in
-  the closure design creates one — deliberately, because per §0.4 captured
-  bindings never enter the lifting problem, so there is no capture-across-suspend
-  restriction to encode.
-
-The one place I want to be careful and explicit: it would be very tempting to make
-**"a closure capturing a binding that is live across an `await`"** a warning or an
-error, on the theory that it is expensive or subtle. **That must not be a
-language rule.** It is legal, it is the design's whole point (§7.1), and it works
-under both backends.
-
-### 9.3 Does the AST carry enough for both without redesign
-
-**Yes — because it carries no lowering metadata at all** (§2.1). The AST holds
-syntax; capture facts live in the resolved model keyed by `Function`; the
-environment is a synthesized class; the call convention is standard. There is no
-node field that a backend could write an assumption into, which is the structural
-guarantee that a redesign is not needed.
-
-**What would break Backend B**, listed so it can be avoided rather than discovered:
-
-1. **Putting capture metadata on the AST node.** Two failure modes: stale after
-   the clone at `compiler.ts:7223`, and it becomes a place for Backend A to write
-   state-machine specifics.
-2. **Requiring the environment to live in the state struct.** That would make the
-   environment a state-machine artifact and force Backend B to re-derive it. The
-   environment must be its own heap object under both backends (§0.4).
-3. **Making the closure call convention carry state-machine data** (e.g. passing
-   the state struct as the closure's implicit parameter instead of a plain
-   environment pointer). The implicit parameter is the **environment**, nothing
-   more.
-4. **Promoting any Backend A restriction to a language error** (§9.2).
-5. **Encoding capture-ness in the `Signature` string** — the interning collision
-   in §6.2, which would also make closure-ness a *type* fact instead of a
-   representation fact, and thus visible to both backends.
-
-**One residual hazard that is Backend B's own, restated because it is a memory
-concern and not a lowering one:** the conservative `visitStack` scan does not cover
-a suspended continuation's fiber stack (§0.5). So under Backend B, everything a
-suspended task needs must be reachable from a traced root — the same rule Backend
-A needs. If that is honored, Backend B is a swap; if a future Backend B lets
-`visitStack` be the only thing keeping an environment alive across a suspension,
-environments will be collected out from under live continuations. That is a
-runtime-discipline requirement, and it is why the rule is enforced in the runtime
-(§7.3) rather than left to each backend.
-
----
-
-## 10. Open decisions requiring architect approval
-
-Each with a recommendation. None decided unilaterally.
-
-**D1 — Guest runtime: `--runtime stub` vs `--runtime incremental`.** *(The
-blocking one.)*
-Closures cannot be memory-correct under `stub`: every environment allocation is
-permanent, and `free` only works on the topmost block (§0.3). Measured 32
-bytes/closure with zero reclamation vs. full reclamation under `incremental`.
-**Recommend switching the guests to `--runtime incremental`.**
-
-**The change is smaller than it first looks, and here is exactly where it lives
-(verified):**
-
-- `tension-framework/build.sh:149` generates
-  `tension-framework/build/session.asconfig.json` with `"runtime": "stub"`
-  hard-coded in the `asconfig_doc` dict. **The OGRE examples inherit the runtime
-  from that generated config** — e.g.
-  `examples/ogre/bouncing-ball/package.json:8`:
-  `asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm`.
-  So for every OGRE example, this is **one line in the generator**, and it
-  propagates on the next `build.sh` run.
-- The **non-OGRE examples pass it explicitly on the command line** —
-  `examples/{ai,audio,io,log}/package.json:8` and `examples/res/package.json:8`
-  each read `--runtime stub`. Those are **five separate one-word edits**.
-- Two documentation/echo sites also mention it and should be updated for honesty:
-  `build.sh:19` (the flags list) and `build.sh:174` (the printed flags).
-
-So: **one generator line + five example lines + two comments.** It requires no
-host change, no shadow stack, and no ABI change; write barriers are already
-emitted identically in both runtimes.
-
-*Named cost:* ~4.7 KB fixed code size (measured 932 B → 5,620 B on a trivial
-program) plus per-allocation and incremental-collection overhead. *Alternatives if
-the size cost is unacceptable:* (i) keep `stub` and ship closures with a
-documented, quantified leak — not recommended, it is the footgun from §0.3; (ii) a
-third runtime variant (the fork could add an allocator-free-list-only runtime:
-reuse freed env blocks without a full collector — bounded memory, no code-size
-blowup, but it leaks anything that is not freed explicitly and cannot handle
-reference cycles, so closures that capture each other still leak). **I would want
-the architect's judgment on whether (ii) is worth prototyping before accepting
-(i)'s cost.**
-
-**D2 — Environment granularity and the chaining scheme.**
-**Recommend one environment per scope instance, with a parent link, and
-per-iteration allocation for loop-header bindings** (§1.2, §1.3). The alternatives
-(per-closure environments) break shared mutation; a flat env per closure breaks
-transitive capture. Not really a close call, but it is a structural decision that
-is expensive to change later, so it is recorded.
-
-**D3 — TDZ for captured bindings.**
-**Recommend (a)+(b) from §1.5**: static rejection using AS's existing flow
-definite-assignment analysis, plus an initialization flag per captured
-`let`/`const` slot checked on read so the residual case is a defined error.
-*Cost:* one word per captured mutable slot and a branch per captured read.
-**Recommend against** silently reading the zero value — it is the plan lying about
-what it does. The alternative if the architect wants zero runtime cost is
-**static-only rejection (a) with a documented gap**, which rejects some legal TS
-rather than accepting a silent hole. That trade is the architect's to make.
-
-**D4 — Hoisting: not in this plan.**
-**Recommend explicitly scoping hoisting out** (§1.5) and tracking it as its own
-piece of "be TypeScript-shaped" work. It is orthogonal to closures, it requires a
-resolver pre-pass, and adding it *here* would bury a resolver rework inside a
-closures plan. Flagging it because the mission's wording ("match TS semantics")
-could be read as requiring it, and I want that read decided rather than assumed.
-
-**D5 — Does a capturing function's implicit environment parameter change any
-existing ABI?**
-It adds a leading `usize` to the wasm signature of **capturing functions only**,
-which are exactly the functions that cannot be compiled today (they are errors).
-Non-capturing functions are unchanged. So no existing signature, no export, and no
-host-visible ABI is affected. **Recommend confirming this explicitly**, since it is
-the kind of statement that is easy to accept casually and expensive to discover
-otherwise.
-
-**D6 — `CommonFlags.Closure = 1 << 29` (`common.ts:79`), currently dead.**
-**Recommend** either using it as the "this function captures" bit or deleting it,
-and recording which. It is not load-bearing (§2.1 puts capture in the resolved
-model), so it is housekeeping — but a dead flag named `Closure` next to a feature
-called closures will mislead the next reader.
-
-**D7 — Diagnostic cleanup.**
-The capture error currently emits a **spurious companion** `TS2454: Variable 'x'
-is used before being assigned` alongside `AS100: Not implemented: Closures`
-(measured, §0.1). **Recommend** that supporting capture suppresses the companion,
-and that the two `declaredByFlow` sites gain real, specific diagnostics for the
-cases that remain errors (transitive-capture-through-a-non-capturing-function, if
-any survive).
-
-**D8 — Does the fork take an `--runtime` default, or per-example flags?**
-Related to D1 but distinct: whether `incremental` becomes the fork's default (and
-`stub` the opt-out), or stays an explicit per-example flag. **Recommend** making it
-the fork's default for Tension guests, because the failure mode of forgetting the
-flag is silent unbounded growth (§0.3), which is the worst kind of default.
-
-**D9 — Escape analysis / stack allocation of environments.**
-**Recommend deferring** (§4.5). Noting it here because it is the answer to "will
-this be slow", and the honest v1 answer is "capturing closures allocate; we accept
-that."
-
----
-
-## 11. Fork model and commits
-
-**Detached fork. Upstream is reference only. No compatibility patches.**
-Restating v2 §0 exactly, since nothing has changed: `origin` =
-`git@github.com:Yabgu/TensionScript.git`, `upstream` = fetch-only with its push URL
-disabled, initial commit `b6bda05c`. We are not obligated to cherry-pick and will
-not carry patches whose only purpose is mergeability.
-
-**Pure additions (new files):**
-
-- `src/passes/closure.ts` — capture analysis (§3.2).
-- Environment-class synthesis helper (may live in the same file).
-- `tests/parser/closure_*.ts.fixture.ts`, `tests/compiler/closure_*.ts` +
-  generated `.wat`/`.js`/`.d.ts` fixtures.
-- `tension-framework/tests/guest-closures.ts` (+ the case-6 fixture).
-
-**Core files modified** — and this is the honest comparison the mission asks for:
-**closures are more core-invasive than async.**
-
-| File | Nature of edit | Why it cannot be additive |
+| name | what it is | who reads it |
 |---|---|---|
-| `src/compiler.ts` | The two capture sites (`:5708`, `:7562`); closure creation at `ensureRuntimeFunction`/`compileFunctionExpression` (`:2154`, `:7352`); the `This`-in-arrow path; calling the analysis pass | These **are** the feature. The two sites are where capture is decided today. |
-| `src/resolver.ts` | `lookupThisExpression` for arrows — lexical `this` (§1.4); arrow `thisType` (§6.1) | `this` in an arrow is resolved here; no other layer can fix it. |
-| `src/program.ts` | Capture side table keyed by `Function`; `declaredByFlow` becomes a query; env class registration | The resolved model lives here. |
-| `src/ast.ts` | **Nothing required.** `arrowKind` already exists; no new node (§2.1) | — |
-| `src/tokenizer.ts` | **Nothing.** | — |
-| `src/extra/ast.ts` | **Nothing** — no new node means no serializer case (unlike v2 §0.2, which needed one for `AwaitExpression`) | — |
-| `std/assembly/function.ts` | **Nothing** — `_env` is already there and already traced (§0.1) | — |
-| `std/assembly/rt/**` | **Nothing** — the fix is a build flag, not new runtime code (D1) | — |
-| `tension-framework/**` | The `--runtime` flag in the build config (D1/D8); test fixtures | Build configuration, not compiler work |
+| `_env` | the `usize` word inside every `Function<T>` | `makeCallIndirect`, the callee's prologue |
+| `$env` | the state struct's `TaskEnv`-or-null field (`src/async/lower.ts:175`) | async methods (this-struct) and `f$resume` (closure env) |
+| `$closureEnv` / `$closureEnvIn` | the env locals of a function | capture accesses, creation, delivery |
 
-**The striking asymmetry, stated because it shapes the work:** async needed new
-AST nodes and a serializer case but only one resolver case and one compiler case;
-closures need **zero** AST changes but edits across `compiler.ts`, `resolver.ts`,
-and `program.ts`, plus a new analysis pass. The mission's expectation — that
-closures are the bigger feature in compiler surface area — **is correct**, and the
-AST is the one layer that needs nothing, because upstream already built the AST
-and the value representation for first-class functions (#1384) and stopped exactly
-where capture analysis would have begun.
+There are two distinct async cases, and they use different carriers:
 
-**No `parser.ts` change is required by this plan at all.** v2 needed it for
-`async`/`await` keywords (v2 §2.2/§5, its D-M3); closures need nothing from the
-parser, because arrow functions, function expressions, and `this` are all already
-parsed. That is worth stating plainly so it is not assumed otherwise.
+**(a) The async function *is* a closure value** — a nested async function or an
+async arrow, the only kind that can itself capture. The env arrives through
+`~env` at the **entry**, but the body lives in `f$resume`. The transform:
+
+1. keeps the resolver-added `$closureEnvIn` local in the entry,
+2. emits `state.$env = $closureEnvIn;` before `f$resume(state)`,
+3. emits at the top of `f$resume` its **own** declaration (a normal statement in
+   the synthesized body, not a resolver-added local):
+   `let $closureEnvIn: f$Env = changetype<f$Env>(state.$env);`
+
+`f$resume`'s signature is unchanged — one parameter, `state`.
+
+**(b) The async function is not itself a closure but contains one** — it owns the
+env. The declaration `let $closureEnv: f$Env = new f$Env();` is written in the
+body that moves into `f$resume`, so the existing lifting rule lifts `$closureEnv`
+into a state field of the env class: a managed reference to the environment,
+which is §4.4 exactly. `state.$env` stays null in this case; nothing is carried
+there because nothing needs to cross a function boundary.
+
+For an **async method**, the entry populates `state.$env` with the this-struct
+(§7.4). A method is not a closure value, so it has no `$closureEnvIn`.
+
+The `$env` field type stays `TaskEnv | null`; `changetype` at read-back is the one
+cast, and it is the same cast the plan already uses for `record!`-style
+non-nullable fields.
+
+### 8.4 Case 6 — the dependency chain, stated as three gates
+
+**Gate 1 — closures land.** A capture can exist in a body: the closure transform
+produces `$closureEnv`/`$closureEnvIn` and field accesses.
+
+**Gate 2 — the async transform un-refuses.** Separate dispatch, async-side
+changes:
+
+- `this` in an async body: un-refuse for async **methods** only, with §7.4's
+  `$env` population; a free async function still has no `this` (resolver
+  `TS2332`).
+- a nested function in an async body: un-refuse function expressions/arrows that
+  capture, provided the closure transform has rewritten them.
+- async methods: un-refuse the parser/member guard (`src/async/lower.ts:1463`)
+  and lower the method shape (entry stays a method; `f$resume` is free and reads
+  `this` from `state.$env`).
+
+**Gate 3 — case 6 testable.** The test (§13, case 6) compiles an async body that
+creates a closure, awaits, and calls it, and asserts the mutation is visible —
+first as a **shape** assertion in Phase 3, then as a **value** assertion once the
+scheduler exists (Phase 4).
+
+Until Gate 2, `this` and nested functions in async bodies stay refused by name;
+the closure plan does not weaken those refusals itself.
+
+### 8.5 The async contract this plan requires
+
+For the async transform (Gate 2), the closure plan requires exactly:
+
+1. Accept the closure transform's output in every position it already accepts
+   ordinary code (env locals, field accesses, `new`, `!`).
+2. Populate `$env` in the entry before `f$resume`, for capturing functions and
+   for async methods.
+3. Read `$env` back at the top of `f$resume`.
+4. Do not lift a binding that is a field access (there is nothing to lift — the
+   binding is no longer a local).
+5. Keep the `$env` name reserved, and keep `$closureEnv`/`$closureEnvIn`
+   unreserved so the lifting rule can lift them when they are body-local.
+6. In case (a), do **not** lift the read-back `$closureEnvIn` into a second state
+   field: its carrier is `state.$env`, and a second reference would be
+   redundant even though it points at the same object.
 
 ---
 
-## 12. Risks
+## 9. Host boundary
+
+### 9.1 `makeCallbacks` refuses capturing closures — both kinds
+
+`tension-framework/assembly/runtime/callbacks.ts:34-36`:
+
+```ts
+assert(load<usize>(fn, sizeof<usize>()) == 0,
+  "makeCallbacks: a handler that captures `this` cannot be called by the host");
+```
+
+The check is "the environment word is zero", not "this was captured". Therefore
+it refuses **every** capturing closure: a `Receiver` arrow (its `_env` is the
+receiver) and a `Struct` closure (its `_env` is the env object). The host has no
+indirect-call site at which to set `~env`, so this is correct, not incidental.
+
+**The plan's handling: host callbacks are refused for capturing closures.** The
+supported pattern is a **shim**: a non-capturing, module-level handler that reads
+the state it needs from a module-level (traced) binding:
+
+```ts
+let pending: i32 = 0;                                  // a traced module-level binding
+function onBatchShim(class_: u32, ptr: u32, count: u32): i32 { /* uses pending */ }
+// registered where the guest builds its callbacks:
+//   makeCallbacks(onBatchShim)   — `_env` is 0, so the guard passes
+```
+
+The shim's `_env` is 0, so the guard passes; the closure that produced the state
+is not the handler. This is a language-level consequence of the host ABI (no
+environment word crosses it) and is documented in §9.4's "no ABI change".
+
+### 9.2 The unsafe `call_indirect` builtin
+
+`builtin_call_indirect` emits a raw `module.call_indirect` with no `~env`
+hand-over (`src/builtins.ts:3788-3818`). A capturing closure invoked through it
+reads whatever `~env` last held. The plan does not fix this builtin (it takes a
+raw table index by design); it **documents** the limitation and adds a negative
+control that asserts the guard-rail shape: the builtin is `@unsafe`, and the
+closure case is named in the documentation. If the architect prefers an active
+guard, the same `assert` shape as `makeCallbacks` can be emitted at the builtin's
+site — recorded as an option, not adopted here.
+
+### 9.3 `~env` is a delivery register, not a root
+
+`~env` is a mutable `usize` global (`ensureEnvGlobal`, `src/compiler.ts:6637-6650`),
+not a managed global, so `__visit_globals` does not trace it. That is fine while
+it is transient: between the store and the callee's prologue the value is also
+held by the closure value (`_env`, traced) and by a stack local (conservatively
+scanned). **It must never be the only reference to an environment across a
+suspension**; §8 makes the state struct / lifted local the carrier.
+
+### 9.4 No ABI change
+
+No export, no import, no record field, no host-visible signature changes. The
+environment never crosses the host boundary; the completion record and
+`BUFFER_POOL` are untouched. The one behavioural interaction is the existing
+`makeCallbacks` guard (§9.1).
+
+---
+
+## 10. Backend B (WasmFX) compatibility
+
+The environment design is backend-neutral: an env class with a fixed layout, an
+allocation policy (scope entry), a capture access (`env.field`), and a call
+convention that is the *existing* one (a `Function<T>` value plus the `~env`
+register). None of these mention state machines.
+
+| concern | where solved | backend-specific? |
+|---|---|---|
+| env layout | synthesized managed class (§5.2) | no |
+| allocation policy | scope entry / per iteration (§5.3, §5.4) | no |
+| capture reach | rewritten `env.field` (§6.2) | no |
+| delivery | `~env` save/set/restore (§6.4) | no |
+| rooting across suspension | state struct / lifted local (§8.1) | no |
+| what an `await` becomes | async plan v2 §5 | **yes — the only one** |
+
+Backend B specific hazard, restated: a suspended continuation's fiber stack is
+not scanned by `visitStack`, so the env must be reachable from a traced root —
+the same rule Backend A needs for the opposite reason. Under Backend B a
+`Struct` function's prologue reads `~env` exactly as under Backend A; the value
+is also held by the closure value, which is on a continuation stack, so the
+*root* rule (not the register) is what must hold.
+
+What would break Backend B, restated so it is avoided rather than discovered:
+capture metadata on the AST; requiring the env to live in the state struct
+instead of being *referenced* by a traced field; making the call convention carry
+state-machine data; promoting a Backend A restriction to a language rule;
+encoding capture-ness in the `Signature` string.
+
+---
+
+## 11. Type system
+
+- **No new `TypeKind`, no new `TypeFlags`.** A closure's type is `Function<T>`,
+  exactly like a non-capturing function value (`Type.getClassOrWrapper` over the
+  signature; the original plan's §6.1 analysis is unchanged).
+- **No subclass of `Function<T>`** — it is `@final abstract`
+  (`std/assembly/function.ts:3`); the difference is in `_env` and `envKind`.
+- **No capture-ness in the `Signature` string.** `Signature` interning keys on
+  `toString()`, so two functions differing only in whether they capture would
+  collide. Capture facts live in the side table (§3.3), keyed by declaration.
+- **The env class is an ordinary class** — field offsets, `__visit`, and `__link`
+  barriers come from the existing class machinery.
+- **`envKind` is a `FunctionPrototype` field**, not a type: a compile-time
+  representation fact.
+
+---
+
+## 12. Decisions register
+
+| # | Decision | Status |
+|---|---|---|
+| **D1** | Guest runtime `stub` vs `incremental`. | **Resolved** by the runtime migration: compiler default `incremental` (`src/compiler.ts:244`), generated config (`tension-framework/build.sh:154`), five examples. The 32 B/closure measurement stays as history. |
+| **D2** | Environment granularity. | **Keep**: one env per scope instance, `$parent` chain, per-iteration allocation for loop-header bindings (§2.2, §2.3). |
+| **D3** | TDZ for captured bindings. | **Revised**: the demotion loses the static check, so a per-slot `$init$` flag plus `abort()` is **mandatory**, emitted only for declarations without an initializer (§2.5). `const` assignment is checked by the transform (`TS2540`). |
+| **D4** | Hoisting. | **Keep out** (§2.5). Orthogonal, resolver-sized. |
+| **D5** | ABI. | **Revised**: no implicit environment parameter. The register is `~env`, internal to the module; no host-visible change (§9.4). |
+| **D6** | `CommonFlags.Closure = 1 << 29` (`src/common.ts:79`). | **Delete.** `envKind` in the side table is the fact; a dead flag beside this feature misleads. |
+| **D7** | Diagnostic cleanup. | **Revised**: the two `AS100: Not implemented: Closures` sites (`src/compiler.ts:5771`, `:7747`) are deleted in C2 once the transform covers the shapes; the spurious `TS2454` companion disappears with the demotion (the field is always assigned); the shapes that remain refused get specific `Not implemented: <shape> (closures lowering)` messages. |
+| **D8** | Runtime default. | **Resolved**: the compiler default is already `incremental`. |
+| **D9** | Escape analysis / stack allocation. | **Deferred** (not v1). |
+| **D10** | **Captured bindings with an inferred type are refused.** | New, and the sharpest divergence: `let n = 0;` cannot be given an env field before resolution. Refused by name; the fix (a resolver-stage type inference pass) is named, not smuggled. |
+| **D11** | **Captured bindings typed by a type parameter or a function-local alias are refused** in v1. | New; generic env classes / hoisted aliases are the extension. |
+| **D12** | **Host callbacks cannot be capturing closures.** | New; the shim pattern is the supported route (§9.1). |
+| **D13** | **Async methods populate `$env` unconditionally** with a this-struct at field 0. | New (architect ruling); it is an async-transform change, scheduled with Gate 2 (§7.4, §8.4). |
+
+---
+
+## 13. Test harness
+
+### 13.1 Pass criteria
+
+| # | Case | Expectation | Gate |
+|---|---|---|---|
+| 1 | function expression capturing a local | compiles, returns the value; env class emitted, `_env` non-zero | C2 |
+| 2 | arrow capturing a local | same path | C2 |
+| 3 | **method value** | `const f = c.m; f()` → `TS2685` (measured); `f.call(c)` → value | C2 |
+| 4 | two closures sharing one binding | `inc`/`get` observe each other; **one** env allocation | C2 |
+| 5 | closure in a loop | `0,1,2`; per-iteration env allocation count asserted | C3 |
+| 6 | closure across an async suspend point | shape now; value in Phase 4 | C5 (after Gate 2) |
+| 7 | environment outliving its frame | returned counter increments across calls | C2 |
+| 8 | environment reclaimed | unreachable env collected under `incremental` (leak check) | C4 |
+| 9 | arrow `this` | unchanged behaviour (regression guard for the shipped path) | C2 |
+| 10 | transitive capture through an intermediate function | value correct; intermediate receives and forwards the env | C2 |
+| 11 | non-capturing value allocates nothing | **three-way**: `None` → no allocation; `Receiver` → heap value, no env; `Struct` → heap value + env | C2 |
+| 12 | **host callback shim** | a capturing closure is refused by `makeCallbacks`; a non-capturing shim works | C4 |
+| 13 | **for-header per-iteration shape** | clone-before-increment visible in the wat; the incrementor runs on the fresh env | C3 |
+| 14 | **direct-call shape** | a nested `function` is a value; its call is `call_indirect` (measured baseline) | C1 |
+| 15 | **`super` in a capturing arrow** | refused by name | C4 |
+
+### 13.2 Negative controls
+
+- **NC1 — read before assignment.** `let x: i32; const f = () => x; f(); x = 1;`
+  → the `$init$x` check aborts; the test asserts a **trap**, not a zero.
+- **NC2 — `this` in a regular function expression vs an arrow.** The regular
+  function is `TS2332`; the arrow sees the enclosing `this` (the arrow-this
+  contract, unchanged).
+- **NC3 — host callback.** A capturing closure passed to `makeCallbacks` trips the
+  guard; the shim passes. The framework already exercises the refusal half
+  (`tension-framework/tests/guest-callbacks-guard.ts`, per
+  `docs/async-await-plan-v2-review.md` §6.5).
+- **NC4 — non-capturing arrows.** A `map(x => x * 2)` arrow keeps the static
+  instance and `_env = 0` (no regression in the common case).
+- **NC5 — detached method value.** `TS2685` (measured), and `.call(c)` returns
+  the value (measured).
+- **NC6 — `super` in a capturing arrow.** Refused by name.
+
+### 13.3 Platform
+
+**Linux first, Windows second**, as the runtime migration did (its verification
+documents are separate). A platform failure must not be confused with a closure
+failure.
+
+### 13.4 Byte-identity and suite
+
+- Non-closure programs: three programs × plain/`--optimize` against `bb2dde70`,
+  **6/6**. Programs: p1 arrow-this-in-method, p2 nested arrows, p3 indirect
+  `this` — the same probe set the async work uses, which is exactly the corpus
+  most at risk (this-only arrows must keep the `Receiver` path).
+- Full compiler suite: 247 tests, 0 mismatches, `[SUCCESS]`; the capturing-arrow
+  probe returns 7 — the async work's standing measurement at `ccf888c6`, re-run
+  as a gate here rather than assumed.
+
+---
+
+## 14. Milestones
+
+- **C0 — decisions.** This revision's D1-D13 confirmed. (Nothing to build.)
+- **C1 — analysis + rewrite, no codegen.** `src/closure/` with the scoping walk,
+  env-class synthesis, and the body rewrite; the side table; the direct-call
+  measurement re-run as the first task (it is expected to confirm §6.5). Gate:
+  rewritten ASTs are inspectable for cases 1, 4, 7, 10; **no** codegen change
+  yet, so nothing compiles differently; byte identity holds trivially.
+- **C2 — codegen.** Resolver flags + `$closureEnvIn` local; the prologue; the
+  `Struct` branch in `compileFunctionExpression`; the `declaredByFlow` error
+  sites removed. Gate: cases 1, 2, 3, 4, 7, 9, 10, 11 pass; byte identity 6/6;
+  full suite green.
+- **C3 — loops.** §5.4's clone-before-increment, body-block envs, `continue`
+  rewriting; case 5, 13. Gate: `0,1,2` and the allocation count.
+- **C4 — controls.** NC1-NC6, case 12, case 15; the `call_indirect` builtin
+  documentation.
+- **C5 — async composition (Gate 2).** Separate dispatch: the async transform's
+  un-refusals and `$env` population; case 6 shape, then value in Phase 4.
+
+Each milestone is its own dispatch with its own report; none is started by this
+document.
+
+---
+
+## 15. Risks
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| **Closures ship on `--runtime stub` and leak** | **Critical** | D1. The measured 32 B/closure with zero reclamation, and the ~131-second figure at 100 closures/frame, are the argument. The fix is one line in `tension-framework/build.sh:149` plus five explicit example flags. Do not ship the compiler work without deciding D1. |
-| Transitive capture propagation (a binding captured through an intervening function) is analysed incompletely | High | Dedicated test case (§8.1 case 10); analysis resolves identifiers via the *same* `lookupIdentifier` path as codegen, so the two cannot disagree |
-| Per-iteration environments missed for loop headers | High | §1.3 states it as a requirement, not an optimization; §8.1 case 5 is exactly `0,1,2` |
-| A captured binding also gets lifted into the state struct (double home) | High | §0.4's single-storage rule; §8.1 case 6 fails if it happens (shared mutation across a suspend) |
-| Environment reference not rooted across suspension → collected while live | High | §7.3: task table a managed global, state struct managed with managed fields; NC3a asserts it. And this is the same hazard Backend B has for its own reason (§0.5) |
-| Performance regression: every access to a captured binding becomes a memory walk | Medium | Accepted for v1; §4.5 and D9 note the escape-analysis and local-mirror optimizations. Non-capturing closures (the common `map` case) allocate nothing (§3.4) and are unaffected |
-| Arrow `this` fix changes behaviour for existing code that relied on the (wrong) non-lexical binding | Medium | Such code is arguably already broken — it resolves `this` to the arrow's own type and fails with `TS2339` in most uses (§0.1). Verify against existing examples before landing |
-| TDZ residual hole reads a zero value silently | Medium | D3 — the explicit trade, with the silent option recommended against |
-| Switching to `incremental` changes timing/behaviour of existing examples | Medium | It adds cost and collection pauses; measure on the existing examples before making it the default (D8) |
-| `@final` on `Function<T>` blocks a future distinct closure type | Low | Deliberate — one representation for all function values (§6.1); if a distinct type is ever needed, that is the time to revisit `@final` |
-| Dead `CommonFlags.Closure` bit misleads future readers | Low | D6 |
+| A capture escapes the analysis (shadowing, a declaration-order edge) | High | The rewrite fails closed: a missed capture leaves a name that the resolver reports (`TS2304`) rather than a silent miscompile; shadowing cases are in the test matrix (§4.2) |
+| Per-iteration semantics wrong (`3,3,3`) | High | §2.3's clone-before-increment, case 5 and 13 assert values **and** the wat shape |
+| Double storage (`env` field plus a state field) | High | §2.2/§8.1; the async transform lifts the env **local**, which is the single object; case 6's value test (Phase 4) would catch a copy |
+| A captured binding's inferred type is the common case and is refused | Medium | D10: named refusal, documented; the fix path (resolver-stage inference) is stated |
+| `task-rt`'s `TaskEnv` is pulled into non-async closure programs | Low | It is an empty class in a top-level std file that every build parses anyway; unused functions are DCE'd |
+| The closure transform changes this-only arrow output | High | The fast path skips sources with no non-`this` capture; byte identity 6/6 is a gate |
+| Host callbacks cannot be closures | Medium | §9.1's shim pattern; NC3 |
+| `call_indirect` builtin with a closure reads a stale `~env` | Low | Documented; `@unsafe`; optional guard recorded |
+| Env chain depth computed wrongly for transitive captures | High | Case 10; the rewrite is `. $parent!` per hop with concrete parent types, so a wrong depth is a type error, not a wrong read |
 
 ---
 
-## 13. What happens on approval (nothing before)
+## 16. What happens on approval
 
-Nothing until the architect reviews this document. On approval, the milestones
-run in this order:
+Nothing until the architect reviews this document. On approval:
 
-- **C0** — D1 decided (the runtime), because everything downstream's test results
-  depend on it.
-- **C1** — capture analysis + resolved-model side table + environment class
-  synthesis (`src/passes/closure.ts`, `src/program.ts`). Gate: analysis is
-  inspectable for the §8.1 cases, with no codegen yet.
-- **C2** — codegen: creation, capture read/write at the two sites, call
-  convention, arrow `this`. Gate: cases 1–5 and 7, 9–11 pass.
-- **C3** — negative controls: NC1, NC2, NC3a, NC3b.
-- **C4** — closure × async: case 6, on v2's D8 harness. Gate: mutation across a
-  suspend is visible.
-- **C5** — the game example that reads like TypeScript: closures and `await`
-  together, which is the actual win condition.
-
-Each is a separate dispatch after review; none is started by the plan author.
-**No code has been written for this plan.** The Tension working tree contains the
-staged submodule addition, `docs/async-await-plan.md`,
-`docs/async-await-plan-v2.md`, and this document.
+- **C1** starts with the direct-call measurement (§6.5) and the analysis pass,
+  because it is the piece the other milestones depend on.
+- **C5** (async composition) is gated on the async transform's un-refusal
+  dispatch, which is not part of this plan's implementation.
+- This plan does not touch `tension-core`, `tension-ogre`, or the engine, and
+  modifies no plan document other than itself.
