@@ -1238,8 +1238,28 @@ constructor calls the base constructor and then assigns the receiver.
 **The lesson, recorded as a rule:** a feature that synthesizes a construction site
 must test the *called* form, not only the declared one. "Not refused" is not
 "compiles", and the parser guard can mask a resolver error for as long as it
-exists — which is exactly why this defect surfaced only when the guard was about
-to come down.
+exists — which is exactly why this defect surfaced only when the guard came down.
+
+### 4.8.3 §8.3(a) lands, and the two-environment refusal
+
+An async function that is *itself* a closure value — a bare
+`async function inner() {}` in a function body, the only async shape that can
+capture — now carries its environment across the entry/resume boundary exactly as
+`closures-plan.md` §8.3(a) specifies: the entry stores the received local in
+`state.$env`, and the resume function re-declares it there
+(`const $closureEnvIn: E = changetype<E>(state.$env)`). The signal is the closure
+transform's own record (`envInfoOf`, keyed by the `FunctionExpression`); the one
+lowering call site that has an expression passes it, the other three (a
+top-level/namespace declaration, a nested declaration, a class method) are not
+values that carry `_env` and pass `null`.
+
+**New refusal:** `a capturing function with an explicit \`this:\` parameter
+(async lowering)`. `state.$env` holds one reference. A capturing function that also
+has an explicit `this:` needs the this-struct *and* the captured environment in
+that one field, and emitting either alone would be wrong code — the second
+assignment clobbers the first. This is the two-environment shape C5's parent-chain
+design owns; the refusal names it rather than half-lowering it. Refused before any
+artifact is built, so the AST is left untouched.
 
 ---
 
