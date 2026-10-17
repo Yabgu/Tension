@@ -1187,6 +1187,60 @@ written with a different allocation pattern must be caught by review, not by the
 test. Measured: 10/10 probes (five sources, plain and `-O`) are byte-identical to
 `ccf888c6`.
 
+### 4.8.1 The parser guard's deletion (commit 7b)
+
+The parser's five `AS100: Not implemented: Async functions` sites are gone. Each
+shape they caught, with its replacement, measured through the CLI after the
+deletion:
+
+| parser site | shape it caught | after deletion |
+|---|---|---|
+| `:323` | `async function` in a declaration list (top level, namespace, `export default`) | lowers; `export default` refuses as `an async export default function` |
+| `:2498` | async class member | instance method lowers (and, since the constructor fix below, compiles when called); static refuses as `async static methods` |
+| `:3897` | async function expression **and** `function` inside any block or body (the parser's expression-statement shape) | `async function expressions`; a declaration in a body refuses as `an async function nested in a non-async body` |
+| `:3909` | async parenthesized arrow | `async arrow functions` |
+| `:3940` | async single-parameter arrow | `async arrow functions` |
+
+No shape that used to be refused now compiles silently: the shapes that exit 0
+are exactly the ones that lower, and each was checked for its emitted artifacts.
+
+Fixtures: the four parser fixtures lose only their AS100 lines (the remaining
+1308/1042/1109 diagnostics are the parser's own and unchanged);
+`tests/compiler/async-not-implemented` is repurposed to an async static method —
+a still-refused shape — so the fixture count stays 247 and the suite retains a
+pinned example of a named refusal that emits no code. `tests/async/resolver.js`
+drops its guard expectation, and the `refusals()` helpers stop filtering the old
+text, so a resurrected guard fails the tests instead of hiding.
+
+Residual mentions of `Not implemented: Async functions`: zero in `src/`, `dist/`
+and the fixtures; one historical sentence in `src/async/validate.ts` recording
+that the guard used to be the only diagnostic for unreached shapes.
+
+### 4.8.2 The this-env constructor defect, and what it teaches
+
+C4a's verification had a gap: it asserted that an async method was *not refused*
+and never compiled a called one. The synthesized this-env class had only the
+`$this` field, while the entry wrote `state.$env = new m$ThisEnv(this)` — a
+one-argument call to a zero-parameter constructor. Every *called* async method,
+and every called explicit-`this:` async function, failed to compile:
+
+```
+ERROR TS2554: Expected 0 arguments, but got 1.
+```
+
+The diagnostic pointed at the method, because the synthesized node carries the
+method's range. Measured on the test harness's own path before and after the fix:
+four shapes reported `2554` before and none after; the static-method refusal was
+unchanged throughout. The class now declares
+`constructor(source: C) { super(); this.$this = source; }`, and the emitted
+constructor calls the base constructor and then assigns the receiver.
+
+**The lesson, recorded as a rule:** a feature that synthesizes a construction site
+must test the *called* form, not only the declared one. "Not refused" is not
+"compiles", and the parser guard can mask a resolver error for as long as it
+exists — which is exactly why this defect surfaced only when the guard was about
+to come down.
+
 ---
 
 ## 5. Lowering Backend B: WasmFX (design only)
