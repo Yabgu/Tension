@@ -661,8 +661,9 @@ refused by name.
 
 ### 6.1 The two locals
 
-- **`$closureEnv`** — the environment this function owns. Declared by the
-  transform at the scope entry: `let $closureEnv: f$Env = new f$Env();`.
+- **`$closureEnv`** — the environment this function's **body** owns (a nested
+  owning scope uses `$closureEnv$<n>`, §5.6). Declared by the transform at the
+  scope entry: `let $closureEnv: f$Env = new f$Env();`.
 - **`$closureEnvIn`** — the environment this function received. Added by the
   **resolver** to a `receivesEnv` function's flow before its body is resolved
   (the same mechanism as the `this` local, `src/resolver.ts:2284-2291`), and
