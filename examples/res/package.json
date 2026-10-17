@@ -5,7 +5,7 @@
   "type": "module",
   "description": "TensionCore example: an ECMA-208 (SIDF) resource pak read through the tension::res ABI",
   "scripts": {
-    "build": "node ./node_modules/@yabgu_gm/tensionscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime incremental --target release",
+    "build": "node ./node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js assembly/index.ts -o build/game.wasm --runtime incremental --target release",
     "pack": "node ../../scripts/run-example.mjs --pack-only",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
@@ -17,6 +17,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.1.0"
+    "@yabgu_gm/tensionscript": "^0.2.0"
   }
 }

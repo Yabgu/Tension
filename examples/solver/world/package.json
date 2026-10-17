@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: a YAML world integrated through source: \"world\" (rk45 on a spring oscillator)",
   "scripts": {
-    "build": "asc game.ts -o build/game.wasm --runtime incremental --target release --exportTable",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportTable",
+    "build": "tensionscript game.ts -o build/game.wasm --runtime incremental --target release --exportTable",
+    "build:debug": "tensionscript game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportTable",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs"
   },
@@ -17,6 +17,6 @@
     "tension-framework": "file:../../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.1.0"
+    "@yabgu_gm/tensionscript": "^0.2.0"
   }
 }

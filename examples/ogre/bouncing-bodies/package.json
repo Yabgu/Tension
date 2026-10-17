@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: sixty-four rigid bodies colliding in a box, through the physics layer",
   "scripts": {
-    "build": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
-    "build:debug": "asc game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
+    "build": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
+    "build:debug": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs"
   },
@@ -17,6 +17,6 @@
     "tension-framework": "file:../../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.1.0"
+    "@yabgu_gm/tensionscript": "^0.2.0"
   }
 }

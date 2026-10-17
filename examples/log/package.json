@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: the logging subsystem — levels, per-logger filtering, and the JSON layout",
   "scripts": {
-    "build": "asc game.ts -o build/game.wasm --runtime incremental --target release",
-    "build:debug": "asc game.ts -o build/game.wasm --runtime incremental --debug --sourceMap",
+    "build": "tensionscript game.ts -o build/game.wasm --runtime incremental --target release",
+    "build:debug": "tensionscript game.ts -o build/game.wasm --runtime incremental --debug --sourceMap",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
   },
@@ -20,6 +20,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.1.0"
+    "@yabgu_gm/tensionscript": "^0.2.0"
   }
 }

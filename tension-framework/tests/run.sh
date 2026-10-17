@@ -82,7 +82,7 @@ run_fixture() {
   local entry="$1" out="$2"
   shift 2
   echo "==> compiling $entry"
-  ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
+  ( cd "$root" && ./node_modules/.bin/tensionscript "tests/$entry" \
       --config build/session.asconfig.json -o "build/$out" )
   echo "==> running $out"
   set +e
@@ -110,7 +110,7 @@ run_fixture() {
 run_plain_fixture() {
   local entry="$1" out="$2"
   echo "==> compiling $entry (plain module: no session, no capability)"
-  ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
+  ( cd "$root" && ./node_modules/.bin/tensionscript "tests/$entry" \
       --runtime incremental --target release -o "build/$out" )
   echo "==> running $out"
   set +e
@@ -139,7 +139,7 @@ run_plain_fixture() {
 run_guard_fixture() {
   local entry="$1" out="$2"
   echo "==> compiling $entry (plain module: no session, no capability)"
-  ( cd "$root" && ./node_modules/.bin/asc "tests/$entry" \
+  ( cd "$root" && ./node_modules/.bin/tensionscript "tests/$entry" \
       --runtime incremental --target release -o "build/$out" )
   echo "==> running $out (expecting the guard's abort)"
   set +e
