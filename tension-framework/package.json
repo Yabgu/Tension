@@ -7,7 +7,7 @@
   "types": "index.d.ts",
   "scripts": {
     "build": "tensionscript index.ts -o build/index.wasm --runtime incremental --target release",
-    "test": "bash tests/run.sh",
+    "test": "bash tests/run.sh && node tests/rt-dispatch.mjs",
     "build:fixture": "bash tests/run.sh"
   },
   "exports": {

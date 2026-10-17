@@ -37,6 +37,7 @@ export * from "./wire";
 export * from "./arena";
 export * from "./config";
 export * from "./callbacks";
+export { rt } from "./rt";
 export * from "./layout";
 export { verbs };
 
