@@ -61,6 +61,10 @@ asc="$framework/node_modules/.bin/tensionscript"
 "$asc" "$here/guest-jobs.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-jobs.wasm" >/dev/null ||
     fail "guest-jobs.ts did not compile"
+# Phase 4c: the async harness (tension-core/tests/async_await.rs runs it).
+"$asc" "$here/guest-async.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-async.wasm" >/dev/null ||
+    fail "guest-async.ts did not compile"
 "$asc" "$here/guest-triangle.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-triangle.wasm" >/dev/null ||
     fail "guest-triangle.ts did not compile"
