@@ -1046,6 +1046,9 @@ declaration took (commit 2); the same check extends to these names.
 | `__taskBindFamily(class_: i32, family: i32)` | std (hook) | the framework, at startup |
 | `__taskHasRunnable(): bool` | std | the framework's frame loop (§6.3), to choose `wait(0)` over `wait(timeout)` |
 | `TaskState.resume: (state: TaskState) => void` | std (field) | the entry, before the synchronous prefix; `__taskTick`, on resume |
+| `__taskComplete(state: TaskState): void` | std | a `void` body's terminal (§4.7.3's guest-to-guest ruling) |
+| `__taskCompleteResult<R>(state: TaskState, value: R): void` | std | a value `return`, at every return site |
+| `__asyncZero<T>(): T` | std | the state constructor, one initializer per lifted local |
 
 **Phase 4 rulings on the carrier (architect).** A parked task has no way back into
 its own body: the entry calls `f$resume` directly and returns, and the state struct
@@ -1058,6 +1061,22 @@ by the generated visitor like every other managed reference in the chain (§4.4)
 
 `__taskHasRunnable` was missing from this table: §6.3's loop tests
 `rt.hasRunnable()` to decide whether to block, and the seam had no symbol for it.
+
+**Completion (Phase 4b, the guest-to-guest path).** A guest task finishes in its
+own body, so nothing outside it can write its record: the lowering emits
+`__taskCompleteResult<R>(state, value)` at every value `return` and
+`__taskComplete(state)` at a `void` terminal. The store lives where `R` is
+named — but as a **generic call**, not a store the transform emits, because the
+transform knows the return type only syntactically: for `type F = f64`, a store
+chosen by name would land in `payload` (8) while the typed read, which uses the
+resolved type, loads from `f0` (16). std picks the offset with
+`sizeof`/`isFloat`, and the compiler resolves the alias. Measured both ways.
+
+**`state.result` is retired.** It was the pre-Phase-4 payload stand-in; the
+record is the payload's home now (§3.2), nothing read the field, and its
+`changetype<R>(0)` initializer did not compile for a float `R`. The same
+initializer spelling broke a *lifted local* of float type, which is why those
+start at `__asyncZero<R>()` instead.
 
 **Three corrections to the table, made against the frozen record.** `__taskPark`
 takes the *state*, not the record: the runtime's table must hold something a
