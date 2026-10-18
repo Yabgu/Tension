@@ -1045,6 +1045,8 @@ declaration took (commit 2); the same check extends to these names.
 | `__taskBindRecordFactory(factory: () => TaskRecord)` | std (hook) | the framework, at startup |
 | `__taskBindFamily(class_: i32, family: i32)` | std (hook) | the framework, at startup |
 | `__taskHasRunnable(): bool` | std | the framework's frame loop (§6.3), to choose `wait(0)` over `wait(timeout)` |
+| `__taskReportDrops(family: i32, count: i32): void` | std | the framework's tick wrapper (§6.4), when a class's `dropped` advanced |
+| `__taskBufferedOverflows(): i32` / `__taskBufferedEvictions(): i32` | std (read-only counters) | tests: the early-completion buffer's boundary (§4b) |
 | `TaskState.resume: (state: TaskState) => void` | std (field) | the entry, before the synchronous prefix; `__taskTick`, on resume |
 | `__taskComplete(state: TaskState): void` | std | a `void` body's terminal (§4.7.3's guest-to-guest ruling) |
 | `__taskCompleteResult<R>(state: TaskState, value: R): void` | std | a value `return`, at every return site |
@@ -1540,6 +1542,53 @@ readers), which is exactly the trade the design already makes everywhere else.
 `KEY_RING_CAPACITY_BASE = 0x0100` at `:25`), which `session_open` adopts
 (`PostingSide::set_capacities`, `posting.rs:483`). So the harness's third control sets `JOB_DONE`'s capacity
 to 1 and queues more loads than the ring can hold without a tick (§8.4, NC3).
+
+**Implemented in 4e — the split, and what it costs.** The framework does the
+reading and std does the waking, because the counter is a wire type and std must
+not learn the arena's layout (§4.7's D9 split):
+
+- `rt.reportDrops()` (`tension-framework/assembly/runtime/rt.ts`) runs at the
+top of `rt.runReady()`, before `__taskTick()`. It reads class 4's
+`TableHeader.dropped` from region `EVENT_TABLE` (5), at the offset the session's
+own `ring_offset` computes (`arena.rs:1198-1207`) from the capacities the guest
+requested — `ConfigBuilder.ringCapacity` records them in
+`effectiveRingCapacities`, so the geometry follows a shrunk ring. The first read
+adopts the current value and reports nothing; later reads report the delta. The
+read is guarded by `isReady()`: a guest without a session (a unit harness) must
+not read the region table — measured, an unconditional read faulted
+`tests/rt-dispatch.mjs` with "memory access out of bounds".
+- `__taskReportDrops(family, count)` (std) wakes up to `count` tasks parked in
+that family, oldest-first, with `status = -5` (`-EIO`). Attribution is per
+family for the reason the rule gives: a drop is counted per class, not per
+record (`subring.rs:290-295`), and the family is the union of its classes.
+- **v1 reads the job family only** (`FAMILY_JOBS = CLASS_JOB_DONE = 4`). The
+per-class read generalizes when a second producer exists; the rollup
+`FrameState.droppedEvents` is deliberately *not* used, because it cannot
+attribute a drop to a family.
+- **Ring capacity 1 is a test-only trick**, not a production setting: it makes
+an overflow affordable inside a guest run.
+
+**What the guest observes.** The wake writes the status on the **awaited**
+record — the `TaskRecord` inside the `Task` the guest awaited. The task's own
+result record is completed by `__taskCompleteResult` with `status = 0`, so a
+guest that writes `await rt.job(id)` inline and keeps only the returned task
+cannot read the -EIO from it; it recovers through the capability's table
+(`ogre.jobState(id)`), which this section already names as the truth. A guest
+that keeps the handle (`const h = rt.job(id); await h;`) reads `h._record.status`.
+
+**Measured towards the control: a full ring needs an undrained record.** The
+first version of the control queued three loads with no tick and shrank the
+ring to one slot, and observed `dropped = 0`: with callbacks registered, the
+epoch's invoke phase hands every class-4 record to the guest's `onBatch`, which
+delivers and drains it in the same epoch — the ring is empty again before the
+next completion is posted. (The probe also read `capacity = 1` at the computed
+offset and `delivered = 1`, so the geometry and the capacity override were
+right; only the overflow was missing.) The control therefore opens the session
+**without callbacks** (the ring protocol: the guest owns `tail`), fills the one
+slot with a completion nobody awaits, parks two tasks in the family, lets the
+next completion drop, and hand-drains the live record through `rt.deliver` —
+the same seam the callback uses. Both the overflow and the oldest-first
+attribution are then deterministic.
 
 ### 6.5 Parking, resume, and ordering
 

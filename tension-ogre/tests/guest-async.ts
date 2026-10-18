@@ -29,7 +29,14 @@ import { arg, argCount, print } from "../../tension-framework/assembly/io";
 import {
   ConfigBuilder,
   RuntimeSession,
-  rt
+  rt,
+  TableHeader,
+  TABLE_HEADER_SIZE,
+  EVENT_RECORD_SIZE,
+  RING_CAPACITIES,
+  CLASS_JOB_DONE,
+  regionOffset,
+  EventRecord
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { Task, TaskRecord } from "~lib/task";
@@ -79,18 +86,54 @@ async function awaitJob(job: i32): u32 {
   return resource + framesWhileSuspended;
 }
 
+/// Class 4's sub-ring header, straight from the arena: the session's
+/// `ring_offset` (`arena.rs:1198-1207`) — a 32-byte header plus
+/// `capacity × 32` bytes per class, in class-id order. Classes 0–3 keep their
+/// build capacities; only class 4 is shrunk by the drop case.
+function jobRingHeader(): TableHeader {
+  let at: u32 = regionOffset(5);
+  for (let i: u32 = 0; i < CLASS_JOB_DONE; ++i) {
+    at += TABLE_HEADER_SIZE + RING_CAPACITIES[i] * EVENT_RECORD_SIZE;
+  }
+  return changetype<TableHeader>(at);
+}
+
+/// The awaited record of the next `awaitJobRec` call, so the guest can read the
+/// *job's* status. The task's own result record is completed with `status = 0`
+/// by `__taskCompleteResult`; §3.4's errno lives on the record the task awaited.
+let recorded: TaskRecord = new TaskRecord();
+let recordNext: bool = false;
+
+async function awaitJobRec(job: i32): i32 {
+  const h: Task<u32> = rt.job(job);
+  if (recordNext) {
+    recorded = h._record;
+    recordNext = false;
+  }
+  const v: u32 = await h;
+  return i32(v);
+}
+
 /// The drop case (`--async-case=drop`, 4e-2): one completion is forced to be
 /// dropped, and the task awaiting it must wake with -EIO rather than hang.
 ///
-/// The forced drop uses a test-only trick: `JOB_DONE`'s ring is shrunk to one
-/// slot at `session_open`, three loads are queued without a tick between, and
-/// the middle load's completion finds the ring full — counted `dropped` and
-/// discarded (`subring.rs:290-295`). The store is a real session either way.
+/// The forced drop is a test-only trick: `JOB_DONE`'s ring is shrunk to one
+/// slot, one completion nobody awaits fills it, and the next completion finds
+/// it full — counted `dropped` and discarded (`subring.rs:290-295`). The store
+/// is a real session either way.
+///
+/// **Why this case opens the session without callbacks.** With `rt.callbacks()`
+/// the epoch's invoke phase hands the guest every class-4 record and the
+/// guest's `onBatch` drains it in the same epoch, so the ring is empty again
+/// before the next completion is posted. Measured: three loads queued with no
+/// tick between them produced `dropped=0`, `delivered=1` per epoch — never an
+/// overflow. Without callbacks the records stay in the ring (the ring protocol:
+/// the guest owns `tail`), which makes the overflow deterministic and lets the
+/// case exercise the same `rt.deliver` seam the callback uses.
 function dropCase(tns: string): void {
   rt.start();
-  const callbacks = rt.callbacks();
-  const cfg = ConfigBuilder.forThisBuild(callbacks).ringCapacity(4, 1); // class 4 = JOB_DONE
-  if (RuntimeSession.open(cfg, callbacks) != 0) {
+  const cfg = ConfigBuilder.forThisBuild(null).ringCapacity(CLASS_JOB_DONE, 1);
+  if (RuntimeSession.open(cfg) != 0) {
     print("ASYNC SKIP drop-setup: session_open refused the capacity");
     return;
   }
@@ -103,79 +146,146 @@ function dropCase(tns: string): void {
     return;
   }
 
+  const ring = jobRingHeader();
+  const base = changetype<u32>(ring);
+
+  // 1. Fill the one slot with a completion nobody awaits. The first `runReady`
+  //    also adopts the drop counter (0), so the later delta is reportable.
   const j1 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
-  const j2 = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
-  const j3 = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
-  if (j1 <= 0 || j2 <= 0 || j3 <= 0) {
-    print("ASYNC SKIP drop-setup: a load was refused at queue time");
+  if (j1 <= 0) {
+    print("ASYNC SKIP drop-setup: the fill load was refused");
     RuntimeSession.close();
     return;
   }
-
-  // j1's own completion fills the 1-slot ring; its job must reach DONE before
-  // anything about the later drops can be attributed.
   let guard: u32 = 0;
-  while (ogre.jobState(j1) != ogre.JOB_DONE && ogre.jobState(j1) != ogre.JOB_FAILED && guard < 600) {
+  while (ogre.jobState(j1) != ogre.JOB_DONE && guard < 600) {
     RuntimeSession.wait(10);
     rt.runReady();
     guard++;
   }
-  if (ogre.jobState(j1) != ogre.JOB_DONE) {
-    print("ASYNC SKIP drop-setup: j1 never reached JOB_DONE (state " + ogre.jobState(j1).toString() + ")");
+  if (ogre.jobState(j1) != ogre.JOB_DONE || ring.head != 1 || ring.tail != 0) {
+    print("ASYNC SKIP drop-setup: the ring did not hold j1's completion (state " +
+      ogre.jobState(j1).toString() + " head=" + ring.head.toString() +
+      " tail=" + ring.tail.toString() + ")");
+    RuntimeSession.close();
+    return;
+  }
+  if (ring.capacity != 1) {
+    print("ASYNC SKIP drop-setup: the ring capacity is " + ring.capacity.toString() + ", not 1");
     RuntimeSession.close();
     return;
   }
 
-  // Two tasks park: one on the dropped job, one on the live one.
-  const lost: Task<i32> = awaitJob32(j2);
-  const live: Task<u32> = rt.job(j3);
+  // 2. Two tasks park before the drop: the dropped job's, and a control on a
+  //    key that never completes — it must stay parked while the older task
+  //    takes the -EIO (attribution is per family, oldest-first).
+  const j2 = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
+  if (j2 <= 0) {
+    print("ASYNC SKIP drop-setup: the drop load was refused");
+    RuntimeSession.close();
+    return;
+  }
+  recordNext = true;
+  const lost = awaitJobRec(j2);
   const lostRecord: TaskRecord = lost._record;
-  const liveRecord: TaskRecord = live._record;
+  const lostAwait: TaskRecord = recorded;
+  const control = awaitJobRec(2147483647);
+  const controlRecord: TaskRecord = control._record;
 
+  // 3. j2's completion finds the ring full and is dropped; the tick that sees
+  //    the delta wakes the oldest parked task with -EIO.
   guard = 0;
-  while (lostRecord.status == 0 && guard < 600) {
+  while (ring.dropped == 0 && guard < 600) {
     RuntimeSession.wait(10);
     rt.runReady();
     guard++;
   }
-
-  if (lostRecord.status != -5) {
-    print("ASYNC FAIL: the dropped job did not wake with -EIO (status " + lostRecord.status.toString() + ")");
+  if (ring.dropped != 1) {
+    print("ASYNC SKIP drop-setup: the ring dropped " + ring.dropped.toString() +
+      " completions, not 1");
+    RuntimeSession.close();
+    return;
+  }
+  if (lostRecord.done == 0) {
+    print("ASYNC FAIL: the dropped task did not resume");
+    assert(false, "no resume");
+    return;
+  }
+  if (lostAwait.status != -5) {
+    print("ASYNC FAIL: the awaited record's status is " + lostAwait.status.toString() +
+      ", not -EIO");
     assert(false, "no -EIO");
     return;
   }
-  // Exactly one task took the drop: the live job's record is untouched.
-  if (liveRecord.status == -5) {
+  if (lostAwait.payload != 0) {
+    print("ASYNC FAIL: the lost completion left a payload");
+    assert(false, "payload");
+    return;
+  }
+  // Attribution: the control task, parked second, must still be waiting.
+  if (controlRecord.done != 0) {
     print("ASYNC FAIL: both tasks took the -EIO wake");
     assert(false, "over-attribution");
     return;
   }
-  // Recovery: the region is the truth (tension-ogre/DESIGN.md:1842-1844).
-  const state = ogre.jobState(j2);
-  print("ASYNC EIO job=" + j2.toString() + " status=" + lostRecord.status.toString() +
-    " payload=" + lostRecord.payload.toString() + " region-state=" + state.toString());
 
+  // 4. A delivery for the lost key after the wake must not turn -EIO into
+  //    success (the wake writes the status; a delivery never clears it).
+  const late = new EventRecord();
+  late.class_ = CLASS_JOB_DONE;
+  late.a = <u32>j2;
+  late.b = 0x5eed;
+  rt.deliver(CLASS_JOB_DONE, changetype<u32>(late), 1);
+  if (lostAwait.status != -5 || lostAwait.payload != 0) {
+    print("ASYNC FAIL: a post-wake delivery overwrote the -EIO status");
+    assert(false, "overwrite");
+    return;
+  }
+
+  // 5. Reclaim the slot and let one live job complete through the ring. No
+  //    callbacks: the guest consumes the record itself and hands it to the
+  //    same dispatcher seam the callback would (`rt.deliver`).
+  ring.tail = ring.head;
+  const j3 = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
+  if (j3 <= 0) {
+    print("ASYNC SKIP drop-setup: the live load was refused");
+    RuntimeSession.close();
+    return;
+  }
+  recordNext = true;
+  const live = awaitJobRec(j3);
+  const liveRecord: TaskRecord = live._record;
+  const liveAwait: TaskRecord = recorded;
   guard = 0;
   while (liveRecord.done == 0 && guard < 600) {
     RuntimeSession.wait(10);
+    if (ring.head > ring.tail) {
+      const slot = base + TABLE_HEADER_SIZE + ring.tail * EVENT_RECORD_SIZE;
+      const record = changetype<EventRecord>(slot);
+      rt.deliver(record.class_, slot, 1);
+      ring.tail = ring.tail + 1;
+    }
     rt.runReady();
     guard++;
   }
-  if (liveRecord.done == 0 || liveRecord.status != 0) {
-    print("ASYNC FAIL: the live job did not complete normally");
+  if (liveRecord.done == 0 || liveAwait.status != 0 || liveAwait.payload == 0) {
+    print("ASYNC FAIL: the live job did not complete normally (status " +
+      liveAwait.status.toString() + " payload=" + liveAwait.payload.toString() + ")");
     assert(false, "live job");
     return;
   }
-  print("ASYNC live job=" + j3.toString() + " resource=" + liveRecord.payload.toString());
+  if (ogre.jobState(j3) != ogre.JOB_DONE) {
+    print("ASYNC FAIL: the live job's region state is not JOB_DONE");
+    assert(false, "region");
+    return;
+  }
+
+  // Recovery: the region is the truth (tension-ogre/DESIGN.md:1842-1844).
+  print("ASYNC EIO job=" + j2.toString() + " status=" + lostAwait.status.toString() +
+    " payload=" + lostAwait.payload.toString() + " region-state=" + ogre.jobState(j2).toString());
+  print("ASYNC live job=" + j3.toString() + " resource=" + liveAwait.payload.toString());
   print("ASYNC PASS drop");
   RuntimeSession.close();
-}
-
-/// Parks a task on a job and reports the outcome as an `i32` status: an `-EIO`
-/// wake leaves the payload 0, so the value alone cannot say what happened.
-async function awaitJob32(job: i32): i32 {
-  let v: u32 = await rt.job(job);
-  return i32(v);
 }
 
 export function _start_game(): void {
