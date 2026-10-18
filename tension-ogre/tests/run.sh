@@ -393,6 +393,30 @@ noskel_case() {
     echo "== $name: ok — $(echo "$stdout" | grep '^NOSKEL ' | tail -1)"
 }
 
+# 4e-2's NC3 control: a completion the ring had no room for is counted, and the
+# task parked on that family wakes with -EIO instead of hanging (§6.4). The
+# guest forces the overflow itself (ring capacity 1, one undrained completion)
+# and asserts the -EIO, the per-family attribution, the post-wake non-overwrite
+# and the live path's normal completion. A setup the environment cannot provide
+# is printed as ASYNC SKIP and reported as a skip — never as a pass.
+drop_case() {
+    name=async-drop
+    stdout=$("$core" --capability "$dso" "$out/guest-async.wasm" \
+        "--tns=$out/fixtures.tns" --renderer=null --async-case=drop \
+        2>"$out/$name.err") ||
+        { rc=$?; echo "$stdout" | sed 's/^/    /'; \
+          fail "$name: the interpreter exited $rc (stderr: $(tail -2 "$out/$name.err"))"; }
+    echo "$stdout" | sed 's/^/    /'
+    if echo "$stdout" | grep -q "^ASYNC PASS drop$"; then
+        echo "== $name: ok — $(echo "$stdout" | grep '^ASYNC PASS drop$')"
+    elif echo "$stdout" | grep -q "^ASYNC SKIP drop-setup: "; then
+        echo "== $name: SKIP — $(echo "$stdout" | grep '^ASYNC SKIP drop-setup: ' | tail -1)"
+    else
+        fail "$name: neither 'ASYNC PASS drop' nor 'ASYNC SKIP drop-setup' (got: $(echo "$stdout" | tail -3))"
+    fi
+}
+drop_case
+
 if [ "${TENSION_OGRE_WINDOW_TEST:-0}" = "1" ]; then
     if [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
         echo "== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY"
