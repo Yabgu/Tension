@@ -20,6 +20,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "file:../../tools/assemblyscript-fork/yabgu_gm-tensionscript-0.3.3.tgz"
+    "@yabgu_gm/tensionscript": "^0.3.3"
   }
 }
