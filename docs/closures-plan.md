@@ -612,13 +612,55 @@ asserts (§13).
 
 ### 4.6 v1 refusals (named, never silent)
 
-- **A captured binding without a declared type** — `let n = 0;` — refused:
-  `Not implemented: a captured local without a declared type (closures lowering)`.
-  The transform runs before resolution and cannot name the field's type. This is
-  the plan's sharpest divergence from TS and is D10.
-- **A captured binding whose declared type mentions a type parameter** of an
-  enclosing function — refused by name (a top-level env class cannot be generic
-  in v1; the extension is a generic env class, deferred).
+- **A captured binding without a declared type** — `let n = 0;`. The transform
+  runs before resolution and cannot name the field's type from a `Type`. It can,
+  however, name it from the initializer's **syntax**, which is what C6a
+  implements. This is D10.
+
+  **The syntax arm (C6a).** At the capture site, when `binding.type == null`, the
+  transform derives a type *expression* from `declaration.initializer` and writes
+  it onto the declaration — the same `type` field the env class's field
+  declaration takes (`src/closure/lower.ts:2046-2055`). Inference is on demand,
+  so a program with no captures sees no AST change.
+
+  | initializer | inferred type expression |
+  |---|---|
+  | integer literal | `i32` |
+  | float literal | `f64` |
+  | string / template literal | `string` |
+  | `true` / `false` | `bool` |
+  | `new X<A,B>(…)` | `X<A,B>` — from `NewExpression.typeName` + `.typeArguments` |
+  | `changetype<T>(…)`, `<T>expr`, `expr as T` | `T` |
+  | `(expr)` | the operand's |
+  | identifier bound to a typed local in scope | that local's `TypeNode` |
+  | unary `-`/`+` | the operand's (numeric) |
+  | unary `!` | `bool` |
+  | binary arithmetic / bitwise of two inferable operands | the operands' common type |
+  | binary comparison / equality / logical of inferable operands | `bool` |
+
+  Everything else still refuses with `a captured local without a declared type
+  (closures lowering)`: a call (`let x = f()`), a property or element access
+  (`let x = a.b`), `null`, a conditional, and any operand the table cannot name.
+  Those are C6c's — the resolver arm — and C6a is deliberately not a partial
+  version of it.
+- **A captured binding whose declared type mentions a type parameter.** The env
+  class is hoisted to the source top level (§5.2), so a type parameter is
+  nameable there only if the class carries it. C6b makes the env class generic in
+  the **owning function's** and its **class's** type parameters, which un-refuses
+  the captures that motivated D11 — `let out = new Map<K,V>(map1)` inside
+  `mergeMaps<K,V>`, and `let x: T = this.v` inside a `Box<T>` method.
+
+  **The guard's scope rule (C6a, then narrowed by C6b).** Today the guard collects
+  the analysis owner's type parameters only, and is therefore both too narrow and
+  silent about one case: a declaration typed by a **class's** type parameter is
+  not refused at all, and fails later as `TS2304: Cannot find name 'T'` plus
+  cascading `TS2339` (measured on `Box<T>`'s `let x: T`). That violates this
+  section's "named, never silent" rule. C6a widens the guard to the enclosing
+  function chain **and** the enclosing class, refusing by name:
+  `a captured local typed by a class type parameter (closures lowering)`.
+  C6b then un-refuses the parameters the env class can carry (the owner's own,
+  and its class's), and keeps refusing a parameter that belongs to an
+  **enclosing** function of a nested owner — the hoisted class cannot name it.
 - **A captured binding whose declared type is a function-local type alias** —
   refused by name (the env class is top-level; the alias is not visible there).
 - **A user declaration in the reserved namespace** — refused by name: `a user
@@ -1686,8 +1728,8 @@ encoding capture-ness in the `Signature` string.
 | **D7** | Diagnostic cleanup. | **Revised**: the two `AS100: Not implemented: Closures` sites (`src/compiler.ts:5771`, `:7747`) are deleted in C2 once the transform covers the shapes; the spurious `TS2454` companion disappears with the demotion (the field is always assigned); the shapes that remain refused get specific `Not implemented: <shape> (closures lowering)` messages. |
 | **D8** | Runtime default. | **Resolved**: the compiler default is already `incremental`. |
 | **D9** | Escape analysis / stack allocation. | **Deferred** (not v1). |
-| **D10** | **Captured bindings with an inferred type are refused.** | New, and the sharpest divergence: `let n = 0;` cannot be given an env field before resolution. Refused by name; the fix (a resolver-stage type inference pass) is named, not smuggled. |
-| **D11** | **Captured bindings typed by a type parameter or a function-local alias are refused** in v1. | New; generic env classes / hoisted aliases are the extension. |
+| **D10** | **Captured bindings with an inferred type.** | Refused in v1. **C6a** implements the syntax arm — the type is derived from the initializer's own syntax (§4.6) — and **C6c** takes the rest (a resolver-stage pass, deferred). |
+| **D11** | **Captured bindings typed by a type parameter or a function-local alias.** | **C6b** makes the env class generic in the owning function's and its class's type parameters, un-refusing those captures. A parameter of an *enclosing* function on a nested owner, and a function-local type alias, stay refused by name. |
 | **D12** | **Host callbacks cannot be capturing closures.** | New; the shim pattern is the supported route (§9.1). |
 | **D13** | **Async methods populate `$env` unconditionally** with a this-struct at field 0. | New (architect ruling); it is an async-transform change, scheduled with Gate 2 (§7.4, §8.4). Amended by D16 for the body-owns-an-env case. |
 | **D14** | **`_env` names the innermost env the closure needs — its head — not the innermost owning scope at the creation site.** | New (C5 review F5). §3.3, §4.7.2, §6.2. |
@@ -1727,6 +1769,11 @@ encoding capture-ness in the `Signature` string.
 | 22 | **this-only arrow in an async body** | `7`; the arrow is a `Struct` over the body env, which carries `$this` | C5b |
 | 23 | **one env per scope instance** | an async method that owns a captured local and reads `this` emits **one** class (`$this` at field 0, then the binding) and returns `8` | C5b |
 | 24 | **reserved names** | `$parent`, `$this`, `$env`, `$closureEnv`, `$closureEnvIn`, `$closureEnv$1`, `$init$x`, `resumePoint`, `result`, `handle`, `record` as captured names → refused by name | pre-C5 (F14) |
+| 25 | **D10, literal capture** | `let n = 0; () => n` compiles and returns the value; the env class's field is typed `i32` in the AST | C6a |
+| 26 | **D10, `new` capture** | `let m = new Map<i32,i32>(); () => m.size` compiles and returns the value; field typed `Map<i32,i32>` from the `NewExpression` | C6a |
+| 27 | **D11, class type parameter (negative)** | `class Box<T> { m() { let x: T = this.v; () => x } }` → refused **by name** (`a captured local typed by a class type parameter`), never `TS2304` | C6a |
+| 28 | **D11, generic owner (the gate)** | `let out = new Map<K,V>(map1)` inside `mergeMaps<K,V>`, captured by an arrow → compiles; wat: the env class is generic in `K,V` and the construction supplies them; **`npm run bootstrap:debug` passes** | C6b |
+| 29 | **Divergence 3** | `let n = 0; await h; f(() => n)` → compiles; the async transform reads the annotated `declaration.type` and lifts it | C6a |
 
 The two refusal assertions C5 deletes — the two-environment message
 (`src/closure/lower.ts:614`) and the collision message
@@ -1796,6 +1843,28 @@ failure.
   exists only when it does not, and the collision plus the async-body `TS2332`
   un-refuse. Gate: cases 21-23; exactly one env class per scope instance in the
   wat; full suite green.
+
+- **C6a — the syntax arm (D10's syntax cases, and the D11 guard).** §4.6's table:
+  infer a capture's type expression from the initializer's own syntax, on demand
+  at the capture site, and write it onto the declaration. Widen the type-parameter
+  guard to the enclosing function chain and the enclosing class, so the `Box<T>`
+  case is a **named** refusal rather than `TS2304`. Gate: cases 25-27 and 29;
+  shapes the table does not cover still refuse by name; byte identity 10/10;
+  closure and async suites green. **Bootstrap is still red** — that is C6b's.
+- **C6b — generic env classes (D11's extension).** The env class becomes generic
+  in its owning function's and its class's type parameters; every construction,
+  field access, `$parent` type and `changetype` supplies them; and the one
+  `compiler.ts` site that resolves `envClass` by bare name
+  (`src/compiler.ts:1834-1841`) passes the flow's type arguments — the existing
+  `resolveClass(prototype, typeArguments, ctxTypes, reportMode)` signature
+  (`src/resolver.ts:3336-3346`) already accepts them. Gate: case 28; **the
+  executable gate is `npm run bootstrap:debug` compiling the compiler's own
+  source**, plus `bootstrap:release`; full suite green; byte identity 10/10.
+- **C6c — the resolver arm (deferred; its own plan review).** The general D10
+  shapes the syntax table cannot reach (`let x = f()`, `let x = a.b`): a type-only
+  walker at `afterInitialize` that resolves initializers and annotates the
+  declaration. This is the only part that may move the transform hook, and it is
+  **not** started by C6a/C6b.
 
 Each milestone is its own dispatch with its own report; none is started by this
 document.

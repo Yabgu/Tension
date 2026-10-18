@@ -1154,6 +1154,17 @@ transform must hand that case the pointer it reads from. Everything else in
 §4.5's argument — the AST stage, the synthesized managed class, one registration
 line in `cli/index.js` — is unaffected.
 
+**The same limit, in the lifting rule (Divergence 3).** Lifting a local across an
+await needs a field type, and the transform runs before resolution, so an
+unannotated local is refused: `a local without a declared type that crosses an
+await (async lowering)` (`src/async/lower.ts:1486`). This is D10's gap in a second
+place, and it closes the same way — the closure transform's syntax arm
+(`docs/closures-plan.md` §4.6, C6a) **annotates the declaration** in place, and
+the async transform already reads exactly that field (`lower.ts:1481`, `:2468`).
+No async-specific mechanism is needed, and the async transform does not move.
+Generic async functions are refused outright (`lower.ts:416-417`), so the D11
+case does not arise here.
+
 ### 4.8 The validation walk (Phase 3, commit 7) — NEW
 
 §4.5's transform reaches a source's top level, a namespace's members, a class
