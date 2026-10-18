@@ -70,6 +70,14 @@ unrelated to `src`/`cli` but still fail the command).
 
 ## Gotchas
 
+- **`file:` dependencies cache by version.** Repacking a tarball into the same
+  `acakar-tensionscript-<version>.tgz` name and reinstalling does **not** pick
+  up the new contents: npm serves the previously installed package from its
+  cache for that version, so every consumer keeps the old `~lib/task-rt` and a
+  freshly added export fails at typecheck (`TS2305: no exported member`). A
+  tarball refresh after a source change requires a **version bump** in the
+  fork's `package.json` before `npm pack`. Measured twice in 4e: the 0.3.2
+  repack installed stale contents, and bumping to 0.3.3 fixed it.
 - **The `~env` global is dead-code-eliminated in release output when no arrow
   in the module captures `this`.** That is the expected shape, not a missing
   feature: the global is only ever *read* by a capturing arrow's prologue, so
