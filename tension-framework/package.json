@@ -28,6 +28,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "file:../tools/assemblyscript-fork/yabgu_gm-tensionscript-0.3.2.tgz"
+    "@yabgu_gm/tensionscript": "file:../tools/assemblyscript-fork/yabgu_gm-tensionscript-0.3.3.tgz"
   }
 }

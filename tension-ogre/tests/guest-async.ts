@@ -79,11 +79,116 @@ async function awaitJob(job: i32): u32 {
   return resource + framesWhileSuspended;
 }
 
+/// The drop case (`--async-case=drop`, 4e-2): one completion is forced to be
+/// dropped, and the task awaiting it must wake with -EIO rather than hang.
+///
+/// The forced drop uses a test-only trick: `JOB_DONE`'s ring is shrunk to one
+/// slot at `session_open`, three loads are queued without a tick between, and
+/// the middle load's completion finds the ring full — counted `dropped` and
+/// discarded (`subring.rs:290-295`). The store is a real session either way.
+function dropCase(tns: string): void {
+  rt.start();
+  const callbacks = rt.callbacks();
+  const cfg = ConfigBuilder.forThisBuild(callbacks).ringCapacity(4, 1); // class 4 = JOB_DONE
+  if (RuntimeSession.open(cfg, callbacks) != 0) {
+    print("ASYNC SKIP drop-setup: session_open refused the capacity");
+    return;
+  }
+  const config = new ogre.ConfigBuilder()
+    .renderer(ogre.Renderer.Null)
+    .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
+  if (ogre.init(config) != 0 || tns.length == 0 || ogre.mountTns("resources", tns) != 0) {
+    print("ASYNC SKIP drop-setup: ogre init or mount failed");
+    RuntimeSession.close();
+    return;
+  }
+
+  const j1 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
+  const j2 = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
+  const j3 = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
+  if (j1 <= 0 || j2 <= 0 || j3 <= 0) {
+    print("ASYNC SKIP drop-setup: a load was refused at queue time");
+    RuntimeSession.close();
+    return;
+  }
+
+  // j1's own completion fills the 1-slot ring; its job must reach DONE before
+  // anything about the later drops can be attributed.
+  let guard: u32 = 0;
+  while (ogre.jobState(j1) != ogre.JOB_DONE && ogre.jobState(j1) != ogre.JOB_FAILED && guard < 600) {
+    RuntimeSession.wait(10);
+    rt.runReady();
+    guard++;
+  }
+  if (ogre.jobState(j1) != ogre.JOB_DONE) {
+    print("ASYNC SKIP drop-setup: j1 never reached JOB_DONE (state " + ogre.jobState(j1).toString() + ")");
+    RuntimeSession.close();
+    return;
+  }
+
+  // Two tasks park: one on the dropped job, one on the live one.
+  const lost: Task<i32> = awaitJob32(j2);
+  const live: Task<u32> = rt.job(j3);
+  const lostRecord: TaskRecord = lost._record;
+  const liveRecord: TaskRecord = live._record;
+
+  guard = 0;
+  while (lostRecord.status == 0 && guard < 600) {
+    RuntimeSession.wait(10);
+    rt.runReady();
+    guard++;
+  }
+
+  if (lostRecord.status != -5) {
+    print("ASYNC FAIL: the dropped job did not wake with -EIO (status " + lostRecord.status.toString() + ")");
+    assert(false, "no -EIO");
+    return;
+  }
+  // Exactly one task took the drop: the live job's record is untouched.
+  if (liveRecord.status == -5) {
+    print("ASYNC FAIL: both tasks took the -EIO wake");
+    assert(false, "over-attribution");
+    return;
+  }
+  // Recovery: the region is the truth (tension-ogre/DESIGN.md:1842-1844).
+  const state = ogre.jobState(j2);
+  print("ASYNC EIO job=" + j2.toString() + " status=" + lostRecord.status.toString() +
+    " payload=" + lostRecord.payload.toString() + " region-state=" + state.toString());
+
+  guard = 0;
+  while (liveRecord.done == 0 && guard < 600) {
+    RuntimeSession.wait(10);
+    rt.runReady();
+    guard++;
+  }
+  if (liveRecord.done == 0 || liveRecord.status != 0) {
+    print("ASYNC FAIL: the live job did not complete normally");
+    assert(false, "live job");
+    return;
+  }
+  print("ASYNC live job=" + j3.toString() + " resource=" + liveRecord.payload.toString());
+  print("ASYNC PASS drop");
+  RuntimeSession.close();
+}
+
+/// Parks a task on a job and reports the outcome as an `i32` status: an `-EIO`
+/// wake leaves the payload 0, so the value alone cannot say what happened.
+async function awaitJob32(job: i32): i32 {
+  let v: u32 = await rt.job(job);
+  return i32(v);
+}
+
 export function _start_game(): void {
   let tns = "";
+  let drop = false;
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
     if (value.startsWith("--tns=")) tns = value.slice(6);
+    if (value == "--async-case=drop") drop = true;
+  }
+  if (drop) {
+    dropCase(tns);
+    return;
   }
 
   rt.start();

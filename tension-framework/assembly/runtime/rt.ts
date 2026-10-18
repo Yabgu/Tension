@@ -25,11 +25,31 @@ import {
   __taskBindFamily,
   __taskDeliver,
   __taskHasRunnable,
+  __taskReportDrops,
   __taskTick
 } from "~lib/task-rt";
-import { EventRecord } from "./wire";
+import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks } from "./wire";
+import { effectiveRingCapacities } from "./config";
 import { makeCallbacks } from "./callbacks";
-import { Callbacks } from "./wire";
+import { regionOffset } from "./arena";
+import { isReady } from "./index";
+
+/** The EVENT_TABLE region: every class's sub-ring, headers and records. */
+const REGION_EVENT_TABLE: u32 = 5;
+
+/**
+ * The byte offset of one class's sub-ring header, mirroring the session's own
+ * `ring_offset` (`arena.rs:1198-1207`): each class contributes a 32-byte header
+ * plus `capacity × 32` bytes of records, in class-id order, from the start of
+ * the EVENT_TABLE region.
+ */
+function ringHeaderOffset(class_: u32): u32 {
+  let at = regionOffset(REGION_EVENT_TABLE);
+  for (let i: u32 = 0; i < class_; ++i) {
+    at += TABLE_HEADER_SIZE + effectiveRingCapacities[i] * EVENT_RECORD_SIZE;
+  }
+  return at;
+}
 
 /** The arena's completion class ids (`arena.rs:202-213`). */
 const CLASS_JOB_FAILED: i32 = 1;
@@ -40,9 +60,6 @@ const CLASS_RESOURCE_FAILED: i32 = 2;
 /** One family per awaitable outcome pair (§3.1): the success class's id. */
 const FAMILY_JOBS: i32 = CLASS_JOB_DONE;
 const FAMILY_RESOURCES: i32 = CLASS_RESOURCE_READY;
-
-/** One event record's size on the wire (`arena.rs:124`). */
-const EVENT_RECORD_SIZE: u32 = 32;
 
 export class rt {
   /**
@@ -62,11 +79,52 @@ export class rt {
     return __taskHasRunnable();
   }
 
+  /** The last per-class drop count this guest observed (§6.4). */
+  private static lastDropped: i32 = -1;
+
+  /**
+   * §6.4, guest side: compares the arena's per-class drop counter against the
+   * last value observed, and reports any delta for the job family to the
+   * runtime, which wakes the affected tasks with `-EIO`.
+   *
+   * **Why the framework and not std:** the counter is a wire type
+   * (`TableHeader.dropped`, `wire.ts:208`; region 1, class index 4), and std
+   * must not learn the arena's layout (§4.7's D9 split). The framework reads it,
+   * std owns the wake policy.
+   *
+   * **Scope in v1:** the job family only. The input and log classes ride the
+   * same arena but nothing awaits them; a second awaitable family (resources)
+   * generalizes this by reading its own class index. The rollup
+   * (`FrameState.droppedEvents`) is deliberately *not* used: it cannot attribute
+   * a drop to a family.
+   */
+  static reportDrops(): void {
+    // No session, no arena: a guest that has not opened one (a unit harness, or
+    // a game before `RuntimeSession.open`) must not read the region table —
+    // measured: an unconditional read faulted with "memory access out of
+    // bounds" in `tests/rt-dispatch.mjs`, which runs without a session.
+    if (!isReady()) return;
+    // Region 1's table is indexed by class; `TableHeader` is 32 bytes and the
+    // job class is 4 (`arena.rs:202-213`). The base of the class table is
+    // `regionOffset(1)` — see `runtime/wire.ts`'s `TableHeader` for the layout.
+    const header = changetype<TableHeader>(ringHeaderOffset(CLASS_JOB_DONE));
+    const dropped = header.dropped;
+    if (rt.lastDropped < 0) {
+      rt.lastDropped = <i32>dropped;   // first tick: adopt, report nothing
+      return;
+    }
+    if (<i32>dropped == rt.lastDropped) return;
+    const delta = <i32>dropped - rt.lastDropped;
+    rt.lastDropped = <i32>dropped;
+    if (delta > 0) __taskReportDrops(FAMILY_JOBS, delta);
+  }
+
   /**
    * Resumes the ready tasks, in delivery order — one resume per task per tick
    * (§6.5). Call after `RuntimeSession.wait(...)` returns.
    */
   static runReady(): void {
+    rt.reportDrops();
     __taskTick();
   }
 
