@@ -4,12 +4,16 @@
 commits.**
 **Supersedes:** the 2026-10-15 revision of this file, written against
 `b6bda05c` (the pre-arrow-this, pre-runtime-migration, pre-async tree). This
-revision answers `docs/closures-plan-review.md` finding by finding; the
-disposition table is §0.2 and no finding is dropped.
+revision answers `docs/closures-plan-review.md` finding by finding; that
+disposition table is §0.2. The **C5 amendment** answers
+`docs/closures-plan-c5-review.md`; its disposition table is §0.4. No finding is
+dropped.
 **Evidence basis:** the fork at `~/work/as-inspect/assemblyscript`, branch
 `feat/async-phase3`, HEAD `ccf888c6`; the Tension tree at `main`. Every
-`file:line` citation below is against `ccf888c6`. Measurements marked
-**measured** were run through `dist/asc.js` at that commit during this revision.
+`file:line` citation below is against `ccf888c6` unless it is marked otherwise.
+The C5 amendment's citations and measurements are against `3490f6f8` (v0.3.3,
+after C1-C4 and async Phase 4e) and are marked **measured** where a probe was
+run (§0.4, §3.3, §4.7).
 
 ---
 
@@ -38,15 +42,19 @@ disposition table is §0.2 and no finding is dropped.
    (`examples/{ai,audio,io,log,res}/package.json:8`). The old plan's §0.3 blocker
    is history; the 32 B/closure measurement stays as the *reason* the migration
    was necessary.
-3. **Async phases 1-6 landed.** A `TaskRecord` class (managed, traced,
-   `std/assembly/task.ts:22`), `Task<T>._record` as a managed reference (`:53-55`),
-   `TaskState` and `TaskEnv` (`std/assembly/task-rt.ts:54-59`), and **one**
-   `$env: TaskEnv | null` field on every lowered state struct, emitted and never
-   populated (`src/async/lower.ts:175`, `:375-397`). The lowering transform runs
-   at `afterParse` (`cli/index.js:448-451`, `:705-707`), before
-   `initializeProgram` (`:715-719`), and refuses the three constructs that could
-   supply a capture: `this` in an async body (`src/async/lower.ts:1332`), a nested
-   plain function in an async body (`:1993-1999`), async methods (`:1463`).
+3. **Async landed through Phase 4e.** A `TaskRecord` (managed, traced,
+   `std/assembly/task.ts:22`), `Task<T>._record` (`:53-55`), `TaskState` and
+   `TaskEnv` (`std/assembly/task-rt.ts:54-59`), and **one** `$env: TaskEnv | null`
+   field on every lowered state struct (`src/async/lower.ts:175`, `:375-397`),
+   which C4 now **populates**: a this-struct for an async method or an explicit
+   `this:` function (`:754-780`), and the received closure env for an async
+   function that is itself a closure value (§8.3(a), `:766-780`, `:866-890`). The
+   lowering transform runs at `afterParse` (`cli/index.js:448-451`, `:705-707`),
+   before `initializeProgram` (`:715-719`). What it still refuses, after C4: async
+   arrow functions, async generic functions, an async function nested in a
+   non-async body, a local without a declared type that crosses an await, a
+   capturing function with an explicit `this:` (§8.3's collision — C5b), and
+   `this` in a free async function (resolver `TS2332`).
 
 ### 0.2 Finding disposition — every review finding, addressed
 
@@ -81,6 +89,34 @@ reviewed draft's "the environment would also have to be lifted" at
 (§2.1), per-scope-instance environments with a parent chain (§2.2), no hoisting
 (§2.5), no new AST nodes (§3.5), no new `TypeKind` and no capture-ness in the
 `Signature` string (§11), and the backend-neutrality argument (§10).
+
+---
+
+### 0.4 C5 review disposition (F1-F14)
+
+The C5 review (`docs/closures-plan-c5-review.md`) found the chain design correct
+and its specification incomplete. Every finding and its disposition here:
+
+| # | Finding | Disposition |
+|---|---|---|
+| **F1** | C5 had no design section; its milestone described shipped work | **Addressed.** New §4.7; milestone restated (§14) |
+| **F2** | `$parent` was conditioned on "the owner is itself a closure" | **Addressed.** §5.2 states the real condition (the scope has an owning ancestor) and the expected wat |
+| **F3** | Nested owners were refused, so the nested two-scope shape was unreachable | **Addressed (C5a).** §4.7.3; §6.1; §7.1a's table |
+| **F4** | The side table could not represent "owns and receives" | **Addressed.** §3.3 defines `ownEnv`, `receivesEnv`, `parentClass`, and who reads each |
+| **F5** | `needed: Scope \| null` and `needScope`'s one-env rule had no replacement | **Addressed.** §4.7.2: `needed` is the innermost referenced scope; hops are counted over owning scopes |
+| **F6** | No allocation/constructor rule for a parented scope | **Addressed.** §5.2's constructor rule; §5.3; §5.4; §6.1 |
+| **F7** | `$init$` was written against one env and would not hop | **Addressed.** §4.7.2's `targetOf`; §2.5 notes the guard shares the value's walk |
+| **F8** | `$env` had no chain meaning; §8.3(a)'s read-back was wrong for the collision | **Addressed.** §8.3: `$env` is the function-scope env (head); two read-back shapes; the runtime root chain |
+| **F9** | The this-struct and the body env were two objects for one scope | **Addressed (C5b).** §4.7.5; `EnvInfo.hasThis` (§3.3); the two refusals lifted |
+| **F10** | No C5 tests; the refusals being removed had no tests | **Addressed.** §13 cases 16-24, each labeled C5a/C5b/pre-C5 |
+| **F11** | §7.1's `$this` placement disagreed with the shipped rule | **Addressed.** §7.1 restated: `$this` lives in the innermost needed env, which keeps it at the head under a chain |
+| **F12** | The revision record was stale about C4 | **Addressed.** §0.1 fact 3; §6.1's "resolver-added" corrected to codegen |
+| **F13** | §5.4 claimed a copy constructor per env class | **Addressed.** §5.4: only loop-header classes carry it |
+| **F14** | The reserved-name refusal was not implemented, and C5 adds `$parent` | **Addressed outside this amendment, by ruling.** It is a separate pre-C5 commit (§4.6, §4.7.4, §14), with its own test (case 24). C5a must not start before it lands |
+
+Nothing in the review is dismissed as unnecessary. The one scope reduction is by
+ruling: the capture + explicit `this:` collision and the async-body `TS2332` move
+to **C5b** rather than C5a (§4.7.6).
 
 ---
 
@@ -212,12 +248,19 @@ copy.
 
 One environment per **scope instance** that owns at least one captured binding.
 Every closure created in that instance shares it, so `inc`/`get` observe each
-other's writes. Nested scopes chain via a `$parent` field, typed as the parent
-env class.
+other's writes. Nested **owning** scopes chain via a `$parent` field, typed as the
+parent env class; a scope that declares no captured binding has no env and no
+link, so the chain is over owning scopes, not over lexical blocks.
+
+A closure's `_env` names the **innermost** env it needs — its *head* — and a
+reference to a binding further out walks `$parent` from there by a statically
+known number of hops (§4.7.1, §6.2). That is what keeps one `_env` word able to
+reach every scope a closure may legally capture from.
 
 Rejected, with reasons: **per-closure** environments (two closures in one scope
 would not share mutations); a **flat** env per closure (transitive capture needs
-the chain).
+the chain); a **flat** env per top-of-scope (it would give every iteration's
+closure the loop's last value, breaking §2.3).
 
 ### 2.3 Per-iteration bindings — the rule, not a hope
 
@@ -293,6 +336,11 @@ closure can only capture a binding declared before it, and a read can only follo
 the declaration in declaration order, so the field is assigned before any read.
 
 Cost: one `bool` field and one branch per read, only for the `let x: T;` shape.
+
+**Under a chain (C5a)** the flag lives in the env that owns the binding, and it is
+reached by the same hop walk as the value: `targetOf(binding, site)` supplies the
+expression for the value read, the flag read and the flag write alike (§4.7.2).
+The snippet above is that expression's `k = 0` case.
 
 ### 2.6 Checks the demotion moves
 
@@ -386,20 +434,39 @@ export const enum EnvKind { None, Receiver, Struct }
 
 export class EnvInfo {
   kind: EnvKind = EnvKind.None;
-  envClass: string | null = null;   // synthesized class name
-  ownEnv: bool = false;             // this function declares an env
-  receivesEnv: bool = false;        // this function is a closure value (~env)
+  /** The class of the env this function's `_env` names — its HEAD env.
+   *  Null when the function is not a closure value. */
+  envClass: string | null = null;
+  /** This function's body (or one of its nested scopes) allocates an env. */
+  ownEnv: bool = false;
+  /** This function is a closure value: it has `$closureEnvIn` and a prologue. */
+  receivesEnv: bool = false;
+  /** The class of the env this function's OWN body env links to (C5a);
+   *  null at a root, or when the body owns nothing. */
   parentClass: string | null = null;
+  /** C5b: the head env carries `$this` at field 0. */
+  hasThis: bool = false;
   captures: Array<{ name: string; field: string; type: TypeNode }> = [];
 }
 
 export const envInfoOf = new Map<FunctionDeclaration, EnvInfo>();  // program-scoped
 ```
 
-The resolver copies `kind`/`ownEnv`/`receivesEnv` onto the `FunctionPrototype` when
-the function is initialized (the same place `capturesThis` lives,
-`src/program.ts:3722`), and codegen branches on the prototype. The table is keyed
-by the **original** declaration; generic clones inherit through the prototype.
+`EnvKind` stays three-valued (`None` / `Receiver` / `Struct`): a chain still
+stores **one** env object in `_env`, so a `StructChain` kind would add a
+distinction no consumer reads. What codegen and the transforms need beyond the
+kind is the four facts above:
+
+| field | read by | for |
+|---|---|---|
+| `kind`, `envClass` | `compileFunctionExpression` (`src/compiler.ts:7526-7535`) | which value shape to build, and which class its `_env` names |
+| `kind == Struct` | `compileFunctionBody` (`src/compiler.ts:1830-1841`, `:1966-1985`) | the `$closureEnvIn` local and its prologue |
+| `ownEnv`, `parentClass` | the closure transform | whether to allocate a body env and what constructor argument it takes (§4.7.3, §6.1) |
+| `receivesEnv` | the closure transform | whether the body env has a parent at all (a nested owner that is itself a closure) |
+| `hasThis` | the async transform (C5b) | which read-back shape §8.3(a) emits, and whether a this-struct is synthesized |
+
+The table is keyed by the **original** declaration; generic clones inherit
+through the prototype.
 
 A second map records, per **creation site**, which local holds the environment to
 store in the value's `_env`:
@@ -409,9 +476,28 @@ export const creationEnvOf = new Map<FunctionExpression, string>();
 ```
 
 The same function can be created in more than one scope (a nested arrow inside a
-block, the block executed twice), and the env local is the *innermost owning
-scope at the site*, not necessarily the function's own — so the site is the key,
-not the declaration.
+block, the block executed twice), so the site is the key, not the declaration.
+The local recorded is the one holding the closure's **head** — the `needed`
+scope's local when the creating function owns it, otherwise `$closureEnvIn`
+(§4.7.2). It is **not** "the innermost owning scope at the site": those differ
+whenever a block owns an env for one closure and a sibling closure captures only
+an outer binding. Measured on `p.ts`:
+
+```ts
+export function main(): i32 {
+  let a: i32 = 1; let out: i32 = 0;
+  { let b: i32 = 2;
+    const h = (): i32 => b;      // needs the BLOCK env
+    const g = (): i32 => a;      // needs the FUNCTION env, though its site is the block
+    out = h() + g(); }
+  return out;
+}
+```
+
+Both creations are in the same block, and the shipped compiler already stores
+different envs: `p.wat` loads `$closureEnv$1` for `h` and `$closureEnv` for `g`
+(`$p/main`, the two `local.get`s before the `_env` stores). The plan's old
+wording described neither.
 
 ### 3.4 What the transform does, in one pass over each source
 
@@ -535,11 +621,206 @@ asserts (§13).
   in v1; the extension is a generic env class, deferred).
 - **A captured binding whose declared type is a function-local type alias** —
   refused by name (the env class is top-level; the alias is not visible there).
-- **A user declaration named `$closureEnv`, `$closureEnvIn`, `$this`,
-  `$parent`, or `$init$…`** — refused by name (the transform's reserved names).
+- **A user declaration in the reserved namespace** — refused by name. The
+  closure names are `$closureEnv`, `$closureEnvIn`, `$closureEnv$<n>`, `$this`,
+  `$parent`, and `$init$…`; the async state struct already reserves `$env`,
+  `resumePoint`, `result`, `handle`, and `record`
+  (`src/async/lower.ts`'s `isReservedStateField`). **This refusal is not
+  implemented in the tree yet** — measured: `let $parent: i32 = 7;` captured by
+  an arrow compiles to `main$Env.$parent`. It lands as a **separate pre-C5
+  commit** (F14, §4.7.4), before C5a introduces that field.
 
 Each refusal is a `DiagnosticCode.Not_implemented_0` with the shape named, so a
 program never reaches codegen with a half-rewritten body.
+
+---
+
+## 4.7 C5 — parent-chain captures, and one env per scope instance (new)
+
+C5 makes §2.2's chain executable. It is split by the architect's ruling into
+**C5a** (the chain and nested owners) and **C5b** (the receiver/body-env
+unification), because the two un-refuse different shapes and carry independent
+tests. Both are closure-transform work plus the side-table data in §3.3; neither
+changes `compiler.ts`'s call convention, the `~env` delivery (§6.4), or the async
+transform's planner.
+
+### 4.7.1 The invariant
+
+**The scopes a closure captures from are a path in the lexical scope tree**, and
+every scope on that path that owns a captured binding has exactly one environment
+object (§2.2). The closure's `_env` names the **innermost** such environment —
+its *head* — and a reference to a binding owned further out is the field access
+reached by following `$parent` links from the head; the number of links is a
+compile-time constant (§6.2).
+
+Three consequences, each load-bearing:
+
+- **One storage location per binding.** The chain is object links; nothing is
+  copied. A write at any depth is visible to every reader (§2.1).
+- **The head is what the closure needs, not where the closure sits.** A closure
+  created inside a block that owns an unrelated env still heads at the innermost
+  env *it needs* (§4.7.2). This keeps `_env` minimal and the hop count exact.
+- **The chain skips non-owning scopes.** A scope that declares no captured
+  binding has no env class and no `$parent`; hops are counted over *owning*
+  scopes, not lexical blocks.
+
+### 4.7.2 C5a — the head, the hop, and multi-scope `needed`
+
+Today `needScope` refuses a function's second distinct referenced scope
+(`src/closure/lower.ts:610-615`) and `FunctionInfo.needed` holds one `Scope`.
+C5a replaces the refusal with a selection:
+
+> **`needed` is the innermost scope among the scopes whose bindings this function
+> references.** Every other referenced scope is an ancestor of `needed` (the
+> lexical path is unique), so a reference's hop count is the number of *owning*
+> scopes on the path from `needed` (exclusive) to the binding's scope
+> (inclusive).
+
+The reference rewrite (§6.2) is unchanged in shape; what C5a adds is that `k` may
+now exceed 1 and is derived, not restricted to 0 or 1.
+
+- **At a creation site**, `creationEnvOf` records the local holding the head: the
+  `needed` scope's local when the creating function owns it (`$closureEnv` /
+  `$closureEnv$<n>`), otherwise `$closureEnvIn` (§3.3).
+- **Inside a closure**, the head is `$closureEnvIn`, and the expression is
+  `$closureEnvIn (. $parent!)*k . field`.
+- **Inside an owner's own body**, the head is the innermost owning-scope local
+  visible at the reference (`$closureEnv$<n>` or `$closureEnv`), and the walk goes
+  outward the same way. A reference inside the scope that owns the binding has
+  `k = 0`.
+- **`$init$` flags use the same walk.** One `targetOf(binding, site)` supplies the
+  expression for the value read, the flag read, the flag write and the `const`
+  check; §2.5's snippet is its `k = 0` case.
+
+**The canonical shape, worked through.** A loop header and a body block are two
+owning scopes of `main`:
+
+```ts
+for (let i: i32 = 0; i < 3; i++) {
+  let now: i32 = i * 10;
+  fns.push((): i32 => i + now);
+}
+```
+
+The closure `needed`s the body block (it owns `now`, the innermost) and hops one
+link to the header env for `i`. Schematic (class names and `$n` numbering are
+placeholders; the numbering is §5.6's source order):
+
+```ts
+let $closureEnv$1: main$Env$1 = new main$Env$1();                  // header, root
+$closureEnv$1.i = 0;
+for (; $closureEnv$1.i < 3; $closureEnv$1.i++) {
+  let $closureEnv$2: main$Env$2 = new main$Env$2($closureEnv$1);   // body
+  $closureEnv$2.now = $closureEnv$1.i * 10;
+  fns.push((): i32 => $closureEnvIn.$parent.i + $closureEnvIn.now);
+  $closureEnv$1 = new main$Env$1($closureEnv$1);                   // clone (§5.4)
+}
+```
+
+The body env's parent is the header env **as it stands before the clone**: the
+clone runs after the body, so iteration *k*'s body env keeps iteration *k*'s `i`.
+The clone copies `$parent`, which does not change (§5.4).
+
+`main`'s own function-body scope owns nothing here, so the header env is the root
+and has no `$parent` field — the "skips non-owning scopes" rule in practice.
+
+### 4.7.3 C5a — nested owners
+
+The analysis runs per top-level function and per method today; a binding owned by
+a nested owner is refused twice (`src/closure/lower.ts:512-514`, `:1013-1017`).
+C5a removes both:
+
+> **Any function or block that declares a captured binding owns an
+> environment**, whatever its nesting: a nested `function`
+> expression/declaration, a block-bodied arrow, a method, a top-level function.
+> The allocation is at the owning scope's entry (§5.3); the class is hoisted to
+> the source's top level (§5.2).
+
+Two mechanical consequences:
+
+- **Class naming.** The class is named after the **owning function**:
+  `<ownerName>$Env` / `<ownerName>$Env$<n>`, with §5.2's counter for an anonymous
+  owner and the async transform's collision check (`src/async/lower.ts:354`).
+  The shipped naming loop uses `this.owner.name` for every function scope
+  (`src/closure/lower.ts:508-530`); with nested owners, two owners would produce
+  the same class name.
+- **The owner's own parent.** A nested owner that is itself a closure value has
+  both `$closureEnvIn` (the head it received) and its own body env; the body env's
+  `$parent` is `$closureEnvIn`, passed to its constructor (§6.1). An owner that
+  is not a closure value has a root body env. `EnvInfo.parentClass` records which
+  class that link has — or null at a root.
+
+A nested owner's body env is an ordinary local of its own body, so the async
+transform's existing lifting rule carries it across an await (§8.3(b)); C5a adds
+no async-specific rule.
+
+What stays refused (§7.1a): a static method (no receiver value to store) and a
+**top-level function expression** as an owner (its owner would be the module,
+whose entry is the start function). Both are unchanged by C5a.
+
+### 4.7.4 The reserved-name gate (F14) — pre-C5, separate commit
+
+C5a adds a `$parent` field to synthesized classes, and a user binding named
+`$parent` exists today (measured: `let $parent: i32 = 7; const f = () =>
+$parent` compiles to `main$Env.$parent`). The guard in §4.6 therefore lands
+**before** C5a, as its own commit with its own test (case 24). This amendment
+does not implement it and does not specify its internals; it records the
+dependency: **C5a must not start before the guard is on the tree.**
+
+### 4.7.5 C5b — one env per scope instance, receivers included
+
+Two objects already stand for one scope instance today. An async method that owns
+a captured local and reads `this` compiles to `k/m$Env` (the captured local) and
+`k/m$ThisEnv` (the receiver), with separate constructors and no link (measured:
+the module carries both classes, and the state struct has both `$closureEnv` and
+`$env` setters); the this-struct is `state.$env` and the body env is lifted as
+`$closureEnv` (§8.3(b)). What no shape reaches is a *single closure needing
+both*, because an arrow capturing `this` in an async body is refused (`TS2332`)
+and a nested owner is refused. C5a removes the second; C5b removes the first by
+unifying the two objects:
+
+> **One environment per scope instance.** When a function's body owns an env and
+> the function has a receiver, the **body env carries `$this` at field 0** and is
+> the function-scope env; no this-struct is synthesized. When the body owns no
+> env but the function has a receiver, the synthesized this-struct is the
+> function-scope env (the head), and it carries `$parent` when the function is
+> also a closure value.
+
+The closure transform's `needsThis` currently fires only when an *arrow* captures
+`this` (`src/closure/lower.ts:537-551`). C5b extends the condition: an owner with
+a receiver whose **own body** reads `this` and owns an env sets it, and
+`EnvInfo.hasThis` (§3.3) records the fact for the async transform.
+
+Two refusals then lift:
+
+- **Capture + explicit `this:`** (`src/async/lower.ts:426-434`) — `$env` now holds
+  one object, so the receiver's struct and the captured env no longer compete for
+  it; the closure env is `$env.$parent` (§8.3(a)'s second shape). Case 21.
+- **`TS2332` for an arrow capturing `this` in an async body** — with `this` a
+  field of the body env, the closure transform rewrites it before the resolver
+  sees a `ThisExpression`, exactly as C2b does for a non-async method. Case 22.
+
+The static-method refusal is untouched (there is no receiver value to store).
+
+### 4.7.6 The boundary
+
+| | C5a | C5b |
+|---|---|---|
+| two-scope capture | **yes** — multi-scope `needed`, hops, `$parent` | unchanged |
+| nested owners | **yes** — nested functions and block-bodied arrows | unchanged |
+| capture + explicit `this:` | **still refused** | **un-refused** |
+| arrow capturing `this` in an async body (`TS2332`) | **still refused** | **un-refused** |
+| async method with a body env **and** `this` | two objects, as today | **one object** |
+| `_env` / `$env` meaning | unchanged from C4 (head env; §8.3 as shipped) | head env; both read-back shapes |
+| reserved-name guard (F14) | **required before start** | — |
+| tests | 16-20 | 21-23 |
+
+C5a changes the closure transform and §3.3's data only. It is expected to need
+**no** `compiler.ts` change: the prologue and the creation branch already key off
+`EnvKind.Struct`/`envClass` (`src/compiler.ts:1830-1841`, `:7526-7535`). If a
+counterexample is found, it is that branch, and the dispatch reports before
+changing it. C5b adds `hasThis`'s recording and the async transform's second
+read-back shape (§8.3), plus the two refusal deletions.
 
 ---
 
@@ -557,9 +838,9 @@ frame is gone by definition).
 For each owning scope, the transform emits one class at the source's top level:
 
 ```ts
-class outer$Env extends TaskEnv {
-  $this: C = changetype<C>(0);         // field 0, only if a Struct arrow captures `this`
-  $parent: parent$Env | null = null;   // next, only if the owner is itself a closure
+class window$Env$2 extends TaskEnv {
+  $this: C = changetype<C>(0);         // field 0, only if the env carries a receiver (§7.1, C5b)
+  $parent: window$Env$1 | null = null; // next, only if this scope has an owning ancestor
   n: i32 = 0;                          // one field per captured binding, declaration order
   $init$x: bool = false;               // only for declarations without initializer (§2.5)
 }
@@ -570,6 +851,37 @@ then the captured bindings in declaration order, then the `$init$` flags. The
 order must be stable because every environment of the same scope shape shares
 one class.
 
+**When `$parent` exists.** It is emitted when the scope this class represents has
+a nearest **owning** ancestor scope — that is, when walking outward from this
+scope, the first scope that owns a captured binding exists. It is **not**
+conditioned on the owner being a closure: the canonical two-scope shape's owner
+is `main` (not a closure), and both its header env and its body env need the
+link (§4.7.2). The root env of a chain has no `$parent` field at all, rather than
+a permanently null one.
+
+**Construction.** Every class with a `$parent` field takes the parent as a
+constructor argument: `new X$Env(parentLocal)`. A loop-header class also carries
+§5.4's copy constructor; because AS has no overloads, the two are one constructor
+with two optional parameters —
+
+```ts
+constructor(source: X$Env | null = null, parent: Parent$Env | null = null)
+```
+
+— and `source` wins when both are given (the shipped optional-parameter trick,
+`src/closure/lower.ts:1150-1198`). The copy path sets `$parent` from
+`source.$parent`; the allocation path sets it from `parent`. A **root** class has
+no `$parent` field and therefore no parent parameter; it is constructed with no
+argument (or, for a loop header, with the source alone).
+
+**The wat this should produce (expected, not yet measured).** For §4.7.2's
+canonical shape: two classes (`<owner>$Env` for the loop header, `<owner>$Env$<n>`
+for the body); accessors `<owner>$Env$<n>#get:$parent` / `#set:$parent` on the
+body class; the body allocation calling its constructor with the header local;
+and, inside the closure, a read of `i` compiled as `$closureEnvIn.$parent.i`
+(`<owner>$Env$<n>#get:$parent`, then `#get:i`). The header class has no `$parent`
+accessor, because it is the root.
+
 - **Base: `TaskEnv`** (`std/assembly/task-rt.ts:54`). This is deliberate: the
   state struct's `$env` field is typed `TaskEnv | null`, and the environment must
   be assignable to it when an async method or a resumed async function carries
@@ -579,9 +891,11 @@ one class.
   capture and the `$parent` link are both reachable while a task is suspended.
 - **Field types** are the bindings' declared types, copied verbatim. The env
   class is emitted at top level, so those types must be nameable there (§4.6).
-- **Names** are `<ownerName>$Env`; a counter disambiguates anonymous owners, and
-  the transform checks the synthesized name against the source's declarations
-  (the async transform's rule, `src/async/lower.ts:354`).
+- **Names** are `<ownerName>$Env` / `<ownerName>$Env$<n>`, where `ownerName` is
+  the **owning function** — including a nested owner (C5a, §4.7.3). A counter
+  disambiguates anonymous owners, and the transform checks the synthesized name
+  against the source's declarations (the async transform's rule,
+  `src/async/lower.ts:354`).
 
 ### 5.3 Allocation: at scope entry, not at analysis time
 
@@ -598,6 +912,12 @@ One allocation per scope instance. Fields are zero-initialized by the env's
 constructor; the rewritten declarations assign real values at their declaration
 points. A closure created before a later declaration cannot occur (no hoisting).
 
+**The parent at each site.** A function body's env is parented to
+`$closureEnvIn` when the function is a closure value, and is a root otherwise. A
+block or loop-body env is parented to the innermost enclosing owning scope's
+local at that point — which, inside a header-capturing loop, is the iteration's
+header env before the clone (§5.4).
+
 ### 5.4 Loop environments — the concrete rewrite
 
 **Header binding (`for (let i = …; cond; incr) body`), when `i` is captured:**
@@ -611,16 +931,22 @@ $closureEnv.i = 0;
 for (; $closureEnv.i < n; $closureEnv = new f$Env($closureEnv), $closureEnv.i++) body($closureEnv.i)
 ```
 
-`new f$Env($closureEnv)` is the copy constructor the transform synthesizes (one
-per env class: copies every value field, sets `$parent`). Because the clone is
-part of the incrementor, a `continue` executes it (the language already runs the
-incrementor on `continue`), and a `break` skips it. (The local is shown as
+`new f$Env($closureEnv)` is the copy constructor the transform synthesizes — one
+per **loop-header** env class, not one per env class (§4.7.3's constructor rule
+covers a parent). It copies every value field, `$this`, the `$init$` flags, and
+`$parent`; copying `$parent` is what keeps the enclosing link intact across the
+clone. Because the clone is part of the incrementor, a `continue` executes it
+(the language already runs the incrementor on `continue`), and a `break` skips
+it. (The local is shown as
 `$closureEnv`; a loop whose header scope is nested inside another owning scope
 uses `$closureEnv$<n>`, §5.6.)
 
 **Body binding (`for (…) { let x: i32 = …; const f = () => x; }`)** — the block's
 env is allocated at the top of the body, so each iteration allocates its own:
-no clone and no special case.
+no clone and no special case. Its `$parent` is the enclosing owning env at that
+moment; inside a header-capturing loop that is **the header env before the
+clone**, which is why iteration *k*'s body env keeps iteration *k*'s `i`
+(§4.7.2).
 
 **`for…of`:** allocate at the top of the body and assign the iteration value
 (§2.3).
@@ -647,8 +973,8 @@ value, the collector follows it (case 7).
 - **`$closureEnv$<n>`** — the env owned by a nested scope (block or loop body) of
   the same function, numbered in source order. Every owning scope needs its own
   local; a function may own several.
-- **`$closureEnvIn`** — the env a function **received** (one per function, added
-  by the resolver).
+- **`$closureEnvIn`** — the env a function **received** (one per function; the
+  local is added by codegen, §6.1).
 - **`$parent`**, **`$this`**, **`$init$<name>`** — fields of an env class.
 - **`<owner>$Env`** / **`<owner>$Env$<n>`** — the synthesized classes.
 
@@ -663,20 +989,33 @@ refused by name.
 
 - **`$closureEnv`** — the environment this function's **body** owns (a nested
   owning scope uses `$closureEnv$<n>`, §5.6). Declared by the transform at the
-  scope entry: `let $closureEnv: f$Env = new f$Env();`.
-- **`$closureEnvIn`** — the environment this function received. Added by the
-  **resolver** to a `receivesEnv` function's flow before its body is resolved
-  (the same mechanism as the `this` local, `src/resolver.ts:2284-2291`), and
-  filled by a **codegen prologue** from `~env` (the same shape as
-  `src/compiler.ts:1921-1934`).
+  scope entry: `let $closureEnv: f$Env = new f$Env(parentLocal);` — the parent
+  argument is present exactly when the class has a `$parent` field (§5.2), and is
+  the head local in scope at that entry (`$closureEnvIn` for a nested owner that
+  is itself a closure value).
+- **`$closureEnvIn`** — the environment this function received. Its local is
+  added by **codegen**, before the body is compiled (`src/compiler.ts:1830-1841`)
+  — not by the resolver, which has no `$closureEnvIn` — and filled by the
+  prologue from `~env` (`:1966-1985`), for a function whose prototype is
+  `EnvKind.Struct`.
 
-A function may have both (it owns bindings and is itself nested). Its
-`$closureEnv.$parent` is assigned from `$closureEnvIn` immediately after the
-allocation.
+A function may have both (it owns bindings and is itself nested). Its body env's
+constructor receives `$closureEnvIn` as the parent, so the link exists from the
+first read and needs no separate assignment statement. The transform records that
+link's class as `EnvInfo.parentClass` (§3.3).
+
+**Nested owners (C5a).** Any function or block that declares a captured binding
+owns an env, including a nested function or a block-bodied arrow (§4.7.3). The
+analysis runs per owning function; the class is hoisted to the source top level
+and named after the owning function (§5.2). The allocation stays at the owning
+scope's entry (§5.3), so a nested owner's body env is an ordinary local of its own
+body and the async transform's existing lifting rule carries it across an await
+(§8.3(b)).
 
 The compiler reads the creator's env local for a given creation site from
-`creationEnvOf` (§3.3): it is the innermost owning scope's local at that site
-(`$closureEnv`, a `$closureEnv$<n>`, or — from inside a closure — `$closureEnvIn`).
+`creationEnvOf` (§3.3): it is the local holding the **head** the closure needs —
+the `needed` scope's local when the creating function owns it (`$closureEnv`, a
+`$closureEnv$<n>`), otherwise `$closureEnvIn` (§4.7.2).
 
 ### 6.2 Reference rewrite
 
@@ -686,10 +1025,22 @@ A reference to a binding owned by scope `S` becomes, inside function `F`:
 envExpr(F) ($parent! × k) . field
 ```
 
-where `k` is the number of env layers between `F`'s env and `S`'s env, known
-statically. Because each env class types its `$parent` as the concrete parent
-class, the walk needs no casts — only a non-null assertion per hop (the transform
-emits `!`, a normal AS expression).
+where `k` is the number of **owning** env layers between `F`'s head and `S`'s
+env, known statically (§4.7.2): `k = depth(S) − depth(head)`, counted over scopes
+that own a captured binding. Because each env class types its `$parent` as the
+concrete parent class, the walk needs no casts — only a non-null assertion per
+hop (the transform emits `!`, a normal AS expression).
+
+The head is `$closureEnvIn` for a reference inside a closure, and the innermost
+owning-scope local visible at the reference for one inside an owner's own body
+(§6.1). `k = 0` is the single-env case the shipped C1-C4 code already emits;
+`k = 1` is §4.7.2's canonical loop; `k > 1` is a chain of three or more owning
+scopes.
+
+One helper, `targetOf(binding, site)`, produces the expression for every use:
+value read, the `$init$` flag read, the flag write, and the `const`-assignment
+check. That is what keeps a guarded read from reading the flag off a different
+object than the value (§2.5, F7).
 
 Assignments, compound assignments, and `++`/`--` are rewritten to the same
 target, which is what makes `let n: i32 = 0; const f = () => ++n;` share one
@@ -784,20 +1135,34 @@ proves it handles the shapes (D7).
 | `this` + a local | `Struct` | the env object | reads `~env` into `$closureEnvIn` |
 | a local only | `Struct` | the env object | reads `~env` into `$closureEnvIn` |
 
-In the `Struct` case, `this` is field 0 (`$this`) of the env owned by the nearest
-enclosing non-arrow function, initialized at that function's scope entry from its
-`this` (a parameter, so always available where a `this` exists at all). References
-to `this` inside the arrow are rewritten to `env.$this`; the resolver never sees a
-`ThisExpression` there, so `capturesThis` is not also set — no double storage.
+In the `Struct` case, `this` is field 0 (`$this`) of the env of the **innermost
+scope whose binding the arrow captures** — the body env when `this` is the only
+local source, a block env when the arrow also captures a block binding. That is
+the shipped C2b rule (`src/closure/lower.ts:537-551`, `let env =
+innermost.needed`), not "the env of the nearest enclosing non-arrow function".
+It is initialized at that scope's entry from the owner's `this` (a parameter, so
+always available where a `this` exists at all). References to `this` inside the
+arrow are rewritten to `env.$this`; the resolver never sees a `ThisExpression`
+there, so `capturesThis` is not also set — no double storage.
 
-A struct is created only when there is at least one non-`this` capture to justify
-it, so a `$this`-only struct cannot occur.
+The placement has a second, load-bearing property under a chain: because the env
+holding `$this` is the one the arrow `needed`s, **`$this` is always a field of
+the head**. A chain never hops to reach the receiver; only captured bindings
+walk `$parent`.
+
+**One exception (C5b).** A this-only arrow inside an async body cannot use the
+`Receiver` path: the function creating it is `f$resume`, which has no `this` to
+put in `~env`, and the resolver answers `TS2332` (measured). C5b classifies that
+arrow as `Struct` against the enclosing function-scope env and stores the
+receiver there (§4.7.5). Outside that exception a struct is created only when at
+least one non-`this` capture justifies it, so a `$this`-only struct does not
+occur in a non-async function.
 
 ### 7.1a Owner kinds — what may own an environment
 
 The rules above say where `$this` lives; this says *whose* environment it can
-live in. An **owner** is a function whose body declares bindings that a nested
-function captures, and therefore allocates the environment.
+live in. An **owner** is a function or block whose body declares bindings that a
+nested function captures, and therefore allocates the environment.
 
 | Owner kind | May own an environment | Why |
 |---|---|---|
@@ -806,14 +1171,16 @@ function captures, and therefore allocates the environment.
 | a function with an explicit **`this:` parameter** | **yes** | the explicit parameter supplies the receiver (`signature.explicitThisType`) |
 | a **static method** | **no** | `this` there is the class object, not a receiver parameter; there is no value to store, and its members are globals |
 | a function expression at the top level | **no** (C1 scope) | the environment's owner would be the module, whose "entry" is the start function; deferred |
-| a nested function that is neither a method nor an arrow | **no** (refused) | its own frame is where the environment would be allocated, but its body is compiled as a separate closure value — the shape needs the parent chain (§2.2), deferred |
+| a **nested** `function` or block-bodied arrow | **yes (C5a)** | its own frame is where the environment is allocated, and §4.7's chain lets a deeper closure reach it; the class is hoisted and named after the owner (§4.7.3) |
+| a nested **async** function | **yes** | lowered as an entry + `f$resume` pair; its body env is lifted as a state field (§8.3(b)) |
 
-Two consequences, both implemented:
+Two consequences:
 
 - **`$this` is initialized at the owning scope's entry** from whatever the
   owner's `this` is — the method's `param 0`, or the explicit `this:` parameter.
   A block-scoped owner initializes it at the block's entry, where `this` is
-  still in scope, so no parent chain is needed.
+  still in scope, so no parent chain is needed. (The nested-owner and
+  body-env-carrying-`$this` rows are C5a/C5b; the rest are shipped.)
 - **`$this` is field 0 whenever the environment carries a receiver.** It is the
   only field whose position is fixed; the captured bindings follow in
   declaration order, then the `$init$` flags.
@@ -853,13 +1220,19 @@ Case 3 asserts the diagnostic and the `.call(c)` path (§13).
 An async method's `this` must survive suspension, and a method has no `_env` of
 its own. Per the architect's ruling:
 
-- The async transform synthesizes `f$ThisEnv extends TaskEnv { $this: C }`.
-- The entry populates `state.$env = new f$ThisEnv(this)` **unconditionally** —
-  before `f$resume(state)` — so the sync prefix runs with it in place.
+- The async transform synthesizes `f$ThisEnv extends TaskEnv { $this: C }` for a
+  method that owns **no** body env. It has no `$parent`: a method cannot capture
+  from an enclosing function (methods are not nested), so its this-struct is
+  always a root.
+- The entry populates `state.$env = new f$ThisEnv(this)` **unconditionally** for
+  every such method — before `f$resume(state)` — so the sync prefix runs with it
+  in place. C5b's unification (D16) folds the receiver into the body env when the
+  method owns one (§4.7.5), so exactly one object exists either way.
 - `this` in the method body is rewritten, at each occurrence, to
-  `changetype<f$ThisEnv>(state.$env).$this`. **A read per occurrence, not a
-  hoisted local**: a local would have to be lifted across every await to stay
-  correct, and the field read is always current by construction.
+  `changetype<f$ThisEnv>(state.$env).$this`, or — when the body env carries the
+  receiver (C5b) — to `changetype<F$Env>(state.$closureEnv).$this`. **A read per
+  occurrence, not a hoisted local**: a local would have to be lifted across every
+  await to stay correct, and the field read is always current by construction.
 - The same mechanism serves a free `async function` with an explicit `this:`
   parameter — the receiver is `param 0` there too, and the this-struct holds it
   (§7.1a).
@@ -880,7 +1253,9 @@ now lowered too:
 **Two shapes remain refused, and the reason is the transform order (§3.1).**
 Closures lower *before* async, so a nested arrow in an async body that captures
 `this` was already classified by the closure transform — as `Receiver`, with no
-environment. That arrow's prologue then reads `~env`, and the function creating
+environment. **C5b un-refuses this** (§4.7.5): with `this` a field of the body
+env, the closure transform rewrites the reference before the resolver sees it.
+The static-method refusal above stays. That arrow's prologue then reads `~env`, and the function creating
 it is `f$resume`, which has no `this` to store there. The result is a clean
 compile error (`TS2332`), not a miscompile, and it is reported as a known
 limitation rather than worked around. The fix, when it is wanted, is to let an
@@ -936,16 +1311,46 @@ Three different words, now named distinctly:
 | name | what it is | who reads it |
 |---|---|---|
 | `_env` | the `usize` word inside every `Function<T>` | `makeCallIndirect`, the callee's prologue |
-| `$env` | the state struct's `TaskEnv`-or-null field (`src/async/lower.ts:175`) | async methods (this-struct) and `f$resume` (closure env) |
+| `$env` | the state struct's `TaskEnv`-or-null field (`src/async/lower.ts:175`) | the **function-scope env** of the suspended frame: the received closure env, or the this-struct; null when the frame owns a body env and received nothing |
 | `$closureEnv` / `$closureEnvIn` | the env locals of a function | capture accesses, creation, delivery |
+
+**The head rule.** `$env` carries the env that must cross the entry → `f$resume`
+boundary — the **function-scope env** in that boundary sense (§4.7.1). Only two
+objects can occupy it: the **received env**, or the **this-struct** that stands
+in for a receiver-only frame. A body env (§8.3(b)) is never stored there; it is
+carried by its own lifted field, and its `$parent` names the received env. The
+read-back follows from which object occupies `$env`:
+
+| function shape | `state.$env` holds | `this` reads | `$closureEnvIn` read-back |
+|---|---|---|---|
+| closure value, no receiver, no body env | the received env `$E` | — | `changetype<$E>(state.$env)` |
+| closure value, no receiver, owns a body env | the received env `$E`; the body env is lifted, parent `$E` | — | `changetype<$E>(state.$env)` |
+| closure value, receiver, no body env (C5b's collision) | the this-struct `$T`, with `$T.$parent = $E` | `changetype<$T>(state.$env).$this` | `changetype<$E>(state.$env.$parent!)` |
+| closure value, receiver, owns a body env (C5b) | the received env `$E`; the body env carries `$this` and is lifted, parent `$E` | from the body env | `changetype<$E>(state.$env)` |
+| no received env, receiver, no body env | the this-struct `$T` | `changetype<$T>(state.$env).$this` | — |
+| no received env, receiver, owns a body env (C5b) | null; the body env carries `$this` | from the body env | — |
+| no received env, no receiver, owns a body env (§8.3(b)) | null | — | — |
+
+**The two read-back shapes** are therefore exactly two expressions:
+
+1. **head is a closure env** — `changetype<$E>(state.$env)`.
+2. **head is the this-struct** — `changetype<$E>(state.$env.$parent!)` for the
+   received env, and `changetype<$T>(state.$env).$this` for the receiver.
+
+**The runtime root chain.** The task table holds the state; for a parked task the
+collector reaches an environment through `table → state → state.$env → $parent* →
+environment`, and through any lifted `$closureEnv` field. The `$closureEnvIn`
+local is a view of the same object, never a second storage. Every link is a
+managed field (§5.2, §5.5), so nothing needs a manual root.
 
 There are two distinct async cases, and they use different carriers:
 
-**(a) The async function *is* a closure value** — a nested async function or an
-async arrow, the only kind that can itself capture. The env arrives through
+**(a) The async function *is* a closure value** — a nested async function (the
+only async shape that can itself capture; an async arrow is refused, §0.1). The
+env arrives through
 `~env` at the **entry**, but the body lives in `f$resume`. The transform:
 
-1. keeps the resolver-added `$closureEnvIn` local in the entry,
+1. keeps the codegen-added `$closureEnvIn` local in the entry (§6.1),
 2. emits `state.$env = $closureEnvIn;` before `f$resume(state)`,
 3. emits at the top of `f$resume` its **own** declaration (a normal statement in
    the synthesized body, not a resolver-added local):
@@ -953,15 +1358,37 @@ async arrow, the only kind that can itself capture. The env arrives through
 
 `f$resume`'s signature is unchanged — one parameter, `state`.
 
+**With a receiver (C5b).** When the async function also has a receiver, the head
+depends on whether its body owns an env (§4.7.5):
+
+- **body owns no env** — the this-struct is synthesized (as today), but it is now
+  the head and carries `$parent` when the function is a closure value: the entry
+  emits `state.$env = new f$ThisEnv(this, $closureEnvIn)` (the parent argument is
+  absent when there is no received env). Step 3's read-back becomes
+  `changetype<f$Env>(state.$env.$parent!)`, and `this` stays
+  `changetype<f$ThisEnv>(state.$env).$this`.
+- **body owns an env** — that env carries `$this` at field 0 (§4.7.5) and no
+  this-struct is synthesized. `state.$env` holds the **received** env when the
+  function is a closure value (null otherwise); the body env is declared with its
+  parent and lifted across the suspension by the ordinary rule, and every `this`
+  read in the body compiles to `changetype<f$Env>(state.$closureEnv).$this` — the
+  lifted field, not `state.$env`.
+
 **(b) The async function is not itself a closure but contains one** — it owns the
-env. The declaration `let $closureEnv: f$Env = new f$Env();` is written in the
-body that moves into `f$resume`, so the existing lifting rule lifts `$closureEnv`
+env. The declaration `let $closureEnv: f$Env = new f$Env(parentLocal);` is written
+in the body that moves into `f$resume` (`parentLocal` only when the class has a
+`$parent`, §5.2), so the existing lifting rule lifts `$closureEnv`
 into a state field of the env class: a managed reference to the environment,
 which is §4.4 exactly. `state.$env` stays null in this case; nothing is carried
 there because nothing needs to cross a function boundary.
 
 For an **async method**, the entry populates `state.$env` with the this-struct
-(§7.4). A method is not a closure value, so it has no `$closureEnvIn`.
+(§7.4) when the body owns no env — a method is not a closure value, so it has no
+`$closureEnvIn` and its this-struct has no parent. **When the method's body owns
+an env (C5b), the this-struct is not synthesized**: the body env carries `$this`
+and `state.$env` stays null; the method's `this` is read from the lifted body
+env. This is the measured `k/m$Env` + `k/m$ThisEnv` pair collapsing to one class
+(§4.7.5).
 
 **Case (b) is what C4 relies on, and it needed one addition to the async
 transform.** When the async body creates a closure *before* an await, the
@@ -1015,11 +1442,14 @@ rediscovered as bugs:
   mechanism described in §7.4 (a `TS2332` from the resolver), because the closure
   transform classified them before the async transform moved the body.
 
-**Parent-chain captures (C5).** A capture that crosses more than one environment
-is still refused by name. It is deferred to C5 — after the async interaction,
-because C4's cases all need at most one environment layer, and the chain is a
-separate mechanism (a `$parent` link with statically decided depth) rather than a
-consequence of composition.
+**Parent-chain captures (C5a) and the receiver unification (C5b).** A capture
+that crosses more than one environment is refused at this revision and is the
+first thing §4.7 un-refuses. The chain is a separate mechanism (a `$parent` link
+with statically decided depth, §4.7.1-§4.7.3), not a consequence of composition;
+§8.3's head rule and its two read-back shapes are what let it coexist with the
+async carriers. The collision (`capture + explicit this:`) and the async-body
+`TS2332` are C5b's, not C5a's (§4.7.6); until C5b lands they stay refused by
+name, and §8.3's this-struct row describes the shape C5b replaces.
 
 ### 8.5 The async contract this plan requires
 
@@ -1175,7 +1605,11 @@ encoding capture-ness in the `Signature` string.
 | **D10** | **Captured bindings with an inferred type are refused.** | New, and the sharpest divergence: `let n = 0;` cannot be given an env field before resolution. Refused by name; the fix (a resolver-stage type inference pass) is named, not smuggled. |
 | **D11** | **Captured bindings typed by a type parameter or a function-local alias are refused** in v1. | New; generic env classes / hoisted aliases are the extension. |
 | **D12** | **Host callbacks cannot be capturing closures.** | New; the shim pattern is the supported route (§9.1). |
-| **D13** | **Async methods populate `$env` unconditionally** with a this-struct at field 0. | New (architect ruling); it is an async-transform change, scheduled with Gate 2 (§7.4, §8.4). |
+| **D13** | **Async methods populate `$env` unconditionally** with a this-struct at field 0. | New (architect ruling); it is an async-transform change, scheduled with Gate 2 (§7.4, §8.4). Amended by D16 for the body-owns-an-env case. |
+| **D14** | **`_env` names the innermost env the closure needs — its head — not the innermost owning scope at the creation site.** | New (C5 review F5). §3.3, §4.7.2, §6.2. |
+| **D15** | **Nested functions and block-bodied arrows may own an environment (C5a).** The class is named after the owning function. | New. §4.7.3, §6.1, §7.1a. |
+| **D16** | **One env per scope instance, receivers included (C5b).** A body env that coexists with a receiver carries `$this` at field 0; the separate this-struct exists only when the body owns no env. | New. §4.7.5, §8.3. |
+| **D17** | **`$env` is the function-scope env, with two read-back shapes** (head-is-closure-env, head-is-this-struct). | New (architect ruling). §8.3. |
 
 ---
 
@@ -1190,7 +1624,7 @@ encoding capture-ness in the `Signature` string.
 | 3 | **method value** | `const f = c.m; f()` → `TS2685` (measured); `f.call(c)` → value | C2 |
 | 4 | two closures sharing one binding | `inc`/`get` observe each other; **one** env allocation | C2 |
 | 5 | closure in a loop | `0,1,2`; per-iteration env allocation count asserted | C3 |
-| 6 | closure across an async suspend point | shape now; value in Phase 4 | C5 (after Gate 2) |
+| 6 | closure across an async suspend point | **landed** — the shape is `tests/compiler/async-closure-value.*.wat`; the value is `tests/async/runtime.js` (40 + 2 = 42; Phase 4, 4d) | C4 / Phase 4 |
 | 7 | environment outliving its frame | returned counter increments across calls | C2 |
 | 8 | environment reclaimed | unreachable env collected under `incremental` (leak check) | C4 |
 | 9 | arrow `this` | unchanged behaviour (regression guard for the shipped path) | C2 |
@@ -1200,6 +1634,20 @@ encoding capture-ness in the `Signature` string.
 | 13 | **for-header per-iteration shape** | clone-before-increment visible in the wat; the incrementor runs on the fresh env | C3 |
 | 14 | **direct-call shape** | a nested `function` is a value; its call is `call_indirect` (measured baseline) | C1 |
 | 15 | **`super` in a capturing arrow** | refused by name | C4 |
+| 16 | **two-scope, canonical loop** | `33` (0 + 11 + 22) after the loop; wat: body class has `$parent`, its allocation takes the header env, the closure reads `$closureEnvIn.$parent.i` | C5a |
+| 17 | **two-scope, nested owner** | `3` after `outer`'s frame is gone; wat: `mid$Env.$parent` typed `outer$Env` | C5a |
+| 18 | **two-scope, mutation** | `11`: a write made through the link is read by the outer scope | C5a |
+| 19 | **two-scope, escaped loop** | `33`; every per-iteration closure keeps its own `i`/`now` pair after the loop | C5a |
+| 20 | **two-scope, async** | `3`, delivered after the park (4d's delivery shape (a)); wat: the block env lifted as a state field, `$parent` intact | C5a |
+| 21 | **collision: capture + explicit `this:`** | the awaited result is `8`; wat: one head env carrying the receiver, the received env as its `$parent` | C5b |
+| 22 | **this-only arrow in an async body** | today `TS2332` (measured, called method); after C5b `7` | C5b |
+| 23 | **one env per scope instance** | an async method that owns a captured local and reads `this` emits **one** class (measured today: both `$Env` and `$ThisEnv`) and returns `8` | C5b |
+| 24 | **reserved names** | `$parent`, `$this`, `$env`, `$closureEnv`, `$closureEnvIn`, `$closureEnv$1`, `$init$x`, `resumePoint`, `result`, `handle`, `record` as captured names → refused by name | pre-C5 (F14) |
+
+The two refusal assertions C5 deletes — the two-environment message
+(`src/closure/lower.ts:614`) and the collision message
+(`src/async/lower.ts:434`) — are removed in the same commit as the un-refusal
+(C5a and C5b respectively), so the diff shows the removal rather than hiding it.
 
 ### 13.2 Negative controls
 
@@ -1238,7 +1686,7 @@ failure.
 
 ## 14. Milestones
 
-- **C0 — decisions.** This revision's D1-D13 confirmed. (Nothing to build.)
+- **C0 — decisions.** This revision's D1-D17 confirmed. (Nothing to build.)
 - **C1 — analysis + rewrite, no codegen.** `src/closure/` with the scoping walk,
   env-class synthesis, and the body rewrite; the side table; the direct-call
   measurement re-run as the first task (it is expected to confirm §6.5). Gate:
@@ -1252,8 +1700,18 @@ failure.
   rewriting; case 5, 13. Gate: `0,1,2` and the allocation count.
 - **C4 — controls.** NC1-NC6, case 12, case 15; the `call_indirect` builtin
   documentation.
-- **C5 — async composition (Gate 2).** Separate dispatch: the async transform's
-  un-refusals and `$env` population; case 6 shape, then value in Phase 4.
+- **C5a — parent-chain captures and nested owners.** §4.7.1-§4.7.3 and §4.7.6:
+  multi-scope `needed`, `$parent` emission and construction, the hop rewrite,
+  nested owners, class naming, and the §3.3 side-table extension. **Gate: the F14
+  reserved-name guard has landed** (its own commit, case 24), because C5a adds
+  the `$parent` field. Gate: cases 16-20; the canonical loop's wat shows the body
+  class's `$parent` and its allocation taking the header env; byte identity 6/6;
+  full suite green.
+- **C5b — receiver / body-env unification.** §4.7.5 and §8.3's two read-back
+  shapes: the body env carries `$this` when the body owns one, the this-struct
+  exists only when it does not, and the collision plus the async-body `TS2332`
+  un-refuse. Gate: cases 21-23; exactly one env class per scope instance in the
+  wat; full suite green.
 
 Each milestone is its own dispatch with its own report; none is started by this
 document.
@@ -1266,13 +1724,16 @@ document.
 |---|---|---|
 | A capture escapes the analysis (shadowing, a declaration-order edge) | High | The rewrite fails closed: a missed capture leaves a name that the resolver reports (`TS2304`) rather than a silent miscompile; shadowing cases are in the test matrix (§4.2) |
 | Per-iteration semantics wrong (`3,3,3`) | High | §2.3's clone-before-increment, case 5 and 13 assert values **and** the wat shape |
-| Double storage (`env` field plus a state field) | High | §2.2/§8.1; the async transform lifts the env **local**, which is the single object; case 6's value test (Phase 4) would catch a copy |
+| Double storage (`env` field plus a state field, or a this-struct plus a body env) | High | §2.2/§8.1; the async transform lifts the env **local**, which is the single object; C5b's one-env rule (§4.7.5) and case 23 assert one class; case 6's value test (`tests/async/runtime.js`) would catch a copy |
 | A captured binding's inferred type is the common case and is refused | Medium | D10: named refusal, documented; the fix path (resolver-stage inference) is stated |
 | `task-rt`'s `TaskEnv` is pulled into non-async closure programs | Low | It is an empty class in a top-level std file that every build parses anyway; unused functions are DCE'd |
 | The closure transform changes this-only arrow output | High | The fast path skips sources with no non-`this` capture; byte identity 6/6 is a gate |
 | Host callbacks cannot be closures | Medium | §9.1's shim pattern; NC3 |
 | `call_indirect` builtin with a closure reads a stale `~env` | Low | Documented; `@unsafe`; optional guard recorded |
-| Env chain depth computed wrongly for transitive captures | High | Case 10; the rewrite is `. $parent!` per hop with concrete parent types, so a wrong depth is a type error, not a wrong read |
+| Env chain depth computed wrongly | High | Cases 16-20; the rewrite is `. $parent!` per hop with concrete parent types, so a wrong depth is a type error, not a wrong read. The head is the closure's `needed` scope, not the site's innermost owning scope (§3.3's measured `p.ts`), which is the rule that makes the depth exact |
+| A user binding named `$parent` collides with the new field | High | F14's reserved-name guard lands before C5a (§4.7.4); case 24 asserts every reserved name |
+| Two objects for one scope instance survive C5b | High | §4.7.5's one-env rule; case 23 asserts exactly one class in the wat, and case 22's this-only arrow reuses the same env |
+| A nested owner's class name collides with its parent owner's | Medium | §4.7.3 names classes after the owning function with §5.2's counter; the transform's synthesized-name check (§3.3) catches a residual collision |
 
 ---
 
@@ -1282,7 +1743,7 @@ Nothing until the architect reviews this document. On approval:
 
 - **C1** starts with the direct-call measurement (§6.5) and the analysis pass,
   because it is the piece the other milestones depend on.
-- **C5** (async composition) is gated on the async transform's un-refusal
-  dispatch, which is not part of this plan's implementation.
+- **C5a** starts only after the F14 reserved-name guard has landed, and **C5b**
+  after C5a; §4.7 is their specification. Neither is started by this document.
 - This plan does not touch `tension-core`, `tension-ogre`, or the engine, and
   modifies no plan document other than itself.
