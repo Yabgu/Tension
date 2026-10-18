@@ -650,17 +650,28 @@ asserts (§13).
   the captures that motivated D11 — `let out = new Map<K,V>(map1)` inside
   `mergeMaps<K,V>`, and `let x: T = this.v` inside a `Box<T>` method.
 
-  **The guard's scope rule (C6a, then narrowed by C6b).** Today the guard collects
-  the analysis owner's type parameters only, and is therefore both too narrow and
-  silent about one case: a declaration typed by a **class's** type parameter is
-  not refused at all, and fails later as `TS2304: Cannot find name 'T'` plus
-  cascading `TS2339` (measured on `Box<T>`'s `let x: T`). That violates this
-  section's "named, never silent" rule. C6a widens the guard to the enclosing
-  function chain **and** the enclosing class, refusing by name:
+  **The guard's scope rule (C6a), and what C6b does to it.** Before C6a the guard
+  collected the analysis owner's type parameters only, and was therefore both
+  too narrow and silent about one case: a declaration typed by a **class's** type
+  parameter was not refused at all, and failed later as `TS2304: Cannot find
+  name 'T'` plus cascading `TS2339` (measured on `Box<T>`'s `let x: T`). That
+  violated this section's "named, never silent" rule. C6a widened the guard to
+  the enclosing function chain **and** the enclosing class, refusing by name:
   `a captured local typed by a class type parameter (closures lowering)`.
-  C6b then un-refuses the parameters the env class can carry (the owner's own,
-  and its class's), and keeps refusing a parameter that belongs to an
-  **enclosing** function of a nested owner — the hoisted class cannot name it.
+
+  C6b then removes that refusal by making the class capable of carrying the
+  parameter. **Measured, not assumed:** the class declares every parameter in
+  scope at its owning function, and every construction site is lexically inside
+  those scopes, so an **enclosing function's** parameter on a nested owner works
+  too — the earlier guess that the hoisted class could not name it was wrong and
+  is corrected here.
+
+  **One refusal remains, and it is narrower than D11 was:** a type-parameter
+  capture inside an **async** function —
+  `a captured local typed by a type parameter in an async body (closures
+  lowering)`. The async transform's synthesized types (`$env`, the head class)
+  do not spell type arguments yet, so the alternative is a bare `TS2558`; it
+  keeps a named refusal until that transform carries the parameter list.
 - **A captured binding whose declared type is a function-local type alias** —
   refused by name (the env class is top-level; the alias is not visible there).
 - **A user declaration in the reserved namespace** — refused by name: `a user
@@ -1774,6 +1785,7 @@ encoding capture-ness in the `Signature` string.
 | 27 | **D11, class type parameter (negative)** | `class Box<T> { m() { let x: T = this.v; () => x } }` → refused **by name** (`a captured local typed by a class type parameter`), never `TS2304` | C6a |
 | 28 | **D11, generic owner (the gate)** | `let out = new Map<K,V>(map1)` inside `mergeMaps<K,V>`, captured by an arrow → compiles; wat: the env class is generic in `K,V` and the construction supplies them; **`npm run bootstrap:debug` passes** | C6b |
 | 29 | **Divergence 3** | `let n = 0; await h; f(() => n)` → compiles; the async transform reads the annotated `declaration.type` and lifts it | C6a |
+| 30 | **D11 in an async body (negative)** | a type-parameter capture inside an `async` function → refused by name (`... in an async body`), never `TS2558` | C6b |
 
 The two refusal assertions C5 deletes — the two-environment message
 (`src/closure/lower.ts:614`) and the collision message
@@ -1857,9 +1869,17 @@ failure.
   `compiler.ts` site that resolves `envClass` by bare name
   (`src/compiler.ts:1834-1841`) passes the flow's type arguments — the existing
   `resolveClass(prototype, typeArguments, ctxTypes, reportMode)` signature
-  (`src/resolver.ts:3336-3346`) already accepts them. Gate: case 28; **the
-  executable gate is `npm run bootstrap:debug` compiling the compiler's own
-  source**, plus `bootstrap:release`; full suite green; byte identity 10/10.
+  (`src/resolver.ts:3336-3346`) already accepts them. A synthesized
+  `ClassDeclaration` must also carry `CommonFlags.Generic`; the parser derives
+  that flag from the presence of type parameters, and a synthesized class has no
+  parser. Gate: case 28; **the executable gate is `npm run bootstrap:debug`
+  compiling the compiler's own source**, plus `bootstrap:release`; full suite
+  green; byte identity 10/10.
+  **Gate status at landing (measured):** the compile reaches resolution with
+  **zero** D10/D11 refusals — the gate's binding included — and fails on 187
+  `TS2448` plus one `TS2322`, the declaration-ordering defect `main`'s CI was
+  already red on. That is a separate phase; C6b clears the blocker it was
+  scoped to and says so rather than claiming green.
 - **C6c — the resolver arm (deferred; its own plan review).** The general D10
   shapes the syntax table cannot reach (`let x = f()`, `let x = a.b`): a type-only
   walker at `afterInitialize` that resolves initializers and annotates the
