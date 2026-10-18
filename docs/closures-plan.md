@@ -831,9 +831,25 @@ counterexample is found, it is that branch, and the dispatch reports before
 changing it. C5b adds `hasThis`'s recording and the async transform's second
 read-back shape (§8.3), plus the two refusal deletions.
 
-### 4.7.7 A known limitation: `.call` on a hoisted nested async entry (`thisof`)
+### 4.7.7 `thisof`: the `.call` limitation, and its resolution
 
-**The shape.** A nested `async function f(this: C) { … }` written inside another
+**Resolved in 0.4.1** — fork `859e14e7`. `thisof` now has the same three-part
+registration as `valueof`/`returnof`/`nonnull`: the name in `src/common.ts`, a
+builtin `TypeDefinition` in `src/program.ts`, and `builtin_resolveThisOfType`
+in `src/builtins.ts`. `thisof<T>` resolves to `T`'s signature `thisType`; a
+plain function has none, and there `Function#call` accepts only `null` — a rule
+the builtin enforces, not the parameter type.
+
+**Measured incidence is broader than this section first claimed.** The trigger
+is not the nested-async shape and not the method shape: it is `await` applied
+directly to a `.call(...)` expression, which forces the declared signature to
+resolve. Measured against 0.4.0, `await f.call(null)` failed for a top-level
+async function, a nested async function, a method, and a plain function
+returning a `Task`; `let r: Task<i32> = f.call(null); await r` compiled, and an
+unawaited `.call` inside an async method compiled. Case 21 was one instance of
+the general shape, not the whole of it.
+
+**The original report.** The shape: A nested `async function f(this: C) { … }` written inside another
 function is lowered to an entry `f`, a state struct `f$State`, and `f$resume`
 (§4.1); the entry keeps its `this:` parameter. Calling that entry through
 `Function#call` — `f.call(new C())` — fails to compile:
@@ -857,16 +873,17 @@ that captures *nothing* fails the same way when its entry is called — reproduc
 at `ccf888c6`, whose tree has no closure transform and no C5b. It is a
 `Function<T>#call` typing gap, not a carrier defect.
 
-**What it gates.** C5b's collision shape (capture + explicit `this:`) is
+**What it gated.** C5b's collision shape (capture + explicit `this:`) is
 **lowered**: `$env` holds the this-struct, its `$parent` is the captured env,
 and `x` is read through the link — asserted in `tests/async/lower.js` (the
 carrier) and `tests/closure/lower.js` C5b-21 (the fields and constructor). Its
-**value** test (case 21, expected `8`) is deferred until this call form
-compiles. A user who writes `.call` on a nested async entry hits the same error
-today.
+value test (case 21, expected `8`) is now **measured** in
+`tests/async/runtime.js` (delivered after a real park, with the this-struct's
+`$this` and `$parent` asserted in the wat).
 
-**Not** in scope for this plan: it is a `~lib`/builtin typing fix, not a
-lowering decision. §13 records the deferral.
+**Scope note, kept for the record.** The fix was outside this plan's lowering
+decisions — a `~lib`/builtin typing gap — and was made as the 0.4.1 release
+commit `859e14e7`, not folded into C5.
 
 ---
 
@@ -1706,7 +1723,7 @@ encoding capture-ness in the `Signature` string.
 | 18 | **two-scope, mutation** | `11`: a write made through the link is read by the outer scope | C5a |
 | 19 | **two-scope, escaped loop** | `33`; every per-iteration closure keeps its own `i`/`now` pair after the loop | C5a |
 | 20 | **two-scope, async** | `3`, delivered after the park (4d's delivery shape (a)); wat: the block env lifted as a state field, `$parent` intact | C5a |
-| 21 | **collision: capture + explicit `this:`** | **lowered**; the carrier is asserted (the this-struct holds `$this` and `$parent = the received env`, ctor `(source, parent)`). The **value** (`8`) is deferred: calling the nested async entry with `.call` fails at `thisof` (§4.7.7) | C5b |
+| 21 | **collision: capture + explicit `this:`** | `8`; the carrier is asserted (the this-struct holds `$this` and `$parent = the received env`, ctor `(source, parent)`) and the value is measured in `tests/async/runtime.js` after a real park. The `await f.call(...)` shape that gated it is resolved at `859e14e7` (§4.7.7) | C5b |
 | 22 | **this-only arrow in an async body** | `7`; the arrow is a `Struct` over the body env, which carries `$this` | C5b |
 | 23 | **one env per scope instance** | an async method that owns a captured local and reads `this` emits **one** class (`$this` at field 0, then the binding) and returns `8` | C5b |
 | 24 | **reserved names** | `$parent`, `$this`, `$env`, `$closureEnv`, `$closureEnvIn`, `$closureEnv$1`, `$init$x`, `resumePoint`, `result`, `handle`, `record` as captured names → refused by name | pre-C5 (F14) |
