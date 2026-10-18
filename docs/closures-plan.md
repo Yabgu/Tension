@@ -831,6 +831,43 @@ counterexample is found, it is that branch, and the dispatch reports before
 changing it. C5b adds `hasThis`'s recording and the async transform's second
 read-back shape (§8.3), plus the two refusal deletions.
 
+### 4.7.7 A known limitation: `.call` on a hoisted nested async entry (`thisof`)
+
+**The shape.** A nested `async function f(this: C) { … }` written inside another
+function is lowered to an entry `f`, a state struct `f$State`, and `f$resume`
+(§4.1); the entry keeps its `this:` parameter. Calling that entry through
+`Function#call` — `f.call(new C())` — fails to compile:
+
+```
+ERROR TS2304: Cannot find name 'thisof'.
+   └─ in ~lib/function.ts(24,26)
+```
+
+**Why.** `Function<T>#call` is declared `call(thisArg: thisof<T> | null, …)`
+(`std/assembly/function.ts:24`) and implemented as a builtin
+(`src/builtins.ts:3887-3921`). The fork registers `returnof` and `nonnull` as
+native types but **not `thisof`** (`src/program.ts:1025-1044` registers
+`valueof`, `returnof`, `nonnull`; no `thisof` entry exists anywhere — grep).
+For most call shapes the builtin resolves first and the declaration's parameter
+types are never read, so the missing name never surfaces; on this one they are,
+and the type check reports it.
+
+**It predates C5b, measured.** A nested async function with an explicit `this:`
+that captures *nothing* fails the same way when its entry is called — reproduced
+at `ccf888c6`, whose tree has no closure transform and no C5b. It is a
+`Function<T>#call` typing gap, not a carrier defect.
+
+**What it gates.** C5b's collision shape (capture + explicit `this:`) is
+**lowered**: `$env` holds the this-struct, its `$parent` is the captured env,
+and `x` is read through the link — asserted in `tests/async/lower.js` (the
+carrier) and `tests/closure/lower.js` C5b-21 (the fields and constructor). Its
+**value** test (case 21, expected `8`) is deferred until this call form
+compiles. A user who writes `.call` on a nested async entry hits the same error
+today.
+
+**Not** in scope for this plan: it is a `~lib`/builtin typing fix, not a
+lowering decision. §13 records the deferral.
+
 ---
 
 ## 5. The environment
@@ -1320,14 +1357,24 @@ Three different words, now named distinctly:
 | name | what it is | who reads it |
 |---|---|---|
 | `_env` | the `usize` word inside every `Function<T>` | `makeCallIndirect`, the callee's prologue |
-| `$env` | the state struct's `TaskEnv`-or-null field (`src/async/lower.ts:175`) | the **function-scope env** of the suspended frame: the received closure env, or the this-struct; null when the frame owns a body env and received nothing |
+| `$env` | the state struct's `TaskEnv`-or-null field (`src/async/lower.ts:175`) | the **function-scope env**: the received closure env, the this-struct, or the body env when that env carries `$this` (C5b); null only when the body owns an env that carries no receiver and nothing was received |
 | `$closureEnv` / `$closureEnvIn` | the env locals of a function | capture accesses, creation, delivery |
 
 **The head rule.** `$env` carries the env that must cross the entry → `f$resume`
-boundary — the **function-scope env** in that boundary sense (§4.7.1). Only two
-objects can occupy it: the **received env**, or the **this-struct** that stands
-in for a receiver-only frame. A body env (§8.3(b)) is never stored there; it is
-carried by its own lifted field, and its `$parent` names the received env. The
+boundary — the **function-scope env** in that boundary sense (§4.7.1). Three
+objects can occupy it, in this precedence:
+
+1. the **body env**, when it carries `$this` (C5b's unification, §4.7.5) — the
+   entry allocates it, because the entry is where `this` exists, and the resume
+   reads it back instead of allocating a second object
+   (`src/async/lower.ts`, `headIsBodyEnv`; the closure transform's own
+   allocation and `$this` initializer are stripped by
+   `stripBodyEnvAllocation`);
+2. the **this-struct**, when the frame has a receiver but its body owns no env;
+3. the **received env**, when neither of the above applies.
+
+A body env that carries **no** receiver is not stored there: it keeps the
+existing lifting as `$closureEnv`, exactly as C4 shipped it (§8.3(b)). The
 read-back follows from which object occupies `$env`:
 
 | function shape | `state.$env` holds | `this` reads | `$closureEnvIn` read-back |
@@ -1335,16 +1382,27 @@ read-back follows from which object occupies `$env`:
 | closure value, no receiver, no body env | the received env `$E` | — | `changetype<$E>(state.$env)` |
 | closure value, no receiver, owns a body env | the received env `$E`; the body env is lifted, parent `$E` | — | `changetype<$E>(state.$env)` |
 | closure value, receiver, no body env (C5b's collision) | the this-struct `$T`, with `$T.$parent = $E` | `changetype<$T>(state.$env).$this` | `changetype<$E>(state.$env.$parent!)` |
-| closure value, receiver, owns a body env (C5b) | the received env `$E`; the body env carries `$this` and is lifted, parent `$E` | from the body env | `changetype<$E>(state.$env)` |
+| **closure value, receiver, owns a body env (C5b)** | **the body env `$B`**, with `$B.$parent = $E`; `$B` carries `$this`; the env is not lifted | `changetype<$B>(state.$env).$this` | `changetype<$E>(state.$env.$parent!)` |
 | no received env, receiver, no body env | the this-struct `$T` | `changetype<$T>(state.$env).$this` | — |
-| no received env, receiver, owns a body env (C5b) | null; the body env carries `$this` | from the body env | — |
-| no received env, no receiver, owns a body env (§8.3(b)) | null | — | — |
+| **no received env, receiver, owns a body env (C5b)** | **the body env `$B`**, carrying `$this` | `changetype<$B>(state.$env).$this` | — |
+| no received env, no receiver, owns a body env (§8.3(b)) | null; the body env is lifted as `$closureEnv` | — | — |
+
+**What C5b changed, and why the old row was wrong.** The pre-C5b table said
+`$env` is null whenever the frame owns a body env. That was true only while a
+body env and a receiver could not coexist: an async method that owned a captured
+local *and* read `this` emitted two unrelated classes (`k/m$Env` and
+`k/m$ThisEnv`), and the resume reached the receiver through a second object.
+C5b's one-env rule puts `$this` at field 0 of the body env (§4.7.5), so that env
+**is** the function-scope env and `$env` holds it. Measured: `s.ts` emits one
+`m$Env { $this, x }` where it used to emit both classes, and the resume reads
+`changetype<m$Env>(state.$env)`.
 
 **The two read-back shapes** are therefore exactly two expressions:
 
-1. **head is a closure env** — `changetype<$E>(state.$env)`.
-2. **head is the this-struct** — `changetype<$E>(state.$env.$parent!)` for the
-   received env, and `changetype<$T>(state.$env).$this` for the receiver.
+1. **head is the received env** — `changetype<$E>(state.$env)`.
+2. **head is anything else** (the body env or the this-struct) — the received
+   env is `changetype<$Head>(state.$env).$parent!`, and `this` is
+   `changetype<$Head>(state.$env).$this` when the head carries it.
 
 **The runtime root chain.** The task table holds the state; for a parked task the
 collector reaches an environment through `table → state → state.$env → $parent* →
@@ -1648,9 +1706,9 @@ encoding capture-ness in the `Signature` string.
 | 18 | **two-scope, mutation** | `11`: a write made through the link is read by the outer scope | C5a |
 | 19 | **two-scope, escaped loop** | `33`; every per-iteration closure keeps its own `i`/`now` pair after the loop | C5a |
 | 20 | **two-scope, async** | `3`, delivered after the park (4d's delivery shape (a)); wat: the block env lifted as a state field, `$parent` intact | C5a |
-| 21 | **collision: capture + explicit `this:`** | the awaited result is `8`; wat: one head env carrying the receiver, the received env as its `$parent` | C5b |
-| 22 | **this-only arrow in an async body** | today `TS2332` (measured, called method); after C5b `7` | C5b |
-| 23 | **one env per scope instance** | an async method that owns a captured local and reads `this` emits **one** class (measured today: both `$Env` and `$ThisEnv`) and returns `8` | C5b |
+| 21 | **collision: capture + explicit `this:`** | **lowered**; the carrier is asserted (the this-struct holds `$this` and `$parent = the received env`, ctor `(source, parent)`). The **value** (`8`) is deferred: calling the nested async entry with `.call` fails at `thisof` (§4.7.7) | C5b |
+| 22 | **this-only arrow in an async body** | `7`; the arrow is a `Struct` over the body env, which carries `$this` | C5b |
+| 23 | **one env per scope instance** | an async method that owns a captured local and reads `this` emits **one** class (`$this` at field 0, then the binding) and returns `8` | C5b |
 | 24 | **reserved names** | `$parent`, `$this`, `$env`, `$closureEnv`, `$closureEnvIn`, `$closureEnv$1`, `$init$x`, `resumePoint`, `result`, `handle`, `record` as captured names → refused by name | pre-C5 (F14) |
 
 The two refusal assertions C5 deletes — the two-environment message
