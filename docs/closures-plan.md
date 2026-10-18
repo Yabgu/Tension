@@ -621,14 +621,20 @@ asserts (§13).
   in v1; the extension is a generic env class, deferred).
 - **A captured binding whose declared type is a function-local type alias** —
   refused by name (the env class is top-level; the alias is not visible there).
-- **A user declaration in the reserved namespace** — refused by name. The
-  closure names are `$closureEnv`, `$closureEnvIn`, `$closureEnv$<n>`, `$this`,
-  `$parent`, and `$init$…`; the async state struct already reserves `$env`,
-  `resumePoint`, `result`, `handle`, and `record`
-  (`src/async/lower.ts`'s `isReservedStateField`). **This refusal is not
-  implemented in the tree yet** — measured: `let $parent: i32 = 7;` captured by
-  an arrow compiles to `main$Env.$parent`. It lands as a **separate pre-C5
-  commit** (F14, §4.7.4), before C5a introduces that field.
+- **A user declaration in the reserved namespace** — refused by name: `a user
+  identifier named '<name>' (closures lowering)`. **Implemented (F14).** The
+  flat scan covers `$closureEnv`, `$closureEnvIn`, `$closureEnv$<n>`, `$this`,
+  `$parent`, `$init$…`, `$env`, and `$awaited<digits>`, in every declaration
+  position, and runs only when the pass would synthesize a name — a capture to
+  lower, or an async function (§4.7.4).
+  `resumePoint`, `handle` and `record` are **not** in the flat set: they are
+  ordinary words, they collide only when a local is lifted into the state
+  struct, and the async transform already refuses exactly those sites
+  (`isReservedStateField`, `src/async/lower.ts:2871-2880`). `result` is not a
+  state field at all any more (§4.7.3 retired it; measured — a local named
+  `result` crossing an await compiles). A flat refusal of those four would
+  reject `let handle: i32` in any program containing a closure, for no
+  collision.
 
 Each refusal is a `DiagnosticCode.Not_implemented_0` with the shape named, so a
 program never reaches codegen with a half-rewritten body.
@@ -761,11 +767,14 @@ whose entry is the start function). Both are unchanged by C5a.
 ### 4.7.4 The reserved-name gate (F14) — pre-C5, separate commit
 
 C5a adds a `$parent` field to synthesized classes, and a user binding named
-`$parent` exists today (measured: `let $parent: i32 = 7; const f = () =>
-$parent` compiles to `main$Env.$parent`). The guard in §4.6 therefore lands
-**before** C5a, as its own commit with its own test (case 24). This amendment
-does not implement it and does not specify its internals; it records the
-dependency: **C5a must not start before the guard is on the tree.**
+`$parent` existed before it (measured: `let $parent: i32 = 7; const f = () =>
+$parent` compiled to `main$Env.$parent`). The guard therefore landed **before**
+C5a, as its own commit with its own tests (case 24): `ReservedScan` in
+`src/closure/lower.ts` walks the program's declarations in `afterParse`'s
+collect phase, after the analyses say the pass will synthesize and before any
+rewrite, and refuses each reserved name once. **The gate is the whole point** —
+a program with no capture and no async has no environment and no state struct,
+so its `$parent` stays a user name (pinned by a test).
 
 ### 4.7.5 C5b — one env per scope instance, receivers included
 
