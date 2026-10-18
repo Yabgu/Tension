@@ -32,6 +32,9 @@ export const KEY_RING_CAPACITY_BASE: u32 = 0x0100;
  *   const cfg = ConfigBuilder.forThisBuild(callbacks);
  *   RuntimeSession.open(cfg);
  */
+/** The capacities this build actually opened with (defaults, then overrides). */
+export const effectiveRingCapacities: u32[] = RING_CAPACITIES.slice();
+
 export class ConfigBuilder {
   private argmap: TlvArgmap;
 
@@ -67,6 +70,12 @@ export class ConfigBuilder {
   /** `ring_capacity_<class>`: override one class's ring capacity. */
   ringCapacity(class_: u32, capacity: u32): ConfigBuilder {
     this.argmap.put(KEY_RING_CAPACITY_BASE + class_, capacity);
+    // The geometry is also recorded here, because a consumer needs it to find a
+    // class's sub-ring inside the EVENT_TABLE: the rings are laid out back to
+    // back in class order (`ring_offset`, `arena.rs:1198-1207`), so the offset
+    // of class k is the sum of the 32-byte headers and the padded records of
+    // the classes before it. `rt.reportDrops` reads it from here.
+    effectiveRingCapacities[class_] = capacity;
     return this;
   }
 
