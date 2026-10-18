@@ -200,6 +200,26 @@ one: a `frameState()` accessor and a per-class header read (the existing
 
 ---
 
+## 4b. A completion that arrives before the park (4e's scope)
+
+`__taskDeliver` keys on `(family, key)` in `waitingByKey`, which `__taskPark`
+writes — so a completion delivered **before** the guest awaits finds no entry and
+is dropped silently. Measured: a job whose record was delivered before the
+`await` left the task parked forever, and the four probe instruments read the
+sentinel values (`A = -1`, `B = -1`) that only a body which never passed the
+await produces.
+
+For the OGRE job path this is a live race: a job fast enough to complete before
+the guest's `await` runs would park a task nothing will wake (§6.5 defines
+parking as registering the key; it says nothing about an early completion).
+
+4e must resolve it one of two ways: the runtime **buffers unmatched deliveries**
+until a park claims them, or `__taskPark` **checks the capability's terminal
+table** on entry (for the job family, `jobState(job)` — the region is the truth,
+`tension-ogre/DESIGN.md:1842-1844`). The buffer is general and keeps std free of
+capability knowledge; the table check is O(1) and needs no lifetime questions.
+Not fixed in 4d: the transform is not involved.
+
 ## 5. Dropped completions (plan §6.4)
 
 **Rule, as scoped:** at each tick, before draining, read the drop rollup(s) and
