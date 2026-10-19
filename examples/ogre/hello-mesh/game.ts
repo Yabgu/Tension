@@ -13,7 +13,7 @@
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
+import { ConfigBuilder, arg, argCount, print, RuntimeSession, rt } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 
@@ -23,6 +23,25 @@ const WINDOWED_RENDERER = "gl3plus";
 function fail(what: string): void {
   print("hello-mesh: " + what);
   assert(false, what);
+}
+
+/// Runs `task` to completion, ticking the scheduler while it is parked.
+///
+/// `_start_game` is `() -> ()` — the host binds the entry as
+/// `get_typed_func::<(), ()>` — so the awaitable load is settled here instead of
+/// at the top level. `runReady` is what resumes a task whose completion has
+/// landed; the guard is a hang detector, not a timeout.
+function settleTask(task: Task<i32>, what: string): i32 {
+  let guard: i32 = 0;
+  while (!task._record.done && guard < 6000) {
+    RuntimeSession.wait(10);
+    rt.runReady();
+    ++guard;
+  }
+  if (!task._record.done) fail(what + " never settled");
+  const result: i32 = task._record.payload;
+  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -54,7 +73,7 @@ function parseArgs(): Options {
 
 class Game {
   private options: Options;
-  // Whatever `ogre.jobResult` hands back for a loaded mesh (an id/handle).
+  // The resource id the awaitable load resolved to.
   private mesh: i32 = 0;
 
   constructor(options: Options) {
@@ -63,7 +82,12 @@ class Game {
 
   /// Open the session, bring up OGRE, mount the volume, load the mesh.
   initialize(): void {
-    const callbacks = makeCallbacks(null, null);
+    // `rt.callbacks()` wires `onBatch`/`onEvent` to the task dispatcher.
+    // Threading null handlers here was fine while loading polled `jobState`,
+    // but a parked task learns of its completion only through that dispatch:
+    // with no handler the records arrive and are dropped, and the await never
+    // resumes.
+    const callbacks = rt.callbacks();
     if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
       fail("session_open refused");
     }
@@ -87,20 +111,15 @@ class Game {
     const mounted = ogre.mountTns("resources", this.options.tns);
     if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
 
-    this.mesh = this.loadMesh("resources/models/Barrel.mesh");
+    this.mesh = settleTask(this.loadMesh("resources/models/Barrel.mesh"), "resources/models/Barrel.mesh");
   }
 
-  /// Loads are asynchronous: the job id is a handle you resolve when the result
-  /// arrives. The worker reads the bytes; the render thread makes the mesh.
-  private loadMesh(path: string): i32 {
-    const job = ogre.queueMeshLoad(path, 0);
-    if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
-    while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
-      RuntimeSession.wait(10);
-      rt.runReady();
-    }
-    if (ogre.jobState(job) != ogre.JOB_DONE) fail(path + " did not load");
-    return ogre.jobResult(job);
+  /// Loads through the awaitable wrapper (`ogre/async.ts`): it queues, parks on
+  /// the job and classifies the outcome, so there is no `jobState` poll here.
+  /// A negative return is the loader's errno, the vocabulary `ogre.jobError`
+  /// uses.
+  private loadMesh(path: string): Task<i32> {
+    return ogre.loadMesh(path, 0);
   }
 
   /// Hand the renderer a material, a camera and the mesh placed in the world.
