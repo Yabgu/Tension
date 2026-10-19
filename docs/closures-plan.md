@@ -1875,11 +1875,29 @@ failure.
   parser. Gate: case 28; **the executable gate is `npm run bootstrap:debug`
   compiling the compiler's own source**, plus `bootstrap:release`; full suite
   green; byte identity 10/10.
-  **Gate status at landing (measured):** the compile reaches resolution with
-  **zero** D10/D11 refusals — the gate's binding included — and fails on 187
-  `TS2448` plus one `TS2322`, the declaration-ordering defect `main`'s CI was
-  already red on. That is a separate phase; C6b clears the blocker it was
-  scoped to and says so rather than claiming green.
+
+  **Gate split (measured at `11e4f37f`).** The gate above named one thing; it is
+  two, and only the first was C6b's:
+
+  - **D10/D11 clear in the bootstrap — MET.** `npm run bootstrap:debug` reaches
+    resolution with **zero** D10/D11 refusals, and `src/util/collections.ts:29`
+    — the gate's binding — lowers through the transform (asserted in
+    `tests/closure/lower.js`'s C6b cases).
+  - **`npm run bootstrap:debug` exits 0 — UNMET.** It reports 187 `TS2448`
+    ("used before declaration") and 1 `TS2322`, spread over `src/module.ts`,
+    `src/compiler.ts`, `src/builtins.ts`, `src/types.ts`, `src/ast.ts`,
+    `src/flow.ts`, `src/closure/ir.ts` and `src/async/ir.ts` (375 reported
+    locations: each error prints both its use site and its declaration site).
+    Identical counts before and after C6b; none names the transform or
+    `src/inference.ts`.
+
+  The unmet half is a **declaration-ordering defect class**, not a capture gap:
+  `main`'s CI was already red on it before this work
+  (`TS2448: Variable 'src/compiler/FUNCTION_INDEX_OFFSET' used before its
+  declaration`), and clearing D10/D11 merely let the compile reach all of it.
+  It is scoped as the **bootstrap-ordering phase**, with its own review. C6b
+  clears the blocker it was scoped to and says so rather than claiming green —
+  and **no release note for this work may claim bootstrap-green**.
 - **C6c — the resolver arm (deferred; its own plan review).** The general D10
   shapes the syntax table cannot reach (`let x = f()`, `let x = a.b`): a type-only
   walker at `afterInitialize` that resolves initializers and annotates the
@@ -1888,6 +1906,30 @@ failure.
 
 Each milestone is its own dispatch with its own report; none is started by this
 document.
+
+### 14.1 Known limitations carried past C6
+
+Two, both narrower than the D-items they replace:
+
+- **Bootstrap ordering (`TS2448` × 187, plus 1 `TS2322`).** The compiler does
+  not yet compile its own source: its resolver reports module-level constants
+  used before their declaration — `Variable 'src/module/TypeRef.None' used
+  before its declaration` is the shape, and `FUNCTION_INDEX_OFFSET` was the one
+  `main`'s CI reported — while the relevant declaration is present and legal
+  TypeScript. **Why** that ordering rule fires across these files is not yet
+  established; establishing it is the **bootstrap-ordering phase**, with its own
+  review. What is measured is that it predates this plan's C6 work (it was
+  `main`'s standing CI red), and that C6a/C6b leave its counts identical. Until
+  it lands, `npm run bootstrap:debug` is red and no release note may say
+  otherwise.
+- **A type-parameter capture inside an async function (case 30).** Refused by
+  name: `a captured local typed by a type parameter in an async body (closures
+  lowering)`. This is **narrower than the old D11**, which refused the shape in
+  every function: the closure transform now emits generic env classes, but the
+  async transform's synthesized types (`$env`, the head class) do not spell type
+  arguments yet, so the alternative to the refusal is a bare `TS2558`. Closing
+  it means teaching that transform to carry the parameter list; it is not
+  scheduled.
 
 ---
 
