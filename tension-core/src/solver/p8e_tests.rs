@@ -180,6 +180,7 @@ fn test_state() -> HostState {
         ai: ai::AiSession::new(Box::new(StubAdapter::new(ai::AiSink::detached()))),
         solver: SolverHost::default(),
         scheduler: crate::scheduler::Scheduler::new(),
+        wake_batch: Vec::new(),
         task_wake: None,
         game_running: None,
         posting: std::sync::Arc::new(

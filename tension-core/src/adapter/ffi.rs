@@ -1243,6 +1243,7 @@ mod tests {
                 ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
                 scheduler: crate::scheduler::Scheduler::new(),
+                wake_batch: Vec::new(),
                 task_wake: None,
                 game_running: None,
                 posting: std::sync::Arc::new(
