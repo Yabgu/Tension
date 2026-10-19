@@ -222,10 +222,10 @@ export class AiConfig {
  *   }
  */
 export class Session {
-  private handle: i32;
+  private sessionHandle: i32;
 
   private constructor(handle: i32) {
-    this.handle = handle;
+    this.sessionHandle = handle;
   }
 
   /**
@@ -239,10 +239,23 @@ export class Session {
     return handle > 0 ? new Session(handle) : null;
   }
 
+  /**
+   * The host's handle for this session — the key a completion is posted with,
+   * and therefore the key `rt.stream` parks on.
+   *
+   * It exists so the scheduler does not have to know what a chat session is:
+   * `rt.stream(handle: i32)` is generic over any i32-keyed stream, and this is
+   * the bridge. Not an ABI verb of its own — it reads the handle the ABI
+   * already returned.
+   */
+  handle(): i32 {
+    return this.sessionHandle;
+  }
+
   /** Append a chat message. `false` on an unknown handle, bad role, or while generating. */
   add(role: AiRole, text: string): bool {
     const bytes = String.UTF8.encode(text);
-    return hostSessionAdd(this.handle, <i32>role, changetype<usize>(bytes), bytes.byteLength) == 0;
+    return hostSessionAdd(this.sessionHandle, <i32>role, changetype<usize>(bytes), bytes.byteLength) == 0;
   }
 
   /**
@@ -252,7 +265,7 @@ export class Session {
    * undrained (drain them first).
    */
   generate(): bool {
-    return hostSessionGenerate(this.handle) == 0;
+    return hostSessionGenerate(this.sessionHandle) == 0;
   }
 
   /**
@@ -266,10 +279,10 @@ export class Session {
   read(): string {
     let text = "";
     while (true) {
-      const unread = hostSessionRead(this.handle, 0, 0); // probe: no consume
+      const unread = hostSessionRead(this.sessionHandle, 0, 0); // probe: no consume
       if (unread <= 0) break;
       const buf = new ArrayBuffer(unread);
-      const got = hostSessionRead(this.handle, changetype<usize>(buf), unread);
+      const got = hostSessionRead(this.sessionHandle, changetype<usize>(buf), unread);
       if (got <= 0) break;
       text += String.UTF8.decodeUnsafe(changetype<usize>(buf), got);
     }
@@ -278,17 +291,17 @@ export class Session {
 
   /** `0` idle, `1` generating, `-1` unknown handle. */
   state(): i32 {
-    return hostSessionState(this.handle);
+    return hostSessionState(this.sessionHandle);
   }
 
   /** Stop the in-flight generation; already-streamed text stays readable. */
   cancel(): bool {
-    return hostSessionCancel(this.handle) == 0;
+    return hostSessionCancel(this.sessionHandle) == 0;
   }
 
   /** Clear the history and discard unread text. `false` while generating. */
   reset(): bool {
-    return hostSessionReset(this.handle) == 0;
+    return hostSessionReset(this.sessionHandle) == 0;
   }
 
   /**
@@ -297,9 +310,9 @@ export class Session {
    * session when the game exits, so a forgotten `close()` is not a leak.
    */
   close(): void {
-    if (this.handle > 0) {
-      hostSessionClose(this.handle);
-      this.handle = 0;
+    if (this.sessionHandle > 0) {
+      hostSessionClose(this.sessionHandle);
+      this.sessionHandle = 0;
     }
   }
 }

@@ -90,8 +90,40 @@ export class rt {
     return __taskHasRunnable();
   }
 
-  /** The last per-class drop count this guest observed (§6.4). */
+  /** The last per-class drop count this guest observed (§6.4), job family. */
   private static lastDropped: i32 = -1;
+
+  /** The AI family's drop total, as last observed (§6.4, 0.6.0b). */
+  private static lastDroppedAi: i32 = -1;
+
+  /**
+   * The AI family's `dropped` total right now: the sum over its three classes.
+   *
+   * Per family, not per class, because attribution is per family — a drop is
+   * counted per class, never per record, so the runtime cannot say *which*
+   * stream lost a signal (`__taskReportDrops`' rule). Summing is the honest
+   * rollup for the one family those three classes form.
+   */
+  private static aiDroppedNow(): i32 {
+    let total: i32 = 0;
+    total += <i32>changetype<TableHeader>(ringHeaderOffset(CLASS_AI_READY)).dropped;
+    total += <i32>changetype<TableHeader>(ringHeaderOffset(CLASS_AI_DONE)).dropped;
+    total += <i32>changetype<TableHeader>(ringHeaderOffset(CLASS_AI_ERROR)).dropped;
+    return total;
+  }
+
+  /**
+   * The AI family's dropped count, for a test or a diagnostic. `-1` without a
+   * session: a guest that has not opened one must not read the region table
+   * (the same guard `reportDrops` uses, and for the same measured reason).
+   *
+   * On a healthy stream this stays 0: coalescing leaves at most one record per
+   * session in flight, against a capacity of 16 for a maximum of 4 sessions.
+   */
+  static aiDropped(): i32 {
+    if (!isReady()) return -1;
+    return rt.aiDroppedNow();
+  }
 
   /**
    * §6.4, guest side: compares the arena's per-class drop counter against the
@@ -128,6 +160,19 @@ export class rt {
     const delta = <i32>dropped - rt.lastDropped;
     rt.lastDropped = <i32>dropped;
     if (delta > 0) __taskReportDrops(FAMILY_JOBS, delta);
+
+    // The AI family (0.6.0b): the same rule, its own counter. A lost stream
+    // signal is fatal — the guest would park with nothing coming — so it must
+    // wake with a failure status rather than hang.
+    const aiNow = rt.aiDroppedNow();
+    if (rt.lastDroppedAi < 0) {
+      rt.lastDroppedAi = aiNow;        // first tick: adopt, report nothing
+      return;
+    }
+    if (aiNow == rt.lastDroppedAi) return;
+    const aiDelta = aiNow - rt.lastDroppedAi;
+    rt.lastDroppedAi = aiNow;
+    if (aiDelta > 0) __taskReportDrops(FAMILY_AI, aiDelta);
   }
 
   /**
@@ -187,6 +232,66 @@ export class rt {
    * The record is stamped with the success class's id and the job id; the
    * family lookup is what makes the failure class resolve the same task.
    */
+  /**
+   * A handle for one signal on an AI stream (0.6.0b): awaiting it parks on
+   * `(AI family, session handle)`, which is what the backend posts —
+   * `post_event(AI_READY|AI_DONE|AI_ERROR, session, …)`.
+   *
+   * The record is stamped with `AI_DONE`'s class (the family's key, mirroring
+   * `rt.job`'s use of `JOB_DONE`) and the session handle. The delivered class
+   * replaces it, so a caller that wants the raw signal can await this and read
+   * `_record.class_` / `_record.payload`; callers normally want {@link stream},
+   * which classifies.
+   */
+  static streamTask(session: i32): Task<i32> {
+    const record = new TaskRecord();
+    record.class_ = CLASS_AI_DONE;
+    record.key = session;
+    const handle = new Task<i32>();
+    handle._record = record;
+    return handle;
+  }
+
+  /**
+   * Waits for the next signal on `session`'s stream, classified by the
+   * **delivered class** — never by the payload.
+   *
+   * ```
+   * while (true) {
+   *   const n: i32 = await rt.stream(session);
+   *   if (n < 0) break;               // AI_ERROR, or a dropped signal
+   *   if (n == 0) break;              // AI_DONE
+   *   write(session.read());          // AI_READY: bytes are available
+   * }
+   * ```
+   *
+   * Return protocol:
+   *
+   * | delivered class | returns |
+   * |---|---|
+   * | `AI_READY` | the unread byte count, always `> 0` |
+   * | `AI_DONE` | `0` |
+   * | `AI_ERROR` | `-EIO` |
+   * | a dropped signal | the status `__taskReportDrops` wrote (`-EIO`) |
+   *
+   * `0` is unambiguous because READY is only posted when bytes were actually
+   * appended (the host's set-if-not-set rule), and the terminal is posted only
+   * once the reply is drained — so a `0` never means "the tail is still
+   * unread". A zero-length READY cannot exist.
+   */
+  static stream(session: i32): Task<i32> {
+    return streamWait(session);
+  }
+
+  /**
+   * A handle for a queued job (§3.3): awaiting it parks on
+   * `(JOBS, jobId)`, which is exactly what the loader's completion posts —
+   * `post_event(JOB_DONE|JOB_FAILED, job_id, …)` (`loader.cpp:433-439`,
+   * `adapter.cpp:194-197`).
+   *
+   * The record is stamped with the success class's id and the job id; the
+   * family lookup is what makes the failure class resolve the same task.
+   */
   static job(jobId: i32): Task<u32> {
     const record = new TaskRecord();
     record.class_ = CLASS_JOB_DONE;
@@ -195,4 +300,45 @@ export class rt {
     handle._record = record;
     return handle;
   }
+}
+
+/**
+ * The classifying body of `rt.stream`, a free function rather than a method:
+ * the async transform lowers this file, and an `async` class member would
+ * change `rt`'s shape for every guest that imports the barrel.
+ *
+ * Locals read after the `await` are declared before it — the transform's
+ * documented limit (a local declared after an await is scoped to its own
+ * resume guard), the same reason `ogre/async.ts` is shaped this way.
+ */
+async function streamWait(session: i32): i32 {
+  let result: i32 = 0;
+  let status: i32 = 0;
+  let cls: i32 = 0;
+  const awaited: Task<i32> = rt.streamTask(session);
+  const payload: i32 = await awaited;
+  status = awaited._record.status;
+  cls = awaited._record.class_;
+
+  if (status != 0) {
+    // A dropped signal: `__taskReportDrops` wakes the task with -EIO and leaves
+    // the class as it was. Checked first, because it is the one case the class
+    // cannot describe.
+    result = status;
+  } else if (cls == CLASS_AI_READY) {
+    // A count, never 0: the host signals only when it appended. A 0 here is an
+    // incoherent record — treat it as the lost completion it is.
+    result = payload > 0 ? payload : -5;
+  } else if (cls == CLASS_AI_DONE) {
+    result = 0;
+  } else if (cls == CLASS_AI_ERROR) {
+    // The reason is in the reply buffer, where the backend already put it; the
+    // class carries the outcome, so no errno vocabulary is needed.
+    result = -5; // -EIO
+  } else {
+    // Not an AI class at all: another family's completion reached this key, or
+    // a record nobody stamped. Never report success.
+    result = -5;
+  }
+  return result;
 }
