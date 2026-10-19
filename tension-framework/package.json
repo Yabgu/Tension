@@ -28,6 +28,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@acakar/tensionscript": "^0.4.1"
+    "@acakar/tensionscript": "^0.5.0"
   }
 }
