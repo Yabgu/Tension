@@ -113,3 +113,15 @@ unrelated to `src`/`cli` but still fail the command).
 - **The clone is a scratch tree.** The fork's real source is
   `third_party/assemblyscript`; changes here prove feasibility and are ported,
   not pushed.
+
+## The no-poll rule (scheduler contract)
+
+`docs/scheduler-contract.md` in TensionScript is the language-level scheduler
+contract (§4.4 and §8 are the rule). New code introduces **no wait site
+without naming what it blocks on** — a condition variable, channel, epoll,
+vsync, timer, or stdin. Guest source has zero `while` around a wait (no state
+polling); host source has no `try_recv` + sleep and no spin.
+
+The measured audit of every host and guest wait site, and the greps that must
+stay at zero, are in `docs/scheduler-implementation-plan.md` §9. A wait site
+added without a named primitive is a review failure, not a style nit.
