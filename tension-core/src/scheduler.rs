@@ -137,17 +137,32 @@ impl ParkTable {
         (slot != EMPTY).then_some(slot)
     }
 
-    /// Register `task_id` for `key`. `None` when that key is already parked —
-    /// contract §4.9 refuses a second concurrent park on one pair rather than
-    /// sharing it.
-    fn insert(&mut self, key: u32, task_id: u64) -> Option<()> {
-        let slot = self.slots.get_mut(key as usize)?;
-        if *slot != EMPTY {
-            return None;
+    /// Register `task_id` for `key`, answering the id it displaced (if any).
+    ///
+    /// **Overwrite, not refuse**, because the guest's own registration already
+    /// overwrites: `__taskPark` does `byKey.set(keyOf(family, key), record)`
+    /// (`task-rt.ts:246`). A re-park of a key is how a task awaits the same
+    /// producer id twice — the AI stream does it every chunk, and the OGRE
+    /// loader every sequential load — so a host that refused would strand the
+    /// second park while the guest considered it parked.
+    ///
+    /// Liveness is the guest's to know, not the host's: the slot table is where
+    /// the continuation lives (contract §1.2), so a displaced entry whose task
+    /// had already resumed is a stale hint, not a live park. A wake for such an
+    /// id is a no-op in `__taskWake` (its slot is empty). §4.9's "refuse a
+    /// second concurrent park on one pair" is enforced where it can be decided
+    /// — the guest's slot table — not by a host that cannot see a resume.
+    fn insert(&mut self, key: u32, task_id: u64) -> Result<Option<u64>, ()> {
+        let slot = match self.slots.get_mut(key as usize) {
+            Some(slot) => slot,
+            None => return Err(()),
+        };
+        let displaced = (*slot != EMPTY).then_some(*slot);
+        if displaced.is_none() {
+            self.parked += 1;
         }
         *slot = task_id;
-        self.parked += 1;
-        Some(())
+        Ok(displaced)
     }
 
     /// Remove and answer the task parked on `key`.
@@ -195,8 +210,8 @@ pub struct Scheduler {
     parked: u32,
     class_refusals: u64,
     scheduler_refusals: u64,
-    /// Task ids currently outstanding, so a slot cannot be handed out twice.
-    live: HashMap<u64, ()>,
+    /// The peak number of distinct keys occupied at once — the number the table
+    /// capacity has to hold.
     /// Refused parks awaiting delivery: `(task_id, status)` in refusal order.
     ///
     /// Contract §2.1 makes `park` `void`, and §5.1 says a refusal is a
@@ -221,7 +236,6 @@ impl Scheduler {
             parked: 0,
             class_refusals: 0,
             scheduler_refusals: 0,
-            live: HashMap::new(),
             pending_refusals: Vec::new(),
         }
     }
@@ -241,24 +255,16 @@ impl Scheduler {
             self.class_refusals += 1;
             return Err(ParkRefusal::Class { family, key });
         }
-        // A task id already live is a double park (§4.9) — refused, never
-        // overwritten. Counted as a class refusal: the guest named an id it is
-        // already using.
-        if self.live.contains_key(&task_id) {
-            self.class_refusals += 1;
-            return Err(ParkRefusal::Class { family, key });
-        }
         let table = self
             .tables
             .entry(family)
             .or_insert_with(|| ParkTable::new(bound));
-        if table.insert(key, task_id).is_none() {
-            // The key is already parked: contract §4.9, not back-pressure.
+        if table.insert(key, task_id).is_err() {
+            // Unreachable: the bound check above already excluded it.
             self.class_refusals += 1;
             return Err(ParkRefusal::Class { family, key });
         }
-        self.live.insert(task_id, ());
-        self.parked += 1;
+        self.parked = self.tables.values().map(|t| t.parked()).sum();
         self.high_water = self.high_water.max(self.parked);
         Ok(())
     }
@@ -269,8 +275,7 @@ impl Scheduler {
         let family = family_of(class);
         let table = self.tables.get_mut(&family)?;
         let task_id = table.take(key)?;
-        self.live.remove(&task_id);
-        self.parked = self.parked.saturating_sub(1);
+        self.parked = self.tables.values().map(|t| t.parked()).sum();
         Some(task_id)
     }
 
@@ -282,11 +287,6 @@ impl Scheduler {
     /// Drain the refusals that still owe a wake, oldest first.
     pub fn take_refusals(&mut self) -> Vec<(u64, i32)> {
         std::mem::take(&mut self.pending_refusals)
-    }
-
-    /// Whether `task_id` is currently parked.
-    pub fn is_live(&self, task_id: u64) -> bool {
-        self.live.contains_key(&task_id)
     }
 
     /// Tasks parked right now, and the high-water mark.
@@ -358,15 +358,15 @@ mod tests {
         let mut scheduler = Scheduler::new();
         assert_eq!(scheduler.park(7, CLASS_JOB_DONE, 3), Ok(()));
         assert_eq!(scheduler.parked(), 1);
-        assert!(scheduler.is_live(7));
-        // The same task id twice is a double park (§4.9).
-        assert!(scheduler.park(7, CLASS_JOB_DONE, 4).is_err());
-        // The same pair twice is also refused.
-        assert!(scheduler.park(8, CLASS_JOB_DONE, 3).is_err());
 
-        assert_eq!(scheduler.take(CLASS_JOB_DONE, 3), Some(7));
+        // A re-park of the same key displaces the old id — the guest's own
+        // registration does the same, and a task awaiting one producer id twice
+        // (the AI stream, every chunk) depends on it.
+        assert_eq!(scheduler.park(8, CLASS_JOB_DONE, 3), Ok(()));
+        assert_eq!(scheduler.parked(), 1, "one key, still one park");
+        assert_eq!(scheduler.take(CLASS_JOB_DONE, 3), Some(8));
+
         assert_eq!(scheduler.parked(), 0);
-        assert!(!scheduler.is_live(7));
         // Taking it twice yields nothing, so a completion cannot resume twice.
         assert_eq!(scheduler.take(CLASS_JOB_DONE, 3), None);
     }
