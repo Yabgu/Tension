@@ -495,3 +495,130 @@ target exactly the defects this phase was scoped around — a failed load that
 must not hang, a dropped completion that must surface `-EIO`, a refused queue
 that must not park, and two concurrent loads — and they remain the right gate
 for whichever commit enables the wrappers.
+
+---
+
+## Amendment 2 — the predicate question, answered (measurement only, no change made)
+
+**Question:** can the compiler distinguish its own `std/assembly/` from a
+user-installed package under `~lib/`, so the transform's skip can be narrowed to
+a predicate?
+
+**Answer: no complete signal exists on `Source`.** Details below; per the
+dispatch this stops the phase rather than landing a marker unruled.
+
+### What exists today
+
+`Source.isLibrary` (`ast.ts:1739-1742`) returns true for `SourceKind.Library`
+and `SourceKind.LibraryEntry`. The kind is assigned **by path shape**, in the
+parser (`parser.ts:171-177`):
+
+```ts
+let source = new Source(
+  isEntry
+    ? SourceKind.UserEntry
+    : path.startsWith(LIBRARY_PREFIX)
+      ? path.indexOf(PATH_DELIMITER, LIBRARY_PREFIX.length) < 0
+        ? SourceKind.LibraryEntry      // ~lib/foo.ts   — flat, one file
+        : SourceKind.Library           // ~lib/foo/bar.ts — nested
+      : SourceKind.User,
+  ...
+```
+
+So the four kinds encode *entry vs nested*, never *whose* code it is:
+
+| | path | kind |
+|---|---|---|
+| std, flat | `~lib/array.ts` | `LibraryEntry` |
+| **std, subdirectory** | `~lib/rt/itcms.ts`, `~lib/shared/runtime.ts`, `~lib/util/*.ts`, `~lib/bindings/*` | **`Library`** |
+| **user package** | `~lib/tension-framework/assembly/ogre/async.ts` | **`Library`** |
+| user package, single flat file | `~lib/foo.ts` | `LibraryEntry` |
+
+Measured from the embedded std (`cli/index.generated.js`, `libraryFiles`): **61
+files, 35 flat, 26 under `rt/`, `shared/`, `util/` and `bindings/`**. The 26 are
+indistinguishable from a user package by kind, and a single-file user package is
+indistinguishable from a flat std file. `isLibrary` therefore cannot serve as
+the narrowing predicate, in either direction.
+
+### Where the provenance actually is
+
+Only in `cli/index.js`, at parse time:
+
+- `:503-511` parses the flat std files (`libraryFiles` keys without a `/`).
+- `getFile` (`:544-565`) serves std *subdirectory* files from the same
+  `libraryFiles` map — the same code path that serves user packages.
+- **`:520-534` merges `--lib` custom libraries into `libraryFiles`**, so
+  membership in that map is *not* a clean "is std" test after that point.
+
+`parse()` returns `void` (`index-wasm.ts:327-338`), so recording the std sources
+means either changing that signature or noting `program.sources[program.sources.length - 1]`
+right after each std parse.
+
+### Options, with tradeoffs
+
+- **(a) A program-level `stdSources` set**, populated in `cli/index.js` at the
+  two std parse sites, *before* the `--lib` merge. The transform asks
+  `program.stdSources.has(source)`. Exact; no change to `Source`; every
+  downstream `isLibrary` consumer keeps its current behaviour. Cost: one `Set`
+  and 61 insertions at startup, plus the CLI→compiler plumbing through `Program`.
+- **(b) A new `Source.isStd` flag**, set at parse time. Cleanest to read, but it
+  touches a core AST type used everywhere, needs a setter or a signature change,
+  and every `new Source(...)` call site (parser, native source, tests) has to say
+  what it means. Largest blast radius of the three.
+- **(c) An embedded `stdPaths` list** (the `libraryFiles` keys) plus a membership
+  test on the source's path relative to `~lib/`. No runtime state and no CLI
+  change, but the list must reach the *library* bundle: `index.generated.js` is
+  bundled into `cli/`, while the transforms live in `dist/assemblyscript.js`, so
+  the build script would have to emit a second generated module into `src/`.
+- **(d) A path-prefix heuristic** — skip `LibraryEntry` plus `{rt, shared, util,
+  bindings}`. Smallest diff, but it permanently reserves four names: a user
+  package called `rt` would never be lowered, and the list silently rots if std
+  grows a directory.
+
+**Recommendation if a marker is ruled in:** (a). It is exact, it leaves
+`isLibrary` alone, and it is confined to the CLI plus one field on `Program`.
+(c) is the alternative if runtime state is unwanted.
+
+### What downstream assumes about library sources
+
+Measured, all by `isLibrary`/`isDeclaredInLibrary`, none by "was this source
+lowered":
+
+- decorator flags: `Builtin` (`program.ts:2211`, `:2659`, `:2886`), `Lazy`
+  (`:2650`), `Global` (`:2659`);
+- `isDeclaredInLibrary` (`program.ts:3228`) → the `__visit` generator's
+  custom-visitor path (`builtins.ts:10950`);
+- global registration for a `LibraryEntry`'s elements (`program.ts:3374`);
+- `noUnsafe` diagnostics (`compiler.ts:6481`).
+
+**Nothing records or depends on the transform's skip.** So (a) — adding a
+marker — leaves every one of these untouched. Redefining `isLibrary` itself
+would not: that is why the marker, not the predicate, is the shape to rule on.
+
+### Fast-path cost of narrowing
+
+`hasLowerable` (`async/lower.ts:2390-2412`) short-circuits only when a statement
+list has **no** async function, **no** `ClassDeclaration` and **no**
+`NamespaceDeclaration` — a class or namespace alone returns `true`. std is
+class-heavy (`Array`, `Map`, `Set`, typed arrays, …), so narrowing means the
+async transform walks most of the 61 std files instead of skipping them. The walk
+allocates nothing for a file with no async (its structures are created only on
+the lowering path), but it is not free. Measure `time` on a fixed compile before
+and after; the expected cost is small, and it is the price of the marker being
+path-independent.
+
+### The test that would prove a narrowed skip
+
+1. **The wrapper itself.** Export `ogre/async.ts` from the barrel and compile
+   `bouncing-bodies`: `loadMesh` must lower and the example must run. Today that
+   is exactly the file that fails (`AS100: the async lowering transform did not
+   run`), so it is the direct proof that a user-installed `~lib/` package lowers.
+   Revert the export if the test fails — no other change is needed to run it.
+2. **std unchanged.** Compile the byte-identity corpus and compare: 10/10 against
+   `ccf888c6`. A lowered std that changed any byte would show here.
+3. **std's own async-free status.** Confirmed: the six `async` occurrences in the
+   embedded std are all in comments, so the async transform is a no-op on std
+   today even if it walks it. That is the safety margin the marker relies on —
+   and the reason a *closure* transform narrowing would be a separate,
+   riskier question (std has 225 `=>` occurrences; the closure transform would
+   rewrite any that capture).
