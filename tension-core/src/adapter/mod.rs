@@ -65,14 +65,14 @@ pub(crate) fn probe_adapter(name: &str, apply: ApplyFn, user: *mut c_void) -> Ad
 use std::collections::BTreeSet;
 use std::ffi::c_void;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 
-use wasmtime::{Caller, Linker};
+use wasmtime::{Caller, Linker, Store};
 
 use crate::session::posting::PostingSide;
 use crate::HostState;
-use ffi::{HostHandle, RegisteredImport, TensionAdapter, TensionCoreApi};
+use ffi::{HostHandle, RegisteredImport, TensionAdapter, TensionCoreApi, EBADF, EBUSY};
 use signatures::ValueType;
 
 /// The one symbol the registry looks up in a loaded object.
@@ -274,11 +274,20 @@ pub struct AdapterHost {
     /// What `link` collected. Single-threaded in practice; `Sync` by
     /// construction.
     link: Mutex<LinkState>,
-    /// The caller of the adapter call in flight, for `guest_read` /
-    /// `guest_write`. Stored as an address: `Cell<*mut _>` is not `Sync`, and a
-    /// raw pointer is not `Send`. The value is only ever read on the guest
-    /// thread, inside the call that installed it.
-    caller: Mutex<usize>,
+    /// The context of the adapter call in flight, for `guest_read` /
+    /// `guest_write`: a tagged pointer, because there are two ways an adapter's
+    /// code can be running against guest memory (see [`Ctx`]).
+    ///
+    /// Stored as an address with the kind in `ctx_kind`, not as an enum holding
+    /// a pointer: `Mutex<Ctx>` would need `Ctx: Send`, and a raw pointer is not.
+    /// The value is only ever read on the thread that installed it, inside the
+    /// call that installed it.
+    ctx: Mutex<usize>,
+    /// Which variant `ctx` holds: 0 empty, 1 `Ctx::Caller`, 2 `Ctx::Store`.
+    /// Written *after* the pointer and cleared *before* it, so a shim that sees
+    /// a live kind also sees a matching pointer (`caller_thread`'s rule,
+    /// extended).
+    ctx_kind: AtomicU8,
     /// The id of the thread that installed `caller`, or 0 when the slot is
     /// empty (C4.1b). Set and cleared with `caller`, and compared by the
     /// guest-memory shims so a call from any other thread is refused rather
@@ -334,13 +343,20 @@ pub(crate) fn current_thread_id() -> u64 {
     THREAD_TOKEN.with(|token| *token)
 }
 
+/// The context slot's tag. Zero is empty; the two live kinds name how the
+/// adapter's code reached guest memory.
+pub(crate) const CTX_EMPTY: u8 = 0;
+pub(crate) const CTX_CALLER: u8 = 1;
+pub(crate) const CTX_STORE: u8 = 2;
+
 impl AdapterHost {
     /// A host whose API table points back at itself, carrying `posting`.
     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
             link: Mutex::new(LinkState::default()),
-            caller: Mutex::new(0),
+            ctx: Mutex::new(0),
+            ctx_kind: AtomicU8::new(CTX_EMPTY),
             caller_thread: AtomicU64::new(0),
             memory_size: AtomicU32::new(0),
             posting,
@@ -418,8 +434,112 @@ impl AdapterHost {
         self.api.0
     }
 
+    /// What kind of context the adapter call in flight has.
+    ///
+    /// Two shapes, because an adapter's code reaches guest memory two ways:
+    ///
+    /// - [`Ctx::Caller`] — a `session::*` verb or a callback is on the stack.
+    ///   The guest's own stack is under this one, so a `Caller` exists.
+    /// - [`Ctx::Store`] — the host-owned loop is driving the epoch (0.7.0a).
+    ///   There is no guest call to borrow, so the `Store` itself is the way in.
+    ///
+    /// The contract's §3.4 rule is what makes the second safe: a manager never
+    /// touches the Store, and the loop calls this only between wakes, on the
+    /// store's owner thread.
+    pub(crate) fn ctx_kind(&self) -> u8 {
+        self.ctx_kind.load(Ordering::Relaxed)
+    }
+
+    /// Run `body` with the guest's arena bytes, from whichever context is
+    /// installed.
+    ///
+    /// **One dispatch site.** `guest_read` and `guest_write` both go through
+    /// here, so a third context kind would be one new arm rather than a hunt
+    /// through the shims. `Err` carries the errno the shim returns: `-EBUSY`
+    /// for a call from the wrong thread or with nothing installed (the header's
+    /// rule 6), `-EBADF` when there is no arena.
+    ///
+    /// SAFETY: the caller has already passed `caller_is_this_thread`, so the
+    /// pointer was installed by this thread and is cleared by the guard before
+    /// the frame ends.
+    pub(crate) fn with_arena<R>(
+        &self,
+        body: impl FnOnce(&[u8]) -> R,
+    ) -> Result<R, i32> {
+        if !self.caller_is_this_thread() {
+            return Err(EBUSY);
+        }
+        let raw = *self.ctx.lock().expect("the ctx mutex is never poisoned");
+        if raw == 0 {
+            return Err(EBUSY); // outside a guest call: rule 6
+        }
+        match self.ctx_kind() {
+            CTX_CALLER => {
+                // SAFETY: installed by this thread's guard, checked above.
+                let caller = unsafe { &mut *(raw as *mut Caller<'static, HostState>) };
+                let Some(memory) = caller.data().arena else {
+                    return Err(EBADF);
+                };
+                Ok(body(memory.data(&*caller)))
+            }
+            CTX_STORE => {
+                // SAFETY: installed by this thread's guard, checked above.
+                let store = unsafe { &mut *(raw as *mut Store<HostState>) };
+                let Some(memory) = store.data().arena else {
+                    return Err(EBADF);
+                };
+                Ok(body(memory.data(&*store)))
+            }
+            _ => Err(EBUSY),
+        }
+    }
+
+    /// The writable half of [`AdapterHost::with_arena`]. Used by `guest_write`
+    /// and by nothing else.
+    pub(crate) fn with_arena_mut<R>(
+        &self,
+        body: impl FnOnce(&mut [u8]) -> R,
+    ) -> Result<R, i32> {
+        if !self.caller_is_this_thread() {
+            return Err(EBUSY);
+        }
+        let raw = *self.ctx.lock().expect("the ctx mutex is never poisoned");
+        if raw == 0 {
+            return Err(EBUSY);
+        }
+        match self.ctx_kind() {
+            CTX_CALLER => {
+                // SAFETY: as in `with_arena`.
+                let caller = unsafe { &mut *(raw as *mut Caller<'static, HostState>) };
+                let Some(memory) = caller.data().arena else {
+                    return Err(EBADF);
+                };
+                Ok(body(memory.data_mut(&mut *caller)))
+            }
+            CTX_STORE => {
+                // SAFETY: as in `with_arena`.
+                let store = unsafe { &mut *(raw as *mut Store<HostState>) };
+                let Some(memory) = store.data().arena else {
+                    return Err(EBADF);
+                };
+                Ok(body(memory.data_mut(&mut *store)))
+            }
+            _ => Err(EBUSY),
+        }
+    }
+
+    /// The installed `Caller`, when the context is one.
+    ///
+    /// Kept for the test-only probe that reads `depth` through it
+    /// (`epoch.rs:1370`); production code goes through [`AdapterHost::with_arena`]
+    /// or [`AdapterHost::with_arena_mut`], which handle both kinds. Returns null
+    /// for a store context, which has no `Caller` to hand out.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn caller(&self) -> *mut Caller<'static, HostState> {
-        let address = *self.caller.lock().expect("the caller mutex is never poisoned");
+        if self.ctx_kind() != CTX_CALLER {
+            return std::ptr::null_mut();
+        }
+        let address = *self.ctx.lock().expect("the ctx mutex is never poisoned");
         address as *mut Caller<'static, HostState>
     }
 
@@ -435,9 +555,9 @@ impl AdapterHost {
         self.memory_size.load(Ordering::Relaxed)
     }
 
-    /// Install the caller of the adapter call now in flight, refreshing the
+    /// Install the `Caller` of the adapter call now in flight, refreshing the
     /// cached memory size while there is a caller to ask.
-    pub(crate) fn enter(&self, caller: &mut Caller<'static, HostState>) {
+    pub(crate) fn enter_caller(&self, caller: &mut Caller<'static, HostState>) {
         // `HostState::arena`, not the session: the epoch runs while the session
         // is out of the store, and a publish hook still needs the size.
         let memory = caller.data().arena;
@@ -445,19 +565,36 @@ impl AdapterHost {
             self.memory_size
                 .store(memory.data(&*caller).len() as u32, Ordering::Relaxed);
         }
-        *self.caller.lock().expect("the caller mutex is never poisoned") =
+        *self.ctx.lock().expect("the ctx mutex is never poisoned") =
             caller as *mut Caller<'static, HostState> as usize;
-        // Publish the thread id *after* the pointer, so a shim that sees a
-        // non-zero tid also sees the matching pointer.
+        // Kind, then thread id, *after* the pointer: a shim that sees either
+        // also sees a matching address.
+        self.ctx_kind.store(CTX_CALLER, Ordering::Relaxed);
+        self.caller_thread.store(current_thread_id(), Ordering::Relaxed);
+    }
+
+    /// Install the `Store` of a host-owned epoch (0.7.0a). The same window, the
+    /// same guard, the same thread rule — only the way into guest memory
+    /// differs.
+    pub(crate) fn enter_store(&self, store: &mut Store<HostState>) {
+        let memory = store.data().arena;
+        if let Some(memory) = memory {
+            self.memory_size
+                .store(memory.data(&*store).len() as u32, Ordering::Relaxed);
+        }
+        *self.ctx.lock().expect("the ctx mutex is never poisoned") =
+            store as *mut Store<HostState> as usize;
+        self.ctx_kind.store(CTX_STORE, Ordering::Relaxed);
         self.caller_thread.store(current_thread_id(), Ordering::Relaxed);
     }
 
     /// Clear the slot. The guard in `ffi` calls this however a call ends.
     pub(crate) fn leave(&self) {
-        // Clear the thread id *first*, so a racing shim stops trusting the slot
-        // before the pointer goes.
+        // Thread id first, then kind, then the pointer: a racing shim stops
+        // trusting the slot in the same order the install published it.
         self.caller_thread.store(0, Ordering::Relaxed);
-        *self.caller.lock().expect("the caller mutex is never poisoned") = 0;
+        self.ctx_kind.store(CTX_EMPTY, Ordering::Relaxed);
+        *self.ctx.lock().expect("the ctx mutex is never poisoned") = 0;
     }
 
     /// Open a `publish` hook's byte budget. Only one hook runs at a time: the
@@ -571,6 +708,23 @@ pub(crate) fn adapter_calls(adapters: &[LoadedAdapter], api: &TensionCoreApi) ->
 /// The caller slot is the same one an import call installs, so a hook that
 /// writes a region uses exactly the path an import uses; it is cleared however
 /// the body ends.
+/// Run `body` with the adapter's own context installed, chosen by the caller:
+/// the `Caller` variant for a guest call, the `Store` variant for the host loop.
+pub(crate) fn with_hook_ctx<C, R, F>(cx: &mut C, api: &TensionCoreApi, body: F) -> R
+where
+    C: HookCtx,
+    F: FnOnce() -> R,
+{
+    // SAFETY: the table's `user` is the host the registry built for this run.
+    match unsafe { AdapterHost::from_user(api.user) } {
+        Some(host) => {
+            let handle = HostHandle(host as *const AdapterHost as *mut AdapterHost);
+            cx.run_hook(handle, body)
+        }
+        None => body(),
+    }
+}
+
 pub(crate) fn with_publish_caller<R>(
     caller: &mut Caller<'_, HostState>,
     api: &TensionCoreApi,
@@ -592,10 +746,43 @@ pub(crate) fn with_publish_caller<R>(
 /// A hook that returns non-zero is logged and the epoch carries on: the records
 /// it did not write are simply not there this epoch, and the adapter can try
 /// again next time. Returns how many hooks ran.
-pub(crate) fn run_publish_hooks(
-    caller: &mut Caller<'_, HostState>,
+/// The context an epoch hook runs against.
+///
+/// The epoch's body is one function serving two callers: a `session::*` verb,
+/// whose `Caller` is on the stack, and the host-owned loop (0.7.0a), which has
+/// only a `Store`. Everything mechanical is written once over
+/// `AsContextMut<Data = HostState>`; this trait covers the one thing that is
+/// *not* mechanical — installing the context the adapter's memory shims read.
+///
+/// A `Caller` cannot hand out a `&mut Store` (wasmtime exposes the store only as
+/// a `StoreContextMut`, and `StoreContextMut` does not unwrap), so the two
+/// implementations cannot be collapsed into one. Two impls of one method is the
+/// smallest honest shape.
+pub(crate) trait HookCtx {
+    /// Run `body` with this context installed in the adapter host, so
+    /// `guest_read`/`guest_write` reach guest memory for its duration.
+    fn run_hook<R, F: FnOnce() -> R>(&mut self, handle: HostHandle, body: F) -> R;
+}
+
+impl HookCtx for Caller<'_, HostState> {
+    fn run_hook<R, F: FnOnce() -> R>(&mut self, handle: HostHandle, body: F) -> R {
+        ffi::with_caller_installed(handle, self, body)
+    }
+}
+
+impl HookCtx for Store<HostState> {
+    fn run_hook<R, F: FnOnce() -> R>(&mut self, handle: HostHandle, body: F) -> R {
+        ffi::with_store_installed(handle, self, body)
+    }
+}
+
+pub(crate) fn run_publish_hooks<C>(
+    cx: &mut C,
     calls: &[AdapterCall],
-) -> usize {
+) -> usize
+where
+    C: HookCtx,
+{
     let mut ran = 0;
     let Some(first) = calls.first() else {
         return 0;
@@ -619,7 +806,7 @@ pub(crate) fn run_publish_hooks(
                 // The hook runs with the caller installed, so its own
                 // `guest_write` calls reach the guest memory of the call the
                 // epoch is inside.
-                let status = ffi::with_caller_installed(handle, caller, || unsafe {
+                let status = cx.run_hook(handle, || unsafe {
                     publish(std::ptr::null_mut(), &call.api)
                 });
                 host.end_publish();

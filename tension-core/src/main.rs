@@ -1152,6 +1152,34 @@ fn main() -> anyhow::Result<()> {
         .get_typed_func::<(), i32>(&mut store, "_game_running")
         .ok();
 
+    // The coexistence rule, refused here rather than discovered later
+    // (`docs/step2-shape-report.md` §3.1). A guest either opts into the
+    // host-owned loop — exporting both — or keeps its own, exporting neither.
+    //
+    // Half an adoption is not a degenerate case to tolerate: a guest with
+    // `__taskWake` and no `_game_running` returns from `_start_game`, never gets
+    // a wake (the host has no reason to loop), and exits 0 having done nothing —
+    // a failure that reads as success. A guest with `_game_running` and no
+    // `__taskWake` asks the host to loop and gives it no way to dispatch. Both
+    // are static properties of the binary, so both are refused before the first
+    // guest instruction runs.
+    match (
+        store.data().task_wake.is_some(),
+        store.data().game_running.is_some(),
+    ) {
+        (true, true) | (false, false) => {}
+        (true, false) => anyhow::bail!(
+            "the guest exports `__taskWake` but not `_game_running`: a host-driven \
+             guest must export both (it cannot report when to stop), so this is \
+             refused rather than run as a guest that silently does nothing"
+        ),
+        (false, true) => anyhow::bail!(
+            "the guest exports `_game_running` but not `__taskWake`: a host-driven \
+             guest must export both (the loop would have no way to resume a task), \
+             so this is refused rather than spun on"
+        ),
+    }
+
     // The arena as the session left it, before the guest's first instruction:
     // the control block's triple, the region band's zeros, and the gap's canary
     // lattice (DESIGN.md §11 step 2).

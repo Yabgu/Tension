@@ -40,7 +40,7 @@ use std::ffi::{c_char, c_void, CStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use wasmtime::{Caller, Engine, FuncType, Val, ValType};
+use wasmtime::{Caller, Engine, FuncType, Store, Val, ValType};
 
 use super::signatures::{Signature, Slot, ValueType, MAX_PARAMS};
 use super::AdapterHost;
@@ -527,13 +527,25 @@ pub struct CallerGuard {
 }
 
 impl CallerGuard {
-    fn install(host: HostHandle, caller: &mut Caller<'_, HostState>) -> CallerGuard {
+    fn install_caller(host: HostHandle, caller: &mut Caller<'_, HostState>) -> CallerGuard {
         if let Some(adapter_host) = host.get() {
             // SAFETY: the erased lifetime is a name. The guard clears the slot
             // before this frame ends, and the header's rule 6 says an adapter
             // may only use guest memory inside the call it is invoked from.
             let erased: &mut Caller<'static, HostState> = unsafe { std::mem::transmute(caller) };
-            adapter_host.enter(erased);
+            adapter_host.enter_caller(erased);
+        }
+        CallerGuard { host }
+    }
+
+    /// The store variant (0.7.0a). Same window, same `Drop`, same thread rule:
+    /// what differs is only how `guest_read`/`guest_write` reach the arena.
+    fn install_store(host: HostHandle, store: &mut Store<HostState>) -> CallerGuard {
+        if let Some(adapter_host) = host.get() {
+            // SAFETY: as above — the erased lifetime is a name, and the guard
+            // clears the slot however this call ends.
+            let erased: &mut Store<HostState> = unsafe { std::mem::transmute(store) };
+            adapter_host.enter_store(erased);
         }
         CallerGuard { host }
     }
@@ -559,7 +571,20 @@ pub(crate) fn with_caller_installed<R>(
     caller: &mut Caller<'_, HostState>,
     body: impl FnOnce() -> R,
 ) -> R {
-    let guard = CallerGuard::install(host, caller);
+    let guard = CallerGuard::install_caller(host, caller);
+    let result = body();
+    drop(guard);
+    result
+}
+
+/// The store variant of [`with_caller_installed`], for the host-owned epoch
+/// (0.7.0a): the same guard, the same window, the same clear-on-drop.
+pub(crate) fn with_store_installed<R>(
+    host: HostHandle,
+    store: &mut Store<HostState>,
+    body: impl FnOnce() -> R,
+) -> R {
+    let guard = CallerGuard::install_store(host, store);
     let result = body();
     drop(guard);
     result
@@ -666,7 +691,7 @@ pub fn import_closure(
             // REENTRANT_READONLY falls through and runs exactly as at depth 0.
         }
 
-        let guard = CallerGuard::install(host, &mut caller);
+        let guard = CallerGuard::install_caller(host, &mut caller);
         let mut ret = TensionValue::zero();
         // SAFETY: the adapter is native code that declared this signature at
         // `link`; the pointers below are valid for the duration of the call, and
@@ -779,24 +804,9 @@ unsafe fn guest_read_into(
     let Some(host) = AdapterHost::from_user(user) else {
         return EBADF;
     };
-    // C4.1b: the caller slot is installed by the guest thread, inside a call.
-    // A shim reached from any other thread — `post_event` is any-thread, and an
-    // adapter may run its own worker — would otherwise dereference a `Caller`
-    // that thread does not own. Refuse it (-EBUSY), never dereference it, never
-    // panic. This subsumes the null-caller case: a null slot has tid 0.
-    if !host.caller_is_this_thread() {
-        return EBUSY;
-    }
-    let caller = host.caller();
-    if caller.is_null() {
-        return EBUSY; // outside a guest call: rule 6
-    }
-    // SAFETY: installed by CallerGuard for the duration of the call in flight,
-    // and now checked to be this thread's.
-    let caller = unsafe { &mut *caller };
-    let Some(memory) = caller.data().arena else {
-        return EBADF;
-    };
+    // The thread rule (C4.1b) lives inside `with_arena`, which both context
+    // kinds go through: a shim reached from a producer thread is refused there
+    // with -EBUSY rather than dereferencing a context this thread does not own.
     if dst.is_null() {
         return EINVAL;
     }
@@ -807,17 +817,25 @@ unsafe fn guest_read_into(
             return EINVAL;
         }
     }
-    let data = memory.data(&*caller);
-    let Some(end) = (ptr as usize).checked_add(len as usize) else {
-        return EINVAL;
-    };
-    if end > data.len() {
-        return EINVAL;
+    match host.with_arena(|data| {
+        let Some(end) = (ptr as usize).checked_add(len as usize) else {
+            return EINVAL;
+        };
+        if end > data.len() {
+            return EINVAL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data[ptr as usize..end].as_ptr(),
+                dst as *mut u8,
+                len as usize,
+            )
+        };
+        0
+    }) {
+        Ok(status) => status,
+        Err(errno) => errno,
     }
-    unsafe {
-        std::ptr::copy_nonoverlapping(data[ptr as usize..end].as_ptr(), dst as *mut u8, len as usize)
-    };
-    0
 }
 
 pub(crate) unsafe extern "C" fn guest_write(
@@ -827,19 +845,6 @@ pub(crate) unsafe extern "C" fn guest_write(
     len: u32,
 ) -> i32 {
     let Some(host) = AdapterHost::from_user(user) else {
-        return EBADF;
-    };
-    // C4.1b: same thread rule as the read path.
-    if !host.caller_is_this_thread() {
-        return EBUSY;
-    }
-    let caller = host.caller();
-    if caller.is_null() {
-        return EBUSY;
-    }
-    // SAFETY: as in `guest_read`.
-    let caller = unsafe { &mut *caller };
-    let Some(memory) = caller.data().arena else {
         return EBADF;
     };
     if src.is_null() {
@@ -852,15 +857,25 @@ pub(crate) unsafe extern "C" fn guest_write(
     if !host.charge_publish(len) {
         return ENOSPC;
     }
-    let data = memory.data_mut(&mut *caller);
-    let Some(end) = (ptr as usize).checked_add(len as usize) else {
-        return EINVAL;
-    };
-    if end > data.len() {
-        return EINVAL;
+    match host.with_arena_mut(|data| {
+        let Some(end) = (ptr as usize).checked_add(len as usize) else {
+            return EINVAL;
+        };
+        if end > data.len() {
+            return EINVAL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src as *const u8,
+                data[ptr as usize..end].as_mut_ptr(),
+                len as usize,
+            )
+        };
+        0
+    }) {
+        Ok(status) => status,
+        Err(errno) => errno,
     }
-    unsafe { std::ptr::copy_nonoverlapping(src as *const u8, data[ptr as usize..end].as_mut_ptr(), len as usize) };
-    0
 }
 
 pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
