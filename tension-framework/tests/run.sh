@@ -131,6 +131,40 @@ run_plain_fixture() {
   esac
 }
 
+# The AI stream's controls. Unlike the other session fixtures this one takes a
+# *guest* argument (the model path, which the stub ignores), so it needs its own
+# runner: everything before the wasm is a host flag, everything after is the
+# guest's `args`. Run twice — once normally (controls 2-4: coalescing, done vs
+# an empty chunk, the ring invariant) and once with the adapter stalling
+# (control 1: a parked stream woken by an error post).
+run_ai_fixture() {
+  local mode="${1:-}" env_prefix="${2:-}"
+  local args=("$root/build/guest-ai-stream.wasm" "models/unused.gguf")
+  [ -n "$mode" ] && args+=("$mode")
+  echo "==> running guest-ai-stream.wasm${mode:+ ($mode)}"
+  set +e
+  local stdout
+  stdout="$(cd "$root" && env $env_prefix "$core" "${args[@]}" 2>"$root/build/guest-ai-stream.err")"
+  local status=$?
+  set -e
+  local line
+  while IFS= read -r line; do echo "    $line"; done <<< "$stdout"
+  if [ "$status" -ne 0 ]; then
+    echo "run.sh: guest-ai-stream ($mode): exited $status; stderr:" >&2
+    cat "$root/build/guest-ai-stream.err" >&2
+    exit 1
+  fi
+  # Every control line must have measured PASS, not merely compiled.
+  if printf '%s' "$stdout" | grep -q "FAIL"; then
+    echo "run.sh: guest-ai-stream ($mode): a control FAILED" >&2
+    exit 1
+  fi
+  case "$stdout" in
+    *OK*) echo "    == guest-ai-stream${mode:+ ($mode)}: OK" ;;
+    *) echo "run.sh: guest-ai-stream ($mode): the guest did not print OK" >&2; exit 1 ;;
+  esac
+}
+
 # A fixture whose contract is a **refusal**, not `OK`: the callback guard stops
 # it before it can register a handler that carries an environment. The runner
 # asserts the signature rather than the exit alone -- a non-zero exit, the
@@ -178,6 +212,11 @@ run_plain_fixture guest-anim-eval.ts guest-anim-eval.wasm
 run_plain_fixture guest-log.ts guest-log.wasm
 run_plain_fixture guest-callbacks.ts guest-callbacks.wasm
 run_guard_fixture guest-callbacks-guard.ts guest-callbacks-guard.wasm
+echo "==> compiling guest-ai-stream.ts"
+( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-ai-stream.ts \
+    --config build/session.asconfig.json -o build/guest-ai-stream.wasm )
+run_ai_fixture "" ""
+run_ai_fixture "stall" "TENSION_AI_STUB_STALL_MS=50"
 echo "==> checking guest-log's records (trace)"
 # The compiled fixture's records must reach the host's layout and filter: at
 # `trace` every level is present, the structured payload lands in the message

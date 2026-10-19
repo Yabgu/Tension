@@ -15,6 +15,7 @@
 use std::collections::HashMap;
 
 use crate::ai::{AiAdapter, AiConfig, AiSink, StreamGate, StreamPost};
+use crate::session::arena::CLASS_AI_ERROR;
 
 /// Roles accepted by `session_add` (0 = system, 1 = user, 2 = assistant).
 const ROLE_SYSTEM: i32 = 0;
@@ -48,6 +49,15 @@ pub struct StubAdapter {
     next: i32,
     sessions: HashMap<i32, StubSession>,
     sink: AiSink,
+    /// Test-only: stall a generation and post AI_ERROR `ms` later, producing no
+    /// bytes at all (`TENSION_AI_STUB_STALL_MS`).
+    ///
+    /// This is the **stalled stream** the first control needs: a guest parks on
+    /// a stream that has neither appended nor finished, and an error post wakes
+    /// it. The post is made from a thread after a real delay, which is the shape
+    /// the loader's worker uses — not a fabricated record.
+    stall_ms: Option<u64>,
+
     /// Test-only: make every generation fail. Set `TENSION_AI_STUB_FAIL=1`.
     ///
     /// The **error path** (the gate's `settled(failed)`, the `AI_ERROR` post,
@@ -65,6 +75,10 @@ impl StubAdapter {
             next: 1,
             sessions: HashMap::new(),
             sink,
+            stall_ms: std::env::var("TENSION_AI_STUB_STALL_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|ms| *ms > 0),
             fail_generation: matches!(
                 std::env::var("TENSION_AI_STUB_FAIL").as_deref(),
                 Ok("1") | Ok("true") | Ok("yes")
@@ -141,6 +155,19 @@ impl AiAdapter for StubAdapter {
             s.pos = 0;
             s.generating = true;
             s.gate.begin();
+
+            if let Some(ms) = self.stall_ms {
+                // Nothing is appended and nothing is settled: the guest parks on
+                // a stream with no completion. The error arrives later, from a
+                // thread — the control's whole subject.
+                s.generating = false;
+                let sink = self.sink.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    sink.post(CLASS_AI_ERROR, session, 0);
+                });
+                return 0;
+            }
 
             if self.fail_generation {
                 // The real adapter's failure shape: the reason lands in the
