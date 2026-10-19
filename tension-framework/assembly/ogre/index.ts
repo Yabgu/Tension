@@ -66,6 +66,7 @@ import {
 } from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
 import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
+import { rt } from "../runtime/rt";
 
 export * from "./wire";
 export * from "./motion";
@@ -200,6 +201,14 @@ export function windowHandle(): u64 {
 
 /** Initialize the adapter. */
 export function init(cfg: ConfigBuilder): i32 {
+  // Bind the completion classes to their families before any load can park
+  // (`docs/resource-async-scope.md` M3). Awaiting a job parks on the success
+  // class; a JOB_FAILED completion resolves that same task only when the two
+  // are bound to one family. Measured: without this, a successful load resumes
+  // and a failed one parks forever. `rt.start()` is idempotent — it sets
+  // entries in a map — so the async wrappers call it per load and this call
+  // covers a guest that only ever uses the synchronous verbs.
+  rt.start();
   const bytes = cfg.toBytes();
   return initRaw(changetype<usize>(bytes) as u32, <u32>bytes.byteLength);
 }
