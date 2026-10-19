@@ -91,8 +91,9 @@ if arena > ceiling:  # C1
     fail(f"arena_size {arena} exceeds max_arena_size {ceiling} (C1)")
 
 caps = cfg["ring_capacities"]
-if len(caps) != 10:
-    fail(f"ring_capacities has {len(caps)} entries; this chunk has 10 classes")
+# 0.6.0a: the AI family (10-12) appended after FRAME, so this chunk has 13.
+if len(caps) != 13:
+    fail(f"ring_capacities has {len(caps)} entries; this chunk has 13 classes")
 if any(not isinstance(c, int) or c <= 0 for c in caps):
     fail("every ring capacity must be a positive integer")
 
@@ -139,7 +140,7 @@ export const MAX_ARENA_SIZE: u32 = {ceiling};
 export const MEMORY_BASE: u32 = {ceiling};
 export const INITIAL_PAGES: u32 = {initial};
 export const MAXIMUM_PAGES: u32 = {maximum};
-export const CLASS_COUNT: u32 = 10;
+export const CLASS_COUNT: u32 = {len(caps)};
 /** Per-class ring capacities, in class-id order. */
 export const RING_CAPACITIES: u32[] = [{", ".join(str(c) for c in caps)}];
 """

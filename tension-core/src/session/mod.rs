@@ -40,7 +40,7 @@ mod config;
 /// The posting face: the queues an adapter thread writes into, and the
 /// sequence counter they share (`tension-ogre/DESIGN.md` §3.2, §7.2).
 pub mod posting;
-/// The arena side: the ten per-class sub-rings, and the transfer that moves a
+/// The arena side: the thirteen per-class sub-rings, and the transfer that moves a
 /// class queue into its ring (`DESIGN.md` §3.3, §3.4).
 pub mod subring;
 /// The epoch: publish, invoke, apply — the only place delivery happens

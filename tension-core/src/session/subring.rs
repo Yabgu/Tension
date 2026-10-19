@@ -1,4 +1,4 @@
-//! The arena side of delivery: the ten per-class sub-rings inside `EVENT_TABLE`
+//! The arena side of delivery: the thirteen per-class sub-rings inside `EVENT_TABLE`
 //! (`DESIGN.md` §3.4), and the transfer that moves what the posting face queued
 //! into the ring the guest reads.
 //!
@@ -144,7 +144,7 @@ pub fn event_subring_slice<'a>(
 /// Initialize one class's sub-ring header: empty, at the given capacity.
 ///
 /// Delegates to `arena::write_ring_header`, which is the same write
-/// `session_open` performs for all ten classes at once — this exists so the
+/// `session_open` performs for all thirteen classes at once — this exists so the
 /// tests and A2b can name one class without restating the offset arithmetic.
 pub fn write_event_subring_header(
     arena: &mut [u8],

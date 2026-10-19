@@ -90,7 +90,7 @@ extern "C" {
  * If the host's value disagrees, the load is refused by name rather than the
  * process corrupting later.
  */
-#define TENSION_ADAPTER_LAYOUT_HASH 3451714980u
+#define TENSION_ADAPTER_LAYOUT_HASH 786288195u
 
 /** The most scalar parameters a registered import may take. */
 #define TENSION_ADAPTER_MAX_PARAMS 8u

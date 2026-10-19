@@ -28,7 +28,7 @@ import {
   __taskReportDrops,
   __taskTick
 } from "~lib/task-rt";
-import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks } from "./wire";
+import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR } from "./wire";
 import { effectiveRingCapacities } from "./config";
 import { makeCallbacks } from "./callbacks";
 import { regionOffset } from "./arena";
@@ -60,6 +60,14 @@ export const CLASS_RESOURCE_FAILED: i32 = 2;
 /** One family per awaitable outcome pair (§3.1): the success class's id. */
 const FAMILY_JOBS: i32 = CLASS_JOB_DONE;
 const FAMILY_RESOURCES: i32 = CLASS_RESOURCE_READY;
+/**
+ * The AI family (0.6.0a). One family for three classes: a stream's `READY`,
+ * `DONE` and `ERROR` all resolve the same parked task, and the **delivered
+ * class** — not the payload — decides which it was. Keyed on `AI_DONE`'s id for
+ * the same reason `FAMILY_JOBS` is keyed on `JOB_DONE`'s: the success class is
+ * the one a caller awaits.
+ */
+const FAMILY_AI: i32 = CLASS_AI_DONE;
 
 export class rt {
   /**
@@ -72,6 +80,9 @@ export class rt {
     __taskBindFamily(CLASS_JOB_FAILED, FAMILY_JOBS);
     __taskBindFamily(CLASS_RESOURCE_READY, FAMILY_RESOURCES);
     __taskBindFamily(CLASS_RESOURCE_FAILED, FAMILY_RESOURCES);
+    __taskBindFamily(CLASS_AI_READY, FAMILY_AI);
+    __taskBindFamily(CLASS_AI_DONE, FAMILY_AI);
+    __taskBindFamily(CLASS_AI_ERROR, FAMILY_AI);
   }
 
   /** Whether a task is ready to resume — the frame loop's `wait(0)` test (§6.3). */
