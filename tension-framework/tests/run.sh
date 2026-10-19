@@ -217,6 +217,30 @@ echo "==> compiling guest-ai-stream.ts"
     --config build/session.asconfig.json -o build/guest-ai-stream.wasm )
 run_ai_fixture "" ""
 run_ai_fixture "stall" "TENSION_AI_STUB_STALL_MS=50"
+
+# The push path (0.7.0a): a guest that exports `__taskWake` and `_game_running`,
+# so the host owns the loop. `--post-test-events` queues the JOB_DONE records
+# before the guest runs; what this proves is the part that is new — the guest
+# parks, the host matches `(family, key)` to the task id, and `__taskWake`
+# resumes it, with no `__taskTick` call from the guest.
+echo "==> compiling guest-push.ts"
+( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-push.ts \
+    --config build/session.asconfig.json -o build/guest-push.wasm )
+echo "==> running guest-push.wasm (host-owned loop)"
+set +e
+push_out="$("$core" --post-test-events "$root/build/guest-push.wasm" 2>"$root/build/guest-push.err")"
+push_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$push_out"
+if [ "$push_status" -ne 0 ]; then
+  echo "run.sh: guest-push: exited $push_status; stderr:" >&2
+  cat "$root/build/guest-push.err" >&2
+  exit 1
+fi
+case "$push_out" in
+  *"PUSH resumed with 2"*) echo "    == guest-push: OK" ;;
+  *) echo "run.sh: guest-push: did not resume through __taskWake" >&2; cat "$root/build/guest-push.err" >&2; exit 1 ;;
+esac
 echo "==> checking guest-log's records (trace)"
 # The compiled fixture's records must reach the host's layout and filter: at
 # `trace` every level is present, the structured payload lands in the message

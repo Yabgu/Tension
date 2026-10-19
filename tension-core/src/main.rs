@@ -158,6 +158,10 @@ struct HostState {
     /// a lookup on the completion path and make a missing export a runtime
     /// surprise rather than a startup fact.
     task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    /// Task ids the epoch matched to parked tasks, waiting for `__taskWake`.
+    /// Drained by the host loop; empty for every pre-adoption guest, because
+    /// nothing parked.
+    wake_batch: Vec<u64>,
     /// The guest's `_game_running()`: 1 while the guest still wants frames.
     /// `None` means the guest has not adopted the host-owned loop, which is
     /// every example until 0.7.0b — so the loop must not start for it.
@@ -645,6 +649,7 @@ fn main() -> anyhow::Result<()> {
             solver: solver::SolverHost::default(),
             posting,
             scheduler: scheduler::Scheduler::new(),
+            wake_batch: Vec::new(),
             task_wake: None,
             game_running: None,
             arena: None,
@@ -1323,6 +1328,19 @@ fn main() -> anyhow::Result<()> {
         return Err(error);
     }
 
+    // ── the host-owned loop (0.7.0a) ─────────────────────────────────────
+    //
+    // Only for a guest that opted in: both exports present, checked at load.
+    // A pre-adoption guest's `_start_game` blocks on its own frame loop and
+    // returns at exit, so it never reaches here with anything to drive.
+    //
+    // The wake rides the epoch: each iteration blocks on the session's own
+    // condition variable (a real wait, `posting.rs:320-350`), publishes and
+    // matches whatever arrived, then hands the matched ids to `__taskWake`.
+    if let Some(wake) = store.data().task_wake.clone() {
+        host_loop(&mut store, &wake)?;
+    }
+
     // What a trapping epoch left behind: a deferred submission belongs to the
     // session, not to the callback that queued it (R7), so the host reports what
     // is still pending rather than quietly dropping it.
@@ -1393,6 +1411,94 @@ fn main() -> anyhow::Result<()> {
 ///   the check exists to protect. The scope is the rationale: a guest with no
 ///   session import has no arena to verify, and the pre-session examples build
 ///   with plain `asc`, which emits a start section by default (DESIGN.md §10).
+/// Drive a host-owned guest: wait, publish, match, wake.
+///
+/// The primitive is the session's condition variable (`PostingSide::wait_for_events`,
+/// a `Condvar::wait`/`wait_timeout`) — the same one a blocking `session.wait`
+/// uses. An event returns it early; nothing polls.
+///
+/// **FRAME is not driven here yet, and that is deliberate.** A FRAME tick needs a
+/// frame period, and the only frame period in the tree lives inside the OGRE
+/// adapter's own config (`tension-ogre/src/config.h:48`), parsed from the guest's
+/// `ogre.init` argmap — it is not in the core ABI and not reachable from here.
+/// No example awaits `rt.frame()` yet (that is 0.7.0b), so a loop driven by real
+/// completions is the complete 0.7.0a behaviour; the frame clock is reported as
+/// the one open decision rather than invented as a constant.
+fn host_loop(
+    store: &mut Store<HostState>,
+    wake: &wasmtime::TypedFunc<(i32, i32), ()>,
+) -> anyhow::Result<()> {
+    use wasmtime::AsContextMut;
+
+    loop {
+        // Exit condition, in the order that cannot lose the last completion:
+        // the guest's say-so first, then whether anything is still outstanding.
+        let running = match store.data().game_running.clone() {
+            Some(game_running) => game_running.call(&mut *store, ())? != 0,
+            None => false,
+        };
+        let outstanding = store.data().scheduler.parked() > 0;
+        if !running && !outstanding && store.data().wake_batch.is_empty() {
+            break;
+        }
+
+        // Block on the session's condition variable. A completion, a fault or a
+        // shutdown returns it early; the timeout is the loop's safety net for a
+        // guest that says it is running while nothing can arrive.
+        let _ = store.data().posting.wait_for_events(HOST_LOOP_SLICE_MS);
+
+        // Publish + match. The epoch appends matched ids to `wake_batch`.
+        let taken = store.data_mut().session.take();
+        let Some(mut session) = taken else {
+            break;
+        };
+        let outcome = crate::session::epoch::run_epoch_with_store(
+            &mut session,
+            &mut *store,
+            crate::session::epoch::EpochMode::DrainAll,
+        );
+        store.data_mut().session = Some(session);
+        if let Err(error) = outcome {
+            anyhow::bail!("host loop: the epoch failed: {error}");
+        }
+
+        // Hand the batch to the guest. One `wake` for the whole epoch's matches,
+        // which is the contract's batching (§2.2): the host names the tasks.
+        let batch = std::mem::take(&mut store.data_mut().wake_batch);
+        if !batch.is_empty() {
+            let bytes = batch.len() * 8;
+            let Some(memory) = store.data().arena else {
+                anyhow::bail!("host loop: no arena to write wake ids into");
+            };
+            let ptr = HOST_WAKE_SCRATCH as u32;
+            {
+                let data = memory.data_mut(&mut *store);
+                if ptr as usize + bytes > data.len() {
+                    anyhow::bail!("host loop: the wake scratch does not fit the arena");
+                }
+                for (index, id) in batch.iter().enumerate() {
+                    let at = ptr as usize + index * 8;
+                    data[at..at + 8].copy_from_slice(&id.to_le_bytes());
+                }
+            }
+            wake.call(&mut *store, (ptr as i32, batch.len() as i32))?;
+        }
+    }
+    Ok(())
+}
+
+/// Where the loop stages the ids it is about to hand `__taskWake`, as an arena
+/// offset. The guest's table is at least `MEMORY_BASE` bytes in, and this is the
+/// first 64 KiB of the arena — the header page and the control block, which the
+/// loop owns between epochs and which no guest allocation occupies (the guest's
+/// heap starts at `MEMORY_BASE`, `session.json`). Sized for 1024 ids, the
+/// scheduler table's capacity.
+const HOST_WAKE_SCRATCH: usize = 0x800;
+/// The loop's wait slice, in ms: a bounded condvar wait, not a poll. It exists
+/// so a guest that reports "running" with nothing outstanding cannot hang the
+/// process; a healthy loop returns on an event long before it expires.
+const HOST_LOOP_SLICE_MS: i32 = 16;
+
 fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
     let mut imports_session = false;
     let mut imports_memory = false;

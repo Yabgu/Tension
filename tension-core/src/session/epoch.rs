@@ -171,6 +171,9 @@ where
 
     let memory = cx.as_context().data().arena.ok_or(SessionError::ArenaLost)?;
     let mut deliveries: Vec<Delivery> = Vec::new();
+    /// `(class, key)` pairs this epoch published, matched to task ids after the
+    /// arena borrow ends.
+    let mut completions: Vec<(u32, u32)> = Vec::new();
     {
         let arena_bytes = memory.data_mut(&mut *cx);
         for class in &classes {
@@ -194,6 +197,28 @@ where
             arena::set_ring_delivered(arena_bytes, at, queue.delivered().min(u32::MAX as u64) as u32)?;
         }
 
+        // 4b(2). The push path's match: every record this epoch published is a
+        //     candidate completion for a parked task. Collected here — while the
+        //     arena is borrowed — and matched after the borrow ends.
+        //
+        //     The match reads the record's own `a` (the producer's key) and
+        //     `class`, which is the identity half of `(family, key)`. Nothing is
+        //     removed from the ring: the pull path still needs it, and until
+        //     0.7.0d both paths are live.
+        for delivery in &deliveries {
+            let Some(base) = subring::event_subring_offset(&capacities, delivery.class).ok() else {
+                continue;
+            };
+            for i in 0..delivery.count {
+                let at = base + RING_HEADER_SIZE + (delivery.first_slot + i) as usize * EVENT_RECORD_SIZE;
+                if at + EVENT_RECORD_SIZE > arena_bytes.len() {
+                    continue;
+                }
+                let record = arena::read_event_record(arena_bytes, at);
+                completions.push((record.class, record.a));
+            }
+        }
+
         // 4c. FrameState: the epoch counter, the cross-class drop rollup, and a
         //     clean fault report — a fault, if one happens, is written by the
         //     invoke phase below.
@@ -214,6 +239,25 @@ where
         if arena::control_state(arena_bytes) != arena::STATE_READY {
             arena::set_control_state(arena_bytes, arena::STATE_READY)?;
             arena::set_control_fault_code(arena_bytes, 0)?;
+        }
+    }
+
+    // 4e. Match. A delivered record resolves a parked task iff the host's
+    //     scheduler table holds one for `(family(class), key)` — which only
+    //     happens for a guest that called `scheduler::park`. A pre-adoption
+    //     guest never does, so this loop is empty for every guest in the tree
+    //     today, and the pull path is all there is.
+    //
+    //     Matched ids go to `HostState::wake_batch`. The caller decides whether
+    //     to hand them to `__taskWake`: the host loop does (0.7.0a); a verb does
+    //     not, because a guest that drives its own epochs has no push handler.
+    if !completions.is_empty() {
+        let mut ctx = cx.as_context_mut();
+        let data = ctx.data_mut();
+        for (class, key) in &completions {
+            if let Some(task_id) = data.scheduler.take(*class, *key) {
+                data.wake_batch.push(task_id);
+            }
         }
     }
 
@@ -550,6 +594,7 @@ mod tests {
                     ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                     solver: crate::solver::SolverHost::default(),
                     scheduler: crate::scheduler::Scheduler::new(),
+                    wake_batch: Vec::new(),
                     task_wake: None,
                     game_running: None,
                     posting: std::sync::Arc::clone(&posting),
