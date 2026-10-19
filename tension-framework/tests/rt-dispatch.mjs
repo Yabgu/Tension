@@ -144,7 +144,15 @@ try {
         }
         return () => 0;
       }
-    })
+    }),
+    // The scheduler's guest half (TensionScript 0.6.0): a guest that parks
+    // imports `scheduler::park`. This harness exercises the *pull* path only,
+    // so the push half is a no-op here — but the import must exist, or
+    // instantiation fails before a single check runs (measured: "Import #1
+    // scheduler: module is not an object or function").
+    scheduler: {
+      park: () => {}
+    }
   });
 
   check("a delivered completion resumes the parked task through rt (41)",
