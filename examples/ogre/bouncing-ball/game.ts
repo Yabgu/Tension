@@ -10,7 +10,7 @@
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import {
-  ConfigBuilder, Solver, SolverConfig, arg, argCount, makeCallbacks, print, RuntimeSession, rt,
+  ConfigBuilder, Solver, SolverConfig, arg, argCount, print, RuntimeSession, rt,
 } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
@@ -46,6 +46,25 @@ const WINDOWED_RENDERER = "gl3plus";
 function fail(what: string): void {
   print("bouncing-ball: " + what);
   assert(false, what);
+}
+
+/// Runs `task` to completion, ticking the scheduler while it is parked.
+///
+/// `_start_game` is `() -> ()` — the host binds the entry as
+/// `get_typed_func::<(), ()>` — so the awaitable load is settled here instead of
+/// at the top level. `runReady` is what resumes a task whose completion has
+/// landed; the guard is a hang detector, not a timeout.
+function settleTask(task: Task<i32>, what: string): i32 {
+  let guard: i32 = 0;
+  while (!task._record.done && guard < 6000) {
+    RuntimeSession.wait(10);
+    rt.runReady();
+    ++guard;
+  }
+  if (!task._record.done) fail(what + " never settled");
+  const result: i32 = task._record.payload;
+  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,7 +124,10 @@ class Game {
   /// handshake. Nothing in this file runs before it opens.
   private openSession(): void {
     // Same setup as hello-triangle: session, mesh, material, camera, renderable.
-    const callbacks = makeCallbacks(null, null);
+    // `rt.callbacks()` wires `onBatch`/`onEvent` to the task dispatcher: a
+    // parked load learns of its completion only through that dispatch, so with
+    // no handler the records arrive and are dropped.
+    const callbacks = rt.callbacks();
     if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
       fail("session_open refused");
     }
@@ -137,14 +159,9 @@ class Game {
   /// Load the barrel out of the volume, hand the renderer a material, a camera
   /// and the mesh placed in the world, and build the solver that will move it.
   submitScene(): void {
-    const job = ogre.queueMeshLoad("resources/models/Barrel.mesh", 0);
-    if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
-    while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
-      RuntimeSession.wait(10);
-      rt.runReady();
-    }
-    if (ogre.jobState(job) != ogre.JOB_DONE) fail("Barrel.mesh did not load");
-    const mesh = ogre.jobResult(job);
+    const mesh = settleTask(
+      ogre.loadMesh("resources/models/Barrel.mesh", 0), "resources/models/Barrel.mesh");
+
     // The factories fill the records; the ids are the guest's own handles.
     const material = ogre.Material.unlit(0.9, 0.6, 0.2);
     material.materialId = 1;
