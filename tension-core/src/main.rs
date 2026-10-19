@@ -75,6 +75,7 @@ use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store
 mod adapter;
 mod ai;
 mod audio;
+mod scheduler;
 mod debug;
 mod dwarf;
 pub(crate) mod leb;
@@ -144,6 +145,23 @@ struct HostState {
     /// phase calls, and in what order (`DESIGN.md` §3.3).
     adapters: Vec<adapter::AdapterCall>,
     posting: std::sync::Arc<session::posting::PostingSide>,
+    /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
+    /// writes and the epoch's completion path will read. Bounded, per family,
+    /// and — at pre0 — recorded but unread.
+    scheduler: scheduler::Scheduler,
+    /// The guest's `__taskWake(idsPtr, count)`, resolved after instantiation
+    /// when the module exports it (std 0.6.0 and later). `None` for a guest
+    /// that has no push path — the pull path still delivers those.
+    ///
+    /// **Resolved eagerly, called never (at pre0).** Resolving costs one table
+    /// lookup after instantiation; resolving lazily at the first wake would put
+    /// a lookup on the completion path and make a missing export a runtime
+    /// surprise rather than a startup fact.
+    task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    /// The guest's `_game_running()`: 1 while the guest still wants frames.
+    /// `None` means the guest has not adopted the host-owned loop, which is
+    /// every example until 0.7.0b — so the loop must not start for it.
+    game_running: Option<wasmtime::TypedFunc<(), i32>>,
     /// The session: it owns the arena memory and the open/close verbs.
     ///
     /// `Option` because the memory can only be created *from* a store, and this
@@ -626,6 +644,9 @@ fn main() -> anyhow::Result<()> {
             ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
             solver: solver::SolverHost::default(),
             posting,
+            scheduler: scheduler::Scheduler::new(),
+            task_wake: None,
+            game_running: None,
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),
@@ -1047,6 +1068,13 @@ fn main() -> anyhow::Result<()> {
     session::link_session(&mut linker)?;
     store.data_mut().session = session;
 
+    // The scheduler's guest-facing half (0.7.0a-pre0). Registered unconditionally
+    // and inert: Wasmtime resolves a definition only when a guest imports it, so
+    // a guest built against std 0.5.1 sees nothing new. The registration is what
+    // lets the *next* std release (0.6.0, which calls `scheduler::park`) run on
+    // this host instead of failing at instantiation with "unknown import".
+    scheduler::link_scheduler(&mut linker)?;
+
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
     // the guest may call, and because `region_lookup` answers from the frozen
@@ -1105,6 +1133,24 @@ fn main() -> anyhow::Result<()> {
     }
 
     let instance = linker.instantiate(&mut store, &module)?;
+
+    // The scheduler's two guest exports (0.7.0a-pre0). Both are optional and
+    // both are resolved once, right here, so a guest's capabilities are a
+    // startup fact rather than a surprise on the completion path:
+    //
+    //   __taskWake     std 0.6.0+'s push handler; absent in an older guest,
+    //                  which keeps the pull path and needs no wake call.
+    //   _game_running  the guest's "still want frames" answer; absent until a
+    //                  guest adopts the host-owned loop (0.7.0b), which is
+    //                  exactly why the loop below cannot start without it.
+    //
+    // Neither is called in this phase.
+    store.data_mut().task_wake = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "__taskWake")
+        .ok();
+    store.data_mut().game_running = instance
+        .get_typed_func::<(), i32>(&mut store, "_game_running")
+        .ok();
 
     // The arena as the session left it, before the guest's first instruction:
     // the control block's triple, the region band's zeros, and the gap's canary
