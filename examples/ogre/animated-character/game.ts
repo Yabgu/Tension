@@ -32,7 +32,6 @@ import {
   identityPose,
   indexAnimation,
   localToModel,
-  makeCallbacks,
   mat4Multiply,
   print,
   resReadFile,
@@ -293,17 +292,24 @@ function mat4AffineInverseInto(src: Float32Array, src_at: i32, dst: Float32Array
   return true;
 }
 
-/// Wait for a job to finish, and fail with the job's errno when it failed.
-function settle(job: i32, what: string): u32 {
-  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
+/// Runs `task` to completion, ticking the scheduler while it is parked.
+///
+/// `_start_game` is `() -> ()` — the host binds the entry as
+/// `get_typed_func::<(), ()>` — so the awaitable loads are settled here instead
+/// of at the top level. `runReady` is what resumes a task whose completion has
+/// landed; the guard is a hang detector, not a timeout. A negative result is
+/// the loader's errno, the vocabulary `ogre.jobError` uses.
+function settleTask(task: Task<i32>, what: string): i32 {
+  let guard: i32 = 0;
+  while (!task._record.done && guard < 6000) {
     RuntimeSession.wait(10);
     rt.runReady();
+    ++guard;
   }
-  if (ogre.jobState(job) != ogre.JOB_DONE) {
-    fail(what + " did not load (state " + ogre.jobState(job).toString() + ", error " +
-         ogre.jobError(job).toString() + ")");
-  }
-  return ogre.jobResult(job);
+  if (!task._record.done) fail(what + " never settled");
+  const result: i32 = task._record.payload;
+  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -368,7 +374,10 @@ class Game {
   /// handshake. Nothing in this file runs before it opens.
   private openSession(): void {
     // Open the session, then hand the renderer its own config.
-    const callbacks = makeCallbacks(null, null);
+    // `rt.callbacks()` wires `onBatch`/`onEvent` to the task dispatcher: a
+    // parked load learns of its completion only through that dispatch, so with
+    // no handler the records arrive and are dropped.
+    const callbacks = rt.callbacks();
     if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
       fail("session_open refused");
     }
@@ -449,9 +458,7 @@ class Game {
   /// to make: `settle` fails on any realisation refusal, and the pixel checks
   /// are the proof the pose arrives.
   private loadMesh(path: string): i32 {
-    const mesh_job = ogre.queueMeshLoad(path, 0);
-    if (mesh_job <= 0) fail("queueMeshLoad refused (" + mesh_job.toString() + ")");
-    return settle(mesh_job, path);
+    return settleTask(ogre.loadMesh(path, 0), path);
   }
 
   /// Four skins, four materials, one light, one camera, four renderables: the
@@ -461,10 +468,8 @@ class Game {
     // resource ids the four materials name in their slot 0.
     const textures: u32[] = [];
     for (let i = 0; i < CHARACTERS; i++) {
-      const job = ogre.queueTextureLoad(SKINS[i], 0);
-      if (job <= 0) fail("queueTextureLoad refused (" + SKINS[i] + ")");
-      const id = settle(job, SKINS[i]);
-      textures.push(id);
+      const id = settleTask(ogre.loadTexture(SKINS[i], 0), SKINS[i]);
+      textures.push(<u32>id);
     }
 
     // Four PBS materials, one per skin: diffuse white so the texture is what shows,
