@@ -160,6 +160,9 @@ impl AiSink {
     /// stream (see [`StreamGate`]), so a refusal means the guest stopped
     /// draining.
     pub fn post(&self, class: u32, session: i32, payload: u32) {
+        trace(&format!(
+            "post class={class} session={session} payload={payload}"
+        ));
         if let Err(error) = self.posting.post(0, class, 0, session as u32, payload, 0.0, 0.0) {
             log(&format!(
                 "session {session}: AI completion refused ({error}); \
@@ -242,12 +245,25 @@ impl StreamGate {
         Some(StreamPost::Ready(unread))
     }
 
-    /// The generation settled with `unread` bytes still in the buffer. Posts
-    /// the terminal now only if there is nothing left to read.
+    /// The generation settled with `unread` bytes still in the buffer.
+    ///
+    /// Three cases, and the middle one is the defect a measured control found:
+    ///
+    /// - nothing unread → post the terminal now;
+    /// - unread, **and a READY outstanding** → defer; that wake brings the guest
+    ///   back and its drain releases the terminal;
+    /// - unread, **and nothing outstanding** → a failure that produced no
+    ///   streamed bytes at all (the reply holds only the backend's reason note).
+    ///   Posting nothing here would park the guest forever, because there is no
+    ///   outstanding wake to bring it back. So the READY is minted here.
     pub fn settled(&mut self, failed: bool, unread: usize) -> Option<StreamPost> {
         self.finished = true;
         self.failed = failed;
         if unread > 0 {
+            if !self.signaled {
+                self.signaled = true;
+                return Some(StreamPost::Ready(unread));
+            }
             return None; // the outstanding READY wake is what brings the guest back
         }
         self.signaled = false; // the terminal supersedes any READY
@@ -1210,6 +1226,20 @@ mod stream_gate_tests {
         // A failure with a partial reply: the guest wakes on the READY, reads
         // the partial text, and then learns the outcome.
         assert_eq!(gate.settled(true, 5), None);
+        assert_eq!(gate.drained(0), Some(StreamPost::Error));
+    }
+
+    /// The failure that produces no token at all. Found by the error control,
+    /// not by inspection: without this post the guest parks on a stream that
+    /// has already finished.
+    #[test]
+    fn a_failure_with_no_streamed_bytes_still_wakes_the_guest() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        // Nothing was ever appended, so no READY is outstanding; the reply holds
+        // only the backend's reason note, and the generation has failed.
+        assert_eq!(gate.settled(true, 42), Some(StreamPost::Ready(42)));
+        // The guest reads the note, drains, and only then learns the outcome.
         assert_eq!(gate.drained(0), Some(StreamPost::Error));
     }
 
