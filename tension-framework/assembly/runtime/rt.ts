@@ -52,10 +52,10 @@ function ringHeaderOffset(class_: u32): u32 {
 }
 
 /** The arena's completion class ids (`arena.rs:202-213`). */
-const CLASS_JOB_FAILED: i32 = 1;
-const CLASS_RESOURCE_READY: i32 = 5;
-const CLASS_JOB_DONE: i32 = 4;
-const CLASS_RESOURCE_FAILED: i32 = 2;
+export const CLASS_JOB_FAILED: i32 = 1;
+export const CLASS_RESOURCE_READY: i32 = 5;
+export const CLASS_JOB_DONE: i32 = 4;
+export const CLASS_RESOURCE_FAILED: i32 = 2;
 
 /** One family per awaitable outcome pair (§3.1): the success class's id. */
 const FAMILY_JOBS: i32 = CLASS_JOB_DONE;

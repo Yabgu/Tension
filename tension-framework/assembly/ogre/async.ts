@@ -51,7 +51,7 @@
  *   read after the park is declared before it.
  */
 
-import { rt } from "../runtime/rt";
+import { rt, CLASS_JOB_DONE, CLASS_JOB_FAILED } from "../runtime/rt";
 import {
   jobError,
   jobState,
@@ -88,13 +88,41 @@ async function loadResource(kind: i32, name: string, priority: i32): i32 {
   // Declared before the park: a local declared after an `await` and read later
   // is scoped to its own resume guard (the transform's documented limit).
   let result: i32 = 0;
-  const payload: u32 = await rt.job(job);
-  if (jobState(job) == JOB_DONE) {
+  let status: i32 = 0;
+  let cls: i32 = 0;
+  const awaited: Task<u32> = rt.job(job);
+  const payload: u32 = await awaited;
+  status = awaited._record.status;
+  cls = awaited._record.class_;
+
+  // **The delivered record decides the outcome, not the job slot.** The record
+  // arrived through the ring and is authoritative; the slot the guest reads is
+  // the arena mirror, which the host publishes on its own schedule. Measured
+  // (bouncing-bodies, one run in three): the completion arrived with the right
+  // resource id while `jobState` still answered `1` — not yet `JOB_DONE` — so
+  // classifying by the slot turned a successful load into -EIO.
+  if (status != 0) {
+    // §6.4: a dropped completion wakes the task with -EIO. The record's status
+    // is the only place a drop is visible, so it is checked first.
+    result = status;
+  } else if (cls == CLASS_JOB_DONE) {
     result = toI32(payload);
+    // A success record with no resource is incoherent — ids start at 1 — and is
+    // the other face of a lost completion.
+    if (result == 0) result = -5; // -EIO
+  } else if (cls == CLASS_JOB_FAILED) {
+    // The failure record's payload *is* the errno, as a u32 (`loader.cpp:434`).
+    result = toI32(payload);
+    if (result >= 0) { // a malformed failure record: fall back to the slot
+      result = jobError(job);
+      if (result >= 0) result = -5;
+    }
   } else {
-    // The slot's `error`, not the record's `status` and not the raw payload.
+    // Not a job class at all: the slot is all there is. Its `error` field is
+    // written by the loader (`loader.cpp:498`, `:715`), unlike the task
+    // record's `status`, which the runtime leaves 0 for job completions.
     result = jobError(job);
-    if (result == 0) result = -5; // a failure with no recorded errno: -EIO
+    if (result == 0) result = -5;
   }
   releaseJob(job);
   return result;
