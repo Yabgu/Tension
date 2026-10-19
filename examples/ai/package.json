@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: an interactive chat session over the tension::ai ABI",
   "scripts": {
-    "build": "tensionscript story.ts -o build/story.wasm --runtime incremental --target release",
-    "build:debug": "tensionscript story.ts -o build/story.wasm --runtime incremental --debug --sourceMap",
+    "build": "tensionscript story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm",
+    "build:debug": "tensionscript story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm --debug --sourceMap",
     "fetch-model": "node ../../scripts/run-example.mjs --fetch-model",
     "postinstall": "node ../../scripts/run-example.mjs --fetch-model",
     "run": "node ../../scripts/run-example.mjs --no-build",
