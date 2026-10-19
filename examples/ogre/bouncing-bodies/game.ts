@@ -109,14 +109,33 @@ function submit_material(id: u32, r: f64, g: f64, b: f64, lit: bool,
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + what + ")");
 }
 
-/// Wait for a job to finish, and fail when it did not load.
-function settle(job: i32, what: string): i32 {
-  while (ogre.jobState(job) != ogre.JOB_DONE && ogre.jobState(job) != ogre.JOB_FAILED) {
+/// Loads one mesh through the awaitable wrapper (`ogre/async.ts`).
+///
+/// The wrapper queues, parks on the job and classifies the outcome, so there is
+/// no `jobState` poll here any more. A negative return is the loader's errno,
+/// the same vocabulary `ogre.jobError` uses.
+async function loadMeshAsync(path: string): i32 {
+  return await ogre.loadMesh(path, 0);
+}
+
+/// Runs `task` to completion, ticking the scheduler while it is parked.
+///
+/// `_start_game` and `run()` are `() -> ()` — the host binds the entry as
+/// `get_typed_func::<(), ()>` — so the loader is spawned as a task and settled
+/// here. This is the frame loop's own pattern applied to setup: `runReady` is
+/// what resumes a task whose completion has landed. The guard is a hang
+/// detector, not a timeout.
+function settleTask(task: Task<i32>, what: string): i32 {
+  let guard: i32 = 0;
+  while (!task._record.done && guard < 6000) {
     RuntimeSession.wait(10);
     rt.runReady();
+    ++guard;
   }
-  if (ogre.jobState(job) != ogre.JOB_DONE) fail(what + " did not load");
-  return ogre.jobResult(job);
+  if (!task._record.done) fail(what + " never settled");
+  const result: i32 = task._record.payload;
+  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
+  return result;
 }
 
 /// One frame from the renderer's readback, or null when there is none.
@@ -189,7 +208,9 @@ class Game {
     this.openSession();
     this.openRenderer();
     this.mountAssets();
-    const mesh = this.loadMesh("resources/models/cube.mesh");
+    const mesh = settleTask(
+      loadMeshAsync("resources/models/cube.mesh"), "resources/models/cube.mesh"
+    );
     this.submitScene(mesh);
     this.createBodies(mesh);
     if (!this.options.windowed) {
@@ -202,7 +223,12 @@ class Game {
   /// The session itself: the loop, the arena, the event ring, the frame
   /// handshake. Nothing in this file runs before it opens.
   private openSession(): void {
-    const callbacks = makeCallbacks(null, null);
+    // `rt.callbacks()` wires `onBatch`/`onEvent` to the task dispatcher
+    // (`rt.deliver`). Threading null handlers here was fine while loading
+    // polled `jobState`, but a parked task learns of its completion only
+    // through that dispatch: with no handler the records arrive at the guest
+    // and are dropped, and the await never resumes.
+    const callbacks = rt.callbacks();
     if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
       fail("session_open refused");
     }
@@ -229,16 +255,6 @@ class Game {
     }
     const mounted = ogre.mountTns("resources", this.options.tns);
     if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
-  }
-
-  /// One mesh, drawn N+1 times: OGRE-Next ships no sphere, so the bodies are
-  /// cubes — scaled to a sphere's diameter, which is what the physics thinks they
-  /// are. The floor is the same mesh, twenty-four units across, with its top
-  /// surface at y = 0.
-  private loadMesh(path: string): i32 {
-    const job = ogre.queueMeshLoad(path, 0);
-    if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
-    return settle(job, path);
   }
 
   /// The floor's and the bodies' materials, the light, the camera and the floor
