@@ -74,6 +74,9 @@ export * from "./animation";
 export * from "./bones";
 export * from "./skin";
 export * from "./mesh";
+// The awaitable resource wrappers (`docs/resource-async-scope.md`). Additive:
+// the synchronous verbs above are unchanged and remain the primitive.
+export * from "./async";
 
 /** `ogre::init(cfg)`: 0, or the errno the adapter refused with. */
 @external("ogre", "init")
