@@ -65,6 +65,10 @@ asc="$framework/node_modules/.bin/tensionscript"
 "$asc" "$here/guest-async.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-async.wasm" >/dev/null ||
     fail "guest-async.ts did not compile"
+# The awaitable resource API's negative controls (docs/resource-async-scope.md §7).
+"$asc" "$here/guest-resource-async.ts" --config "$framework/build/session.asconfig.json" \
+    -o "$out/guest-resource-async.wasm" >/dev/null ||
+    fail "guest-resource-async.ts did not compile"
 "$asc" "$here/guest-triangle.ts" --config "$framework/build/session.asconfig.json" \
     -o "$out/guest-triangle.wasm" >/dev/null ||
     fail "guest-triangle.ts did not compile"
@@ -178,6 +182,22 @@ jobs_case() {
     echo "== $name: ok — $(echo "$stdout" | tail -1)"
 }
 jobs_case jobs --renderer=null
+
+# The four negative controls of the awaitable resource API. Cases 1, 3 and 4
+# run in one process; the drop case runs in its own, because the OGRE adapter
+# is a singleton and `shutdown()` does not make `init` legal again.
+resasync_case() {
+    name=$1
+    shift
+    stdout=$("$core" --capability "$dso" "$out/guest-resource-async.wasm" \
+        "--tns=$out/fixtures.tns" "$@" 2>"$out/$name.err") ||
+        fail "$name: the interpreter exited $? (stderr: $(tail -2 "$out/$name.err"))"
+    echo "$stdout" | grep -q "^RESASYNC PASS" ||
+        fail "$name: no 'RESASYNC PASS' (got: $(echo "$stdout" | tail -2))"
+    echo "== $name: ok — $(echo "$stdout" | grep -c '^[0-9] ok') control(s)"
+}
+resasync_case resource-async --renderer=null
+resasync_case resource-async-drop --resasync-case=drop
 
 # Error propagation: what a guest can learn when a resource cannot load. Every
 # clause polls a job's terminal state and errno, so a lost error is a failed
