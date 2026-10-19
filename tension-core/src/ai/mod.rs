@@ -97,9 +97,192 @@
 //! ABI change**; building it now would be management, which belongs to the
 //! guest.
 
+use std::sync::Arc;
+
 use wasmtime::{Caller, Linker};
 
+use crate::session::arena::{CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY};
+use crate::session::posting::PostingSide;
 use crate::HostState;
+
+/// The AI backend's side of the posting face: the same any-thread `post_event`
+/// path the OGRE loader uses (`loader.cpp:433-439`), reached through the
+/// `Arc<PostingSide>` the store already shares with every adapter.
+///
+/// **Why a sink and not a `&mut HostState`.** The producer is a worker thread
+/// with no `Caller`, and the posting face is `Sync` by design
+/// (`posting.rs:1-14`) — so the whole object a producer needs is this `Arc`.
+/// The shape mirrors `LoaderSink` (`tension-ogre/src/loader.h:107`): a small
+/// `Copy`-ish handle the worker holds, not a borrow of the session.
+///
+/// `source_id` is 0. The posting face validates sources only on the adapter FFI
+/// path (`adapter/ffi.rs:1099`); `PostingSide::post` itself uses the word as
+/// provenance, and this backend registers no adapter source.
+#[derive(Clone)]
+pub struct AiSink {
+    posting: Arc<PostingSide>,
+}
+
+impl AiSink {
+    pub fn new(posting: Arc<PostingSide>) -> Self {
+        Self { posting }
+    }
+
+    /// A sink nothing is listening to, for tests that construct an adapter
+    /// without a session. Posts land in the sink's own queues and are never
+    /// drained; they are bounded by the class capacities, so a long test cannot
+    /// grow them without bound — the queue refuses rather than overwrites.
+    ///
+    /// Named for what it is: an adapter built this way **cannot** wake a guest.
+    /// It exists so the adapters' own state machines (history, drain, refusal)
+    /// are testable without a store, not as a production default.
+    #[cfg(test)]
+    pub fn detached() -> Self {
+        Self { posting: Arc::new(PostingSide::default()) }
+    }
+
+    /// The `Arc` a test host needs when it builds its own store: the same
+    /// throwaway posting face [`AiSink::detached`] uses, handed out so the
+    /// `HostState` field and the adapter's sink can be the same object.
+    #[cfg(test)]
+    pub fn detached_posting() -> Arc<PostingSide> {
+        Arc::new(PostingSide::default())
+    }
+
+    /// Post one completion for `session`. The key is the session handle — the
+    /// consumer polled by `session_create` — so the guest's park on
+    /// `(AI family, handle)` finds it.
+    ///
+    /// **Best effort, and counted.** `post` never blocks and never overwrites: a
+    /// full class queue is refused and counted in the queue's `dropped`. A
+    /// producer loop must keep generating, so a refusal is logged rather than
+    /// retried; the coalescing design makes the queue unreachable on a healthy
+    /// stream (see [`StreamGate`]), so a refusal means the guest stopped
+    /// draining.
+    pub fn post(&self, class: u32, session: i32, payload: u32) {
+        if let Err(error) = self.posting.post(0, class, 0, session as u32, payload, 0.0, 0.0) {
+            log(&format!(
+                "session {session}: AI completion refused ({error}); \
+                 the stream may stall"
+            ));
+        }
+    }
+}
+
+/// What a stream's state change asks the producer to post.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StreamPost {
+    /// Bytes are available; the payload is the unread byte count (`> 0`).
+    Ready(usize),
+    /// The generation finished successfully.
+    Done,
+    /// The generation failed; the reason is already in the reply buffer.
+    Error,
+}
+
+impl StreamPost {
+    /// The wire class this post crosses as.
+    pub fn class(self) -> u32 {
+        match self {
+            StreamPost::Ready(_) => CLASS_AI_READY,
+            StreamPost::Done => CLASS_AI_DONE,
+            StreamPost::Error => CLASS_AI_ERROR,
+        }
+    }
+
+    /// The payload word: the unread count for READY, 0 for both terminals. The
+    /// **class** says which it is — a zero payload must never be read as either
+    /// done or failure on its own (STEP 7's lesson).
+    pub fn payload(self) -> u32 {
+        match self {
+            StreamPost::Ready(unread) => unread as u32,
+            StreamPost::Done | StreamPost::Error => 0,
+        }
+    }
+}
+
+/// One session's coalescing rule, as a state machine with no clock and no lock
+/// of its own: the caller holds it beside the reply buffer, under the same
+/// mutex, so an append and its post are one atomic step.
+///
+/// The policy (the 0.6.0b ruling):
+///
+/// - `signaled` means **a READY is outstanding** — posted, not yet followed by a
+///   full drain. Appends while it is set post nothing, so N tokens produce one
+///   ring record.
+/// - `finished` means the generation settled. The **terminal post is deferred
+///   until the reply is drained**, because a terminal delivered while bytes are
+///   still unread would overwrite the READY record of a task that has not
+///   resumed yet — the guest would then see `0` and drop the tail. Deferring is
+///   what makes `0 = done` exact.
+/// - At most **one** post is outstanding per session at any moment, so the AI
+///   rings hold at most `MAX_SESSIONS` (4) records against a capacity of 16.
+#[derive(Debug, Default)]
+pub struct StreamGate {
+    signaled: bool,
+    finished: bool,
+    failed: bool,
+}
+
+impl StreamGate {
+    /// A new generation starts with nothing outstanding.
+    pub fn begin(&mut self) {
+        self.signaled = false;
+        self.finished = false;
+        self.failed = false;
+    }
+
+    /// `unread` bytes were just appended. Returns the post to make when this
+    /// append is the one that breaks the silence.
+    pub fn appended(&mut self, unread: usize) -> Option<StreamPost> {
+        if self.signaled || unread == 0 {
+            return None;
+        }
+        self.signaled = true;
+        Some(StreamPost::Ready(unread))
+    }
+
+    /// The generation settled with `unread` bytes still in the buffer. Posts
+    /// the terminal now only if there is nothing left to read.
+    pub fn settled(&mut self, failed: bool, unread: usize) -> Option<StreamPost> {
+        self.finished = true;
+        self.failed = failed;
+        if unread > 0 {
+            return None; // the outstanding READY wake is what brings the guest back
+        }
+        self.signaled = false; // the terminal supersedes any READY
+        Some(self.take_terminal())
+    }
+
+    /// The guest consumed everything. Clears the signal and releases a deferred
+    /// terminal.
+    pub fn drained(&mut self, unread: usize) -> Option<StreamPost> {
+        if unread > 0 {
+            return None;
+        }
+        self.signaled = false;
+        if !self.finished {
+            return None;
+        }
+        Some(self.take_terminal())
+    }
+
+    /// Whether a READY is outstanding (diagnostics and tests).
+    #[cfg(test)]
+    pub fn is_signaled(&self) -> bool {
+        self.signaled
+    }
+
+    /// One terminal per generation.
+    fn take_terminal(&mut self) -> StreamPost {
+        self.finished = false;
+        if self.failed {
+            StreamPost::Error
+        } else {
+            StreamPost::Done
+        }
+    }
+}
 
 /// Headless deterministic adapter. The no-feature fallback, the test adapter,
 /// and the reference implementation of the contract.
@@ -881,5 +1064,183 @@ mod tests {
         ]))
         .unwrap();
         assert!(AiConfig::from_argmap(&entries).is_err());
+    }
+}
+
+/// The coalescing rule, tested without a model, a thread or a session — which is
+/// the point of keeping it a state machine rather than scattering it through the
+/// adapters.
+#[cfg(test)]
+mod stream_gate_tests {
+    use super::{AiSink, StreamGate, StreamPost};
+    use crate::session::arena::{CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY};
+    use crate::session::posting::{PostingSide, WaitOutcome};
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    /// **The cross-thread half of the wake.** A worker holds no `Caller` and no
+    /// borrow of the store; all it has is the sink. This measures that a post
+    /// from another thread reaches the class queue *and* brings a blocked waiter
+    /// back — the property the whole stream rests on (the same shape
+    /// `loader.cpp:433-439` relies on, and the fault test at `posting.rs:681`
+    /// already exercises for a different signal).
+    #[test]
+    fn a_cross_thread_post_reaches_the_class_and_wakes_the_waiter() {
+        let posting = Arc::new(PostingSide::default());
+        let sink = AiSink::new(Arc::clone(&posting));
+
+        let waiter = Arc::clone(&posting);
+        let blocked = std::thread::spawn(move || waiter.wait_for_events(-1));
+        // Give the waiter time to actually block: without this the post could
+        // land first and the test would prove only that a queued event is found.
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(!blocked.is_finished(), "the waiter must still be blocked");
+
+        sink.post(CLASS_AI_READY, 2, 37);
+
+        assert_eq!(
+            blocked.join().expect("the waiter finishes"),
+            WaitOutcome::Events,
+            "the post, not the timeout, is what brings the wait back"
+        );
+        let records = posting
+            .queue(CLASS_AI_READY)
+            .expect("the class exists")
+            .drain();
+        assert_eq!(records.len(), 1, "one record, not one per token");
+        assert_eq!(records[0].a, 2, "the key is the session handle");
+        assert_eq!(records[0].b, 37, "the payload is the unread count");
+    }
+
+    /// The three AI classes are real wire classes in this chunk, and the sink
+    /// posts each as itself — never a borrowed class, never an unknown id.
+    #[test]
+    fn the_sink_posts_the_class_the_gate_names() {
+        let posting = Arc::new(PostingSide::default());
+        let sink = AiSink::new(Arc::clone(&posting));
+        sink.post(StreamPost::Ready(9).class(), 1, StreamPost::Ready(9).payload());
+        sink.post(StreamPost::Done.class(), 1, StreamPost::Done.payload());
+        sink.post(StreamPost::Error.class(), 1, StreamPost::Error.payload());
+        for class in [CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR] {
+            let records = posting.queue(class).expect("the class exists").drain();
+            assert_eq!(records.len(), 1, "class {class} got exactly one record");
+            assert_eq!(records[0].a, 1);
+        }
+    }
+
+    /// The ring invariant, measured: with coalescing, a burst of appends leaves
+    /// **one** queued record, so the AI rings hold at most `MAX_SESSIONS` (4)
+    /// against a capacity of 16 — overflow is structurally unreachable.
+    #[test]
+    fn a_burst_leaves_one_record_against_a_capacity_of_sixteen() {
+        let posting = Arc::new(PostingSide::default());
+        let sink = AiSink::new(Arc::clone(&posting));
+        let mut gate = StreamGate::default();
+        gate.begin();
+        let capacity = posting.class_capacity(CLASS_AI_READY).expect("class");
+        assert_eq!(capacity, 16, "0.6.0a's capacity for the AI classes");
+
+        for unread in 1..=64usize {
+            if let Some(post) = gate.appended(unread) {
+                sink.post(post.class(), 1, post.payload());
+            }
+        }
+        let queued = posting.queue(CLASS_AI_READY).expect("class").len();
+        assert_eq!(queued, 1, "64 appends, one record");
+        assert!(queued <= capacity as usize, "and it fits");
+        assert_eq!(posting.queue(CLASS_AI_READY).expect("class").dropped(), 0);
+    }
+
+
+    #[test]
+    fn three_appends_before_a_drain_produce_one_ready() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        // The first append breaks the silence with the running count...
+        assert_eq!(gate.appended(4), Some(StreamPost::Ready(4)));
+        // ...and the next two are coalesced, whatever their counts are.
+        assert_eq!(gate.appended(11), None);
+        assert_eq!(gate.appended(19), None);
+        assert!(gate.is_signaled());
+
+        // A full drain re-arms it: the signal is the guest's to clear.
+        assert_eq!(gate.drained(0), None);
+        assert!(!gate.is_signaled());
+        assert_eq!(gate.appended(3), Some(StreamPost::Ready(3)));
+    }
+
+    #[test]
+    fn a_partial_drain_does_not_re_arm() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        assert_eq!(gate.appended(10), Some(StreamPost::Ready(10)));
+        // The guest read some, not all: the outstanding READY still covers it.
+        assert_eq!(gate.drained(4), None);
+        assert!(gate.is_signaled());
+    }
+
+    #[test]
+    fn a_terminal_with_unread_bytes_is_deferred_to_the_drain() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        assert_eq!(gate.appended(9), Some(StreamPost::Ready(9)));
+        // Generation ends with 9 bytes unread: posting DONE now would overwrite
+        // the READY the guest has not resumed on yet, and the tail would be lost.
+        assert_eq!(gate.settled(false, 9), None);
+        assert!(gate.is_signaled());
+        // The drain releases it — once.
+        assert_eq!(gate.drained(0), Some(StreamPost::Done));
+        assert_eq!(gate.drained(0), None, "one terminal per generation");
+    }
+
+    #[test]
+    fn a_terminal_with_nothing_unread_posts_immediately_once() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        assert_eq!(gate.settled(false, 0), Some(StreamPost::Done));
+        assert_eq!(gate.drained(0), None, "the terminal was already posted");
+        assert!(!gate.is_signaled());
+    }
+
+    #[test]
+    fn a_failed_generation_keeps_its_partial_reply_readable() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        assert_eq!(gate.appended(5), Some(StreamPost::Ready(5)));
+        // A failure with a partial reply: the guest wakes on the READY, reads
+        // the partial text, and then learns the outcome.
+        assert_eq!(gate.settled(true, 5), None);
+        assert_eq!(gate.drained(0), Some(StreamPost::Error));
+    }
+
+    #[test]
+    fn a_stalled_stream_posts_nothing() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        // No append, no settle: the guest stays parked. That is the state the
+        // negative control posts an AI_ERROR into.
+        assert!(!gate.is_signaled());
+        assert_eq!(gate.drained(0), None);
+    }
+
+    #[test]
+    fn a_new_generation_clears_a_stale_signal() {
+        let mut gate = StreamGate::default();
+        gate.begin();
+        assert_eq!(gate.appended(7), Some(StreamPost::Ready(7)));
+        gate.begin(); // generate() again
+        assert!(!gate.is_signaled());
+        assert_eq!(gate.appended(2), Some(StreamPost::Ready(2)));
+    }
+
+    #[test]
+    fn the_payload_never_encodes_the_outcome() {
+        // Class decides; payload is data or 0. A zero-length READY cannot occur
+        // because `appended` refuses unread == 0, so 0 unambiguously means a
+        // terminal once the class is known.
+        assert_eq!(StreamPost::Ready(12).payload(), 12);
+        assert_eq!(StreamPost::Done.payload(), 0);
+        assert_eq!(StreamPost::Error.payload(), 0);
+        assert_ne!(StreamPost::Done.class(), StreamPost::Error.class());
     }
 }

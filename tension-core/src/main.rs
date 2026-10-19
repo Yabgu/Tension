@@ -87,13 +87,13 @@ mod solver;
 /// llama.cpp adapter; otherwise the deterministic headless stub (the
 /// contract reference and the test adapter).
 #[cfg(feature = "ai")]
-fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
-    Box::new(ai::llama::LlamaAdapter::new())
+fn default_ai_adapter(posting: std::sync::Arc<session::posting::PostingSide>) -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::llama::LlamaAdapter::new(ai::AiSink::new(posting)))
 }
 
 #[cfg(not(feature = "ai"))]
-fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
-    Box::new(ai::stub::StubAdapter::new())
+fn default_ai_adapter(posting: std::sync::Arc<session::posting::PostingSide>) -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::stub::StubAdapter::new(ai::AiSink::new(posting)))
 }
 
 /// The adapter the CLI uses. The default build (feature `audio`) plays
@@ -610,6 +610,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The posting face is built **before** the store because the AI backend is
+    // a producer too: its worker posts AI completions through the same
+    // any-thread path the adapters use, so it needs the `Arc` at construction —
+    // not a borrow of the store it will wake.
+    let posting = std::sync::Arc::new(session::posting::PostingSide::default());
+
     let mut store = Store::new(
         &engine,
         HostState {
@@ -617,9 +623,9 @@ fn main() -> anyhow::Result<()> {
             pending_line: None,
             res: resource_sets,
             audio: audio::AudioSession::new(default_adapter()),
-            ai: ai::AiSession::new(default_ai_adapter()),
+            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
             solver: solver::SolverHost::default(),
-            posting: std::sync::Arc::new(session::posting::PostingSide::default()),
+            posting,
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),

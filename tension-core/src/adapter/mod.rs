@@ -954,7 +954,7 @@ mod tests {
                 pending_line: None,
                 res: Vec::new(),
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
-                ai: crate::ai::AiSession::new(crate::default_ai_adapter()),
+                ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
                 posting: test_posting(),
                 arena: None,

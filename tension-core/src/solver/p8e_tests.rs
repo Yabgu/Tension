@@ -177,7 +177,7 @@ fn test_state() -> HostState {
         pending_line: None,
         res: Vec::new(),
         audio: audio::AudioSession::new(Box::new(HeadlessAdapter::new())),
-        ai: ai::AiSession::new(Box::new(StubAdapter::new())),
+        ai: ai::AiSession::new(Box::new(StubAdapter::new(ai::AiSink::detached()))),
         solver: SolverHost::default(),
         posting: std::sync::Arc::new(
             crate::session::posting::PostingSide::default(),
