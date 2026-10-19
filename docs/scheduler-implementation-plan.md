@@ -174,6 +174,22 @@ after _start_game returns:
   adapter's `scene_mutex` already serializes them against the render thread
   (`adapter.cpp:352-356`). No new lock is introduced.
 
+**Two measured plumbing facts this loop depends on.**
+
+1. `epoch::run_epoch` takes a `&mut Caller` (`epoch.rs:80-84`) and invokes the
+   callbacks through it (`:192-240`). The host loop holds `&mut Store`, not a
+   `Caller`, so it cannot call the epoch as it stands. 0.7.0 factors the epoch
+   into a `Store`-based core plus the existing `Caller` wrapper; the import
+   path (`session.wait`) keeps its exact behavior, and the core is what the
+   loop runs. This is mechanical but not optional — it is the first task of
+   commit 4.
+2. The frame boundary must reach the loop from the render thread. The adapter
+   already posts `RESOURCE_READY` from the render path
+   (`adapter.cpp:340`); posting `FRAME` per frame is the same call, and class 9
+   is `MODE_POLLED` (`arena.rs:275-289`), so the epoch does not invoke a guest
+   callback for it — the loop consumes it as the frame signal. No new adapter
+   thread or shared flag is needed.
+
 ### 4.2 The CLI (`tension-core`)
 
 There is no loop today: `main.rs:1226-1232` calls `_start_game` and the process
@@ -426,7 +442,7 @@ asserted.
 | 1 | `docs: the scheduler contract` | TensionScript | the document; no code |
 | 2 | `std: the park/wake seam` | TensionScript | `scheduler::park` import + `__taskWake` export; async suite; closure suite; fixtures; sync programs byte-identical |
 | 3 | `core: the park table and the matcher` | Tension | `cargo test`; `framework_layout` (no layout change); `rt-dispatch`; a buffered-before-park unit test |
-| 4 | `core: the host loop calls wake` | Tension | CLI + OGRE adapters build; a hand-written guest parks and is woken cross-thread |
+| 4 | `core: the Store-based epoch core + the host loop calls wake` | Tension | CLI + OGRE adapters build; `session.wait` behaves exactly as before; a hand-written guest parks and is woken cross-thread |
 | 5 | `framework: rt.frame and rt.stream` | Tension | `runReady` retired; the two wrappers; the four scheduler controls (exactly-once, buffered, ordering, no-poll) |
 | 6 | `engine: the examples adopt` | Tension | bouncing-bodies + the five OGRE examples run; the AI example on a named backend |
 | 7 | `test: the scheduler invariants` | Tension | the greps in §9; the multi-executor case if the split lands |
