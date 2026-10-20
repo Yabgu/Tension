@@ -22,11 +22,19 @@
 // (AI_READY / AI_DONE / AI_ERROR) through the arena's posting face and the guest
 // **parks** on it:
 //
-//   const n: i32 = await rt.stream(session.handle());
+//   const signal: Task<i32> = rt.stream(session.handle());
+//   await signal;
+//   const n: i32 = rt.classify(signal);
 //
 // `n > 0` is an unread byte count (AI_READY), `n == 0` is the end of the
 // generation (AI_DONE), `n < 0` is an error (AI_ERROR, or a lost signal). The
 // **delivered class** decides, never the payload.
+//
+// Two steps, not one: an `async` accessor would return *its own* task, and
+// awaiting that parks the wrapper, not the caller — the two-layer composition
+// `rt.frame` was fixed for (0.7.0a). `rt.stream` is a stamped handle, so
+// `await` parks this task on `(AI family, session)` directly, and `classify`
+// reads the record the await filled without parking anything.
 //
 // There is no `session.state()` in the loop and no yield loop around it: the
 // task parks on `(AI family, session handle)` and the driver's `rt.runReady()`
@@ -62,6 +70,7 @@ import {
   write
 } from "tension-framework";
 import { AiConfig, AiRole, Session } from "tension-framework";
+import { Task } from "~lib/task";
 
 const SYSTEM_PROMPT =
   "You narrate a terse, atmospheric text adventure. Reply in at most two sentences.";
@@ -72,15 +81,18 @@ let finishing: bool = false;
 /// One turn: ask, then read the stream until it ends.
 ///
 /// Pure `await` — no state polling, no yield loop. Every branch is decided by
-/// the class the host delivered, which `rt.stream` has already classified.
+/// the class the host delivered, which `rt.classify` names.
 async function converse(session: Session): void {
   write("ai> ");
 
-  // Typed at its declaration: a local that survives a park must be.
+  // Typed at their declaration: locals that survive a park must be.
   let n: i32 = 0;
   let streaming: bool = true;
+  let signal: Task<i32> = rt.streamTask(session.handle());
   while (streaming) {
-    n = await rt.stream(session.handle());
+    signal = rt.stream(session.handle());
+    await signal; // parks *this* task on (AI family, session handle)
+    n = rt.classify(signal);
     if (n < 0) {
       // AI_ERROR, or a signal the runtime reported as lost. The backend's own
       // reason, if it had one, is already in the reply buffer.
@@ -206,13 +218,12 @@ export function _start_game(): void {
   // call — a real wait too, with no generation in flight.
   while (!finishing) {
     // `wait(0)` drains without blocking; `wait(-1)` blocks until an event. The
-    // choice is what makes a *chained* resume work: `rt.stream` is a two-layer
-    // async composition, so resuming the inner task completes the outer one
-    // **during** the tick, and that wake lands in the next tick's queue. Ticking
-    // again immediately (no wait) is what carries it; with a bare `wait(-1)`
-    // the guest would block with a runnable task and never resume. This is the
-    // plan's `timeout = hasRunnable() ? 0 : frameTimeout` shape (§6.3), and it
-    // is not a poll: the zero-timeout call never waits.
+    // choice keeps a resumed task from being stranded: a delivery can wake the
+    // REPL at any point, and a bare `wait(-1)` after it would block with a
+    // runnable task. This is the plan's `timeout = hasRunnable() ? 0 : -1`
+    // shape (§6.3), and it is not a poll: the zero-timeout call never waits.
+    // (Under 0.7.0b's host loop this driver disappears; `rt.frame` parks the
+    // game loop and the host owns the wake.)
     RuntimeSession.wait(rt.hasRunnable() ? 0 : -1);
     rt.runReady();
   }

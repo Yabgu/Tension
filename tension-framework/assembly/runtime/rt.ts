@@ -224,15 +224,6 @@ export class rt {
   }
 
   /**
-   * A handle for a queued job (§3.3): awaiting it parks on
-   * `(JOBS, jobId)`, which is exactly what the loader's completion posts —
-   * `post_event(JOB_DONE|JOB_FAILED, job_id, …)` (`loader.cpp:433-439`,
-   * `adapter.cpp:194-197`).
-   *
-   * The record is stamped with the success class's id and the job id; the
-   * family lookup is what makes the failure class resolve the same task.
-   */
-  /**
    * A handle for one signal on an AI stream (0.6.0b): awaiting it parks on
    * `(AI family, session handle)`, which is what the backend posts —
    * `post_event(AI_READY|AI_DONE|AI_ERROR, session, …)`.
@@ -240,8 +231,8 @@ export class rt {
    * The record is stamped with `AI_DONE`'s class (the family's key, mirroring
    * `rt.job`'s use of `JOB_DONE`) and the session handle. The delivered class
    * replaces it, so a caller that wants the raw signal can await this and read
-   * `_record.class_` / `_record.payload`; callers normally want {@link stream},
-   * which classifies.
+   * `_record.class_` / `_record.payload`; callers normally want {@link stream}
+   * plus {@link classify}.
    */
   static streamTask(session: i32): Task<i32> {
     const record = new TaskRecord();
@@ -253,17 +244,30 @@ export class rt {
   }
 
   /**
-   * Waits for the next signal on `session`'s stream, classified by the
-   * **delivered class** — never by the payload.
+   * A handle for the next signal on `session`'s stream. Awaiting it parks the
+   * **caller** on `(AI family, session handle)` — no layer between, so a
+   * host-owned loop can wake it directly (0.7.0a). Classify the result with
+   * {@link classify}, which reads the record after the await.
    *
    * ```
-   * while (true) {
-   *   const n: i32 = await rt.stream(session);
-   *   if (n < 0) break;               // AI_ERROR, or a dropped signal
-   *   if (n == 0) break;              // AI_DONE
-   *   write(session.read());          // AI_READY: bytes are available
-   * }
+   * const signal: Task<i32> = rt.stream(session);
+   * await signal;
+   * const n: i32 = rt.classify(signal);
    * ```
+   *
+   * The handle is exactly `streamTask`'s: the record is stamped with
+   * `AI_DONE`'s class (the family's key, mirroring `rt.job`'s use of
+   * `JOB_DONE`) and the session handle; the host's delivered class replaces it.
+   */
+  static stream(session: i32): Task<i32> {
+    return rt.streamTask(session);
+  }
+
+  /**
+   * Classifies a delivered AI signal by its **delivered class** — never by the
+   * payload. Synchronous: it reads the record the await filled, and must not
+   * park a second task (an `async` wrapper here would reintroduce the
+   * two-layer composition `rt.frame` was fixed for).
    *
    * Return protocol:
    *
@@ -279,8 +283,28 @@ export class rt {
    * once the reply is drained — so a `0` never means "the tail is still
    * unread". A zero-length READY cannot exist.
    */
-  static stream(session: i32): Task<i32> {
-    return streamWait(session);
+  static classify(signal: Task<i32>): i32 {
+    const status: i32 = signal._record.status;
+    const cls: i32 = signal._record.class_;
+    const payload: i32 = signal._record.payload;
+
+    if (status != 0) {
+      // A dropped signal: `__taskReportDrops` wakes the task with -EIO and
+      // leaves the class as it was. Checked first, because it is the one case
+      // the class cannot describe.
+      return status;
+    }
+    if (cls == CLASS_AI_READY) {
+      // A count, never 0: the host signals only when it appended. A 0 here is
+      // an incoherent record — treat it as the lost completion it is.
+      return payload > 0 ? payload : -5;
+    }
+    if (cls == CLASS_AI_DONE) return 0;
+    // AI_ERROR: the reason is in the reply buffer, where the backend already
+    // put it; the class carries the outcome.
+    // Anything else: another family's completion reached this key, or a record
+    // nobody stamped. Never report success.
+    return -5;
   }
 
   /**
@@ -316,47 +340,6 @@ export class rt {
     handle._record = record;
     return handle;
   }
-}
-
-/**
- * The classifying body of `rt.stream`, a free function rather than a method:
- * the async transform lowers this file, and an `async` class member would
- * change `rt`'s shape for every guest that imports the barrel.
- *
- * Locals read after the `await` are declared before it — the transform's
- * documented limit (a local declared after an await is scoped to its own
- * resume guard), the same reason `ogre/async.ts` is shaped this way.
- */
-async function streamWait(session: i32): i32 {
-  let result: i32 = 0;
-  let status: i32 = 0;
-  let cls: i32 = 0;
-  const awaited: Task<i32> = rt.streamTask(session);
-  const payload: i32 = await awaited;
-  status = awaited._record.status;
-  cls = awaited._record.class_;
-
-  if (status != 0) {
-    // A dropped signal: `__taskReportDrops` wakes the task with -EIO and leaves
-    // the class as it was. Checked first, because it is the one case the class
-    // cannot describe.
-    result = status;
-  } else if (cls == CLASS_AI_READY) {
-    // A count, never 0: the host signals only when it appended. A 0 here is an
-    // incoherent record — treat it as the lost completion it is.
-    result = payload > 0 ? payload : -5;
-  } else if (cls == CLASS_AI_DONE) {
-    result = 0;
-  } else if (cls == CLASS_AI_ERROR) {
-    // The reason is in the reply buffer, where the backend already put it; the
-    // class carries the outcome, so no errno vocabulary is needed.
-    result = -5; // -EIO
-  } else {
-    // Not an AI class at all: another family's completion reached this key, or
-    // a record nobody stamped. Never report success.
-    result = -5;
-  }
-  return result;
 }
 
 /** Builds the FRAME handle. A plain function, not an async one: `await
