@@ -325,3 +325,60 @@ ogre/hello-triangle    ogre/input-camera  ogre/bouncing-ball   same
 `RuntimeSession.wait` in a **non-adopting** guest (`io`, `log`, `res`, `audio`,
 `solver ×3`) is the sync API's own use and is fine; the rule is about waiting
 around *task state*, not about the verb existing.
+
+## The no-poll audit: every wait site and its primitive
+
+Measured, not asserted. The rule the design holds itself to is "no poll" — a
+guest that spins on state, or a host that busy-waits, is the failure. Every site
+below either blocks on a primitive or drains work that is already there.
+
+**Blocking waits (the primitive wakes them; no timeout is the steady state)**
+
+| site | primitive | blocking |
+|---|---|---|
+| host loop (`main.rs:1511`) | `PostingSide::wait_for_events`, condvar | yes, 16 ms bounded |
+| `RuntimeSession.wait` | the same condvar, `-1` = indefinite | yes (non-adopting guests) |
+| loader worker (`loader.cpp:643`) | `condition_variable::wait` | yes, indefinite |
+| AI worker (`llama.rs:162`) | `Condvar::wait` | yes, indefinite |
+| render thread (`adapter.cpp:402`) | `cv.wait_for(period)` | yes, bounded by the frame period |
+| input SDL thread (`input.cpp:233`) | `work_cv_.wait_for(2 ms)` | yes, bounded |
+| input attach/detach (`input.cpp:695`) | `done_cv_.wait_for(5 s)` | yes, bounded |
+| input startup (`input.cpp:145`) | `startup_cv_.wait_for(5 s)` | yes, bounded |
+| audio driver (`real.rs:394`) | `recv_timeout(INIT_TIMEOUT)` | yes, bounded |
+| teardown (loader, adapter, input, audio) | `thread::join` | yes, blocking |
+
+**Signals and drains (no wait at all)**
+
+| site | primitive | poll? |
+|---|---|---|
+| `signal_frame` (`ffi.rs:889`) | `posting.signal_wake()` — notify, never blocks | no |
+| epoch event drain (`subring.rs:262`) | `queue.drain()` under the posting lock | no — a drain |
+| `SDL_PollEvent` (`input.cpp`) | non-blocking pop, paced by the render wait | no — a drain |
+| wake/fail scratch writes | plain stores into the arena's control tail | no |
+
+**The three poll sites the plan named are deleted** (0.7.0b), verified by grep:
+`settleTask` 0 occurrences, `function grab` 0, the AI REPL pump
+(`RuntimeSession.wait(rt.hasRunnable() ? 0 : -1)`) 0.
+
+**`thread::sleep` in test code — three, not two.** `epoch.rs:1004`,
+`posting.rs:681`, `ai/mod.rs:1112`; the third is the AI sink test's, added with
+0.6.0b. Each is inside `#[cfg(test)]` and exists for one reason: to let a waiter
+block before the post lands, so the test measures the wake rather than the
+queue. Acceptable, and they never compile into the shipped binary.
+
+**The canary gap (filed, not fixed here).** `verify_band_is_zero` covers
+`[HEADER_PAGE_SIZE, LAYOUT_FLOOR)` = `0x1000..0x5F6020` at session *open*; the
+lattice covers `[LAYOUT_FLOOR, memory_base)`. Page 0's tail (`0x380..0x1000`) is
+covered by neither — which is why the wake buffer lives at
+`CONTROL_OFFSET + 184` (session-owned, inside the control block) rather than in
+that padding. A runtime re-check is its own phase.
+
+**input-camera's non-exit: recorded, unexplained.** One run in five printed its
+summary and did not exit within 30 s; four later runs (three plain, one
+instrumented per teardown step) exited cleanly with rc=0. The audit looked for a
+candidate and did not find one: the loop's exit is `running = false` → summary →
+`input.close` → `ogre.shutdown` → `session.close`, each of which the instrumented
+run printed in order; the host's exit condition (`_game_running() == 0`, nothing
+parked, empty batch) has no path that can leave a task parked after the last
+frame, because the frame add takes the id out of the table. No fix attempted; the
+observation stands as unexplained rather than assigned a cause it has not earned.
