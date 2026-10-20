@@ -14,6 +14,13 @@ import {
 } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+import { Task } from "~lib/task";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake } from "~lib/task-rt";
 
 const GRAVITY = -9.81; // m/s², downward
 const FLOOR = 0.25; // where the ball turns around
@@ -48,25 +55,6 @@ function fail(what: string): void {
   assert(false, what);
 }
 
-/// Runs `task` to completion, ticking the scheduler while it is parked.
-///
-/// `_start_game` is `() -> ()` — the host binds the entry as
-/// `get_typed_func::<(), ()>` — so the awaitable load is settled here instead of
-/// at the top level. `runReady` is what resumes a task whose completion has
-/// landed; the guard is a hang detector, not a timeout.
-function settleTask(task: Task<i32>, what: string): i32 {
-  let guard: i32 = 0;
-  while (!task._record.done && guard < 6000) {
-    RuntimeSession.wait(10);
-    rt.runReady();
-    ++guard;
-  }
-  if (!task._record.done) fail(what + " never settled");
-  const result: i32 = task._record.payload;
-  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
-  return result;
-}
-
 // ---------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------
@@ -99,6 +87,15 @@ class Game {
   private options: Options;
   private solver: Solver | null = null;
   private state: Float64Array = new Float64Array(3); // [t, height, velocity]
+  // The loop's state (0.7.0b): fields, because the frame loop is a task and a
+  // local that crosses a park must live where the transform can see it.
+  private running: bool = false;
+  private last: u64 = 0;
+  private first: u64 = 0;
+  private tallest: f64 = 0.0;
+  private bounces: i32 = 0;
+  private apexes: f64[] = [];
+  private batch: ogre.MotionBatch = new ogre.MotionBatch();
 
   constructor(options: Options) {
     this.options = options;
@@ -107,17 +104,35 @@ class Game {
   /// Open the session and the renderer, mount the volume and submit the scene,
   /// then run the simulation: headless is the same physics, printed instead of
   /// drawn.
-  run(): void {
+  async run(): void {
+    // Declared before the first await: the transform scopes a local declared
+    // after one to its own resume guard.
+    let mesh: i32 = 0;
+
     this.openSession();
     this.openRenderer();
     this.mountAssets();
-    this.submitScene();
+    const load: Task<u32> = ogre.loadMesh("resources/models/Barrel.mesh", 0);
+    await load;                        // parks on (JOBS, jobId)
+    mesh = ogre.loadResult(load);
+    if (mesh < 0) fail("resources/models/Barrel.mesh did not load (errno " + mesh.toString() + ")");
+    this.submitScene(mesh);
 
     if (!this.options.windowed) {
       print("renderer=null: no window; the physics and the summary are the same");
     }
 
-    this.simulate();
+    this.beginSimulation();
+    // The frame loop: one tick per frame the renderer presents, woken by the
+    // host. No `RuntimeSession.wait`, no `rt.runReady()`.
+    while (this.running) {
+      await rt.frame();
+      this.stepSimulation();
+    }
+    this.endSimulation();
+
+    this.shutdown();
+    finished = true;
   }
 
   /// The session itself: the loop, the arena, the event ring, the frame
@@ -158,10 +173,7 @@ class Game {
 
   /// Load the barrel out of the volume, hand the renderer a material, a camera
   /// and the mesh placed in the world, and build the solver that will move it.
-  submitScene(): void {
-    const mesh = settleTask(
-      ogre.loadMesh("resources/models/Barrel.mesh", 0), "resources/models/Barrel.mesh");
-
+  submitScene(mesh: i32): void {
     // The factories fill the records; the ids are the guest's own handles.
     const material = ogre.Material.unlit(0.9, 0.6, 0.2);
     material.materialId = 1;
@@ -194,51 +206,61 @@ class Game {
     if (this.solver!.setState(0.0, this.state.subarray(1)) != 0) fail("setState refused the seed");
   }
 
-  /// One solver step and one motion batch per rendered frame.
-  private simulate(): void {
-    const batch = new ogre.MotionBatch();
-    let last = ogre.frameCount(), first = last, tallest = this.state[1], bounces = 0;
-    const apexes = new Array<f64>();
+  /// The loop's starting point.
+  private beginSimulation(): void {
+    this.running = true;
+    this.last = ogre.frameCount();
+    this.first = this.last;
+    this.tallest = this.state[1];
+    this.bounces = 0;
+    this.apexes = new Array<f64>();
+  }
 
-    while (ogre.frameCount() < first + FRAMES && bounces < BOUNCES) {
-      RuntimeSession.wait(16);
-      rt.runReady();
-      const now = ogre.frameCount();
-      const advance = now - last;
-      if (advance == 0) continue; // the renderer has not drawn a new frame yet
-      last = now;
+  /// One frame: one solver step and one motion batch per rendered frame.
+  private stepSimulation(): void {
+    const now = ogre.frameCount();
+    const advance = now - this.last;
+    if (advance == 0) return; // the renderer has not drawn a new frame yet
+    this.last = now;
 
-      // Stepping per rendered frame keeps the physics and the pictures in step.
-      if (this.solver!.step(<f64>advance * STEP) != 0) fail("solver step failed");
-      if (this.solver!.state(this.state) < 0) fail("solver state failed");
-      if (this.state[1] > tallest) tallest = this.state[1];
+    // Stepping per rendered frame keeps the physics and the pictures in step.
+    if (this.solver!.step(<f64>advance * STEP) != 0) fail("solver step failed");
+    if (this.solver!.state(this.state) < 0) fail("solver state failed");
+    if (this.state[1] > this.tallest) this.tallest = this.state[1];
 
-      // The bounce. A solver integrates smooth derivatives and has no notion of a
-      // floor, so the discontinuity lives here, in game logic between steps:
-      // reflect the velocity, keep most of its energy, and hand the state back so
-      // the next step starts from the floor rather than from below it.
-      if (this.state[1] < FLOOR && this.state[2] < 0.0) {
-        apexes.push(tallest); // how high this arc got, measured before it ended
-        bounces++;
-        this.state[1] = FLOOR;
-        this.state[2] = -this.state[2] * RESTITUTION;
-        if (this.solver!.setState(this.state[0], this.state.subarray(1)) != 0) fail("setState refused the bounce");
-        tallest = this.state[1];
+    // The bounce. A solver integrates smooth derivatives and has no notion of a
+    // floor, so the discontinuity lives here, in game logic between steps:
+    // reflect the velocity, keep most of its energy, and hand the state back so
+    // the next step starts from the floor rather than from below it.
+    if (this.state[1] < FLOOR && this.state[2] < 0.0) {
+      this.apexes.push(this.tallest); // how high this arc got, measured before it ended
+      this.bounces++;
+      this.state[1] = FLOOR;
+      this.state[2] = -this.state[2] * RESTITUTION;
+      if (this.solver!.setState(this.state[0], this.state.subarray(1)) != 0) {
+        fail("setState refused the bounce");
       }
-
-      // One call for the frame's motion. An entry is a whole transform, so the
-      // ball's size travels with its position.
-      batch.set(0, BALL, 0.0, <f32>this.state[1], 0.0, SCALE);
-      if (batch.commit() != 1) fail("submit_motion refused the batch");
-
-      if (now % 30 == 0) {
-        print("frame " + now.toString() + "  height " + this.state[1].toString() + "  speed " +
-              this.state[2].toString());
-      }
+      this.tallest = this.state[1];
     }
 
-    let summary = "ball bounced " + bounces.toString() + " times, apex heights";
-    for (let i = 0; i < apexes.length; i++) summary += " " + apexes[i].toString();
+    // One call for the frame's motion. An entry is a whole transform, so the
+    // ball's size travels with its position.
+    this.batch.set(0, BALL, 0.0, <f32>this.state[1], 0.0, SCALE);
+    if (this.batch.commit() != 1) fail("submit_motion refused the batch");
+
+    if (now % 30 == 0) {
+      print("frame " + now.toString() + "  height " + this.state[1].toString() + "  speed " +
+            this.state[2].toString());
+    }
+
+    // No `break`: the run's two ends are the frame cap and the bounce count.
+    if (now >= this.first + FRAMES || this.bounces >= BOUNCES) this.running = false;
+  }
+
+  /// The bounces and how high each arc got.
+  private endSimulation(): void {
+    let summary = "ball bounced " + this.bounces.toString() + " times, apex heights";
+    for (let i = 0; i < this.apexes.length; i++) summary += " " + this.apexes[i].toString();
     print(summary);
   }
 
@@ -255,7 +277,18 @@ class Game {
 // ---------------------------------------------------------------------------
 
 export function _start_game(): void {
+  rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
   const game = new Game(parseArgs());
+  // A floating task: it runs the synchronous prologue and parks at the load.
   game.run();
-  game.shutdown();
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared after
+/// teardown, so the host's exit cannot cut the summary off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
 }
