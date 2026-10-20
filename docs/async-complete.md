@@ -4,6 +4,15 @@ The state of the feature at TensionScript 0.7.1 / Tension 0.7.0, and what is not
 in it. Written the way the arrow-`this`, closures and scheduler notes were: what
 shipped, what is tested, what is deferred, and what the record is.
 
+**Consumer state.** All sixteen consumers are on `^0.7.0`, installed from the
+registry. 0.7.1 is built, packed (1,624,436 bytes) and committed in TensionScript
+— the compiler half of `break`/`continue` — but it is **not published**, so the
+transition to it is pending and `guest-flow` reports SKIP against 0.7.0 rather
+than passing. When 0.7.1 publishes, the transition is mechanical: bump sixteen
+`package.json`s, clean-install, and apply the bouncing-bodies adoption saved at
+`/tmp/bb-adopted.ts` (its frame loop's exit becomes a real `break`, verified
+against the packed tarball: `asleep 64/64`, exit 0).
+
 ## What shipped
 
 | version | what it delivered |
@@ -75,15 +84,21 @@ is queued by `wake` and drained at the top of the next host entry.
 
 ## The next phase — a menu
 
-1. **Interop struct views.** A scoping pass was started and interrupted. The
-   measurements that landed: `@unmanaged` already works at the ABI boundary
-   (field order *is* the layout — a swapped declaration really swaps the bytes;
-   alignment is honoured — `i32/i64/i32` puts the third field at 16), **39 wire
-   types already use it**, and `offsetof<T>(field)` is already the framework's
-   cross-check in 75 places. What does not work: `sizeof<T>()` returns 4 for an
-   unmanaged class (pointer size, not data size), and `store<T>(ptr, value)`
-   writes one word. So the honest framing is narrower than "add struct views" —
-   it is "finish the pattern the tree already uses".
+1. **Interop struct views — reframed.** The scoping pass that was started and
+   interrupted left a measurement that changes the phase's shape. `@unmanaged`
+   **already works at the ABI boundary**: field order *is* the layout (a swapped
+   declaration really swaps the bytes — `B { y: f32; x: i32 }` puts `y` at 0 and
+   `x` at 4), alignment is honoured (`i32/i64/i32` puts the third field at 16),
+   **39 wire types already use it**, and `offsetof<T>("field")` is already the
+   framework's cross-check in 75 places.
+
+   What does *not* work is narrower than the feature sounds: `sizeof<T>()`
+   returns **4** for an unmanaged class (pointer size, not data size), and
+   `store<T>(ptr, value)` writes **one word** — while `load<T>(ptr)` correctly
+   copies the data. So the phase is **not** "add struct views". It is: fix
+   `sizeof`/`store<T>` for unmanaged types, and adopt the `@unmanaged` pattern
+   the tree already uses everywhere it currently hand-rolls offsets. The
+   scoping document needs revising along that line before anything is built.
 2. **Bootstrap-ordering.** The CI red; self-hosting.
 3. **`try`/`catch`.**
 4. **Barrel narrowing.** The leak above, and the hand-written re-exports with it.
@@ -116,11 +131,27 @@ is queued by `wake` and drained at the top of the next host entry.
   the canary gap, the wake buffer, the sub-ring reclaim, the `HostState`
   test-literal obligation, and the no-poll audit.
 
-Two facts worth carrying forward that are not in any plan:
+## What the record got wrong, and the discipline that catches it
 
+- **A consumer table is evidence, not a claim.** `501f024`'s message said all
+  sixteen consumers were on `^0.6.1`; `io` and `input-camera` were not — they had
+  been reinstalled at `^0.6.0` to take measurements, which rewrites the
+  dependency, and the transition's `git add -A` staged the drift. Repaired in
+  `5746baf`, whose message says so. **Stage by name, never `-A`**: a shell command
+  that installs a package edits the record, and `-A` cannot tell that apart from
+  a deliberate bump.
 - **"Tests pass" is evidence for the committed tree.** A structural change to a
   type constructed in test code is not verified until `cargo test` *compiles* it.
-  This cost two phases.
-- **A capacity is a silent timeout.** The sub-ring filled at 16 and stopped
-  delivering with no trap and no error; only the real model, which posts per
-  chunk, made it visible. The stub cannot see it.
+  This cost two phases (`HostState`'s `task_fail`/`drop_seen`, then
+  `task_resume`).
+- **A capacity is a silent timeout.** The sub-ring filled at its 16 slots and
+  stopped delivering with no trap and no error; only the real llama.cpp backend,
+  which posts per chunk, made it visible. The stub posts once per generation and
+  cannot see it. **The real-backend gate is not optional for anything that
+  touches delivery.**
+- **A compiler change gets three fixtures, not two.** For `break`/`continue` the
+  useful evidence was: the published compiler **refuses** (the gap is real), a
+  partial fix **passes the obvious cases and hangs on `for`+`continue`** (the
+  incrementor was in the body), and the full fix passes all four. The middle
+  state is the one a two-way fixture hides — and it is the state a partial
+  implementation ships in.
