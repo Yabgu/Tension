@@ -275,3 +275,53 @@ ends at 184, `CONTROL_SIZE` is 256, so 72 bytes are free. Nine ids per call,
 chunked (`HOST_WAKE_CHUNK = 9`) — a larger batch becomes several `wake` calls,
 still batched from the guest's side. Do not move it back into page 0's padding;
 that range is unowned (previous section).
+
+## A sub-ring fills up and then silently stops delivering
+
+`tail` is the guest's reclaim counter — "how many records the guest has
+consumed" (`subring.rs`). The session writes `head`, the guest writes `tail`, and
+the buffer only compacts when the guest has reclaimed something:
+
+```
+head == capacity  ->  compact_subring  ->  tail == 0  ->  nothing to reclaim
+                  ->  append refused   ->  the caller counts a drop
+```
+
+Until 0.7.0b **no guest in the tree wrote `tail`**. Every class delivered through
+a callback therefore filled its sub-ring and then dropped the rest. It was
+invisible for months because the AI stub posts one READY per generation; the real
+llama.cpp backend posts one per chunk, and a reply stops dead at exactly 16 —
+`AI_READY`'s default capacity — with the guest parked and nothing coming.
+
+`rt.deliver` now advances the class's `tail` to `head` after the batch has been
+copied into task records, guarded on `isReady()` like `reportDrops` (a guest with
+no session must not read the region table; `tests/rt-dispatch.mjs` traps otherwise).
+
+Two corollaries worth keeping:
+
+- **A capacity is a silent timeout.** Nothing traps at 16; the stream simply
+  stops. When a long stream "hangs", read `head`/`tail`/`capacity` before
+  suspecting the wake path.
+- **The stub is not a stream test.** One record per generation exercises the
+  wake path and nothing else. Anything about ordering, coalescing or capacity
+  needs the real backend, or a fixture that posts many records.
+
+## The no-poll grep, and what it is allowed to match
+
+For an adopting guest (one that exports `__taskWake` and `_game_running`), the
+source must contain, outside comments: no `settleTask`, no `grab`, no
+`RuntimeSession.wait`, no `rt.runReady()`, no `__taskTick`, and no `break` in an
+async body.
+
+Measured at 0.7.0b's close — every match in all eight adopters is a **comment**
+explaining what is no longer there:
+
+```
+ogre/bouncing-bodies   ai/story       wait=0  runReady=0  tick=0  settleTask=0
+ogre/hello-mesh        async-io       wait=0  runReady=0  tick=0  settleTask=0
+ogre/hello-triangle    ogre/input-camera  ogre/bouncing-ball   same
+```
+
+`RuntimeSession.wait` in a **non-adopting** guest (`io`, `log`, `res`, `audio`,
+`solver ×3`) is the sync API's own use and is fine; the rule is about waiting
+around *task state*, not about the verb existing.
