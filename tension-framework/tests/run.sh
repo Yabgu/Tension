@@ -51,6 +51,16 @@
 # Usage: run.sh [path-to-tension-core] [path-to-stub-adapter]
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Whether a fixture's compile failed because the installed tensionscript's std
+# predates 0.6.1. The missing symbol differs per fixture (`__taskResume` for the
+# ones that export it, `__taskFail` for guest-drop, `__taskRegistered` for the
+# creation guard), so the test is on the *shape* of the error rather than one
+# name: a missing `__task*` export is the old std, and anything else is a real
+# failure that must not be skipped.
+old_stdlib_error() {
+  grep -q "no exported member '__task" "$1" 2>/dev/null
+}
+
 root="$(cd "$here/.." && pwd)"
 core="${1:-$root/../tension-core/target/debug/tension-core}"
 
@@ -213,10 +223,21 @@ run_plain_fixture guest-log.ts guest-log.wasm
 run_plain_fixture guest-callbacks.ts guest-callbacks.wasm
 run_guard_fixture guest-callbacks-guard.ts guest-callbacks-guard.wasm
 echo "==> compiling guest-ai-stream.ts"
-( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-ai-stream.ts \
-    --config build/session.asconfig.json -o build/guest-ai-stream.wasm )
-run_ai_fixture "" ""
-run_ai_fixture "stall" "TENSION_AI_STUB_STALL_MS=50"
+# Host-driven since 0.7.0d-pre: it exports `__taskWake`/`__taskResume` and lets
+# the executor drive it, so it needs a std that has them. Against the published
+# 0.6.0 the two controls below cannot run at all — reported as a SKIP with the
+# reason, never as a pass and never as a hard failure.
+if ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-ai-stream.ts \
+      --config build/session.asconfig.json -o build/guest-ai-stream.wasm ) >build/guest-ai-stream.compile 2>&1; then
+  run_ai_fixture "" ""
+  run_ai_fixture "stall" "TENSION_AI_STUB_STALL_MS=50"
+elif old_stdlib_error build/guest-ai-stream.compile; then
+  echo "    == guest-ai-stream (and stall): SKIP — the installed tensionscript has no push-path std (needs >= 0.6.1)"
+else
+  cat build/guest-ai-stream.compile >&2
+  echo "run.sh: guest-ai-stream: compile failed for a reason other than the missing std" >&2
+  exit 1
+fi
 
 # The push path (0.7.0a): a guest that exports `__taskWake` and `_game_running`,
 # so the host owns the loop. `--post-test-events` queues the JOB_DONE records
@@ -272,7 +293,7 @@ esac
 echo "==> compiling guest-early.ts"
 if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-early.ts \
         --config build/session.asconfig.json -o build/guest-early.wasm ) >build/guest-early.compile 2>&1; then
-  if grep -q "__taskResume" build/guest-early.compile; then
+  if old_stdlib_error build/guest-early.compile; then
     echo "    == guest-early: SKIP — the installed tensionscript has no __taskResume (needs >= 0.6.1)"
     true
   else
@@ -306,7 +327,7 @@ fi
 echo "==> compiling guest-sync.ts"
 if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-sync.ts \
         --config build/session.asconfig.json -o build/guest-sync.wasm ) >build/guest-sync.compile 2>&1; then
-  if grep -q "__taskRegistered" build/guest-sync.compile; then
+  if old_stdlib_error build/guest-sync.compile; then
     echo "    == guest-sync: SKIP — the installed tensionscript has no creation guard (needs >= 0.6.1)"
     true
   else
@@ -339,7 +360,7 @@ fi
 echo "==> compiling guest-enospc.ts"
 if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-enospc.ts \
         --config build/session.asconfig.json -o build/guest-enospc.wasm ) >build/guest-enospc.compile 2>&1; then
-  if grep -q "__taskRegistered" build/guest-enospc.compile; then
+  if old_stdlib_error build/guest-enospc.compile; then
     echo "    == guest-enospc: SKIP — the installed tensionscript has no creation guard (needs >= 0.6.1)"
     true
   else
@@ -376,7 +397,7 @@ echo "==> compiling guest-drop.ts"
 # 0.6.0 cannot compile it: reported as a SKIP naming the reason, never as a pass.
 if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-drop.ts \
         --config build/session.asconfig.json -o build/guest-drop.wasm ) >build/guest-drop.compile 2>&1; then
-  if grep -q "__taskFail" build/guest-drop.compile; then
+  if old_stdlib_error build/guest-drop.compile; then
     echo "    == guest-drop: SKIP — the installed tensionscript has no __taskFail (needs >= 0.6.1)"
     echo "==> checking guest-log's records (trace)"
     true
