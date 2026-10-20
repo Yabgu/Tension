@@ -460,6 +460,8 @@ fn test_state() -> HostState {
         scheduler: crate::scheduler::Scheduler::new(),
         wake_batch: Vec::new(),
         task_wake: None,
+        task_fail: None,
+        drop_seen: [0; crate::session::arena::CLASS_COUNT],
         game_running: None,
         posting: std::sync::Arc::new(
             crate::session::posting::PostingSide::default(),

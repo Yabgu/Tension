@@ -1261,6 +1261,8 @@ mod tests {
                 scheduler: crate::scheduler::Scheduler::new(),
                 wake_batch: Vec::new(),
                 task_wake: None,
+                task_fail: None,
+                drop_seen: [0; session::arena::CLASS_COUNT],
                 game_running: None,
                 posting: std::sync::Arc::new(
                     crate::session::posting::PostingSide::default(),
