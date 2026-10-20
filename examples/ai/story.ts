@@ -37,18 +37,20 @@
 // reads the record the await filled without parking anything.
 //
 // There is no `session.state()` in the loop and no yield loop around it: the
-// task parks on `(AI family, session handle)` and the driver's `rt.runReady()`
-// is what resumes it. That is the whole point of the change — zero polls, zero
-// yields.
+// task parks on `(AI family, session handle)` and the host's loop wakes it when
+// the completion is posted. That is the whole point of the change — zero polls,
+// zero yields.
 //
-// ## Why `_start_game` still owns a loop
+// ## Why there is one async function and no driver
 //
-// `_start_game` is `() -> ()`: the host binds the entry as
-// `get_typed_func::<(), ()>`. A suspended task cannot keep the guest thread
-// alive, so the entry starts the REPL as a task and then **drives** it: block on
-// the session's own wait (a real condition variable inside the host), then
-// resume whatever is ready. This is the shape every async game runs; here the
-// "frames" are stream chunks.
+// 0.7.0b moved this guest onto the host-owned loop. `_start_game` opens the
+// session, creates the model session and starts `run`; it does not pump. The
+// turn loop and the stream loop are **one** function, not two: `converse()` was
+// an `async` helper, and `await converse(session)` parked *converse's* task —
+// completing it would leave `run` on the ready queue, which the host loop never
+// drains (pipeline-notes: an awaitable accessor returns a stamped handle, never
+// an async wrapper). One function, so every `await` parks the task the host is
+// waking.
 //
 // ## What the compiler forced (all measured, all in this file's shape)
 //
@@ -71,53 +73,40 @@ import {
 } from "tension-framework";
 import { AiConfig, AiRole, Session } from "tension-framework";
 import { Task } from "~lib/task";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake } from "~lib/task-rt";
 
 const SYSTEM_PROMPT =
   "You narrate a terse, atmospheric text adventure. Reply in at most two sentences.";
 
-/// Set when the REPL is over, so the driver above it can stop.
-let finishing: bool = false;
-
-/// One turn: ask, then read the stream until it ends.
+/// The whole conversation, as one task (0.7.0b).
 ///
-/// Pure `await` — no state polling, no yield loop. Every branch is decided by
-/// the class the host delivered, which `rt.classify` names.
-async function converse(session: Session): void {
-  write("ai> ");
-
-  // Typed at their declaration: locals that survive a park must be.
-  let n: i32 = 0;
-  let streaming: bool = true;
-  let signal: Task<i32> = rt.streamTask(session.handle());
-  while (streaming) {
-    signal = rt.stream(session.handle());
-    await signal; // parks *this* task on (AI family, session handle)
-    n = rt.classify(signal);
-    if (n < 0) {
-      // AI_ERROR, or a signal the runtime reported as lost. The backend's own
-      // reason, if it had one, is already in the reply buffer.
-      print("");
-      print("(generation failed: errno " + n.toString() + ")");
-      streaming = false;
-    } else if (n == 0) {
-      print("");
-      streaming = false; // AI_DONE: over, and the reply is fully read
-    } else {
-      // AI_READY: at least one byte is waiting. `read()` drains everything
-      // accumulated — more than `n` if the guest was slow to resume.
-      write(session.read());
-    }
-  }
-}
-
-/// The read-eval-print loop, as a task. No `break`, no `continue`: the loop
-/// condition carries the exits.
-async function repl(session: Session): void {
+/// Flattened from `converse` + `repl`: every `await` here parks **this** task, so
+/// the host's wake resumes the loop itself. No `async` helper sits between
+/// `_start_game` and the stream, and there is no `rt.runReady()` in the file.
+///
+/// No `break`, no `continue`: the transform refuses both in a lowered body, so
+/// the loop conditions and flags carry every exit.
+async function run(session: Session): void {
+  // Typed at their declaration and declared before the first await: a local that
+  // survives a park must be (the transform's documented limit).
   let running: bool = true;
+  let text: string = "";
+  let streaming: bool = true;
+  let n: i32 = 0;
+  let cleared: bool = false;
+  // `handle` is a name the state struct reserves, so the awaited signal is
+  // `signal`.
+  let signal: Task<i32> = rt.streamTask(session.handle());
+
   while (running) {
     print("");
     write("you> ");
-    const text: string = nextLine().trim();
+    text = nextLine().trim();
 
     if (text.length == 0) {
       // An empty line (or closed stdin) is not a turn. Closed stdin is detected
@@ -125,7 +114,7 @@ async function repl(session: Session): void {
     } else if (text == "/quit") {
       running = false;
     } else if (text == "/reset") {
-      const cleared: bool = session.reset();
+      cleared = session.reset();
       // reset clears the whole history, including the system prompt that makes
       // the model narrate. Restore it, or the next reply comes back from a
       // generic assistant instead of the game's narrator.
@@ -138,8 +127,29 @@ async function repl(session: Session): void {
       if (!session.generate()) {
         print("(generate refused — drain the previous reply or cancel first)");
       } else {
-        // Parks until the host posts a signal; the driver below resumes it.
-        await converse(session);
+        write("ai> ");
+        streaming = true;
+        while (streaming) {
+          // Parks on `(AI family, session handle)`; the host's loop delivers the
+          // wake the backend posted, and `classify` reads the record it filled.
+          signal = rt.stream(session.handle());
+          await signal;
+          n = rt.classify(signal);
+          if (n < 0) {
+            // AI_ERROR, or a signal the runtime reported as lost. The backend's
+            // own reason, if it had one, is already in the reply buffer.
+            print("");
+            print("(generation failed: errno " + n.toString() + ")");
+            streaming = false;
+          } else if (n == 0) {
+            print("");
+            streaming = false; // AI_DONE: over, and the reply is fully read
+          } else {
+            // AI_READY: at least one byte is waiting. `read()` drains everything
+            // accumulated — more than `n` if the guest was slow to resume.
+            write(session.read());
+          }
+        }
       }
     }
 
@@ -150,7 +160,7 @@ async function repl(session: Session): void {
 
   session.close();
   print("--- end ---");
-  finishing = true;
+  finished = true;
 }
 
 /// Whether the last `readLine` hit end of input. Kept as a separate probe so the
@@ -169,19 +179,29 @@ function nextLine(): string {
   return line === null ? "" : line!;
 }
 
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared only after the
+/// conversation is closed, so the host's exit cannot cut the closing line off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
+}
+
 export function _start_game(): void {
   // Bind the completion classes to their families — including the AI family —
   // before any await can park. Idempotent; `init` calls it too.
   rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
 
   // The stream needs a **session**: the completions arrive through the arena's
   // posting face, which only exists once one is open. The AI verbs themselves
-  // work without it (which is why this example ran without a session before
-  // 0.6.0b), but `await` cannot.
+  // work without it, but `await` cannot.
   const callbacks = rt.callbacks();
   const opened = RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks);
   if (opened != 0) {
     print("ai: the session refused to open (" + opened.toString() + ")");
+    finished = true;
     return;
   }
 
@@ -191,6 +211,7 @@ export function _start_game(): void {
     print("usage: tension-core ai/build/story.wasm <model.gguf>");
     print("(the host requires a model key; the headless fallback ignores its value)");
     RuntimeSession.close();
+    finished = true;
     return;
   }
   const modelPath: string = arg(0);
@@ -202,6 +223,7 @@ export function _start_game(): void {
   if (created === null) {
     print("(session_create failed — the host refused the configuration)");
     RuntimeSession.close();
+    finished = true;
     return;
   }
   // Non-null from here, and the assertion lives in synchronous code.
@@ -210,23 +232,7 @@ export function _start_game(): void {
   session.add(AiRole.System, SYSTEM_PROMPT);
   print("Commands: /reset, /cancel, /quit");
 
-  repl(session); // floating task: runs its synchronous prefix, parks at the first await
-
-  // The driver. `wait(-1)` blocks on the host's condition variable until an
-  // event, a fault or a shutdown; `runReady()` resumes what the delivery woke.
-  // A task that blocks on stdin (the REPL, between turns) does so *inside* this
-  // call — a real wait too, with no generation in flight.
-  while (!finishing) {
-    // `wait(0)` drains without blocking; `wait(-1)` blocks until an event. The
-    // choice keeps a resumed task from being stranded: a delivery can wake the
-    // REPL at any point, and a bare `wait(-1)` after it would block with a
-    // runnable task. This is the plan's `timeout = hasRunnable() ? 0 : -1`
-    // shape (§6.3), and it is not a poll: the zero-timeout call never waits.
-    // (Under 0.7.0b's host loop this driver disappears; `rt.frame` parks the
-    // game loop and the host owns the wake.)
-    RuntimeSession.wait(rt.hasRunnable() ? 0 : -1);
-    rt.runReady();
-  }
-
-  RuntimeSession.close();
+  // A floating task: it runs to the first `await` — the first reply's stream —
+  // and parks there. From here the host owns the loop; the entry returns.
+  run(session);
 }
