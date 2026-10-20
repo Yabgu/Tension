@@ -168,10 +168,14 @@ struct HostState {
     /// the *delta* since the last iteration, and without this every iteration
     /// after the first would re-wake the same victims.
     drop_seen: [u64; session::arena::CLASS_COUNT],
-    /// Task ids the epoch matched to parked tasks, waiting for `__taskWake`.
-    /// Drained by the host loop; empty for every pre-adoption guest, because
-    /// nothing parked.
-    wake_batch: Vec<u64>,
+    /// Tasks the epoch matched, or the park found already completed, waiting to
+    /// be resumed. Drained by the host loop; empty for every pre-adoption
+    /// guest, because nothing parked.
+    wake_batch: Vec<scheduler::Wake>,
+    /// The guest's `__taskResume(idsPtr, classesPtr, payloadsPtr, count)`: resume
+    /// with the delivered class and payload (std 0.6.1). Preferred over
+    /// `__taskWake`, which resumes with whatever the record already holds.
+    task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
     /// The guest's `_game_running()`: 1 while the guest still wants frames.
     /// `None` means the guest has not adopted the host-owned loop, which is
     /// every example until 0.7.0b — so the loop must not start for it.
@@ -661,6 +665,7 @@ fn main() -> anyhow::Result<()> {
             scheduler: scheduler::Scheduler::new(),
             wake_batch: Vec::new(),
             task_wake: None,
+            task_resume: None,
             task_fail: None,
             drop_seen: [0; session::arena::CLASS_COUNT],
             game_running: None,
@@ -1165,6 +1170,9 @@ fn main() -> anyhow::Result<()> {
     store.data_mut().task_wake = instance
         .get_typed_func::<(i32, i32), ()>(&mut store, "__taskWake")
         .ok();
+    store.data_mut().task_resume = instance
+        .get_typed_func::<(i32, i32, i32, i32), ()>(&mut store, "__taskResume")
+        .ok();
     store.data_mut().task_fail = instance
         .get_typed_func::<(i32, i32, i32), ()>(&mut store, "__taskFail")
         .ok();
@@ -1285,7 +1293,9 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--session-open: {error}");
             }
         }
+        let capacities = *session.ring_capacities();
         store.data_mut().session = Some(session);
+        store.data_mut().scheduler.set_capacities(&capacities);
     }
 
     // `--post-test-events`: three JOB_DONE events, so an epoch fixture has
@@ -1355,6 +1365,18 @@ fn main() -> anyhow::Result<()> {
     if let Some(wake) = store.data().task_wake.clone() {
         let fail = store.data().task_fail.clone();
         host_loop(&mut store, &wake, fail.as_ref())?;
+        let (buffered, evicted) = store.data().scheduler.recent_counters();
+        if buffered > 0 || evicted > 0 {
+            logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "host loop: recent completions buffered={buffered} evicted={evicted} \
+                     held={}",
+                    store.data().scheduler.recent_len()
+                ),
+            );
+        }
     }
 
     // What a trapping epoch left behind: a deferred submission belongs to the
@@ -1532,7 +1554,11 @@ fn host_loop(
         // guest that never calls `rt.frame()` costs nothing.
         if running {
             if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
-                store.data_mut().wake_batch.push(frame_task);
+                store.data_mut().wake_batch.push(scheduler::Wake {
+                    task_id: frame_task,
+                    class: session::arena::CLASS_FRAME,
+                    payload: 0,
+                });
             }
         }
 
@@ -1586,27 +1612,62 @@ fn host_loop(
             }
         }
 
-        // Hand the batch to the guest. One `wake` for the whole epoch's matches,
+        // Hand the batch to the guest. One call for the whole epoch's matches,
         // which is the contract's batching (§2.2): the host names the tasks.
         let batch = std::mem::take(&mut store.data_mut().wake_batch);
-        // Chunked: the scratch holds nine ids, and a batch can be larger (a job
-        // flood plus the frame). Each chunk is one `wake` call, so the guest
-        // still sees the contract's batched wake (§2.2) — just across several.
-        for chunk in batch.chunks(HOST_WAKE_CHUNK) {
-            let Some(memory) = store.data().arena else {
-                anyhow::bail!("host loop: no arena to write wake ids into");
-            };
-            {
-                let data = memory.data_mut(&mut *store);
-                if HOST_WAKE_SCRATCH + chunk.len() * 8 > data.len() {
-                    anyhow::bail!("host loop: the wake scratch does not fit the arena");
+        if batch.is_empty() {
+            continue;
+        }
+        // Chunked: the control block's tail holds a few ids, and a batch can be
+        // larger (a job flood plus the frame). Each chunk is one call, so the
+        // guest still sees a batched wake — just across several.
+        if let Some(resume) = store.data().task_resume.clone() {
+            // The richer export (std 0.6.1): ids, classes and payloads, so the
+            // record the guest awaited holds what was delivered. `__taskWake`
+            // alone resumes with whatever the record happens to contain, which
+            // under the push path is nothing.
+            for chunk in batch.chunks(HOST_RESUME_CHUNK) {
+                let Some(memory) = store.data().arena else {
+                    anyhow::bail!("host loop: no arena to write wake ids into");
+                };
+                {
+                    let data = memory.data_mut(&mut *store);
+                    for (index, wake) in chunk.iter().enumerate() {
+                        let at = HOST_WAKE_SCRATCH + index * 8;
+                        data[at..at + 8].copy_from_slice(&wake.task_id.to_le_bytes());
+                        let cat = HOST_RESUME_CLASSES + index * 4;
+                        data[cat..cat + 4].copy_from_slice(&wake.class.to_le_bytes());
+                        let pat = HOST_RESUME_PAYLOADS + index * 4;
+                        data[pat..pat + 4].copy_from_slice(&wake.payload.to_le_bytes());
+                    }
                 }
-                for (index, id) in chunk.iter().enumerate() {
-                    let at = HOST_WAKE_SCRATCH + index * 8;
-                    data[at..at + 8].copy_from_slice(&id.to_le_bytes());
-                }
+                resume.call(
+                    &mut *store,
+                    (
+                        HOST_WAKE_SCRATCH as i32,
+                        HOST_RESUME_CLASSES as i32,
+                        HOST_RESUME_PAYLOADS as i32,
+                        chunk.len() as i32,
+                    ),
+                )?;
             }
-            wake.call(&mut *store, (HOST_WAKE_SCRATCH as i32, chunk.len() as i32))?;
+        } else {
+            for chunk in batch.chunks(HOST_WAKE_CHUNK) {
+                let Some(memory) = store.data().arena else {
+                    anyhow::bail!("host loop: no arena to write wake ids into");
+                };
+                {
+                    let data = memory.data_mut(&mut *store);
+                    if HOST_WAKE_SCRATCH + chunk.len() * 8 > data.len() {
+                        anyhow::bail!("host loop: the wake scratch does not fit the arena");
+                    }
+                    for (index, wake) in chunk.iter().enumerate() {
+                        let at = HOST_WAKE_SCRATCH + index * 8;
+                        data[at..at + 8].copy_from_slice(&wake.task_id.to_le_bytes());
+                    }
+                }
+                wake.call(&mut *store, (HOST_WAKE_SCRATCH as i32, chunk.len() as i32))?;
+            }
         }
     }
     Ok(())
@@ -1629,6 +1690,13 @@ const HOST_WAKE_CHUNK: usize = 9;
 const HOST_FAIL_STATUS: usize = HOST_WAKE_SCRATCH + 5 * 8;
 /// Tasks per `__taskFail` call: ids and statuses both fit in the tail.
 const HOST_FAIL_CHUNK: usize = 5;
+/// Where a resume's classes start: after three ids (24 bytes), five classes
+/// (20) end at 184+24+20 = 228, and five payloads (20) at 248 of 256.
+const HOST_RESUME_CLASSES: usize = HOST_WAKE_SCRATCH + 3 * 8;
+/// Where a resume's payloads start: after the classes.
+const HOST_RESUME_PAYLOADS: usize = HOST_RESUME_CLASSES + 5 * 4;
+/// Tasks per `__taskResume` call: three ids, five classes, five payloads.
+const HOST_RESUME_CHUNK: usize = 3;
 /// The loop's wait slice, in ms: a bounded condvar wait, not a poll. It exists
 /// so a guest that reports "running" with nothing outstanding cannot hang the
 /// process; a healthy loop returns on an event long before it expires.

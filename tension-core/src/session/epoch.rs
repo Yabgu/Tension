@@ -128,6 +128,10 @@ where
 
     let posting = cx.as_context().data().posting.clone();
     let adapters = cx.as_context().data().adapters.clone();
+    // Push or pull: a guest that exports `__taskWake` has an executor to hand
+    // wakes to; one that does not is driven by its own loop, and its records
+    // travel the callback path exactly as they did before 0.7.0c.
+    let data_has_push = cx.as_context().data().task_wake.is_some();
     let capacities = *session.ring_capacities();
 
     // 3. Block, when this is a wait.
@@ -173,7 +177,7 @@ where
     let mut deliveries: Vec<Delivery> = Vec::new();
     /// `(class, key)` pairs this epoch published, matched to task ids after the
     /// arena borrow ends.
-    let mut completions: Vec<(u32, u32)> = Vec::new();
+    let mut completions: Vec<(u32, u32, i32)> = Vec::new();
     {
         let arena_bytes = memory.data_mut(&mut *cx);
         for class in &classes {
@@ -215,7 +219,11 @@ where
                     continue;
                 }
                 let record = arena::read_event_record(arena_bytes, at);
-                completions.push((record.class, record.a));
+                // The word a resume carries: `b`, the payload slot every
+                // awaitable class uses (`rt.classify` reads it as the unread
+                // count / resource id / job result). The `f0`/`f1` words are
+                // for classes nothing awaits.
+                completions.push((record.class, record.a, record.b as i32));
             }
         }
 
@@ -251,12 +259,28 @@ where
     //     Matched ids go to `HostState::wake_batch`. The caller decides whether
     //     to hand them to `__taskWake`: the host loop does (0.7.0a); a verb does
     //     not, because a guest that drives its own epochs has no push handler.
-    if !completions.is_empty() {
+    //
+    //     **A completion with no waiter is buffered, not dropped** (§4.9,
+    //     0.7.0d-pre): the host keeps it per class, bounded by that class's ring
+    //     capacity, and the park that arrives later claims it. This is the
+    //     guest-side 4e-1 buffer's job moved to the executor — and under the
+    //     push path it is not optional: the AI stream posts READY and DONE for
+    //     one key in one epoch, and the second arrival finds the table entry
+    //     already taken by the first.
+    //
+    //     Gated on the guest exporting `__taskWake`: a guest without a push
+    //     handler has nobody to hand a wake batch to, and buffering for it would
+    //     only accumulate records nothing reads.
+    if !completions.is_empty() && data_has_push {
         let mut ctx = cx.as_context_mut();
         let data = ctx.data_mut();
-        for (class, key) in &completions {
-            if let Some(task_id) = data.scheduler.take(*class, *key) {
-                data.wake_batch.push(task_id);
+        for (class, key, payload) in &completions {
+            if let Some(task_id) = data.scheduler.deliver(*class, *key, *payload) {
+                data.wake_batch.push(crate::scheduler::Wake {
+                    task_id,
+                    class: *class,
+                    payload: *payload,
+                });
             }
         }
     }
@@ -596,6 +620,7 @@ mod tests {
                     scheduler: crate::scheduler::Scheduler::new(),
                     wake_batch: Vec::new(),
                     task_wake: None,
+                    task_resume: None,
                     task_fail: None,
                     drop_seen: [0; crate::session::arena::CLASS_COUNT],
                     game_running: None,

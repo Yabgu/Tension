@@ -265,6 +265,39 @@ case "$frame_out" in
   *"FRAME loop finished after 3 frames"*) echo "    == guest-frame: OK" ;;
   *) echo "run.sh: guest-frame: the frame loop did not run to its own exit" >&2; cat "$root/build/guest-frame.err" >&2; exit 1 ;;
 esac
+# The early-completion table (0.7.0d-pre): `--post-test-events` queues three job
+# records before the guest runs, and the guest waits two frames before parking —
+# so the record it wants was published with nobody waiting. It must still be
+# there when the park arrives. Without the host's table the park waits forever.
+echo "==> compiling guest-early.ts"
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-early.ts \
+        --config build/session.asconfig.json -o build/guest-early.wasm ) >build/guest-early.compile 2>&1; then
+  if grep -q "__taskResume" build/guest-early.compile; then
+    echo "    == guest-early: SKIP — the installed tensionscript has no __taskResume (needs >= 0.6.1)"
+    true
+  else
+    cat build/guest-early.compile >&2
+    echo "run.sh: guest-early: compile failed for a reason other than the missing export" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-early.wasm (host-owned loop, completion before park)"
+set +e
+early_out="$(timeout 60 "$core" --post-test-events "$root/build/guest-early.wasm" 2>"$root/build/guest-early.err")"
+early_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$early_out"
+if [ "$early_status" -ne 0 ]; then
+  echo "run.sh: guest-early: exited $early_status; stderr:" >&2
+  cat "$root/build/guest-early.err" >&2
+  exit 1
+fi
+case "$early_out" in
+  *"EARLY resumed with 6"*) echo "    == guest-early: OK" ;;
+  *) echo "run.sh: guest-early: a completion published before the park was lost" >&2; cat "$root/build/guest-early.err" >&2; exit 1 ;;
+esac
+fi
+
 # The drop path (0.7.0c): a record the sub-ring refuses must wake its parked
 # task with -EIO, not leave it parked. `--post-test-events` queues three job
 # records; the guest opens a two-slot ring with no callbacks, so the third is

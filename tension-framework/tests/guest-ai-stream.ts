@@ -30,6 +30,8 @@ import {
 } from "../assembly/runtime";
 import { AiConfig, AiRole, Session } from "../assembly/ai";
 import { Task } from "~lib/task";
+import { __taskBindTable } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 /// Whether this run is the stalled-stream control.
 let stallMode: bool = false;
@@ -123,6 +125,7 @@ async function streaming(session: Session): void {
 
 export function _start_game(): void {
   rt.start();
+  __taskBindTable(16);
 
   const callbacks = rt.callbacks();
   const opened = RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks);
@@ -154,11 +157,16 @@ export function _start_game(): void {
     streaming(session);
   }
 
-  // The same driver the example uses: tick while work is queued, block when it
-  // is not.
+  reportOnFinish(session);
+}
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
+}
+
+async function reportOnFinish(session: Session): void {
   while (!finished) {
-    RuntimeSession.wait(rt.hasRunnable() ? 0 : -1);
-    rt.runReady();
+    await rt.frame();
   }
 
   if (stallMode) {

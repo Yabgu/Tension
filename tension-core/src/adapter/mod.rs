@@ -1147,6 +1147,7 @@ mod tests {
                 scheduler: crate::scheduler::Scheduler::new(),
                 wake_batch: Vec::new(),
                 task_wake: None,
+                task_resume: None,
                 task_fail: None,
                 drop_seen: [0; crate::session::arena::CLASS_COUNT],
                 game_running: None,

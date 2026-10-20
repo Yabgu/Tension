@@ -1259,6 +1259,11 @@ fn open_with_caller(
             // guest cannot post until this verb returns, and an adapter thread
             // that posts concurrently reads one value or the other, never both.
             caller.data().posting.set_capacities(*session.ring_capacities());
+            // The same live numbers bound the recent-completions table (§4.9):
+            // a class's ring capacity is how many undelivered records it can
+            // have, so it is how many the host may need to hold.
+            let live = *session.ring_capacities();
+            caller.data_mut().scheduler.set_capacities(&live);
             log(&format!(
                 "session_open(cfg_len={cfg_len}, arena={}, ceiling={}) -> 0",
                 decoded.arena_size, decoded.max_arena_size
@@ -1895,6 +1900,7 @@ mod lifecycle {
                 scheduler: crate::scheduler::Scheduler::new(),
                 wake_batch: Vec::new(),
                 task_wake: None,
+                task_resume: None,
                 task_fail: None,
                 drop_seen: [0; crate::session::arena::CLASS_COUNT],
                 game_running: None,
@@ -2319,6 +2325,7 @@ mod verbs {
                 scheduler: crate::scheduler::Scheduler::new(),
                 wake_batch: Vec::new(),
                 task_wake: None,
+                task_resume: None,
                 task_fail: None,
                 drop_seen: [0; crate::session::arena::CLASS_COUNT],
                 game_running: None,

@@ -43,14 +43,14 @@
 // phase — not a reason to leave the API unwritten.
 #![allow(dead_code)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use wasmtime::{Caller, Linker};
 
 use crate::session::arena::{
-    CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY, CLASS_DEVICE_LOST, CLASS_FRAME, CLASS_INPUT_KEY,
-    CLASS_INPUT_MOUSE, CLASS_JOB_DONE, CLASS_JOB_FAILED, CLASS_LOG, CLASS_RESOURCE_FAILED,
-    CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED,
+    CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_AI_READY, CLASS_COUNT, CLASS_DEVICE_LOST, CLASS_FRAME,
+    CLASS_INPUT_KEY, CLASS_INPUT_MOUSE, CLASS_JOB_DONE, CLASS_JOB_FAILED, CLASS_LOG,
+    CLASS_RESOURCE_FAILED, CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED,
 };
 use crate::HostState;
 
@@ -203,6 +203,134 @@ impl ParkTable {
     }
 }
 
+/// One task to resume, with what should be on the record when it runs.
+///
+/// The host used to carry bare task ids, which is all `__taskWake` takes. Under
+/// the push path that is not enough: the *record* the guest awaited must carry
+/// the delivered class and payload, or `rt.classify` reads zeros — measured as
+/// the failed retirement's `C2 readyWakes=0 firstPayload=0`. `__taskResume`
+/// carries all three, and this is its argument.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct Wake {
+    pub task_id: u64,
+    pub class: u32,
+    pub payload: i32,
+}
+
+/// One completion that arrived before any task parked on its key.
+///
+/// The guest-side 4e-1 buffer's entry, moved to the host (0.7.0d-pre): the
+/// buffer existed so a producer that posts before the consumer parks does not
+/// lose the record. With the push path the host is what matches, so the host is
+/// what must remember.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct BufferedCompletion {
+    pub class: u32,
+    pub payload: i32,
+}
+
+/// Completions that arrived with no waiter, per class, bounded (§4.9).
+///
+/// **One entry per `(family, key)`, replaced.** The guest-side buffer this
+/// replaces did `buffer.set(key, entry)`, and that is the right rule for the
+/// same reason: these completions are *levels*, not events. The AI stream posts
+/// READY then DONE for one session; a park that finds both must see DONE (the
+/// newest), because the bytes READY announced are still in the reply buffer and
+/// `session.read()` — not the count — is what reads them. Holding both would
+/// hand the guest a stale READY after the generation already finished.
+///
+/// **The bound is the class's ring capacity**, the number the session already
+/// promises a producer may have in flight. A well-formed class therefore never
+/// evicts; an eviction means the guest is not awaiting at all.
+#[derive(Debug, Default)]
+pub struct RecentCompletions {
+    /// `(family, key) → the newest completion nobody has claimed`.
+    entries: HashMap<(u32, u32), BufferedCompletion>,
+    /// Arrival order for eviction, oldest first.
+    order: VecDeque<(u32, u32)>,
+    /// Per-class bound: the class's ring capacity.
+    capacities: [u32; CLASS_COUNT],
+    buffered: u64,
+    evicted: u64,
+}
+
+impl RecentCompletions {
+    pub fn new() -> RecentCompletions {
+        RecentCompletions::default()
+    }
+
+    /// Adopt the session's configured ring capacities — the class's own bound.
+    pub fn set_capacities(&mut self, capacities: &[u32; CLASS_COUNT]) {
+        self.capacities = *capacities;
+    }
+
+    fn count_of_class(&self, class: u32) -> usize {
+        self.entries
+            .values()
+            .filter(|entry| entry.class == class)
+            .count()
+    }
+
+    /// Store a completion nobody is waiting for, replacing any older one for the
+    /// same key.
+    pub fn buffer(&mut self, class: u32, key: u32, payload: i32) {
+        let capacity = self.capacities.get(class as usize).copied().unwrap_or(0) as usize;
+        if capacity == 0 {
+            // A class nothing can await (POLLED FRAME, a signal-only class) has
+            // no park to serve; the loop resolves FRAME per key instead.
+            return;
+        }
+        let family = family_of(class);
+        let at = (family, key);
+        // A replacement is not new storage, so it is not counted as buffered.
+        let replacing = self.entries.contains_key(&at);
+        if !replacing {
+            while self.count_of_class(class) >= capacity {
+                // Oldest-first, and only within the class that is over its
+                // bound: a busy family must not evict another family's records.
+                let Some(index) = self
+                    .order
+                    .iter()
+                    .position(|(f, k)| self.entries.get(&(*f, *k)).is_some_and(|e| e.class == class))
+                else {
+                    break;
+                };
+                if let Some(old) = self.order.remove(index) {
+                    self.entries.remove(&old);
+                    self.evicted += 1;
+                }
+            }
+            self.order.push_back(at);
+            self.buffered += 1;
+        }
+        self.entries.insert(at, BufferedCompletion { class, payload });
+    }
+
+    /// Claim the completion awaiting `(family, key)`, if one is here.
+    pub fn take(&mut self, family: u32, key: u32) -> Option<BufferedCompletion> {
+        let at = (family, key);
+        let entry = self.entries.remove(&at)?;
+        if let Some(index) = self.order.iter().position(|(f, k)| (*f, *k) == at) {
+            self.order.remove(index);
+        }
+        Some(entry)
+    }
+
+    /// How many completions were stored, and how many evicted to make room.
+    pub fn counters(&self) -> (u64, u64) {
+        (self.buffered, self.evicted)
+    }
+
+    /// Entries held right now.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 /// Why a park was refused. Both variants are the contract's, kept apart (§5.1).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ParkRefusal {
@@ -245,6 +373,9 @@ pub struct Scheduler {
     /// the guest sets the record's status before resuming, which is exactly the
     /// shape a lost completion already uses (§4.7).
     pending_refusals: Vec<(u64, i32)>,
+    /// Completions that arrived before their waiter (§4.9) — the guest-side
+    /// 4e-1 buffer's job, moved here because the host is what matches.
+    recent: RecentCompletions,
 }
 
 impl Default for Scheduler {
@@ -262,7 +393,44 @@ impl Scheduler {
             class_refusals: 0,
             scheduler_refusals: 0,
             pending_refusals: Vec::new(),
+            recent: RecentCompletions::new(),
         }
+    }
+
+    /// Adopt the session's ring capacities: the recent-completions bound.
+    pub fn set_capacities(&mut self, capacities: &[u32; CLASS_COUNT]) {
+        self.recent.set_capacities(capacities);
+    }
+
+    /// The recent-completions counters, `(buffered, evicted)`.
+    pub fn recent_counters(&self) -> (u64, u64) {
+        self.recent.counters()
+    }
+
+    /// Completions held right now.
+    pub fn recent_len(&self) -> usize {
+        self.recent.len()
+    }
+
+    /// A completion arrived: hand it to a parked task, or keep it for the park
+    /// that has not happened yet.
+    ///
+    /// Returns the task id when somebody was waiting. This is the whole of the
+    /// match phase's decision, which is why it lives beside the tables rather
+    /// than in the epoch.
+    pub fn deliver(&mut self, class: u32, key: u32, payload: i32) -> Option<u64> {
+        match self.take(class, key) {
+            Some(task_id) => Some(task_id),
+            None => {
+                self.recent.buffer(class, key, payload);
+                None
+            }
+        }
+    }
+
+    /// A task just parked: a completion that arrived early is delivered now.
+    pub fn take_early(&mut self, class: u32, key: u32) -> Option<BufferedCompletion> {
+        self.recent.take(family_of(class), key)
     }
 
     /// Register `task_id` as parked on `(class, key)`.
@@ -376,6 +544,26 @@ pub fn scheduler_park(caller: &mut Caller<'_, HostState>, task_id: i64, class: i
             .data_mut()
             .scheduler
             .queue_refusal(task_id, refusal.status());
+        return;
+    }
+    // A completion that arrived before this park (§4.9): hand it over now. The
+    // task is already in the guest's slot table — `__taskPark` wrote it before
+    // calling — so the wake has somewhere to land, and the next host-loop
+    // iteration resumes it with the payload it was waiting for.
+    if let Some(early) = caller.data_mut().scheduler.take_early(class, key) {
+        // The park just recorded is resolved by this completion, so take it
+        // back: leaving it would keep `parked()` above zero and the host loop
+        // waiting for a task that is about to be resumed.
+        let resolved = caller
+            .data_mut()
+            .scheduler
+            .take(class, key)
+            .unwrap_or(task_id);
+        caller.data_mut().wake_batch.push(Wake {
+            task_id: resolved,
+            class: early.class,
+            payload: early.payload,
+        });
     }
 }
 
