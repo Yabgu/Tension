@@ -218,3 +218,60 @@ The rule: **after any refactor that touches more than one file, run `git status`
 before trusting a test run.** An uncommitted hunk that the build does not need
 is exactly the kind of thing `cargo build` will not catch and `cargo test` will,
 depending on what you remembered to stage.
+
+## An awaitable accessor returns a stamped handle, never an async wrapper
+
+`rt.frame()` was `return frameWait();`, and `frameWait` was `async`. The chain was:
+
+```
+gameLoop  --awaits-->  frameWait's own task
+frameWait --awaits-->  the (FRAME, 0) record
+```
+
+The host woke the FRAME slot, `frameWait` resumed and returned, and
+`__taskCompleteResult` pushed `gameLoop` onto the **ready queue** — which only
+`__taskTick` drains, and a host-owned loop never calls it. Every intermediate
+signal was correct: the wake batch held the right id, the slot resumed, the task
+completed. The wake simply landed one layer below the task that needed resuming,
+so the symptom was a silent spin with no failing step to point at.
+
+The rule: an accessor a guest `await`s returns a **stamped handle** — a `Task`
+whose record carries `(class, key)` — the way `rt.job()` and `rt.frame()` do.
+An `async` wrapper parks the *wrapper's* task, not the caller's. Inside a
+guest-driven loop the extra layer costs one tick (`rt.runReady()` twice over two
+iterations) and hides; under a host loop it is a hang.
+
+The corollary: classification that needs the record is a **synchronous**
+function (`rt.classify`), taking the handle after the await. It must not park.
+
+## The header page's tail has no owner, and no check
+
+`0x800` is not the canary gap. The arena's regions are:
+
+| range | owner | checked by |
+|---|---|---|
+| `0x000..0x100` | `ArenaControl` (256 B) | magic/version on open; `CONTROL_STATE` onward is session-owned |
+| `0x100..0x190` | session info (144 B) | — |
+| `0x200..0x320` | region table (12 × 24 B) | `region_count` on open |
+| `0x320..0x380` | manifest (12 × 8 B) | — |
+| **`0x380..0x1000`** | **nobody** | **nothing** |
+| `0x1000..0x5F6020` | zero band | `verify_band_is_zero`, at open |
+| `0x5F6020..0x800000` | canary lattice | `verify_canary_lattice`, at open |
+
+So `verify_band_is_zero` starts at `HEADER_PAGE_SIZE`, and the lattice covers
+`[LAYOUT_FLOOR, memory_base)`. Page 0's tail is in neither, and both checks run
+at session **open** — nothing re-checks the arena while the session is live.
+
+The consequence for the wake buffer: staging ids at `0x800` was not detected and
+did not trap, but it claimed memory with no owner. Any later use of that padding
+would have been a silent collision in the other direction. The buffer now lives
+in the control block's session-owned tail (`CONTROL_OFFSET + 184`, after
+`CONTROL_SESSION_NONCE`), which is the block the session documents as its own.
+
+## The wake buffer's home
+
+`HOST_WAKE_SCRATCH = session::arena::CONTROL_OFFSET + 184`: `CONTROL_SESSION_NONCE`
+ends at 184, `CONTROL_SIZE` is 256, so 72 bytes are free. Nine ids per call,
+chunked (`HOST_WAKE_CHUNK = 9`) — a larger batch becomes several `wake` calls,
+still batched from the guest's side. Do not move it back into page 0's padding;
+that range is unowned (previous section).
