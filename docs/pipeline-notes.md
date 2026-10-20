@@ -382,3 +382,22 @@ run printed in order; the host's exit condition (`_game_running() == 0`, nothing
 parked, empty batch) has no path that can leave a task parked after the last
 frame, because the frame add takes the id out of the table. No fix attempted; the
 observation stands as unexplained rather than assigned a cause it has not earned.
+
+## A structural change to `HostState` carries an obligation only the test build sees
+
+`cargo build` does not compile `#[cfg(test)]` modules. So adding a field to
+`HostState` and updating the run-path literal compiles, the binary runs, the
+framework suite passes, and every example passes — against a tree whose test
+modules no longer build. `cargo test` is the only thing that sees the six
+`#[cfg(test)]` literals in other modules, and it fails with
+`missing field ... in initializer of HostState`.
+
+This happened twice in two phases (0.7.0c's `task_fail`/`drop_seen`, 0.7.0d-pre's
+`task_resume`). The rule: **a change to a type that is constructed in test code is
+not verified until `cargo test` has compiled it** — not "until the tests pass",
+until it *compiles*. Run `cargo test` before the commit, not after the phase.
+
+The `#[cfg(test)]` literals live in `solver/p5_tests.rs`, `solver/p8e_tests.rs`,
+`adapter/mod.rs`, `adapter/ffi.rs`, `session/mod.rs` (two), and
+`session/epoch.rs`. Inside those modules the arena constants are
+`crate::session::arena::*`, not `session::arena::*`.
