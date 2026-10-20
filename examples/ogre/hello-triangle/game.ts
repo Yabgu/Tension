@@ -17,6 +17,12 @@
 import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake } from "~lib/task-rt";
 
 const WINDOWED_RENDERER = "gl3plus";
 
@@ -24,6 +30,22 @@ const WINDOWED_RENDERER = "gl3plus";
 function fail(what: string): void {
   print("hello-triangle: " + what);
   assert(false, what);
+}
+
+/// The pixel census. A free function, not inline: the async body refuses
+/// `continue` and a `<T>` cast, and this needs both.
+function reportFrame(frame: ArrayBuffer, bytes: i32): void {
+  // The workspace clears to a dark grey, so "not background" is what we drew.
+  const pixels = Uint8Array.wrap(frame);
+  let drawn = 0, sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
+  for (let i = 0; i < bytes; i += 4) {
+    if (pixels[i] < 40 && pixels[i + 1] < 40 && pixels[i + 2] < 40) continue;
+    drawn++;
+    sum_r += <f64>pixels[i]; sum_g += <f64>pixels[i + 1]; sum_b += <f64>pixels[i + 2];
+  }
+  print("rendered " + ogre.frameCount().toString() + " frames, " + drawn.toString() +
+        " non-background pixels, mean rgb " + u32(sum_r / drawn).toString() + "/" +
+        u32(sum_g / drawn).toString() + "/" + u32(sum_b / drawn).toString());
 }
 
 // ---------------------------------------------------------------------------
@@ -60,17 +82,46 @@ class Game {
 
   /// Open the session and the renderer, submit the triangle, then either report
   /// structurally (headless) or grab a frame.
-  run(): void {
+  async run(): void {
+    // Declared before the first await: the transform scopes a local declared
+    // after one to its own resume guard.
+    let from: u64 = 0;
+    let bytes: i32 = 0;
+
     this.openSession();
     this.openRenderer();
-    this.submitScene();
+    const mesh: i32 = this.buildMesh();
+
+    // The render thread builds the mesh on its next pass; the resource record is
+    // where the guest learns it happened. Waiting on the frame clock is what
+    // lets the host wake this task — no `RuntimeSession.wait`, no `rt.runReady()`.
+    while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
+      if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the mesh was never built");
+      await rt.frame();
+    }
+    this.submitScene(mesh);
 
     if (!this.options.windowed) {
       print("renderer=null: no pixels to read; submitted 1 object");
-      return;
+    } else {
+      // The frame counter is the renderer's own progress, so waiting on it is
+      // waiting on something real. A screenshot is probe/consume: ask, wait,
+      // read. The waiting is the frame clock now — no `RuntimeSession.wait`.
+      from = ogre.frameCount();
+      while (ogre.frameCount() < from + 300) await rt.frame();
+      ogre.screenshot(0, 0);
+      while (ogre.frameCount() < from + 340) await rt.frame();
+      bytes = ogre.screenshot(0, 0);
+      if (bytes <= 0) fail("no frame was downloaded");
+      const frame = new ArrayBuffer(bytes);
+      if (ogre.screenshot(changetype<usize>(frame), bytes) != bytes) {
+        fail("the frame came back short");
+      }
+      reportFrame(frame, bytes);
     }
 
-    this.captureFrame();
+    this.shutdown();
+    finished = true;
   }
 
   /// The session itself: the loop, the arena, the event ring, the frame
@@ -95,7 +146,7 @@ class Game {
 
   /// Build the triangle in the guest's own memory, then hand the renderer a
   /// material, a camera and the mesh placed in the world.
-  submitScene(): void {
+  buildMesh(): i32 {
     // Nine numbers and three indices: a triangle in the XY plane, one unit either
     // way from the origin. This is the whole mesh — no file, no job, no bytes to
     // read.
@@ -107,11 +158,16 @@ class Game {
     // record is where a guest learns it happened. Submitting a renderable against
     // a resource that is not READY yet is refused and skipped, so wait for the
     // record exactly as a loader's job is waited for.
-    while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
-      if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the mesh was never built");
-      RuntimeSession.wait(5);
-      rt.runReady();
-    }
+    // The render thread builds it; the readiness wait belongs to `run`, which
+    // holds every `await` in this guest. An async helper here would park *its*
+    // task and leave `run` on the ready queue a host loop never drains. So the
+    // wait sits between this method and `submitScene`, both synchronous.
+    return mesh;
+  }
+
+  /// The material, the camera and the renderable — after the mesh is READY,
+  /// because a renderable naming a resource that is still building is refused.
+  submitScene(mesh: i32): void {
 
     // Unlit is the simplest material: a colour, and no lights required.
     const material = ogre.Material.unlit(0.9, 0.2, 0.2);
@@ -133,31 +189,6 @@ class Game {
     if (ogre.submitRenderable(renderable) != 0) fail("submitRenderable refused");
   }
 
-  /// The frame counter is the renderer's own progress, so waiting on it is
-  /// waiting on something real. A screenshot is probe/consume: ask, wait, read.
-  private captureFrame(): void {
-    const from = ogre.frameCount();
-    while (ogre.frameCount() < from + 300) { RuntimeSession.wait(16); rt.runReady(); }
-    ogre.screenshot(0, 0);
-    while (ogre.frameCount() < from + 340) { RuntimeSession.wait(16); rt.runReady(); }
-    const bytes = ogre.screenshot(0, 0);
-    if (bytes <= 0) fail("no frame was downloaded");
-    const frame = new ArrayBuffer(bytes);
-    if (ogre.screenshot(changetype<usize>(frame), bytes) != bytes) fail("the frame came back short");
-
-    // The workspace clears to a dark grey, so "not background" is what we drew.
-    const pixels = Uint8Array.wrap(frame);
-    let drawn = 0, sum_r = 0.0, sum_g = 0.0, sum_b = 0.0;
-    for (let i = 0; i < bytes; i += 4) {
-      if (pixels[i] < 40 && pixels[i + 1] < 40 && pixels[i + 2] < 40) continue;
-      drawn++;
-      sum_r += <f64>pixels[i]; sum_g += <f64>pixels[i + 1]; sum_b += <f64>pixels[i + 2];
-    }
-    print("rendered " + ogre.frameCount().toString() + " frames, " + drawn.toString() +
-          " non-background pixels, mean rgb " + u32(sum_r / drawn).toString() + "/" +
-          u32(sum_g / drawn).toString() + "/" + u32(sum_b / drawn).toString());
-  }
-
   /// Bring the renderer and the session down. Safe to call on any exit path.
   shutdown(): void {
     ogre.shutdown();
@@ -170,7 +201,19 @@ class Game {
 // ---------------------------------------------------------------------------
 
 export function _start_game(): void {
+  rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
   const game = new Game(parseArgs());
+  // A floating task: it runs the synchronous prologue and parks on the mesh's
+  // readiness. From here the host owns the loop.
   game.run();
-  game.shutdown();
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared after
+/// teardown, so the host's exit cannot cut the last frame or the readback off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
 }
