@@ -20,6 +20,12 @@ import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt 
 import * as ogre from "tension-framework/assembly/ogre";
 // The input capability's SDK: the six verbs and the state record.
 import * as input from "tension-framework/assembly/input";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake } from "~lib/task-rt";
 
 const WINDOWED_RENDERER = "gl3plus";
 const WIDTH = 960;
@@ -70,12 +76,21 @@ class Game {
   private z: f32 = 14.0;
   private yaw: f32 = 0.0;
   private pitch: f32 = -0.15;
+  // The loop's state (0.7.0b): fields, because `step` runs in a different call
+  // from the one that started the loop.
+  private running: bool = false;
+  private frames: u32 = 0;
 
   constructor(options: Options) {
     this.options = options;
   }
 
-  run(): void {
+  async run(): void {
+    // Declared before the first await: the transform scopes a local declared
+    // after one to its own resume guard.
+    let mesh: i32 = 0;
+    let token: u64 = 0;
+
     this.openSession();
     this.openRenderer();
 
@@ -84,12 +99,45 @@ class Game {
       // pretending. This is the headless shape the other examples use.
       print("input-camera: renderer=null — there is no window to attach input to.");
       print("input-camera: run WITHOUT TENSION_OGRE_HEADLESS to fly the camera.");
+      this.shutdown();
+      finished = true;
       return;
     }
 
-    this.buildScene();
-    this.attachInput();
-    this.loop();
+    // Both waits are the frame clock: the render thread is what builds the mesh
+    // and what brings the window up, so its frame is the signal that either has
+    // happened. No `RuntimeSession.wait`, no `rt.runReady()`.
+    mesh = this.buildMesh();
+    while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
+      if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the marker mesh was never built");
+      await rt.frame();
+    }
+    this.submitScene(mesh);
+
+    // The window comes up on the render thread, so the handle is awaited rather
+    // than assumed.
+    let waited: i32 = 0;
+    while (token == 0 && waited < 600) {
+      token = ogre.windowHandle();
+      if (token == 0) {
+        await rt.frame();
+        waited++;
+      }
+    }
+    if (token == 0) fail("no window handle arrived within ~10 s");
+    this.attachInput(token);
+
+    this.beginLoop();
+    // The frame loop: one input read and one camera submit per presented frame.
+    // No `break` — the escape key clears `running`, which is the loop's exit.
+    while (this.running) {
+      await rt.frame();
+      this.step();
+    }
+    this.endLoop();
+
+    this.shutdown();
+    finished = true;
   }
 
   private openSession(): void {
@@ -114,15 +162,16 @@ class Game {
   /// A grid of coloured markers to fly through. One triangle mesh (built from
   /// nine numbers, like hello-triangle) is reused by every renderable, and two
   /// unlit materials alternate so the grid reads as structure rather than noise.
-  private buildScene(): void {
+  private buildMesh(): i32 {
     const mesh = ogre.MeshBuilder.triangle(0.0, -1.0, 0.0, 0.9, 1.0, 0.0, -0.9, 1.0, 0.0);
     if (mesh <= 0) fail("MeshBuilder.triangle refused (" + mesh.toString() + ")");
-    while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
-      if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the marker mesh was never built");
-      RuntimeSession.wait(5);
-      rt.runReady();
-    }
+    // The readiness wait is `run`'s: an `await` here would park this method's
+    // own task and strand the caller on a ready queue the host never drains.
+    return mesh;
+  }
 
+  /// The materials and the marker grid, after the mesh is READY.
+  private submitScene(mesh: i32): void {
     const warm = ogre.Material.unlit(0.95, 0.45, 0.15);
     warm.materialId = 1;
     if (ogre.submitMaterial(warm) != 0) fail("submitMaterial refused (warm)");
@@ -146,17 +195,7 @@ class Game {
   /// The guest-mediated handoff: the renderer's XID from `ogre.windowHandle()`,
   /// handed to the input capability. The window comes up on the render thread,
   /// so the handle is polled for a bounded time rather than assumed.
-  private attachInput(): void {
-    let token: u64 = 0;
-    for (let waited: i32 = 0; waited < 600 && token == 0; waited++) {
-      token = ogre.windowHandle();
-      if (token == 0) {
-        RuntimeSession.wait(16);
-        rt.runReady();
-      }
-    }
-    if (token == 0) fail("no window handle arrived within ~10 s");
-
+  private attachInput(token: u64): void {
     const handle = input.open(0);
     if (handle <= 0) fail("input_open refused (" + handle.toString() + ")");
     this.handle = handle;
@@ -170,12 +209,18 @@ class Game {
     print("input-camera: flying. WASD moves, the mouse turns, escape quits.");
   }
 
-  /// One epoch per frame: wait, read the state, move and turn, submit.
-  private loop(): void {
-    let frames: u32 = 0;
-    while (true) {
-      RuntimeSession.wait(16);
-      rt.runReady();
+  /// The loop's starting point.
+  private beginLoop(): void {
+    this.running = true;
+    this.frames = 0;
+  }
+
+  /// One frame: read the input state, turn, walk, submit the camera.
+  ///
+  /// Synchronous, and called from `run` right after `await rt.frame()`: the body
+  /// is full of `<f32>` casts and `<f64>` casts, which the async transform
+  /// refuses inside a lowered body.
+  private step(): void {
       if (input.state(this.handle, this.stateBuffer) <= 0) {
         fail("input_state refused — is the capability still attached?");
       }
@@ -206,7 +251,9 @@ class Game {
         this.z += (moveZ / length) * MOVE_SPEED * FRAME_DT;
       }
 
-      if (state.keyHeld(SCANCODE_ESCAPE)) break;
+      if (state.keyHeld(SCANCODE_ESCAPE)) {
+        this.running = false;   // the loop's exit; `break` is refused in an async body
+      }
 
       // The camera record: yaw about Y, then pitch about the camera's own X,
       // as one quaternion (the renderer takes orientation, not angles).
@@ -226,10 +273,12 @@ class Game {
       camera.rotationW = cyq * cpq;
       if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
-      frames++;
-    }
+      this.frames++;
+  }
 
-    print("input-camera: " + frames.toString() + " frames, camera at (" +
+  /// The one line the run ends on.
+  private endLoop(): void {
+    print("input-camera: " + this.frames.toString() + " frames, camera at (" +
           this.x.toString() + ", " + this.y.toString() + ", " + this.z.toString() +
           "), yaw " + this.yaw.toString() + ", pitch " + this.pitch.toString());
   }
@@ -242,7 +291,19 @@ class Game {
 }
 
 export function _start_game(): void {
+  rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
   const game = new Game(parseArgs());
+  // A floating task: the synchronous prologue runs, then it parks on the frame
+  // clock. From here the host owns the loop.
   game.run();
-  game.shutdown();
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared after
+/// teardown, so the host's exit cannot cut the summary off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
 }
