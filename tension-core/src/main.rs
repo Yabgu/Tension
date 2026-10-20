@@ -1476,35 +1476,41 @@ fn host_loop(
         // Hand the batch to the guest. One `wake` for the whole epoch's matches,
         // which is the contract's batching (§2.2): the host names the tasks.
         let batch = std::mem::take(&mut store.data_mut().wake_batch);
-        if !batch.is_empty() {
-            let bytes = batch.len() * 8;
+        // Chunked: the scratch holds nine ids, and a batch can be larger (a job
+        // flood plus the frame). Each chunk is one `wake` call, so the guest
+        // still sees the contract's batched wake (§2.2) — just across several.
+        for chunk in batch.chunks(HOST_WAKE_CHUNK) {
             let Some(memory) = store.data().arena else {
                 anyhow::bail!("host loop: no arena to write wake ids into");
             };
-            let ptr = HOST_WAKE_SCRATCH as u32;
             {
                 let data = memory.data_mut(&mut *store);
-                if ptr as usize + bytes > data.len() {
+                if HOST_WAKE_SCRATCH + chunk.len() * 8 > data.len() {
                     anyhow::bail!("host loop: the wake scratch does not fit the arena");
                 }
-                for (index, id) in batch.iter().enumerate() {
-                    let at = ptr as usize + index * 8;
+                for (index, id) in chunk.iter().enumerate() {
+                    let at = HOST_WAKE_SCRATCH + index * 8;
                     data[at..at + 8].copy_from_slice(&id.to_le_bytes());
                 }
             }
-            wake.call(&mut *store, (ptr as i32, batch.len() as i32))?;
+            wake.call(&mut *store, (HOST_WAKE_SCRATCH as i32, chunk.len() as i32))?;
         }
     }
     Ok(())
 }
 
-/// Where the loop stages the ids it is about to hand `__taskWake`, as an arena
-/// offset. The guest's table is at least `MEMORY_BASE` bytes in, and this is the
-/// first 64 KiB of the arena — the header page and the control block, which the
-/// loop owns between epochs and which no guest allocation occupies (the guest's
-/// heap starts at `MEMORY_BASE`, `session.json`). Sized for 1024 ids, the
-/// scheduler table's capacity.
-const HOST_WAKE_SCRATCH: usize = 0x800;
+/// Where the loop stages the ids it hands `__taskWake`, as an arena offset.
+///
+/// **The control block's unused tail**, not the header page's canary gap. The
+/// first cut wrote at `0x800`, which lies between the manifest (ends `0x368`)
+/// and `HEADER_PAGE_SIZE` (`0x1000`) — the gap the canary lattice fills. The
+/// write did not trap, because the lattice is verified in tests rather than at
+/// runtime, so it silently corrupted the one region whose whole purpose is to
+/// prove nothing wrote there. The control block is session-owned, already
+/// host-writable, and its last field ends at 184 of 256 bytes.
+const HOST_WAKE_SCRATCH: usize = session::arena::CONTROL_OFFSET + 184;
+/// Ids that fit in the control block's tail: (256 - 184) / 8.
+const HOST_WAKE_CHUNK: usize = 9;
 /// The loop's wait slice, in ms: a bounded condvar wait, not a poll. It exists
 /// so a guest that reports "running" with nothing outstanding cannot hang the
 /// process; a healthy loop returns on an event long before it expires.

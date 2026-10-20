@@ -241,6 +241,30 @@ case "$push_out" in
   *"PUSH resumed with 2"*) echo "    == guest-push: OK" ;;
   *) echo "run.sh: guest-push: did not resume through __taskWake" >&2; cat "$root/build/guest-push.err" >&2; exit 1 ;;
 esac
+
+# The frame clock (0.7.0a): the guest awaits `rt.frame()`, which parks it on
+# `(FRAME, 0)`. The host loop's per-iteration frame add is the only thing that
+# resolves it — the guest never calls `__taskTick`, and no ring record exists
+# for FRAME. The guest stops itself after three frames, so a loop that fails to
+# wake it shows up as a timeout, not a hang in CI.
+echo "==> compiling guest-frame.ts"
+( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-frame.ts \
+    --config build/session.asconfig.json -o build/guest-frame.wasm )
+echo "==> running guest-frame.wasm (host-owned frame loop)"
+set +e
+frame_out="$(timeout 60 "$core" "$root/build/guest-frame.wasm" 2>"$root/build/guest-frame.err")"
+frame_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$frame_out"
+if [ "$frame_status" -ne 0 ]; then
+  echo "run.sh: guest-frame: exited $frame_status; stderr:" >&2
+  cat "$root/build/guest-frame.err" >&2
+  exit 1
+fi
+case "$frame_out" in
+  *"FRAME loop finished after 3 frames"*) echo "    == guest-frame: OK" ;;
+  *) echo "run.sh: guest-frame: the frame loop did not run to its own exit" >&2; cat "$root/build/guest-frame.err" >&2; exit 1 ;;
+esac
 echo "==> checking guest-log's records (trace)"
 # The compiled fixture's records must reach the host's layout and filter: at
 # `trace` every level is present, the structured payload lands in the message

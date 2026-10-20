@@ -296,7 +296,7 @@ export class rt {
    * the host's frame add finds nothing and does nothing.
    */
   static frame(): Task<i32> {
-    return frameWait();
+    return frameTask(CLASS_FRAME, 0);
   }
 
   /**
@@ -359,8 +359,8 @@ async function streamWait(session: i32): i32 {
   return result;
 }
 
-/** Builds the FRAME handle outside the async body, where type arguments are
- *  still allowed (the async lowering refuses them inside one). */
+/** Builds the FRAME handle. A plain function, not an async one: `await
+ *  rt.frame()` must park its caller on `(FRAME, 0)` with no layer between. */
 function frameTask(class_: u32, key: i32): Task<i32> {
   const record = new TaskRecord();
   record.class_ = <i32>class_;
@@ -370,11 +370,3 @@ function frameTask(class_: u32, key: i32): Task<i32> {
   return handle;
 }
 
-/** The body of `rt.frame` — one park on `(FRAME, 0)`, resumed by the host loop. */
-async function frameWait(): i32 {
-  // The handle is built by `frameTask`, outside the async body: the transform
-  // refuses a type argument inside one, and `Task<i32>` is a type argument.
-  const awaited: Task<i32> = frameTask(CLASS_FRAME, 0);
-  const tick: i32 = await awaited;
-  return tick;
-}
