@@ -47,7 +47,11 @@ function openSession(callbacks: bool): bool {
 // ── case 1: a mesh that is not there ──────────────────────────────────────
 // The wrapper must return the loader's errno and the task must settle.
 async function loadMissing(path: string): i32 {
-  return await ogre.loadMesh(path, 0);
+  // The accessor is a stamped handle now (0.7.0b); this wrapper is the fixture's
+  // own task, settled by the pump below, so the layer costs nothing here.
+  const load: Task<u32> = ogre.loadMesh(path, 0);
+  await load;
+  return ogre.loadResult(load);
 }
 
 // ── case 2: a completion that never arrives ───────────────────────────────
@@ -55,16 +59,28 @@ async function loadMissing(path: string): i32 {
 // completion fills it, and the next is dropped. The parked task must wake with
 // -EIO rather than hang — the wrapper has to report that, not a resource id.
 async function loadDropped(path: string): i32 {
-  return await ogre.loadMesh(path, 0);
+  const load: Task<u32> = ogre.loadMesh(path, 0);
+  await load;
+  return ogre.loadResult(load);
 }
 
 // ── case 4: two loads in flight at once ───────────────────────────────────
+// Module-level, because the transform scopes a local declared after an await to
+// its own resume guard: `second` below is read after the *second* park.
+let pairFirst: i32 = 0;
+let pairSecond: i32 = 0;
+let pairSecondLoad: Task<u32> = new Task<u32>();
+
 async function loadTwo(a: string, b: string): i32 {
-  const first: i32 = await ogre.loadMesh(a, 0);
-  const second: i32 = await ogre.loadMesh(b, 0);
+  const firstLoad: Task<u32> = ogre.loadMesh(a, 0);
+  await firstLoad;
+  pairFirst = ogre.loadResult(firstLoad);
+  pairSecondLoad = ogre.loadMesh(b, 0);
+  await pairSecondLoad;
+  pairSecond = ogre.loadResult(pairSecondLoad);
   // Two distinct, positive resource ids: the correlation is per job id.
-  if (first <= 0 || second <= 0) return first < 0 ? first : second;
-  return first == second ? -99 : first * 1000 + second;
+  if (pairFirst <= 0 || pairSecond <= 0) return pairFirst < 0 ? pairFirst : pairSecond;
+  return pairFirst == pairSecond ? -99 : pairFirst * 1000 + pairSecond;
 }
 
 /// Case 2 runs in its own process: the OGRE adapter is a singleton, and
@@ -137,10 +153,10 @@ export function _start_game(): void {
   // code and must not park on an id that will never complete.
   let longName = "";
   for (let i: i32 = 0; i < 20000; ++i) longName += "x";
-  const refused: Task<i32> = ogre.loadMesh(longName, 0);
+  const refused: Task<u32> = ogre.loadMesh(longName, 0);
   check(refused._record.done == 1,
     "case 3: the refused queue parked instead of returning immediately");
-  const refusedCode: i32 = refused._record.payload;
+  const refusedCode: i32 = ogre.loadResult(refused);
   check(refusedCode < 0, "case 3: a refused queue returned " + refusedCode.toString());
   print("3 ok: refused queue -> " + refusedCode.toString() + " (no park)");
 
