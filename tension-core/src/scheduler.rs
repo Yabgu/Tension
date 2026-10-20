@@ -289,6 +289,13 @@ impl Scheduler {
         std::mem::take(&mut self.pending_refusals)
     }
 
+    /// Take the task parked on `(class, key)` — the frame add's accessor.
+    /// Same call the completion path makes; the FRAME family's table is one
+    /// slot, so this is the whole of "is a frame awaited?".
+    pub fn take_frame(&mut self) -> Option<u64> {
+        self.take(CLASS_FRAME, 0)
+    }
+
     /// Tasks parked right now, and the high-water mark.
     pub fn parked(&self) -> u32 {
         self.parked

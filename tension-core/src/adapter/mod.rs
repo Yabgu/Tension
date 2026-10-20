@@ -54,6 +54,7 @@ pub(crate) fn probe_adapter(name: &str, apply: ApplyFn, user: *mut c_void) -> Ad
         shutdown: None,
         destroy: None,
         layout_hash: crate::session::arena::layout_hash(),
+
     }));
     AdapterCall {
         vtable,
@@ -1176,13 +1177,13 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 3, "the fixture declares a version this build does not load");
+                assert_eq!(found, 4, "the fixture declares a version this build does not load");
                 assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
-                assert_eq!(expected, 2);
+                assert_eq!(expected, 3);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 3"));
+        assert!(error.to_string().contains("ABI 4"), "the message names the fixture's version");
     }
 
     #[test]
@@ -1204,7 +1205,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(found, 1, "the fixture is a version-1 adapter");
-                assert_eq!(expected, 2);
+                assert_eq!(expected, 3);
             }
             AdapterError::LayoutHash { .. } => panic!(
                 "a v1 adapter was refused for its layout hash — that means the host read \
@@ -1496,6 +1497,7 @@ mod tests {
             shutdown,
             destroy,
             layout_hash: crate::session::arena::layout_hash(),
+
         }))
     }
 

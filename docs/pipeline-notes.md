@@ -206,3 +206,15 @@ symptom is a `session_open` hash mismatch at run time rather than a build error.
 stale guest survives a local loop. The generator is idempotent — re-running it
 on an up-to-date tree rewrites `layout.ts` byte-identically — so running it
 twice costs nothing and is the safe default.
+
+## "Tests pass" is evidence for the committed tree
+
+A refactor that moves lines can leave a file half-staged: the production change
+committed, a matching field added to six `#[cfg(test)]` host literals left in
+the working tree. `cargo build` does not compile test modules, so the binary
+built and the local suite passed — against a tree that was not the one committed.
+
+The rule: **after any refactor that touches more than one file, run `git status`
+before trusting a test run.** An uncommitted hunk that the build does not need
+is exactly the kind of thing `cargo build` will not catch and `cargo test` will,
+depending on what you remembered to stage.

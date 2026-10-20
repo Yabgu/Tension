@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 2;
+pub const ADAPTER_ABI_VERSION: u32 = 3;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -177,6 +177,10 @@ pub struct TensionCoreApi {
     /// capacity, so the host can refuse rather than overwrite. `guest_read`
     /// stays populated for adapters built before this slot.
     pub guest_read_checked: Option<GuestReadCheckedFn>,
+    /// Appended under rule 11 at ABI version 3: the adapter's render thread says
+    /// one frame was presented (0.7.0a). The host wakes whichever loop is
+    /// driving the guest; a host with no loop ignores it.
+    pub signal_frame: Option<SignalFrameFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -187,6 +191,7 @@ pub type PublishFn = unsafe extern "C" fn(*mut c_void, *const TensionCoreApi) ->
 pub type ApplyFn = unsafe extern "C" fn(*mut c_void, u32, *const c_void, u32) -> i32;
 pub type ShutdownFn = unsafe extern "C" fn(*mut c_void) -> i32;
 pub type DestroyFn = unsafe extern "C" fn(*mut c_void);
+pub type SignalFrameFn = unsafe extern "C" fn(*mut c_void);
 /// The bounds-checked read appended under rule 11 (C4.1a).
 pub type GuestReadCheckedFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32;
@@ -217,7 +222,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 136);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 144);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -231,6 +236,7 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, register_import) == 72);
     assert!(std::mem::offset_of!(TensionCoreApi, register_source) == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, post_event) == 88);
+    assert!(std::mem::offset_of!(TensionCoreApi, signal_frame) == 136);
     assert!(std::mem::offset_of!(TensionCoreApi, class_info) == 96);
     assert!(std::mem::offset_of!(TensionCoreApi, region_lookup) == 104);
     // Appended under rule 11; the header's `_Static_assert` pins the same shape
@@ -878,6 +884,15 @@ pub(crate) unsafe extern "C" fn guest_write(
     }
 }
 
+/// One frame was presented (v3). Any thread, never blocks, never touches guest
+/// memory: it wakes whatever loop is waiting on the session's posting face.
+pub(crate) unsafe extern "C" fn signal_frame(user: *mut c_void) {
+    let Some(host) = AdapterHost::from_user(user) else {
+        return;
+    };
+    host.posting.signal_wake();
+}
+
 pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
     AdapterHost::from_user(user)
         .map(|host| host.memory_size())
@@ -1217,6 +1232,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         log_named: Some(log_named),
         log_structured: Some(log_structured),
         guest_read_checked: Some(guest_read_checked),
+        signal_frame: Some(signal_frame),
     }
 }
 
@@ -1411,16 +1427,18 @@ mod tests {
         // x86-64 (quoted in this module's docs); the const assertions above are
         // the compile-time half of this check. `log_named`/`log_structured`
         // were appended under rule 11, moving the size 112 -> 128;
-        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and the adapter's
-        // `layout_hash` (C4.1c) moved that one 72 -> 80.
+        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and `signal_frame`
+        // (v3, 0.7.0a) moved it 136 -> 144. The adapter's `layout_hash` (C4.1c)
+        // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 136);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 144);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

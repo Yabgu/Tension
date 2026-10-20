@@ -1462,6 +1462,17 @@ fn host_loop(
             anyhow::bail!("host loop: the epoch failed: {error}");
         }
 
+        // The frame add: a guest awaiting `rt.frame()` has a task parked on
+        // `(FRAME, 0)`, and this is the only thing that ever resolves it. Gated
+        // on `_game_running()` because a guest that has stopped wanting frames
+        // must not be woken for one — and gated on the take answering, so a
+        // guest that never calls `rt.frame()` costs nothing.
+        if running {
+            if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
+                store.data_mut().wake_batch.push(frame_task);
+            }
+        }
+
         // Hand the batch to the guest. One `wake` for the whole epoch's matches,
         // which is the contract's batching (§2.2): the host names the tasks.
         let batch = std::mem::take(&mut store.data_mut().wake_batch);

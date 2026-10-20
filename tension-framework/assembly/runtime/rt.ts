@@ -28,7 +28,7 @@ import {
   __taskReportDrops,
   __taskTick
 } from "~lib/task-rt";
-import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR } from "./wire";
+import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_FRAME } from "./wire";
 import { effectiveRingCapacities } from "./config";
 import { makeCallbacks } from "./callbacks";
 import { regionOffset } from "./arena";
@@ -284,6 +284,22 @@ export class rt {
   }
 
   /**
+   * Waits for the next frame (0.7.0a): parks on `(FRAME, 0)`, and the host-owned
+   * loop wakes it once per presented frame.
+   *
+   * The host adds this task's id to its wake batch — no ring entry, no per-frame
+   * record. That is what `MODE_POLLED` means for class 9: a 256-slot ring fed at
+   * 120 Hz would fill in 2.13 s and count every later frame as a drop, poisoning
+   * the signal `-EIO` attribution rests on.
+   *
+   * A guest that never calls this keeps its own loop: nothing parks on FRAME, so
+   * the host's frame add finds nothing and does nothing.
+   */
+  static frame(): Task<i32> {
+    return frameWait();
+  }
+
+  /**
    * A handle for a queued job (§3.3): awaiting it parks on
    * `(JOBS, jobId)`, which is exactly what the loader's completion posts —
    * `post_event(JOB_DONE|JOB_FAILED, job_id, …)` (`loader.cpp:433-439`,
@@ -341,4 +357,24 @@ async function streamWait(session: i32): i32 {
     result = -5;
   }
   return result;
+}
+
+/** Builds the FRAME handle outside the async body, where type arguments are
+ *  still allowed (the async lowering refuses them inside one). */
+function frameTask(class_: u32, key: i32): Task<i32> {
+  const record = new TaskRecord();
+  record.class_ = <i32>class_;
+  record.key = key;
+  const handle = new Task<i32>();
+  handle._record = record;
+  return handle;
+}
+
+/** The body of `rt.frame` — one park on `(FRAME, 0)`, resumed by the host loop. */
+async function frameWait(): i32 {
+  // The handle is built by `frameTask`, outside the async body: the transform
+  // refuses a type argument inside one, and `Task<i32>` is a type argument.
+  const awaited: Task<i32> = frameTask(CLASS_FRAME, 0);
+  const tick: i32 = await awaited;
+  return tick;
 }
