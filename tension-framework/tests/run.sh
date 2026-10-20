@@ -386,6 +386,39 @@ case "$enospc_out" in
 esac
 fi
 
+# `break`/`continue` in an await-bearing loop (0.7.1). Four shapes: the `while`
+# pair, and the `for` pair — the latter is the one that can go wrong quietly,
+# because an instrumented `for` used to append its incrementor to the body, so a
+# native `continue` skipped it and the loop spun forever.
+echo "==> compiling guest-flow.ts"
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-flow.ts \
+        --config build/session.asconfig.json -o build/guest-flow.wasm ) >build/guest-flow.compile 2>&1; then
+  if old_stdlib_error build/guest-flow.compile || grep -q "break in an async function body" build/guest-flow.compile; then
+    echo "    == guest-flow: SKIP — the installed tensionscript refuses break/continue in async bodies (needs >= 0.7.1)"
+    true
+  else
+    cat build/guest-flow.compile >&2
+    echo "run.sh: guest-flow: compile failed for a reason other than the missing support" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-flow.wasm (host-owned loop, break and continue)"
+set +e
+flow_out="$(timeout 60 "$core" "$root/build/guest-flow.wasm" 2>"$root/build/guest-flow.err")"
+flow_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$flow_out"
+if [ "$flow_status" -ne 0 ]; then
+  echo "run.sh: guest-flow: exited $flow_status; stderr:" >&2
+  cat "$root/build/guest-flow.err" >&2
+  exit 1
+fi
+case "$flow_out" in
+  *"FLOW PASS"*) echo "    == guest-flow: OK" ;;
+  *) echo "run.sh: guest-flow: a break/continue shape produced the wrong value" >&2; cat "$root/build/guest-flow.err" >&2; exit 1 ;;
+esac
+fi
+
 # The chained await (0.7.0): a task parked on another *suspending guest task's*
 # record. No producer key, so the host never hears of it — the guest's own
 # completion has to wake it. This is the shape that deadlocked when `wake`
