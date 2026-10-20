@@ -200,6 +200,25 @@ export class rt {
         reinterpret<i32>(record.f1)
       );
     }
+    // Reclaim the slots (`0.7.0b`). `tail` is the guest's counter — "how many
+    // records the guest has consumed" — and until this line nothing in the tree
+    // ever wrote it. The sub-ring keeps records until the guest says it is done
+    // with them, so every class that delivered through a callback filled up and
+    // then dropped: measured with the real model, a reply stops dead at 16
+    // chunks, which is exactly `AI_READY`'s capacity.
+    //
+    // The batch has been copied into the task records by `__taskDeliver` above,
+    // so `[tail, head)` is consumed by the time this returns. `head` cannot move
+    // under us: only an epoch flush writes it, and no epoch runs inside a
+    // callback (the session's reentrancy rules, §1.1).
+    //
+    // Guarded like `reportDrops`: a guest with no session (the dispatch unit
+    // harness) must not read the region table — measured here as "memory access
+    // out of bounds" in `tests/rt-dispatch.mjs`, the same failure that guard
+    // documents.
+    if (!isReady()) return;
+    const header = changetype<TableHeader>(ringHeaderOffset(class_));
+    header.tail = header.head;
   }
 
   /** The `onBatch` handler: `class, first record, count` (§6.1). */
