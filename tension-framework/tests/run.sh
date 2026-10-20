@@ -298,6 +298,39 @@ case "$early_out" in
 esac
 fi
 
+# The refused-creation path (0.7.0d-pre): a two-slot table, two tasks holding
+# both slots, and a third created while they do. Capacity bounds *live* tasks
+# (the slot is claimed at creation), so the third is settled with -ENOSPC before
+# its body runs — a refusal with an id, not a park with nowhere to go.
+echo "==> compiling guest-enospc.ts"
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-enospc.ts \
+        --config build/session.asconfig.json -o build/guest-enospc.wasm ) >build/guest-enospc.compile 2>&1; then
+  if grep -q "__taskRegistered" build/guest-enospc.compile; then
+    echo "    == guest-enospc: SKIP — the installed tensionscript has no creation guard (needs >= 0.6.1)"
+    true
+  else
+    cat build/guest-enospc.compile >&2
+    echo "run.sh: guest-enospc: compile failed for a reason other than the missing guard" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-enospc.wasm (host-owned loop, refused creation)"
+set +e
+enospc_out="$(timeout 60 "$core" --post-test-events "$root/build/guest-enospc.wasm" 2>"$root/build/guest-enospc.err")"
+enospc_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$enospc_out"
+if [ "$enospc_status" -ne 0 ]; then
+  echo "run.sh: guest-enospc: exited $enospc_status; stderr:" >&2
+  cat "$root/build/guest-enospc.err" >&2
+  exit 1
+fi
+case "$enospc_out" in
+  *"ENOSPC third task settled with -28"*) echo "    == guest-enospc: OK" ;;
+  *) echo "run.sh: guest-enospc: a refused task creation was not answered with -ENOSPC" >&2; cat "$root/build/guest-enospc.err" >&2; exit 1 ;;
+esac
+fi
+
 # The drop path (0.7.0c): a record the sub-ring refuses must wake its parked
 # task with -EIO, not leave it parked. `--post-test-events` queues three job
 # records; the guest opens a two-slot ring with no callbacks, so the third is
