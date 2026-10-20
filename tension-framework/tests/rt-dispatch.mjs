@@ -1,9 +1,17 @@
-// The framework's async dispatcher, executed (Phase 4b).
+// The framework's async surface without a session (0.7.0).
 //
-// What is under test: `rt.start()` binding the completion classes to their
-// families, `rt.deliver`/`onBatch` decoding the arena's 32-byte records into
-// `__taskDeliver`, and `rt.runReady()` resuming the parked task — the whole
-// path a real completion takes, minus the host.
+// **What this used to test, and why it changed.** Until 0.7.0 it drove the pull
+// path: `rt.onEvent` → `__taskDeliver` → `rt.runReady` → `__taskTick`, and
+// asserted the parked task resumed with 41. All three of those symbols are gone
+// — the host publishes, matches and wakes now — so that assertion has no subject
+// left. The push path's wake is measured end to end instead, with a real host:
+// `guest-push`, `guest-chain`, `guest-early`, `guest-sync`, `guest-enospc`,
+// `guest-drop`, and the seven adopting examples.
+//
+// What is left to test here is the part that must not depend on a host at all:
+// the guards. A guest that instantiates the framework and parks with **no task
+// table and no session** must return quietly — no trap, no wild region read —
+// because that is the state every fixture starts in before `session_open`.
 //
 // **Compiler requirement, stated as a gate:** the guest here links the
 // *framework*, and the framework's build uses the published package. This test
@@ -67,8 +75,7 @@ if (!compiler) {
 
 const source = `
 import { rt } from "../assembly/runtime/rt";
-import { Task, TaskRecord } from "~lib/task";
-import { __taskTick, __taskHasRunnable } from "~lib/task-rt";
+import { Task } from "~lib/task";
 
 let resumed: i32 = 0;
 
@@ -79,18 +86,24 @@ async function awaitJob(h: Task<u32>): u32 {
 }
 
 export function probe(): i32 {
-  rt.start();
-  let handle: Task<u32> = rt.job(7);
-  awaitJob(handle);                       // parks on (JOBS, 7)
-  if (rt.hasRunnable()) return -1;        // nothing delivered yet
+  // No table bound, no session open: the state a fixture is in before
+  // session_open. Every one of these must be inert rather than a trap.
+  rt.start();                             // binds families; needs no session
+  let handle: Task<u32> = rt.job(7);      // a stamped handle, no allocation
+  awaitJob(handle);                       // parks with no table: returns
+  if (resumed != 0) return -1;            // nothing delivered, so nothing ran
+  if (rt.hasRunnable()) return -2;        // and nothing claimed to be ready
+
+  // The dispatcher with no session: rt.deliver reads the region table only when
+  // a session is open, so this must be a no-op, not an out-of-bounds read.
   let record: EventRecord = new EventRecord();
-  record.class_ = 4;                      // JOB_DONE
-  record.a = 7;                           // the job id
-  record.b = 41;                          // the loader's resource id
-  rt.onEvent(4, changetype<u32>(record)); // the framework's dispatcher
-  if (!rt.hasRunnable()) return -2;
-  rt.runReady();                          // __taskTick
-  return resumed;
+  record.class_ = 4;
+  record.a = 7;
+  record.b = 41;
+  rt.onEvent(4, changetype<u32>(record));
+  if (resumed != 0) return -3;
+
+  return 41;                              // the guards held
 }
 
 class EventRecord {
@@ -155,7 +168,7 @@ try {
     }
   });
 
-  check("a delivered completion resumes the parked task through rt (41)",
+  check("the framework parks and dispatches with no table and no session (41)",
     instance.exports.probe(), 41);
 } finally {
   rmSync(tsPath, { force: true });

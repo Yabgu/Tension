@@ -60,7 +60,7 @@ import { Task } from "~lib/task";
 // The host's wake entry. Re-exported because the linker drops an export the
 // guest never names (measured: 0 occurrences without this line), and the host
 // resolves `__taskWake` by name at load.
-export { __taskWake } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 const DT: f64 = 1.0 / 60.0;
 /** How long the simulation runs before the summary, if nothing rests sooner. */

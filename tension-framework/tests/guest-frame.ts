@@ -17,7 +17,7 @@ import { print } from "../assembly/io";
 import { ConfigBuilder, RuntimeSession } from "../assembly/runtime";
 import { rt } from "../assembly/runtime/rt";
 
-export { __taskWake } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 const FRAMES: i32 = 3;
 let frame: i32 = 0;

@@ -11,6 +11,19 @@ import {
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { Task } from "~lib/task";
+import { __taskBindTable } from "~lib/task-rt";
+
+// Host-driven since 0.7.0: the pull path (`__taskTick`) is gone, so a guest that
+// awaits is resumed by the host loop. Both symbols are re-exported because the
+// linker drops an export nobody names.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
+
+/// 1 while the guest still wants the host to drive it.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
+}
 
 const CLASS_JOB_DONE: i32 = 4;
 const ENOENT: i32 = -2;
@@ -25,12 +38,13 @@ function check(condition: bool, reason: string): void {
   if (!condition) fail(reason);
 }
 
-/// Runs `task` to completion, ticking the scheduler. The guard is a hang
-/// detector: a task that never settles is the failure this fixture hunts.
-function settle(task: Task<i32>): i32 {
-  for (let guard: i32 = 0; guard < 6000 && !task._record.done; ++guard) {
-    RuntimeSession.wait(10);
-    rt.runReady();
+/// Runs `task` to completion on the frame clock. The guard is a hang detector: a
+/// task that never settles is the failure this fixture hunts.
+async function settle(task: Task<i32>): i32 {
+  let guard: i32 = 0;
+  while (!task._record.done && guard < 6000) {
+    await rt.frame();
+    guard += 1;
   }
   return task._record.done;
 }
@@ -86,27 +100,37 @@ async function loadTwo(a: string, b: string): i32 {
 /// Case 2 runs in its own process: the OGRE adapter is a singleton, and
 /// `shutdown()` does not make `init` legal again in the same instance — the 4c
 /// harness (`guest-async.ts:297-301`) splits its drop case for the same reason.
-function dropCase(tns: string): void {
+/// The drop case's setup, in **synchronous** code: the transform lifts locals
+/// out of an async body, and a `const` declared before the first `await` and
+/// read immediately after it did not survive that lift (measured: "Cannot find
+/// name 'cfg'"). Setup belongs in sync code anyway — the same split the other
+/// fixtures use for nullable refinements.
+function openDropCase(tns: string): bool {
   const cfg = ConfigBuilder.forThisBuild(null).ringCapacity(CLASS_JOB_DONE, 1);
-  if (RuntimeSession.open(cfg) != 0) fail("case 2: session_open refused the capacity");
+  if (RuntimeSession.open(cfg) != 0) return false;
   const dropConfig = new ogre.ConfigBuilder()
     .renderer(ogre.Renderer.Null)
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
-  if (ogre.init(dropConfig) != 0) fail("case 2: ogre init refused");
-  if (ogre.mountTns("resources", tns) != 0) fail("case 2: mountTns refused");
+  if (ogre.init(dropConfig) != 0) return false;
+  return ogre.mountTns("resources", tns) == 0;
+}
+
+async function dropCase(tns: string): void {
+  if (!openDropCase(tns)) fail("case 2: session, ogre init or mountTns refused");
 
   // Fill the one slot with a completion nobody awaits.
   const filler: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   check(filler > 0, "case 2: the filler load was refused");
-  for (let guard: i32 = 0; guard < 600 && ogre.jobState(filler) != ogre.JOB_DONE; ++guard) {
-    RuntimeSession.wait(10);
-    rt.runReady();
+  let fillerGuard: i32 = 0;
+  while (ogre.jobState(filler) != ogre.JOB_DONE && fillerGuard < 600) {
+    await rt.frame();
+    fillerGuard += 1;
   }
   check(ogre.jobState(filler) == ogre.JOB_DONE, "case 2: the filler never completed");
 
   // Now the awaited load's completion finds the ring full and is dropped.
   const dropped: Task<i32> = loadDropped("resources/meshes/cube.mesh");
-  const settled: i32 = settle(dropped);
+  const settled: i32 = await settle(dropped);
   const code: i32 = dropped._record.payload;
   check(settled == 1, "case 2: the dropped load never settled (the hang)");
   check(code == EIO, "case 2: the dropped load returned " + code.toString() + ", not -EIO");
@@ -114,9 +138,11 @@ function dropCase(tns: string): void {
 
   RuntimeSession.close();
   print("RESASYNC PASS");
+  finished = true;
 }
 
 export function _start_game(): void {
+  __taskBindTable(16);
   let tns = "";
   let drop = false;
   for (let i: i32 = 0; i < argCount(); ++i) {
@@ -125,8 +151,25 @@ export function _start_game(): void {
     if (value == "--resasync-case=drop") drop = true;
   }
   if (tns.length == 0) fail("no --tns=<volume> argument");
+  // A floating task: it runs the synchronous prefix and parks at its first
+  // await. From here the host owns the loop.
+  run(tns, drop);
+}
+
+/// A name far longer than the submission half can carry, built in sync code: a
+/// string local accumulated across an `await` is lifted by the transform with the
+/// wrong type (measured: "Type 'String' is not assignable to type 'i32'").
+function overlongName(): string {
+  let name = "";
+  for (let i: i32 = 0; i < 20000; ++i) name += "x";
+  return name;
+}
+
+/// The fixture body, as one task (0.7.0). Every await in the file parks this
+/// task, so the host's wake resumes the checks themselves.
+async function run(tns: string, drop: bool): void {
   if (drop) {
-    dropCase(tns);
+    await dropCase(tns);
     return;
   }
 
@@ -134,16 +177,26 @@ export function _start_game(): void {
   if (!openSession(true)) fail("session or ogre init refused");
   if (ogre.mountTns("resources", tns) != 0) fail("mountTns refused");
 
-  const missing: Task<i32> = loadMissing("resources/meshes/does-not-exist.mesh");
-  check(settle(missing) == 1, "case 1: the missing-mesh load never settled");
-  const missingId: i32 = missing._record.payload;
+  let missingId: i32 = 0;
+  let missingDone: i32 = 0;
+  {
+    const missing: Task<i32> = loadMissing("resources/meshes/does-not-exist.mesh");
+    missingDone = await settle(missing);
+    missingId = missing._record.payload;
+  }
+  if (missingDone != 1) fail("case 1: the missing-mesh load never settled");
   check(missingId == ENOENT, "case 1: the errno is " + missingId.toString() + ", not -ENOENT");
   print("1 ok: missing mesh -> " + missingId.toString() + " (settled, no hang)");
 
   // ── 4. two concurrent loads ────────────────────────────────────────────
-  const two: Task<i32> = loadTwo("resources/meshes/Barrel.mesh", "resources/meshes/cube.mesh");
-  check(settle(two) == 1, "case 4: the two-load task never settled");
-  const pair: i32 = two._record.payload;
+  let pair: i32 = 0;
+  let pairDone: i32 = 0;
+  {
+    const two: Task<i32> = loadTwo("resources/meshes/Barrel.mesh", "resources/meshes/cube.mesh");
+    pairDone = await settle(two);
+    pair = two._record.payload;
+  }
+  if (pairDone != 1) fail("case 4: the two-load task never settled");
   check(pair > 0, "case 4: two loads did not both resolve (" + pair.toString() + ")");
   print("4 ok: two loads -> " + pair.toString() + " (distinct ids)");
 
@@ -151,9 +204,7 @@ export function _start_game(): void {
   // The name is far longer than the submission half can carry, so
   // `queueMeshLoad` refuses before a job exists. The wrapper must return that
   // code and must not park on an id that will never complete.
-  let longName = "";
-  for (let i: i32 = 0; i < 20000; ++i) longName += "x";
-  const refused: Task<u32> = ogre.loadMesh(longName, 0);
+  const refused: Task<u32> = ogre.loadMesh(overlongName(), 0);
   check(refused._record.done == 1,
     "case 3: the refused queue parked instead of returning immediately");
   const refusedCode: i32 = ogre.loadResult(refused);
@@ -163,4 +214,5 @@ export function _start_game(): void {
   ogre.shutdown();
   RuntimeSession.close();
   print("RESASYNC PASS");
+  finished = true;
 }

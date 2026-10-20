@@ -1532,6 +1532,22 @@ fn host_loop(
         // guest that says it is running while nothing can arrive.
         let _ = store.data().posting.wait_for_events(HOST_LOOP_SLICE_MS);
 
+        // **A closed session ends the loop** (0.7.0). A guest that closes its
+        // session has finished, whatever is still parked: a test fixture can
+        // legitimately leave a control task waiting forever (the drop case's
+        // "a key that never completes"), and an epoch over a closed session is
+        // an error rather than a wake. Measured: `ASYNC PASS drop` printed, then
+        // "host loop: the epoch failed: this verb needs a READY session".
+        let session_ready = store
+            .data()
+            .session
+            .as_ref()
+            .map(|session| session.state() == session::SessionState::Ready)
+            .unwrap_or(false);
+        if !session_ready {
+            break;
+        }
+
         // Publish + match. The epoch appends matched ids to `wake_batch`.
         let taken = store.data_mut().session.take();
         let Some(mut session) = taken else {

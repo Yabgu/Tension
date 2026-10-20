@@ -20,7 +20,7 @@ import { Task } from "~lib/task";
 
 // The host's wake entry. Re-exported because the linker drops an export the
 // guest never names, and the host resolves `__taskWake` by name at load.
-export { __taskWake } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 const GRAVITY = -9.81; // m/s², downward
 const FLOOR = 0.25; // where the ball turns around

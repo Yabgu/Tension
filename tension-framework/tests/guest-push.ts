@@ -23,7 +23,7 @@ import { rt } from "../assembly/runtime/rt";
 
 // The host resolves this export by name; nothing in guest code calls it, so
 // without the re-export DCE drops it and the load-time coexistence check fails.
-export { __taskWake } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 /// Set when the awaited task has resumed — what `_game_running` reports.
 let finished: bool = false;

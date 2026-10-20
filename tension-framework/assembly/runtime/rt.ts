@@ -7,27 +7,22 @@
 //
 //   1. **the family bindings** (`start`), so `JOB_DONE` and `JOB_FAILED` — two
 //      classes, one await — resolve the same parked task (§3.1);
-//   2. **the dispatcher** (`deliver`, `onBatch`, `onEvent`), which decodes the
-//      arena's 32-byte records and hands their words to `__taskDeliver`
-//      verbatim (§6.1, §6.2). The copy is immediate: the sub-ring is transient,
-//      and reading a record at resume time would read someone else's event
-//      (review 8.3);
-//   3. **the tick** (`runReady`), called from the game's frame loop after
-//      `RuntimeSession.wait(...)` returns — never from inside a callback,
-//      where the session's reentrancy rules refuse a verb (§1.1, §6.5).
+//   2. **the reclaim** (`deliver`, `onBatch`, `onEvent`), which says the guest
+//      has consumed a class's records so the sub-ring may reuse the slots
+//      (§6.1, §6.2). The *words* no longer travel through here: the host
+//      matches each published record to its parked task and wakes it (§2.2),
+//      so a guest that never ticks still gets its completion.
+//
+// There is no tick (0.7.0). `__taskDeliver`, `__taskTick` and
+// `__taskReportDrops` — and the drop attribution that called the last of them —
+// are gone; the host publishes, matches, wakes and attributes drops itself.
 //
 // The class is `rt`, not a module of loose functions, so the call sites read as
 // the plan writes them (`rt.runReady()`) and the barrel cannot collide with a
 // game's own `start` or `deliver`.
 
 import { Task, TaskRecord } from "~lib/task";
-import {
-  __taskBindFamily,
-  __taskDeliver,
-  __taskHasRunnable,
-  __taskReportDrops,
-  __taskTick
-} from "~lib/task-rt";
+import { __taskBindFamily, __taskHasRunnable } from "~lib/task-rt";
 import { EventRecord, TableHeader, TABLE_HEADER_SIZE, EVENT_RECORD_SIZE, Callbacks, CLASS_AI_READY, CLASS_AI_DONE, CLASS_AI_ERROR, CLASS_FRAME } from "./wire";
 import { effectiveRingCapacities } from "./config";
 import { makeCallbacks } from "./callbacks";
@@ -90,18 +85,12 @@ export class rt {
     return __taskHasRunnable();
   }
 
-  /** The last per-class drop count this guest observed (§6.4), job family. */
-  private static lastDropped: i32 = -1;
-
-  /** The AI family's drop total, as last observed (§6.4, 0.6.0b). */
-  private static lastDroppedAi: i32 = -1;
-
   /**
    * The AI family's `dropped` total right now: the sum over its three classes.
    *
    * Per family, not per class, because attribution is per family — a drop is
    * counted per class, never per record, so the runtime cannot say *which*
-   * stream lost a signal (`__taskReportDrops`' rule). Summing is the honest
+   * stream lost a signal (the drop rule). Summing is the honest
    * rollup for the one family those three classes form.
    */
   private static aiDroppedNow(): i32 {
@@ -115,7 +104,7 @@ export class rt {
   /**
    * The AI family's dropped count, for a test or a diagnostic. `-1` without a
    * session: a guest that has not opened one must not read the region table
-   * (the same guard `reportDrops` uses, and for the same measured reason).
+   * (the same guard every region-table read in this file uses).
    *
    * On a healthy stream this stays 0: coalescing leaves at most one record per
    * session in flight, against a capacity of 16 for a maximum of 4 sessions.
@@ -126,96 +115,22 @@ export class rt {
   }
 
   /**
-   * §6.4, guest side: compares the arena's per-class drop counter against the
-   * last value observed, and reports any delta for the job family to the
-   * runtime, which wakes the affected tasks with `-EIO`.
+   * Decodes `count` contiguous records and reclaims their slots (§6.1).
    *
-   * **Why the framework and not std:** the counter is a wire type
-   * (`TableHeader.dropped`, `wire.ts:208`; region 1, class index 4), and std
-   * must not learn the arena's layout (§4.7's D9 split). The framework reads it,
-   * std owns the wake policy.
+   * The words no longer travel through here (0.7.0): the host matches every
+   * published record to its parked task and wakes it with `__taskResume`, so
+   * this callback's whole job is to say the guest has consumed `[tail, head)`
+   * and the sub-ring may reuse those slots. Without that, every class fills its
+   * ring and then drops — measured with the real model, a reply stops dead at 16
+   * chunks (`AI_READY`'s capacity).
    *
-   * **Scope in v1:** the job family only. The input and log classes ride the
-   * same arena but nothing awaits them; a second awaitable family (resources)
-   * generalizes this by reading its own class index. The rollup
-   * (`FrameState.droppedEvents`) is deliberately *not* used: it cannot attribute
-   * a drop to a family.
-   */
-  static reportDrops(): void {
-    // No session, no arena: a guest that has not opened one (a unit harness, or
-    // a game before `RuntimeSession.open`) must not read the region table —
-    // measured: an unconditional read faulted with "memory access out of
-    // bounds" in `tests/rt-dispatch.mjs`, which runs without a session.
-    if (!isReady()) return;
-    // Region 1's table is indexed by class; `TableHeader` is 32 bytes and the
-    // job class is 4 (`arena.rs:202-213`). The base of the class table is
-    // `regionOffset(1)` — see `runtime/wire.ts`'s `TableHeader` for the layout.
-    const header = changetype<TableHeader>(ringHeaderOffset(CLASS_JOB_DONE));
-    const dropped = header.dropped;
-    if (rt.lastDropped < 0) {
-      rt.lastDropped = <i32>dropped;   // first tick: adopt, report nothing
-      return;
-    }
-    if (<i32>dropped == rt.lastDropped) return;
-    const delta = <i32>dropped - rt.lastDropped;
-    rt.lastDropped = <i32>dropped;
-    if (delta > 0) __taskReportDrops(FAMILY_JOBS, delta);
-
-    // The AI family (0.6.0b): the same rule, its own counter. A lost stream
-    // signal is fatal — the guest would park with nothing coming — so it must
-    // wake with a failure status rather than hang.
-    const aiNow = rt.aiDroppedNow();
-    if (rt.lastDroppedAi < 0) {
-      rt.lastDroppedAi = aiNow;        // first tick: adopt, report nothing
-      return;
-    }
-    if (aiNow == rt.lastDroppedAi) return;
-    const aiDelta = aiNow - rt.lastDroppedAi;
-    rt.lastDroppedAi = aiNow;
-    if (aiDelta > 0) __taskReportDrops(FAMILY_AI, aiDelta);
-  }
-
-  /**
-   * Resumes the ready tasks, in delivery order — one resume per task per tick
-   * (§6.5). Call after `RuntimeSession.wait(...)` returns.
-   */
-  static runReady(): void {
-    rt.reportDrops();
-    __taskTick();
-  }
-
-  /**
-   * Decodes `count` contiguous records starting at `ptr` and delivers each
-   * (§6.1). The stride is 32 bytes, and a batch may mix several tasks'
-   * completions — so the call is per-record, never per-batch.
+   * `head` cannot move under this: only an epoch flush writes it, and no epoch
+   * runs inside a callback (§1.1). Guarded like every other region-table read: a
+   * guest with no session must not touch it (measured as "memory access out of
+   * bounds" in `tests/rt-dispatch.mjs`).
    */
   static deliver(class_: u32, ptr: u32, count: u32): void {
-    for (let i: u32 = 0; i < count; ++i) {
-      const record = changetype<EventRecord>(ptr + i * EVENT_RECORD_SIZE);
-      __taskDeliver(
-        <i32>record.class_,
-        <i32>record.a,
-        <i32>record.b,
-        reinterpret<i32>(record.f0),
-        reinterpret<i32>(record.f1)
-      );
-    }
-    // Reclaim the slots (`0.7.0b`). `tail` is the guest's counter — "how many
-    // records the guest has consumed" — and until this line nothing in the tree
-    // ever wrote it. The sub-ring keeps records until the guest says it is done
-    // with them, so every class that delivered through a callback filled up and
-    // then dropped: measured with the real model, a reply stops dead at 16
-    // chunks, which is exactly `AI_READY`'s capacity.
-    //
-    // The batch has been copied into the task records by `__taskDeliver` above,
-    // so `[tail, head)` is consumed by the time this returns. `head` cannot move
-    // under us: only an epoch flush writes it, and no epoch runs inside a
-    // callback (the session's reentrancy rules, §1.1).
-    //
-    // Guarded like `reportDrops`: a guest with no session (the dispatch unit
-    // harness) must not read the region table — measured here as "memory access
-    // out of bounds" in `tests/rt-dispatch.mjs`, the same failure that guard
-    // documents.
+    if (count == 0) return;
     if (!isReady()) return;
     const header = changetype<TableHeader>(ringHeaderOffset(class_));
     header.tail = header.head;
@@ -295,7 +210,7 @@ export class rt {
    * | `AI_READY` | the unread byte count, always `> 0` |
    * | `AI_DONE` | `0` |
    * | `AI_ERROR` | `-EIO` |
-   * | a dropped signal | the status `__taskReportDrops` wrote (`-EIO`) |
+   * | a dropped signal | the status the host wrote with `__taskFail` (`-EIO`) |
    *
    * `0` is unambiguous because READY is only posted when bytes were actually
    * appended (the host's set-if-not-set rule), and the terminal is posted only

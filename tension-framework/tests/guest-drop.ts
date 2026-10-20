@@ -33,7 +33,7 @@ import { rt } from "../assembly/runtime/rt";
 
 // The host resolves both by name; nothing in guest code calls them, so without
 // the re-exports DCE drops them and the load-time check fails.
-export { __taskWake, __taskFail } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 /// -EIO: §4.4's lost completion.
 const EIO: i32 = -5;

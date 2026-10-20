@@ -78,7 +78,7 @@ import { __taskBindTable } from "~lib/task-rt";
 
 // The host's wake entry. Re-exported because the linker drops an export the
 // guest never names, and the host resolves `__taskWake` by name at load.
-export { __taskWake } from "~lib/task-rt";
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 const SYSTEM_PROMPT =
   "You narrate a terse, atmospheric text adventure. Reply in at most two sentences.";
