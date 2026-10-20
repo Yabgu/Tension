@@ -176,6 +176,31 @@ impl ParkTable {
         self.parked -= 1;
         Some(task_id)
     }
+
+    /// Take up to `limit` parked ids, lowest key first.
+    ///
+    /// The drop path's accessor (§4.4): a lost signal is attributed to a
+    /// *family*, not a record — the producer's count cannot say which stream
+    /// lost it (`pre0`'s note, and `rt.ts`'s rollup) — so the wake names the
+    /// family's parked tasks rather than trying to match a key that never
+    /// arrived. Lowest key first only so the order is deterministic in a test.
+    pub fn take_upto(&mut self, limit: usize) -> Vec<u64> {
+        let mut taken = Vec::new();
+        if limit == 0 {
+            return taken;
+        }
+        for index in 0..self.slots.len() {
+            if taken.len() == limit {
+                break;
+            }
+            if self.slots[index] != EMPTY {
+                taken.push(self.slots[index]);
+                self.slots[index] = EMPTY;
+                self.parked -= 1;
+            }
+        }
+        taken
+    }
 }
 
 /// Why a park was refused. Both variants are the contract's, kept apart (§5.1).
@@ -277,6 +302,22 @@ impl Scheduler {
         let task_id = table.take(key)?;
         self.parked = self.tables.values().map(|t| t.parked()).sum();
         Some(task_id)
+    }
+
+    /// Take up to `limit` parked ids from one family — the drop path (§4.4).
+    ///
+    /// A family with no park answers with an empty vector, which is the common
+    /// case: a drop only costs a wake when something was actually waiting on it.
+    pub fn take_from_family(&mut self, family: u32, limit: usize) -> Vec<u64> {
+        let Some(table) = self.tables.get_mut(&family) else {
+            return Vec::new();
+        };
+        let taken = table.take_upto(limit);
+        if taken.is_empty() {
+            return taken;
+        }
+        self.parked = self.tables.values().map(|t| t.parked()).sum();
+        taken
     }
 
     /// Record a refused park for the next wake to carry.

@@ -158,6 +158,16 @@ struct HostState {
     /// a lookup on the completion path and make a missing export a runtime
     /// surprise rather than a startup fact.
     task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    /// The guest's `__taskFail(idsPtr, statusesPtr, count)`: resume a task with
+    /// a status and no payload — §4.4's lost completion and §5.1's refused park.
+    /// `None` for a guest built before std 0.6.1, which has no such export; the
+    /// host then has no way to fail a task, and says so rather than parking it.
+    task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
+    /// Per-class drop totals already attributed (0.7.0c). The posting queues'
+    /// counters are cumulative, so the host keeps its own baseline: a drop is
+    /// the *delta* since the last iteration, and without this every iteration
+    /// after the first would re-wake the same victims.
+    drop_seen: [u64; session::arena::CLASS_COUNT],
     /// Task ids the epoch matched to parked tasks, waiting for `__taskWake`.
     /// Drained by the host loop; empty for every pre-adoption guest, because
     /// nothing parked.
@@ -651,6 +661,8 @@ fn main() -> anyhow::Result<()> {
             scheduler: scheduler::Scheduler::new(),
             wake_batch: Vec::new(),
             task_wake: None,
+            task_fail: None,
+            drop_seen: [0; session::arena::CLASS_COUNT],
             game_running: None,
             arena: None,
             depth: 0,
@@ -1153,6 +1165,9 @@ fn main() -> anyhow::Result<()> {
     store.data_mut().task_wake = instance
         .get_typed_func::<(i32, i32), ()>(&mut store, "__taskWake")
         .ok();
+    store.data_mut().task_fail = instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "__taskFail")
+        .ok();
     store.data_mut().game_running = instance
         .get_typed_func::<(), i32>(&mut store, "_game_running")
         .ok();
@@ -1338,7 +1353,8 @@ fn main() -> anyhow::Result<()> {
     // condition variable (a real wait, `posting.rs:320-350`), publishes and
     // matches whatever arrived, then hands the matched ids to `__taskWake`.
     if let Some(wake) = store.data().task_wake.clone() {
-        host_loop(&mut store, &wake)?;
+        let fail = store.data().task_fail.clone();
+        host_loop(&mut store, &wake, fail.as_ref())?;
     }
 
     // What a trapping epoch left behind: a deferred submission belongs to the
@@ -1424,9 +1440,56 @@ fn main() -> anyhow::Result<()> {
 /// No example awaits `rt.frame()` yet (that is 0.7.0b), so a loop driven by real
 /// completions is the complete 0.7.0a behaviour; the frame clock is reported as
 /// the one open decision rather than invented as a constant.
+/// The tasks a lost signal must fail, host-side (0.7.0c).
+///
+/// The guest-side path (`rt.reportDrops` → `__taskReportDrops`) reads the same
+/// counters and wakes up to N tasks with `-EIO`, but it is called from
+/// `rt.runReady()` — which a host-loop guest never calls. So the rule moves
+/// here: the host already owns the per-family parked tables, and the wake is
+/// direct rather than a guest-side scan of `waitingByKey`.
+///
+/// Attribution is per **family**, exactly as the guest side has it: a drop is
+/// counted per class by the producer, and the count cannot say which stream
+/// lost the record, so the family's parked tasks are what gets failed. That
+/// imprecision is the contract's (§4.4), not a shortcut here.
+///
+/// The counters are cumulative, so `drop_seen` is the baseline: without it every
+/// iteration after the first would re-fail the same victims.
+fn take_drop_victims(store: &mut Store<HostState>) -> Vec<(u64, i32)> {
+    let posting = store.data().posting.clone();
+    let data = store.data_mut();
+    let mut per_family: Vec<(u32, usize)> = Vec::new();
+    for class in 0..session::arena::CLASS_COUNT as u32 {
+        let Some(queue) = posting.queue(class) else {
+            continue;
+        };
+        let total = queue.dropped();
+        let seen = data.drop_seen[class as usize];
+        if total <= seen {
+            continue;
+        }
+        data.drop_seen[class as usize] = total;
+        let delta = (total - seen) as usize;
+        let family = scheduler::family_of(class);
+        match per_family.iter_mut().find(|(known, _)| *known == family) {
+            Some((_, count)) => *count += delta,
+            None => per_family.push((family, delta)),
+        }
+    }
+
+    let mut victims = Vec::new();
+    for (family, count) in per_family {
+        for task_id in data.scheduler.take_from_family(family, count) {
+            victims.push((task_id, -5)); // -EIO: §4.4's lost completion
+        }
+    }
+    victims
+}
+
 fn host_loop(
     store: &mut Store<HostState>,
     wake: &wasmtime::TypedFunc<(i32, i32), ()>,
+    fail: Option<&wasmtime::TypedFunc<(i32, i32, i32), ()>>,
 ) -> anyhow::Result<()> {
     use wasmtime::AsContextMut;
 
@@ -1473,6 +1536,56 @@ fn host_loop(
             }
         }
 
+        // §4.4 and §5.1, host-side: a task whose record will never arrive is
+        // resumed with a status rather than left parked. Two sources, one call —
+        // a lost completion (-EIO) and a refused park (its own -ENOSPC), which
+        // `scheduler::park` queued because a `void` import has nowhere to return
+        // a refusal.
+        let mut failed: Vec<(u64, i32)> = store.data_mut().scheduler.take_refusals();
+        failed.extend(take_drop_victims(store));
+        if !failed.is_empty() {
+            match fail {
+                Some(fail) => {
+                    for chunk in failed.chunks(HOST_FAIL_CHUNK) {
+                        let Some(memory) = store.data().arena else {
+                            anyhow::bail!("host loop: no arena to write fail ids into");
+                        };
+                        {
+                            let data = memory.data_mut(&mut *store);
+                            if HOST_FAIL_STATUS + chunk.len() * 4 > data.len() {
+                                anyhow::bail!("host loop: the fail scratch does not fit the arena");
+                            }
+                            for (index, (id, status)) in chunk.iter().enumerate() {
+                                let at = HOST_WAKE_SCRATCH + index * 8;
+                                data[at..at + 8].copy_from_slice(&id.to_le_bytes());
+                                let sat = HOST_FAIL_STATUS + index * 4;
+                                data[sat..sat + 4].copy_from_slice(&status.to_le_bytes());
+                            }
+                        }
+                        fail.call(
+                            &mut *store,
+                            (
+                                HOST_WAKE_SCRATCH as i32,
+                                HOST_FAIL_STATUS as i32,
+                                chunk.len() as i32,
+                            ),
+                        )?;
+                    }
+                }
+                // A guest built before std 0.6.1 has no `__taskFail`. Said out
+                // loud rather than swallowed: the task stays parked, and that is
+                // the failure mode this path exists to remove.
+                None => logging::log(
+                    Level::Warn,
+                    "core",
+                    &format!(
+                        "host loop: {} task(s) to fail but the guest exports no                          `__taskFail`; they stay parked (rebuild the guest against                          std 0.6.1)",
+                        failed.len()
+                    ),
+                ),
+            }
+        }
+
         // Hand the batch to the guest. One `wake` for the whole epoch's matches,
         // which is the contract's batching (§2.2): the host names the tasks.
         let batch = std::mem::take(&mut store.data_mut().wake_batch);
@@ -1511,6 +1624,11 @@ fn host_loop(
 const HOST_WAKE_SCRATCH: usize = session::arena::CONTROL_OFFSET + 184;
 /// Ids that fit in the control block's tail: (256 - 184) / 8.
 const HOST_WAKE_CHUNK: usize = 9;
+/// Where a fail call's statuses start: after five ids (5 * 8 = 40 bytes), so
+/// five statuses (20 bytes) end at 184 + 40 + 20 = 244 of the 256-byte block.
+const HOST_FAIL_STATUS: usize = HOST_WAKE_SCRATCH + 5 * 8;
+/// Tasks per `__taskFail` call: ids and statuses both fit in the tail.
+const HOST_FAIL_CHUNK: usize = 5;
 /// The loop's wait slice, in ms: a bounded condvar wait, not a poll. It exists
 /// so a guest that reports "running" with nothing outstanding cannot hang the
 /// process; a healthy loop returns on an event long before it expires.

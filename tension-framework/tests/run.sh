@@ -265,6 +265,44 @@ case "$frame_out" in
   *"FRAME loop finished after 3 frames"*) echo "    == guest-frame: OK" ;;
   *) echo "run.sh: guest-frame: the frame loop did not run to its own exit" >&2; cat "$root/build/guest-frame.err" >&2; exit 1 ;;
 esac
+# The drop path (0.7.0c): a record the sub-ring refuses must wake its parked
+# task with -EIO, not leave it parked. `--post-test-events` queues three job
+# records; the guest opens a two-slot ring with no callbacks, so the third is
+# dropped by the session, and it parks on exactly that record (job 5). Only the
+# host-side fail path can resume it.
+echo "==> compiling guest-drop.ts"
+# The fixture needs std's `__taskFail`, which lands with 0.6.1. Until the
+# dependency floor moves (0.7.0d's release), a tree built against the published
+# 0.6.0 cannot compile it: reported as a SKIP naming the reason, never as a pass.
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-drop.ts \
+        --config build/session.asconfig.json -o build/guest-drop.wasm ) >build/guest-drop.compile 2>&1; then
+  if grep -q "__taskFail" build/guest-drop.compile; then
+    echo "    == guest-drop: SKIP — the installed tensionscript has no __taskFail (needs >= 0.6.1)"
+    echo "==> checking guest-log's records (trace)"
+    true
+  else
+    cat build/guest-drop.compile >&2
+    echo "run.sh: guest-drop: compile failed for a reason other than the missing export" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-drop.wasm (host-owned loop, forced drop)"
+set +e
+drop_out="$(timeout 60 "$core" --post-test-events "$root/build/guest-drop.wasm" 2>"$root/build/guest-drop.err")"
+drop_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$drop_out"
+if [ "$drop_status" -ne 0 ]; then
+  echo "run.sh: guest-drop: exited $drop_status; stderr:" >&2
+  cat "$root/build/guest-drop.err" >&2
+  exit 1
+fi
+case "$drop_out" in
+  *"DROP woke with status -5"*) echo "    == guest-drop: OK" ;;
+  *) echo "run.sh: guest-drop: a lost completion did not wake with -EIO" >&2; cat "$root/build/guest-drop.err" >&2; exit 1 ;;
+esac
+fi
+
 echo "==> checking guest-log's records (trace)"
 # The compiled fixture's records must reach the host's layout and filter: at
 # `trace` every level is present, the structured payload lands in the message
