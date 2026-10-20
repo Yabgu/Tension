@@ -1548,18 +1548,25 @@ fn host_loop(
         }
 
         // The frame add: a guest awaiting `rt.frame()` has a task parked on
-        // `(FRAME, 0)`, and this is the only thing that ever resolves it. Gated
-        // on `_game_running()` because a guest that has stopped wanting frames
-        // must not be woken for one — and gated on the take answering, so a
-        // guest that never calls `rt.frame()` costs nothing.
-        if running {
-            if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
-                store.data_mut().wake_batch.push(scheduler::Wake {
-                    task_id: frame_task,
-                    class: session::arena::CLASS_FRAME,
-                    payload: 0,
-                });
-            }
+        // `(FRAME, 0)`, and this is the only thing that ever resolves it.
+        //
+        // **Not gated on `_game_running()`** (0.7.0). It was, and that
+        // deadlocked the one shape a guest legitimately has at the end: a final
+        // task — a report, a teardown step — parked on the frame clock *after*
+        // the game loop cleared `running`. The exit condition wants
+        // `parked() == 0`, the frame add was refused because `running` was 0, and
+        // nothing could reach either. Measured with `guest-ai-stream`, whose
+        // verdict task parks on FRAME after the stream finishes.
+        //
+        // A per-key lookup is the whole guard: nothing parked costs one empty
+        // table read, and a guest that has stopped being driven leaves through
+        // the exit condition below.
+        if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
+            store.data_mut().wake_batch.push(scheduler::Wake {
+                task_id: frame_task,
+                class: session::arena::CLASS_FRAME,
+                payload: 0,
+            });
         }
 
         // §4.4 and §5.1, host-side: a task whose record will never arrive is

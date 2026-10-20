@@ -386,6 +386,39 @@ case "$enospc_out" in
 esac
 fi
 
+# The chained await (0.7.0): a task parked on another *suspending guest task's*
+# record. No producer key, so the host never hears of it — the guest's own
+# completion has to wake it. This is the shape that deadlocked when `wake`
+# filtered on `slot >= 0`; the fixture prints "got 7" only if the waiter ran.
+echo "==> compiling guest-chain.ts"
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-chain.ts \
+        --config build/session.asconfig.json -o build/guest-chain.wasm ) >build/guest-chain.compile 2>&1; then
+  if old_stdlib_error build/guest-chain.compile; then
+    echo "    == guest-chain: SKIP — the installed tensionscript has no push-path std (needs >= 0.6.1)"
+    true
+  else
+    cat build/guest-chain.compile >&2
+    echo "run.sh: guest-chain: compile failed for a reason other than the missing std" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-chain.wasm (host-owned loop, waiter on a guest record)"
+set +e
+chain_out="$(timeout 60 "$core" "$root/build/guest-chain.wasm" 2>"$root/build/guest-chain.err")"
+chain_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$chain_out"
+if [ "$chain_status" -ne 0 ]; then
+  echo "run.sh: guest-chain: exited $chain_status; stderr:" >&2
+  cat "$root/build/guest-chain.err" >&2
+  exit 1
+fi
+case "$chain_out" in
+  *"CHAIN outer: got 7"*) echo "    == guest-chain: OK" ;;
+  *) echo "run.sh: guest-chain: the waiter on a guest task's record never resumed" >&2; cat "$root/build/guest-chain.err" >&2; exit 1 ;;
+esac
+fi
+
 # The drop path (0.7.0c): a record the sub-ring refuses must wake its parked
 # task with -EIO, not leave it parked. `--post-test-events` queues three job
 # records; the guest opens a two-slot ring with no callbacks, so the third is
