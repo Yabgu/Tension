@@ -298,6 +298,40 @@ case "$early_out" in
 esac
 fi
 
+# The synchronous async function (0.7.0): a task that never parks. The entry
+# claims its slot, the body runs inside its own entry, the terminal frees the
+# slot — and the caller's `await` falls through on the already-settled record.
+# A four-slot table against twelve tasks is what makes a leaked slot visible: the
+# fifth would be refused and return 0, and the sum would be short.
+echo "==> compiling guest-sync.ts"
+if ! ( cd "$root" && ./node_modules/.bin/tensionscript tests/guest-sync.ts \
+        --config build/session.asconfig.json -o build/guest-sync.wasm ) >build/guest-sync.compile 2>&1; then
+  if grep -q "__taskRegistered" build/guest-sync.compile; then
+    echo "    == guest-sync: SKIP — the installed tensionscript has no creation guard (needs >= 0.6.1)"
+    true
+  else
+    cat build/guest-sync.compile >&2
+    echo "run.sh: guest-sync: compile failed for a reason other than the missing guard" >&2
+    exit 1
+  fi
+else
+echo "==> running guest-sync.wasm (host-owned loop, no park at all)"
+set +e
+sync_out="$(timeout 60 "$core" --post-test-events "$root/build/guest-sync.wasm" 2>"$root/build/guest-sync.err")"
+sync_status=$?
+set -e
+while IFS= read -r line; do echo "    $line"; done <<< "$sync_out"
+if [ "$sync_status" -ne 0 ]; then
+  echo "run.sh: guest-sync: exited $sync_status; stderr:" >&2
+  cat "$root/build/guest-sync.err" >&2
+  exit 1
+fi
+case "$sync_out" in
+  *"SYNC 12 synchronous awaits summed 504"*) echo "    == guest-sync: OK" ;;
+  *) echo "run.sh: guest-sync: the synchronous path did not complete" >&2; cat "$root/build/guest-sync.err" >&2; exit 1 ;;
+esac
+fi
+
 # The refused-creation path (0.7.0d-pre): a two-slot table, two tasks holding
 # both slots, and a third created while they do. Capacity bounds *live* tasks
 # (the slot is claimed at creation), so the third is settled with -ENOSPC before
