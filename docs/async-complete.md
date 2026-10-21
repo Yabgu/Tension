@@ -50,10 +50,14 @@ is queued by `wake` and drained at the top of the next host entry.
 - Seven adopting examples on the host-owned loop: bouncing-bodies, hello-mesh,
   animated-character, hello-triangle, input-camera, async-io, ai. bouncing-ball
   is source-adopted behind its pre-existing `AS105` memory-page gate.
-- **The real llama.cpp stream on 0.7.0**: 35 chunks, ending on `AI_DONE`
-  (class 11), one host wake per chunk, exit 0. The chunk count varies with
-  timing (36 on 0.6.1, same reply) — what does not vary is that it passes 16,
-  the ring capacity a per-chunk registration used to pressure.
+- **The real llama.cpp stream on 0.7.1**: 35 chunks (`post class=10`), one
+  `AI_DONE` (class 11), zero `AI_ERROR`, exit 0, reply *"Shadows stretch across
+  the desolate landscape, whispering secrets of forgotten tales. The air
+  carries a chill, a prelude to the impending storm."* Measured with
+  `TENSION_AI_TRACE=1` against the `--features ai` host and the 2.39 GB Phi-3
+  Q4 GGUF. The chunk count varies with timing (36 on 0.6.1, 35 on 0.7.0, same
+  reply) — what does not vary is that it passes 16, the ring capacity a
+  per-chunk registration used to pressure.
 - io's wasm is the non-adopting control: byte-identical between 0.6.1 and 0.7.0
   except for the globals the retired buffer occupied.
 
