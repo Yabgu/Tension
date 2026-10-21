@@ -51,7 +51,7 @@ pub const ABI_VERSION: u16 = 1;
 pub const CONTROL_OFFSET: usize = 0x000;
 pub const CONTROL_SIZE: usize = 256;
 pub const SESSION_INFO_OFFSET: usize = 0x100;
-pub const SESSION_INFO_SIZE: usize = 128;
+pub const SESSION_INFO_SIZE: usize = 144;
 pub const REGION_TABLE_OFFSET: usize = 0x200;
 pub const REGION_DESC_SIZE: usize = 24;
 pub const REGION_COUNT: usize = 12;
@@ -94,7 +94,11 @@ pub const SESSION_INFO_LAYOUT_HASH: usize = 36;
 pub const SESSION_INFO_REGION_COUNT: usize = 40;
 pub const SESSION_INFO_CLASS_COUNT: usize = 44;
 pub const SESSION_INFO_CLASS_CAPACITY: usize = 48;
-pub const SESSION_INFO_OPEN_NONCE: usize = 88;
+/// The open nonce, after the class-capacity array. It is a `u64` and `put_u64`
+/// **refuses** an offset that is not 8-byte aligned (`arena.rs:511-521`), so
+/// this rounds the array's 13 x 4 = 52 bytes up to the next 8-byte boundary:
+/// 48 + 52 = 100, padded to 104.
+pub const SESSION_INFO_OPEN_NONCE: usize = 104;
 
 // ── the session state machine's values (the control block's report) ───────
 
@@ -111,9 +115,13 @@ pub const FAULT_SHUTDOWN: u32 = 4;
 
 // ── event classes and delivery modes ──────────────────────────────────────
 
-/// The ten classes of `DESIGN.md` §3.2, in the frozen id order (urgent first:
-/// delivery follows class id within an epoch).
-pub const CLASS_COUNT: usize = 10;
+/// The thirteen classes of `DESIGN.md` §3.2, in the frozen id order (urgent
+/// first: delivery follows class id within an epoch).
+///
+/// 0.6.0a appended the AI family (10-12) after `FRAME`. Appending — never
+/// inserting — is the rule: a class id is a subscription key and a wire value,
+/// so every existing id had to stay where it was.
+pub const CLASS_COUNT: usize = 13;
 
 pub const MODE_DIRECT: u32 = 1;
 pub const MODE_BATCHED: u32 = 2;
@@ -196,7 +204,7 @@ pub const CALLBACKS_ON_EVENT: usize = 12;
 /// cannot validate a signature must not accept it.
 pub const CALLBACKS_SLOTS: u16 = 2;
 
-/// The ten class ids, by name (`DESIGN.md` §3.2). The order is the delivery
+/// The thirteen class ids, by name (`DESIGN.md` §3.2). The order is the delivery
 /// priority — urgent first — and it is frozen: a class id is a subscription key
 /// and a wire value.
 pub const CLASS_DEVICE_LOST: u32 = 0;
@@ -211,10 +219,18 @@ pub const CLASS_INPUT_KEY: u32 = 6;
 pub const CLASS_INPUT_MOUSE: u32 = 7;
 pub const CLASS_LOG: u32 = 8;
 pub const CLASS_FRAME: u32 = 9;
+/// The AI family (0.6.0a): a coalesced completion per session. `READY` says
+/// bytes are available, `DONE` says generation finished, `ERROR` says it failed;
+/// the **delivered class** is the discriminator, never the payload — a zero
+/// payload must not read as either done or failure (the lesson of the OGRE
+/// wrapper's two defects). Appended after `FRAME` so ids 0-9 keep their values.
+pub const CLASS_AI_READY: u32 = 10;
+pub const CLASS_AI_DONE: u32 = 11;
+pub const CLASS_AI_ERROR: u32 = 12;
 
-/// The ten classes as `(id, name)`, in the frozen order — the catalogue the ids
-/// above name, in one place. `DESIGN.md` §3.2 is the prose; this is what code
-/// reads when it has to print which class a record belongs to.
+/// The thirteen classes as `(id, name)`, in the frozen order — the catalogue the
+/// ids above name, in one place. `DESIGN.md` §3.2 is the prose; this is what
+/// code reads when it has to print which class a record belongs to.
 pub const CLASSES: [(u32, &str); CLASS_COUNT] = [
     (CLASS_DEVICE_LOST, "DEVICE_LOST"),
     (CLASS_JOB_FAILED, "JOB_FAILED"),
@@ -226,6 +242,9 @@ pub const CLASSES: [(u32, &str); CLASS_COUNT] = [
     (CLASS_INPUT_MOUSE, "INPUT_MOUSE"),
     (CLASS_LOG, "LOG"),
     (CLASS_FRAME, "FRAME"),
+    (CLASS_AI_READY, "AI_READY"),
+    (CLASS_AI_DONE, "AI_DONE"),
+    (CLASS_AI_ERROR, "AI_ERROR"),
 ];
 
 /// A class's name, or `"<unknown>"` for an id this chunk does not define.
@@ -238,8 +257,14 @@ pub fn class_name(id: u32) -> &'static str {
 }
 
 /// The default ring capacity per class, in class-id order (`DESIGN.md` §3.2).
+///
+/// The AI classes get 16. Coalescing bounds the AI family at one un-drained
+/// READY plus one terminal per session, and `MAX_SESSIONS` is 4
+/// (`ai/mod.rs:114`) — so 8 is the ceiling and 16 is 2x margin, which is what
+/// makes `QueueFull` and the sub-ring's full case unreachable on a healthy
+/// stream (0.6.0a's ring invariant).
 pub const DEFAULT_RING_CAPACITIES: [u32; CLASS_COUNT] =
-    [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256];
+    [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16];
 
 /// The default delivery mode per class, in class-id order (`DESIGN.md` §3.2).
 ///
@@ -258,6 +283,9 @@ pub const DEFAULT_CLASS_MODES: [u32; CLASS_COUNT] = [
     MODE_BATCHED,  // 7 INPUT_MOUSE
     MODE_BATCHED,  // 8 LOG
     MODE_POLLED,   // 9 FRAME — off unless subscribed
+    MODE_BATCHED,  // 10 AI_READY
+    MODE_BATCHED,  // 11 AI_DONE
+    MODE_BATCHED,  // 12 AI_ERROR
 ];
 
 /// `class_info`'s `flags` word: the class is subscribed, so a producer that can
@@ -1205,7 +1233,7 @@ pub fn ring_offset(capacities: &[u32; CLASS_COUNT], class: usize) -> usize {
     EVENT_TABLE_OFFSET + EVENT_TABLE_SIZE
 }
 
-/// How many bytes the ten sub-rings need. C4 requires this to fit
+/// How many bytes the thirteen sub-rings need. C4 requires this to fit
 /// [`EVENT_TABLE_SIZE`].
 pub fn ring_bytes(capacities: &[u32; CLASS_COUNT]) -> u64 {
     let mut total: u64 = 0;
@@ -1271,7 +1299,7 @@ mod tests {
         assert_eq!(CONTROL_OFFSET, 0x000);
         assert_eq!(CONTROL_SIZE, 256);
         assert_eq!(SESSION_INFO_OFFSET, 0x100);
-        assert_eq!(SESSION_INFO_SIZE, 128);
+        assert_eq!(SESSION_INFO_SIZE, 144);
         assert_eq!(REGION_TABLE_OFFSET, 0x200);
         assert_eq!(REGION_DESC_SIZE, 24);
         assert_eq!(MANIFEST_ENTRY_SIZE, 8);
@@ -1321,10 +1349,20 @@ mod tests {
         assert_eq!(SESSION_INFO_REGION_COUNT, 40);
         assert_eq!(SESSION_INFO_CLASS_COUNT, 44);
         assert_eq!(SESSION_INFO_CLASS_CAPACITY, 48);
-        assert_eq!(SESSION_INFO_OPEN_NONCE, 88);
-        // The ten capacities and the nonce fit, with eight reserved words.
-        assert_eq!(SESSION_INFO_CLASS_CAPACITY + CLASS_COUNT * 4, SESSION_INFO_OPEN_NONCE);
+        assert_eq!(SESSION_INFO_OPEN_NONCE, 104);
+        // 0.6.0a's bump, stated as arithmetic. The class-capacity array covers
+        // 13 x 4 = 52 bytes (48..100); the nonce is a u64, so the offset rounds
+        // up from 100 to 104 — `put_u64` refuses anything else. Then the nonce's
+        // eight words must be 8-aligned, and the whole record pads to 16:
+        // 104 + 8 = 112, reserved to 144.
+        assert_eq!(SESSION_INFO_CLASS_CAPACITY + CLASS_COUNT * 4, 100);
+        assert_eq!(SESSION_INFO_OPEN_NONCE % 8, 0, "the u64 nonce is 8-aligned");
         assert_eq!(SESSION_INFO_OPEN_NONCE + 8 + 8 * 4, SESSION_INFO_SIZE);
+        assert_eq!(SESSION_INFO_SIZE % 16, 0, "SessionInfo pads to 16, like every region");
+        // The record ends at 0x100 + 0x90 = 0x190, still inside the header page:
+        // no region moves, which is the whole point of appending the classes.
+        assert_eq!(SESSION_INFO_SIZE, 144);
+        assert!(SESSION_INFO_OFFSET + SESSION_INFO_SIZE <= REGION_TABLE_OFFSET);
     }
 
     #[test]
@@ -1634,7 +1672,10 @@ mod tests {
     ///
     /// `303_487_325` was the value before field offsets were folded in; a
     /// reordering or renaming of any field a guest reads now moves it.
-    const RECORDED_LAYOUT_HASH: u32 = 3_451_714_980;
+    /// `3_451_714_980` was the value before 0.6.0a appended the AI classes:
+    /// `CLASS_COUNT` (10 -> 13) and `SESSION_INFO_SIZE` (128 -> 144) are both
+    /// folded in, so the bump moves the hash by design.
+    const RECORDED_LAYOUT_HASH: u32 = 786_288_195;
 
     #[test]
     fn canary_lattice_verifies_and_detects_one_byte() {
@@ -1706,12 +1747,13 @@ mod tests {
         assert!(used <= EVENT_TABLE_SIZE as u64);
         assert_eq!(
             EVENT_TABLE_SIZE as u64 - used,
-            61_088,
-            "the defaults leave 61 088 bytes of EVENT_TABLE unused"
+            59_456,
+            "the defaults leave 59 456 bytes of EVENT_TABLE unused (the AI \
+             family's three classes cost 3 x (32 + 16 x 32) = 1632)"
         );
         assert_eq!(
             DEFAULT_RING_CAPACITIES.iter().map(|c| *c as u64).sum::<u64>(),
-            10_369
+            10_417
         );
     }
 

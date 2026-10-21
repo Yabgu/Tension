@@ -40,7 +40,7 @@ use std::ffi::{c_char, c_void, CStr};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-use wasmtime::{Caller, Engine, FuncType, Val, ValType};
+use wasmtime::{Caller, Engine, FuncType, Store, Val, ValType};
 
 use super::signatures::{Signature, Slot, ValueType, MAX_PARAMS};
 use super::AdapterHost;
@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 2;
+pub const ADAPTER_ABI_VERSION: u32 = 3;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -177,6 +177,10 @@ pub struct TensionCoreApi {
     /// capacity, so the host can refuse rather than overwrite. `guest_read`
     /// stays populated for adapters built before this slot.
     pub guest_read_checked: Option<GuestReadCheckedFn>,
+    /// Appended under rule 11 at ABI version 3: the adapter's render thread says
+    /// one frame was presented (0.7.0a). The host wakes whichever loop is
+    /// driving the guest; a host with no loop ignores it.
+    pub signal_frame: Option<SignalFrameFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -187,6 +191,7 @@ pub type PublishFn = unsafe extern "C" fn(*mut c_void, *const TensionCoreApi) ->
 pub type ApplyFn = unsafe extern "C" fn(*mut c_void, u32, *const c_void, u32) -> i32;
 pub type ShutdownFn = unsafe extern "C" fn(*mut c_void) -> i32;
 pub type DestroyFn = unsafe extern "C" fn(*mut c_void);
+pub type SignalFrameFn = unsafe extern "C" fn(*mut c_void);
 /// The bounds-checked read appended under rule 11 (C4.1a).
 pub type GuestReadCheckedFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32;
@@ -217,7 +222,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 136);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 144);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -231,6 +236,7 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, register_import) == 72);
     assert!(std::mem::offset_of!(TensionCoreApi, register_source) == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, post_event) == 88);
+    assert!(std::mem::offset_of!(TensionCoreApi, signal_frame) == 136);
     assert!(std::mem::offset_of!(TensionCoreApi, class_info) == 96);
     assert!(std::mem::offset_of!(TensionCoreApi, region_lookup) == 104);
     // Appended under rule 11; the header's `_Static_assert` pins the same shape
@@ -527,13 +533,25 @@ pub struct CallerGuard {
 }
 
 impl CallerGuard {
-    fn install(host: HostHandle, caller: &mut Caller<'_, HostState>) -> CallerGuard {
+    fn install_caller(host: HostHandle, caller: &mut Caller<'_, HostState>) -> CallerGuard {
         if let Some(adapter_host) = host.get() {
             // SAFETY: the erased lifetime is a name. The guard clears the slot
             // before this frame ends, and the header's rule 6 says an adapter
             // may only use guest memory inside the call it is invoked from.
             let erased: &mut Caller<'static, HostState> = unsafe { std::mem::transmute(caller) };
-            adapter_host.enter(erased);
+            adapter_host.enter_caller(erased);
+        }
+        CallerGuard { host }
+    }
+
+    /// The store variant (0.7.0a). Same window, same `Drop`, same thread rule:
+    /// what differs is only how `guest_read`/`guest_write` reach the arena.
+    fn install_store(host: HostHandle, store: &mut Store<HostState>) -> CallerGuard {
+        if let Some(adapter_host) = host.get() {
+            // SAFETY: as above — the erased lifetime is a name, and the guard
+            // clears the slot however this call ends.
+            let erased: &mut Store<HostState> = unsafe { std::mem::transmute(store) };
+            adapter_host.enter_store(erased);
         }
         CallerGuard { host }
     }
@@ -559,7 +577,20 @@ pub(crate) fn with_caller_installed<R>(
     caller: &mut Caller<'_, HostState>,
     body: impl FnOnce() -> R,
 ) -> R {
-    let guard = CallerGuard::install(host, caller);
+    let guard = CallerGuard::install_caller(host, caller);
+    let result = body();
+    drop(guard);
+    result
+}
+
+/// The store variant of [`with_caller_installed`], for the host-owned epoch
+/// (0.7.0a): the same guard, the same window, the same clear-on-drop.
+pub(crate) fn with_store_installed<R>(
+    host: HostHandle,
+    store: &mut Store<HostState>,
+    body: impl FnOnce() -> R,
+) -> R {
+    let guard = CallerGuard::install_store(host, store);
     let result = body();
     drop(guard);
     result
@@ -666,7 +697,7 @@ pub fn import_closure(
             // REENTRANT_READONLY falls through and runs exactly as at depth 0.
         }
 
-        let guard = CallerGuard::install(host, &mut caller);
+        let guard = CallerGuard::install_caller(host, &mut caller);
         let mut ret = TensionValue::zero();
         // SAFETY: the adapter is native code that declared this signature at
         // `link`; the pointers below are valid for the duration of the call, and
@@ -779,24 +810,9 @@ unsafe fn guest_read_into(
     let Some(host) = AdapterHost::from_user(user) else {
         return EBADF;
     };
-    // C4.1b: the caller slot is installed by the guest thread, inside a call.
-    // A shim reached from any other thread — `post_event` is any-thread, and an
-    // adapter may run its own worker — would otherwise dereference a `Caller`
-    // that thread does not own. Refuse it (-EBUSY), never dereference it, never
-    // panic. This subsumes the null-caller case: a null slot has tid 0.
-    if !host.caller_is_this_thread() {
-        return EBUSY;
-    }
-    let caller = host.caller();
-    if caller.is_null() {
-        return EBUSY; // outside a guest call: rule 6
-    }
-    // SAFETY: installed by CallerGuard for the duration of the call in flight,
-    // and now checked to be this thread's.
-    let caller = unsafe { &mut *caller };
-    let Some(memory) = caller.data().arena else {
-        return EBADF;
-    };
+    // The thread rule (C4.1b) lives inside `with_arena`, which both context
+    // kinds go through: a shim reached from a producer thread is refused there
+    // with -EBUSY rather than dereferencing a context this thread does not own.
     if dst.is_null() {
         return EINVAL;
     }
@@ -807,17 +823,25 @@ unsafe fn guest_read_into(
             return EINVAL;
         }
     }
-    let data = memory.data(&*caller);
-    let Some(end) = (ptr as usize).checked_add(len as usize) else {
-        return EINVAL;
-    };
-    if end > data.len() {
-        return EINVAL;
+    match host.with_arena(|data| {
+        let Some(end) = (ptr as usize).checked_add(len as usize) else {
+            return EINVAL;
+        };
+        if end > data.len() {
+            return EINVAL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                data[ptr as usize..end].as_ptr(),
+                dst as *mut u8,
+                len as usize,
+            )
+        };
+        0
+    }) {
+        Ok(status) => status,
+        Err(errno) => errno,
     }
-    unsafe {
-        std::ptr::copy_nonoverlapping(data[ptr as usize..end].as_ptr(), dst as *mut u8, len as usize)
-    };
-    0
 }
 
 pub(crate) unsafe extern "C" fn guest_write(
@@ -827,19 +851,6 @@ pub(crate) unsafe extern "C" fn guest_write(
     len: u32,
 ) -> i32 {
     let Some(host) = AdapterHost::from_user(user) else {
-        return EBADF;
-    };
-    // C4.1b: same thread rule as the read path.
-    if !host.caller_is_this_thread() {
-        return EBUSY;
-    }
-    let caller = host.caller();
-    if caller.is_null() {
-        return EBUSY;
-    }
-    // SAFETY: as in `guest_read`.
-    let caller = unsafe { &mut *caller };
-    let Some(memory) = caller.data().arena else {
         return EBADF;
     };
     if src.is_null() {
@@ -852,15 +863,34 @@ pub(crate) unsafe extern "C" fn guest_write(
     if !host.charge_publish(len) {
         return ENOSPC;
     }
-    let data = memory.data_mut(&mut *caller);
-    let Some(end) = (ptr as usize).checked_add(len as usize) else {
-        return EINVAL;
-    };
-    if end > data.len() {
-        return EINVAL;
+    match host.with_arena_mut(|data| {
+        let Some(end) = (ptr as usize).checked_add(len as usize) else {
+            return EINVAL;
+        };
+        if end > data.len() {
+            return EINVAL;
+        }
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                src as *const u8,
+                data[ptr as usize..end].as_mut_ptr(),
+                len as usize,
+            )
+        };
+        0
+    }) {
+        Ok(status) => status,
+        Err(errno) => errno,
     }
-    unsafe { std::ptr::copy_nonoverlapping(src as *const u8, data[ptr as usize..end].as_mut_ptr(), len as usize) };
-    0
+}
+
+/// One frame was presented (v3). Any thread, never blocks, never touches guest
+/// memory: it wakes whatever loop is waiting on the session's posting face.
+pub(crate) unsafe extern "C" fn signal_frame(user: *mut c_void) {
+    let Some(host) = AdapterHost::from_user(user) else {
+        return;
+    };
+    host.posting.signal_wake();
 }
 
 pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
@@ -1202,6 +1232,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         log_named: Some(log_named),
         log_structured: Some(log_structured),
         guest_read_checked: Some(guest_read_checked),
+        signal_frame: Some(signal_frame),
     }
 }
 
@@ -1225,8 +1256,15 @@ mod tests {
                 pending_line: None,
                 res: Vec::new(),
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
-                ai: crate::ai::AiSession::new(crate::default_ai_adapter()),
+                ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
+                scheduler: crate::scheduler::Scheduler::new(),
+                wake_batch: Vec::new(),
+                task_wake: None,
+                task_resume: None,
+                task_fail: None,
+                drop_seen: [0; session::arena::CLASS_COUNT],
+                game_running: None,
                 posting: std::sync::Arc::new(
                     crate::session::posting::PostingSide::default(),
                 ),
@@ -1392,16 +1430,18 @@ mod tests {
         // x86-64 (quoted in this module's docs); the const assertions above are
         // the compile-time half of this check. `log_named`/`log_structured`
         // were appended under rule 11, moving the size 112 -> 128;
-        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and the adapter's
-        // `layout_hash` (C4.1c) moved that one 72 -> 80.
+        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and `signal_frame`
+        // (v3, 0.7.0a) moved it 136 -> 144. The adapter's `layout_hash` (C4.1c)
+        // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 136);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 144);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

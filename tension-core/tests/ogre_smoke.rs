@@ -303,7 +303,7 @@ mod tension_core_adapter_probe {
             region_lookup: Some(record_region),
         };
 
-        assert_eq!(api.abi_version, 2, "the stub is built against ABI 2");
+        assert_eq!(api.abi_version, 3, "the stub is built against ABI 3");
         unsafe {
             if let Some(init) = (*adapter).init {
                 assert_eq!(init(std::ptr::null_mut(), &api), 0, "init");

@@ -13,7 +13,7 @@
 // `--noExportMemory` is forbidden (F2) and `--lowMemoryLimit` likewise.
 
 export const ABI_VERSION: u32 = 1;
-export const LAYOUT_HASH: u32 = 3451714980;
+export const LAYOUT_HASH: u32 = 786288195;
 /** The live arena this guest asks for (bytes). */
 export const ARENA_SIZE: u32 = 6250528;
 /** The ceiling, and therefore the guest's `--memoryBase`. */
@@ -21,6 +21,6 @@ export const MAX_ARENA_SIZE: u32 = 8388608;
 export const MEMORY_BASE: u32 = 8388608;
 export const INITIAL_PAGES: u32 = 132;
 export const MAXIMUM_PAGES: u32 = 512;
-export const CLASS_COUNT: u32 = 10;
+export const CLASS_COUNT: u32 = 13;
 /** Per-class ring capacities, in class-id order. */
-export const RING_CAPACITIES: u32[] = [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256];
+export const RING_CAPACITIES: u32[] = [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16];

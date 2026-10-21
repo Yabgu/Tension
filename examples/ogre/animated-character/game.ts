@@ -41,6 +41,13 @@ import {
 } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+import { Task } from "~lib/task";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 /** The character is 3.765 units tall at scale 1; 0.29 makes it 1.09. */
 const SCALE: f32 = 0.29;
@@ -83,19 +90,21 @@ function fail(what: string): void {
 
 /// One frame from the renderer's readback, or null when there is none (the NULL
 /// render system has no framebuffer).
-function grab(): ArrayBuffer | null {
-  const armed_at = ogre.frameCount();
-  ogre.screenshot(0, 0);
-  for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed_at + 3; guard++) {
-    RuntimeSession.wait(5);
-    rt.runReady();
-  }
+function readback(): ArrayBuffer | null {
   const length = ogre.screenshot(0, 0);
   if (length <= 0) return null;
   const frame = new ArrayBuffer(length);
   const got = ogre.screenshot(changetype<usize>(frame), length);
   if (got != length) return null;
   return frame;
+}
+
+/// The readback, or a failure. A plain `ArrayBuffer` return keeps the async
+/// body free of a nullable local, which the transform refuses to lift.
+function readbackOrFail(): ArrayBuffer {
+  const frame = readback();
+  if (frame == null) fail("no frame could be downloaded");
+  return frame!;
 }
 
 /// Foreground is "not the frame's own corner pixel" — a mesh drawn black and a
@@ -292,26 +301,6 @@ function mat4AffineInverseInto(src: Float32Array, src_at: i32, dst: Float32Array
   return true;
 }
 
-/// Runs `task` to completion, ticking the scheduler while it is parked.
-///
-/// `_start_game` is `() -> ()` — the host binds the entry as
-/// `get_typed_func::<(), ()>` — so the awaitable loads are settled here instead
-/// of at the top level. `runReady` is what resumes a task whose completion has
-/// landed; the guard is a hang detector, not a timeout. A negative result is
-/// the loader's errno, the vocabulary `ogre.jobError` uses.
-function settleTask(task: Task<i32>, what: string): i32 {
-  let guard: i32 = 0;
-  while (!task._record.done && guard < 6000) {
-    RuntimeSession.wait(10);
-    rt.runReady();
-    ++guard;
-  }
-  if (!task._record.done) fail(what + " never settled");
-  const result: i32 = task._record.payload;
-  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
-  return result;
-}
-
 // ---------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------
@@ -342,6 +331,8 @@ function parseArgs(): Options {
 class Game {
   private options: Options;
   private frames: i32 = 0; // how many frames the clip loop ran
+  private frame: i32 = 0;  // the loop's own counter (0.7.0b: a field, so it
+                           // survives the park without being lifted)
   private midFrame: ArrayBuffer | null = null; // the frame kept halfway through the run
   private skeleton: Skeleton = new Skeleton();
   private animations: Animation[] = [];
@@ -349,25 +340,88 @@ class Game {
   /// Each joint's bind matrix, inverted once: the shader's matrices are
   /// bind-relative, so every frame multiplies the model pose by this.
   private bind_inverse: Float32Array = new Float32Array(0);
+  // The frame loop's buffers (0.7.0b): fields, because `stepAnimation` runs in
+  // a different call from the one that allocated them.
+  private poses: BoneTransform[][] = [];
+  private models: Float32Array[] = [];
+  private placed: Float32Array[] = [];
+  private matrices: Float32Array[] = [];
+  private worlds: Float32Array[] = [];
+  private batch: ogre.SkinMatrixBatch = new ogre.SkinMatrixBatch();
 
   constructor(options: Options) {
     this.options = options;
   }
 
-  /// Open the session and the renderer, mount the volume, load the mesh and
-  /// submit the scene, play the clips, then read the frames back.
-  run(): void {
+  /// The whole guest life, as one task (0.7.0b).
+  ///
+  /// One async function: every `await` parks *this* task — the mesh and the four
+  /// skins on `(JOBS, jobId)`, then `rt.frame()` — so the host's wake resumes the
+  /// caller directly. An `async` helper would park its own task and leave this
+  /// one on the ready queue, which a host-owned loop never drains.
+  async run(): void {
+    // Declared before the first await: the transform scopes a local declared
+    // after one to its own resume guard.
+    let mesh: i32 = 0;
+    let mid: ArrayBuffer | null = null;
+    let armed: u64 = 0;
+
     this.openSession();
     this.openRenderer();
     this.mountAssets();
     this.loadClips();
-    const mesh = this.loadMesh(MESH);
-    this.submitScene(mesh);
-    this.animate();
-    this.captureFrame();
+
+    const meshLoad: Task<u32> = ogre.loadMesh(MESH, 0);
+    await meshLoad;                    // parks on (JOBS, jobId)
+    mesh = ogre.loadResult(meshLoad);
+    if (mesh < 0) fail(MESH + " did not load (errno " + mesh.toString() + ")");
+
+    // Four skins, one job each: the texture path through the volume, and the
+    // resource ids the four materials name in their slot 0.
+    const textures: u32[] = [];
+    for (let i = 0; i < CHARACTERS; i++) {
+      const skinLoad: Task<u32> = ogre.loadTexture(SKINS[i], 0);
+      await skinLoad;
+      const id: i32 = ogre.loadResult(skinLoad);
+      if (id < 0) fail(SKINS[i] + " did not load (errno " + id.toString() + ")");
+      textures.push(u32(id));
+    }
+
+    this.submitScene(mesh, textures);
+    this.beginAnimation();
+
+    // The frame loop: one tick of 1/60 s per frame the renderer presents, and
+    // the host's frame signal is what paces it — no `RuntimeSession.wait`, no
+    // `rt.runReady()`.
+    for (this.frame = 0; this.frame < FRAMES; this.frame++) {
+      await rt.frame();
+      this.stepAnimation(this.frame);
+      // Halfway through, a second frame is kept: the last one is compared
+      // against it below, and the difference is the animation. Three frames for
+      // the readback to land, the same wait `grab` used to pump for.
+      if (this.options.windowed && this.frame == FRAMES / 2) {
+        armed = ogre.frameCount();
+        ogre.screenshot(0, 0);
+        while (ogre.frameCount() < armed + 3) await rt.frame();
+        mid = readback();
+      }
+    }
+    this.frames = FRAMES;
+    this.midFrame = mid;
 
     print("animated 4 characters, 3 clips, " + this.frames.toString() + " frames");
     print("done: 4 characters, one mesh, four skins, three clips");
+
+    if (this.options.windowed) {
+      armed = ogre.frameCount();
+      ogre.screenshot(0, 0);
+      while (ogre.frameCount() < armed + 3) await rt.frame();
+      const frame: ArrayBuffer = readbackOrFail();
+      this.captureFrame(frame);
+    }
+
+    this.shutdown();
+    finished = true;
   }
 
   /// The session itself: the loop, the arena, the event ring, the frame
@@ -454,24 +508,12 @@ class Game {
   /// `boneCount` 0. `isRigged` reads a bone-count flag (the loader writes
   /// `flags = bone_count > 0`), so it is **false** here by design — that flag
   /// is what makes the bone-update path refuse a mesh it cannot pose, and
-  /// this mesh is posed by matrices, not bones. There is no rig assert left
+  /// this mesh is posed by this.matrices, not bones. There is no rig assert left
   /// to make: `settle` fails on any realisation refusal, and the pixel checks
   /// are the proof the pose arrives.
-  private loadMesh(path: string): i32 {
-    return settleTask(ogre.loadMesh(path, 0), path);
-  }
-
   /// Four skins, four materials, one light, one camera, four renderables: the
   /// whole scene, submitted once.
-  submitScene(mesh: i32): void {
-    // Four skins, one job each: the texture path through the volume, and the
-    // resource ids the four materials name in their slot 0.
-    const textures: u32[] = [];
-    for (let i = 0; i < CHARACTERS; i++) {
-      const id = settleTask(ogre.loadTexture(SKINS[i], 0), SKINS[i]);
-      textures.push(<u32>id);
-    }
-
+  submitScene(mesh: i32, textures: u32[]): void {
     // Four PBS materials, one per skin: diffuse white so the texture is what shows,
     // specular off, roughness 0.5. Slot 0 is the id the loader handed back.
     for (let i = 0; i < CHARACTERS; i++) {
@@ -514,11 +556,9 @@ class Game {
     }
   }
 
-  /// The loop. The guest owns the clock and the pose: one tick of 1/60 s per
-  /// iteration, each character's time wrapped into its clip, and the pose
-  /// sampled and turned into model-space matrices here — the adapter only
-  /// forwards them. Everything the loop uses is allocated once, before it.
-  private animate(): void {
+  /// Everything the frame loop uses, allocated once before it starts: the pose
+  /// buffers, the batches, and the clip line the run opens with.
+  private beginAnimation(): void {
     print("clips: " + CLIP_NAMES[CLIP_INDEX[0]] + " " + CLIP_NAMES[CLIP_INDEX[1]] + " " +
           CLIP_NAMES[CLIP_INDEX[2]] + " " + CLIP_NAMES[CLIP_INDEX[3]] + " (" +
           this.animations[CLIP_INDEX[0]].duration.toString() + "s, " +
@@ -527,26 +567,21 @@ class Game {
           CLIP_OFFSETS[3].toString() + "s)");
 
     // Per-character buffers, allocated once: a pose the sampler writes into,
-    // a scratch for the frame's model matrices, the bind-relative block the
+    // a scratch for the frame's model this.matrices, the bind-relative block the
     // shader consumes, and one batch the four renderables share every frame
     // (`commit` resets its cursor, so the batch is the frame's scratch, not
     // one object per submit).
-    const poses: BoneTransform[][] = [];
-    const models: Float32Array[] = [];
-    const placed: Float32Array[] = [];
-    const matrices: Float32Array[] = [];
     for (let i = 0; i < CHARACTERS; i++) {
-      poses.push(identityPose(this.animations[CLIP_INDEX[i]].slots));
-      models.push(new Float32Array(this.skeleton.jointCount * 16));
-      placed.push(new Float32Array(this.skeleton.jointCount * 16));
-      matrices.push(new Float32Array(this.skeleton.jointCount * 16));
+      this.poses.push(identityPose(this.animations[CLIP_INDEX[i]].slots));
+      this.models.push(new Float32Array(this.skeleton.jointCount * 16));
+      this.placed.push(new Float32Array(this.skeleton.jointCount * 16));
+      this.matrices.push(new Float32Array(this.skeleton.jointCount * 16));
     }
     // The node's world matrix, constant per character. The shader piece's
     // overwrite lands where `worldPos` already is — **world space** (the
     // template transforms by `worldMat` before the custom piece and by
     // `viewProj` after it) — so the submitted matrices carry the node transform
     // the base path would have applied: world × model × bind⁻¹.
-    const worlds: Float32Array[] = [];
     for (let i = 0; i < CHARACTERS; i++) {
       const world = new Float32Array(16);
       world[0] = SCALE;
@@ -556,52 +591,40 @@ class Game {
       world[12] = GRID_X[i];
       world[13] = GRID_Y;
       world[14] = GRID_Z[i];
-      worlds.push(world);
+      this.worlds.push(world);
     }
-    const batch = new ogre.SkinMatrixBatch();
+  }
 
-    let frames = 0;
-    let mid_frame: ArrayBuffer | null = null;
-    for (frames = 0; frames < FRAMES; frames++) {
-      const now: f32 = <f32>frames / 60.0;
+  /// One frame: each character's time wrapped into its clip, the pose sampled
+  /// and turned into model-space matrices here — the adapter only forwards
+  /// them. Synchronous, called from `run` right after `await rt.frame()`.
+  private stepAnimation(frame: i32): void {
+    const now: f32 = <f32>frame / 60.0;
       for (let i = 0; i < CHARACTERS; i++) {
         const clip = this.animations[CLIP_INDEX[i]];
         let t: f32 = now + CLIP_OFFSETS[i];
         while (t >= clip.duration) t -= clip.duration;
-        const pose = sample(clip, this.indices[CLIP_INDEX[i]], t, poses[i]);
-        const model = localToModel(this.skeleton, pose, models[i]);
-        const skin = matrices[i];
+        const pose = sample(clip, this.indices[CLIP_INDEX[i]], t, this.poses[i]);
+        const model = localToModel(this.skeleton, pose, this.models[i]);
+        const skin = this.matrices[i];
         // The submitted matrices carry the whole chain the base path would
         // have applied: world × model × bind⁻¹ (two multiplies per joint —
         // `placed` exists because the module's mat4Multiply may not alias its
         // output).
         for (let j = 0; j < this.skeleton.jointCount; j++) {
-          mat4Multiply(worlds[i], model, placed[i], 0, j * 16, j * 16);
-          mat4Multiply(placed[i], this.bind_inverse, skin, j * 16, j * 16, j * 16);
+          mat4Multiply(this.worlds[i], model, this.placed[i], 0, j * 16, j * 16);
+          mat4Multiply(this.placed[i], this.bind_inverse, skin, j * 16, j * 16, j * 16);
         }
-        if (!batch.set(<u32>i, <u32>(i + 1), skin)) {
+        if (!this.batch.set(<u32>i, <u32>(i + 1), skin)) {
           fail("the matrix batch refused character " + (i + 1).toString());
         }
       }
-      if (batch.commit() != CHARACTERS) fail("submit_skin_matrices refused the batch");
-      RuntimeSession.wait(16);
-      rt.runReady();
-      // Halfway through, a second frame is kept: the last one is compared
-      // against it below, and the difference is the animation.
-      if (this.options.windowed && frames == FRAMES / 2) mid_frame = grab();
-    }
-    this.frames = frames;
-    this.midFrame = mid_frame;
+      if (this.batch.commit() != CHARACTERS) fail("submit_skin_matrices refused the batch");
   }
 
   /// The readback, where there is a framebuffer to read: four characters, three
   /// clips, one mesh, four skins — and the count says they were drawn.
-  private captureFrame(): void {
-    if (!this.options.windowed) return;
-    const frame = grab();
-    if (frame == null) {
-      fail("no frame could be downloaded");
-    }
+  private captureFrame(frame: ArrayBuffer): void {
     print("rendered " + foreground_count(frame!).toString() + " non-background pixels");
     // The four characters are in the four screen quadrants (the back row
     // projects higher and the front row lower at this camera), so a per-
@@ -645,7 +668,19 @@ class Game {
 // ---------------------------------------------------------------------------
 
 export function _start_game(): void {
+  rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
   const game = new Game(parseArgs());
+  // A floating task: it runs the synchronous prologue and parks at the mesh
+  // load. From here the host owns the loop.
   game.run();
-  game.shutdown();
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared after
+/// teardown, so the host's exit cannot cut the last frame or the readback off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
 }

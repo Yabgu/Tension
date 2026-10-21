@@ -30,6 +30,12 @@ import {
   rt
 } from "tension-framework";
 import { Task } from "~lib/task";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names, and the host resolves `__taskWake` by name at load.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 /** A task that finishes inside its own entry: no park, a settled record. */
 async function compute(seed: i32): i32 {
@@ -44,35 +50,62 @@ async function pipeline(): i32 {
   return a + b + 1;                // 83
 }
 
-export function _start_game(): void {
-  // Bind the completion classes to their families before any await can park
-  // (§3.1). Harmless with no producer attached: an unbound class is its own
-  // family, and the binding is what makes a failure class resolve the same task.
-  rt.start();
-
-  const callbacks = rt.callbacks();
-  const opened = RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks);
-  if (opened != 0) {
-    print("async-io: the session refused to open (" + opened.toString() + ")");
-    return;
-  }
+/// The whole guest life, as one task (0.7.0b).
+///
+/// `await` here parks *this* task on `(FRAME, 0)` and the host's loop wakes it.
+/// Nothing composes another async layer above it.
+async function run(): void {
+  // Declared before the first await: the transform scopes a local declared
+  // after one to its own resume guard.
+  let frames: i32 = 0;
 
   print("async-io: awaiting guest tasks");
 
-  const handle: Task<i32> = pipeline();
+  // `handle` is a name the state struct reserves, so the handle is `pipelineTask`.
+  const pipelineTask: Task<i32> = pipeline();
   // `await` already ran inside pipeline(); the record holds its return value.
-  print("  pipeline() completed with " + handle._record.payload.toString());
+  print("  pipeline() completed with " + pipelineTask._record.payload.toString());
 
-  // The frame loop every async game runs: yield, then resume what is ready.
-  // Three ticks is plenty here — nothing is parked — and it exercises the
-  // scheduler's "nothing to do" path on a real session.
-  for (let frame: i32 = 0; frame < 3; frame++) {
-    RuntimeSession.wait(0);
-    rt.runReady();
+  // The frame loop: three frames from the host. This is the scheduler's
+  // "nothing to do" path on a real session — no task is parked between these
+  // awaits — so it costs three wakeups and exercises the loop's exit.
+  while (frames < 3) {
+    await rt.frame();
+    frames += 1;
   }
 
   print("  no task left to resume: " + (rt.hasRunnable() ? "false" : "true"));
   print("--- end ---");
 
   RuntimeSession.close();
+  finished = true;
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a). Cleared after the
+/// session is closed, so the host's exit cannot cut the closing line off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
+}
+
+export function _start_game(): void {
+  // Bind the completion classes to their families before any await can park
+  // (§3.1). Harmless with no producer attached: an unbound class is its own
+  // family, and the binding is what makes a failure class resolve the same task.
+  rt.start();
+  // The table the push path parks slots in (0.7.0a); one task parks at a time.
+  __taskBindTable(8);
+
+  const callbacks = rt.callbacks();
+  const opened = RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks);
+  if (opened != 0) {
+    print("async-io: the session refused to open (" + opened.toString() + ")");
+    finished = true;
+    return;
+  }
+
+  // A floating task: it runs to its first `await rt.frame()` and parks. From
+  // here the host owns the loop.
+  run();
 }

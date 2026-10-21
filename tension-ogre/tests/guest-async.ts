@@ -40,6 +40,18 @@ import {
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { Task, TaskRecord } from "~lib/task";
+import { __taskBindTable } from "~lib/task-rt";
+
+// Host-driven since 0.7.0: `__taskTick` and `__taskDeliver` are gone, so a guest
+// that awaits is resumed by the host loop.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
+
+/// 1 while the guest still wants the host to drive it.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
+}
 
 /** -EBADF: the session is FAULTED; -EBUSY: a verb inside a callback. */
 const EBADF: i32 = -9;
@@ -52,6 +64,10 @@ let preAwaitFrame: u32 = 0;
 let afterFrame: u32 = 0;
 let badVerbResult: i32 = 0;
 let awaitedResource: u32 = 0;
+/// The class the delivery stamped on the awaited record. This is the design's
+/// guarantee — the record resolves the await — and the only value the harness
+/// may assert *immediately* after the resume.
+let deliveredClass: i32 = 0;
 
 function fail(reason: string): void {
   print("ASYNC FAIL: " + reason);
@@ -69,8 +85,11 @@ async function awaitJob(job: i32): u32 {
   // The parked path: `rt.job` stamps the record with (JOB_DONE, jobId), which
   // is exactly what the loader posts — `post_event(JOB_DONE|JOB_FAILED, job_id,
   // resource_id)` (`loader.cpp:433-439`, `adapter.cpp:194-197`).
-  let resource: u32 = await rt.job(job);
+  // `handle` is a name the state struct reserves (the transform refuses it).
+  const awaitedHandle: Task<u32> = rt.job(job);
+  let resource: u32 = await awaitedHandle;
   awaitedResource = resource;
+  deliveredClass = awaitedHandle._record.class_;
 
   // `after` is a module-level variable, not a local: a local declared *after*
   // an await and read by a later statement is scoped to its own resume guard
@@ -130,28 +149,55 @@ async function awaitJobRec(job: i32): i32 {
 /// overflow. Without callbacks the records stay in the ring (the ring protocol:
 /// the guest owns `tail`), which makes the overflow deterministic and lets the
 /// case exercise the same `rt.deliver` seam the callback uses.
-function dropCase(tns: string): void {
+/// Setup results, module-level for the reason `j2u32` exists.
+let dropOpen: i32 = 0;
+let mainOpen: i32 = 0;
+
+/// `j2` as a `u32`, outside the async body (which refuses `<T>expr`).
+let jobForRecord: i32 = 0;
+function j2u32(): u32 {
+  return <u32>jobForRecord;
+}
+
+/// The drop case's setup, in synchronous code: the transform lifts locals out
+/// of an async body and does not always keep their types (measured with 0.7.0's
+/// conversion: "Cannot find name 'cfg'").
+function openDropCase(tns: string): i32 {
   rt.start();
   const cfg = ConfigBuilder.forThisBuild(null).ringCapacity(CLASS_JOB_DONE, 1);
-  if (RuntimeSession.open(cfg) != 0) {
-    print("ASYNC SKIP drop-setup: session_open refused the capacity");
-    return;
-  }
+  if (RuntimeSession.open(cfg) != 0) return -1;
   const config = new ogre.ConfigBuilder()
     .renderer(ogre.Renderer.Null)
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
   if (ogre.init(config) != 0 || tns.length == 0 || ogre.mountTns("resources", tns) != 0) {
-    print("ASYNC SKIP drop-setup: ogre init or mount failed");
     RuntimeSession.close();
+    return -2;
+  }
+  return 0;
+}
+
+async function dropCase(tns: string): void {
+  // Module-level, not a local: the transform drops a local declared from a call
+  // and read immediately in an async body (measured: "Cannot find name
+  // 'opened'").
+  dropOpen = openDropCase(tns);
+  if (dropOpen == -1) {
+    print("ASYNC SKIP drop-setup: session_open refused the capacity");
+    finished = true;
+    return;
+  }
+  if (dropOpen != 0) {
+    print("ASYNC SKIP drop-setup: ogre init or mount failed");
+    finished = true;
     return;
   }
 
-  const ring = jobRingHeader();
-  const base = changetype<u32>(ring);
+  const ring: TableHeader = jobRingHeader();
+  const base: u32 = changetype<u32>(ring);
 
   // 1. Fill the one slot with a completion nobody awaits. The first `runReady`
   //    also adopts the drop counter (0), so the later delta is reportable.
-  const j1 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
+  const j1: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   if (j1 <= 0) {
     print("ASYNC SKIP drop-setup: the fill load was refused");
     RuntimeSession.close();
@@ -159,8 +205,7 @@ function dropCase(tns: string): void {
   }
   let guard: u32 = 0;
   while (ogre.jobState(j1) != ogre.JOB_DONE && guard < 600) {
-    RuntimeSession.wait(10);
-    rt.runReady();
+    await rt.frame();
     guard++;
   }
   if (ogre.jobState(j1) != ogre.JOB_DONE || ring.head != 1 || ring.tail != 0) {
@@ -179,25 +224,30 @@ function dropCase(tns: string): void {
   // 2. Two tasks park before the drop: the dropped job's, and a control on a
   //    key that never completes — it must stay parked while the older task
   //    takes the -EIO (attribution is per family, oldest-first).
-  const j2 = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
+  const j2: i32 = ogre.queueMeshLoad("resources/meshes/cube.mesh", 0);
   if (j2 <= 0) {
     print("ASYNC SKIP drop-setup: the drop load was refused");
     RuntimeSession.close();
     return;
   }
   recordNext = true;
-  const lost = awaitJobRec(j2);
+  const lost: Task<i32> = awaitJobRec(j2);
   const lostRecord: TaskRecord = lost._record;
   const lostAwait: TaskRecord = recorded;
-  const control = awaitJobRec(2147483647);
+  // A **valid** jobs key that nothing will ever complete. The old control used
+  // 0x7FFFFFFF, which is outside the class's key space — under the push path
+  // that park is refused at once (§5.1: a key outside the space is refused,
+  // never waited on), so the control would wake with -EINVAL and the
+  // over-attribution check would measure nothing. 767 is the last valid jobs
+  // key (768 = `key_capacity(CLASS_JOB_DONE)`).
+  const control: Task<i32> = awaitJobRec(767);
   const controlRecord: TaskRecord = control._record;
 
   // 3. j2's completion finds the ring full and is dropped; the tick that sees
   //    the delta wakes the oldest parked task with -EIO.
   guard = 0;
   while (ring.dropped == 0 && guard < 600) {
-    RuntimeSession.wait(10);
-    rt.runReady();
+    await rt.frame();
     guard++;
   }
   if (ring.dropped != 1) {
@@ -231,9 +281,10 @@ function dropCase(tns: string): void {
 
   // 4. A delivery for the lost key after the wake must not turn -EIO into
   //    success (the wake writes the status; a delivery never clears it).
-  const late = new EventRecord();
+  jobForRecord = j2;
+  const late: EventRecord = new EventRecord();
   late.class_ = CLASS_JOB_DONE;
-  late.a = <u32>j2;
+  late.a = j2u32();
   late.b = 0x5eed;
   rt.deliver(CLASS_JOB_DONE, changetype<u32>(late), 1);
   if (lostAwait.status != -5 || lostAwait.payload != 0) {
@@ -246,26 +297,28 @@ function dropCase(tns: string): void {
   //    callbacks: the guest consumes the record itself and hands it to the
   //    same dispatcher seam the callback would (`rt.deliver`).
   ring.tail = ring.head;
-  const j3 = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
+  const j3: i32 = ogre.queueMeshLoad("resources/meshes/Smiley.mesh", 0);
   if (j3 <= 0) {
     print("ASYNC SKIP drop-setup: the live load was refused");
     RuntimeSession.close();
     return;
   }
   recordNext = true;
-  const live = awaitJobRec(j3);
+  const live: Task<i32> = awaitJobRec(j3);
   const liveRecord: TaskRecord = live._record;
   const liveAwait: TaskRecord = recorded;
   guard = 0;
   while (liveRecord.done == 0 && guard < 600) {
-    RuntimeSession.wait(10);
+    await rt.frame();
+    // Reclaim the ring as the callback would: `rt.deliver` is the guest's
+    // tail-advance since 0.7.0 (the host matches and wakes; this no longer
+    // delivers).
     if (ring.head > ring.tail) {
-      const slot = base + TABLE_HEADER_SIZE + ring.tail * EVENT_RECORD_SIZE;
-      const record = changetype<EventRecord>(slot);
+      const slot: u32 = base + TABLE_HEADER_SIZE + ring.tail * EVENT_RECORD_SIZE;
+      const record: EventRecord = changetype<EventRecord>(slot);
       rt.deliver(record.class_, slot, 1);
       ring.tail = ring.tail + 1;
     }
-    rt.runReady();
     guard++;
   }
   if (liveRecord.done == 0 || liveAwait.status != 0 || liveAwait.payload == 0) {
@@ -286,9 +339,11 @@ function dropCase(tns: string): void {
   print("ASYNC live job=" + j3.toString() + " resource=" + liveAwait.payload.toString());
   print("ASYNC PASS drop");
   RuntimeSession.close();
+  finished = true;
 }
 
 export function _start_game(): void {
+  __taskBindTable(16);
   let tns = "";
   let drop = false;
   for (let i: i32 = 0; i < argCount(); i++) {
@@ -296,48 +351,63 @@ export function _start_game(): void {
     if (value.startsWith("--tns=")) tns = value.slice(6);
     if (value == "--async-case=drop") drop = true;
   }
-  if (drop) {
-    dropCase(tns);
-    return;
-  }
+  // A floating task: it runs the synchronous setup and parks at its first
+  // await. From here the host owns the loop.
+  run(tns, drop);
+}
 
+/// The main path's setup, in synchronous code (see `openDropCase`).
+/// 0 ok, 1 session, 2 ogre, 3 no volume, 4 mount.
+function openMain(tns: string): i32 {
   rt.start();
   const callbacks = rt.callbacks();
-  if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) {
-    fail("session_open refused");
-  }
-
+  if (RuntimeSession.open(ConfigBuilder.forThisBuild(callbacks), callbacks) != 0) return 1;
   const config = new ogre.ConfigBuilder()
     .renderer(ogre.Renderer.Null)
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
-  if (ogre.init(config) != 0) fail("ogre::init refused");
-  if (tns.length == 0) fail("no --tns=<volume> argument");
-  if (ogre.mountTns("resources", tns) != 0) fail("mountTns refused");
+  if (ogre.init(config) != 0) return 2;
+  if (tns.length == 0) return 3;
+  if (ogre.mountTns("resources", tns) != 0) return 4;
+  return 0;
+}
 
-  const job = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
+/// The harness body, as one task (0.7.0). Every await here parks this task, so
+/// the host's wake is what advances the criteria — the same property the old
+/// `RuntimeSession.wait` + `rt.runReady` pump had, without a tick.
+async function run(tns: string, drop: bool): void {
+  if (drop) {
+    await dropCase(tns);
+    return;
+  }
+
+  mainOpen = openMain(tns);
+  if (mainOpen == 1) fail("session_open refused");
+  if (mainOpen == 2) fail("ogre::init refused");
+  if (mainOpen == 3) fail("no --tns=<volume> argument");
+  if (mainOpen == 4) fail("mountTns refused");
+
+  const job: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");
 
   // Start the task. It parks inside `awaitJob`, so its entry returns a handle
   // whose record is *not* settled yet.
-  let handle: Task<u32> = awaitJob(job);
-  let record: TaskRecord = handle._record;
-  if (record.done != 0) fail("the task was already settled before the loop ran");
+  const handle: Task<u32> = awaitJob(job);
+  const taskRecord: TaskRecord = handle._record;
+  if (taskRecord.done != 0) fail("the task was already settled before the loop ran");
 
-  // The frame loop every async game runs: yield, then resume what is ready.
+  // Wait for the task's own record, on the frame clock.
   let ticks: u32 = 0;
-  while (record.done == 0 && ticks < 600) {
-    const waited = RuntimeSession.wait(10);
-    if (waited == EBADF || waited == EBUSY) badVerbResult = waited;
-    rt.runReady();
+  while (taskRecord.done == 0 && ticks < 600) {
+    await rt.frame();
     ticks++;
   }
-  if (record.done == 0) fail("the job never completed (no delivery in 600 ticks)");
+  if (taskRecord.done == 0) fail("the job never completed (no delivery in 600 frames)");
 
   // The handle's record is the *task's own* result record: `awaitJob`'s return
   // completed it (`__taskCompleteResult`), so its payload is `resource + frames`
   // — a different record from the job's, which held the resource id. The two
   // numbers disagreeing is the design working, not a mismatch.
-  const result: u32 = record.payload;
+  const result: u32 = taskRecord.payload;
   const awaited: u32 = awaitedResource;
 
   // Criterion 1: ordering. Both lines exist, and the post-await line's frame is
@@ -354,8 +424,35 @@ export function _start_game(): void {
   // Criterion 4: no reentrancy refusal in the normal path.
   if (badVerbResult != 0) fail("a session verb refused with " + badVerbResult.toString());
 
-  // The cross-checks: the awaited value is the job's, from the job's own table.
-  if (ogre.jobState(job) != ogre.JOB_DONE) fail("jobState != JOB_DONE");
+  // The cross-checks, in the order the design guarantees them.
+  //
+  // 1. **The delivered class**, which is what resolved the await and is the
+  //    contract (`docs/async-await-plan-v2.md` §3.1). Available immediately.
+  if (deliveredClass != CLASS_JOB_DONE) {
+    fail("the delivered class is " + deliveredClass.toString() + ", not JOB_DONE");
+  }
+  // 2. **The arena mirror**, which is a *different* mechanism and eventually
+  //    consistent. The loader sets its own `JobSlot` and posts the record from
+  //    the worker thread; the guest's `jobState` reads the arena's JOB region,
+  //    which is written later, by the render thread's `publish` hook
+  //    (`adapter.cpp:1364`, `mirror_to_region`). A record can therefore arrive
+  //    while the mirror still says RUNNING — measured, one run in three, and
+  //    documented in `ogre/async.ts`'s classification comment. Asserting the
+  //    mirror *immediately* would assert something the design never promised.
+  //
+  //    The property the design does promise is convergence: the slot stays
+  //    dirty until it is mirrored. So the harness waits for it, bounded. This
+  //    is a test harness, not a guest: the no-poll rule governs guest code,
+  //    and a bounded wait for an eventual guarantee is exactly what a
+  //    conformance test is for.
+  let mirrorGuard: i32 = 0;
+  while (ogre.jobState(job) != ogre.JOB_DONE && mirrorGuard < 600) {
+    await rt.frame();
+    mirrorGuard++;
+  }
+  if (ogre.jobState(job) != ogre.JOB_DONE) {
+    fail("jobState never mirrored JOB_DONE (guard " + mirrorGuard.toString() + ")");
+  }
   if (ogre.jobResult(job) != awaited) fail("the completion and the job table disagree");
   if (result != awaited + framesWhileSuspended) fail("the task's own result is not resource + frames");
 
@@ -364,4 +461,5 @@ export function _start_game(): void {
   print("ASYNC PASS");
 
   RuntimeSession.close();
+  finished = true;
 }

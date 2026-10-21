@@ -53,6 +53,14 @@ import {
 import { World, WorldConfig } from "tension-framework/assembly/physics";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
+// The std's task machine: the table the push path parks in (0.7.0a).
+import { __taskBindTable } from "~lib/task-rt";
+import { Task } from "~lib/task";
+
+// The host's wake entry. Re-exported because the linker drops an export the
+// guest never names (measured: 0 occurrences without this line), and the host
+// resolves `__taskWake` by name at load.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
 const DT: f64 = 1.0 / 60.0;
 /** How long the simulation runs before the summary, if nothing rests sooner. */
@@ -109,43 +117,11 @@ function submit_material(id: u32, r: f64, g: f64, b: f64, lit: bool,
   if (ogre.submitMaterial(material) != 0) fail("submitMaterial refused (" + what + ")");
 }
 
-/// Loads one mesh through the awaitable wrapper (`ogre/async.ts`).
-///
-/// The wrapper queues, parks on the job and classifies the outcome, so there is
-/// no `jobState` poll here any more. A negative return is the loader's errno,
-/// the same vocabulary `ogre.jobError` uses.
-async function loadMeshAsync(path: string): i32 {
-  return await ogre.loadMesh(path, 0);
-}
-
-/// Runs `task` to completion, ticking the scheduler while it is parked.
-///
-/// `_start_game` and `run()` are `() -> ()` — the host binds the entry as
-/// `get_typed_func::<(), ()>` — so the loader is spawned as a task and settled
-/// here. This is the frame loop's own pattern applied to setup: `runReady` is
-/// what resumes a task whose completion has landed. The guard is a hang
-/// detector, not a timeout.
-function settleTask(task: Task<i32>, what: string): i32 {
-  let guard: i32 = 0;
-  while (!task._record.done && guard < 6000) {
-    RuntimeSession.wait(10);
-    rt.runReady();
-    ++guard;
-  }
-  if (!task._record.done) fail(what + " never settled");
-  const result: i32 = task._record.payload;
-  if (result < 0) fail(what + " did not load (errno " + result.toString() + ")");
-  return result;
-}
-
-/// One frame from the renderer's readback, or null when there is none.
-function grab(): ArrayBuffer | null {
-  const armed = ogre.frameCount();
-  ogre.screenshot(0, 0);
-  for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed + 3; guard++) {
-    RuntimeSession.wait(5);
-    rt.runReady();
-  }
+/// One frame from the renderer's readback, or an empty buffer when there is
+/// none. The *waiting* for a frame moved into `run` (0.7.0b): under the host
+/// loop a readback cannot pump the session any more, so the caller awaits
+/// `rt.frame()` before calling this.
+function readback(): ArrayBuffer | null {
   const length = ogre.screenshot(0, 0);
   if (length <= 0) return null;
   const frame = new ArrayBuffer(length);
@@ -198,26 +174,85 @@ class Game {
   // The config the world was built from: the summary prints its sub-step count.
   private worldConfig: WorldConfig = new WorldConfig();
 
+  // ── the simulation's loop-carried state (0.7.0b) ────────────────────────
+  // These were locals of `simulate()`, which was one synchronous loop. The
+  // frame loop is now the guest's *task*: it parks on `rt.frame()` every frame,
+  // and a local that crosses a park must live somewhere the transform can see.
+  // A field is that place, and it has the side benefit of being readable in a
+  // debugger between frames.
+  private frame: i32 = 0;
+  private lastFrame: u64 = 0;
+  private nextReport: i32 = 0;
+  private contactsTotal: i32 = 0;
+  private contactsMeasured: i32 = 0;
+  private prevQ: Float64Array = new Float64Array(0);
+  private fastestSpin: Float64Array = new Float64Array(0);
+  private turned: Float64Array = new Float64Array(0);
+  private batch: ogre.MotionBatch = new ogre.MotionBatch();
+
   constructor(options: Options) {
     this.options = options;
   }
 
-  /// Open the session and the renderer, mount the volume, load the mesh, submit
-  /// the scene and build the pile, then run it and read the picture back.
-  run(): void {
+  /// The whole guest life, as one task (0.7.0b).
+  ///
+  /// **One async function, deliberately.** Every `await` in here parks *this*
+  /// task on a record the host completes — first the mesh handle, then
+  /// `rt.frame()`. An `async` helper would park its own task instead, and its
+  /// completion would put this one on the ready queue, which a host-owned loop
+  /// never drains (pipeline-notes: an awaitable accessor returns a stamped
+  /// handle, never an async wrapper). So the loads, the frame loop and the
+  /// readback are inlined rather than composed from async methods.
+  async run(): void {
     this.openSession();
     this.openRenderer();
     this.mountAssets();
-    const mesh = settleTask(
-      loadMeshAsync("resources/models/cube.mesh"), "resources/models/cube.mesh"
-    );
+    // Every local is declared before the first await: the transform scopes a
+    // local declared after one to its own resume guard.
+    const load: Task<u32> = ogre.loadMesh("resources/models/cube.mesh", 0);
+    let mesh: i32 = 0;
+    let armed: u64 = 0;
+    let guard: i32 = 0;
+
+    await load;                        // parks on (JOBS, jobId)
+    mesh = ogre.loadResult(load);
+    if (mesh < 0) fail("resources/models/cube.mesh did not load (errno " + mesh.toString() + ")");
     this.submitScene(mesh);
     this.createBodies(mesh);
     if (!this.options.windowed) {
       print("renderer=null: no window; the physics and the summary are the same");
     }
-    this.simulate();
-    this.captureFrame();
+
+    this.beginSimulation();
+    // The frame loop. `await rt.frame()` parks on (FRAME, 0) and the host-owned
+    // loop wakes it once per presented frame — no `RuntimeSession.wait`, no
+    // `rt.runReady()`, no tick of any kind in this guest.
+    //
+    // `break` is the exit (0.7.1). This loop carried a `running` flag because
+    // the transform refused `break` in an async body; the refusal is gone, so the
+    // loop says what it means: run until the pile settles.
+    while (true) {
+      await rt.frame();
+      if (!this.stepSimulation()) break;
+    }
+    this.endSimulation();
+
+    if (this.options.windowed) {
+      // Three frames for the readback to be the picture the pile came to rest
+      // at; the old `grab()` pumped the session while it waited, which a host
+      // loop cannot do, so it waits on the frame clock instead.
+      armed = ogre.frameCount();
+      ogre.screenshot(0, 0);
+      guard = 0;
+      while (guard < 300 && ogre.frameCount() < armed + 3) {
+        await rt.frame();
+        guard += 1;
+      }
+      this.captureFrame();
+    }
+
+    this.shutdown();
+    finished = true;
   }
 
   /// The session itself: the loop, the arena, the event ring, the frame
@@ -382,86 +417,96 @@ class Game {
     }
   }
 
-  /// The frame loop and what it measured: the angular bookkeeping it accumulates,
-  /// then the three summaries.
-  private simulate(): void {
-    // With --angular, what the summary reports: how far each body has *turned*
-    // (accumulated per frame, since a quaternion only expresses a rotation mod a
-    // full turn) and the fastest it has ever spun. Both are per body and over the
-    // whole run, because the interesting moment for a tumbling pile is not the
-    // last frame — by then everything that can stop has.
-    const prev_q = new Float64Array(this.options.bodies * 4);
-    const turned = new Float64Array(this.options.bodies);
-    const fastest_spin = new Float64Array(this.options.bodies);
-    const now_q = new Float64Array(4);
+  /// The per-run allocations and the angular bookkeeping's starting point.
+  private beginSimulation(): void {
+    const bodies = this.options.bodies;
+
+    this.frame = 0;
+    this.lastFrame = ogre.frameCount();
+    this.nextReport = 60;
+    this.contactsTotal = 0;
+    this.contactsMeasured = 0;
+    this.prevQ = new Float64Array(bodies * 4);
+    this.fastestSpin = new Float64Array(bodies);
+    this.turned = new Float64Array(bodies);
     if (this.options.angular) {
       const b = this.world!.bodies();
+      for (let i = 0; i < bodies; i++) {
+        for (let k: i32 = 0; k < 4; k++) this.prevQ[i * 4 + k] = b.quat(i, k);
+      }
+    }
+  }
+
+  /// One frame: advance by however many frames the renderer drew, step, book.
+  ///
+  /// Synchronous, and called from `run` right after `await rt.frame()`. The
+  /// advance is still measured from `ogre.frameCount()` rather than assumed to
+  /// be one, because a stalled or doubled frame must not turn into a physics
+  /// avalanche — the same reason the loop is paced by the renderer, not a clock.
+  ///
+  /// Answers `false` when the run is over, which is the loop's `break`.
+  private stepSimulation(): bool {
+    const now = ogre.frameCount();
+    const advance = now - this.lastFrame;
+    if (advance == 0) return true; // the renderer has not drawn a new frame yet
+    const steps: i32 = advance > 2 ? 2 : <i32>advance;
+    this.lastFrame = now;
+    this.frame += steps;
+
+    if (this.world!.step(<f64>steps * DT) != 0) {
+      fail("world.step refused at frame " + this.frame.toString());
+    }
+    const contacts_this_frame = this.world!.contactCount();
+    this.contactsTotal += contacts_this_frame;
+    this.contactsMeasured += 1;
+
+    if (this.options.angular) {
+      const b = this.world!.bodies();
+      const now_q = new Float64Array(4);
       for (let i = 0; i < this.options.bodies; i++) {
-        for (let k: i32 = 0; k < 4; k++) prev_q[i * 4 + k] = b.quat(i, k);
-      }
-    }
-
-    // ── the loop ─────────────────────────────────────────────────────────
-    const batch = new ogre.MotionBatch();
-    let last = ogre.frameCount(), frame = 0, next_report = 60;
-    let contacts_this_frame = 0, total_contacts = 0, contacts_measured = 0;
-    while (frame < FRAMES) {
-      RuntimeSession.wait(16);
-      rt.runReady();
-      const now = ogre.frameCount();
-      const advance = now - last;
-      if (advance == 0) continue; // the renderer has not drawn a new frame yet
-      // Clamped: a stalled frame must not turn into a physics avalanche, which is
-      // the same reason the loop is paced by the renderer rather than by a clock.
-      const steps: i32 = advance > 2 ? 2 : <i32>advance;
-      last = now;
-      frame += steps;
-
-      if (this.world!.step(<f64>steps * DT) != 0) fail("world.step refused at frame " + frame.toString());
-      contacts_this_frame = this.world!.contactCount();
-      total_contacts += contacts_this_frame;
-      contacts_measured += 1;
-      if (this.options.angular) {
-        const b = this.world!.bodies();
-        for (let i = 0; i < this.options.bodies; i++) {
-          const wx = b.omega(i, 0), wy = b.omega(i, 1), wz = b.omega(i, 2);
-          const spin = Math.sqrt(wx * wx + wy * wy + wz * wz);
-          if (spin > fastest_spin[i]) fastest_spin[i] = spin;
-          let dot = 0.0;
-          for (let k: i32 = 0; k < 4; k++) {
-            now_q[k] = b.quat(i, k);
-            dot += now_q[k] * prev_q[i * 4 + k];
-          }
-          if (dot < 0.0) dot = -dot; // the double cover
-          if (dot > 1.0) dot = 1.0;
-          turned[i] += 2.0 * Math.acos(dot);
-          for (let k: i32 = 0; k < 4; k++) prev_q[i * 4 + k] = now_q[k];
+        const wx = b.omega(i, 0), wy = b.omega(i, 1), wz = b.omega(i, 2);
+        const spin = Math.sqrt(wx * wx + wy * wy + wz * wz);
+        if (spin > this.fastestSpin[i]) this.fastestSpin[i] = spin;
+        let dot = 0.0;
+        for (let k: i32 = 0; k < 4; k++) {
+          now_q[k] = b.quat(i, k);
+          dot += now_q[k] * this.prevQ[i * 4 + k];
         }
+        if (dot < 0.0) dot = -dot; // the double cover
+        if (dot > 1.0) dot = 1.0;
+        this.turned[i] += 2.0 * Math.acos(dot);
+        for (let k: i32 = 0; k < 4; k++) this.prevQ[i * 4 + k] = now_q[k];
       }
-      this.world!.pose(batch);
-      if (batch.commit() != this.options.bodies) fail("submit_motion refused the batch");
+    }
+    this.world!.pose(this.batch);
+    if (this.batch.commit() != this.options.bodies) fail("submit_motion refused the batch");
 
-      // A threshold rather than `frame % 60`: the frame counter advances by one
-      // or two per iteration, so an equality test silently skips the report it
-      // was written to print (the 6a probe learned this the same way).
-      if (frame >= next_report) {
-        next_report += 60;
-        print("frame " + frame.toString() + "  bodies " + this.options.bodies.toString() +
-              "  asleep " + this.world!.asleepCount().toString() + "/" +
-              this.options.bodies.toString() + "  max|v| " + this.world!.maxSpeed().toString() +
-              "  contacts " + contacts_this_frame.toString());
-      }
-      // The loop ends when the pile has stopped — every body asleep — rather than
-      // at a frame count: "runs until it settles" is the honest condition, and the
-      // frame cap above is the backstop that keeps "never settles" from being
-      // "runs forever". Sleeping is per body, so the count climbs as bodies stop
-      // and the last one decides when the picture is finished.
-      if (this.world!.asleepCount() == this.options.bodies) break;
+    // A threshold rather than `frame % 60`: the frame counter advances by one or
+    // two per iteration, so an equality test silently skips the report it was
+    // written to print (the 6a probe learned this the same way).
+    if (this.frame >= this.nextReport) {
+      this.nextReport += 60;
+      print("frame " + this.frame.toString() + "  bodies " + this.options.bodies.toString() +
+            "  asleep " + this.world!.asleepCount().toString() + "/" +
+            this.options.bodies.toString() + "  max|v| " + this.world!.maxSpeed().toString() +
+            "  contacts " + contacts_this_frame.toString());
     }
 
-    const contacts_per_frame = contacts_measured > 0
-      ? <f64>total_contacts / <f64>contacts_measured : 0.0;
-    print("simulated " + this.options.bodies.toString() + " bodies for " + frame.toString() +
+    // The loop ends when the pile has stopped — every body asleep — rather than
+    // at a frame count: "runs until it settles" is the honest condition, and the
+    // FRAMES cap is the backstop that keeps "never settles" from being "runs
+    // forever".
+    if (this.world!.asleepCount() == this.options.bodies || this.frame >= FRAMES) {
+      return false;
+    }
+    return true;
+  }
+
+  /// What the run measured: the counts, then the summaries.
+  private endSimulation(): void {
+    const contacts_per_frame = this.contactsMeasured > 0
+      ? <f64>this.contactsTotal / <f64>this.contactsMeasured : 0.0;
+    print("simulated " + this.options.bodies.toString() + " bodies for " + this.frame.toString() +
           " frames, " + contacts_per_frame.toString() + " contacts/frame, K=" +
           this.worldConfig.substeps.toString() + " sub-steps");
     print("asleep " + this.world!.asleepCount().toString() + "/" + this.options.bodies.toString() +
@@ -475,8 +520,8 @@ class Game {
       const threshold = 30.0 * (3.14159265358979 / 180.0);
       let rolling = 0, tumbling = 0;
       for (let i = 0; i < this.options.bodies; i++) {
-        if (fastest_spin[i] > 0.1) rolling += 1;
-        if (turned[i] > threshold) tumbling += 1;
+        if (this.fastestSpin[i] > 0.1) rolling += 1;
+        if (this.turned[i] > threshold) tumbling += 1;
       }
       print("angular on, " + rolling.toString() + " rolling, " + tumbling.toString() +
             " tumbling (> 0.1 rad/s at some point; > 30 deg over the run)");
@@ -486,8 +531,7 @@ class Game {
   /// One line about the picture, the way the other examples end: a box of bodies
   /// that simulates correctly and draws nothing is a bug this line would catch.
   private captureFrame(): void {
-    if (!this.options.windowed) return;
-    const frame = grab();
+    const frame = readback();
     if (frame == null) return;
     const pixels = Uint8Array.wrap(frame!);
     let drawn = 0;
@@ -512,7 +556,25 @@ class Game {
 // ---------------------------------------------------------------------------
 
 export function _start_game(): void {
+  rt.start();
+  // The table the push path parks slots in (0.7.0a). Eight slots: this guest
+  // parks one task at a time — the run task, on the mesh and then on the frame —
+  // and every wake frees the slot before the continuation runs.
+  __taskBindTable(8);
   const game = new Game(parseArgs());
+  // A floating task: it runs the synchronous prologue (session, renderer,
+  // volume) and parks at the mesh load. `_start_game` returns here, and from
+  // now on the host owns the loop.
   game.run();
-  game.shutdown();
+}
+
+/// 1 while the guest wants the host to drive it (0.7.0a).
+///
+/// Cleared only after `run` has finished teardown — never when the frame loop
+/// stops — so the host's exit condition (`_game_running() == 0` and nothing
+/// parked) cannot cut the last frame or the readback off.
+let finished: bool = false;
+
+export function _game_running(): i32 {
+  return finished ? 0 : 1;
 }
