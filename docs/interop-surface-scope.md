@@ -203,7 +203,8 @@ Measured end to end: `tests/guest-open.ts`, a real session guest, compiled at
 
 | build | wasm bytes | run |
 |---|---|---|
-| `-O0` | 13 690 | `OK`, exit 0 |
+| `-O0 --noAssert` | 13 682 | `OK`, exit 0 |
+| `-O0` (asserts on) | 15 247 | `OK`, exit 0 |
 | `-O3 --noAssert` | 8 889 | `OK`, exit 0 |
 | `-O3` (asserts on) | 10 352 | `OK`, exit 0 |
 
@@ -553,7 +554,9 @@ Three findings support that, in order of leverage:
    considering `"noAssert": true` — the CLI's help names `-O --noAssert` as
    "a release build") to the generated asconfig removes every accessor call, makes
    field access two instructions instead of four, and shrinks a real session
-   guest from 13 690 to 8 889 bytes. No compiler change, no release, no hash
+   guest from 13 682 to 8 889 bytes (`-O0`/`-O3` with `--noAssert` on both
+   sides; with asserts on it is 15 247 to 10 352). No compiler change, no
+   release, no hash
    move. **Verified for the session runtime only** (`guest-open` at `-O0`,
    `-O3`, `-O3 --noAssert`, all `OK` on the real host); the OGRE path at `-O3`
    is unverified and is the first thing to test.
@@ -687,7 +690,8 @@ measurement.
 
 | example | `-O0` | `-O3` | smaller |
 |---|---|---|---|
-| `guest-open` (session guest, the reference) | 13 690 | 10 352 | 24.4% |
+| `guest-open` (session guest, asserts on) | 15 247 | 10 352 | 32.1% |
+| `guest-open` (session guest, `--noAssert`) | 13 682 | 8 889 | 35.0% |
 | `ogre/bouncing-bodies` | 236 498 | 206 980 | 12.5% |
 | `ogre/animated-character` | 236 318 | 208 804 | 11.6% |
 | `ogre/hello-mesh` | 178 910 | 164 877 | 7.8% |
@@ -706,13 +710,96 @@ The two populations differ by what they link: the examples that include a
 capability's record catalogue and the async/task machine shrink 6-25%; the
 console-sized ones (no session, small runtime surface) shrink ~90%.
 
-### 8.6 Still not measured
+### 8.6 The pre-merge items
 
+**Item 1 — the size delta, reconciled.** Two percentages had been quoted for
+the same guest with different flag pairs. Measured on this branch, four cells:
+
+| configuration | bytes |
+|---|---|
+| `-O0`, asserts on | 15 247 |
+| `-O0 --noAssert` | 13 682 |
+| `-O3`, asserts on | 10 352 |
+| `-O3 --noAssert` | 8 889 |
+
+Like-for-like: **32.1%** with asserts on (15 247 → 10 352) and **35.0%** with
+`--noAssert` (13 682 → 8 889). The earlier "24.4%" compared a `-O0 --noAssert`
+build against a `-O3` build that still had asserts — a mismatched pair, now
+replaced by the two rows above. (The 13 690 first recorded in §2.1.2 differs by
+8 bytes from this branch's 13 682 because that measurement was taken on the
+struct-phase branch, whose `SessionInfo` declaration is 144 bytes; this branch
+is based on `main`, where it is still 128.)
+
+**Item 2 — the AI example at `-O3` ran the stub backend, not llama.cpp.** The
+built host has `tension_core::ai::stub::StubSession` and was compiled
+`--no-default-features --features audio`; no `.gguf` exists on the machine.
+Numbers from the `-O3` artifact (163 477 bytes, the `-O3` size) with
+`TENSION_AI_TRACE=1`: **1 `class=10` (AI_READY), 1 `class=11` (AI_DONE),
+0 `class=12` (AI_ERROR), exit 0** — the stub's coalesced shape, which is not the
+per-chunk shape the real backend produces. **The real-llama.cpp gate at `-O3` is
+not satisfied in this session** and cannot be: the weights are a 2.39 GB
+download and the host lacks the `ai` feature. Recorded as a merge gate.
+
+**Item 3 — the six async fixtures at `-O3`, run.** Compiled through the config
+(so at `-O3`) and run on the real host with `--post-test-events`:
+
+| fixture | exit | output |
+|---|---|---|
+| `guest-push` | 0 | `PUSH parked…` / `PUSH resumed with 2` |
+| `guest-flow` | 0 | `while+break 3`, `while+continue 9`, **`for+continue 9`**, `for+break 406`, `FLOW PASS` |
+| `guest-drop` | 0 | `DROP woke with status -5 (-EIO)` |
+| `guest-early` | 0 | `EARLY resumed with 6 (buffered before the park)` |
+| `guest-chain` | 0 | `CHAIN outer: got 7` |
+| `guest-sync` | 0 | `SYNC 12 synchronous awaits summed 504` |
+
+`for+continue` is the assertion the `break`/`continue` bug once hung on; it
+passes at `-O3`.
+
+**Item 4 — `-O3` does not imply `--noAssert`.** They are separate options:
+`noAssert` is its own field (`src/compiler.ts:249`, "If true, replaces
+assertions with nops"), and nothing in the compiler couples it to
+`optimizeLevel` (`grep optimizeLevel.*noAssert src/*.ts` → no hits). The `-O3`
+shorthand sets `{optimizeLevel: 3, shrinkLevel: 0}` only. The tree sets no
+`--noAssert` anywhere (`grep -rn noAssert` over the tree's json/sh/bat/mjs → no
+hits), so **assertions remain** in every build this PR configures. Runtime
+asserts are still emitted; only codegen for field access changed.
+
+### 8.7 Bookkeeping
+
+**(a) Follow-up K — the "bypass `--config`" pattern.** Seven examples set the
+level in their own `package.json` because they build without `--config`; the
+config-driven ones inherit and were verified byte-identical. A new example added
+without `--config`, and without the flag, silently compiles at `-O0` and gets the
+accessor-call shape back. Filed as K; not fixed in PR 27.
+
+**(b) The 16 external consumers.** A consumer that builds through its own
+`package.json` build line gets whatever that line says: consumers on `^0.7.1`
+that pass `--config` against a regenerated asconfig inherit the level, and
+consumers with a pinned `--optimizeLevel` do not. Nothing here changes a
+consumer's build; that is a per-consumer decision when they bump.
+
+**(c) The full cargo suite — run, at `-O3` fixtures: 37 suites, 519 passed, 0
+failed** (the `fresh.txt` baseline is 519/0/37). The first attempts failed on
+stale or missing fixtures in the gitignored `build/` directories (guests from
+Oct 11 embedding a pre-0.6.0a layout hash, and `guest-async.wasm` absent);
+after rebuilding them through the config the suite is green.
+
+**(d) Console-sized examples — output compared, not just exit codes.** `io`,
+`log` and `res` at `-O0` and `-O3` produce **byte-identical** output: `io`'s
+argument dump and `You said: hello from the terminal`; `log`'s five levels
+including `{"tick":1,…}` and `unicode survives the boundary: héllo wörld ✓`
+with timestamps stripped; `res`'s 21-line volume walk including the
+decompression pattern checks. "Smaller" was checked against "same output".
+
+### 8.8 Still not measured
+
+- **Real llama.cpp at `-O3`** — the merge gate in Item 2 above.
 - **The 16 external consumers** (`^0.7.1` in their own repos) at `-O3`. They
   build with their own npm projects; not compiled here. The tree's own fifteen
   examples are the evidence available in this checkout.
 - **The plain test fixtures** (`tension-framework/tests/run.sh`'s non-session
-  ones) at `-O3`, for the reason in §8.4.
+  ones) at `-O3`, for the reason in §8.4 — though the Rust suite above now
+  exercises several of the same guests through the config.
 - **Whether the CLR has a load-time check in some form the docs do not describe.**
   The documentation-level search found none (§4.1); a proof would need the
   runtime's source or a deliberate mismatch experiment on .NET.
