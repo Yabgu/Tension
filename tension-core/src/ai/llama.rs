@@ -36,7 +36,7 @@ use llama_cpp_2::model::params::LlamaModelParams;
 use llama_cpp_2::model::{AddBos, LlamaChatMessage, LlamaModel};
 use llama_cpp_2::sampling::LlamaSampler;
 
-use crate::ai::{log, AiAdapter, AiConfig};
+use crate::ai::{log, AiAdapter, AiConfig, AiSink, StreamGate, StreamPost};
 
 /// Roles as the ABI numbers them.
 const ROLE_SYSTEM: i32 = 0;
@@ -98,11 +98,32 @@ struct Inner {
     /// Set by `generate`, cleared by the worker. One flag is enough because
     /// `generate` is refused while `generating` holds.
     run: bool,
+    /// The coalescing rule for this session's stream (0.6.0b): one outstanding
+    /// READY, and a terminal deferred until the guest has drained. Held under
+    /// this same mutex so an append and its post are one atomic step.
+    gate: StreamGate,
 }
 
 struct Shared {
     inner: Mutex<Inner>,
     cv: Condvar,
+    /// The handle `session_create` returned: the key every completion is
+    /// posted with, and the key the guest parks on.
+    session: i32,
+    /// The posting face. The worker reaches it with no `Caller`, no borrow of
+    /// the session and no lock of the store's — the any-thread path
+    /// `loader.cpp:433-439` uses.
+    sink: AiSink,
+}
+
+/// Post whatever the gate asked for, and nothing when it asked for nothing.
+/// Called with `Shared`'s guard released: the post takes the queue's own mutex,
+/// and holding the reply lock across it would put two independent locks in one
+/// critical section for no benefit.
+fn post_if_any(shared: &Shared, post: Option<StreamPost>) {
+    if let Some(post) = post {
+        shared.sink.post(post.class(), shared.session, post.payload());
+    }
 }
 
 /// Never hold this guard across a blocking wait or a `join`: the worker needs
@@ -114,12 +135,21 @@ fn lock(shared: &Shared) -> MutexGuard<'_, Inner> {
 /// Append decoded text to the reply buffer. `false` means the guest cancelled
 /// (or the session is closing), which is the worker's signal to stop.
 fn push_text(shared: &Shared, piece: &str) -> bool {
-    let mut inner = lock(shared);
-    if inner.cancel || inner.shutdown {
-        return false;
-    }
-    inner.reply.extend_from_slice(piece.as_bytes());
-    shared.cv.notify_all();
+    let post = {
+        let mut inner = lock(shared);
+        if inner.cancel || inner.shutdown {
+            return false;
+        }
+        inner.reply.extend_from_slice(piece.as_bytes());
+        // Set-if-not-set: the first append of a burst posts the unread count,
+        // the rest coalesce into that one record. The guest's drain re-arms it
+        // (`read_consume` -> `drained`).
+        let unread = inner.reply.len() - inner.pos;
+        let post = inner.gate.appended(unread);
+        shared.cv.notify_all();
+        post
+    };
+    post_if_any(shared, post);
     true
 }
 
@@ -158,6 +188,10 @@ fn run_completion(model: &LlamaModel, shared: &Shared, cfg: &AiConfig) {
             None
         }
     };
+    // `assistant` is moved into the history below, so the outcome is read
+    // before the move: `None` means the generation failed (the reply buffer
+    // carries the reason).
+    let failed = assistant.is_none();
     if let Some(text) = assistant {
         // Cancelled generations keep the partial text, and it becomes the
         // assistant turn: it is exactly what the guest already read.
@@ -167,7 +201,14 @@ fn run_completion(model: &LlamaModel, shared: &Shared, cfg: &AiConfig) {
     }
     inner.generating = false;
     inner.cancel = false;
+    // The outcome post. A terminal with bytes still unread is **deferred** to
+    // `read_consume`, so it can never overwrite the READY a parked task has not
+    // resumed on yet — which is what makes `0 = done` exact for the guest.
+    let unread = inner.reply.len() - inner.pos;
+    let post = inner.gate.settled(failed, unread);
     shared.cv.notify_all();
+    drop(inner);
+    post_if_any(shared, post);
 }
 
 /// Chat-template the history when the model carries a template, else fall back
@@ -367,20 +408,21 @@ struct Session {
 pub struct LlamaAdapter {
     next_handle: i32,
     sessions: HashMap<i32, Session>,
+    /// Cloned into every session's `Shared`; the worker holds no borrow of the
+    /// adapter.
+    sink: AiSink,
 }
 
 impl LlamaAdapter {
-    pub fn new() -> Self {
+    /// `sink` is the posting face the worker posts completions through. It is
+    /// required, not optional: an adapter that cannot post is an adapter whose
+    /// guest can never `await` it.
+    pub fn new(sink: AiSink) -> Self {
         Self {
             next_handle: 1,
             sessions: HashMap::new(),
+            sink,
         }
-    }
-}
-
-impl Default for LlamaAdapter {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -417,6 +459,8 @@ impl AiAdapter for LlamaAdapter {
         let shared = Arc::new(Shared {
             inner: Mutex::new(Inner::default()),
             cv: Condvar::new(),
+            session: handle,
+            sink: self.sink.clone(),
         });
         let worker = {
             let shared = Arc::clone(&shared);
@@ -471,6 +515,9 @@ impl AiAdapter for LlamaAdapter {
         inner.reply.clear();
         inner.pos = 0;
         inner.cancel = false;
+        // A new generation starts with nothing outstanding: a stale `signaled`
+        // would suppress the first READY and park the guest forever.
+        inner.gate.begin();
         inner.generating = true;
         inner.run = true;
         session.shared.cv.notify_all();
@@ -493,11 +540,20 @@ impl AiAdapter for LlamaAdapter {
 
     fn read_consume(&mut self, session: i32, cap: i32) -> Option<Vec<u8>> {
         let session = self.sessions.get(&session)?;
-        let mut inner = lock(&session.shared);
-        let unread = inner.reply.len() - inner.pos;
-        let take = unread.min(cap.max(0) as usize);
-        let bytes = inner.reply[inner.pos..inner.pos + take].to_vec();
-        inner.pos += take;
+        let post = {
+            let mut inner = lock(&session.shared);
+            let unread = inner.reply.len() - inner.pos;
+            let take = unread.min(cap.max(0) as usize);
+            let bytes = inner.reply[inner.pos..inner.pos + take].to_vec();
+            inner.pos += take;
+            // The drain re-arms the stream, and releases a terminal that was
+            // waiting for exactly this: nothing left to read. This is the only
+            // place a deferred DONE/ERROR is posted.
+            let unread = inner.reply.len() - inner.pos;
+            (bytes, inner.gate.drained(unread))
+        };
+        let (bytes, post) = post;
+        post_if_any(&session.shared, post);
         Some(bytes)
     }
 
@@ -525,6 +581,9 @@ impl AiAdapter for LlamaAdapter {
         inner.history.clear();
         inner.reply.clear();
         inner.pos = 0;
+        // The reply is gone, so any outstanding READY refers to bytes nobody can
+        // read; clearing the flag lets the next generation's first append post.
+        inner.gate.begin();
         0
     }
 
@@ -572,7 +631,7 @@ mod tests {
     /// deep inside llama.cpp.
     #[test]
     fn create_refuses_a_blob_only_config() {
-        let mut adapter = LlamaAdapter::new();
+        let mut adapter = LlamaAdapter::new(crate::ai::AiSink::detached());
         let cfg = AiConfig {
             model_blob: Some(BlobRef { len: 4, ptr: 0 }),
             ..AiConfig::default()
@@ -585,7 +644,7 @@ mod tests {
     /// its own loader, and `load_model` is the boundary that contains it.
     #[test]
     fn create_reports_a_missing_model_without_panicking() {
-        let mut adapter = LlamaAdapter::new();
+        let mut adapter = LlamaAdapter::new(crate::ai::AiSink::detached());
         let err = adapter.create(&missing_model_cfg(), None).unwrap_err();
         assert!(err.contains("definitely-not-a-real-model.gguf"), "{err}");
     }
@@ -593,7 +652,7 @@ mod tests {
     /// Every verb answers for an unknown handle instead of inventing state.
     #[test]
     fn unknown_handles_are_rejected() {
-        let mut adapter = LlamaAdapter::new();
+        let mut adapter = LlamaAdapter::new(crate::ai::AiSink::detached());
         assert_eq!(adapter.state(7), -1);
         assert_eq!(adapter.add(7, 1, "hi"), -1);
         assert_eq!(adapter.generate(7), -1);

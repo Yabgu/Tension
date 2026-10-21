@@ -14,7 +14,8 @@
 
 use std::collections::HashMap;
 
-use crate::ai::{AiAdapter, AiConfig};
+use crate::ai::{AiAdapter, AiConfig, AiSink, StreamGate, StreamPost};
+use crate::session::arena::CLASS_AI_ERROR;
 
 /// Roles accepted by `session_add` (0 = system, 1 = user, 2 = assistant).
 const ROLE_SYSTEM: i32 = 0;
@@ -30,6 +31,11 @@ struct StubSession {
     /// How many reply bytes have been consumed by `read`.
     pos: usize,
     generating: bool,
+    /// The same coalescing rule the real adapter runs: one outstanding READY,
+    /// terminal deferred until the reply is drained. The stub streams so the
+    /// await path is exercisable with no model and no GGUF — which is what makes
+    /// the SDK's stream testable in a container without llama.cpp.
+    gate: StreamGate,
 }
 
 impl StubSession {
@@ -42,11 +48,49 @@ pub struct StubAdapter {
     /// Handles start at 1 so 0 stays reserved for "create failed".
     next: i32,
     sessions: HashMap<i32, StubSession>,
+    sink: AiSink,
+    /// Test-only: stall a generation and post AI_ERROR `ms` later, producing no
+    /// bytes at all (`TENSION_AI_STUB_STALL_MS`).
+    ///
+    /// This is the **stalled stream** the first control needs: a guest parks on
+    /// a stream that has neither appended nor finished, and an error post wakes
+    /// it. The post is made from a thread after a real delay, which is the shape
+    /// the loader's worker uses — not a fabricated record.
+    stall_ms: Option<u64>,
+
+    /// Test-only: make every generation fail. Set `TENSION_AI_STUB_FAIL=1`.
+    ///
+    /// The **error path** (the gate's `settled(failed)`, the `AI_ERROR` post,
+    /// the guest's class-derived negative return) is otherwise unreachable with
+    /// no model, and a control that cannot reach the path measures nothing. The
+    /// injection is at the adapter — where a real failure originates — so the
+    /// transport, the epoch, the dispatcher and the wrapper are the production
+    /// ones; only the cause is synthetic.
+    fail_generation: bool,
 }
 
 impl StubAdapter {
-    pub fn new() -> Self {
-        Self { next: 1, sessions: HashMap::new() }
+    pub fn new(sink: AiSink) -> Self {
+        Self {
+            next: 1,
+            sessions: HashMap::new(),
+            sink,
+            stall_ms: std::env::var("TENSION_AI_STUB_STALL_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+                .filter(|ms| *ms > 0),
+            fail_generation: matches!(
+                std::env::var("TENSION_AI_STUB_FAIL").as_deref(),
+                Ok("1") | Ok("true") | Ok("yes")
+            ),
+        }
+    }
+
+    /// Post whatever the gate asked for.
+    fn post(&self, session: i32, post: Option<StreamPost>) {
+        if let Some(post) = post {
+            self.sink.post(post.class(), session, post.payload());
+        }
     }
 }
 
@@ -61,7 +105,13 @@ impl AiAdapter for StubAdapter {
         self.next += 1;
         self.sessions.insert(
             handle,
-            StubSession { history: Vec::new(), reply: Vec::new(), pos: 0, generating: false },
+            StubSession {
+                history: Vec::new(),
+                reply: Vec::new(),
+                pos: 0,
+                generating: false,
+                gate: StreamGate::default(),
+            },
         );
         Ok(handle)
     }
@@ -78,24 +128,81 @@ impl AiAdapter for StubAdapter {
     }
 
     fn generate(&mut self, session: i32) -> i32 {
-        let Some(s) = self.sessions.get_mut(&session) else {
-            return -1;
+        // The posts are collected while the session is borrowed and made after
+        // the borrow ends: `post` takes `&self`, and the session came from a
+        // `&mut` of the same struct.
+        let (posts, refusal) = {
+            let Some(s) = self.sessions.get_mut(&session) else {
+                return -1;
+            };
+            if s.generating || s.unread() > 0 {
+                return -1;
+            }
+            let last_user = s
+                .history
+                .iter()
+                .rev()
+                .find(|(role, _)| *role == ROLE_USER)
+                .map(|(_, text)| text.clone())
+                .unwrap_or_default();
+            let text = format!(
+                "[ai-stub] {} message(s) in history; you said: {last_user}",
+                s.history.len()
+            );
+
+            let mut posts: Vec<Option<StreamPost>> = Vec::new();
+            s.reply.clear();
+            s.pos = 0;
+            s.generating = true;
+            s.gate.begin();
+
+            if let Some(ms) = self.stall_ms {
+                // Nothing is appended and nothing is settled: the guest parks on
+                // a stream with no completion. The error arrives later, from a
+                // thread — the control's whole subject.
+                s.generating = false;
+                let sink = self.sink.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(ms));
+                    sink.post(CLASS_AI_ERROR, session, 0);
+                });
+                return 0;
+            }
+
+            if self.fail_generation {
+                // The real adapter's failure shape: the reason lands in the
+                // reply buffer (the AI backend has no errno vocabulary), and the
+                // completion carries AI_ERROR.
+                let note = "[tension:ai] error: injected failure (TENSION_AI_STUB_FAIL)";
+                s.reply.extend_from_slice(note.as_bytes());
+                s.generating = false;
+                let unread = s.reply.len() - s.pos;
+                posts.push(s.gate.settled(true, unread));
+                (posts, false)
+            } else {
+                // Append in pieces so a coalesced burst is real rather than
+                // asserted: the first append posts READY with the running
+                // count, the rest are swallowed until the guest drains.
+                for piece in split_pieces(&text, 4) {
+                    s.reply.extend_from_slice(piece.as_bytes());
+                    let unread = s.reply.len() - s.pos;
+                    posts.push(s.gate.appended(unread));
+                }
+                // Completion appends the assistant turn, exactly as a real
+                // model does, and settles the stream.
+                s.history.push((ROLE_ASSISTANT, text));
+                s.generating = false;
+                let unread = s.reply.len() - s.pos;
+                posts.push(s.gate.settled(false, unread));
+                (posts, false)
+            }
         };
-        if s.generating || s.unread() > 0 {
+        if refusal {
             return -1;
         }
-        let last_user = s
-            .history
-            .iter()
-            .rev()
-            .find(|(role, _)| *role == ROLE_USER)
-            .map(|(_, text)| text.clone())
-            .unwrap_or_default();
-        let text = format!("[ai-stub] {} message(s) in history; you said: {last_user}", s.history.len());
-        s.reply = text.clone().into_bytes();
-        s.pos = 0;
-        // Completion appends the assistant turn, exactly like a real model.
-        s.history.push((ROLE_ASSISTANT, text));
+        for post in posts {
+            self.post(session, post);
+        }
         0
     }
 
@@ -113,10 +220,15 @@ impl AiAdapter for StubAdapter {
     }
 
     fn read_consume(&mut self, session: i32, cap: i32) -> Option<Vec<u8>> {
-        let s = self.sessions.get_mut(&session)?;
-        let n = s.unread().min(cap.max(0) as usize);
-        let out = s.reply[s.pos..s.pos + n].to_vec();
-        s.pos += n;
+        let (out, post) = {
+            let s = self.sessions.get_mut(&session)?;
+            let n = s.unread().min(cap.max(0) as usize);
+            let out = s.reply[s.pos..s.pos + n].to_vec();
+            s.pos += n;
+            // The drain re-arms the stream and releases a deferred terminal.
+            (out, s.gate.drained(s.unread()))
+        };
+        self.post(session, post);
         Some(out)
     }
 
@@ -140,6 +252,7 @@ impl AiAdapter for StubAdapter {
                 s.history.clear();
                 s.reply.clear();
                 s.pos = 0;
+                s.gate.begin();
                 0
             }
         }
@@ -157,6 +270,21 @@ impl AiAdapter for StubAdapter {
     }
 }
 
+/// Split `text` into at most `count` pieces, never inside a codepoint: a guest
+/// decodes each read as a whole string, so a split byte would be a malformed
+/// UTF-8 sequence at the ABI.
+fn split_pieces(text: &str, count: usize) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    if count <= 1 || chars.is_empty() {
+        return vec![text.to_string()];
+    }
+    let per = (chars.len() + count - 1) / count;
+    chars
+        .chunks(per.max(1))
+        .map(|chunk| chunk.iter().collect())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,7 +296,7 @@ mod tests {
     }
 
     fn session() -> AiSession {
-        AiSession::new(Box::new(StubAdapter::new()))
+        AiSession::new(Box::new(StubAdapter::new(AiSink::detached())))
     }
 
     /// Drain a session the way a guest would: probe, then consume in chunks.

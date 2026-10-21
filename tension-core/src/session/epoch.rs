@@ -26,13 +26,14 @@
 //! round-2 hard rule): every read of the arena happens through a fresh
 //! `memory.data(&caller)`.
 
-use wasmtime::Caller;
+use wasmtime::{AsContext, AsContextMut, Caller};
 
 use super::arena::{self, CLASS_COUNT, EVENT_RECORD_SIZE, RING_HEADER_SIZE};
 use super::apply;
 use super::posting::WaitOutcome;
 use super::subring::{self, SubringError};
 use super::{log, Session, SessionError};
+use crate::adapter::HookCtx;
 use crate::HostState;
 
 /// Which classes an epoch covers, and whether it blocks first.
@@ -76,12 +77,41 @@ fn slot_address(capacities: &[u32; CLASS_COUNT], class: u32, slot: u32) -> Optio
     u32::try_from(address).ok()
 }
 
-/// Run one epoch. See the module comment for the phase order.
+/// Run one epoch from a guest call — the path every `session::*` verb takes.
+///
+/// A thin shim: it adds nothing and decides nothing. The two refusals that
+/// belong to the *verb* (the session must be READY, and a callback must not
+/// re-enter) stay in the core, so their ordering is unchanged; the rest is one
+/// monomorphized call. Keeping this function's signature is what makes the
+/// refactor invisible to every caller in `session/mod.rs`.
 pub fn run_epoch(
     session: &mut Session,
     caller: &mut Caller<'_, HostState>,
     mode: EpochMode,
 ) -> Result<EpochResult, SessionError> {
+    run_epoch_with_store(session, caller, mode)
+}
+
+/// Run one epoch, from whichever context is driving.
+///
+/// The body is generic over the context because it serves both callers: a
+/// `session::*` verb, whose `Caller` is on the stack (`run_epoch`, below), and
+/// the host-owned loop (0.7.0a), which has only a `Store`. Everything that
+/// touches guest memory goes through `AsContextMut`; the two hook sites go
+/// through `HookCtx`, which knows how to install the context the adapter's
+/// memory shims read.
+///
+/// A `Caller` cannot hand out a `&mut Store` (wasmtime exposes the store only as
+/// a `StoreContextMut`, which does not unwrap), so these are two monomorphized
+/// instantiations of one body rather than one function taking a store.
+pub fn run_epoch_with_store<C>(
+    session: &mut Session,
+    cx: &mut C,
+    mode: EpochMode,
+) -> Result<EpochResult, SessionError>
+where
+    C: AsContextMut<Data = HostState> + HookCtx,
+{
     // 1. State. `wait` and `drain` are non-exempt verbs: in any state but READY
     //    they refuse with -EBADF (§6.3).
     if session.require_ready() != 0 {
@@ -92,12 +122,16 @@ pub fn run_epoch(
 
     // 2. Depth. A callback that waits would run an epoch inside an epoch, and
     //    the guest's own stack is already inside the first one.
-    if caller.data().depth != 0 {
+    if cx.as_context().data().depth != 0 {
         return Err(SessionError::Reentrant);
     }
 
-    let posting = caller.data().posting.clone();
-    let adapters = caller.data().adapters.clone();
+    let posting = cx.as_context().data().posting.clone();
+    let adapters = cx.as_context().data().adapters.clone();
+    // Push or pull: a guest that exports `__taskWake` has an executor to hand
+    // wakes to; one that does not is driven by its own loop, and its records
+    // travel the callback path exactly as they did before 0.7.0c.
+    let data_has_push = cx.as_context().data().task_wake.is_some();
     let capacities = *session.ring_capacities();
 
     // 3. Block, when this is a wait.
@@ -116,7 +150,7 @@ pub fn run_epoch(
     }
 
     // 4a. Publish: the adapters' own regions first, in registration order.
-    let hooks = crate::adapter::run_publish_hooks(caller, &adapters);
+    let hooks = crate::adapter::run_publish_hooks(cx, &adapters);
     let _ = hooks;
 
     // A fatal adapter fault, if one was signalled while the guest was blocked:
@@ -124,9 +158,9 @@ pub fn run_epoch(
     // sweep is a stub — chunk 1 has no job records — and no adapter triggers
     // this yet; the flag is what wakes a blocking wait.
     if posting.has_pending_faults() {
-        let memory = caller.data().arena;
+        let memory = cx.as_context().data().arena;
         if let Some(memory) = memory {
-            let arena_bytes = memory.data_mut(&mut *caller);
+            let arena_bytes = memory.data_mut(&mut *cx);
             let swept = apply::sweep_jobs_to_failed(arena_bytes, EIO);
             let _ = swept;
         }
@@ -139,10 +173,13 @@ pub fn run_epoch(
         EpochMode::Wait { .. } | EpochMode::DrainAll => (0..CLASS_COUNT as u32).collect(),
     };
 
-    let memory = caller.data().arena.ok_or(SessionError::ArenaLost)?;
+    let memory = cx.as_context().data().arena.ok_or(SessionError::ArenaLost)?;
     let mut deliveries: Vec<Delivery> = Vec::new();
+    /// `(class, key)` pairs this epoch published, matched to task ids after the
+    /// arena borrow ends.
+    let mut completions: Vec<(u32, u32, i32)> = Vec::new();
     {
-        let arena_bytes = memory.data_mut(&mut *caller);
+        let arena_bytes = memory.data_mut(&mut *cx);
         for class in &classes {
             let Some(queue) = posting.queue(*class) else {
                 return Err(SessionError::Subring(SubringError::UnknownClass { class: *class }));
@@ -162,6 +199,32 @@ pub fn run_epoch(
             let at = subring::event_subring_offset(&capacities, *class).map_err(SessionError::Subring)?;
             arena::set_ring_dropped(arena_bytes, at, queue.dropped().min(u32::MAX as u64) as u32)?;
             arena::set_ring_delivered(arena_bytes, at, queue.delivered().min(u32::MAX as u64) as u32)?;
+        }
+
+        // 4b(2). The push path's match: every record this epoch published is a
+        //     candidate completion for a parked task. Collected here — while the
+        //     arena is borrowed — and matched after the borrow ends.
+        //
+        //     The match reads the record's own `a` (the producer's key) and
+        //     `class`, which is the identity half of `(family, key)`. Nothing is
+        //     removed from the ring: the pull path still needs it, and until
+        //     0.7.0d both paths are live.
+        for delivery in &deliveries {
+            let Some(base) = subring::event_subring_offset(&capacities, delivery.class).ok() else {
+                continue;
+            };
+            for i in 0..delivery.count {
+                let at = base + RING_HEADER_SIZE + (delivery.first_slot + i) as usize * EVENT_RECORD_SIZE;
+                if at + EVENT_RECORD_SIZE > arena_bytes.len() {
+                    continue;
+                }
+                let record = arena::read_event_record(arena_bytes, at);
+                // The word a resume carries: `b`, the payload slot every
+                // awaitable class uses (`rt.classify` reads it as the unread
+                // count / resource id / job result). The `f0`/`f1` words are
+                // for classes nothing awaits.
+                completions.push((record.class, record.a, record.b as i32));
+            }
         }
 
         // 4c. FrameState: the epoch counter, the cross-class drop rollup, and a
@@ -187,6 +250,41 @@ pub fn run_epoch(
         }
     }
 
+    // 4e. Match. A delivered record resolves a parked task iff the host's
+    //     scheduler table holds one for `(family(class), key)` — which only
+    //     happens for a guest that called `scheduler::park`. A pre-adoption
+    //     guest never does, so this loop is empty for every guest in the tree
+    //     today, and the pull path is all there is.
+    //
+    //     Matched ids go to `HostState::wake_batch`. The caller decides whether
+    //     to hand them to `__taskWake`: the host loop does (0.7.0a); a verb does
+    //     not, because a guest that drives its own epochs has no push handler.
+    //
+    //     **A completion with no waiter is buffered, not dropped** (§4.9,
+    //     0.7.0d-pre): the host keeps it per class, bounded by that class's ring
+    //     capacity, and the park that arrives later claims it. This is the
+    //     guest-side 4e-1 buffer's job moved to the executor — and under the
+    //     push path it is not optional: the AI stream posts READY and DONE for
+    //     one key in one epoch, and the second arrival finds the table entry
+    //     already taken by the first.
+    //
+    //     Gated on the guest exporting `__taskWake`: a guest without a push
+    //     handler has nobody to hand a wake batch to, and buffering for it would
+    //     only accumulate records nothing reads.
+    if !completions.is_empty() && data_has_push {
+        let mut ctx = cx.as_context_mut();
+        let data = ctx.data_mut();
+        for (class, key, payload) in &completions {
+            if let Some(task_id) = data.scheduler.deliver(*class, *key, *payload) {
+                data.wake_batch.push(crate::scheduler::Wake {
+                    task_id,
+                    class: *class,
+                    payload: *payload,
+                });
+            }
+        }
+    }
+
     // 5. Invoke. Publish is complete for the whole epoch before the first
     //    callback runs.
     let mut delivered = 0u32;
@@ -207,13 +305,13 @@ pub fn run_epoch(
                         class: delivery.class,
                     }));
                 };
-                caller.data_mut().depth = 1;
-                let outcome = callback.call(&mut *caller, (delivery.class as i32, ptr as i32, delivery.count as i32));
-                caller.data_mut().depth = 0;
+                cx.as_context_mut().data_mut().depth = 1;
+                let outcome = callback.call(&mut *cx, (delivery.class as i32, ptr as i32, delivery.count as i32));
+                cx.as_context_mut().data_mut().depth = 0;
                 match outcome {
                     Ok(_status) => delivered += delivery.count,
                     Err(trap) => {
-                        return Err(fault_from_trap(session, caller, 0, "onBatch", delivery, &trap));
+                        return Err(fault_from_trap(session, cx, 0, "onBatch", delivery, &trap));
                     }
                 }
             }
@@ -233,15 +331,15 @@ pub fn run_epoch(
                             class: delivery.class,
                         }));
                     };
-                    caller.data_mut().depth = 1;
-                    let outcome = callback.call(&mut *caller, (delivery.class as i32, ptr as i32));
-                    caller.data_mut().depth = 0;
+                    cx.as_context_mut().data_mut().depth = 1;
+                    let outcome = callback.call(&mut *cx, (delivery.class as i32, ptr as i32));
+                    cx.as_context_mut().data_mut().depth = 0;
                     match outcome {
                         Ok(_status) => delivered += 1,
                         Err(trap) => {
                             // The batch is abandoned: the remaining records stay
                             // in the ring, where the guest can still read them.
-                            return Err(fault_from_trap(session, caller, 1, "onEvent", delivery, &trap));
+                            return Err(fault_from_trap(session, cx, 1, "onEvent", delivery, &trap));
                         }
                     }
                 }
@@ -260,7 +358,7 @@ pub fn run_epoch(
     //    pending queue is not cleared, and the submissions are applied at the
     //    guest's next epoch — which, after a fault, is the first epoch of a
     //    closed-and-reopened session.
-    let report = apply::apply_pending(session, caller, &adapters);
+    let report = apply::apply_pending(session, cx, &adapters);
     if report.applied > 0 || report.rejected > 0 || report.dropped > 0 {
         log(&format!(
             "apply: {} applied, {} rejected, {} dropped",
@@ -280,14 +378,17 @@ pub fn run_epoch(
 /// The two writes — `FrameState` and the control block — happen together, before
 /// the caller sees the error: a guest that reads the arena after a refused wait
 /// finds the fault it was refused for.
-fn fault_from_trap(
+fn fault_from_trap<C>(
     session: &mut Session,
-    caller: &mut Caller<'_, HostState>,
+    cx: &mut C,
     slot_index: u32,
     slot: &'static str,
     delivery: &Delivery,
     trap: &wasmtime::Error,
-) -> SessionError {
+) -> SessionError
+where
+    C: AsContextMut<Data = HostState> + HookCtx,
+{
     log(&format!(
         "callback `{slot}` trapped while delivering class {}: {trap}; the slot is disabled \
          for this session and the session is FAULTED",
@@ -296,9 +397,9 @@ fn fault_from_trap(
     session.disable_slot(slot_index);
     session.fault();
 
-    let posting = caller.data().posting.clone();
-    if let Some(memory) = caller.data().arena {
-        let arena_bytes = memory.data_mut(&mut *caller);
+    let posting = cx.as_context().data().posting.clone();
+    if let Some(memory) = cx.as_context().data().arena {
+        let arena_bytes = memory.data_mut(&mut *cx);
         let _ = arena::write_frame_state(
             arena_bytes,
             &arena::FrameStateValues {
@@ -514,8 +615,15 @@ mod tests {
                     pending_line: None,
                     res: Vec::new(),
                     audio: crate::audio::AudioSession::new(crate::default_adapter()),
-                    ai: crate::ai::AiSession::new(crate::default_ai_adapter()),
+                    ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                     solver: crate::solver::SolverHost::default(),
+                    scheduler: crate::scheduler::Scheduler::new(),
+                    wake_batch: Vec::new(),
+                    task_wake: None,
+                    task_resume: None,
+                    task_fail: None,
+                    drop_seen: [0; crate::session::arena::CLASS_COUNT],
+                    game_running: None,
                     posting: std::sync::Arc::clone(&posting),
                     arena: None,
                     depth: 0,

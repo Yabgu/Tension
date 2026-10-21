@@ -23,7 +23,7 @@
 
 use std::collections::VecDeque;
 
-use wasmtime::Caller;
+use wasmtime::{AsContext, AsContextMut, Caller};
 
 use super::arena;
 use super::Session;
@@ -161,12 +161,15 @@ pub struct ApplyReport {
 /// observable at this boundary: a Rust panic unwinds into `extern "C"` and
 /// aborts, which no ABI can catch. What *is* observable is the status, and that
 /// is what the rejection path handles.
-pub fn apply_pending(
+pub fn apply_pending<C>(
     session: &mut Session,
-    caller: &mut Caller<'_, HostState>,
+    cx: &mut C,
     adapters: &[crate::adapter::AdapterCall],
-) -> ApplyReport {
-    let entries: Vec<PendingSubmission> = caller.data_mut().pending.drain().collect();
+) -> ApplyReport
+where
+    C: wasmtime::AsContextMut<Data = HostState> + crate::adapter::HookCtx,
+{
+    let entries: Vec<PendingSubmission> = cx.as_context_mut().data_mut().pending.drain().collect();
     if entries.is_empty() {
         return ApplyReport::default();
     }
@@ -195,14 +198,14 @@ pub fn apply_pending(
 
         // Depth is 0 for the duration: the hook is not inside a callback, and a
         // verb it calls must behave as it does at the top level.
-        let previous_depth = caller.data().depth;
-        caller.data_mut().depth = 0;
+        let previous_depth = cx.as_context().data().depth;
+        cx.as_context_mut().data_mut().depth = 0;
         let status = {
-            // The hook may write guest memory, so it runs with the caller
-            // installed — the same mechanism an import call uses.
-            let host = caller.data().posting.clone();
-            let _ = &host;
-            crate::adapter::with_publish_caller(caller, &call.api, || {
+            // The hook may write guest memory, so it runs with the context
+            // installed — the same mechanism an import call uses, whether that
+            // context is a guest call's `Caller` or the host loop's `Store`.
+            let _ = &cx;
+            crate::adapter::with_hook_ctx(cx, &call.api, || {
                 // SAFETY: as above; the bytes are ours and outlive the call.
                 unsafe {
                     apply(
@@ -214,7 +217,7 @@ pub fn apply_pending(
                 }
             })
         };
-        caller.data_mut().depth = previous_depth;
+        cx.as_context_mut().data_mut().depth = previous_depth;
 
         if status == 0 {
             report.applied += 1;
@@ -229,10 +232,10 @@ pub fn apply_pending(
             entry.verb_id,
             arena::class_name(arena::CLASS_SUBMISSION_REJECTED)
         ));
-        let posting = caller.data().posting.clone();
         // The session posts as source 0: there is no adapter to attribute this
         // to — the session is reporting its own failure to apply, and the
         // adapter's own name is in the log line above.
+        let posting = cx.as_context().data().posting.clone();
         if let Err(error) = posting.post(
             0,
             arena::CLASS_SUBMISSION_REJECTED,

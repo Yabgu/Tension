@@ -117,7 +117,7 @@ pub enum ConfigError {
     ArenaRelation(&'static str),
     /// C4: the frozen layout does not fit the declared live arena.
     LayoutFit { need: u64, have: u32 },
-    /// A ring capacity is zero, or names a class outside the ten.
+    /// A ring capacity is zero, or names a class outside the thirteen.
     RingCapacity { class: u32 },
     /// The capacities together do not fit `EVENT_TABLE`.
     RingTableFit { need: u64, have: u64 },
@@ -390,7 +390,7 @@ pub fn check_layout_fit(config: &SessionConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The ring capacities: every class gets at least one record, and the ten
+/// The ring capacities: every class gets at least one record, and the thirteen
 /// sub-rings fit inside the fixed `EVENT_TABLE`.
 pub fn check_ring_capacities(config: &SessionConfig) -> Result<(), ConfigError> {
     for (class, capacity) in config.ring_capacities.iter().enumerate() {
@@ -663,9 +663,11 @@ mod tests {
     #[test]
     fn an_unknown_ring_class_is_refused() {
         let mut entries = good();
-        entries.push((KEY_RING_CAPACITY_BASE + 12, 16));
-        let error = decode(&enc(&entries)).expect_err("ring_capacity_12 is refused");
-        assert_eq!(error, ConfigError::RingCapacity { class: 12 });
+        // `CLASS_COUNT` itself is the first id this chunk does not define —
+        // 12 is `AI_ERROR` since 0.6.0a, so the out-of-range probe moved up.
+        entries.push((KEY_RING_CAPACITY_BASE + CLASS_COUNT as u32, 16));
+        let error = decode(&enc(&entries)).expect_err("ring_capacity_13 is refused");
+        assert_eq!(error, ConfigError::RingCapacity { class: CLASS_COUNT as u32 });
         assert_eq!(error.errno(), EINVAL);
 
         // The last valid class is accepted.

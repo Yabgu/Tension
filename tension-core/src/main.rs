@@ -75,6 +75,7 @@ use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store
 mod adapter;
 mod ai;
 mod audio;
+mod scheduler;
 mod debug;
 mod dwarf;
 pub(crate) mod leb;
@@ -87,13 +88,13 @@ mod solver;
 /// llama.cpp adapter; otherwise the deterministic headless stub (the
 /// contract reference and the test adapter).
 #[cfg(feature = "ai")]
-fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
-    Box::new(ai::llama::LlamaAdapter::new())
+fn default_ai_adapter(posting: std::sync::Arc<session::posting::PostingSide>) -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::llama::LlamaAdapter::new(ai::AiSink::new(posting)))
 }
 
 #[cfg(not(feature = "ai"))]
-fn default_ai_adapter() -> Box<dyn ai::AiAdapter> {
-    Box::new(ai::stub::StubAdapter::new())
+fn default_ai_adapter(posting: std::sync::Arc<session::posting::PostingSide>) -> Box<dyn ai::AiAdapter> {
+    Box::new(ai::stub::StubAdapter::new(ai::AiSink::new(posting)))
 }
 
 /// The adapter the CLI uses. The default build (feature `audio`) plays
@@ -144,6 +145,41 @@ struct HostState {
     /// phase calls, and in what order (`DESIGN.md` §3.3).
     adapters: Vec<adapter::AdapterCall>,
     posting: std::sync::Arc<session::posting::PostingSide>,
+    /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
+    /// writes and the epoch's completion path will read. Bounded, per family,
+    /// and — at pre0 — recorded but unread.
+    scheduler: scheduler::Scheduler,
+    /// The guest's `__taskWake(idsPtr, count)`, resolved after instantiation
+    /// when the module exports it (std 0.6.0 and later). `None` for a guest
+    /// that has no push path — the pull path still delivers those.
+    ///
+    /// **Resolved eagerly, called never (at pre0).** Resolving costs one table
+    /// lookup after instantiation; resolving lazily at the first wake would put
+    /// a lookup on the completion path and make a missing export a runtime
+    /// surprise rather than a startup fact.
+    task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    /// The guest's `__taskFail(idsPtr, statusesPtr, count)`: resume a task with
+    /// a status and no payload — §4.4's lost completion and §5.1's refused park.
+    /// `None` for a guest built before std 0.6.1, which has no such export; the
+    /// host then has no way to fail a task, and says so rather than parking it.
+    task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
+    /// Per-class drop totals already attributed (0.7.0c). The posting queues'
+    /// counters are cumulative, so the host keeps its own baseline: a drop is
+    /// the *delta* since the last iteration, and without this every iteration
+    /// after the first would re-wake the same victims.
+    drop_seen: [u64; session::arena::CLASS_COUNT],
+    /// Tasks the epoch matched, or the park found already completed, waiting to
+    /// be resumed. Drained by the host loop; empty for every pre-adoption
+    /// guest, because nothing parked.
+    wake_batch: Vec<scheduler::Wake>,
+    /// The guest's `__taskResume(idsPtr, classesPtr, payloadsPtr, count)`: resume
+    /// with the delivered class and payload (std 0.6.1). Preferred over
+    /// `__taskWake`, which resumes with whatever the record already holds.
+    task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
+    /// The guest's `_game_running()`: 1 while the guest still wants frames.
+    /// `None` means the guest has not adopted the host-owned loop, which is
+    /// every example until 0.7.0b — so the loop must not start for it.
+    game_running: Option<wasmtime::TypedFunc<(), i32>>,
     /// The session: it owns the arena memory and the open/close verbs.
     ///
     /// `Option` because the memory can only be created *from* a store, and this
@@ -610,6 +646,12 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // The posting face is built **before** the store because the AI backend is
+    // a producer too: its worker posts AI completions through the same
+    // any-thread path the adapters use, so it needs the `Arc` at construction —
+    // not a borrow of the store it will wake.
+    let posting = std::sync::Arc::new(session::posting::PostingSide::default());
+
     let mut store = Store::new(
         &engine,
         HostState {
@@ -617,9 +659,16 @@ fn main() -> anyhow::Result<()> {
             pending_line: None,
             res: resource_sets,
             audio: audio::AudioSession::new(default_adapter()),
-            ai: ai::AiSession::new(default_ai_adapter()),
+            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
             solver: solver::SolverHost::default(),
-            posting: std::sync::Arc::new(session::posting::PostingSide::default()),
+            posting,
+            scheduler: scheduler::Scheduler::new(),
+            wake_batch: Vec::new(),
+            task_wake: None,
+            task_resume: None,
+            task_fail: None,
+            drop_seen: [0; session::arena::CLASS_COUNT],
+            game_running: None,
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),
@@ -1041,6 +1090,13 @@ fn main() -> anyhow::Result<()> {
     session::link_session(&mut linker)?;
     store.data_mut().session = session;
 
+    // The scheduler's guest-facing half (0.7.0a-pre0). Registered unconditionally
+    // and inert: Wasmtime resolves a definition only when a guest imports it, so
+    // a guest built against std 0.5.1 sees nothing new. The registration is what
+    // lets the *next* std release (0.6.0, which calls `scheduler::park`) run on
+    // this host instead of failing at instantiation with "unknown import".
+    scheduler::link_scheduler(&mut linker)?;
+
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
     // the guest may call, and because `region_lookup` answers from the frozen
@@ -1099,6 +1155,58 @@ fn main() -> anyhow::Result<()> {
     }
 
     let instance = linker.instantiate(&mut store, &module)?;
+
+    // The scheduler's two guest exports (0.7.0a-pre0). Both are optional and
+    // both are resolved once, right here, so a guest's capabilities are a
+    // startup fact rather than a surprise on the completion path:
+    //
+    //   __taskWake     std 0.6.0+'s push handler; absent in an older guest,
+    //                  which keeps the pull path and needs no wake call.
+    //   _game_running  the guest's "still want frames" answer; absent until a
+    //                  guest adopts the host-owned loop (0.7.0b), which is
+    //                  exactly why the loop below cannot start without it.
+    //
+    // Neither is called in this phase.
+    store.data_mut().task_wake = instance
+        .get_typed_func::<(i32, i32), ()>(&mut store, "__taskWake")
+        .ok();
+    store.data_mut().task_resume = instance
+        .get_typed_func::<(i32, i32, i32, i32), ()>(&mut store, "__taskResume")
+        .ok();
+    store.data_mut().task_fail = instance
+        .get_typed_func::<(i32, i32, i32), ()>(&mut store, "__taskFail")
+        .ok();
+    store.data_mut().game_running = instance
+        .get_typed_func::<(), i32>(&mut store, "_game_running")
+        .ok();
+
+    // The coexistence rule, refused here rather than discovered later
+    // (`docs/step2-shape-report.md` §3.1). A guest either opts into the
+    // host-owned loop — exporting both — or keeps its own, exporting neither.
+    //
+    // Half an adoption is not a degenerate case to tolerate: a guest with
+    // `__taskWake` and no `_game_running` returns from `_start_game`, never gets
+    // a wake (the host has no reason to loop), and exits 0 having done nothing —
+    // a failure that reads as success. A guest with `_game_running` and no
+    // `__taskWake` asks the host to loop and gives it no way to dispatch. Both
+    // are static properties of the binary, so both are refused before the first
+    // guest instruction runs.
+    match (
+        store.data().task_wake.is_some(),
+        store.data().game_running.is_some(),
+    ) {
+        (true, true) | (false, false) => {}
+        (true, false) => anyhow::bail!(
+            "the guest exports `__taskWake` but not `_game_running`: a host-driven \
+             guest must export both (it cannot report when to stop), so this is \
+             refused rather than run as a guest that silently does nothing"
+        ),
+        (false, true) => anyhow::bail!(
+            "the guest exports `_game_running` but not `__taskWake`: a host-driven \
+             guest must export both (the loop would have no way to resume a task), \
+             so this is refused rather than spun on"
+        ),
+    }
 
     // The arena as the session left it, before the guest's first instruction:
     // the control block's triple, the region band's zeros, and the gap's canary
@@ -1185,7 +1293,9 @@ fn main() -> anyhow::Result<()> {
                 anyhow::bail!("--session-open: {error}");
             }
         }
+        let capacities = *session.ring_capacities();
         store.data_mut().session = Some(session);
+        store.data_mut().scheduler.set_capacities(&capacities);
     }
 
     // `--post-test-events`: three JOB_DONE events, so an epoch fixture has
@@ -1241,6 +1351,32 @@ fn main() -> anyhow::Result<()> {
     if let Err(error) = guest_result {
         adapter::teardown_adapters(&mut adapters);
         return Err(error);
+    }
+
+    // ── the host-owned loop (0.7.0a) ─────────────────────────────────────
+    //
+    // Only for a guest that opted in: both exports present, checked at load.
+    // A pre-adoption guest's `_start_game` blocks on its own frame loop and
+    // returns at exit, so it never reaches here with anything to drive.
+    //
+    // The wake rides the epoch: each iteration blocks on the session's own
+    // condition variable (a real wait, `posting.rs:320-350`), publishes and
+    // matches whatever arrived, then hands the matched ids to `__taskWake`.
+    if let Some(wake) = store.data().task_wake.clone() {
+        let fail = store.data().task_fail.clone();
+        host_loop(&mut store, &wake, fail.as_ref())?;
+        let (buffered, evicted) = store.data().scheduler.recent_counters();
+        if buffered > 0 || evicted > 0 {
+            logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "host loop: recent completions buffered={buffered} evicted={evicted} \
+                     held={}",
+                    store.data().scheduler.recent_len()
+                ),
+            );
+        }
     }
 
     // What a trapping epoch left behind: a deferred submission belongs to the
@@ -1313,6 +1449,282 @@ fn main() -> anyhow::Result<()> {
 ///   the check exists to protect. The scope is the rationale: a guest with no
 ///   session import has no arena to verify, and the pre-session examples build
 ///   with plain `asc`, which emits a start section by default (DESIGN.md §10).
+/// Drive a host-owned guest: wait, publish, match, wake.
+///
+/// The primitive is the session's condition variable (`PostingSide::wait_for_events`,
+/// a `Condvar::wait`/`wait_timeout`) — the same one a blocking `session.wait`
+/// uses. An event returns it early; nothing polls.
+///
+/// **FRAME is not driven here yet, and that is deliberate.** A FRAME tick needs a
+/// frame period, and the only frame period in the tree lives inside the OGRE
+/// adapter's own config (`tension-ogre/src/config.h:48`), parsed from the guest's
+/// `ogre.init` argmap — it is not in the core ABI and not reachable from here.
+/// No example awaits `rt.frame()` yet (that is 0.7.0b), so a loop driven by real
+/// completions is the complete 0.7.0a behaviour; the frame clock is reported as
+/// the one open decision rather than invented as a constant.
+/// The tasks a lost signal must fail, host-side (0.7.0c).
+///
+/// The guest-side path (`rt.reportDrops` → `__taskReportDrops`) reads the same
+/// counters and wakes up to N tasks with `-EIO`, but it is called from
+/// `rt.runReady()` — which a host-loop guest never calls. So the rule moves
+/// here: the host already owns the per-family parked tables, and the wake is
+/// direct rather than a guest-side scan of `waitingByKey`.
+///
+/// Attribution is per **family**, exactly as the guest side has it: a drop is
+/// counted per class by the producer, and the count cannot say which stream
+/// lost the record, so the family's parked tasks are what gets failed. That
+/// imprecision is the contract's (§4.4), not a shortcut here.
+///
+/// The counters are cumulative, so `drop_seen` is the baseline: without it every
+/// iteration after the first would re-fail the same victims.
+fn take_drop_victims(store: &mut Store<HostState>) -> Vec<(u64, i32)> {
+    let posting = store.data().posting.clone();
+    let data = store.data_mut();
+    let mut per_family: Vec<(u32, usize)> = Vec::new();
+    for class in 0..session::arena::CLASS_COUNT as u32 {
+        let Some(queue) = posting.queue(class) else {
+            continue;
+        };
+        let total = queue.dropped();
+        let seen = data.drop_seen[class as usize];
+        if total <= seen {
+            continue;
+        }
+        data.drop_seen[class as usize] = total;
+        let delta = (total - seen) as usize;
+        let family = scheduler::family_of(class);
+        match per_family.iter_mut().find(|(known, _)| *known == family) {
+            Some((_, count)) => *count += delta,
+            None => per_family.push((family, delta)),
+        }
+    }
+
+    let mut victims = Vec::new();
+    for (family, count) in per_family {
+        for task_id in data.scheduler.take_from_family(family, count) {
+            victims.push((task_id, -5)); // -EIO: §4.4's lost completion
+        }
+    }
+    victims
+}
+
+fn host_loop(
+    store: &mut Store<HostState>,
+    wake: &wasmtime::TypedFunc<(i32, i32), ()>,
+    fail: Option<&wasmtime::TypedFunc<(i32, i32, i32), ()>>,
+) -> anyhow::Result<()> {
+    use wasmtime::AsContextMut;
+
+    loop {
+        // Exit condition, in the order that cannot lose the last completion:
+        // the guest's say-so first, then whether anything is still outstanding.
+        let running = match store.data().game_running.clone() {
+            Some(game_running) => game_running.call(&mut *store, ())? != 0,
+            None => false,
+        };
+        let outstanding = store.data().scheduler.parked() > 0;
+        if !running && !outstanding && store.data().wake_batch.is_empty() {
+            break;
+        }
+
+        // Block on the session's condition variable. A completion, a fault or a
+        // shutdown returns it early; the timeout is the loop's safety net for a
+        // guest that says it is running while nothing can arrive.
+        let _ = store.data().posting.wait_for_events(HOST_LOOP_SLICE_MS);
+
+        // **A closed session ends the loop** (0.7.0). A guest that closes its
+        // session has finished, whatever is still parked: a test fixture can
+        // legitimately leave a control task waiting forever (the drop case's
+        // "a key that never completes"), and an epoch over a closed session is
+        // an error rather than a wake. Measured: `ASYNC PASS drop` printed, then
+        // "host loop: the epoch failed: this verb needs a READY session".
+        let session_ready = store
+            .data()
+            .session
+            .as_ref()
+            .map(|session| session.state() == session::SessionState::Ready)
+            .unwrap_or(false);
+        if !session_ready {
+            break;
+        }
+
+        // Publish + match. The epoch appends matched ids to `wake_batch`.
+        let taken = store.data_mut().session.take();
+        let Some(mut session) = taken else {
+            break;
+        };
+        let outcome = crate::session::epoch::run_epoch_with_store(
+            &mut session,
+            &mut *store,
+            crate::session::epoch::EpochMode::DrainAll,
+        );
+        store.data_mut().session = Some(session);
+        if let Err(error) = outcome {
+            anyhow::bail!("host loop: the epoch failed: {error}");
+        }
+
+        // The frame add: a guest awaiting `rt.frame()` has a task parked on
+        // `(FRAME, 0)`, and this is the only thing that ever resolves it.
+        //
+        // **Not gated on `_game_running()`** (0.7.0). It was, and that
+        // deadlocked the one shape a guest legitimately has at the end: a final
+        // task — a report, a teardown step — parked on the frame clock *after*
+        // the game loop cleared `running`. The exit condition wants
+        // `parked() == 0`, the frame add was refused because `running` was 0, and
+        // nothing could reach either. Measured with `guest-ai-stream`, whose
+        // verdict task parks on FRAME after the stream finishes.
+        //
+        // A per-key lookup is the whole guard: nothing parked costs one empty
+        // table read, and a guest that has stopped being driven leaves through
+        // the exit condition below.
+        if let Some(frame_task) = store.data_mut().scheduler.take_frame() {
+            store.data_mut().wake_batch.push(scheduler::Wake {
+                task_id: frame_task,
+                class: session::arena::CLASS_FRAME,
+                payload: 0,
+            });
+        }
+
+        // §4.4 and §5.1, host-side: a task whose record will never arrive is
+        // resumed with a status rather than left parked. Two sources, one call —
+        // a lost completion (-EIO) and a refused park (its own -ENOSPC), which
+        // `scheduler::park` queued because a `void` import has nowhere to return
+        // a refusal.
+        let mut failed: Vec<(u64, i32)> = store.data_mut().scheduler.take_refusals();
+        failed.extend(take_drop_victims(store));
+        if !failed.is_empty() {
+            match fail {
+                Some(fail) => {
+                    for chunk in failed.chunks(HOST_FAIL_CHUNK) {
+                        let Some(memory) = store.data().arena else {
+                            anyhow::bail!("host loop: no arena to write fail ids into");
+                        };
+                        {
+                            let data = memory.data_mut(&mut *store);
+                            if HOST_FAIL_STATUS + chunk.len() * 4 > data.len() {
+                                anyhow::bail!("host loop: the fail scratch does not fit the arena");
+                            }
+                            for (index, (id, status)) in chunk.iter().enumerate() {
+                                let at = HOST_WAKE_SCRATCH + index * 8;
+                                data[at..at + 8].copy_from_slice(&id.to_le_bytes());
+                                let sat = HOST_FAIL_STATUS + index * 4;
+                                data[sat..sat + 4].copy_from_slice(&status.to_le_bytes());
+                            }
+                        }
+                        fail.call(
+                            &mut *store,
+                            (
+                                HOST_WAKE_SCRATCH as i32,
+                                HOST_FAIL_STATUS as i32,
+                                chunk.len() as i32,
+                            ),
+                        )?;
+                    }
+                }
+                // A guest built before std 0.6.1 has no `__taskFail`. Said out
+                // loud rather than swallowed: the task stays parked, and that is
+                // the failure mode this path exists to remove.
+                None => logging::log(
+                    Level::Warn,
+                    "core",
+                    &format!(
+                        "host loop: {} task(s) to fail but the guest exports no                          `__taskFail`; they stay parked (rebuild the guest against                          std 0.6.1)",
+                        failed.len()
+                    ),
+                ),
+            }
+        }
+
+        // Hand the batch to the guest. One call for the whole epoch's matches,
+        // which is the contract's batching (§2.2): the host names the tasks.
+        let batch = std::mem::take(&mut store.data_mut().wake_batch);
+        if batch.is_empty() {
+            continue;
+        }
+        // Chunked: the control block's tail holds a few ids, and a batch can be
+        // larger (a job flood plus the frame). Each chunk is one call, so the
+        // guest still sees a batched wake — just across several.
+        if let Some(resume) = store.data().task_resume.clone() {
+            // The richer export (std 0.6.1): ids, classes and payloads, so the
+            // record the guest awaited holds what was delivered. `__taskWake`
+            // alone resumes with whatever the record happens to contain, which
+            // under the push path is nothing.
+            for chunk in batch.chunks(HOST_RESUME_CHUNK) {
+                let Some(memory) = store.data().arena else {
+                    anyhow::bail!("host loop: no arena to write wake ids into");
+                };
+                {
+                    let data = memory.data_mut(&mut *store);
+                    for (index, wake) in chunk.iter().enumerate() {
+                        let at = HOST_WAKE_SCRATCH + index * 8;
+                        data[at..at + 8].copy_from_slice(&wake.task_id.to_le_bytes());
+                        let cat = HOST_RESUME_CLASSES + index * 4;
+                        data[cat..cat + 4].copy_from_slice(&wake.class.to_le_bytes());
+                        let pat = HOST_RESUME_PAYLOADS + index * 4;
+                        data[pat..pat + 4].copy_from_slice(&wake.payload.to_le_bytes());
+                    }
+                }
+                resume.call(
+                    &mut *store,
+                    (
+                        HOST_WAKE_SCRATCH as i32,
+                        HOST_RESUME_CLASSES as i32,
+                        HOST_RESUME_PAYLOADS as i32,
+                        chunk.len() as i32,
+                    ),
+                )?;
+            }
+        } else {
+            for chunk in batch.chunks(HOST_WAKE_CHUNK) {
+                let Some(memory) = store.data().arena else {
+                    anyhow::bail!("host loop: no arena to write wake ids into");
+                };
+                {
+                    let data = memory.data_mut(&mut *store);
+                    if HOST_WAKE_SCRATCH + chunk.len() * 8 > data.len() {
+                        anyhow::bail!("host loop: the wake scratch does not fit the arena");
+                    }
+                    for (index, wake) in chunk.iter().enumerate() {
+                        let at = HOST_WAKE_SCRATCH + index * 8;
+                        data[at..at + 8].copy_from_slice(&wake.task_id.to_le_bytes());
+                    }
+                }
+                wake.call(&mut *store, (HOST_WAKE_SCRATCH as i32, chunk.len() as i32))?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Where the loop stages the ids it hands `__taskWake`, as an arena offset.
+///
+/// **The control block's unused tail**, not the header page's canary gap. The
+/// first cut wrote at `0x800`, which lies between the manifest (ends `0x368`)
+/// and `HEADER_PAGE_SIZE` (`0x1000`) — the gap the canary lattice fills. The
+/// write did not trap, because the lattice is verified in tests rather than at
+/// runtime, so it silently corrupted the one region whose whole purpose is to
+/// prove nothing wrote there. The control block is session-owned, already
+/// host-writable, and its last field ends at 184 of 256 bytes.
+const HOST_WAKE_SCRATCH: usize = session::arena::CONTROL_OFFSET + 184;
+/// Ids that fit in the control block's tail: (256 - 184) / 8.
+const HOST_WAKE_CHUNK: usize = 9;
+/// Where a fail call's statuses start: after five ids (5 * 8 = 40 bytes), so
+/// five statuses (20 bytes) end at 184 + 40 + 20 = 244 of the 256-byte block.
+const HOST_FAIL_STATUS: usize = HOST_WAKE_SCRATCH + 5 * 8;
+/// Tasks per `__taskFail` call: ids and statuses both fit in the tail.
+const HOST_FAIL_CHUNK: usize = 5;
+/// Where a resume's classes start: after three ids (24 bytes), five classes
+/// (20) end at 184+24+20 = 228, and five payloads (20) at 248 of 256.
+const HOST_RESUME_CLASSES: usize = HOST_WAKE_SCRATCH + 3 * 8;
+/// Where a resume's payloads start: after the classes.
+const HOST_RESUME_PAYLOADS: usize = HOST_RESUME_CLASSES + 5 * 4;
+/// Tasks per `__taskResume` call: three ids, five classes, five payloads.
+const HOST_RESUME_CHUNK: usize = 3;
+/// The loop's wait slice, in ms: a bounded condvar wait, not a poll. It exists
+/// so a guest that reports "running" with nothing outstanding cannot hang the
+/// process; a healthy loop returns on an event long before it expires.
+const HOST_LOOP_SLICE_MS: i32 = 16;
+
 fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
     let mut imports_session = false;
     let mut imports_memory = false;

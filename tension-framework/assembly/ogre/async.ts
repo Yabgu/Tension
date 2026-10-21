@@ -1,15 +1,4 @@
 /**
- * **NOT ENABLED.** This file is not exported from `ogre/index.ts`, and cannot be
- * until the async transform stops skipping library sources:
- * `src/async/lower.ts:263` (`if (source.isLibrary) continue;`) means a function
- * declared in a package reached through `~lib/` is never lowered, and codegen
- * then reports `AS100: the async lowering transform did not run` at its await.
- * Measured: the identical body compiles when declared in user source, and fails
- * here. See `docs/resource-async-scope.md`'s amendment. The synchronous API is
- * unaffected and remains the only shipping path.
- *
- * ---
- *
  * Awaitable resource loading: `await ogre.loadMesh(path, 0)`.
  *
  * The synchronous API is unchanged and remains the primitive: `queueMeshLoad`
@@ -51,59 +40,99 @@
  *   read after the park is declared before it.
  */
 
+import { Task, TaskRecord } from "~lib/task";
 import { rt, CLASS_JOB_DONE, CLASS_JOB_FAILED } from "../runtime/rt";
 import {
   jobError,
-  jobState,
   queueMeshLoad,
   queueTextureLoad,
   releaseJob
 } from "./index";
-import { JOB_DONE } from "./wire";
 
-/** The awaited payload word is a `u32`; the protocol is `i32`. The cast lives
- *  outside the async bodies, which refuse `<T>expr`. */
-function toI32(value: u32): i32 {
-  return <i32>value;
+/** Reads the payload word as the `i32` protocol value. The bits are the same;
+ *  the cast lives outside any async body, which refuses `<T>expr`. */
+function toI32(value: i32): i32 {
+  return value;
+}
+
+/** A handle that is already settled: awaiting it does not park, and the
+ *  transform's settled check falls straight through to the payload. */
+function settled(errno: i32): Task<u32> {
+  const record = new TaskRecord();
+  record.status = errno;
+  record.done = 1;
+  const handle = new Task<u32>();
+  handle._record = record;
+  return handle;
 }
 
 /**
- * The shared body: queue, wait, classify, release.
- *
- * Named `loadResource`, not `load`: a top-level `load` shadows the builtin
- * `load<T>` for every module that reaches this one through a barrel, and the
- * result is `TS2315: Type '…/async/load' is not generic` in unrelated files.
+ * Queues the load and returns the handle to await.
  *
  * A negative `job` is the queue's own refusal (0 is not a valid id — job ids
- * are `slot + 1`, `loader.cpp:220`), and it is returned **without parking**: a
- * task parked on an id that was never queued would never complete.
+ * are `slot + 1`, `loader.cpp:220`), and it comes back as an already-settled
+ * handle **without parking**: a task parked on an id that was never queued
+ * would never complete. The refusal is carried in `status`, which is exactly
+ * what {@link loadResult} returns first.
  */
-async function loadResource(kind: i32, name: string, priority: i32): i32 {
+function loadHandle(kind: i32, name: string, priority: i32): Task<u32> {
   rt.start();
   const job: i32 = kind == 0
     ? queueMeshLoad(name, priority)
     : queueTextureLoad(name, priority);
-  if (job <= 0) return job;
+  if (job <= 0) return settled(job);
+  return rt.job(job);
+}
 
-  // Declared before the park: a local declared after an `await` and read later
-  // is scoped to its own resume guard (the transform's documented limit).
+/**
+ * Loads a mesh: returns the handle to await, then classify with
+ * {@link loadResult}.
+ *
+ * ```ts
+ * const load: Task<u32> = ogre.loadMesh("resources/meshes/cube.mesh", 0);
+ * await load;
+ * const id: i32 = ogre.loadResult(load);
+ * if (id < 0) { /* report id and stop *\/ }
+ * ```
+ *
+ * The handle is the job's own record, so `await` parks the **calling** task on
+ * `(JOBS, job)` — the completion the loader posts. Nothing is composed above it.
+ */
+export function loadMesh(name: string, priority: i32): Task<u32> {
+  return loadHandle(0, name, priority);
+}
+
+/** Loads a texture; the same contract as `loadMesh`. */
+export function loadTexture(name: string, priority: i32): Task<u32> {
+  return loadHandle(1, name, priority);
+}
+
+/**
+ * The outcome of a load, read from the record the await filled, and the job
+ * released. Synchronous by design: classification must not park a second task.
+ *
+ * **The delivered record decides the outcome, not the job slot.** The record
+ * arrived through the ring and is authoritative; the slot the guest reads is
+ * the arena mirror, which the host publishes on its own schedule. Measured
+ * (bouncing-bodies, one run in three): the completion arrived with the right
+ * resource id while `jobState` still answered `1` — not yet `JOB_DONE` — so
+ * classifying by the slot turned a successful load into -EIO.
+ *
+ * A positive return is the resource id; a negative return is the errno,
+ * unchanged from `jobError` and `queueMeshLoad`.
+ */
+export function loadResult(signal: Task<u32>): i32 {
+  const record = signal._record;
+  const status: i32 = record.status;
+  const cls: i32 = record.class_;
+  const payload: i32 = record.payload;
+  const job: i32 = record.key;
+
   let result: i32 = 0;
-  let status: i32 = 0;
-  let cls: i32 = 0;
-  const awaited: Task<u32> = rt.job(job);
-  const payload: u32 = await awaited;
-  status = awaited._record.status;
-  cls = awaited._record.class_;
-
-  // **The delivered record decides the outcome, not the job slot.** The record
-  // arrived through the ring and is authoritative; the slot the guest reads is
-  // the arena mirror, which the host publishes on its own schedule. Measured
-  // (bouncing-bodies, one run in three): the completion arrived with the right
-  // resource id while `jobState` still answered `1` — not yet `JOB_DONE` — so
-  // classifying by the slot turned a successful load into -EIO.
   if (status != 0) {
-    // §6.4: a dropped completion wakes the task with -EIO. The record's status
-    // is the only place a drop is visible, so it is checked first.
+    // §6.4: a dropped completion wakes the task with -EIO, and the queue's own
+    // refusal is parked here too. The record's status is the only place either
+    // is visible, so it is checked first.
     result = status;
   } else if (cls == CLASS_JOB_DONE) {
     result = toI32(payload);
@@ -124,26 +153,6 @@ async function loadResource(kind: i32, name: string, priority: i32): i32 {
     result = jobError(job);
     if (result == 0) result = -5;
   }
-  releaseJob(job);
+  if (job > 0) releaseJob(job);
   return result;
-}
-
-/**
- * Loads a mesh, returning its resource id, or a negative errno.
- *
- * ```ts
- * const id: i32 = await ogre.loadMesh("resources/meshes/cube.mesh", 0);
- * if (id < 0) { /* report id and stop *\/ }
- * ```
- *
- * Parks the calling task until the job completes; the frame loop's
- * `rt.runReady()` is what resumes it.
- */
-export async function loadMesh(name: string, priority: i32): i32 {
-  return await loadResource(0, name, priority);
-}
-
-/** Loads a texture; the same contract as `loadMesh`. */
-export async function loadTexture(name: string, priority: i32): i32 {
-  return await loadResource(1, name, priority);
 }

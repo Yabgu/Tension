@@ -42,7 +42,7 @@ export const MODE_BATCHED: u32 = 2;
 export const MODE_RING: u32 = 3;
 export const MODE_POLLED: u32 = 4;
 
-/** The ten event classes, in the frozen id order (urgent first). */
+/** The thirteen event classes, in the frozen id order (urgent first). */
 export const CLASS_DEVICE_LOST: u32 = 0;
 export const CLASS_JOB_FAILED: u32 = 1;
 export const CLASS_RESOURCE_FAILED: u32 = 2;
@@ -54,6 +54,15 @@ export const CLASS_INPUT_KEY: u32 = 6;
 export const CLASS_INPUT_MOUSE: u32 = 7;
 export const CLASS_LOG: u32 = 8;
 export const CLASS_FRAME: u32 = 9;
+/**
+ * The AI family (0.6.0a): appended after `FRAME` so every id 0-9 kept its
+ * value. The **delivered class** distinguishes data from done from failure —
+ * never the payload, because a zero payload must not read as either (`0.6.0b`
+ * builds `rt.stream` on this).
+ */
+export const CLASS_AI_READY: u32 = 10;
+export const CLASS_AI_DONE: u32 = 11;
+export const CLASS_AI_ERROR: u32 = 12;
 
 /** The twelve region kinds, in the frozen order (`kind == index`). */
 export const REGION_CONTROL: u32 = 0;

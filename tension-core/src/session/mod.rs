@@ -40,7 +40,7 @@ mod config;
 /// The posting face: the queues an adapter thread writes into, and the
 /// sequence counter they share (`tension-ogre/DESIGN.md` §3.2, §7.2).
 pub mod posting;
-/// The arena side: the ten per-class sub-rings, and the transfer that moves a
+/// The arena side: the thirteen per-class sub-rings, and the transfer that moves a
 /// class queue into its ring (`DESIGN.md` §3.3, §3.4).
 pub mod subring;
 /// The epoch: publish, invoke, apply — the only place delivery happens
@@ -1259,6 +1259,11 @@ fn open_with_caller(
             // guest cannot post until this verb returns, and an adapter thread
             // that posts concurrently reads one value or the other, never both.
             caller.data().posting.set_capacities(*session.ring_capacities());
+            // The same live numbers bound the recent-completions table (§4.9):
+            // a class's ring capacity is how many undelivered records it can
+            // have, so it is how many the host may need to hold.
+            let live = *session.ring_capacities();
+            caller.data_mut().scheduler.set_capacities(&live);
             log(&format!(
                 "session_open(cfg_len={cfg_len}, arena={}, ceiling={}) -> 0",
                 decoded.arena_size, decoded.max_arena_size
@@ -1890,8 +1895,15 @@ mod lifecycle {
                 pending_line: None,
                 res: Vec::new(),
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
-                ai: crate::ai::AiSession::new(crate::default_ai_adapter()),
+                ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
+                scheduler: crate::scheduler::Scheduler::new(),
+                wake_batch: Vec::new(),
+                task_wake: None,
+                task_resume: None,
+                task_fail: None,
+                drop_seen: [0; crate::session::arena::CLASS_COUNT],
+                game_running: None,
                 posting: std::sync::Arc::new(crate::session::posting::PostingSide::default()),
                 arena: None,
                 depth: 0,
@@ -2307,9 +2319,16 @@ mod verbs {
                 pending_line: None,
                 res: Vec::new(),
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
-                ai: crate::ai::AiSession::new(crate::default_ai_adapter()),
+                ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
                 posting: test_posting(),
+                scheduler: crate::scheduler::Scheduler::new(),
+                wake_batch: Vec::new(),
+                task_wake: None,
+                task_resume: None,
+                task_fail: None,
+                drop_seen: [0; crate::session::arena::CLASS_COUNT],
+                game_running: None,
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),

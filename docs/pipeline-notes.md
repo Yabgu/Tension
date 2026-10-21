@@ -113,3 +113,291 @@ unrelated to `src`/`cli` but still fail the command).
 - **The clone is a scratch tree.** The fork's real source is
   `third_party/assemblyscript`; changes here prove feasibility and are ported,
   not pushed.
+
+## The no-poll rule (scheduler contract)
+
+`docs/scheduler-contract.md` in TensionScript is the language-level scheduler
+contract (§4.4 and §8 are the rule). New code introduces **no wait site
+without naming what it blocks on** — a condition variable, channel, epoll,
+vsync, timer, or stdin. Guest source has zero `while` around a wait (no state
+polling); host source has no `try_recv` + sleep and no spin.
+
+The measured audit of every host and guest wait site, and the greps that must
+stay at zero, are in `docs/scheduler-implementation-plan.md` §9. A wait site
+added without a named primitive is a review failure, not a style nit.
+
+## Adding a completion class: the layout arithmetic
+
+`SessionInfo` sits at `0x100` in the first header page and ends at
+`SESSION_INFO_OFFSET + SESSION_INFO_SIZE`. Two alignment rules decide where the
+open nonce and the record's size land, and both are enforced in code — a class
+addition must satisfy them, not round to a number that looks tidy.
+
+1. **The nonce is a `u64` and `put_u64` refuses a non-8-aligned offset**
+   (`arena.rs:511-521`, `LayoutError::Misaligned`). The class-capacity array
+   starts at 48 and covers `CLASS_COUNT * 4` bytes, so the nonce's offset
+   rounds **up to the next multiple of 8**.
+2. **`SESSION_INFO_SIZE` pads to 16**, like every region
+   (`every_region_is_aligned_and_in_order` asserts `size % 16 == 0`).
+
+For 13 classes: `48 + 13*4 = 100` → the nonce rounds to **104**;
+`104 + 8 (nonce) + 32 (eight reserved words) = 144`, already 16-aligned. The
+record ends at `0x100 + 0x90 = 0x190 < 0x200`, so no region moves.
+
+The measured cost of ignoring rule 1: with the nonce at 100 and the size at 140,
+`256 + 100 = 356` is not 8-aligned, so **every** `session_open` fails with
+`Layout(Misaligned { offset: 356, align: 8 })` — 71 tests, all from one number.
+140 fails rule 2 independently (`140 % 16 = 12`).
+
+`104`/`144` are the working set for **thirteen** classes. The next addition
+re-derives: `48 + n*4` rounded up to 8 for the nonce, then `+ 8 + 32` rounded up
+to 16 for the size — and check `0x100 + size <= 0x200` before assuming no
+region moves.
+
+Both rules are now asserts in `session_info_field_offsets_match_the_design_note`,
+so the arithmetic fails loudly at the constant rather than at the first open.
+
+## The io gate for bump batches
+
+`assembly/index.ts` does `export * from "./runtime"`, so **every** consumer of
+`tension-framework` — including `examples/io`, which only calls `print`,
+`readLine`, `argCount` and `arg` — compiles the runtime's layout constants and
+geometry code into its wasm. A layout bump therefore changes the code of
+programs that never open a session or touch the bumped feature.
+
+Measured for 0.6.0a (`c3178b4b` → `a674dadc`): +3 code bytes, +16 data, +4
+globals. Every byte is attributable — the three `__taskBindFamily` calls in
+`rt.start()`, the 13-entry capacities array (3 × u32 padded to 16), and the
+three class ids plus `FAMILY_AI`. Header/table/memory/export sizes are
+unchanged; `type`, `import`, `function`, `table`, `memory`, `export`, `start`,
+`element` and `datacount` are byte-identical. Even a build with **only**
+`layout.ts` bumped moves 13 function bodies (constant baking plus the shifted
+data address), so no split of the bump restores byte-identity.
+
+**The gate for bump batches** is therefore:
+
+- code / data / global movement must be attributed to the bump's own additions,
+  in the commit message, at the level of "+3 bytes, the three
+  `__taskBindFamily` calls in `rt.start()`";
+- **behavior** must be byte-identical at the output level (transcript, exit
+  code, render statistics);
+- a program that does not carry the runtime (if one exists) keeps the stronger
+  wasm-hash check.
+
+The architectural fix is narrowing the barrel (`export *` → explicit exports) so
+a guest that imports `print` does not carry the arena's constants. That is a
+real SDK API change with its own compatibility question and is **filed as its
+own phase** — not a thing to slip into a layout bump.
+
+## `npm run build` does not run `build.sh`
+
+`tension-framework`'s `npm run build` compiles the AssemblyScript against the
+**already generated** `assembly/runtime/layout.ts`. It does not invoke
+`build.sh`, which is what reads `session.json` and rewrites `layout.ts` and
+`build/session.asconfig.json`.
+
+So after changing any arena constant: run
+`bash tension-framework/build.sh --hash <new-layout-hash>` **first**, then
+`npm run build`. Skipping it compiles the old constants into the guest, and the
+symptom is a `session_open` hash mismatch at run time rather than a build error.
+
+`npm test` does run `build.sh` (through `tests/run.sh`), so CI catches a stale
+`layout.ts`; a manual `npm run build` would not. That asymmetry is exactly how a
+stale guest survives a local loop. The generator is idempotent — re-running it
+on an up-to-date tree rewrites `layout.ts` byte-identically — so running it
+twice costs nothing and is the safe default.
+
+## "Tests pass" is evidence for the committed tree
+
+A refactor that moves lines can leave a file half-staged: the production change
+committed, a matching field added to six `#[cfg(test)]` host literals left in
+the working tree. `cargo build` does not compile test modules, so the binary
+built and the local suite passed — against a tree that was not the one committed.
+
+The rule: **after any refactor that touches more than one file, run `git status`
+before trusting a test run.** An uncommitted hunk that the build does not need
+is exactly the kind of thing `cargo build` will not catch and `cargo test` will,
+depending on what you remembered to stage.
+
+## An awaitable accessor returns a stamped handle, never an async wrapper
+
+`rt.frame()` was `return frameWait();`, and `frameWait` was `async`. The chain was:
+
+```
+gameLoop  --awaits-->  frameWait's own task
+frameWait --awaits-->  the (FRAME, 0) record
+```
+
+The host woke the FRAME slot, `frameWait` resumed and returned, and
+`__taskCompleteResult` pushed `gameLoop` onto the **ready queue** — which only
+`__taskTick` drains, and a host-owned loop never calls it. Every intermediate
+signal was correct: the wake batch held the right id, the slot resumed, the task
+completed. The wake simply landed one layer below the task that needed resuming,
+so the symptom was a silent spin with no failing step to point at.
+
+The rule: an accessor a guest `await`s returns a **stamped handle** — a `Task`
+whose record carries `(class, key)` — the way `rt.job()` and `rt.frame()` do.
+An `async` wrapper parks the *wrapper's* task, not the caller's. Inside a
+guest-driven loop the extra layer costs one tick (`rt.runReady()` twice over two
+iterations) and hides; under a host loop it is a hang.
+
+The corollary: classification that needs the record is a **synchronous**
+function (`rt.classify`), taking the handle after the await. It must not park.
+
+## The header page's tail has no owner, and no check
+
+`0x800` is not the canary gap. The arena's regions are:
+
+| range | owner | checked by |
+|---|---|---|
+| `0x000..0x100` | `ArenaControl` (256 B) | magic/version on open; `CONTROL_STATE` onward is session-owned |
+| `0x100..0x190` | session info (144 B) | — |
+| `0x200..0x320` | region table (12 × 24 B) | `region_count` on open |
+| `0x320..0x380` | manifest (12 × 8 B) | — |
+| **`0x380..0x1000`** | **nobody** | **nothing** |
+| `0x1000..0x5F6020` | zero band | `verify_band_is_zero`, at open |
+| `0x5F6020..0x800000` | canary lattice | `verify_canary_lattice`, at open |
+
+So `verify_band_is_zero` starts at `HEADER_PAGE_SIZE`, and the lattice covers
+`[LAYOUT_FLOOR, memory_base)`. Page 0's tail is in neither, and both checks run
+at session **open** — nothing re-checks the arena while the session is live.
+
+The consequence for the wake buffer: staging ids at `0x800` was not detected and
+did not trap, but it claimed memory with no owner. Any later use of that padding
+would have been a silent collision in the other direction. The buffer now lives
+in the control block's session-owned tail (`CONTROL_OFFSET + 184`, after
+`CONTROL_SESSION_NONCE`), which is the block the session documents as its own.
+
+## The wake buffer's home
+
+`HOST_WAKE_SCRATCH = session::arena::CONTROL_OFFSET + 184`: `CONTROL_SESSION_NONCE`
+ends at 184, `CONTROL_SIZE` is 256, so 72 bytes are free. Nine ids per call,
+chunked (`HOST_WAKE_CHUNK = 9`) — a larger batch becomes several `wake` calls,
+still batched from the guest's side. Do not move it back into page 0's padding;
+that range is unowned (previous section).
+
+## A sub-ring fills up and then silently stops delivering
+
+`tail` is the guest's reclaim counter — "how many records the guest has
+consumed" (`subring.rs`). The session writes `head`, the guest writes `tail`, and
+the buffer only compacts when the guest has reclaimed something:
+
+```
+head == capacity  ->  compact_subring  ->  tail == 0  ->  nothing to reclaim
+                  ->  append refused   ->  the caller counts a drop
+```
+
+Until 0.7.0b **no guest in the tree wrote `tail`**. Every class delivered through
+a callback therefore filled its sub-ring and then dropped the rest. It was
+invisible for months because the AI stub posts one READY per generation; the real
+llama.cpp backend posts one per chunk, and a reply stops dead at exactly 16 —
+`AI_READY`'s default capacity — with the guest parked and nothing coming.
+
+`rt.deliver` now advances the class's `tail` to `head` after the batch has been
+copied into task records, guarded on `isReady()` like `reportDrops` (a guest with
+no session must not read the region table; `tests/rt-dispatch.mjs` traps otherwise).
+
+Two corollaries worth keeping:
+
+- **A capacity is a silent timeout.** Nothing traps at 16; the stream simply
+  stops. When a long stream "hangs", read `head`/`tail`/`capacity` before
+  suspecting the wake path.
+- **The stub is not a stream test.** One record per generation exercises the
+  wake path and nothing else. Anything about ordering, coalescing or capacity
+  needs the real backend, or a fixture that posts many records.
+
+## The no-poll grep, and what it is allowed to match
+
+For an adopting guest (one that exports `__taskWake` and `_game_running`), the
+source must contain, outside comments: no `settleTask`, no `grab`, no
+`RuntimeSession.wait`, no `rt.runReady()`, no `__taskTick`, and no `break` in an
+async body.
+
+Measured at 0.7.0b's close — every match in all eight adopters is a **comment**
+explaining what is no longer there:
+
+```
+ogre/bouncing-bodies   ai/story       wait=0  runReady=0  tick=0  settleTask=0
+ogre/hello-mesh        async-io       wait=0  runReady=0  tick=0  settleTask=0
+ogre/hello-triangle    ogre/input-camera  ogre/bouncing-ball   same
+```
+
+`RuntimeSession.wait` in a **non-adopting** guest (`io`, `log`, `res`, `audio`,
+`solver ×3`) is the sync API's own use and is fine; the rule is about waiting
+around *task state*, not about the verb existing.
+
+## The no-poll audit: every wait site and its primitive
+
+Measured, not asserted. The rule the design holds itself to is "no poll" — a
+guest that spins on state, or a host that busy-waits, is the failure. Every site
+below either blocks on a primitive or drains work that is already there.
+
+**Blocking waits (the primitive wakes them; no timeout is the steady state)**
+
+| site | primitive | blocking |
+|---|---|---|
+| host loop (`main.rs:1511`) | `PostingSide::wait_for_events`, condvar | yes, 16 ms bounded |
+| `RuntimeSession.wait` | the same condvar, `-1` = indefinite | yes (non-adopting guests) |
+| loader worker (`loader.cpp:643`) | `condition_variable::wait` | yes, indefinite |
+| AI worker (`llama.rs:162`) | `Condvar::wait` | yes, indefinite |
+| render thread (`adapter.cpp:402`) | `cv.wait_for(period)` | yes, bounded by the frame period |
+| input SDL thread (`input.cpp:233`) | `work_cv_.wait_for(2 ms)` | yes, bounded |
+| input attach/detach (`input.cpp:695`) | `done_cv_.wait_for(5 s)` | yes, bounded |
+| input startup (`input.cpp:145`) | `startup_cv_.wait_for(5 s)` | yes, bounded |
+| audio driver (`real.rs:394`) | `recv_timeout(INIT_TIMEOUT)` | yes, bounded |
+| teardown (loader, adapter, input, audio) | `thread::join` | yes, blocking |
+
+**Signals and drains (no wait at all)**
+
+| site | primitive | poll? |
+|---|---|---|
+| `signal_frame` (`ffi.rs:889`) | `posting.signal_wake()` — notify, never blocks | no |
+| epoch event drain (`subring.rs:262`) | `queue.drain()` under the posting lock | no — a drain |
+| `SDL_PollEvent` (`input.cpp`) | non-blocking pop, paced by the render wait | no — a drain |
+| wake/fail scratch writes | plain stores into the arena's control tail | no |
+
+**The three poll sites the plan named are deleted** (0.7.0b), verified by grep:
+`settleTask` 0 occurrences, `function grab` 0, the AI REPL pump
+(`RuntimeSession.wait(rt.hasRunnable() ? 0 : -1)`) 0.
+
+**`thread::sleep` in test code — three, not two.** `epoch.rs:1004`,
+`posting.rs:681`, `ai/mod.rs:1112`; the third is the AI sink test's, added with
+0.6.0b. Each is inside `#[cfg(test)]` and exists for one reason: to let a waiter
+block before the post lands, so the test measures the wake rather than the
+queue. Acceptable, and they never compile into the shipped binary.
+
+**The canary gap (filed, not fixed here).** `verify_band_is_zero` covers
+`[HEADER_PAGE_SIZE, LAYOUT_FLOOR)` = `0x1000..0x5F6020` at session *open*; the
+lattice covers `[LAYOUT_FLOOR, memory_base)`. Page 0's tail (`0x380..0x1000`) is
+covered by neither — which is why the wake buffer lives at
+`CONTROL_OFFSET + 184` (session-owned, inside the control block) rather than in
+that padding. A runtime re-check is its own phase.
+
+**input-camera's non-exit: recorded, unexplained.** One run in five printed its
+summary and did not exit within 30 s; four later runs (three plain, one
+instrumented per teardown step) exited cleanly with rc=0. The audit looked for a
+candidate and did not find one: the loop's exit is `running = false` → summary →
+`input.close` → `ogre.shutdown` → `session.close`, each of which the instrumented
+run printed in order; the host's exit condition (`_game_running() == 0`, nothing
+parked, empty batch) has no path that can leave a task parked after the last
+frame, because the frame add takes the id out of the table. No fix attempted; the
+observation stands as unexplained rather than assigned a cause it has not earned.
+
+## A structural change to `HostState` carries an obligation only the test build sees
+
+`cargo build` does not compile `#[cfg(test)]` modules. So adding a field to
+`HostState` and updating the run-path literal compiles, the binary runs, the
+framework suite passes, and every example passes — against a tree whose test
+modules no longer build. `cargo test` is the only thing that sees the six
+`#[cfg(test)]` literals in other modules, and it fails with
+`missing field ... in initializer of HostState`.
+
+This happened twice in two phases (0.7.0c's `task_fail`/`drop_seen`, 0.7.0d-pre's
+`task_resume`). The rule: **a change to a type that is constructed in test code is
+not verified until `cargo test` has compiled it** — not "until the tests pass",
+until it *compiles*. Run `cargo test` before the commit, not after the phase.
+
+The `#[cfg(test)]` literals live in `solver/p5_tests.rs`, `solver/p8e_tests.rs`,
+`adapter/mod.rs`, `adapter/ffi.rs`, `session/mod.rs` (two), and
+`session/epoch.rs`. Inside those modules the arena constants are
+`crate::session::arena::*`, not `session::arena::*`.

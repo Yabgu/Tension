@@ -389,6 +389,13 @@ void render_main() {
                 fail(TENSION_OGRE_STAGE_FRAME, framed, "a frame failed");
                 break;
             }
+            // One frame is presented (ABI v3): tell the host, so a host-owned
+            // loop wakes for it. After the frame, never before — a signal ahead
+            // of presentation would wake a loop for a frame nobody can see.
+            // Any thread is allowed (rule 7): no guest memory, no blocking.
+            if (s.api != nullptr && s.api->signal_frame != nullptr) {
+                s.api->signal_frame(s.api->user);
+            }
             std::unique_lock<std::mutex> lock(s.mutex);
             // Bounded wait, so a stop request is honoured immediately and an
             // idle loop does not spin.
