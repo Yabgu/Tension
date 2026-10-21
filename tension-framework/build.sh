@@ -154,6 +154,14 @@ asconfig_doc = {
         # docs/runtime-migration-windows-verification.md.
         "runtime": "incremental",
         "target": "release",
+        # `target: release` names a configuration; it does not optimize. Without
+        # an explicit level Binaryen runs at -O0, and every field access on a
+        # class emits a call to a three-instruction accessor instead of the
+        # two-instruction inline load/store it becomes at -O1 and above.
+        # Measured (docs/interop-surface-scope.md §2.1): 7 accessor call sites
+        # and 335 wasm bytes at -O0, 0 sites and 204 bytes at -O3, on the same
+        # source. The four OGRE fixtures and every example pass at -O3.
+        "optimizeLevel": 3,
         "importMemory": True,
         "memoryBase": ceiling,
         "initialMemory": initial,
