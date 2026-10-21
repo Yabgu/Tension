@@ -4,14 +4,10 @@ The state of the feature at TensionScript 0.7.1 / Tension 0.7.0, and what is not
 in it. Written the way the arrow-`this`, closures and scheduler notes were: what
 shipped, what is tested, what is deferred, and what the record is.
 
-**Consumer state.** All sixteen consumers are on `^0.7.0`, installed from the
-registry. 0.7.1 is built, packed (1,624,436 bytes) and committed in TensionScript
-— the compiler half of `break`/`continue` — but it is **not published**, so the
-transition to it is pending and `guest-flow` reports SKIP against 0.7.0 rather
-than passing. When 0.7.1 publishes, the transition is mechanical: bump sixteen
-`package.json`s, clean-install, and apply the bouncing-bodies adoption saved at
-`/tmp/bb-adopted.ts` (its frame loop's exit becomes a real `break`, verified
-against the packed tarball: `asleep 64/64`, exit 0).
+**Consumer state.** All sixteen consumers are on **`^0.7.1`**, installed from the
+registry (`sha512-57xw75RNq9w…`). Eight fixtures run — `guest-flow` included,
+which SKIPped until this transition — and `bouncing-bodies` exits its frame loop
+with a real `break`, the first production use of 0.7.1's compiler fix.
 
 ## What shipped
 
@@ -47,8 +43,8 @@ is queued by `wake` and drained at the top of the next host entry.
   `guest-push`, `guest-frame`, `guest-early`, `guest-sync`, `guest-enospc`,
   `guest-chain`, `guest-flow`, `guest-drop` — plus the AI controls C1 (stall →
   `AI_ERROR`), C2 (coalescing: one wake, four records), C3 (done-vs-empty),
-  C4 (dropped = 0). Against 0.7.1 all eight run; against the published 0.7.0,
-  `guest-flow` reports **SKIP — needs 0.7.1**, which is the guard, not a pass.
+  C4 (dropped = 0). All eight run on 0.7.1; before the transition `guest-flow`
+  reported SKIP against 0.7.0, which was the guard doing its job.
 - `tension-ogre/tests/run.sh`: all cases passed, `ASYNC PASS drop` (the lost
   completion wakes with `-EIO`, attribution per family).
 - Seven adopting examples on the host-owned loop: bouncing-bodies, hello-mesh,
@@ -121,7 +117,8 @@ is queued by `wake` and drained at the top of the next host entry.
   `d563307` (the `-ENOSPC` fixture), `921548d` (guest-sync), `501f024`+
   (the consumer transitions), `dbed8c5`/`99ec9b28` (the chained-await deadlock),
   `cd1e014` (the retirement), `5746baf` (consumers on 0.7.0), `5dc4206`
-  (guest-flow).
+  (guest-flow), `60cd263` (the closing doc's corrections), `a7b53c9` (consumers
+  on 0.7.1), `7933d75` (bouncing-bodies exits via `break`).
 - **The plans that anchor it:** `docs/async-await-plan-v2.md` (the design, the
   refusals, the measured limits), `docs/scheduler-contract.md` (the language
   feature, and §10.1 for how it shipped), `docs/scheduler-implementation-plan.md`
