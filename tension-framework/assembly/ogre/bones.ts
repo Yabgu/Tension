@@ -22,7 +22,7 @@
 //     not needed and this SDK does not call it: it would take the bone away from
 //     OGRE's own animation system.
 
-import { BONE_SIZE, BONE_CAPACITY, BONE_TABLE_OFFSET } from "./wire";
+import { BoneUpdate, BONE_SIZE, BONE_CAPACITY, BONE_TABLE_OFFSET } from "./wire";
 import { REGION_BUFFER_POOL } from "../runtime/wire";
 import { regionOffset } from "../runtime/arena";
 
@@ -137,22 +137,25 @@ export class BoneBatch {
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,
                 ry: f32, rz: f32, rw: f32, scale: f32): void {
     if (index >= BONE_CAPACITY) return; // a slot past the table is not written
-    const at = this.base + <usize>index * BONE_SIZE;
-    store<u32>(at + 0, renderableId);
-    store<u32>(at + 4, boneIndex);
-    store<u64>(at + 8, 0); // pad0, which is what puts the transform at 16
-    store<f32>(at + 16, x);
-    store<f32>(at + 20, y);
-    store<f32>(at + 24, z);
-    store<f32>(at + 28, 0);
-    store<f32>(at + 32, rx);
-    store<f32>(at + 36, ry);
-    store<f32>(at + 40, rz);
-    store<f32>(at + 44, rw);
-    store<f32>(at + 48, scale);
-    store<f32>(at + 52, scale);
-    store<f32>(at + 56, scale);
-    store<f32>(at + 60, 0);
+    // `BoneUpdate` is `@unmanaged` (`wire.ts:489`), so this is a view of the
+    // arena slot and the field writes below are the wire's bytes in the wire's
+    // order. No header is read or written — the class has none.
+    const rec = changetype<BoneUpdate>(this.base + <usize>index * BONE_SIZE);
+    rec.renderableId = renderableId;
+    rec.boneIndex = boneIndex;
+    rec.pad0 = 0; // what puts the transform at 16
+    rec.positionX = x;
+    rec.positionY = y;
+    rec.positionZ = z;
+    rec.pad1 = 0;
+    rec.rotationX = rx;
+    rec.rotationY = ry;
+    rec.rotationZ = rz;
+    rec.rotationW = rw;
+    rec.scaleX = scale;
+    rec.scaleY = scale;
+    rec.scaleZ = scale;
+    rec.pad2 = 0;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 }

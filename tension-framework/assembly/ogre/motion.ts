@@ -10,7 +10,7 @@
 // (DESIGN.md §5.1), and `setFromState` only converts; the mapping stays where
 // the game can see it.
 
-import { MOTION_SIZE, MOTION_CAPACITY } from "./wire";
+import { MotionUpdate, MOTION_SIZE, MOTION_CAPACITY } from "./wire";
 import { REGION_BUFFER_POOL } from "../runtime/wire";
 import { regionOffset } from "../runtime/arena";
 
@@ -75,22 +75,24 @@ export class MotionBatch {
    */
   set(index: u32, id: u32, x: f32, y: f32, z: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
-    const at = this.base + <usize>index * MOTION_SIZE;
-    store<u32>(at + 0, id);
-    store<u32>(at + 4, 0); // flags, reserved
-    store<u64>(at + 8, 0); // pad0, which is what puts the transform at 16
-    store<f32>(at + 16, x);
-    store<f32>(at + 20, y);
-    store<f32>(at + 24, z);
-    store<f32>(at + 28, 0);
-    store<f32>(at + 32, 0);
-    store<f32>(at + 36, 0);
-    store<f32>(at + 40, 0);
-    store<f32>(at + 44, 1); // w
-    store<f32>(at + 48, scale);
-    store<f32>(at + 52, scale);
-    store<f32>(at + 56, scale);
-    store<f32>(at + 60, 0);
+    // `MotionUpdate` is `@unmanaged` (`wire.ts:462`): a view of the arena slot,
+    // so each assignment is the wire's field at the wire's offset.
+    const rec = changetype<MotionUpdate>(this.base + <usize>index * MOTION_SIZE);
+    rec.renderableId = id;
+    rec.flags = 0; // reserved
+    rec.pad0 = 0; // what puts the transform at 16
+    rec.positionX = x;
+    rec.positionY = y;
+    rec.positionZ = z;
+    rec.pad1 = 0;
+    rec.rotationX = 0;
+    rec.rotationY = 0;
+    rec.rotationZ = 0;
+    rec.rotationW = 1; // identity
+    rec.scaleX = scale;
+    rec.scaleY = scale;
+    rec.scaleZ = scale;
+    rec.pad2 = 0;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 
@@ -107,22 +109,22 @@ export class MotionBatch {
   setPose(index: u32, id: u32, x: f32, y: f32, z: f32,
           qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
-    const at = this.base + <usize>index * MOTION_SIZE;
-    store<u32>(at + 0, id);
-    store<u32>(at + 4, 0); // flags, reserved
-    store<u64>(at + 8, 0); // pad0, which is what puts the transform at 16
-    store<f32>(at + 16, x);
-    store<f32>(at + 20, y);
-    store<f32>(at + 24, z);
-    store<f32>(at + 28, 0);
-    store<f32>(at + 32, qx);
-    store<f32>(at + 36, qy);
-    store<f32>(at + 40, qz);
-    store<f32>(at + 44, qw);
-    store<f32>(at + 48, scale);
-    store<f32>(at + 52, scale);
-    store<f32>(at + 56, scale);
-    store<f32>(at + 60, 0);
+    const rec = changetype<MotionUpdate>(this.base + <usize>index * MOTION_SIZE);
+    rec.renderableId = id;
+    rec.flags = 0; // reserved
+    rec.pad0 = 0; // what puts the transform at 16
+    rec.positionX = x;
+    rec.positionY = y;
+    rec.positionZ = z;
+    rec.pad1 = 0;
+    rec.rotationX = qx;
+    rec.rotationY = qy;
+    rec.rotationZ = qz;
+    rec.rotationW = qw;
+    rec.scaleX = scale;
+    rec.scaleY = scale;
+    rec.scaleZ = scale;
+    rec.pad2 = 0;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 
