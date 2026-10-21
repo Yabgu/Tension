@@ -180,7 +180,6 @@ class Game {
   // and a local that crosses a park must live somewhere the transform can see.
   // A field is that place, and it has the side benefit of being readable in a
   // debugger between frames.
-  private running: bool = false;
   private frame: i32 = 0;
   private lastFrame: u64 = 0;
   private nextReport: i32 = 0;
@@ -228,9 +227,13 @@ class Game {
     // The frame loop. `await rt.frame()` parks on (FRAME, 0) and the host-owned
     // loop wakes it once per presented frame — no `RuntimeSession.wait`, no
     // `rt.runReady()`, no tick of any kind in this guest.
-    while (this.running) {
+    //
+    // `break` is the exit (0.7.1). This loop carried a `running` flag because
+    // the transform refused `break` in an async body; the refusal is gone, so the
+    // loop says what it means: run until the pile settles.
+    while (true) {
       await rt.frame();
-      this.stepSimulation();
+      if (!this.stepSimulation()) break;
     }
     this.endSimulation();
 
@@ -417,7 +420,7 @@ class Game {
   /// The per-run allocations and the angular bookkeeping's starting point.
   private beginSimulation(): void {
     const bodies = this.options.bodies;
-    this.running = true;
+
     this.frame = 0;
     this.lastFrame = ogre.frameCount();
     this.nextReport = 60;
@@ -440,10 +443,12 @@ class Game {
   /// advance is still measured from `ogre.frameCount()` rather than assumed to
   /// be one, because a stalled or doubled frame must not turn into a physics
   /// avalanche — the same reason the loop is paced by the renderer, not a clock.
-  private stepSimulation(): void {
+  ///
+  /// Answers `false` when the run is over, which is the loop's `break`.
+  private stepSimulation(): bool {
     const now = ogre.frameCount();
     const advance = now - this.lastFrame;
-    if (advance == 0) return;
+    if (advance == 0) return true; // the renderer has not drawn a new frame yet
     const steps: i32 = advance > 2 ? 2 : <i32>advance;
     this.lastFrame = now;
     this.frame += steps;
@@ -490,11 +495,11 @@ class Game {
     // The loop ends when the pile has stopped — every body asleep — rather than
     // at a frame count: "runs until it settles" is the honest condition, and the
     // FRAMES cap is the backstop that keeps "never settles" from being "runs
-    // forever". No `break`: the transform refuses it in an async body, so the
-    // condition lives in `running`.
+    // forever".
     if (this.world!.asleepCount() == this.options.bodies || this.frame >= FRAMES) {
-      this.running = false;
+      return false;
     }
+    return true;
   }
 
   /// What the run measured: the counts, then the summaries.
