@@ -24,7 +24,13 @@
 // and a fixture that needs events would be A3b's.
 
 import { print } from "../assembly/io";
-import { assertWireOffsets, ConfigBuilder, makeCallbacks, RuntimeSession } from "../assembly/runtime";
+import {
+  assertAbiAliases,
+  assertWireOffsets,
+  ConfigBuilder,
+  makeCallbacks,
+  RuntimeSession
+} from "../assembly/runtime";
 
 /// The batch callback: a real function, so `makeCallbacks` has a table index to
 /// resolve. This fixture never receives an event — nothing is delivered — but
@@ -40,6 +46,9 @@ function onEvent(class_: u32, ptr: u32): i32 {
 
 export function _start_game(): void {
   assertWireOffsets();
+  // The two ABI aliases, compile-time folded: a field's *name* is a separate
+  // contract from its offset, and `class_` is the one place they differ.
+  assertAbiAliases();
 
   const callbacks = makeCallbacks(onBatch, onEvent);
   const cfg = ConfigBuilder.forThisBuild(callbacks);

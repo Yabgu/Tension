@@ -105,7 +105,7 @@ export const REGION_DESC_SIZE: u32 = 24;
 
 /** The control block (`ArenaControl`, 256 bytes). */
 @unmanaged
-export class ArenaControl {
+export struct ArenaControl {
   magic: u64 = 0;
   formatVersion: u16 = 0;
   schemaVersion: u16 = 0;
@@ -164,7 +164,7 @@ export class ArenaControl {
  * `put_u64` will not accept at 100).
  */
 @unmanaged
-export class SessionInfo {
+export struct SessionInfo {
   magic: u64 = 0;
   abiVersion: u16 = 0;
   schemaVersion: u16 = 0;
@@ -205,7 +205,7 @@ export class SessionInfo {
 
 /** One region's descriptor (24 bytes, `kind == index` at `0x200 + kind*24`). */
 @unmanaged
-export class RegionDesc {
+export struct RegionDesc {
   kind: u32 = 0;
   flags: u32 = 0;
   offset: u32 = 0;
@@ -216,7 +216,7 @@ export class RegionDesc {
 
 /** One class's sub-ring header (32 bytes). */
 @unmanaged
-export class TableHeader {
+export struct TableHeader {
   /** Records the session has written; the guest never moves it. */
   head: u32 = 0;
   /** Records the guest has consumed: space reclaim, not an acknowledgement. */
@@ -233,9 +233,15 @@ export class TableHeader {
 
 /** One event (32 bytes): what a delivery points at. */
 @unmanaged
-export class EventRecord {
+export struct EventRecord {
   seq: u64 = 0;
-  class_: u32 = 0;
+  /**
+   * The class the record landed in, named `class` on the host side
+   * (`arena.rs`'s `EventRecord::class`, `EVENT_CLASS`). This field carries the
+   * trailing underscore only because `class` is a reserved word here; the alias
+   * is what keeps the ABI name honest, and `abiNameOf` is what reads it.
+   */
+  class_: u32 @abi.alias("class") = 0;
   flags: u32 = 0;
   a: u32 = 0;
   b: u32 = 0;
@@ -245,7 +251,7 @@ export class EventRecord {
 
 /** What the session reports about the epoch that just ran (64 bytes). */
 @unmanaged
-export class FrameState {
+export struct FrameState {
   /** The session's epoch counter — not the renderer's frame number. */
   frameIndex: u32 = 0;
   /** Cross-class rollup of dropped events, cumulative. */
@@ -265,7 +271,7 @@ export class FrameState {
 
 /** One half of the `STRING` region's buffer (16 bytes). */
 @unmanaged
-export class StringHalf {
+export struct StringHalf {
   offset: u32 = 0;
   length: u32 = 0;
   capacity: u32 = 0;
@@ -274,7 +280,7 @@ export class StringHalf {
 
 /** The delivery callbacks a guest registers at open (64 bytes). */
 @unmanaged
-export class Callbacks {
+export struct Callbacks {
   abiVersion: u16 = 0;
   slotCount: u16 = 0;
   flags: u32 = 0;
@@ -293,8 +299,10 @@ export class Callbacks {
 
 /** One subscription, as `session::subscribe` takes it (16 bytes). */
 @unmanaged
-export class Subscription {
-  class_: u32 = 0;
+export struct Subscription {
+  /** `class` on the host side (`Subscription::class`, `SUBSCRIPTION_CLASS`); the
+   * underscore is the reserved word, not part of the name. */
+  class_: u32 @abi.alias("class") = 0;
   mode: u32 = 0;
   flags: u32 = 0;
   reserved: u32 = 0;
@@ -433,5 +441,42 @@ export function assertWireOffsets(): void {
   const problem = wireOffsetsProblem();
   if (problem != null) {
     assert(false, "the runtime's wire offsets do not match the arena layout: " + problem);
+  }
+}
+
+/**
+ * The ABI names of the fields whose TypeScript name is not their wire name.
+ *
+ * Two fields differ, both `class_`: `class` is a reserved word in this language,
+ * so the declaration must write `class_`, while the host's record (`arena.rs`'s
+ * `EventRecord::class` and `Subscription::class`) and the wire's offsets
+ * (`EVENT_CLASS`, `SUBSCRIPTION_CLASS`) say `class`. The `@abi.alias` on each
+ * field is the only place that difference is recorded.
+ *
+ * **No other field is aliased, on purpose.** The OGRE records read
+ * `positionX`/`rotationW`/`diffuseR` here where `scene.h`'s decoders declare
+ * `px`/`rw`/`dr`, but those are local variable names in a decoder that fills its
+ * struct from offsets -- the wire bytes carry no field names at all. Aliasing
+ * them would record an implementation detail as protocol metadata, and the drift
+ * checker this metadata exists for would then compare against names that are not
+ * on the wire.
+ *
+ * Compile-time: `abiNameOf` folds to a constant, so this costs nothing at
+ * runtime, but it must be called from code the build actually emits. It is a
+ * separate function from `assertWireOffsets` because the two assert different
+ * things -- where a field sits, and what it is called -- and a build can get one
+ * right while getting the other wrong.
+ */
+export function assertAbiAliases(): void {
+  if (abiNameOf<EventRecord>("class_") != "class") {
+    assert(false, "EventRecord.class_ does not carry its ABI alias: class");
+  }
+  if (abiNameOf<Subscription>("class_") != "class") {
+    assert(false, "Subscription.class_ does not carry its ABI alias: class");
+  }
+  // A field with no alias reports its TypeScript name; if this ever starts
+  // returning the alias shape instead, `abiNameOf`'s fallback is broken.
+  if (abiNameOf<EventRecord>("seq") != "seq") {
+    assert(false, "EventRecord.seq has no alias and must report its TS name");
   }
 }
