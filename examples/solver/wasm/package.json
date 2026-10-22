@@ -5,7 +5,7 @@
   "type": "module",
   "description": "TensionCore example: numerical integration over the tension::solver ABI (rk45 on y' = -y)",
   "scripts": {
-    "build": "tensionscript game.ts -o build/game.wasm --runtime incremental --target release --exportTable",
+    "build": "tensionscript game.ts -o build/game.wasm --runtime incremental --target release --exportTable --optimizeLevel 3",
     "build:debug": "tensionscript game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportTable",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs"
