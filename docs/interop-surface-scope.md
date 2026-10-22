@@ -723,12 +723,32 @@ the same guest with different flag pairs. Measured on this branch, four cells:
 | `-O3 --noAssert` | 8 889 |
 
 Like-for-like: **32.1%** with asserts on (15 247 → 10 352) and **35.0%** with
-`--noAssert` (13 682 → 8 889). The earlier "24.4%" compared a `-O0 --noAssert`
-build against a `-O3` build that still had asserts — a mismatched pair, now
-replaced by the two rows above. (The 13 690 first recorded in §2.1.2 differs by
-8 bytes from this branch's 13 682 because that measurement was taken on the
-struct-phase branch, whose `SessionInfo` declaration is 144 bytes; this branch
-is based on `main`, where it is still 128.)
+`--noAssert` (13 682 → 8 889).
+
+**The mismatch is the finding, not the noise.** The first draft's 24.4%
+`(13 690 - 10 352) / 13 690` compared a `-O0 --noAssert` build against a `-O3`
+build that still had asserts: two flags differed, so the number attributed to
+`-O3` what `--noAssert` had also done. That is the same shape as the "load
+copies" premise the struct phase retired — a number that is consistent with the
+claim and also consistent with its absence — and it is recorded here rather
+than overwritten, because the two like-for-like rows only exist once you know
+which pair was mismatched.
+
+**Why 16 source bytes are 8 wasm bytes.** The 13 690 measured in §2.1.2 was
+taken on the struct-phase branch, whose `SessionInfo` declaration is 144 bytes;
+this branch is based on `main`, where it is still 128 — a 16-byte source
+difference and an 8-byte binary difference. Reproduced deliberately (two copies
+of the same tree, differing only in `wire.ts`): 13 682 for the 128-byte shape,
+13 690 for the 144-byte one, and the whole difference is **one function body,
+`$start`**, growing 512 → 520 bytes. Decoding that body, the added bytes are the
+`capacity12` offset check the larger declaration introduces —
+`i32.const 96; i32.const 96; i32.ne; drop` plus its constant — folded into
+`wireOffsetsProblem`. It is **not** LEB128 widening, which was checked and ruled
+out: 88 and 104 both encode as two-byte `i32.const`, and 128 and 144 both as
+three. The 16 source bytes never reach the binary as storage because
+`SessionInfo` is only *declared* by a guest that never allocates it; only the
+compile-time checks reference the new fields, and each check that survives
+folding costs its constants.
 
 **Item 2 — the AI example at `-O3` ran the stub backend, not llama.cpp.** The
 built host has `tension_core::ai::stub::StubSession` and was compiled
@@ -778,11 +798,19 @@ that pass `--config` against a regenerated asconfig inherit the level, and
 consumers with a pinned `--optimizeLevel` do not. Nothing here changes a
 consumer's build; that is a per-consumer decision when they bump.
 
-**(c) The full cargo suite — run, at `-O3` fixtures: 37 suites, 519 passed, 0
-failed** (the `fresh.txt` baseline is 519/0/37). The first attempts failed on
-stale or missing fixtures in the gitignored `build/` directories (guests from
-Oct 11 embedding a pre-0.6.0a layout hash, and `guest-async.wasm` absent);
-after rebuilding them through the config the suite is green.
+**(c) The full cargo suite — 37 suites, 519 passed, 0 failed, and it tested
+`-O3`-built fixtures.** The guests in the gitignored `build/` directories were
+rebuilt through the config (which now sets `-O3`) before the green run. The
+first attempts failed six times, and every failure was a missing or stale
+fixture rather than a wrong result: `guest-async.wasm` not built; then the OGRE
+DSO unloadable without `LD_LIBRARY_PATH`; then three Oct-11 guests embedding a
+pre-0.6.0a layout hash (`guest-angular`, `guest-skinning`,
+`guest-render-check`); then `guest-ogre.wasm` read from
+`tension-framework/build/` rather than `tension-ogre/build/`. After rebuilding
+every fixture the suite is **37 suites / 519 passed / 0 failed**, matching the
+`fresh.txt` baseline. So the claim is: the Rust suite passes when the WASM it
+drives was compiled at `-O3`, not that it was run against a different artifact
+set.
 
 **(d) Console-sized examples — output compared, not just exit codes.** `io`,
 `log` and `res` at `-O0` and `-O3` produce **byte-identical** output: `io`'s
