@@ -154,7 +154,15 @@ export class ArenaControl {
   reserved23: u64 = 0;
 }
 
-/** What the session reports about the arena it opened (`SessionInfo`, 128 B). */
+/**
+ * What the session reports about the arena it opened (`SessionInfo`, 144 B).
+ *
+ * The shape is `tension-core/src/session/arena.rs:51-101`: thirteen classes, so
+ * thirteen capacities at 48..100, padded to 104, then the nonce at 104..112 and
+ * four reserved words to 144. `pad1` is that alignment word — the host's
+ * `SESSION_INFO_OPEN_NONCE` is 104 for exactly this reason (a `u64`
+ * `put_u64` will not accept at 100).
+ */
 @unmanaged
 export class SessionInfo {
   magic: u64 = 0;
@@ -171,7 +179,7 @@ export class SessionInfo {
   layoutHash: u32 = 0;
   regionCount: u32 = 0;
   classCount: u32 = 0;
-  /** Ten capacities, in class-id order (48 .. 88). */
+  /** Thirteen capacities, in class-id order (48 .. 100). */
   capacity0: u32 = 0;
   capacity1: u32 = 0;
   capacity2: u32 = 0;
@@ -182,9 +190,13 @@ export class SessionInfo {
   capacity7: u32 = 0;
   capacity8: u32 = 0;
   capacity9: u32 = 0;
+  capacity10: u32 = 0;
+  capacity11: u32 = 0;
+  capacity12: u32 = 0;
+  /** 100 .. 104: the `u64` nonce's alignment word (`arena.rs:96-99`). */
+  private pad1: u32 = 0;
   openNonce: u64 = 0;
-  // 96 .. 128: reserved. Four words, not five: the record is 128 bytes and the
-  // check below is what caught the difference.
+  // 112 .. 144: reserved. Four words: the record is 144 bytes.
   reserved0: u64 = 0;
   reserved1: u64 = 0;
   reserved2: u64 = 0;
@@ -320,7 +332,7 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<ArenaControl>("sessionNonce") != 176) return "ArenaControl.sessionNonce";
   if (offsetof<ArenaControl>("sessionNonce") + 8 + 9 * 8 != 256) return "ArenaControl size";
 
-  // SessionInfo: 128 bytes, ten capacities from 48, the nonce at 88.
+  // SessionInfo: 144 bytes, thirteen capacities from 48, the nonce at 104.
   if (offsetof<SessionInfo>("magic") != 0) return "SessionInfo.magic";
   if (offsetof<SessionInfo>("abiVersion") != 8) return "SessionInfo.abiVersion";
   if (offsetof<SessionInfo>("flags") != 12) return "SessionInfo.flags";
@@ -334,8 +346,9 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<SessionInfo>("classCount") != 44) return "SessionInfo.classCount";
   if (offsetof<SessionInfo>("capacity0") != 48) return "SessionInfo.capacity0";
   if (offsetof<SessionInfo>("capacity9") != 84) return "SessionInfo.capacity9";
-  if (offsetof<SessionInfo>("openNonce") != 88) return "SessionInfo.openNonce";
-  if (offsetof<SessionInfo>("openNonce") + 8 + 4 * 8 != 128) return "SessionInfo size";
+  if (offsetof<SessionInfo>("capacity12") != 96) return "SessionInfo.capacity12";
+  if (offsetof<SessionInfo>("openNonce") != 104) return "SessionInfo.openNonce";
+  if (offsetof<SessionInfo>("openNonce") + 8 + 4 * 8 != 144) return "SessionInfo size";
 
   // RegionDesc: 24 bytes, kind == index, the reserved word last.
   if (offsetof<RegionDesc>("kind") != 0) return "RegionDesc.kind";
