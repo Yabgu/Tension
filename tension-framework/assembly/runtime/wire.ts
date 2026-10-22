@@ -105,7 +105,7 @@ export const REGION_DESC_SIZE: u32 = 24;
 
 /** The control block (`ArenaControl`, 256 bytes). */
 @unmanaged
-export class ArenaControl {
+export struct ArenaControl {
   magic: u64 = 0;
   formatVersion: u16 = 0;
   schemaVersion: u16 = 0;
@@ -164,7 +164,7 @@ export class ArenaControl {
  * `put_u64` will not accept at 100).
  */
 @unmanaged
-export class SessionInfo {
+export struct SessionInfo {
   magic: u64 = 0;
   abiVersion: u16 = 0;
   schemaVersion: u16 = 0;
@@ -205,7 +205,7 @@ export class SessionInfo {
 
 /** One region's descriptor (24 bytes, `kind == index` at `0x200 + kind*24`). */
 @unmanaged
-export class RegionDesc {
+export struct RegionDesc {
   kind: u32 = 0;
   flags: u32 = 0;
   offset: u32 = 0;
@@ -216,7 +216,7 @@ export class RegionDesc {
 
 /** One class's sub-ring header (32 bytes). */
 @unmanaged
-export class TableHeader {
+export struct TableHeader {
   /** Records the session has written; the guest never moves it. */
   head: u32 = 0;
   /** Records the guest has consumed: space reclaim, not an acknowledgement. */
@@ -233,7 +233,7 @@ export class TableHeader {
 
 /** One event (32 bytes): what a delivery points at. */
 @unmanaged
-export class EventRecord {
+export struct EventRecord {
   seq: u64 = 0;
   class_: u32 = 0;
   flags: u32 = 0;
@@ -245,7 +245,7 @@ export class EventRecord {
 
 /** What the session reports about the epoch that just ran (64 bytes). */
 @unmanaged
-export class FrameState {
+export struct FrameState {
   /** The session's epoch counter — not the renderer's frame number. */
   frameIndex: u32 = 0;
   /** Cross-class rollup of dropped events, cumulative. */
@@ -265,7 +265,7 @@ export class FrameState {
 
 /** One half of the `STRING` region's buffer (16 bytes). */
 @unmanaged
-export class StringHalf {
+export struct StringHalf {
   offset: u32 = 0;
   length: u32 = 0;
   capacity: u32 = 0;
@@ -274,7 +274,7 @@ export class StringHalf {
 
 /** The delivery callbacks a guest registers at open (64 bytes). */
 @unmanaged
-export class Callbacks {
+export struct Callbacks {
   abiVersion: u16 = 0;
   slotCount: u16 = 0;
   flags: u32 = 0;
@@ -293,7 +293,7 @@ export class Callbacks {
 
 /** One subscription, as `session::subscribe` takes it (16 bytes). */
 @unmanaged
-export class Subscription {
+export struct Subscription {
   class_: u32 = 0;
   mode: u32 = 0;
   flags: u32 = 0;

@@ -27,14 +27,14 @@ import { regionOffset } from "../runtime/arena";
 
 /** Two floats, 8 bytes. */
 @unmanaged
-export class Vec2f {
+export struct Vec2f {
   x: f32 = 0;
   y: f32 = 0;
 }
 
 /** Three floats, 12 bytes. */
 @unmanaged
-export class Vec3f {
+export struct Vec3f {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
@@ -42,7 +42,7 @@ export class Vec3f {
 
 /** A `Vec3f` padded to 16 bytes: the alignment a `Vec4f` has, without a w. */
 @unmanaged
-export class Vec3f16 {
+export struct Vec3f16 {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
@@ -51,7 +51,7 @@ export class Vec3f16 {
 
 /** Four floats, 16 bytes, align 16. */
 @unmanaged
-export class Vec4f {
+export struct Vec4f {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
@@ -60,7 +60,7 @@ export class Vec4f {
 
 /** A quaternion, xyzw, 16 bytes, align 16. */
 @unmanaged
-export class Quatf {
+export struct Quatf {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
@@ -69,7 +69,7 @@ export class Quatf {
 
 /** Linear RGBA, 16 bytes, align 16. */
 @unmanaged
-export class Colourf {
+export struct Colourf {
   r: f32 = 0;
   g: f32 = 0;
   b: f32 = 0;
@@ -78,7 +78,7 @@ export class Colourf {
 
 /** A 4x4 matrix, column-major, 64 bytes, align 16. */
 @unmanaged
-export class Mat4f {
+export struct Mat4f {
   m00: f32 = 0; m01: f32 = 0; m02: f32 = 0; m03: f32 = 0;
   m10: f32 = 0; m11: f32 = 0; m12: f32 = 0; m13: f32 = 0;
   m20: f32 = 0; m21: f32 = 0; m22: f32 = 0; m23: f32 = 0;
@@ -87,7 +87,7 @@ export class Mat4f {
 
 /** Position, rotation, uniform scale — 48 bytes, align 16. */
 @unmanaged
-export class Transformf {
+export struct Transformf {
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
@@ -104,7 +104,7 @@ export class Transformf {
 
 /** An axis-aligned box, 32 bytes, align 16. */
 @unmanaged
-export class Aabbf {
+export struct Aabbf {
   minX: f32 = 0;
   minY: f32 = 0;
   minZ: f32 = 0;
@@ -119,14 +119,14 @@ export class Aabbf {
 
 /** A UTF-8 string in the `STRING` region, 8 bytes. */
 @unmanaged
-export class StringRef {
+export struct StringRef {
   offset: u32 = 0;
   length: u32 = 0;
 }
 
 /** Bytes in the `BUFFER_POOL` region, 8 bytes. */
 @unmanaged
-export class BufferRef {
+export struct BufferRef {
   offset: u32 = 0;
   length: u32 = 0;
 }
@@ -135,7 +135,7 @@ export class BufferRef {
 
 /** A scene node, 80 bytes: `transform` at 24, alignment 16. */
 @unmanaged
-export class SceneNode {
+export struct SceneNode {
   nodeId: u32 = 0;
   parentId: u32 = 0;
   flags: u32 = 0;
@@ -172,7 +172,7 @@ export class SceneNode {
 
 /** A light, 96 bytes. */
 @unmanaged
-export class LightRecord {
+export struct LightRecord {
   lightId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
@@ -232,7 +232,7 @@ export class LightRecord {
 
 /** A camera, 80 bytes. */
 @unmanaged
-export class CameraRecord {
+export struct CameraRecord {
   cameraId: u32 = 0;
   flags: u32 = 0;
   fovY: f32 = 1;
@@ -271,7 +271,7 @@ export class CameraRecord {
 
 /** One texture unit of a material, 16 bytes. */
 @unmanaged
-export class TextureSlot {
+export struct TextureSlot {
   resourceId: u32 = 0;
   sampler: u32 = 0;
   flags: u32 = 0;
@@ -280,7 +280,7 @@ export class TextureSlot {
 
 /** A material, 208 bytes: eight texture slots from 80. */
 @unmanaged
-export class Material {
+export struct Material {
   materialId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
@@ -344,7 +344,7 @@ export class Material {
 
 /** A shader, 40 bytes: source bytes live in the `STRING` region. */
 @unmanaged
-export class ShaderRecord {
+export struct ShaderRecord {
   shaderId: u32 = 0;
   stage: u32 = 0;
   sourceKind: u32 = 0;
@@ -358,7 +358,7 @@ export class ShaderRecord {
 
 /** A request the guest writes into `RESOURCE_REQ`, 40 bytes. */
 @unmanaged
-export class ResourceReq {
+export struct ResourceReq {
   kind: u32 = 0;
   state: u32 = 0;
   priority: i32 = 0;
@@ -371,7 +371,7 @@ export class ResourceReq {
 
 /** A resource the session reports into `RESOURCE`, 48 bytes. */
 @unmanaged
-export class Resource {
+export struct Resource {
   resourceId: u32 = 0;
   kind: u32 = 0;
   state: u32 = 0;
@@ -387,7 +387,7 @@ export class Resource {
 
 /** A GPU buffer the adapter describes, 48 bytes. */
 @unmanaged
-export class Buffer {
+export struct Buffer {
   bufferId: u32 = 0;
   kind: u32 = 0;
   usage: u32 = 0;
@@ -402,7 +402,7 @@ export class Buffer {
 
 /** A drawable, 64 bytes: its transform is inline at 16. */
 @unmanaged
-export class Renderable {
+export struct Renderable {
   renderableId: u32 = 0;
   materialId: u32 = 0;
   meshResourceId: u32 = 0;
@@ -459,7 +459,7 @@ export class Renderable {
  * there, because a record holding a `Quatf` aligns that `Quatf` to 16.
  */
 @unmanaged
-export class MotionUpdate {
+export struct MotionUpdate {
   renderableId: u32 = 0;
   flags: u32 = 0;
   pad0: u64 = 0;
@@ -486,7 +486,7 @@ export class MotionUpdate {
  * is an offset *within the region*, not a region.
  */
 @unmanaged
-export class BoneUpdate {
+export struct BoneUpdate {
   renderableId: u32 = 0;
   boneIndex: u32 = 0;
   pad0: u64 = 0;
@@ -506,7 +506,7 @@ export class BoneUpdate {
 
 /** One job, 64 bytes: what the session reports into `JOB`. */
 @unmanaged
-export class Job {
+export struct Job {
   jobId: u32 = 0;
   state: u32 = 0;
   kind: u32 = 0;

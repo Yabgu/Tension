@@ -54,7 +54,7 @@ const EPSILON: f64 = 1e-10;   // guards the normal when two centres coincide
 // ── static per-sphere props (set once, never integrated) ─────────────────
 
 @unmanaged
-class SphereProps {
+struct SphereProps {
   r: f64;
   m: f64;
 }
