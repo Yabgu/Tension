@@ -235,7 +235,13 @@ export struct TableHeader {
 @unmanaged
 export struct EventRecord {
   seq: u64 = 0;
-  class_: u32 = 0;
+  /**
+   * The class the record landed in, named `class` on the host side
+   * (`arena.rs`'s `EventRecord::class`, `EVENT_CLASS`). This field carries the
+   * trailing underscore only because `class` is a reserved word here; the alias
+   * is what keeps the ABI name honest, and `abiNameOf` is what reads it.
+   */
+  class_: u32 @abi.alias("class") = 0;
   flags: u32 = 0;
   a: u32 = 0;
   b: u32 = 0;
@@ -294,7 +300,9 @@ export struct Callbacks {
 /** One subscription, as `session::subscribe` takes it (16 bytes). */
 @unmanaged
 export struct Subscription {
-  class_: u32 = 0;
+  /** `class` on the host side (`Subscription::class`, `SUBSCRIPTION_CLASS`); the
+   * underscore is the reserved word, not part of the name. */
+  class_: u32 @abi.alias("class") = 0;
   mode: u32 = 0;
   flags: u32 = 0;
   reserved: u32 = 0;
@@ -433,5 +441,42 @@ export function assertWireOffsets(): void {
   const problem = wireOffsetsProblem();
   if (problem != null) {
     assert(false, "the runtime's wire offsets do not match the arena layout: " + problem);
+  }
+}
+
+/**
+ * The ABI names of the fields whose TypeScript name is not their wire name.
+ *
+ * Two fields differ, both `class_`: `class` is a reserved word in this language,
+ * so the declaration must write `class_`, while the host's record (`arena.rs`'s
+ * `EventRecord::class` and `Subscription::class`) and the wire's offsets
+ * (`EVENT_CLASS`, `SUBSCRIPTION_CLASS`) say `class`. The `@abi.alias` on each
+ * field is the only place that difference is recorded.
+ *
+ * **No other field is aliased, on purpose.** The OGRE records read
+ * `positionX`/`rotationW`/`diffuseR` here where `scene.h`'s decoders declare
+ * `px`/`rw`/`dr`, but those are local variable names in a decoder that fills its
+ * struct from offsets -- the wire bytes carry no field names at all. Aliasing
+ * them would record an implementation detail as protocol metadata, and the drift
+ * checker this metadata exists for would then compare against names that are not
+ * on the wire.
+ *
+ * Compile-time: `abiNameOf` folds to a constant, so this costs nothing at
+ * runtime, but it must be called from code the build actually emits. It is a
+ * separate function from `assertWireOffsets` because the two assert different
+ * things -- where a field sits, and what it is called -- and a build can get one
+ * right while getting the other wrong.
+ */
+export function assertAbiAliases(): void {
+  if (abiNameOf<EventRecord>("class_") != "class") {
+    assert(false, "EventRecord.class_ does not carry its ABI alias: class");
+  }
+  if (abiNameOf<Subscription>("class_") != "class") {
+    assert(false, "Subscription.class_ does not carry its ABI alias: class");
+  }
+  // A field with no alias reports its TypeScript name; if this ever starts
+  // returning the alias shape instead, `abiNameOf`'s fallback is broken.
+  if (abiNameOf<EventRecord>("seq") != "seq") {
+    assert(false, "EventRecord.seq has no alias and must report its TS name");
   }
 }
