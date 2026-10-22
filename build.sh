@@ -132,9 +132,14 @@ echo "==> building tension-core (ai is a default feature: links llama.cpp)"
 cargo build --manifest-path tension-core/Cargo.toml
 
 # ---- api ------------------------------------------------------------------
+# The guest API is compiled by `tensionscript`, which each npm project carries as
+# a devDependency (`@yabgu_gm/tensionscript`, from the registry). The gate checks
+# for that binary, not for `.bin/asc` -- `asc` is AssemblyScript's name, and a
+# tree whose install produced `asc` but not `tensionscript` would pass this gate
+# and then fail on the build line.
 echo "==> building the guest API (tension-framework)"
-if [ ! -x tension-framework/node_modules/.bin/asc ]; then
-  echo "    installing tension-framework deps (assemblyscript)"
+if [ ! -x tension-framework/node_modules/.bin/tensionscript ]; then
+  echo "    installing tension-framework deps (@yabgu_gm/tensionscript)"
   ( cd tension-framework && npm install --no-audit --no-fund )
 fi
 ( cd tension-framework && npm run build )
@@ -143,8 +148,8 @@ fi
 # Each example is its own npm project, so it carries its own dependencies.
 build_example() {
   local name="$1" dir="examples/$1"
-  if [ ! -x "$dir/node_modules/.bin/asc" ]; then
-    echo "    installing $dir deps (assemblyscript + tension-framework)"
+  if [ ! -x "$dir/node_modules/.bin/tensionscript" ]; then
+    echo "    installing $dir deps (@yabgu_gm/tensionscript + tension-framework)"
     ( cd "$dir" && TENSION_SKIP_MODEL_FETCH=1 npm install --no-audit --no-fund )
   fi
   echo "==> building the $name example"
