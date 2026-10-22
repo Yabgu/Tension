@@ -5,14 +5,23 @@ come first; the rest is the Windows build cheat-sheet.
 
 ## Hard rules
 
-1. **`third_party/` is read-only.** Never edit, generate into, format, or
-   delete anything under it — including its build trees (`ogre-next-build*`,
+1. **`third_party/ogre-next` is read-only.** Never edit, generate into, format,
+   or delete anything there — including its build trees (`ogre-next-build*`,
    `ogre-next-install`) and the `ogre-next` submodule. `.gitignore` may cover
    paths there, but the tree itself is off limits. Build OGRE only through
    `third_party/bootstrap.sh`.
-2. **Never use destructive git commands and never commit on the user's behalf.**
+2. **TensionScript is a sibling repo, not a submodule.** The language lives at
+   `~/work/TensionScript` (the canonical checkout). Tension consumes the
+   compiler as the published `@acakar/tensionscript` npm package, which each
+   npm project carries as a devDependency (`tension-framework/package.json`,
+   each `examples/*/package.json`). To pick up a language change: publish it
+   there, then bump the version here. **Do not edit
+   `node_modules/@acakar/tensionscript` in place** — it is an installed
+   artifact, and an edit there is lost on the next `npm install`. Version bumps
+   flow through `package.json`.
+3. **Never use destructive git commands and never commit on the user's behalf.**
    Leave changes in the working tree for the user to review and commit.
-3. **Honor runtime tool/approval gates.** If a command is refused, surface it;
+4. **Honor runtime tool/approval gates.** If a command is refused, surface it;
    do not route around it.
 
 ## Running MSYS2 commands on Windows
