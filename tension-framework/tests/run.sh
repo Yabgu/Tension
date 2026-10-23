@@ -112,6 +112,44 @@ run_fixture() {
   esac
 }
 
+# A drift-check fixture whose contract is the **refusal** its check performs.
+# Same contract as `run_guard_fixture`, parameterised on the message because the
+# drift diagnostic carries the type name and both sizes — matching the whole
+# line is what makes it evidence that the checker fired on the right entry with
+# the right numbers, not merely that something aborted.
+run_drift_fixture() {
+  local entry="$1" out="$2"
+  echo "==> compiling $entry"
+  ( cd "$root" && ./node_modules/.bin/tensionscript "tests/$entry" \
+      --config build/session.asconfig.json -o "build/$out" )
+  echo "==> running $out (expecting the drift check's abort)"
+  set +e
+  local stdout
+  stdout="$("$core" "$root/build/$out" 2>"$root/build/$out.err")"
+  local status=$?
+  set -e
+  local err
+  err="$(cat "$root/build/$out.err")"
+  local drift_msg
+  drift_msg="the session's manifest does not match this guest's declarations: SessionInfo: guest 144 != host 128"
+  if [ "$status" -eq 0 ]; then
+    echo "run.sh: $entry: the interpreter exited 0 — the drift check did not abort" >&2
+    printf '%s\n' "$err" >&2
+    exit 1
+  fi
+  case "$stdout" in
+    *OK*) echo "run.sh: $entry: the fixture printed OK — the drift check did not abort" >&2; exit 1 ;;
+  esac
+  case "$err" in
+    *"$drift_msg"*) echo "    == $entry: aborted by the drift check (exit $status)" ;;
+    *)
+      echo "run.sh: $entry: the abort was not the drift check's message; stderr:" >&2
+      printf '%s\n' "$err" >&2
+      exit 1
+      ;;
+  esac
+}
+
 # A fixture that is not a session guest: it imports nothing but `tension::io`
 # (for `print`) and defines its own memory, so it is compiled without the
 # session's flags and run with no capability. The host treats a module as a
@@ -214,6 +252,22 @@ run_guard_fixture() {
 }
 
 run_fixture guest-open.ts guest-open.wasm
+
+# The drift check's three cells, each a real guest run against the real host.
+#
+#   refuse   writes the SessionInfo drift into the arena and opens through the
+#            raw verb, so the check does not run. Prints OK: the pre-check world,
+#            held still so the other two cells are known to corrupt something.
+#   partial  finds the drift and continues anyway — the half-fix. Prints the
+#            diagnostic and OK: the guest now proceeds on offsets it has just
+#            been told are wrong.
+#   fixed    the same corruption through RuntimeSession.open, which asserts.
+#            The runner below asserts the exact message, a non-zero exit and no
+#            OK, for the reason the guard fixture does: an abort is only evidence
+#            when it is the right abort.
+run_fixture guest-drift-refuse.ts guest-drift-refuse.wasm
+run_fixture guest-drift-partial.ts guest-drift-partial.wasm
+run_drift_fixture guest-drift-fixed.ts guest-drift-fixed.wasm
 run_fixture guest-ogre.ts guest-ogre.wasm --capability "$stub"
 run_fixture guest-verlet.ts guest-verlet.wasm
 run_fixture guest-physics-units.ts guest-physics-units.wasm

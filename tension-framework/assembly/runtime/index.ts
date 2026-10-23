@@ -28,7 +28,7 @@
 // first epoch of the reopened session.
 
 import { Callbacks, Subscription, STATE_FAULTED, CALLBACKS_SIZE } from "./wire";
-import { ctrl } from "./arena";
+import { ctrl, manifestProblem } from "./arena";
 import { STATE_READY } from "./wire";
 import { ConfigBuilder } from "./config";
 import * as verbs from "./session";
@@ -39,6 +39,7 @@ export * from "./config";
 export * from "./callbacks";
 export { rt } from "./rt";
 export * from "./layout";
+export * from "./manifest";
 export { verbs };
 
 /** Whether the session is FAULTED: every verb will refuse with `-EBADF`. */
@@ -66,7 +67,26 @@ export class RuntimeSession {
       cfg.callbacks(changetype<usize>(callbacks), CALLBACKS_SIZE);
     }
     const bytes = cfg.toBytes();
-    return verbs.open(changetype<usize>(bytes), <u32>bytes.byteLength);
+    const opened = verbs.open(changetype<usize>(bytes), <u32>bytes.byteLength);
+    if (opened != 0) return opened;
+    // The session is READY, so the host has written the manifest and no user
+    // code has run yet. Every offset this guest computes below this line is
+    // only correct if the host and the guest agree about each record's size, so
+    // a disagreement stops here rather than surfacing as a field read from the
+    // wrong bytes — `SessionInfo`'s 128 vs 144 was exactly that, and it was
+    // invisible for a day because the guest's own offset check compared the
+    // declaration against a stale hand-copy instead of against the host.
+    //
+    // `assert`, not an errno: the open *succeeded*, and 44 call sites check its
+    // return value with `if (open(cfg) != 0) return;` — an invented error there
+    // is a plausible-looking value a caller may still ignore, which is the
+    // silent-corruption outcome this check exists to prevent. It is the same
+    // shape as `assertWireOffsets` and `assertLayout`.
+    const drift = manifestProblem();
+    if (drift != null) {
+      assert(false, "the session's manifest does not match this guest's declarations: " + drift);
+    }
+    return 0;
   }
 
   static close(): i32 {
