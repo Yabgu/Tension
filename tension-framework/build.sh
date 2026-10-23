@@ -184,6 +184,24 @@ print(f"==> wrote {layout_ts}")
 print(f"==> wrote {asconfig}")
 PY
 
+# The guest's view of the arena manifest — the nine {typeId, size, align}
+# entries the host writes at MANIFEST_OFFSET, and the mapping from each id to the
+# type this guest declares. Generated from tension-core's own `TYPES` block by
+# the same cross-source read `tension-core/tests/framework_layout.rs` uses for
+# the hash: the other side's source as text, found by shape, loud on failure.
+#
+# It runs on every build, and it refuses rather than emitting: a parse the
+# script cannot follow, a count that is not 9, ids that are not 1..9 ascending,
+# or an order that disagrees with the framework's name list all exit non-zero
+# with the reason. A silently empty or stale table would make the guest's drift
+# check pass while proving nothing, so that outcome is not reachable — and
+# because the script reads `../tension-core`, a checkout without the core fails
+# here, by design (one repo, one build).
+echo "==> generating the manifest's type table (from tension-core/src/session/arena.rs)"
+python3 "$here/scripts/gen-manifest.py" \
+  "$here/../tension-core/src/session/arena.rs" \
+  "$here/assembly/runtime/manifest.ts"
+
 echo "==> asc flags for a session guest:"
 # The runtime name is read back out of the config we just wrote rather than
 # repeated here, so this line cannot drift from the value above.

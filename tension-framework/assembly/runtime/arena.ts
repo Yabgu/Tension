@@ -27,13 +27,24 @@
 
 import {
   ArenaControl,
+  Callbacks,
+  EventRecord,
+  ManifestEntry,
   RegionDesc,
   SessionInfo,
+  StringHalf,
+  Subscription,
+  TableHeader,
   CONTROL_OFFSET,
   REGION_DESC_SIZE,
   REGION_TABLE_OFFSET,
   SESSION_INFO_OFFSET,
 } from "./wire";
+import {
+  MANIFEST_ENTRY_COUNT,
+  MANIFEST_ENTRY_SIZE,
+  MANIFEST_TYPE_NAMES,
+} from "./manifest";
 import { LAYOUT_HASH, MAX_ARENA_SIZE } from "./layout";
 
 /** The control block: state, fault report, and the layout's own triple. */
@@ -88,6 +99,108 @@ export function checkLayout(): bool {
 /** `checkLayout`, as an assertion. */
 export function assertLayout(): void {
   assert(checkLayout(), "the arena is not the layout this guest was built against");
+}
+
+/**
+ * The first manifest entry that disagrees with this guest's declarations, or
+ * `null` when every one matches.
+ *
+ * **What the manifest is.** Before the guest exists, `prepare_arena` writes
+ * nine `{typeId, size, align, pad}` entries at `ArenaControl.manifestOff`
+ * (`tension-core/src/session/arena.rs`, `TYPES` and `write_manifest`): the
+ * sizes and alignments the host's own writers were built against. It is the
+ * only schema the host ever sends, and until this check existed nothing in the
+ * guest read it.
+ *
+ * **What this proves that `assertWireOffsets` cannot.** The offset checks
+ * compare a declaration against a literal copied from the host by hand, so they
+ * prove *declaration == hand-copy*. `SessionInfo` drifted for a day with every
+ * check passing, because the hand-copy was stale too: the guest declared 128
+ * bytes / 10 capacities / the nonce at 88, the host wrote 144 / 13 / 104, and
+ * the check agreed with the guest. This one compares against what the host
+ * actually wrote into the arena at open. It would have named that drift on the
+ * first open.
+ *
+ * **Type level, not field level.** The manifest carries no per-field offsets, so
+ * this catches a record whose size or alignment changed, not a reorder inside
+ * one. The per-field half stays with `assertWireOffsets`; the two checks are
+ * complementary, neither subsumes the other.
+ *
+ * **Sizes only — alignment is a consistency relation, not a comparison.**
+ * `entry.size % entry.align` is checked because a manifest whose size is not a
+ * multiple of its align is malformed whatever the guest declares. The entry's
+ * `align` is deliberately *not* compared against `alignof<T>()`: under the
+ * pinned TensionScript 0.8.1, `alignof` of an `@unmanaged struct` returns the
+ * `usize` base's alignment (2 in log2 terms, measured: every record reports the
+ * same value regardless of its widest field), the same `type.byteSize` /
+ * `type.alignLog2` collapse that made `sizeof` report 4 for every class before
+ * 0.8.0 fixed it for `sizeof` only. Comparing against it today would fail on
+ * the first record with an 8-byte field for a reason that is not drift. When
+ * `alignof` reports a record's own alignment, this function gains the
+ * comparison; until then the size check carries the drift detection on its own,
+ * and a size change is what `SessionInfo` did.
+ *
+ * Returns a reason rather than asserting, so the caller decides: `
+ * RuntimeSession.open` aborts, and a fixture can print the same reason and
+ * continue.
+ */
+export function manifestProblem(): string | null {
+  const block = ctrl();
+  const off = block.manifestOff;
+  const len = block.manifestLen;
+  const expectedLen = MANIFEST_ENTRY_COUNT * MANIFEST_ENTRY_SIZE;
+  if (len != expectedLen) {
+    return "manifest length " + len.toString() + " != " + expectedLen.toString() +
+      "; the host and this guest disagree on the manifest's shape";
+  }
+  for (let index: u32 = 0; index < MANIFEST_ENTRY_COUNT; index++) {
+    const entry = changetype<ManifestEntry>(off + index * MANIFEST_ENTRY_SIZE);
+    const id = <u32>entry.typeId;
+    // An id outside 1..N is a host type this guest has no declaration for. The
+    // generated table is dense in that range, so there is no other lookup to
+    // miss.
+    if (id == 0 || id > MANIFEST_ENTRY_COUNT) {
+      return "manifest entry " + index.toString() + " states type id " + id.toString() +
+        "; this guest knows ids 1.." + MANIFEST_ENTRY_COUNT.toString();
+    }
+    const name = MANIFEST_TYPE_NAMES[id - 1];
+    const hostSize = <u32>entry.size;
+    const hostAlign = <u32>entry.align;
+    if (hostAlign == 0 || hostSize % hostAlign != 0) {
+      return name + ": size " + hostSize.toString() + " is not a multiple of align " +
+        hostAlign.toString() + "; the manifest is malformed";
+    }
+    const guestSize = guestTypeSize(id);
+    if (guestSize != hostSize) {
+      return name + ": guest " + guestSize.toString() + " != host " + hostSize.toString();
+    }
+  }
+  return null;
+}
+
+/**
+ * This guest's `sizeof` for one manifest id, folded at compile time.
+ *
+ * `sizeof` on an `@unmanaged struct` is the record's layout extent, which is
+ * what the host's `size` is too: both are 8-byte-field records, and every one
+ * of the nine ends on a field whose end coincides with the aligned size. A
+ * record ending in a `u8`/`u16` would need trailing padding the compiler does
+ * not add, and would report smaller than C — that is a `sizeof` semantic, not a
+ * drift this check can see, and no manifest type is shaped that way.
+ */
+function guestTypeSize(id: u32): u32 {
+  switch (id) {
+    case 1: return sizeof<ArenaControl>();
+    case 2: return sizeof<SessionInfo>();
+    case 3: return sizeof<RegionDesc>();
+    case 4: return sizeof<ManifestEntry>();
+    case 5: return sizeof<TableHeader>();
+    case 6: return sizeof<StringHalf>();
+    case 7: return sizeof<Callbacks>();
+    case 8: return sizeof<Subscription>();
+    case 9: return sizeof<EventRecord>();
+  }
+  return 0;
 }
 
 /** `ArenaControl.magic`: "TNSARENA" as eight little-endian bytes. */

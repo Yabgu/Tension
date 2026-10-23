@@ -203,6 +203,29 @@ export struct SessionInfo {
   reserved3: u64 = 0;
 }
 
+/**
+ * One manifest entry (8 bytes), as `arena.rs`'s `TypeEntry` writes it.
+ *
+ * The catalog is `{typeId: u16, size: u16, align: u16, pad: u16}` at the address
+ * `ArenaControl.manifestOff` names (`arena.rs`'s `write_manifest`). It states,
+ * for the nine protocol types the host pins, the size and alignment the host
+ * built its writers against — which is the only schema the host ever sends the
+ * guest. `arena.ts`'s `manifestProblem()` is what compares it to these
+ * declarations.
+ *
+ * The field names are the guest's: the wire carries no names, and the host's
+ * entry has no name field either. Only `typeId`, `size` and `align` mean
+ * anything; `pad` is the manifest entry's own tail padding (`TYPES` id 4 pins
+ * the entry at 8 bytes with alignment 2).
+ */
+@unmanaged
+export struct ManifestEntry {
+  typeId: u16 = 0;
+  size: u16 = 0;
+  align: u16 = 0;
+  pad: u16 = 0;
+}
+
 /** One region's descriptor (24 bytes, `kind == index` at `0x200 + kind*24`). */
 @unmanaged
 export struct RegionDesc {
