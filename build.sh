@@ -32,13 +32,18 @@ cd "$(dirname "$0")"
 # cargo had already compiled the dependency tree; this names what is missing
 # and how to get it, before any of that.
 #
-# Two of them are version-pinned (build.rs's PINNED_ZIG / PINNED_GFORTRAN): a
-# different Zig changes the resource ABI's codegen, a different gfortran changes
-# the solver's results. A mismatch is refused unless TENSION_ALLOW_UNPINNED=1,
-# which demotes it to a warning — the escape hatch for a machine that must build
-# with what it has. build.rs enforces the same rule, so a bare `cargo build`
-# behaves the same way. **If a pin here moves, move it in build.rs too** (and
-# vice versa): they are the same contract in two places.
+# Two of them are version-gated (build.rs's MIN_ZIG / PINNED_GFORTRAN). Zig has a
+# **floor, not a pin**: 0.16 is the oldest series that builds tension-res, and
+# every later series is accepted — a newer toolchain is a deliberate choice, and
+# the resource source is kept building on it (0.18 removed `**`, `dupeZ` and
+# `bufPrintZ`, all of which this tree no longer uses). A version *older* than the
+# floor is the exception: it warns and the build continues, because the Zig
+# compiler is the real gate. The gfortran pin stays exact-ish (16.x) and is
+# refused unless TENSION_ALLOW_UNPINNED=1 demotes it to a warning — the escape
+# hatch for a machine that must build with what it has. build.rs enforces the
+# same rules, so a bare `cargo build` behaves the same way. **If a
+# floor here moves, move it in build.rs too** (and vice versa): they are the same
+# contract in two places.
 unpinned=0
 if [ "${TENSION_ALLOW_UNPINNED:-0}" = 1 ]; then unpinned=1; fi
 missing=0
@@ -68,7 +73,7 @@ echo "==> preflight: checking the toolchain the build shells out to"
 require cargo    "install Rust (https://rustup.rs)"
 require rustc    "install Rust (https://rustup.rs)"
 # The host's linked-in cores and fixtures.
-require zig      "install Zig 0.16.x (https://ziglang.org/download/)"
+require zig      "install Zig 0.16 or newer (https://ziglang.org/download/)"
 require gfortran "install GNU Fortran (Arch: gfortran; Debian: gfortran)"
 require cc       "install a C compiler (Arch: gcc; Debian: gcc/clang)"
 require ar       "install binutils (provides ar)"
@@ -105,13 +110,30 @@ if ! have ld.lld && ! have lld; then
     missing=1
   fi
 fi
-# The two version pins.
+# zig_at_least <reported> <major> <minor>: true when the version's major.minor
+# is at or above the floor. Only the leading two numeric components are read, so
+# a dev build's suffix (`0.18.0-dev.131+41f885830`) compares as 0.18.
+zig_at_least() { # <reported> <min-major> <min-minor>
+  local v=$1 rest major minor
+  major=${v%%.*}
+  rest=${v#*.}
+  minor=${rest%%.*}
+  case "$major" in ''|*[!0-9]*) return 1 ;; esac
+  case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$major" -gt "$2" ] || { [ "$major" -eq "$2" ] && [ "$minor" -ge "$3" ]; }
+}
+
+# Zig: a floor, not a pin — 0.16 is the oldest series that builds tension-res,
+# and every later series is accepted without comment. Older is the **exception**:
+# it warns and the build continues, because the Zig compiler is the real gate
+# (the resource source uses APIs 0.16 introduced, so an older compiler refuses
+# the source itself with a better message than a version check can give).
 if have zig; then
   zig_v=$(zig version 2>/dev/null | head -n1)
-  case "$zig_v" in
-    0.16.*) : ;;
-    *) pin_mismatch zig "$zig_v" "0.16.x" "tension-res is compiled by it" ;;
-  esac
+  if ! zig_at_least "$zig_v" 0 16; then
+    echo "build.sh: warning: zig '$zig_v' is older than the 0.16 floor — tension-res" >&2
+    echo "          may refuse to compile (see the Zig error if it does); continuing." >&2
+  fi
 fi
 if have gfortran; then
   gf_v=$(gfortran --version 2>/dev/null | head -n1)

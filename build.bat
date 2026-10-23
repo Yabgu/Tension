@@ -8,7 +8,7 @@ rem   tension-res    Zig static archive       -> tension-res\zig-out
 rem   tension-ogre   OGRE-Next DSO adapter    -> tension-ogre\build\libtension_ogre.dll
 rem   tension-core   Rust host                -> tension-core\target\release\tension-core.exe
 rem
-rem Needs on PATH: cargo, zig (0.16.x), cmake, ninja, and an MSVC x64
+rem Needs on PATH: cargo, zig (0.16 or newer), cmake, ninja, and an MSVC x64
 rem environment - run this from an "x64 Native Tools Command Prompt", or let
 rem this script find and call vcvars64.bat. OGRE-Next must already be installed
 rem at third_party\ogre-next-install (third_party\README.md documents the

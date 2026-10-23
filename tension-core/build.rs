@@ -7,10 +7,15 @@
 //! directives below are emitted for every target in this package (the binary
 //! and the integration tests alike).
 //!
-//! Zig is pinned to the 0.16 series (tension-res/build.zig targets that
-//! toolchain); a different version is a hard error, because a mismatch changes
-//! the ABI's codegen, not just its taste. `TENSION_ALLOW_UNPINNED=1` demotes
-//! both this pin and the gfortran one below to a warning.
+//! Zig has a **floor, not a pin**: 0.16 is the oldest series that builds
+//! tension-res, and every later series is accepted. A newer toolchain is a
+//! deliberate choice — the resource source is kept building on it (0.18 removed
+//! `**`, `Allocator.dupeZ` and `std.fmt.bufPrintZ`, none of which this tree
+//! uses any more). A version *older* than the floor is the exception: it warns
+//! and the build continues, because the Zig compiler is the real gate (the
+//! resource source uses APIs 0.16 introduced, so an older compiler refuses the
+//! source itself with a better message than this check can give).
+//! `TENSION_ALLOW_UNPINNED=1` still demotes the gfortran pin below to a warning.
 //!
 //! The same pattern runs for tension-solver: its Fortran core is built by
 //! `tension-solver/build.sh` (which pins the determinism flags) and linked
@@ -22,7 +27,10 @@
 use std::path::PathBuf;
 use std::process::Command;
 
-const PINNED_ZIG: &str = "0.16.";
+/// The oldest Zig that builds `tension-res`: this series **and every later one**
+/// are accepted. Compare with [`zig_at_least`], which reads only major.minor so
+/// a dev build's suffix (`0.18.0-dev.131+41f885830`) compares as 0.18.
+const MIN_ZIG: (u64, u64) = (0, 16);
 // gfortran is pinned for the same reason: the numerical core's results are
 // compiled, and a different compiler is a different contract (DESIGN.md §5).
 const PINNED_GFORTRAN: &str = "16.";
@@ -53,8 +61,9 @@ fn main() {
         Ok(s) if s.success() => {}
         Ok(s) => panic!("`zig build -Doptimize=ReleaseSafe` failed in {res_dir:?} with {s}"),
         Err(e) => panic!(
-            "could not run `zig` ({e}) — tension-core links tension-res, so Zig {PINNED_ZIG}x \
-             must be on PATH (see tension-res/DESIGN.md §9.2)"
+            "could not run `zig` ({e}) — tension-core links tension-res, so Zig {}.{} or \
+             newer must be on PATH (see tension-res/DESIGN.md §9.2)",
+            MIN_ZIG.0, MIN_ZIG.1
         ),
     }
 
@@ -438,6 +447,23 @@ fn run_or_panic(mut command: Command, what: &str) {
     }
 }
 
+/// Whether a `zig version` string is at least `min` (major, minor). Only the
+/// leading two numeric components are read: `0.16.0`, `0.18.0-dev.131+41f885830`
+/// and `0.16.0-dev.1` all parse, and anything non-numeric is not a version we
+/// can compare, so it is refused rather than silently accepted.
+fn zig_at_least(version: &str, min: (u64, u64)) -> bool {
+    let mut parts = version.trim().split('.');
+    let leading_digits = |part: Option<&str>| -> Option<u64> {
+        let part = part?;
+        let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() { None } else { digits.parse().ok() }
+    };
+    match (leading_digits(parts.next()), leading_digits(parts.next())) {
+        (Some(major), Some(minor)) => (major, minor) >= min,
+        _ => false,
+    }
+}
+
 fn check_zig_version() {
     let out = match Command::new("zig").arg("version").output() {
         Ok(out) => out,
@@ -445,22 +471,19 @@ fn check_zig_version() {
     };
     let version = String::from_utf8_lossy(&out.stdout);
     let version = version.trim();
-    if version.starts_with(PINNED_ZIG) {
+    if zig_at_least(version, MIN_ZIG) {
         return;
     }
-    if unpinned_allowed() {
-        println!(
-            "cargo:warning=tension-res is built with Zig {version}, not the pinned \
-             {PINNED_ZIG}x — TENSION_ALLOW_UNPINNED=1 is set, so the pin is a warning"
-        );
-    } else {
-        panic!(
-            "tension-res is pinned to Zig {PINNED_ZIG}x but `zig version` reports {version}. \
-             The Zig toolchain compiles the resource ABI, so a mismatch is refused rather than \
-             compiled silently. Install Zig {PINNED_ZIG}x, or set TENSION_ALLOW_UNPINNED=1 to \
-             build with the toolchain you have."
-        );
-    }
+    let (min_major, min_minor) = MIN_ZIG;
+    // The exception, not a refusal: the Zig compiler is the real gate. The
+    // resource source uses APIs 0.16 introduced, so a genuinely too-old
+    // compiler fails there with a better message than this check can give —
+    // which is why an older version warns and the build continues rather than
+    // stopping here.
+    println!(
+        "cargo:warning=tension-res requires Zig {min_major}.{min_minor} or newer; installed is \
+         {version}. Upgrade Zig, or set TENSION_ALLOW_UNPINNED=1 to build anyway."
+    );
 }
 
 fn check_gfortran_version() {

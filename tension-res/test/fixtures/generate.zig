@@ -108,7 +108,7 @@ fn writeVolumeHeader(w: *fields.Writer) !void {
     try w.field(fields.FORMAT_NAME, "SIDF"); // Annex C: the 4 bytes S I D F
     try w.field(fields.FORMAT_VERSION, &.{ 1, 0, 0, 0 }); // Annex C: B0 major, B1 minor, ...
     try w.field(fields.SECTOR_SIZE, &u32bytes(SECTOR)); // 10.1: 2^(n+8), 512 valid
-    const zero_ts = [_]u8{0} ** 16; // clause 7: year 0 -> timestamp ignored
+    const zero_ts: [16]u8 = @splat(0); // clause 7: year 0 -> timestamp ignored
     try w.field(fields.VOLUME_SET_TIME, &zero_ts);
     try w.field(fields.VOLUME_TIME, &zero_ts);
     try w.field(fields.VOLUME_SET_LABEL, "TENSION");
@@ -122,7 +122,7 @@ fn writeFileSetHeader(w: *fields.Writer) !void {
     try w.tableHeader(fields.FILE_SET_HEADER);
     const ote = try writeOte(w);
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID)); // Fixed, 4 bytes (Annex C #8072)
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.field(fields.FILE_SET_LABEL, "TENSION");
     try w.bitsField(fields.FILE_SET_INDEX_PRESENT, 0); // Bit Data (Annex C #80802D)
@@ -138,7 +138,7 @@ fn writeFileSetTrailer(w: *fields.Writer) !void {
     try w.tableHeader(fields.FILE_SET_TRAILER);
     const ote = try writeOte(w);
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID));
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.field(fields.FILE_SET_LABEL, "TENSION");
     try w.field(fields.SOURCE_NAME_TYPE, &.{0x01});
@@ -159,7 +159,7 @@ fn writeBufferHeader(w: *fields.Writer, sequence: u32, address: u32, unused: u32
     try w.field(fields.BUFFER_ADDRESS, &u32bytes(address));
     try w.field(fields.UNUSED_IN_THIS_BUFFER, &u32bytes(unused));
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID));
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try endTable(w, fields.BUFFER_HEADER, ote);
 }
@@ -279,7 +279,7 @@ pub fn generate(image: []u8) !usize {
     // same length, so the stream's physical position is known before the real
     // bytes are written.
     var dir_buf: [1024]u8 = undefined;
-    var placeholder = [_]u8{0} ** 512;
+    const placeholder: [512]u8 = @splat(0);
     var dir_w = fields.Writer{ .buf = &dir_buf };
     _ = try writeFileHeader(&dir_w, @intFromEnum(metadata.FileType.source_directory));
     try writeFileInformation(&dir_w, 1, 1, ROOT_NAME, index_len_u32);
