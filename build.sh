@@ -32,18 +32,17 @@ cd "$(dirname "$0")"
 # cargo had already compiled the dependency tree; this names what is missing
 # and how to get it, before any of that.
 #
-# Two of them are version-gated (build.rs's MIN_ZIG / PINNED_GFORTRAN). Zig has a
-# **floor, not a pin**: 0.16 is the oldest series that builds tension-res, and
-# every later series is accepted — a newer toolchain is a deliberate choice, and
-# the resource source is kept building on it (0.18 removed `**`, `dupeZ` and
+# Two of them are version-gated (build.rs's MIN_ZIG / MIN_GFORTRAN). Both have a
+# **floor, not a pin**: 0.16 is the oldest Zig that builds tension-res and 14.0
+# the oldest gfortran whose numerical results we accept, and every later series
+# is accepted without comment — a newer toolchain is a deliberate choice, and
+# the source is kept building on it (Zig 0.18 removed `**`, `dupeZ` and
 # `bufPrintZ`, all of which this tree no longer uses). A version *older* than the
-# floor is the exception: it warns and the build continues, because the Zig
-# compiler is the real gate. The gfortran pin stays exact-ish (16.x) and is
-# refused unless TENSION_ALLOW_UNPINNED=1 demotes it to a warning — the escape
-# hatch for a machine that must build with what it has. build.rs enforces the
-# same rules, so a bare `cargo build` behaves the same way. **If a
-# floor here moves, move it in build.rs too** (and vice versa): they are the same
-# contract in two places.
+# floor is the exception: it warns and the build continues, because the compiler
+# is the real gate. TENSION_ALLOW_UNPINNED=1 acknowledges a below-floor
+# toolchain and silences that warning. build.rs enforces the same rules, so a
+# bare `cargo build` behaves the same way. **If a floor here moves, move it in
+# build.rs too** (and vice versa): they are the same contract in two places.
 unpinned=0
 if [ "${TENSION_ALLOW_UNPINNED:-0}" = 1 ]; then unpinned=1; fi
 missing=0
@@ -53,17 +52,6 @@ have() { command -v "$1" >/dev/null 2>&1; }
 require() { # <tool> <remedy>
   if ! have "$1"; then
     echo "build.sh: $1 is not on PATH — $2" >&2
-    missing=1
-  fi
-}
-
-pin_mismatch() { # <tool> <reported> <wanted> <why>
-  if [ "$unpinned" = 1 ]; then
-    echo "build.sh: warning: $1 '$2' is not the pinned $3 ($4);" >&2
-    echo "          TENSION_ALLOW_UNPINNED=1 is set, so the build continues." >&2
-  else
-    echo "build.sh: $1 '$2' does not match the pinned $3 — $4." >&2
-    echo "          Use $1 $3, or set TENSION_ALLOW_UNPINNED=1 to build anyway." >&2
     missing=1
   fi
 }
@@ -123,6 +111,20 @@ zig_at_least() { # <reported> <min-major> <min-minor>
   [ "$major" -gt "$2" ] || { [ "$major" -eq "$2" ] && [ "$minor" -ge "$3" ]; }
 }
 
+# gfortran_version_at_least <first-line> <major> <minor>: true when the version
+# is at or above the floor. The banner is `GNU Fortran (Debian 14.2.0-19)
+# 14.2.0`, so the last whitespace-separated token is the version.
+gfortran_version_at_least() { # <reported-first-line> <min-major> <min-minor>
+  local v major minor
+  v=$(printf '%s\n' "$1" | awk '{print $NF}')
+  major=${v%%.*}
+  minor=${v#*.}
+  minor=${minor%%.*}
+  case "$major" in ''|*[!0-9]*) return 1 ;; esac
+  case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+  [ "$major" -gt "$2" ] || { [ "$major" -eq "$2" ] && [ "$minor" -ge "$3" ]; }
+}
+
 # Zig: a floor, not a pin — 0.16 is the oldest series that builds tension-res,
 # and every later series is accepted without comment. Older is the **exception**:
 # it warns and the build continues, because the Zig compiler is the real gate
@@ -137,10 +139,20 @@ if have zig; then
 fi
 if have gfortran; then
   gf_v=$(gfortran --version 2>/dev/null | head -n1)
-  case "$gf_v" in
-    *16.*) : ;;
-    *) pin_mismatch gfortran "$gf_v" "16.x" "the solver's numerical core is compiled by it" ;;
-  esac
+  # The same floor rule as Zig: 14.0 is the oldest series whose numerical
+  # results we accept; older warns and the build continues, because the compiler
+  # is the real gate. TENSION_ALLOW_UNPINNED=1 acknowledges it and silences the
+  # warning.
+  if ! gfortran_version_at_least "$gf_v" 14 0; then
+    if [ "$unpinned" = 1 ]; then
+      echo "build.sh: warning: gfortran '$gf_v' is below the 14.0 floor —" >&2
+      echo "          TENSION_ALLOW_UNPINNED=1 is set, so the build continues." >&2
+    else
+      echo "build.sh: warning: gfortran '$gf_v' is older than the 14.0 floor — the" >&2
+      echo "          solver's numerical core is compiled by it; continuing (set" >&2
+      echo "          TENSION_ALLOW_UNPINNED=1 to acknowledge)." >&2
+    fi
+  fi
 fi
 
 if [ "$missing" != 0 ]; then

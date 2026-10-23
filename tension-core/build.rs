@@ -15,25 +15,28 @@
 //! and the build continues, because the Zig compiler is the real gate (the
 //! resource source uses APIs 0.16 introduced, so an older compiler refuses the
 //! source itself with a better message than this check can give).
-//! `TENSION_ALLOW_UNPINNED=1` still demotes the gfortran pin below to a warning.
+//! `TENSION_ALLOW_UNPINNED=1` acknowledges a below-floor toolchain: it silences
+//! the warning for whichever floor is involved.
 //!
 //! The same pattern runs for tension-solver: its Fortran core is built by
 //! `tension-solver/build.sh` (which pins the determinism flags) and linked
 //! as `libtension_solver.a`, with the Fortran runtime on the link line.
-//! gfortran is pinned to the 16 series for the same reason: the numerical
-//! core's results are compiled, and a different compiler is a different
-//! contract (DESIGN.md §5).
+//! gfortran has a floor too — 14.0, for the same reason: the numerical core's
+//! results are compiled, and a different compiler is a different contract
+//! (DESIGN.md §5).
 
 use std::path::PathBuf;
 use std::process::Command;
 
 /// The oldest Zig that builds `tension-res`: this series **and every later one**
-/// are accepted. Compare with [`zig_at_least`], which reads only major.minor so
-/// a dev build's suffix (`0.18.0-dev.131+41f885830`) compares as 0.18.
+/// are accepted. Compare with [`version_at_least`], which reads only major.minor
+/// so a dev build's suffix (`0.18.0-dev.131+41f885830`) compares as 0.18.
 const MIN_ZIG: (u64, u64) = (0, 16);
-// gfortran is pinned for the same reason: the numerical core's results are
-// compiled, and a different compiler is a different contract (DESIGN.md §5).
-const PINNED_GFORTRAN: &str = "16.";
+/// The oldest gfortran whose numerical results this tree accepts, for the same
+/// reason the Zig floor exists: the solver's core is compiled, and a different
+/// compiler is a different contract (`DESIGN.md` §5). 14.0 is the floor that
+/// covers the distributions this tree is built on; newer series are welcome.
+const MIN_GFORTRAN: (u64, u64) = (14, 0);
 
 fn main() {
     let manifest = PathBuf::from(
@@ -162,7 +165,8 @@ fn main() {
             Ok(s) => panic!("`build.sh` failed in {solver_dir:?} with {s}"),
             Err(e) => panic!(
                 "could not run {script:?} ({e}) — tension-core links the solver core, so \
-                 gfortran {PINNED_GFORTRAN}x must be on PATH (see tension-solver/DESIGN.md §2)"
+                 gfortran {}.{} or newer must be on PATH (see tension-solver/DESIGN.md §2)",
+                MIN_GFORTRAN.0, MIN_GFORTRAN.1
             ),
         }
     }
@@ -447,11 +451,12 @@ fn run_or_panic(mut command: Command, what: &str) {
     }
 }
 
-/// Whether a `zig version` string is at least `min` (major, minor). Only the
-/// leading two numeric components are read: `0.16.0`, `0.18.0-dev.131+41f885830`
-/// and `0.16.0-dev.1` all parse, and anything non-numeric is not a version we
-/// can compare, so it is refused rather than silently accepted.
-fn zig_at_least(version: &str, min: (u64, u64)) -> bool {
+/// Whether a version string's major.minor is at least `min` (major, minor).
+/// Only the leading two numeric components are read: `0.16.0`,
+/// `0.18.0-dev.131+41f885830` and `16.0.0-dev.1` all parse, and anything
+/// non-numeric is not a version we can compare, so it is treated as older than
+/// the floor (which warns rather than refusing).
+fn version_at_least(version: &str, min: (u64, u64)) -> bool {
     let mut parts = version.trim().split('.');
     let leading_digits = |part: Option<&str>| -> Option<u64> {
         let part = part?;
@@ -471,7 +476,7 @@ fn check_zig_version() {
     };
     let version = String::from_utf8_lossy(&out.stdout);
     let version = version.trim();
-    if zig_at_least(version, MIN_ZIG) {
+    if version_at_least(version, MIN_ZIG) {
         return;
     }
     let (min_major, min_minor) = MIN_ZIG;
@@ -493,20 +498,29 @@ fn check_gfortran_version() {
     };
     let text = String::from_utf8_lossy(&out.stdout);
     let first = text.lines().next().unwrap_or("").trim().to_string();
-    if first.contains(PINNED_GFORTRAN) {
+    // The banner is `GNU Fortran (Debian 14.2.0-19) 14.2.0`: the trailing token
+    // is the version, and the parenthesised one is the distributor's build.
+    let version = first.split_whitespace().last().unwrap_or("");
+    let (min_major, min_minor) = MIN_GFORTRAN;
+    if version_at_least(version, MIN_GFORTRAN) {
         return;
     }
+    // The same rule as the Zig floor: the compiler is the real gate, so a newer
+    // series builds without comment and an older one warns rather than stops.
+    // `TENSION_ALLOW_UNPINNED=1` acknowledges a below-floor toolchain and
+    // silences the warning; the build continues either way.
     if unpinned_allowed() {
         println!(
-            "cargo:warning=tension-solver is built with gfortran '{first}', not the pinned \
-             {PINNED_GFORTRAN}x — TENSION_ALLOW_UNPINNED=1 is set, so the pin is a warning"
+            "cargo:warning=tension-solver is built with gfortran {version}, below the \
+             {min_major}.{min_minor} floor — TENSION_ALLOW_UNPINNED=1 is set, so the below-floor \
+             toolchain is acknowledged"
         );
     } else {
-        panic!(
-            "tension-solver is pinned to gfortran {PINNED_GFORTRAN}x but `gfortran --version` \
-             reports: {first}. The numerical core's results are compiled by that toolchain, so a \
-             mismatch is refused rather than linked silently. Install gfortran {PINNED_GFORTRAN}x, \
-             or set TENSION_ALLOW_UNPINNED=1 to build with the toolchain you have."
+        println!(
+            "cargo:warning=tension-solver requires gfortran {min_major}.{min_minor} or newer; \
+             installed is {version} ('{first}'). The build continues, but the numerical core's \
+             results are compiled by that toolchain (DESIGN.md §5). Upgrade gfortran, or set \
+             TENSION_ALLOW_UNPINNED=1 to acknowledge."
         );
     }
 }
