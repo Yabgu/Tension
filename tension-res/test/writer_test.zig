@@ -288,9 +288,11 @@ test "tension_res_pack maps pack failures to the ABI errno table" {
     try sc.tmp.dir.writeFile(io, .{ .sub_path = "assets/hello.txt", .data = PAYLOAD });
 
     var err: [128]u8 = undefined;
-    const out_z = try alloc.dupeZ(u8, sc.out);
+    const out_z = try alloc.allocSentinel(u8, sc.out.len, 0);
+    @memcpy(out_z, sc.out);
     defer alloc.free(out_z);
-    const src_z = try alloc.dupeZ(u8, sc.src);
+    const src_z = try alloc.allocSentinel(u8, sc.src.len, 0);
+    @memcpy(src_z, sc.src);
     defer alloc.free(src_z);
     const out_ptr: [*:0]const u8 = out_z.ptr;
     const src_ptr: [*:0]const u8 = src_z.ptr;
@@ -303,8 +305,10 @@ test "tension_res_pack maps pack failures to the ABI errno table" {
 
     // A missing source is -ENOENT with a message.
     var missing: [64]u8 = undefined;
-    const missing_path = try std.fmt.bufPrintZ(&missing, "{s}/nope", .{sc.src});
-    try testing.expectEqual(@as(i32, -2), c_api.tension_res_pack(missing_path.ptr, out_ptr, &err, err.len));
+    const missing_text = try std.fmt.bufPrint(missing[0 .. missing.len - 1], "{s}/nope", .{sc.src});
+    missing[missing_text.len] = 0;
+    const missing_path: [*:0]const u8 = @ptrCast(&missing);
+    try testing.expectEqual(@as(i32, -2), c_api.tension_res_pack(missing_path, out_ptr, &err, err.len));
     try testing.expect(std.mem.indexOfScalar(u8, &err, 0) != null);
     try testing.expect(err[0] != 0);
 

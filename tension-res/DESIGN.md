@@ -1359,8 +1359,9 @@ writes ever-larger Files until something stops it. Both boundary scans in the
 result rather than on the cap.
 
 **Known artifacts (build tooling, not the format).** Under `zig build test`,
-this Zig 0.16 build runner prints a trailing `failed command: …/test
---listen=-` line whenever the test process writes anything to stderr: it is the
+the Zig build runner (0.16 and later — measured on 0.18.0-dev) prints a
+trailing `failed command: …/test --listen=-` line whenever the test process
+writes anything to stderr: it is the
 verbose-context header for a step that produced stderr output, emitted "no
 matter the result" (`lib/compiler/build_runner.zig`, `printErrorMessages`). It
 is not a failure — the build exits 0 and reports every test as passing — and
