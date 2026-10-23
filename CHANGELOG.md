@@ -15,6 +15,110 @@ attach a change to.
 
 ---
 
+## 2026-10-23 — TensionScript 0.9.0, and the managed struct's alias fixture
+
+### The pin moves to 0.9.0
+
+`@acakar/tensionscript` moves from `^0.8.1` to `^0.9.0` in all sixteen
+`package.json` files (`tension-framework` and the fifteen examples) and their
+sixteen lockfiles. `examples/ai`'s lockfile was regenerated with
+`--package-lock-only --ignore-scripts`: its `postinstall` fetches roughly 2 GB of
+model weights, so the scripts never ran. The other fifteen declare no install
+scripts. There is no workspace root, so every example carries its own
+`node_modules`. The framework build is unchanged in shape — exit 0, the same 69
+`AS235` export-class warnings — and `build/index.wasm` is 65,628 B after this
+entry's fixture (0.8.1: 61,652 B).
+
+The arena did not move: `layout_hash` is `786288195`, read from the host
+(`tension-core layout-hash`) and matched against `layout.ts`. The pin is a
+compiler change, not a wire change.
+
+### What `@managed struct` is in 0.9.0
+
+GC-owned, C layout, on the heap; the reference *is* the fields pointer (reading
+A). It is `final`: no inheritance, no virtual methods. A guest copies one the
+way it copies any managed object — a byte copy is not a copy, because the write
+barrier matters — so `COPY_STRUCT` does not apply to managed types, and it is not
+used here.
+
+`struct` stays unmanaged permanently. The planned 0.9.0 flip to managed was
+cancelled and the `TS6385` warning ("struct flips to managed") was removed, so
+any 0.8.x declaration marked `@unmanaged struct` to silence that warning is now
+redundant but still valid. `@managed` is a new kind, not a rename: the 35
+`@unmanaged struct` declarations in this tree are byte-identical to `origin/main`
+before this change.
+
+Not supported, and not used here:
+
+- `T[N]` fields in an `@managed` struct — the `makeZero` path has no
+  `FixedArray` case (`src/compiler.ts:10688` in TensionScript). Filed.
+- Inline arrays of GC references — `isManaged<Other[4]>()` returns false
+  (`types.ts:885-889`), so the visitor skips element-wise tracing. Filed.
+- `@abi.transfer` — not implemented in 0.8.x or 0.9.0. Filed; it needs a
+  host-retention use case to design against.
+
+### `@managed` + `@abi.alias` verified (the PR 8 gap)
+
+This closes the deferral recorded under "the manifest gets a reader" below. PR 8
+could not ship the fixture: 0.8.1 parsed `@abi.alias` on an `@managed` struct
+and silently ignored it, so an assertion would have failed on the pinned
+compiler while asserting nothing about the wire.
+
+0.9.0 honors it. `ManagedAliased` (`x: u32 @abi.alias("c_x")`,
+`y: u64 @abi.alias("c_y")`) is declared in
+`tension-framework/assembly/runtime/managed-alias.ts` — beside `wire.ts`, not
+inside it, because the struct has no host declaration or arena offset to compare
+against; what it verifies is a compiler property, not a wire record.
+`assertAbiAliases()` calls `assertManagedAliases()`, which checks both aliases,
+the no-alias fallback on a managed struct, and `sizeof<ManagedAliased>() == 16`
+(`u32` at 0, `u64` at 8).
+
+Two-way by construction, not three-way: an alias is either recorded or it is
+not, so there is no partial cell. The load-bearing check: removing `x`'s alias
+compiles cleanly and aborts at runtime with
+
+```
+game aborted: ManagedAliased.x does not carry its ABI alias: c_x
+```
+
+and exit 1; restoring it returns `guest-open.ts` to `OK`. The fixture rides in
+the existing `guest-open` cell, so the framework runner's count is unchanged at
+23 results.
+
+### Verified after the bump
+
+OGRE delivery path (real adapter, NULL render system, `-O3`):
+`guest-motion` `ACID 5/5 passed (structural, renderer=null)`; `guest-skinning`
+`6/6`; `guest-angular` `8/8`; `guest-physics` `9/9`.
+
+Async fixtures on the real host: `guest-push` resumed with 2; `guest-early`
+resumed with 6 (buffered before the park); `guest-flow` `for+continue 9`;
+`guest-chain` `got 7`; `guest-sync` `504`; `guest-drop` `-EIO`.
+
+The three drift-check cells are guest-side and version-independent, and still
+behave as recorded: `refuse` prints the corruption and `OK`; `partial` prints
+`drift: SessionInfo: guest 144 != host 128` and then `OK`; `fixed` aborts with
+the named diagnostic (exit 1, no `OK`).
+
+Non-adopters: `io`, `log`, `res`, `audio`, `solver/wasm`, `solver/world` exit 0;
+`bouncing-bodies` runs its 300-frame smoke and settles (`asleep 64/64`, exit 0).
+
+### Deferred
+
+- `T[N]` in an `@managed` struct (`makeZero`, `src/compiler.ts:10688`) — a
+  compiler phase, not this one.
+- Inline arrays of GC references (`types.ts:885-889`) — same.
+- `@abi.transfer` — waits for a host-retention use case.
+- TensionScript `alignof` for records returns the `usize` base
+  (`builtins.ts:1286-1309`), the same mechanism as the pre-0.8.0 `sizeof` bug.
+  Filed against TensionScript.
+- `cargo test` could not be built here: `tension-core/build.rs:457` refuses the
+  installed Zig (0.18.0-dev) against the pinned 0.16.x, so the suites that need
+  the host were run against the prebuilt interpreter, whose source is identical
+  between the two trees.
+
+---
+
 ## 2026-10-23 — the manifest gets a reader
 
 ### Type-level drift check at session open
