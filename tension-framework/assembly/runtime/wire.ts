@@ -21,6 +21,11 @@
 // test in tension-core reads the generated `layout.ts` for the hash, and these
 // numbers move only when the arena's shape does.
 
+// The managed struct's alias fixture is not a wire record (it has no host
+// declaration), but it is asserted by the same function, so the compiler's two
+// kinds are checked in one place. See `managed-alias.ts` for why it is separate.
+import { assertManagedAliases } from "./managed-alias";
+
 // --- constants -------------------------------------------------------------
 
 /** ArenaControl.state values (arena.rs `STATE_*`). */
@@ -502,4 +507,8 @@ export function assertAbiAliases(): void {
   if (abiNameOf<EventRecord>("seq") != "seq") {
     assert(false, "EventRecord.seq has no alias and must report its TS name");
   }
+  // The same two facts on the compiler's other struct kind. TensionScript 0.9.0
+  // is the first release that honors `@abi.alias` on an `@managed` struct, so
+  // this is the assertion PR 8 could not write.
+  assertManagedAliases();
 }
