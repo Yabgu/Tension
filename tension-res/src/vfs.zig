@@ -108,7 +108,7 @@ pub const Vfs = struct {
     /// The only thing this module allocates from: the per-handle chunk cache
     /// (§8.3). Borrowed; the caller keeps it alive for the VFS's lifetime.
     alloc: std.mem.Allocator,
-    fds: [MAX_FDS]Handle = [_]Handle{.{}} ** MAX_FDS,
+    fds: [MAX_FDS]Handle = @splat(.{}),
     cursor: Cursor = .{},
 
     pub fn init(paks: []const walk.Walker, alloc: std.mem.Allocator) Vfs {

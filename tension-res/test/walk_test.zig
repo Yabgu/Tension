@@ -107,7 +107,7 @@ test "the walker never reads pak_bytes directly" {
     const tiny = buildTiny(null);
     // Decoy of the same length, different content: if the walker touched it,
     // the walk would fail; the reader serves the real bytes.
-    var decoy = [_]u8{0xFF} ** (64 * 1024);
+    const decoy: [64 * 1024]u8 = @splat(0xFF);
     var rec = support.Recorder{ .inner = .{ .bytes = tiny.tree.image[0..tiny.tree.image_len] } };
     const w = try walk.Walker.init(decoy[0..tiny.tree.image_len], rec.reader());
     const loc = try w.lookup("a/b/c/d/e/f");

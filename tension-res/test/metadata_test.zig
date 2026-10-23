@@ -41,7 +41,7 @@ test "timestamp longer than 12 bytes ignores the NULL tail (clause 7)" {
 }
 
 test "a zero year means the timestamp is ignored (clause 7)" {
-    const bytes = [_]u8{0} ** 12;
+    const bytes: [12]u8 = @splat(0);
     const ts = try metadata.Timestamp.decode(&bytes);
     try testing.expect(ts.isIgnored());
 }
@@ -104,7 +104,7 @@ fn buildBufferHeader(buf: []u8, type_byte: u8, with_address: bool) usize {
     if (with_address) w.field(fields.BUFFER_ADDRESS, &.{ 0x01, 0, 0, 0 }) catch unreachable;
     w.field(fields.UNUSED_IN_THIS_BUFFER, &.{ 0, 0, 0, 0 }) catch unreachable;
     w.field(fields.FILE_SET_ID, &.{ 0x54, 0x45, 0x4E, 0x53 }) catch unreachable;
-    w.field(fields.FILE_SET_TIME, &([_]u8{0} ** 16)) catch unreachable;
+    w.field(fields.FILE_SET_TIME, &@as([16]u8, @splat(0))) catch unreachable;
     w.tableEnd(fields.BUFFER_HEADER) catch unreachable;
     return w.len;
 }

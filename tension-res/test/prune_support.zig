@@ -313,7 +313,7 @@ fn writeVolumeHeader(w: *fields.Writer) !void {
     var tmp4: [4]u8 = undefined;
     fields.writeUintLe(&tmp4, SECTOR);
     try w.field(fields.SECTOR_SIZE, &tmp4);
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.VOLUME_SET_TIME, &zero_ts);
     try w.field(fields.VOLUME_TIME, &zero_ts);
     try w.field(fields.VOLUME_SET_LABEL, "PRUNE");
@@ -327,7 +327,7 @@ fn writeFileSetHeader(w: *fields.Writer) !void {
     try w.tableHeader(fields.FILE_SET_HEADER);
     try w.field(fields.OFFSET_TO_END, &.{ 0, 0 });
     try w.field(fields.FILE_SET_ID, &.{ 0x54, 0x45, 0x4E, 0x53 });
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.field(fields.FILE_SET_LABEL, "PRUNE");
     try w.bitsField(fields.FILE_SET_INDEX_PRESENT, 0);
@@ -352,7 +352,7 @@ fn writeBufferHeader(w: *fields.Writer) !void {
     try w.field(fields.BUFFER_ADDRESS, &.{ 1, 0, 0, 0 });
     try w.field(fields.UNUSED_IN_THIS_BUFFER, &.{ 0, 0, 0, 0 });
     try w.field(fields.FILE_SET_ID, &.{ 0x54, 0x45, 0x4E, 0x53 });
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.tableEnd(fields.BUFFER_HEADER);
 }

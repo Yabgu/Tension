@@ -794,7 +794,7 @@ fn writeVolumeHeader(w: *fields.Writer) PackError!void {
     try w.field(fields.FORMAT_NAME, "SIDF"); // Annex C: the 4 bytes S I D F
     try w.field(fields.FORMAT_VERSION, &.{ 1, 0, 0, 0 }); // Annex C: B0 major, B1 minor
     try w.field(fields.SECTOR_SIZE, &u32bytes(@intCast(SECTOR))); // 10.1
-    const zero_ts = [_]u8{0} ** 16; // clause 7: year 0 -> timestamp ignored
+    const zero_ts: [16]u8 = @splat(0); // clause 7: year 0 -> timestamp ignored
     try w.field(fields.VOLUME_SET_TIME, &zero_ts);
     try w.field(fields.VOLUME_TIME, &zero_ts);
     try w.field(fields.VOLUME_SET_LABEL, LABEL);
@@ -808,7 +808,7 @@ fn writeFileSetHeader(w: *fields.Writer, buffer_size: u32) PackError!void {
     try w.tableHeader(fields.FILE_SET_HEADER);
     const ote = try writeOte(w);
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID)); // Fixed, 4 bytes
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.field(fields.FILE_SET_LABEL, LABEL);
     try w.bitsField(fields.FILE_SET_INDEX_PRESENT, 0);
@@ -824,7 +824,7 @@ fn writeFileSetTrailer(w: *fields.Writer) PackError!void {
     try w.tableHeader(fields.FILE_SET_TRAILER);
     const ote = try writeOte(w);
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID));
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try w.field(fields.FILE_SET_LABEL, LABEL);
     try w.field(fields.SOURCE_NAME_TYPE, &.{0x01});
@@ -851,7 +851,7 @@ fn writeBufferHeader(
     try w.field(fields.BUFFER_ADDRESS, &u32bytes(address));
     try w.field(fields.UNUSED_IN_THIS_BUFFER, &u32bytes(unused));
     try w.field(fields.FILE_SET_ID, &u32bytes(FILE_SET_ID));
-    const zero_ts = [_]u8{0} ** 16;
+    const zero_ts: [16]u8 = @splat(0);
     try w.field(fields.FILE_SET_TIME, &zero_ts);
     try endTable(w, fields.BUFFER_HEADER, ote);
 }

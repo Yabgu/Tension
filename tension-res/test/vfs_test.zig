@@ -584,7 +584,7 @@ test "a compressed entry stats, opens, and reads -EIO for that file only" {
 
 test "the VFS reaches bytes only through the BlockReader" {
     const fx = try buildFx(null);
-    var decoy = [_]u8{0xFF} ** (128 * 1024);
+    const decoy: [128 * 1024]u8 = @splat(0xFF);
     var sr = res.block.SliceReader{ .bytes = image[0..fx.tree.image_len] };
     const pak = try walk.Walker.init(decoy[0..fx.tree.image_len], sr.blockReader());
     var paks = [_]walk.Walker{pak};

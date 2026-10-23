@@ -375,7 +375,7 @@ test "load rejects bad arguments with a message, never a panic" {
     try testing.expectEqual(@as(u8, 0), small[3]);
 
     // malformed blobs are errno, not crashes
-    var zeros = [_]u8{0} ** 4096;
+    const zeros: [4096]u8 = @splat(0);
     try testing.expect(tension_res_load(&zeros, zeros.len, &out, &err, err.len) < 0);
     try testing.expect(out == null);
     try testing.expect(tension_res_load_borrowed(&zeros, zeros.len, &out, &err, err.len) < 0);
