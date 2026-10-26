@@ -457,6 +457,18 @@ export struct Renderable {
  * instead, at the offsets `Renderable`'s inline transform already uses
  * (16/32/48), so the two read the same way — and `pad0` is what puts them
  * there, because a record holding a `Quatf` aligns that `Quatf` to 16.
+ *
+ * **Unmanaged: every use is a pointer view.** The idiom is
+ * `changetype<MotionUpdate>(base + index * sizeof<MotionUpdate>())` — a view of
+ * the arena slot with no header read or written. A use-site `@unmanaged`
+ * (`changetype<@unmanaged MotionUpdate>(…)`) is therefore not an improvement but
+ * a restatement: the declaration already names the model, and the override emits
+ * the same code. Say it once, here.
+ *
+ * The layout is verified at the record's `pad2` by `ogreMotionOffsetsProblem`,
+ * which asserts against `sizeof<MotionUpdate>()` rather than a copied constant —
+ * so a field appended after `pad2` fails the check instead of silently widening
+ * the record past the table's stride.
  */
 @unmanaged
 export struct MotionUpdate {
@@ -484,6 +496,14 @@ export struct MotionUpdate {
  *
  * The table lives in `BUFFER_POOL` after the motion table, so `BONE_TABLE_OFFSET`
  * is an offset *within the region*, not a region.
+ *
+ * **Unmanaged: every use is a pointer view.** As for `MotionUpdate`, the
+ * declaration is where the model is stated; a use-site `@unmanaged` restates it
+ * for identical code. The idiom is
+ * `changetype<BoneUpdate>(base + index * sizeof<BoneUpdate>())`.
+ *
+ * The layout is verified at this record's `pad2` by `ogreBoneOffsetsProblem`,
+ * asserting `sizeof<BoneUpdate>()`.
  */
 @unmanaged
 export struct BoneUpdate {
