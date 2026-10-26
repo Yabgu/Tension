@@ -215,3 +215,93 @@ be free of, coming back through a different door. The direct form stays.
 The general rule it leaves: **at `-O3`, `changetype<T>(expr).field = v` is free;
 wrapping that `changetype` in a function that returns `T` is not.** The free part
 is the field store's offset resolution, not the value's lifetime.
+
+## stale-checkout-report (workflow note)
+
+**When someone reports "this file still looks like X," the first question is
+which checkout they are reading, not whether the file changed.**
+
+The `bones.ts` report is the second instance of this in one phase. Verbatim, on
+`origin/main`:
+
+```
+$ git show origin/main:tension-framework/assembly/ogre/bones.ts \
+    | grep -n "store<\|changetype<BoneUpdate>"
+143:    const rec = changetype<BoneUpdate>(this.base + <usize>index * BONE_SIZE);
+```
+
+Zero raw stores. The `write()` method is fifteen field assignments on the
+`@unmanaged` view, exactly as PR #26 claimed.
+
+And in the primary checkout `~/work/Tension`, on `build/optimize-level` at
+`1c663ed` (2026-10-22 02:23, twenty-seven minutes before #26 merged):
+
+```
+$ grep -n "store<\|changetype<BoneUpdate>" tension-framework/assembly/ogre/bones.ts
+141:    store<u32>(at + 0, renderableId);
+142:    store<u32>(at + 4, boneIndex);
+143:    store<u64>(at + 8, 0); // pad0, which is what puts the transform at 16
+144:    store<f32>(at + 16, x);
+...
+155:    store<f32>(at + 60, 0);
+```
+
+Fifteen stores with hand-computed offsets — the pre-conversion code, on a branch
+that predates the conversion. `git merge-base --is-ancestor 31a6626 HEAD` says
+**no**; against `origin/main` it says **yes**.
+
+Both readings are true. They are different trees. The lesson costs nothing to
+apply: **check `git branch --show-current` and whether the commit that made the
+change is an ancestor, before reading the file.** A file's content is a fact
+about a checkout, not about the repo.
+
+The primary checkout has been the stale one in both instances, and for a benign
+reason: it is where somebody's unrelated work in progress lives (here sixteen
+files of `tension-res` and build-script edits, on a branch named for that work).
+It is the least likely place to find the framework's current state and the most
+likely place to look. Read the branch, then the file.
+
+A related trap, since it produced a false report of its own: **a byte-identity
+check cannot tell raw stores from field assignment.** The compiler compiles both
+forms to the same instructions — measured, deduplicated to one symbol — so
+"writers byte-identical" is evidence the *code* is unchanged, never evidence the
+*conversion* was made. Only the source grep settles that. Verified here on both
+trees, for both files:
+
+| Tree | `bones.ts` | `motion.ts` | `skin.ts` |
+|---|---|---|---|
+| `origin/main` | `changetype<BoneUpdate>` ×1, no stores | `changetype<MotionUpdate>` ×2, no stores | 6 stores (undeclared record) |
+| PR #36 (`a4d052d`) | `changetype<BoneUpdate>` + `sizeof<BoneUpdate>()` | same, ×2 | 6 stores + TODO |
+
+## byte-identical-gate-misapplied-to-comments (correction)
+
+**Comment-only commits should be gated on "no behavioural change", not
+"byte-identical".** The two are not the same, and the difference is not a
+technicality.
+
+Commit `8de644a` added twenty comment lines above the two records in
+`ogre/wire.ts`. The wasm moved:
+
+```
+before  e1427710762d9c22464711dfbf8277f0   65627 bytes
+after   e86f41c6974a1fcd81f57f92dbd57453   65627 bytes
+```
+
+Same size. The wat diff is twelve lines and entirely three `i32.const` values —
+`948→968`, `824→844`, `857→877`, each exactly **+20**, the number of comment
+lines added above the asserts whose source positions they record. The
+instructions are identical; what changed is where the debug section says they
+came from.
+
+That is what a comment does: it moves the code it documents. Applying a
+byte-identity gate here fires as a false positive and would forbid documenting
+the file at all. The correct gate for a comment-only commit is **no behavioural
+change** — same size, same instructions, different debug positions is exactly the
+expected outcome, and the comments (which answer "shouldn't this be
+`changetype<@unmanaged BoneUpdate>(at)`?" at the declaration, where a reader
+meets it) stay.
+
+The distinction generalises: byte-identity is the right gate when the change is
+supposed to be a no-op *in codegen*. It is the wrong gate when the change is
+supposed to be a no-op *in behaviour* but necessarily alters source positions —
+comments, and to a lesser extent any reflow that an assert names.
