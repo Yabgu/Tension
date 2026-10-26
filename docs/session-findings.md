@@ -141,3 +141,77 @@ The strengthening is held back for a decision rather than slipped in under a
 "no output change" claim that would be false. Whenever it lands, the honest
 statement is: *one byte, confined to the offset-check functions, no behaviour
 change on any input that has no appended field.*
+
+---
+
+## unmanaged-struct-array-views (filed)
+
+`T[N]` of **records** is a missing capability, and it is the type-system gap
+behind the framework's manual index arithmetic.
+
+Current state, measured:
+
+- **`T[N]` of scalars works.** `u32[8]`, `f32[6]` — shipped in 0.8.0, used for
+  the input records.
+- **`T[N]` of records does not compose.** A `BoneUpdate[256]` field would be
+  `256 * 4` bytes (one 4-byte pointer per element), not `256 * 64`, and element
+  access does not index through to a record. Declared, it is unusable.
+- **Consequence:** `base + index * sizeof<BoneUpdate>()` is a workaround for a
+  missing type. It is correct — the offsets come from the declaration and the
+  size-binding check guards the stride — but there is no way to write "a
+  contiguous array of N inline records, indexable as `arr[i].field`".
+
+What would be needed: an array view over contiguous records — N × 64-byte
+records, `arr[i].field` compiling to `load(base + i * 64 + fieldOffset)`.
+
+Design questions for a future scoping:
+
+- Does `T[N]` of an `@unmanaged` struct mean N **inline records** (C semantics)
+  or N **pointers** (the current default)? The current answer is pointers, which
+  is why the record case does not compose.
+- Does `changetype<T[N]>(ptr)` produce the inline view, or is the view a distinct
+  type (C++ `[N]T`, Zig `*[N]T`)?
+- Value semantics or pointer semantics for iteration?
+- Interaction with `@inline struct`: a `@inline T[N]` field would need inline
+  storage inside a record — the deferred inline-nesting case.
+- The drift check: an inline array field's `offsetof` is checked today, but the
+  element-access codegen path is new and needs its own fixtures.
+
+Scope: substantial — a new array-of-records layout rule, a new element-access
+codegen path, and the pointer-vs-inline decision. Its own scoping, not a
+refactor.
+
+Not blocking 0.10.0 adoption or the release. The bone table's manual arithmetic
+is correct, just verbose.
+
+## recordAt-helper-does-not-inline (filed)
+
+Attempting to extract the slot arithmetic into a helper —
+
+```ts
+private recordAt(index: u32): MotionUpdate {
+  return changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
+}
+```
+
+— **is not free, and `@inline` does not rescue it.** Measured on
+`guest-motion.wasm`:
+
+| Form | `MotionBatch#set` | guest wasm |
+|---|---|---|
+| direct `changetype` at the call site | 2069 B | 172935 B |
+| helper | 2693 B | larger |
+| helper + `@inline` | — | 172942 B |
+
+`MotionBatch#set` grows by **624 bytes**, and the wat shows why: the function
+gains a `block $folding-inner0` and a `stack_pointer ± 4` path. Returning an
+`@unmanaged struct` produces a **reference value**, and a reference return needs
+a shadow-stack temporary even after the body is inlined — so the stack-frame
+bookkeeping appears where the direct `changetype` had none.
+
+This is exactly the accessor tax the field-assignment conversion was supposed to
+be free of, coming back through a different door. The direct form stays.
+
+The general rule it leaves: **at `-O3`, `changetype<T>(expr).field = v` is free;
+wrapping that `changetype` in a function that returns `T` is not.** The free part
+is the field store's offset resolution, not the value's lifetime.
