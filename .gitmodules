@@ -1,3 +1,6 @@
 [submodule "third_party/ogre-next"]
 	path = third_party/ogre-next
 	url = https://github.com/OGRECave/ogre-next.git
+[submodule "third_party/freeimage"]
+	path = third_party/freeimage
+	url = https://github.com/WinMerge/freeimage.git

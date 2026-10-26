@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# bootstrap.sh — build Ogre-Next from the pinned submodule.
+# bootstrap.sh — build Ogre-Next, and the FreeImage it links, from the
+# pinned submodules.
 #
 # Builds third_party/ogre-next into third_party/ogre-next-build and
 # installs it into third_party/ogre-next-install, from where
 # tension-ogre/build.sh picks it up (with the system install as the
-# fallback for contributors who have not run this).
+# fallback for contributors who have not run this). third_party/freeimage
+# is built first and installed into third_party/freeimage-install; the
+# FreeImage step below explains why OGRE cannot be built without it.
 #
 # Why in-tree: the distro package's RenderSystem_Vulkan.so carries no
 # DT_NEEDED for glslang — upstream's link line never names it — so the
@@ -15,8 +18,11 @@
 #
 # Packages this needs (Arch names, per the PKGBUILD): cmake, git,
 # glslang, spirv-tools, vulkan-headers, mesa, plus the runtime deps
-# freeimage, freetype2, glu, libxaw, libxrandr, rapidjson, tinyxml,
-# ziplib, vulkan-icd-loader. On Debian the Vulkan build additionally
+# freetype2, glu, libxaw, libxrandr, rapidjson, tinyxml, ziplib,
+# vulkan-icd-loader. FreeImage is not on that list: it comes from the
+# third_party/freeimage submodule and its codecs (zlib, libpng, libjpeg,
+# libtiff, OpenJPEG, webp, libraw, OpenEXR) are bundled, so no freeimage
+# package is needed on the host. On Debian the Vulkan build additionally
 # needs glslang-dev (headers, and the static libglslang.a it ships in
 # place of a shared glslang), spirv-tools (glslang's static archive calls
 # into it — libSPIRV-Tools-opt/.a; installed as glslang-dev's dependency),
@@ -35,6 +41,9 @@ ROOT="$(cd "$HERE/.." && pwd)"
 SRC="$HERE/ogre-next"
 BUILD="$HERE/ogre-next-build"
 INSTALL="$HERE/ogre-next-install"
+FI_SRC="$HERE/freeimage"
+FI_BUILD="$HERE/freeimage-build"
+FI_INSTALL="$HERE/freeimage-install"
 
 FORCE=0
 for arg in "$@"; do
@@ -44,13 +53,126 @@ for arg in "$@"; do
     esac
 done
 
-# 1. The submodule has to be there — initialise it on a fresh clone.
+# 1. The submodules have to be there — initialise them on a fresh clone.
 if [ ! -f "$SRC/CMakeLists.txt" ]; then
     echo "bootstrap: third_party/ogre-next is empty; initialising the submodule"
     git -C "$ROOT" submodule update --init --recursive third_party/ogre-next
 fi
+if [ ! -f "$FI_SRC/CMakeLists.txt" ]; then
+    echo "bootstrap: third_party/freeimage is empty; initialising the submodule"
+    git -C "$ROOT" submodule update --init --recursive third_party/freeimage
+fi
 
-# 2. Idempotence: an install is a build; don't redo it unless asked.
+# 2. FreeImage, from its own submodule.
+#
+# This is not a preference, it is how OGRE's build is written. OgreMain's
+# CMakeLists seeds BROKEN_FILES_IN_UNITY_BUILD with src/OgreFreeImageCodec2.cpp
+# unconditionally, and create_unity_build_files() puts that SEPARATE list back
+# into the target even when OGRE_UNITY_BUILD is off
+# (CMake/Utils/OgreAddTargets.cmake) — so the translation unit is always
+# compiled and linked. OGRE_CONFIG_ENABLE_FREEIMAGE=OFF only clears the codec
+# *registration* (OGRE_NO_FREEIMAGE in OgreBuildSettings.h); it does not take
+# the file out of the target, and the disable path's list(REMOVE_ITEM) cannot
+# cancel it because the two spell the path differently. Measured with the flag
+# OFF and no FreeImage installed, the build dies on the target's last object:
+#
+#   OgreFreeImageCodec2.cpp:48:10: fatal error: FreeImage.h: No such file
+#   or directory
+#
+# With the flag OFF and FreeImage present it links, but OGRE is then left with
+# no PNG/JPEG decoder at all — the adapter decodes every texture through
+# Ogre::Image2::load — so the flag stays ON below and this step is required.
+#
+# The fork: WinMerge/freeimage is the maintained 3.19.x line with a CMake
+# build. Upstream's own tree stops at 3.18.0 and this repository's submodule
+# mirrors what the distro packages actually ship. The default branch of the
+# fork is `winmerge`; the pin below is that branch's tip.
+
+fi_flags=(
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_INSTALL_PREFIX="$FI_INSTALL"
+    # Shared, not static: the bundled codecs are separate CMake targets,
+    # so only the shared library is one self-contained file for OGRE to
+    # link. A static build would need every codec archive on OGRE's link
+    # line, which FindFreeImage does not provide.
+    -DBUILD_SHARED_LIBS=ON
+    -DFREEIMAGE_STATIC=OFF
+    -DBUILD_TESTS=OFF
+    # No camera RAW. LibRawLite is the only bundled codec under a copyleft
+    # licence — LGPL-2.1 *or* CDDL-1.0 at the recipient's choice — and it is
+    # compiled into libfreeimage statically, so leaving it in means electing
+    # one of those and living with its terms. Nothing here reads camera RAW:
+    # the loader sniffs PNG/DDS magic and the adapter hands bytes to
+    # Ogre::Image2, which never opens a .CR2/.NEF/.DNG. The fork supports the
+    # switch properly — PluginRAW.cpp has an #else stub that keeps the RAW
+    # slot in FREE_IMAGE_FORMAT occupied, precisely so the FIF_* constants in
+    # FreeImage.h stay aligned with the runtime plugin indices (its own
+    # comment cites issue #38). Every remaining bundled codec is permissive:
+    # zlib, libpng, IJG, libtiff, libwebp, libdeflate, OpenJPEG, OpenEXR,
+    # Imath, OpenJPH, Zstd.
+    -DBUILD_LIBRAWLITE=OFF
+)
+case "$(uname -s)" in
+    *MINGW*|*MSYS*|*CYGWIN*|*Windows*)
+        fi_flags+=(-G Ninja)
+        ;;
+    Linux*)
+        # The layout of the distro package this repository was measured
+        # against: libfreeimage.so.3 (+ the .so link) and freeimage.pc.
+        fi_flags+=(-DFREEIMAGE_LINUX_PACKAGE_LAYOUT=ON)
+        ;;
+esac
+
+# An install is a build here too: header + library on disk means done — but
+# only if it was built from *these* flags. The stamp records the flag set, so
+# changing one above (this is how BUILD_LIBRAWLITE=OFF arrived) rebuilds
+# instead of silently reusing a library that still carries the old code. An
+# install that predates the stamp has no recorded flags and so counts as
+# stale, which is deliberate: it was built by an older script.
+fi_stamp="$FI_INSTALL/.bootstrap-flags"
+fi_want_stamp="$(printf '%s\n' "${fi_flags[@]}")"
+fi_installed=0
+if [ -f "$FI_INSTALL/include/FreeImage.h" ] && [ -n "$(find "$FI_INSTALL" \
+        \( -iname 'libfreeimage.so*' -o -iname 'libfreeimage.a' \
+           -o -iname 'freeimage.dll' -o -iname 'libfreeimage.dll.a' \) \
+        -print -quit 2>/dev/null)" ] && [ -f "$fi_stamp" ] \
+        && [ "$(cat "$fi_stamp")" = "$fi_want_stamp" ]; then
+    fi_installed=1
+fi
+
+if [ "$fi_installed" -eq 0 ] || [ "$FORCE" -eq 1 ]; then
+    if [ -d "$FI_INSTALL" ] && [ -f "$FI_INSTALL/include/FreeImage.h" ]; then
+        echo "bootstrap: FreeImage is installed but not with this flag set — rebuilding"
+    fi
+    echo "bootstrap: building FreeImage ($FI_BUILD -> $FI_INSTALL)"
+    cmake -S "$FI_SRC" -B "$FI_BUILD" "${fi_flags[@]}"
+    cmake --build "$FI_BUILD" -j"$(nproc)"
+    cmake --install "$FI_BUILD"
+    printf '%s\n' "$fi_want_stamp" > "$fi_stamp"
+else
+    echo "bootstrap: in-tree FreeImage already installed — reusing it."
+fi
+
+# Where it landed: take the directory from the library itself. It is not
+# always $FI_INSTALL/lib — CMAKE_INSTALL_LIBDIR is "lib64" on some 64-bit hosts
+# and multiarch on Debian — and the RUNPATH below has to name the real one.
+if [ ! -f "$FI_INSTALL/include/FreeImage.h" ]; then
+    echo "bootstrap: FreeImage install has no FreeImage.h at $FI_INSTALL/include" >&2
+    exit 1
+fi
+fi_lib="$(find "$FI_INSTALL" \( -iname 'libfreeimage.so*' -o -iname 'libfreeimage.a' \
+        -o -iname 'libfreeimage.dll.a' -o -iname 'freeimage.lib' \) \
+        -print -quit 2>/dev/null)"
+if [ -z "$fi_lib" ]; then
+    echo "bootstrap: FreeImage install has no library under $FI_INSTALL" >&2
+    exit 1
+fi
+fi_lib_dir="$(dirname "$fi_lib")"
+
+# 3. Idempotence: an install is a build; don't redo it unless asked.
+# This runs *after* FreeImage, because a flag change there (a different
+# codec set) has to be able to rebuild without --force; an early exit
+# here would never reach that check.
 # The media tree is part of "installed": without it the Hlms has no
 # materials (see the OGRE_INSTALL_SAMPLES note below).
 is_installed=0
@@ -125,6 +247,16 @@ find_spirv_tools_libs() {
 }
 
 extra_flags=()
+# FreeImage, built in step 2: point OGRE's FindFreeImage at that install.
+# FindFreeImage derives its search paths from FREEIMAGE_HOME
+# (CMake/Packages/FindFreeImage.cmake -> create_search_paths), and OGRE
+# prepends CMAKE_PREFIX_PATH for its plain find_path/find_library calls. Both
+# are passed so the probe does not depend on the environment, and so that
+# reconfiguring an existing build tree keeps finding it.
+extra_flags+=(
+    "-DFREEIMAGE_HOME=$FI_INSTALL"
+    "-DCMAKE_PREFIX_PATH=$FI_INSTALL"
+)
 # Whether this platform's flag set is supposed to produce the Vulkan
 # render system; the post-install check at the bottom holds the build to it.
 vulkan_expected=0
@@ -215,6 +347,12 @@ case "$(uname -s)" in
             # "Found relative path while evaluating include directories"
             # (measured, Debian 13, 2026-10-11).
             "-DVulkan_SHADERC_INCLUDE_DIR=$glslang_include"
+            # libOgreNextMain.so records a DT_NEEDED on libfreeimage.so.3, and
+            # this install sits outside the loader's default path. Bake the
+            # directory in as a RUNPATH so every consumer resolves it without
+            # environment help: the adapter is dlopen'd by tension-core, the
+            # test runner and the example runners alike.
+            "-DCMAKE_INSTALL_RPATH=$fi_lib_dir"
         )
         vulkan_expected=1
         ;;
@@ -256,6 +394,12 @@ FLAGS=(
     # Feature set matching the system package, so behaviour is
     # unchanged when the source switch happens.
     -DOGRE_CONFIG_THREAD_PROVIDER=std
+    # ON, not OFF: step 2 builds FreeImage so the library is there either
+    # way, and OFF would leave OGRE with no PNG/JPEG decoder at all —
+    # OGRE_NO_FREEIMAGE=1 in OgreBuildSettings.h skips the codec registration
+    # in OgreRoot.cpp, while the codec object is still compiled and linked
+    # (see step 2). The adapter decodes every texture through
+    # Ogre::Image2::load, so OFF means no textures.
     -DOGRE_CONFIG_ENABLE_FREEIMAGE=ON
     -DOGRE_CONFIG_ENABLE_JSON=ON
     -DOGRE_CONFIG_ENABLE_ZIP=ON
@@ -265,13 +409,24 @@ echo "bootstrap: configuring ($SRC -> $BUILD)"
 t0=$(date +%s)
 cmake -S "$SRC" -B "$BUILD" "${FLAGS[@]}" "${extra_flags[@]}"
 
+# FreeImage is required (step 2), and the option is a cmake_dependent_option
+# ("Enable FREEIMAGE if FreeImage_FOUND, else FALSE"): a probe that comes up
+# empty turns the codec off *silently* at configure time. Hold the configure to
+# it here instead of discovering a missing texture decoder at run time.
+if ! grep -q '^#define OGRE_NO_FREEIMAGE 0' "$BUILD/include/OgreBuildSettings.h"; then
+    echo "bootstrap: OGRE's configure did not find FreeImage — the codec is off" >&2
+    echo "bootstrap: expected FreeImage.h in $FI_INSTALL/include and a library in $fi_lib_dir" >&2
+    echo "bootstrap: (-DFREEIMAGE_HOME=$FI_INSTALL was passed; check the configure output above)" >&2
+    exit 1
+fi
+
 echo "bootstrap: building with $(nproc) jobs"
 cmake --build "$BUILD" -j"$(nproc)"
 
 echo "bootstrap: installing to $INSTALL"
 cmake --install "$BUILD"
 
-# 3. The Vulkan plugin is what this build is for — a configure that dropped
+# 4. The Vulkan plugin is what this build is for — a configure that dropped
 # it must not read as success. The undefined-glslang check is the measured
 # load failure: OGRE installs its plugins with RTLD_LAZY | RTLD_LOCAL and
 # these references bind eagerly, so an unresolved glslang:: symbol is a
