@@ -84,6 +84,18 @@ export class SkinMatrixBatch {
     const bytes: u32 = <u32>matrices.length * 4;
     if (this.used + bytes > SKIN_DATA_CAPACITY) return false;
     const at = this.base + <usize>index * SKIN_SIZE;
+    // TODO(skin-record): the 32-byte skin record has no TypeScript declaration.
+    // The six stores below are the only place in the tree that writes it, and
+    // they are the only way to learn its shape — so declaring it is a
+    // measurement, not a transcription. What is known: `@0` renderableId (u32),
+    // `@4` this.used, `@8` bytes, `@12` flags (bit 0 = matrices are model-space),
+    // `@16`/`@24` two reserved u64. What is *not* known is the `@4` field's
+    // meaning: `this.used` is a running byte offset into the matrix window, but
+    // whether the host reads it as an offset or as a usage counter has not been
+    // checked against the adapter. That answer decides the field's name, and it
+    // is why this record cannot be declared from the guest side alone.
+    // Field names + host contract first; then the stores become field
+    // assignment. See `docs/session-findings.md`, `skin-record-undeclared`.
     store<u32>(at + 0, renderableId);
     store<u32>(at + 4, this.used); // where the matrices sit, window-relative
     store<u32>(at + 8, bytes);
