@@ -23,6 +23,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@acakar/tensionscript": "^0.9.0"
+    "@acakar/tensionscript": "^0.10.0"
   }
 }
