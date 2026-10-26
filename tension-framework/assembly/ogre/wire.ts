@@ -803,7 +803,12 @@ function ogreMotionOffsetsProblem(): string | null {
   if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
   if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
   if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
-  if (offsetof<MotionUpdate>("pad2") + 4 != 64) return "MotionUpdate size";
+  // Bound to the declaration, not to a hand-copied 64: a field appended after
+  // `pad2` used to be invisible here, because the constant would still equal the
+  // offset arithmetic while the record grew past the table's stride.
+  if (offsetof<MotionUpdate>("pad2") + sizeof<f32>() != sizeof<MotionUpdate>()) {
+    return "MotionUpdate size";
+  }
   return null;
 }
 
@@ -832,7 +837,11 @@ function ogreBoneOffsetsProblem(): string | null {
   if (offsetof<BoneUpdate>("positionX") != 16) return "BoneUpdate.positionX";
   if (offsetof<BoneUpdate>("rotationX") != 32) return "BoneUpdate.rotationX";
   if (offsetof<BoneUpdate>("scaleX") != 48) return "BoneUpdate.scaleX";
-  if (offsetof<BoneUpdate>("pad2") + 4 != BONE_SIZE) return "BoneUpdate size";
+  // As for the motion record: the size comes from the declaration. `BONE_SIZE`
+  // stays the wire's published stride; this check no longer trusts it.
+  if (offsetof<BoneUpdate>("pad2") + sizeof<f32>() != sizeof<BoneUpdate>()) {
+    return "BoneUpdate size";
+  }
   return null;
 }
 
