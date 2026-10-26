@@ -77,7 +77,7 @@ export class MotionBatch {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
     // `MotionUpdate` is `@unmanaged` (`wire.ts:462`): a view of the arena slot,
     // so each assignment is the wire's field at the wire's offset.
-    const rec = changetype<MotionUpdate>(this.base + <usize>index * MOTION_SIZE);
+    const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
     rec.renderableId = id;
     rec.flags = 0; // reserved
     rec.pad0 = 0; // what puts the transform at 16
@@ -109,7 +109,7 @@ export class MotionBatch {
   setPose(index: u32, id: u32, x: f32, y: f32, z: f32,
           qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
-    const rec = changetype<MotionUpdate>(this.base + <usize>index * MOTION_SIZE);
+    const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
     rec.renderableId = id;
     rec.flags = 0; // reserved
     rec.pad0 = 0; // what puts the transform at 16

@@ -15,6 +15,49 @@ attach a change to.
 
 ---
 
+## 2026-10-26 — Framework record writers: the stride comes from the declaration
+
+### Field assignment is confirmed on main, and the stride now derives from it
+
+`bones.ts` and `motion.ts` write their records with `@unmanaged` struct field
+assignment — `changetype<BoneUpdate>(slot).positionX = x` — not with hand-coded
+`store<u32>(at + 16, …)`. That conversion is PR #26's (`31a6626`), and it is on
+`main`; a checkout showing raw stores there is pre-#26 (the report that prompted
+this change was read from `build/optimize-level`).
+
+The two write paths multiplied by `BONE_SIZE` / `MOTION_SIZE` to find the slot.
+They now multiply by `sizeof<BoneUpdate>()` / `sizeof<MotionUpdate>()`, so the
+stride and the field offsets both come from the one declaration. `BONE_SIZE` and
+`MOTION_SIZE` stay exported — they are the wire's published stride, and the
+region arithmetic, `PROCEDURAL_BASE` and the physics fixture still read them.
+
+**Byte-identical at `-O3`.** `tension-framework`'s `index.wasm` is
+`ff42c221527bacfaf3215d6610402586`, 65 628 bytes, before and after; the wat is
+byte-identical too, so `sizeof<T>()` folds to exactly the constant it replaced.
+
+### skin.ts: the last hand-written record, and why it waits
+
+`SkinMatrixBatch#set` still writes six raw stores. They are blocked not on the
+accessor tax but on a missing declaration: there is no `SkinUpdate` type, no
+`offsetof` check, and `SKIN_SIZE = 32` is a bare constant. A TODO records the
+record's known shape and the one unknown that gates it — whether `@4` (written
+from `this.used`, a running byte offset) is an offset or a usage counter to the
+host. That answer names the field, so declaring the record is a measurement
+against the adapter, not a transcription of the guest.
+
+Filed as `skin-record-undeclared`. The sixteen `physics.ts` and twenty-five
+`solver.ts` stores are a different shape — RK4 state-vector slots addressed by
+computed stride, not record fields — and are filed as
+`state-vector-declarations`; they need a declared vector type before field
+assignment is even expressible.
+
+### Measured, for the record
+
+Raw store and field assignment compile to the same instructions: a probe writing
+four fields both ways was deduplicated by the compiler into a single function
+symbol. The accessor tax the field-assignment pattern once paid is gone at
+`-O3`, which is what makes this refactor free rather than a trade.
+
 ## 2026-10-23 — TensionScript 0.9.0, and the managed struct's alias fixture
 
 ### The pin moves to 0.9.0
