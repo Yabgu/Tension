@@ -132,15 +132,17 @@ export class BoneBatch {
     return submitBonesRaw(<i32>this.entries);
   }
 
-  /// The one place an entry is written, so `BONE_SIZE` and the offset 16/32/48
-  /// layout have exactly one spelling in this module.
+  /// The one place an entry is written, so the stride and the offset 16/32/48
+  /// layout have exactly one spelling in this module. The stride is
+  /// `sizeof<BoneUpdate>()`, not `BONE_SIZE`: the declaration is the source of
+  /// truth and the constant is the wire's published copy of it.
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,
                 ry: f32, rz: f32, rw: f32, scale: f32): void {
     if (index >= BONE_CAPACITY) return; // a slot past the table is not written
     // `BoneUpdate` is `@unmanaged` (`wire.ts:489`), so this is a view of the
     // arena slot and the field writes below are the wire's bytes in the wire's
     // order. No header is read or written — the class has none.
-    const rec = changetype<BoneUpdate>(this.base + <usize>index * BONE_SIZE);
+    const rec = changetype<BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
     rec.pad0 = 0; // what puts the transform at 16
