@@ -76,6 +76,8 @@ __pycache__
 # third_party builds (see third_party/bootstrap.sh)
 third_party/ogre-next-build*/
 third_party/ogre-next-install/
+third_party/freeimage-build*/
+third_party/freeimage-install/
 
 # runtime-migration verification artifacts (transcripts, build logs; regenerated)
 tools/runtime-migration/out/
