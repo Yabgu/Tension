@@ -8,8 +8,9 @@ engine adoption ships without it, Phase 4 lands with align-4 records and
 `@abi.align` becomes a follow-up: nothing in Phases 1–3 depends on it (§8).
 
 **Base:** Tension `origin/main` @ `4b42251` (this branch's base; the
-measurements below were taken at `9bf9ba1`, whose tree is identical — the two
-histories are content-identical rewrites, §1.2). TensionScript `origin/main` @
+measurements below were taken at `9bf9ba1`, whose tree is identical —
+`git diff 9bf9ba1 4b42251` is empty, because Tension's histories were rewritten
+the way §1.2 describes for TensionScript). TensionScript `origin/main` @
 `0b67e3cc` (0.10.0 + #36 inline nesting + #38 the struct default flip).
 Measured 2026-10-28 against the compiler built from that tree; §1.1's registry
 state, §3.8's TYPES verification and §8's baseline were re-measured the same
@@ -581,8 +582,9 @@ path does not need 16.
 
 Measured in a worktree at `origin/docs/engine-adoption-plan` (`/tmp/engine-adopt`),
 because the plan's own branch has no `node_modules` and the main checkout's
-`build/index.wasm` is stale — it is 65,628 bytes dated Oct 26 18:43, i.e. built
-**before** #36 (merged 19:05), so it cannot serve as a baseline for this tree.
+`build/index.wasm` is stale — 65,628 bytes dated Oct 26 18:43 local, i.e. built
+**before** #36 merged (19:05Z, 20:05 local), so it cannot serve as a baseline for
+this tree.
 
 ```
 npm install @acakar/tensionscript@0.9.0   # the compiler the tree shipped with
