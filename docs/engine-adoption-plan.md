@@ -1,11 +1,19 @@
 # Engine adoption plan — the TensionScript features now on main
 
-**Status:** plan only. No source changed, nothing published, no opportunity
-implemented.
+**Status:** plan only. No engine source changed, nothing published, no
+opportunity implemented.
 
-**Base:** Tension `origin/main` @ `9bf9ba1`. TensionScript `origin/main` @
+**This plan assumes Phase 0 (`@abi.align(N)`) ships before Phase 4.** If the
+engine adoption ships without it, Phase 4 lands with align-4 records and
+`@abi.align` becomes a follow-up: nothing in Phases 1–3 depends on it (§8).
+
+**Base:** Tension `origin/main` @ `4b42251` (this branch's base; the
+measurements below were taken at `9bf9ba1`, whose tree is identical — the two
+histories are content-identical rewrites, §1.2). TensionScript `origin/main` @
 `0b67e3cc` (0.10.0 + #36 inline nesting + #38 the struct default flip).
-Measured 2026-10-28 against the compiler built from that tree.
+Measured 2026-10-28 against the compiler built from that tree; §1.1's registry
+state, §3.8's TYPES verification and §8's baseline were re-measured the same
+day.
 
 **Question.** TensionScript now has three capabilities the engine was written
 without — sized enums, inline nesting, and a value-type default. Which of them
@@ -16,7 +24,8 @@ does the engine want, in what order, and what has to be true first?
 ## 0. The answer up front
 
 **Two blockers, then three opportunities worth taking, in this order:**
-publish 0.11.0 → bump the engine → verify the guest byte-identical → `Quat` →
+Phase 0 (`@abi.align(N)` + the 0.11.0 version fix, TensionScript) → bump the
+engine → verify the guest byte-identical → §3.7/§3.8 measurement → `Quat` →
 nested transform records → (optional) enum tidy.
 
 Three of the five candidate wins are real and measured. Two are not what they
@@ -73,7 +82,25 @@ The publish is the user's credential action; this plan only states the order:
    compiles with the *published* rather than the local build.
 3. **Bump the engine to `^0.11.0`** and reinstall, which also fixes the scope
    mismatch (`@acakar` → `@yabgu_gm`).
-4. **Rebuild the framework and verify the guest is byte-identical** (§8.1).
+4. **Rebuild the framework and verify the guest is byte-identical** (§8).
+
+**Measured 2026-10-28 22:10 — the release is a re-number, not a rebuild.** The
+registry says `@yabgu_gm/tensionscript` has exactly two versions,
+`0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`, published
+`20:26:54Z`); `@acakar/tensionscript` stops at `0.10.0`. **There is no 0.11.0 to
+install.** What *is* published as 0.10.0 already contains the flip: the tarball's
+`dist/asc.js` is byte-identical to the local build of `0b67e3cc` (915,141 bytes,
+md5 `9e0d04a20c92757bf6e02730c04932d2`), and a probe that nests a plain struct in
+an `@unmanaged` record reports `sizeof` 24 on it versus **16** on the installed
+`@acakar` 0.9.0 — the flip, shipped under an unchanged version number, with its
+CHANGELOG entry still headed `## Unreleased — breaking`. So step 1 is: retitle
+that entry `## 0.10.0`, add `## 0.11.0`, bump `package.json`, publish (Phase 0).
+
+Two consequences for the engine side, both measured: the scope already moved in
+#35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
+^0.10.0`, so Phase 1 changes **one number per file**, not the scope; and the
+package declares `binaryen` as a dependency but does not bundle it, so a probe
+run straight from an unpacked tarball needs an install beside it.
 
 **A symptom worth knowing:** the rename is live, and stale installs fail loudly
 rather than subtly. The TensionScript primary checkout, re-pointed at
@@ -139,6 +166,11 @@ the contract; their spelling is not.
 That is the licence for §3, and it is narrow: it covers exactly the records whose
 layout does not move anyway.
 
+**Two hash inputs beyond the field tables**, both checked in §3.8: the manifest's
+`TYPES` array is hashed too, and two of its nine entries are anonymous literals.
+They pin `Callbacks` and `Subscription`, not the transform records — which is what
+keeps `@abi.align(16)` off the hash.
+
 ---
 
 ## 3. Opportunity 1 — nest the transform records
@@ -195,12 +227,44 @@ storage. **The inner type must be a value type.**
 
 ### 3.4 The value twins
 
-So each vector type needs two declarations with identical C layout:
+So each vector type needs two declarations with identical C layout. **They need
+distinct names** — the sketch above cannot compile: two declarations of
+`Vec3f16` are a redeclaration, and the twin has to be visibly not the other one
+at every use site. The names used from here on:
 
 ```ts
-@unmanaged struct Vec3f16 { x: f32 = 0; y: f32 = 0; z: f32 = 0; pad: f32 = 0; }
-         struct Vec3f16 { x: f32 = 0; y: f32 = 0; z: f32 = 0; pad: f32 = 0; }
+@unmanaged struct Vec3f16    { x: f32 = 0; y: f32 = 0; z: f32 = 0; pad: f32 = 0; }
+         struct Vec3f16Value { x: f32 = 0; y: f32 = 0; z: f32 = 0; pad: f32 = 0; }
+@unmanaged struct Quatf      { x: f32 = 0; y: f32 = 0; z: f32 = 0; w: f32 = 0; }
+         struct QuatfValue   { x: f32 = 0; y: f32 = 0; z: f32 = 0; w: f32 = 0; }
 ```
+
+(The underscore-free suffix matches the engine's existing spelling —
+`Vec3f16`, `Quatf`, `Transformf` — rather than introducing a second convention.)
+
+**The nesting goes one way only.** Measured 2026-10-28 on both the local
+`0b67e3cc` build and the published 0.10.0: a plain struct nested inside a plain
+struct is refused by name —
+
+```
+AS100: Not implemented: an @inline struct nested inside an @inline value (the
+outer is one WASM local per field, so the inner would have to be flattened into
+the outer's leaves -- that is SROA flattening, sub-phase B)
+```
+
+— while a plain struct nested inside an **`@unmanaged`** record compiles on both,
+reporting `sizeof` 24 and `offsetof("position")` 8 for
+`@unmanaged struct Rec { pad0: u64; position: V3 }`. Every engine record is
+`@unmanaged` (§7), so Phase 4's shape is the supported one. The rule to keep: the
+value twins are leaves — they are never nested inside each other.
+
+**Alignment, if Phase 2 says the GPU path needs 16 (§3.7, §3.8).** The twins then
+carry `@abi.align(16)` too, or the outer record does, depending on what the
+attribute is defined to apply to — that is a Phase 0 decision to read off the
+published 0.11.0, not a guess. **Measure the aligned shape before writing it:**
+`sizeof`, `alignof` and every `offsetof`, against the same numbers in the table
+above. If `alignof` still reports log2 2 with the attribute applied, the
+attribute did nothing and that is a Phase 0 defect, not a Phase 4 choice.
 
 The `@unmanaged` twin stays for `changetype` views and for the `offsetof`-based
 assertions; the value twin is what makes a field inline.
@@ -249,6 +313,21 @@ deleted, so the assertion that referenced them becomes the end-of-field check
 that the next field follows immediately. Each rewritten line still names the
 field that moved, which is the property those functions exist for.
 
+Two notes on reading the table. `offsetof<Vec3f16>` and `offsetof<Quatf>` mean the
+**plain** twin — the one the record actually nests; the `@unmanaged` twins keep
+their own `offsetof` assertions, which is what §3.4's drift probe compares
+against. And `:942 offsetof<Renderable>("nodeId") != 12` is unchanged and not in
+the table: `nodeId` is not a transform field.
+
+**If `@abi.align` lands (§3.8)**, an alignment assertion is a new shape, not a
+rewrite of these: the sums check offsets, and offsets do not move under a
+16-byte alignment (§3.8). `alignof` cannot stand in for it either — the manifest
+compares sizes only, and the guest's `manifestProblem` deliberately does not
+compare its `align` entry against `alignof` (`arena.ts`, "alignment is a
+consistency relation, not a comparison"). So an alignment assertion has to be
+written deliberately, against the published compiler's `alignof`, and it is the
+one assertion in Phase 4 that a `@abi.align` regression would catch.
+
 ### 3.6 What does not change
 
 - **The stride is already derived from the declaration.** Engine #36 moved the
@@ -275,6 +354,79 @@ wrong, and the reason is the thing the nesting work is deleting. Worth correctin
 in the same PR so the next reader does not try to preserve an alignment that was
 never there. If 16-byte alignment is genuinely required for a GPU upload, that is
 a separate, real defect; it is not what makes these records 64 bytes.
+
+Confirmed on three compilers 2026-10-28 (installed `@acakar` 0.9.0, published
+`@yabgu_gm` 0.10.0, local `0b67e3cc`): `alignof` of a 16-byte plain struct whose
+leaves are `f32` reports **2** (log2), i.e. 4-byte alignment — unchanged by the
+flip, which moves `sizeof` and storage but not alignment. Whether that 4-byte
+alignment is a defect for the GPU path is Phase 2's question (§3.8).
+
+### 3.8 The TYPES verification — does `@abi.align(16)` move `layout_hash`?
+
+§2 establishes that the five transform records are absent from `arena.rs`. But
+`layout_hash` also folds `TYPES` (`arena.rs:442-453`), the nine protocol types'
+`{id, size, align}` — and two of those entries are **anonymous literals**:
+
+```rust
+TypeEntry { id: 7, size: 64, align: 4 },
+TypeEntry { id: 8, size: 16, align: 4 },
+```
+
+A 64-byte record at align 4 is the shape of `MotionUpdate`/`BoneUpdate`/
+`Renderable`; a 16-byte one is `StringHalf`'s. If those two entries were transform
+records, giving the transforms `@abi.align(16)` would move
+`TYPES[id=7].align` from 4 to 16 and the hash with it — a coordinated release,
+not a minor bump. **Verified 2026-10-28: they are not transform records.**
+
+- **`id = 7` (size 64, align 4) is `Callbacks`.** `CALLBACKS_SIZE: usize = 64`
+  (`arena.rs:457-459`) is declared immediately below the array, documented *"The
+  `Callbacks` record's size, as the manifest pins it. `callbacks_len` in the open
+  TLV must equal this."*
+- **`id = 8` (size 16, align 4) is `Subscription`.** `SUBSCRIPTION_SIZE: usize =
+  16` (`arena.rs:697-698`), documented *"as the manifest pins it (type 8)"* — the
+  id is named in the source.
+- **The generated guest table agrees, name for name.** `build.sh:201` regenerates
+  `assembly/runtime/manifest.ts` from `arena.rs` on every build, and
+  `scripts/gen-manifest.py` refuses on a count that is not 9, ids that are not
+  1..9 ascending, or an order that disagrees with the guest's name list. The
+  generated table (`manifest.ts:23-29`):
+
+  ```
+  ids    [1, 2, 3, 4, 5, 6, 7, 8, 9]
+  names  [ArenaControl, SessionInfo, RegionDesc, ManifestEntry, TableHeader,
+          StringHalf, Callbacks, Subscription, EventRecord]
+  sizes  [256, 144, 24, 8, 32, 16, 64, 16, 32]
+  aligns [8, 8, 4, 2, 8, 4, 4, 4, 4]
+  ```
+
+  `MotionUpdate`, `BoneUpdate`, `Renderable`, `Transformf`, `Aabbf` appear in none
+  of those nine names, and `grep -c` for each in `arena.rs` is `0` (§2). The doc
+  comment above `TYPES` states the rule that keeps it that way: *"the OGRE
+  catalogue joins this table only when their shapes are pinned; adding an entry
+  is a schema change, because it moves the hash."*
+
+**Consequence — the hash does not move.** `@abi.align(16)` on the five transform
+records touches nothing `layout_hash` folds: not the nine `_FIELDS` arrays, not
+the region table, not `TYPES`. **0.11.0 stays a minor release**: no coordinated
+release, no every-adapter-rebuilds step. The check was made by name rather than
+by size precisely because the sizes collide — had those two literals been the
+transform records, the answer would have been the opposite.
+
+**What that also means.** The manifest compares **sizes only**, and only for the
+nine ids (`arena.ts`, `manifestProblem`: the entry's `align` is not compared
+against `alignof<T>()`). The transform records are not in the manifest at all, so
+a change to their *alignment* is invisible to the runtime drift check. The
+`offsetof` assertions in `wire.ts` are the only guard — which is why they must
+stay load-bearing (§3.5) and the record bytes byte-identical (§3.6).
+
+**Does `@abi.align(16)` move the offsets?** No — by arithmetic on the measured
+layout, not by measurement of the feature: every transform field is a 16-byte
+unit, every current transform offset is already 0 / 16 / 32 / 48, and every
+current `sizeof` (64, 48, 32) is a multiple of 16, so rounding the record to a
+16-byte alignment cannot move anything. What changes is what the record
+*reports* (`alignof`) and where it lands when nested inside something else.
+Phase 4 still proves it with the assertions and the byte compare; §3.2's offsets
+are what the arithmetic is applied to.
 
 ---
 
@@ -400,19 +552,78 @@ allocates and no field is a pointer.
 
 ## 8. The order
 
-| # | Step | Gate |
-|---|---|---|
-| 1 | **Publish TensionScript 0.11.0** (breaking). Registry verify the five steps. | Published tarball compiles a fixture |
-| 2 | **Bump the engine to `^0.11.0`**, reinstall (also fixes the `@acakar` → `@yabgu_gm` scope) | `npm ls @yabgu_gm/tensionscript` resolves |
-| 3 | **Rebuild the framework; verify the guest byte-identical** | `.wasm` and `.wat` `cmp` clean vs the pre-bump build |
-| 4 | **`Quat` → value** (§4) | The frame-time gate (§4.4) decides the wording, not the change |
-| 5 | **Value twins + nested transform records** (§3) | Twins probe green; `offsetof` sums green; guest byte-identical; `layout_hash` unchanged |
-| 6 | *(optional)* enum tidy on `LogLevel` / `AiRole` | Types only — no layout assertion moves |
+**Phase 0 is a different repository and a different PR** (TensionScript); Phases
+1–6 are this PR (#37). Phase 0's *version fix* has to land before Phase 1,
+because Phase 1 installs what Phase 0 publishes. Phase 0's *`@abi.align(N)`
+feature* has to land before Phase 4 — and only matters there if Phase 2 answers
+yes.
 
-Step 3 is the one that makes the rest safe: until the guest compiles identically
-on the new compiler, nothing else can be attributed. Steps 4 and 5 are
-independent and either may go first; 4 is smaller and self-contained, 5 is the
+| Phase | Step | Gate | Repo |
+|---|---|---|---|
+| **0** | **`@abi.align(N)` + the version fix.** Parser accepts the attribute post-type (the grammar `@abi.alias` already uses, `ast.ts:929` / `parser.ts:757`); the resolver threads it into the record's `alignLog2` (`resolver.ts:4073-4078`, `:4189`); the layout loop honours it. Then retitle the CHANGELOG's `## Unreleased — breaking` to `## 0.10.0`, add `## 0.11.0 — @abi.align(N)`, bump `package.json`, publish. | Published 0.11.0 compiles a fixture; an `@abi.align(16)` record reports `alignof` 4 (log2) with every `offsetof` unchanged | TensionScript |
+| **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
+| **2** | **§3.7 measurement:** read the OGRE/GPU path for a 16-byte requirement on the transform records, and record §3.8's TYPES verdict. | An answer in writing, with the file and the line. If yes → the aligned shape is Phase 4's input; if no → the `wire.ts:457` comment is the only defect and `@abi.align` is not applied here | Tension (read-only) |
+| **3** | **`Quat` → value** (§4) | The frame-time gate (§4.4) decides the wording, not the change | Tension |
+| **4** | **Value twins + nested transform records** (§3), with `@abi.align(16)` **only if Phase 2 says yes** | Twins probe green; `offsetof` sums green; per-record bytes byte-identical; guest `.wat` byte-identical to pre-nesting; `layout_hash` unchanged | Tension |
+| **5** | *(optional)* enum tidy on `LogLevel` / `AiRole` | Types only — no layout assertion moves | Tension |
+| **6** | Verification, CHANGELOG, PR body | The four OGRE fixtures, `cargo test`, the hash from the host binary, one PR for review | Tension |
+
+Phase 1 is the one that makes the rest safe: until the guest compiles identically
+on the new compiler, nothing else can be attributed. Phases 3 and 4 are
+independent and either may go first; 3 is smaller and self-contained, 4 is the
 structural win.
+
+**Phase 4 without Phase 0 is a supported outcome** — align-4 records, byte-
+identical, `@abi.align` as a follow-up — provided Phase 2 measured that the GPU
+path does not need 16.
+
+### 8.1 The baseline, captured 2026-10-28
+
+Measured in a worktree at `origin/docs/engine-adoption-plan` (`/tmp/engine-adopt`),
+because the plan's own branch has no `node_modules` and the main checkout's
+`build/index.wasm` is stale — it is 65,628 bytes dated Oct 26 18:43, i.e. built
+**before** #36 (merged 19:05), so it cannot serve as a baseline for this tree.
+
+```
+npm install @acakar/tensionscript@0.9.0   # the compiler the tree shipped with
+npm run build                             # 65627 bytes
+npm install @yabgu_gm/tensionscript@0.10.0  # the published flip
+npm run build                             # 65627 bytes
+```
+
+| Build | `.wasm` | md5 |
+|---|---|---|
+| 0.9.0 (pre-flip) | 65,627 | `a31897e114f21ac4eb7f588a373a8597` |
+| 0.10.0 (published flip) | 65,627 | `a31897e114f21ac4eb7f588a373a8597` |
+
+**Byte-identical, and the `.wat` too** (582,557 bytes). Two things follow:
+
+1. **§7's claim is confirmed on the engine's actual tree**, not only on the
+   compiler's own fixtures: the flip is a no-op for this guest.
+2. **Phase 1's gate should compare against the 0.10.0 build, not the 0.9.0 one.**
+   Both are saved (`/tmp/pre-bump-0.10.0.wasm`, `/tmp/pre-bump-0.10.0.wat`), and
+   the 0.10.0 one is the right comparator: it differs from 0.11.0 by exactly the
+   change under test, so a difference cannot be blamed on the flip. The 0.9.0
+   comparison is the secondary claim — that the flip was a no-op — and it is
+   already green.
+
+**Builds are reproducible in place** (two runs, same directory, `cmp` clean), which
+is what makes a byte comparison meaningful at all. Note the build is *not* proven
+path-independent, so the Phase 1 comparison must run in one directory with only
+the compiler changing.
+
+**One number does not reconcile, and is flagged rather than fixed.** §7 records
+the guest as 200,098 bytes. `npm run build` in `tension-framework` — whose entry
+re-exports all eleven `assembly/*` modules, so it is the whole guest — produces
+**65,627** bytes on this tree with the same 0.10.0 compiler. The plausible
+explanations (a pre-#36 tree, a different entry, a different optimize level) are
+not tested here. What the claim needed is not the number but the comparison, and
+that is measured directly above: one tree, two compilers, md5-equal.
+
+Declaration census, same tree: **34 `@unmanaged`, 2 `@managed`, 0 plain** (36
+records), matching §7. (TensionScript's CHANGELOG says 35+2 = 37; the engine tree
+counts 36. The 0-plain claim, which is what the flip's safety rests on, holds
+under both.)
 
 ---
 
@@ -424,7 +635,9 @@ structural win.
 - **Sized enums on wire records** — moves the layout, and needs the C side
   measured first. Deferred, already filed.
 - **16-byte alignment for the math records** — if it is a real GPU requirement it
-  is its own defect; it is not what produces the current offsets (§3.7).
+  is its own defect; it is not what produces the current offsets (§3.7). The tool
+  for it is Phase 0's `@abi.align(N)`, and applying it to the transform records
+  does **not** move `layout_hash` (§3.8).
 
 ---
 
@@ -443,7 +656,18 @@ structural win.
 - **The C/adapter side of the nested records.** The offsets are unchanged and the
   adapter reads them through `guest_read`, but the adapter was not exercised.
 - **Whether 16-byte alignment matters to the GPU path.** `alignof` is measured
-  (4); the consequence was not traced into the adapter.
+  (log2 2, i.e. 4-byte — identical on 0.9.0, 0.10.0 and the local build); the
+  consequence was not traced into the adapter. That is Phase 2's question, and it
+  is the one open input to Phase 4.
+- **`@abi.align` itself** — it does not exist in the compiler yet (`grep -rn
+  "abi\.align" TensionScript/src` → **0** matches, 2026-10-28), so there is no
+  measurement of the attribute to report. Phase 0 is what produces one.
+- **`layout_hash` under `@abi.align(16)`.** The *composition* question is settled
+  by name (§3.8: `TYPES[id=7]` is `Callbacks`, `[id=8]` is `Subscription`, no
+  transform record appears), which is the half that decides whether the number
+  *can* move. The number itself is still not computed here: `tension-core` was
+  not rebuilt, so 786288195 remains an unasserted expectation rather than a
+  measured value in this document.
 
 ---
 
@@ -459,6 +683,10 @@ standalone instantiation harness.
 | nested-renderable | same for the shape with no `pad0` | size 64/64, align 2/2, offsets 16/32/48 — **identical** |
 | nested-write | do nested writes land where the flat record's did? | raw loads at 0/16/20/24/28/44/48 all correct (`run() = 127`) |
 | `@inline`-on-field | does the field decorator make a field inline? | **no** — `sizeof` 32 with an `@unmanaged` inner, 64 with a plain inner |
+| value-in-value nesting | can a plain struct nest a plain struct? | **refused by name** — `AS100 … SROA flattening, sub-phase B`; plain-inside-`@unmanaged` compiles (`sizeof` 24, `offsetof` 8) — both compilers |
+| flip on the engine tree | does 0.10.0 change the framework guest? | **no** — 65,627 bytes, md5 `a31897e1…`, identical on 0.9.0 and 0.10.0 (`.wasm` and `.wat`, 2026-10-28) |
+| TYPES ids 7/8 | are the anonymous entries transform records? | **no** — `Callbacks` (64/4) and `Subscription` (16/4), per `manifest.ts`'s generated names and `arena.rs:459`, `:697` |
 
-Engine citations to `~/work/Tension` @ `9bf9ba1`; compiler citations to
-TensionScript `origin/main` @ `0b67e3cc`.
+Engine citations to `~/work/Tension` @ `9bf9ba1` (measured) and `4b42251` (this
+branch's base; same tree). Compiler citations to TensionScript `origin/main` @
+`0b67e3cc`, the published `0.10.0` tarball, and the installed `@acakar` `0.9.0`.
