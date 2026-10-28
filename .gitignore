@@ -81,3 +81,7 @@ third_party/freeimage-install/
 
 # runtime-migration verification artifacts (transcripts, build logs; regenerated)
 tools/runtime-migration/out/
+
+# python bytecode (compiled artifacts; never commit)
+__pycache__/
+*.pyc
