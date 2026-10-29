@@ -36,9 +36,11 @@ looked like:
   replacement layout is **byte-identical** — `sizeof` 64, offsets 16/32/48,
   alignment unchanged — verified for both record shapes, and writes through the
   engine's own `changetype` pattern land at the same offsets. 22 pad fields go.
-- **`Quat` → value: unblocked and cheap.** Zero `changetype<Quat>` sites, so the
-  conversion has no migration. The win is per-frame allocations, and whether it
-  is measurable is a **gate**, not a claim (§4.4).
+- **`Quat` → value: BLOCKED — see §4.6.** Zero `changetype<Quat>` sites, so the
+  conversion has no migration, and it compiles and passes the suite. It also
+  corrupts memory at ~1,500 evaluator frames: a method returning a plain struct
+  writes outside its frame under sustained load. Reverted; waits on the
+  TensionScript fix. The frame-time question is unmeasurable until then.
 - **`BoneTransform` → value: blocked**, correctly. It needs `Array<@inline
   struct>`, which the compiler refuses by name.
 - **Sized enums: no byte win.** Zero enum-typed record fields and zero enum
@@ -552,6 +554,13 @@ are what the arithmetic is applied to.
 
 ## 4. Opportunity 2 — `Quat` becomes a value
 
+> **BLOCKED 2026-10-29 — see §4.6.** The conversion was written, compiled and
+> tested; it corrupts memory under sustained load. The tree is reverted and Phase
+> 3 does not land in this PR. The blocker is a TensionScript defect, not a
+> design problem: the value-return path the conversion needs faults at ~1,500
+> evaluator frames. §4.1–§4.5 below stand as the design; §4.6 is what happened
+> when it was built.
+
 ### 4.1 The sites
 
 `class Quat` (`assembly/anim/key.ts:36`, four `f32`) is GC-allocated at three
@@ -586,7 +595,7 @@ pointer, byte-verified in the compiler's own fixtures). That is a signature chan
 across the ~5 call sites listed in §4.1, not a mechanical rename, and it is why
 this is a small commit rather than a cleanup.
 
-### 4.4 The frame-time gate
+### 4.4 The frame-time gate — unmeasurable, not a null result
 
 **Measure before claiming.** Per-frame allocations are the plausible win, but
 "plausible" is not a measurement:
@@ -599,17 +608,96 @@ this is a small commit rather than a cleanup.
 
 **If the delta is under run-to-run noise, the CHANGELOG says "hygiene", not
 "win".** If it is measurable, the number goes in the entry with the scene and the
-frame count beside it. This is a gate on the claim, not on the change: the
-conversion may land either way, but it may not be *described* as a performance
-improvement without the two runs.
+frame count beside it.
+
+**Measured 2026-10-29, and it settles nothing.** A 300-frame `sampleRatio` loop
+against the animation archive ran at a median of **198.3 ms** pre-conversion and
+**203.6 ms** post-conversion, with a run-to-run spread of roughly ±5% on both.
+The difference is inside the noise, and the noise has a reason: ~127 ms of every
+run is process startup, against ~70 ms for the 300 frames themselves. That is a
+startup-dominated measurement of a per-frame cost — **it is not a performance
+conclusion, and it is not the "hygiene" outcome either.**
+
+The gate is **unmeasurable until the compiler defect in §4.6 is fixed**: a build
+that faults at ~1,500 frames cannot be timed honestly over any longer window,
+and the short window it can survive does not measure the thing the change is for.
 
 ### 4.5 What this does not fix
 
 `BoneTransform` (§5) is the dominant per-frame allocator — `identityPose`
 allocates one per slot and `poseBuffer` re-allocates any null slot
 (`evaluator.ts:59-76`). `Quat` is the small, unblocked half of the same problem.
-Expect the `Quat` delta to be modest for that reason, which is exactly why §4.4
-is a gate.
+
+---
+
+### 4.6 Why it did not land — a value return that corrupts memory
+
+**Blocked, not deferred.** The conversion is a ~10-line change and it compiles
+clean on 0.11.0; the framework suite passes on it, every fixture green. It is
+still wrong, and the suite cannot see why.
+
+**The evidence, in the order it was established:**
+
+| build | workload | result |
+|---|---|---|
+| `class Quat` (pre-conversion) | 10,000 frames | checksum `4909.033`, **OK** |
+| `struct Quat` (post-conversion) | 300 frames | checksum `147.27113`, OK |
+| `struct Quat` | 1,500 frames | **memory fault at `0xb7b50008`**, memory size 8,650,752 |
+
+The checksums at 300 frames are *equal* — the conversion is correct as far as it
+runs. Then:
+
+- **The fault address is a float bit pattern.** `0xb7b50008` decodes to ≈
+  −5.2e−5. A quaternion component is being used as a pointer.
+- **Deterministic** at the same address across runs (and at a different but
+  equally stable address before `unpackQuat` was made allocation-free, below).
+- **`--target debug` faults identically to `--target release`**, so it is not an
+  optimizer artifact.
+- **Heap-layout sensitive.** Inserting a single `print` inside the loop makes
+  3,000 frames pass with the pre-conversion checksum (`1472.7117`) — an
+  out-of-bounds access whose verdict depends on allocator state. That is exactly
+  why a fixture sampling six ratios never trips it.
+- **The unchanged path is clean.** `translationAt` — same call graph, but an
+  out-parameter instead of a return — runs **1,000,000 iterations** without a
+  fault. The defect is specific to the value return.
+
+**Two things were fixed on the way to that evidence, and neither removed it.**
+`unpackQuat` was building two `StaticArray`s per call — 268 allocations a frame
+for a 67-slot clip that the plan's promotion count never included, because they
+sit inside the decoder rather than at a `new Quat`. Removing them (three locals
+selected by index, four locals zeroed by index; arithmetic unchanged) moved the
+fault from ~600 frames to ~1,500. The allocation-free form is *correct and
+better* and stays available — but it does not fix the return.
+
+**The diagnosis boundary.** Every structural replica of the faulting shape runs
+clean at 1M+ iterations: a single field read, all four field reads, a value
+return interleaved with a heap-reference write, two live quaternions across 67
+slots × 1,000 frames, and a hand-written copy of `sampleRatio`'s inner loop at
+3,000 frames. The trigger needs the real `bracketOf`/`TrackIndex` path alongside
+the value return. **That is a boundary, not a diagnosis** — what is known is that
+the accepted form of "a method returning a plain struct" produces code that
+writes outside its frame under sustained load. What is not known is which
+construct inside `sampleRatio` completes the picture.
+
+**The compiler's own refusals are clean**, which makes the accepted case the
+surprising one: an `@inline` struct return across the module boundary, a `let`
+from an object literal, and returning a call expression directly are all refused
+by name with a reason. The crash is in the form it *accepts*.
+
+**The reproducer:** `tension-framework/tests/benches/quat-value-bench.ts`, run as
+`tension-core tension-framework/build/quat-value-bench.wasm <frames>`. It is a
+bench and not a test on purpose — it faults on 0.11.0, so it cannot join the
+suite; its job is to fail before the fix and pass after.
+
+**Phase 4 is not affected by this**, and the reasoning is checkable rather than
+hopeful: the nesting adds value-typed *fields* to `@unmanaged` records (§3.2
+measured that path working), and returns no `@inline` value from any function.
+Phase 4's gates assert that with a grep, not with this paragraph.
+
+**Consequence for the plan.** Phase 3 waits on the TensionScript fix. The
+promotion count in §0 and §1 should be read with `Quat` removed: the conversion
+that lands today is the nesting in §3, and the per-frame allocation it removes is
+`BoneTransform`-adjacent work that §5 already blocks.
 
 ---
 
@@ -683,7 +771,7 @@ yes.
 | **0** | **`@abi.align(N)` + the version fix.** The attribute goes on the **field declaration** (prefix position), read by the resolver at the record's `alignLog2` site and validated there (power of two, ≥ 1, ≥ the natural alignment, integer literal); the post-type spelling is refused by name in the parser. Then retitle the CHANGELOG's `## Unreleased — breaking` to `## 0.10.0`, add `## 0.11.0 — @abi.align(N)`, bump `package.json`, publish. **Code landed at TensionScript `a8e79c2a`; the publish is outstanding.** | Published 0.11.0 compiles a fixture; an `@abi.align(16)` record reports `alignof` 4 (log2) with every `offsetof` unchanged | TensionScript |
 | **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | **0.11.0 published to the registry** — **met 2026-10-29**. Then: `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
 | **2** | **§3.7 measurement:** read the OGRE/GPU path for a 16-byte requirement on the transform records, and record §3.8's TYPES verdict. **Answered 2026-10-29 (§3.7.1): no requirement — the records never reach a buffer.** | An answer in writing, with the file and the line. **Met:** no → the `wire.ts:457` comment is the only defect and `@abi.align` is not applied here | Tension (read-only) |
-| **3** | **`Quat` → value** (§4) | The frame-time gate (§4.4) decides the wording, not the change | Tension |
+| **3** | **`Quat` → value** (§4) — **BLOCKED 2026-10-29 (§4.6):** written, compiled, suite-green, and it corrupts memory at ~1,500 frames. Reverted; waits on the TensionScript fix. | Not reached: the conversion does not land, so the frame-time gate (§4.4) is unmeasurable, not green | Tension |
 | **4** | **Value twins + nested transform records** (§3), **Case A — align-4**: Phase 2 said no, so no `@abi.align(16)`. `pad0: u64` stays on `MotionUpdate`/`BoneUpdate` (§3.7.2c). | Twins probe green; `offsetof` sums green; per-record bytes byte-identical (offsets 16/32/48, sizes 64); guest `.wat` byte-identical to pre-nesting; `layout_hash` unchanged | Tension |
 | **5** | *(optional)* enum tidy on `LogLevel` / `AiRole` | Types only — no layout assertion moves | Tension |
 | **6** | Verification, CHANGELOG, PR body | The four OGRE fixtures, `cargo test`, the hash from the host binary, one PR for review | Tension |
@@ -768,18 +856,40 @@ under both.)
   `tension-core` was not rebuilt. What *is* verified is its composition (which
   records are name-frozen, which are absent) and that the guest bytes do not
   move for the changes proposed. The number is not asserted.
-- **The engine's test suite.** `tension-framework/tests/run.sh` and
-  `cargo test` were not run — they need the core built and, for the ogre scenes,
-  a GPU-less path that is not wired up here. So "the guest compiles identically"
-  is proven; "the engine behaves identically" is not.
-- **The per-frame `Quat` cost** (§4.4) — no scene was run, so the win is
-  unquantified by design, and the gate above is what closes it.
+- **The engine's test suite.** `tension-framework/tests/run.sh` **was** run in
+  Phase 3 (all fixtures OK; `guest-ai-stream` skipped, it needs
+  `models/unused.gguf` which is absent here — pre-existing, and it fails the same
+  way on the pre-conversion tree). `cargo test` and the OGRE scene fixtures were
+  **not** run: they need a core built with the capability path and, for the
+  pixel clauses, a GPU. So "the guest compiles identically" is proven and the
+  framework suite is green; "the engine behaves identically under OGRE" is not.
+- **The per-frame `Quat` cost** (§4.4) — **unmeasurable until §4.6's defect is
+  fixed**, not "no gain". The 300-frame sample (198.3 vs 203.6 ms, ±5%, with
+  ~127 ms of startup in every run) is noise on a startup-dominated window, and a
+  build that faults at ~1,500 frames cannot be timed over a window long enough to
+  mean anything.
+- **What triggers §4.6's fault.** Characterised, not diagnosed: the shape is a
+  method returning a plain struct, reached through the real
+  `bracketOf`/`TrackIndex` path. Every structural replica ran clean at 1M+
+  iterations, which localises the boundary but does not name the construct.
+- **Whether 0.10.0 was republished.** The committed lockfile pinned
+  `@yabgu_gm/tensionscript@0.10.0` at `sha512-2AxNlOSd…`, which the registry no
+  longer serves — `npm install` failed `EINTEGRITY` (wanted `2AxNlOSd`, got
+  `OpMKOeC1`). The tarball itself is intact: sha1 and sha512 match the
+  packument's own `dist` entries, and its `dist/asc.js` is 915,141 bytes / md5
+  `9e0d04a2…` — the content §1.1 measured. So the lock was stale. The 0.11.0 bump
+  replaces the entry with the integrity the registry actually serves, and the
+  tree installs cleanly from it. **Whether 0.10.0's metadata was rewritten is
+  unmeasured** — hygiene, not security, and the packument history is where to
+  settle it.
 - **The C/adapter side of the nested records.** The offsets are unchanged and the
   adapter reads them through `guest_read`, but the adapter was not exercised.
-- **Whether 16-byte alignment matters to the GPU path.** `alignof` is measured
-  (log2 2, i.e. 4-byte — identical on 0.9.0, 0.10.0 and the local build); the
-  consequence was not traced into the adapter. That is Phase 2's question, and it
-  is the one open input to Phase 4.
+- **Whether 16-byte alignment matters to the GPU path.** **Answered 2026-10-29
+  (§3.7.1): no.** The five transform records never reach a buffer — they are read
+  as opaque bytes, decoded at literal offsets, and applied through OGRE's CPU
+  setters. `alignof` is measured (log2 2, i.e. 4-byte, identical on 0.9.0, 0.10.0
+  and the local build) and is not a defect for this path. What remains unmeasured
+  is a *future* instanced path, which would be new code rather than this one.
 - **`@abi.align` itself** — it did not exist when this plan was written
   (`grep -rn "abi\.align" TensionScript/src` → **0** matches, 2026-10-28). It
   exists now: implemented at TensionScript `a8e79c2a` with fixtures (§1.1's
