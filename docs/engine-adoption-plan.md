@@ -67,7 +67,9 @@ compiler it builds with is 0.9.0 — **before** sized enums, before inline nesti
 (#36), before the struct default flip (#38).
 
 **And 0.10.0 would not be enough even if it were installed.** Sub-phase A and
-the flip are on `origin/main` but unreleased; `package.json` still says `0.10.0`.
+the flip are on `origin/main` at the time of that measurement, but unreleased —
+the tree's `package.json` said `0.10.0`. **That has since changed in code: see
+the status correction at the end of this subsection.**
 
 **Therefore the first step is a TensionScript release, and it is a breaking one:**
 a bare `struct` changing from a pointer to a value is a semantic change, so the
@@ -75,8 +77,9 @@ number must move to **0.11.0**, not 0.10.1.
 
 The publish is the user's credential action; this plan only states the order:
 
-1. **Bump TensionScript to 0.11.0.** The breaking change is already described in
-   its CHANGELOG (`Unreleased — breaking: plain struct is inline by default`).
+1. **Bump TensionScript to 0.11.0.** The breaking change is described in its
+   CHANGELOG under `## 0.10.0 — breaking: plain struct is inline by default`,
+   with the `@abi.align(N)` entry above it under `## 0.11.0`.
 2. **Registry verify** — the five-step ritual this fork uses: version visible,
    dist contents match the tree, `bin/tensionscript.js` runs from the published
    tarball, the published `package.json` name is the new scope, and a fixture
@@ -94,8 +97,21 @@ install.** What *is* published as 0.10.0 already contains the flip: the tarball'
 md5 `9e0d04a20c92757bf6e02730c04932d2`), and a probe that nests a plain struct in
 an `@unmanaged` record reports `sizeof` 24 on it versus **16** on the installed
 `@acakar` 0.9.0 — the flip, shipped under an unchanged version number, with its
-CHANGELOG entry still headed `## Unreleased — breaking`. So step 1 is: retitle
-that entry `## 0.10.0`, add `## 0.11.0`, bump `package.json`, publish (Phase 0).
+CHANGELOG entry then still headed `## Unreleased — breaking`.
+
+**Status correction, 2026-10-29 — Phase 0's code has landed; only the publish
+remains.** The CHANGELOG retitle and the version bump this subsection calls for
+shipped on TensionScript `main` at **`a8e79c2a`**: `package.json` reads `0.11.0`,
+and the CHANGELOG is headed `## 0.11.0 — @abi.align(N)` above
+`## 0.10.0 — breaking: plain struct is inline by default` — so the flip is now
+correctly filed under the version it actually shipped as. `@abi.align(N)` itself
+is implemented, with fixtures for the prefix form, the four value refusals and
+the post-type refusal.
+
+**The registry does not have it yet.** As of the same date it serves only
+`0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`). **Phase 1's gate is
+that publish** — nothing else in Phase 1 can start until `0.11.0` is resolvable,
+which is why §8's row for it names the publish rather than the bump.
 
 Two consequences for the engine side, both measured: the scope already moved in
 #35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
@@ -259,10 +275,19 @@ reporting `sizeof` 24 and `offsetof("position")` 8 for
 `@unmanaged` (§7), so Phase 4's shape is the supported one. The rule to keep: the
 value twins are leaves — they are never nested inside each other.
 
-**Alignment, if Phase 2 says the GPU path needs 16 (§3.7, §3.8).** The twins then
-carry `@abi.align(16)` too, or the outer record does, depending on what the
-attribute is defined to apply to — that is a Phase 0 decision to read off the
-published 0.11.0, not a guess. **Measure the aligned shape before writing it:**
+**Alignment, if Phase 2 says the GPU path needs 16 (§3.7, §3.8).**
+`@abi.align(16)` on a value twin's field propagates into the nesting record's
+layout. A value type's `alignLog2` **is consumed** by the nesting path — measured
+2026-10-29 on the compiler that ships the attribute: `@inline struct V { x: f64 }`
+nested into an `@unmanaged` record places the field at offset 8, exactly as the
+flat `{ a: u8; v: f64 }` does. So the twins carry `@abi.align(16)` themselves;
+the outer inherits via the `classAlignLog2` max, with no per-field override on
+the outer record needed. This requires Phase 0 (`@abi.align(N)`) published first.
+The attribute goes on the **field declaration** (prefix position) — the post-type
+spelling is refused by name, so `@abi.align(16) x: f32`, never `x: f32
+@abi.align(16)`.
+
+**Measure the aligned shape before writing it:**
 `sizeof`, `alignof` and every `offsetof`, against the same numbers in the table
 above. If `alignof` still reports log2 2 with the attribute applied, the
 attribute did nothing and that is a Phase 0 defect, not a Phase 4 choice.
@@ -322,7 +347,11 @@ the table: `nodeId` is not a transform field.
 
 **If `@abi.align` lands (§3.8)**, an alignment assertion is a new shape, not a
 rewrite of these: the sums check offsets, and offsets do not move under a
-16-byte alignment (§3.8). `alignof` cannot stand in for it either — the manifest
+16-byte alignment (§3.8). If Phase 2's GPU measurement requires 16-byte
+alignment, the twins declare `@abi.align(16)` on their fields and the outer
+records inherit automatically (the `classAlignLog2` max, §3.4); without it, they
+stay at their natural align-4. `alignof` cannot stand in for the assertion
+either — the manifest
 compares sizes only, and the guest's `manifestProblem` deliberately does not
 compare its `align` entry against `alignof` (`arena.ts`, "alignment is a
 consistency relation, not a comparison"). So an alignment assertion has to be
@@ -561,8 +590,8 @@ yes.
 
 | Phase | Step | Gate | Repo |
 |---|---|---|---|
-| **0** | **`@abi.align(N)` + the version fix.** Parser accepts the attribute post-type (the grammar `@abi.alias` already uses, `ast.ts:929` / `parser.ts:757`); the resolver threads it into the record's `alignLog2` (`resolver.ts:4073-4078`, `:4189`); the layout loop honours it. Then retitle the CHANGELOG's `## Unreleased — breaking` to `## 0.10.0`, add `## 0.11.0 — @abi.align(N)`, bump `package.json`, publish. | Published 0.11.0 compiles a fixture; an `@abi.align(16)` record reports `alignof` 4 (log2) with every `offsetof` unchanged | TensionScript |
-| **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
+| **0** | **`@abi.align(N)` + the version fix.** The attribute goes on the **field declaration** (prefix position), read by the resolver at the record's `alignLog2` site and validated there (power of two, ≥ 1, ≥ the natural alignment, integer literal); the post-type spelling is refused by name in the parser. Then retitle the CHANGELOG's `## Unreleased — breaking` to `## 0.10.0`, add `## 0.11.0 — @abi.align(N)`, bump `package.json`, publish. **Code landed at TensionScript `a8e79c2a`; the publish is outstanding.** | Published 0.11.0 compiles a fixture; an `@abi.align(16)` record reports `alignof` 4 (log2) with every `offsetof` unchanged | TensionScript |
+| **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | **0.11.0 published to the registry** — pending at time of writing; Phase 1 cannot start until it is. Then: `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
 | **2** | **§3.7 measurement:** read the OGRE/GPU path for a 16-byte requirement on the transform records, and record §3.8's TYPES verdict. | An answer in writing, with the file and the line. If yes → the aligned shape is Phase 4's input; if no → the `wire.ts:457` comment is the only defect and `@abi.align` is not applied here | Tension (read-only) |
 | **3** | **`Quat` → value** (§4) | The frame-time gate (§4.4) decides the wording, not the change | Tension |
 | **4** | **Value twins + nested transform records** (§3), with `@abi.align(16)` **only if Phase 2 says yes** | Twins probe green; `offsetof` sums green; per-record bytes byte-identical; guest `.wat` byte-identical to pre-nesting; `layout_hash` unchanged | Tension |
@@ -661,9 +690,12 @@ under both.)
   (log2 2, i.e. 4-byte — identical on 0.9.0, 0.10.0 and the local build); the
   consequence was not traced into the adapter. That is Phase 2's question, and it
   is the one open input to Phase 4.
-- **`@abi.align` itself** — it does not exist in the compiler yet (`grep -rn
-  "abi\.align" TensionScript/src` → **0** matches, 2026-10-28), so there is no
-  measurement of the attribute to report. Phase 0 is what produces one.
+- **`@abi.align` itself** — it did not exist when this plan was written
+  (`grep -rn "abi\.align" TensionScript/src` → **0** matches, 2026-10-28). It
+  exists now: implemented at TensionScript `a8e79c2a` with fixtures (§1.1's
+  status correction). What remains unmeasured is its **engine-side** effect —
+  no record in this repository carries the attribute yet, so the aligned
+  transform layout is still Phase 4's measurement, not a result.
 - **`layout_hash` under `@abi.align(16)`.** The *composition* question is settled
   by name (§3.8: `TYPES[id=7]` is `Callbacks`, `[id=8]` is `Subscription`, no
   transform record appears), which is the half that decides whether the number
