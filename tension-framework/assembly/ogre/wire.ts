@@ -69,9 +69,9 @@ export struct Quatf {
 
 // --- the value twins -------------------------------------------------------
 //
-// The same two shapes as plain structs, so a field whose type is one of these is
+// The same shapes as plain structs, so a field whose type is one of these is
 // **inline** rather than a 4-byte reference (0.11.0's struct flip). They are what
-// lets `position: Vec3f16Value` be 16 bytes of the record's body instead of a
+// lets `position: Vec3fValue` be 12 bytes of the record's body instead of a
 // pointer, which is the whole point of §3 of the engine adoption plan.
 //
 // Two names, not one: a second declaration of `Vec3f16` is a redeclaration, and
@@ -79,23 +79,35 @@ export struct Quatf {
 // `@unmanaged` pair above stays for `changetype` views and for the `offsetof`
 // assertions; these are for nesting only.
 //
+// **The naming scheme, and why it is asymmetric.**
+//
+//   wire:  `Vec3f` (12)   `Vec3f16` (16 — the slot shape)   `Quatf` (16)
+//   twin:  `Vec3fValue` (12)                                 `QuatfValue` (16)
+//
+// `Vec3f16`'s suffix is its **slot size**: the wire type with the pad that fills
+// a 16-byte slot, kept because it is that shape and its name says so. The value
+// twin is a pure `Vec3` — 12 bytes, no phantom fourth coordinate — so it carries
+// no suffix and no pad. The 16-byte slot-filling pad lives on the **record**, in
+// an explicit `pad1`/`pad2`, because that is where the slot structure is; hiding
+// it inside a "Vec3+pad" type made a value type out of a layout concern.
+//
 // **Never nested inside each other.** A plain struct inside a plain struct is
 // refused by name (SROA flattening is deferred), so these are leaves. Every
 // record that carries one is `@unmanaged`, which is the supported shape.
 //
-// The drift guard is `ogreTwinOffsetsProblem`: every field offset and both sizes
-// must match the `@unmanaged` twin, because nothing else stops a one-field edit
-// from silently corrupting every record that nests the other.
+// The drift guard is `ogreTwinOffsetsProblem`: the twin's fields must sit where
+// the `@unmanaged` type's do, and the twin must be exactly that type minus its
+// slot pad, because nothing else stops a one-field edit from silently corrupting
+// every record that nests the other.
 
-/** `Vec3f16`, as a value — 16 bytes: three coordinates and their pad. */
-export struct Vec3f16Value {
+/** A `Vec3f16` as a value — **12 bytes**, a pure Vec3: no pad, no fourth coordinate. */
+export struct Vec3fValue {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
-  pad: f32 = 0;
 }
 
-/** `Quatf`, as a value — 16 bytes, `w` last. */
+/** `Quatf`, as a value — 16 bytes, `w` last. Naturally a slot-filler: 16 is its size. */
 export struct QuatfValue {
   x: f32 = 0;
   y: f32 = 0;
@@ -124,18 +136,20 @@ export struct Mat4f {
 /** Position, rotation, uniform scale — 48 bytes. Nested; see the twins above. */
 @unmanaged
 export struct Transformf {
-  position: Vec3f16Value = {};
-  rotation: QuatfValue = {};
-  scale: Vec3f16Value = {};
-  // `scale.pad` is the record's last word: the twin carries it, so the record
-  // ends at 48 without a pad field of its own.
+  position: Vec3fValue = {}; //  0, 12 bytes
+  pad1: f32 = 0; //           12 — fills position to its 16-byte slot
+  rotation: QuatfValue = {}; // 16, 16 bytes — already a full slot
+  scale: Vec3fValue = {}; //   32, 12 bytes
+  pad2: f32 = 0; //           44 — fills scale to its slot; ends the record at 48
 }
 
 /** An axis-aligned box, 32 bytes. Nested; see the twins above. */
 @unmanaged
 export struct Aabbf {
-  min: Vec3f16Value = {};
-  max: Vec3f16Value = {};
+  min: Vec3fValue = {}; //  0, 12 bytes
+  pad1: f32 = 0; //        12 — fills min to its 16-byte slot
+  max: Vec3fValue = {}; // 16, 12 bytes
+  pad2: f32 = 0; //        28 — fills max to its slot; ends the record at 32
 }
 
 // --- refs ------------------------------------------------------------------
@@ -435,9 +449,11 @@ export struct Renderable {
   /// offset moved and `layoutHash` did not either. With a node, the inline
   /// transform below is *local* to it.
   nodeId: u32 = 0;
-  position: Vec3f16Value = {};
-  rotation: QuatfValue = {};
-  scale: Vec3f16Value = {};
+  position: Vec3fValue = {}; //  16, 12 bytes
+  pad1: f32 = 0; //            28 — fills position to its 16-byte slot
+  rotation: QuatfValue = {}; // 32, 16 bytes — already a full slot
+  scale: Vec3fValue = {}; //    48, 12 bytes
+  pad2: f32 = 0; //            60 — fills scale to its slot; ends the record at 64
 
   /// A drawable: a mesh, a material, and a place in the world — the inline
   /// transform this record carries, with the identity rotation it defaults to.
@@ -467,15 +483,16 @@ export struct Renderable {
  * live — one call per frame instead of one per body.
  *
  * **Nested, one transform read for both records.** `position`/`rotation`/`scale`
- * are the value twins, so each is 16 bytes of the record's body rather than a
- * 4-byte reference — `Transformf`'s layout, reused, at the offsets `Renderable`'s
- * inline transform already uses (16/32/48).
+ * are the value twins: `position` and `scale` are 12-byte values and `rotation`
+ * is 16, laid out in the record's body rather than as 4-byte references — the
+ * offsets `Renderable`'s inline transform already uses (16/32/48), each slot
+ * completed by an explicit `pad1`/`pad2`.
  *
  * **`pad0: u64` is what puts the transform at 16 — not alignment.** The 16-byte
  * offsets do not come from `Quatf` being aligned (its `alignof` is log2 2, i.e.
  * 4-byte; §3.7 of the plan measured this on three compilers). They come from this
  * explicit 8-byte pad ending exactly at 16, plus the 16-byte twins striding
- * naturally after it. **Do not drop `pad0` while nesting:** `Vec3f16Value` is
+ * naturally after it. **Do not drop `pad0` while nesting:** `Vec3fValue` is
  * align-4, so `position` would land at offset **8** and the adapter's
  * `read_transform(r, 16, 32, 48, …)` would read `flags` as a coordinate without
  * raising anything. Measured 2026-10-29: without it, size 56 and offsets
@@ -488,10 +505,14 @@ export struct Renderable {
  * a restatement: the declaration already names the model, and the override emits
  * the same code. Say it once, here.
  *
- * The layout is verified at the record's `scale` by `ogreMotionOffsetsProblem`,
- * which asserts `offsetof("scale") + sizeof<Vec3f16Value>() == sizeof<MotionUpdate>()`
- * rather than a copied constant — so a field appended after `scale` fails the
- * check instead of silently widening the record past the table's stride.
+ * The layout is verified at the record's `pad2` by `ogreMotionOffsetsProblem`,
+ * which asserts `offsetof("pad2") + sizeof<f32>() == sizeof<MotionUpdate>()`
+ * rather than a copied constant — so a field appended after `pad2` fails the
+ * check instead of silently widening the record past the table's stride. The
+ * `pad1`/`pad2` fields are **slot-fillers, not value**: each completes a 12-byte
+ * `Vec3fValue` to the 16-byte slot its neighbours start on. That is where the
+ * padding belongs — on the record, whose slot structure it is — rather than
+ * folded into the value type as a phantom fourth coordinate.
  */
 @unmanaged
 export struct MotionUpdate {
@@ -499,9 +520,11 @@ export struct MotionUpdate {
   flags: u32 = 0;
   /// Ends exactly at 16 — see the note above. Not optional.
   pad0: u64 = 0;
-  position: Vec3f16Value = {};
-  rotation: QuatfValue = {};
-  scale: Vec3f16Value = {};
+  position: Vec3fValue = {}; //  16, 12 bytes
+  pad1: f32 = 0; //            28 — fills position to its 16-byte slot
+  rotation: QuatfValue = {}; // 32, 16 bytes — already a full slot
+  scale: Vec3fValue = {}; //    48, 12 bytes
+  pad2: f32 = 0; //            60 — fills scale to its slot; ends the record at 64
 }
 
 /** One bone pose, 64 bytes — one entry of the bone table (DESIGN.md §5.1,
@@ -517,8 +540,8 @@ export struct MotionUpdate {
  * for identical code. The idiom is
  * `changetype<BoneUpdate>(base + index * sizeof<BoneUpdate>())`.
  *
- * The layout is verified at this record's `scale` by `ogreBoneOffsetsProblem`,
- * asserting `offsetof("scale") + sizeof<Vec3f16Value>() == sizeof<BoneUpdate>()`.
+ * The layout is verified at this record's `pad2` by `ogreBoneOffsetsProblem`,
+ * asserting `offsetof("pad2") + sizeof<f32>() == sizeof<BoneUpdate>()`.
  * `pad0: u64` is load-bearing here for the reason `MotionUpdate` gives — without
  * it the transform lands at 8 and the adapter reads the ids as coordinates.
  */
@@ -528,9 +551,11 @@ export struct BoneUpdate {
   boneIndex: u32 = 0;
   /// Ends exactly at 16 — see `MotionUpdate`'s note. Not optional.
   pad0: u64 = 0;
-  position: Vec3f16Value = {};
-  rotation: QuatfValue = {};
-  scale: Vec3f16Value = {};
+  position: Vec3fValue = {}; //  16, 12 bytes
+  pad1: f32 = 0; //            28 — fills position to its 16-byte slot
+  rotation: QuatfValue = {}; // 32, 16 bytes — already a full slot
+  scale: Vec3fValue = {}; //    48, 12 bytes
+  pad2: f32 = 0; //            60 — fills scale to its slot; ends the record at 64
 }
 
 /** One job, 64 bytes: what the session reports into `JOB`. */
@@ -830,19 +855,26 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
 function ogreMotionOffsetsProblem(): string | null {
   // `pad0` survives (§3.7.2c): it is what puts the transform at 16.
   if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
-  if (offsetof<MotionUpdate>("position") + offsetof<Vec3f16Value>("x") != 16) {
+  if (offsetof<MotionUpdate>("position") + offsetof<Vec3fValue>("x") != 16) {
     return "MotionUpdate.position";
+  }
+  // `pad1` fills the material's 12-byte value out to its 16-byte slot, so the
+  // rotation starts at 32 — the sum below is the check that it does.
+  if (offsetof<MotionUpdate>("pad1") + sizeof<f32>() != offsetof<MotionUpdate>("rotation")) {
+    return "MotionUpdate.pad1";
   }
   if (offsetof<MotionUpdate>("rotation") + offsetof<QuatfValue>("x") != 32) {
     return "MotionUpdate.rotation";
   }
-  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3f16Value>("x") != 48) {
+  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3fValue>("x") != 48) {
     return "MotionUpdate.scale";
   }
-  // Bound to the declaration, not to a hand-copied 64: a field appended after
-  // `scale` used to be invisible here, because the constant would still equal the
-  // offset arithmetic while the record grew past the table's stride.
-  if (offsetof<MotionUpdate>("scale") + sizeof<Vec3f16Value>() != sizeof<MotionUpdate>()) {
+  // Bound to the declaration, not to a hand-copied 64: the record ends at `pad2`,
+  // so a field appended after it fails here instead of silently widening the
+  // record past the table's stride. (Before the pad moved out of the twin, the
+  // end was `scale` + the twin's 16 bytes; with a pure 12-byte value the record
+  // needs its own trailing slot-filler, and this is what checks it.)
+  if (offsetof<MotionUpdate>("pad2") + sizeof<f32>() != sizeof<MotionUpdate>()) {
     return "MotionUpdate size";
   }
   return null;
@@ -870,18 +902,21 @@ export function assertOgreMotionOffsets(): void {
  */
 function ogreBoneOffsetsProblem(): string | null {
   if (offsetof<BoneUpdate>("pad0") != 8) return "BoneUpdate.pad0";
-  if (offsetof<BoneUpdate>("position") + offsetof<Vec3f16Value>("x") != 16) {
+  if (offsetof<BoneUpdate>("position") + offsetof<Vec3fValue>("x") != 16) {
     return "BoneUpdate.position";
+  }
+  if (offsetof<BoneUpdate>("pad1") + sizeof<f32>() != offsetof<BoneUpdate>("rotation")) {
+    return "BoneUpdate.pad1";
   }
   if (offsetof<BoneUpdate>("rotation") + offsetof<QuatfValue>("x") != 32) {
     return "BoneUpdate.rotation";
   }
-  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3f16Value>("x") != 48) {
+  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3fValue>("x") != 48) {
     return "BoneUpdate.scale";
   }
   // As for the motion record: the size comes from the declaration. `BONE_SIZE`
   // stays the wire's published stride; this check no longer trusts it.
-  if (offsetof<BoneUpdate>("scale") + sizeof<Vec3f16Value>() != sizeof<BoneUpdate>()) {
+  if (offsetof<BoneUpdate>("pad2") + sizeof<f32>() != sizeof<BoneUpdate>()) {
     return "BoneUpdate size";
   }
   return null;
@@ -901,20 +936,30 @@ export function assertOgreBoneOffsets(): void {
 }
 
 /**
- * The twin drift guard: every value twin must match its `@unmanaged` original,
- * field for field and in size.
+ * The twin drift guard: every value twin must sit where its `@unmanaged` original
+ * does, and `Vec3fValue` must be exactly the wire type **minus its slot pad**.
  *
  * Nothing else stops the two declarations drifting. A one-field edit to either
  * side silently changes what every record nesting the value twin puts on the
  * wire, and the `offsetof` sums downstream would still pass — they check where
  * the nested field *starts*, not how wide it is. This is the assertion plan
  * §3.4 calls for, and it is the one that makes the whole nesting safe.
+ *
+ * The two size relations differ, because the types differ in kind:
+ *
+ *   `Vec3fValue` (12) is `Vec3f16` (16) minus the pad that fills a 16-byte slot.
+ *     So the check is `sizeof<Vec3fValue>() == offsetof<Vec3f16>("pad")` — the
+ *     twin ends exactly where the wire type's pad begins. Comparing the two
+ *     sizes for equality would be wrong now, and would fail.
+ *
+ *   `QuatfValue` (16) is `Quatf` (16) exactly: a quaternion fills its slot
+ *     naturally, so size equality is the right check there.
  */
 function ogreTwinOffsetsProblem(): string | null {
-  if (offsetof<Vec3f16Value>("y") != offsetof<Vec3f16>("y")) return "Vec3f16Value.y";
-  if (offsetof<Vec3f16Value>("z") != offsetof<Vec3f16>("z")) return "Vec3f16Value.z";
-  if (offsetof<Vec3f16Value>("pad") != offsetof<Vec3f16>("pad")) return "Vec3f16Value.pad";
-  if (sizeof<Vec3f16Value>() != sizeof<Vec3f16>()) return "Vec3f16Value size";
+  if (offsetof<Vec3fValue>("y") != offsetof<Vec3f16>("y")) return "Vec3fValue.y";
+  if (offsetof<Vec3fValue>("z") != offsetof<Vec3f16>("z")) return "Vec3fValue.z";
+  // The twin is the wire type minus its slot pad: it must end where the pad starts.
+  if (sizeof<Vec3fValue>() != offsetof<Vec3f16>("pad")) return "Vec3fValue size";
   if (offsetof<QuatfValue>("y") != offsetof<Quatf>("y")) return "QuatfValue.y";
   if (offsetof<QuatfValue>("z") != offsetof<Quatf>("z")) return "QuatfValue.z";
   if (offsetof<QuatfValue>("w") != offsetof<Quatf>("w")) return "QuatfValue.w";
@@ -948,12 +993,17 @@ function ogreWireOffsetsProblem(): string | null {
   if (offsetof<Transformf>("rotation") + offsetof<QuatfValue>("x") != 16) {
     return "Transformf.rotation";
   }
-  if (offsetof<Transformf>("scale") + offsetof<Vec3f16Value>("x") != 32) {
+  // `pad1` fills position's 12-byte value out to the slot the rotation starts at.
+  if (offsetof<Transformf>("pad1") + sizeof<f32>() != offsetof<Transformf>("rotation")) {
+    return "Transformf.pad1";
+  }
+  if (offsetof<Transformf>("scale") + offsetof<Vec3fValue>("x") != 32) {
     return "Transformf.scale";
   }
-  if (offsetof<Transformf>("scale") + sizeof<Vec3f16Value>() != 48) return "Transformf";
-  if (offsetof<Aabbf>("max") + offsetof<Vec3f16Value>("x") != 16) return "Aabbf.max";
-  if (offsetof<Aabbf>("max") + sizeof<Vec3f16Value>() != 32) return "Aabbf";
+  if (offsetof<Transformf>("pad2") + sizeof<f32>() != sizeof<Transformf>()) return "Transformf";
+  if (offsetof<Aabbf>("max") + offsetof<Vec3fValue>("x") != 16) return "Aabbf.max";
+  if (offsetof<Aabbf>("pad1") + sizeof<f32>() != offsetof<Aabbf>("max")) return "Aabbf.pad1";
+  if (offsetof<Aabbf>("pad2") + sizeof<f32>() != sizeof<Aabbf>()) return "Aabbf";
 
   // Refs.
   if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
@@ -1001,10 +1051,15 @@ function ogreWireOffsetsProblem(): string | null {
   // The pin is here because the rename is a *semantics* change, and the one
   // thing that must not change with it is where the field sits.
   if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
-  if (offsetof<Renderable>("position") + offsetof<Vec3f16Value>("x") != 16) {
+  if (offsetof<Renderable>("position") + offsetof<Vec3fValue>("x") != 16) {
     return "Renderable.position";
   }
-  if (offsetof<Renderable>("scale") + sizeof<Vec3f16Value>() != 64) return "Renderable size";
+  if (offsetof<Renderable>("pad1") + sizeof<f32>() != offsetof<Renderable>("rotation")) {
+    return "Renderable.pad1";
+  }
+  if (offsetof<Renderable>("pad2") + sizeof<f32>() != sizeof<Renderable>()) {
+    return "Renderable size";
+  }
   // The motion table's record: the id pair, then the transform at the offsets
   // Renderable's inline one uses. `pad0` is what makes the transform land on
   // 16, and the record end at 64. Checked by `ogreMotionOffsetsProblem` so a

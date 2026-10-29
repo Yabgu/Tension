@@ -843,10 +843,22 @@ under both.)
   records; the hash folds the names (§2).
 - **Sized enums on wire records** — moves the layout, and needs the C side
   measured first. Deferred, already filed.
-- **16-byte alignment for the math records** — if it is a real GPU requirement it
-  is its own defect; it is not what produces the current offsets (§3.7). The tool
-  for it is Phase 0's `@abi.align(N)`, and applying it to the transform records
-  does **not** move `layout_hash` (§3.8).
+- **16-byte alignment for the math records** — not required: Phase 2 measured no
+  GPU buffer upload (§3.7.1), so the 16-byte spacing is legacy striding, not an
+  alignment requirement. The tool for it, Phase 0's `@abi.align(N)`, is therefore
+  not applied to these records; §3.8 records that it would not move `layout_hash`
+  regardless (`TYPES[id=7]`/`[id=8]` are `Callbacks`/`Subscription`).
+- **`wire-tighten-transform-records`** — change the five transform records from
+  16-byte slots to 12-byte slots: `Vec3f16` → a 12-byte `Vec3f`, `MotionUpdate`/
+  `BoneUpdate`/`Renderable` 64 → 56 bytes, `Transformf` 48 → 40, `Aabbf` 32 → 24
+  (≈12.5% smaller wire traffic on the motion and bone tables). Phase 2 established
+  that nothing needs the 16-byte spacing — no GPU buffer upload, and the adapter
+  decodes field-by-field — so this is a size win with no functional cost, but it
+  is a **coordinated guest+adapter change**: `read_transform`'s offsets move from
+  16/32/48 to 16/28/44 (`scene.cpp:460`, `:472`, `:484`), the guest's stride
+  constants change, and the `wire.ts` assertions follow. `layout_hash` is
+  unaffected — these are free records (§2). Deferred: the current 16-byte slots
+  are legacy with no remaining requirement, not a decision.
 
 ---
 

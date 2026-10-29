@@ -102,7 +102,7 @@ export class MotionBatch {
     rec.position.x = x;
     rec.position.y = y;
     rec.position.z = z;
-    rec.position.pad = 0;
+    rec.pad1 = 0; // fills position's 12-byte value to its 16-byte slot
     rec.rotation.x = qx;
     rec.rotation.y = qy;
     rec.rotation.z = qz;
@@ -110,7 +110,7 @@ export class MotionBatch {
     rec.scale.x = scale;
     rec.scale.y = scale;
     rec.scale.z = scale;
-    rec.scale.pad = 0;
+    rec.pad2 = 0; // fills scale's 12-byte value; ends the record at 64
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 
