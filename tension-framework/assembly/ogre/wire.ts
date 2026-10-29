@@ -1,11 +1,15 @@
 // The OGRE capability's wire, as the guest sees it.
 //
 // Same rules as the session runtime's `wire.ts`: every type is `@unmanaged`
-// with scalar fields in declared order and its padding spelled out, so a
-// `changetype<T>(offset)` is a view and the field order is the wire order. No
-// nested types — an `@unmanaged` class holding another class holds a *reference*
-// to it, which is the one thing a wire record must not do — so a `Transformf`
-// is twelve floats and a `Mat4f` is sixteen.
+// with its fields in declared order, so a `changetype<T>(offset)` is a view and
+// the field order is the wire order. The transform records nest the plain-struct
+// twins (`Vec3fValue`, `QuatfValue`) — a *plain* struct is stored inline, so the
+// nesting is bytes in the record rather than a reference — and everything else
+// stays scalar, so `Mat4f` is sixteen floats.
+//
+// Padding is spelled out only where something depends on it: an alignment need,
+// or a host reader's fixed offset. See the rule above `Transformf` for which
+// records carry pads and why.
 //
 // **These field layouts are defined here, for the first time.** The design note
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
@@ -133,23 +137,48 @@ export struct Mat4f {
   m30: f32 = 0; m31: f32 = 0; m32: f32 = 0; m33: f32 = 0;
 }
 
-/** Position, rotation, uniform scale — 48 bytes. Nested; see the twins above. */
+// ── Transform record padding: the rule ────────────────────────────────
+//
+// **Renderable, MotionUpdate and BoneUpdate keep their explicit pads.** The
+// adapter reads those three at literal byte offsets 16 / 32 / 48
+// (`tension-ogre/src/scene.cpp:460`, `:472`, `:484` — one `read_transform(r, 16,
+// 32, 48, …)` call per decoder), and the sizes are the tables' strides
+// (`scene.h:39`, `:49`, `:67`). That is an external contract: the guest cannot
+// move those offsets without the adapter moving with it.
+//
+// **Transformf and Aabbf have no host reader** — zero occurrences in
+// `tension-ogre/`; their only consumers are the `offsetof` assertions below.
+// Their pads were uniformity, so they are gone and both records are tight.
+//
+// The rule, stated once:
+//
+//   Padding is added when a smaller field precedes a larger one that needs
+//   stricter alignment — a `u8` before an `f32` on a target that demands it, or
+//   a `u64` at an odd offset — **or** when an external reader depends on a fixed
+//   offset. Padding is never added for uniformity ("all records should be
+//   N-byte shaped"), convention ("this is the wire's slot size"), or "16-byte
+//   slots" as a shape preference.
+//
+// Neither tight record has a field that needs padding, and neither contains a
+// `u8`-adjacent-to-`f32` or an odd-offset `u64` sequence. Measured 2026-10-30:
+// every leaf is `f32` at 4-byte alignment (`Vec3fValue` sizeof 12 / align 4,
+// `QuatfValue` sizeof 16 / align 4), and every field lands on a 4-byte multiple.
+// If a future field does need padding, pad that field explicitly and say why
+// here — the reason is the alignment arithmetic, never the shape.
+
+/** Position, rotation, uniform scale — 40 bytes (tight: no host reader). */
 @unmanaged
 export struct Transformf {
   position: Vec3fValue = {}; //  0, 12 bytes
-  pad1: f32 = 0; //           12 — fills position to its 16-byte slot
-  rotation: QuatfValue = {}; // 16, 16 bytes — already a full slot
-  scale: Vec3fValue = {}; //   32, 12 bytes
-  pad2: f32 = 0; //           44 — fills scale to its slot; ends the record at 48
+  rotation: QuatfValue = {}; // 12, 16 bytes — `QuatfValue` is 4-byte aligned
+  scale: Vec3fValue = {}; //    28, 12 bytes — ends the record at 40
 }
 
-/** An axis-aligned box, 32 bytes. Nested; see the twins above. */
+/** An axis-aligned box — 24 bytes (tight: no host reader). */
 @unmanaged
 export struct Aabbf {
   min: Vec3fValue = {}; //  0, 12 bytes
-  pad1: f32 = 0; //        12 — fills min to its 16-byte slot
-  max: Vec3fValue = {}; // 16, 12 bytes
-  pad2: f32 = 0; //        28 — fills max to its slot; ends the record at 32
+  max: Vec3fValue = {}; // 12, 12 bytes — ends the record at 24
 }
 
 // --- refs ------------------------------------------------------------------
@@ -990,20 +1019,21 @@ function ogreWireOffsetsProblem(): string | null {
   if (offsetof<Quatf>("w") != 12 || offsetof<Quatf>("w") + 4 != 16) return "Quatf";
   if (offsetof<Colourf>("a") != 12 || offsetof<Colourf>("a") + 4 != 16) return "Colourf";
   if (offsetof<Mat4f>("m33") != 60 || offsetof<Mat4f>("m33") + 4 != 64) return "Mat4f";
-  if (offsetof<Transformf>("rotation") + offsetof<QuatfValue>("x") != 16) {
+  // Transformf and Aabbf are tight — no host reader, no alignment need. Each
+  // assertion is the *sum* form, so it still names the field that moved, and
+  // each is paired with the end-of-record check that a full 12-byte value lands
+  // where the next field begins (i.e. that no pad crept back in).
+  if (offsetof<Transformf>("rotation") + offsetof<QuatfValue>("x") != 12) {
     return "Transformf.rotation";
   }
-  // `pad1` fills position's 12-byte value out to the slot the rotation starts at.
-  if (offsetof<Transformf>("pad1") + sizeof<f32>() != offsetof<Transformf>("rotation")) {
-    return "Transformf.pad1";
-  }
-  if (offsetof<Transformf>("scale") + offsetof<Vec3fValue>("x") != 32) {
+  if (offsetof<Transformf>("scale") + offsetof<Vec3fValue>("x") != 28) {
     return "Transformf.scale";
   }
-  if (offsetof<Transformf>("pad2") + sizeof<f32>() != sizeof<Transformf>()) return "Transformf";
-  if (offsetof<Aabbf>("max") + offsetof<Vec3fValue>("x") != 16) return "Aabbf.max";
-  if (offsetof<Aabbf>("pad1") + sizeof<f32>() != offsetof<Aabbf>("max")) return "Aabbf.pad1";
-  if (offsetof<Aabbf>("pad2") + sizeof<f32>() != sizeof<Aabbf>()) return "Aabbf";
+  if (offsetof<Transformf>("scale") + sizeof<Vec3fValue>() != sizeof<Transformf>()) {
+    return "Transformf size";
+  }
+  if (offsetof<Aabbf>("max") + offsetof<Vec3fValue>("x") != 12) return "Aabbf.max";
+  if (offsetof<Aabbf>("max") + sizeof<Vec3fValue>() != sizeof<Aabbf>()) return "Aabbf size";
 
   // Refs.
   if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
