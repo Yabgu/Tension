@@ -241,11 +241,11 @@ export function _start_game(): void {
     renderable.renderableId = <u32>(i + 1);
     renderable.materialId = 1;
     renderable.meshResourceId = mesh_resource;
-    renderable.positionX = i == 0 ? 0.0 : <f32>(-100.0 - <f64>i);
-    renderable.rotationW = 1.0;
-    renderable.scaleX = BARREL_SCALE;
-    renderable.scaleY = BARREL_SCALE;
-    renderable.scaleZ = BARREL_SCALE;
+    renderable.position.x = i == 0 ? 0.0 : <f32>(-100.0 - <f64>i);
+    renderable.rotation.w = 1.0;
+    renderable.scale.x = BARREL_SCALE;
+    renderable.scale.y = BARREL_SCALE;
+    renderable.scale.z = BARREL_SCALE;
     submitted(ogre.submitRenderable(renderable), "renderable " + (i + 1).toString());
   }
   print("2 ok");

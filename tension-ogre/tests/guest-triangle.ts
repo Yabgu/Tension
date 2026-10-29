@@ -176,13 +176,13 @@ export function _start_game(): void {
   renderable.renderableId = 1;
   renderable.materialId = 1;
   renderable.meshResourceId = mesh_resource;
-  renderable.positionX = 0.0;
-  renderable.positionY = 0.0;
-  renderable.positionZ = 0.0;
-  renderable.rotationW = 1.0;
-  renderable.scaleX = BARREL_SCALE;
-  renderable.scaleY = BARREL_SCALE;
-  renderable.scaleZ = BARREL_SCALE;
+  renderable.position.x = 0.0;
+  renderable.position.y = 0.0;
+  renderable.position.z = 0.0;
+  renderable.rotation.w = 1.0;
+  renderable.scale.x = BARREL_SCALE;
+  renderable.scale.y = BARREL_SCALE;
+  renderable.scale.z = BARREL_SCALE;
   submitted(ogre.submitRenderable(renderable), "renderable");
   print("4 ok");
 

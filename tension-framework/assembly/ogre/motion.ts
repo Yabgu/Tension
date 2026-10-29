@@ -74,26 +74,9 @@ export class MotionBatch {
    * way. The default keeps the simple case simple.
    */
   set(index: u32, id: u32, x: f32, y: f32, z: f32, scale: f32 = 1.0): void {
-    if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
-    // `MotionUpdate` is `@unmanaged` (`wire.ts:462`): a view of the arena slot,
-    // so each assignment is the wire's field at the wire's offset.
-    const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
-    rec.renderableId = id;
-    rec.flags = 0; // reserved
-    rec.pad0 = 0; // what puts the transform at 16
-    rec.positionX = x;
-    rec.positionY = y;
-    rec.positionZ = z;
-    rec.pad1 = 0;
-    rec.rotationX = 0;
-    rec.rotationY = 0;
-    rec.rotationZ = 0;
-    rec.rotationW = 1; // identity
-    rec.scaleX = scale;
-    rec.scaleY = scale;
-    rec.scaleZ = scale;
-    rec.pad2 = 0;
-    if (index + 1 > this.entries) this.entries = index + 1;
+    // The identity rotation, which is the only thing `set` and `setPose` differ
+    // by — so one writer serves both rather than two bodies drifting apart.
+    this.setPose(index, id, x, y, z, 0, 0, 0, 1, scale);
   }
 
   /**
@@ -109,22 +92,25 @@ export class MotionBatch {
   setPose(index: u32, id: u32, x: f32, y: f32, z: f32,
           qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
+    // `MotionUpdate` is `@unmanaged`: a view of the arena slot, so each
+    // assignment is the wire's field at the wire's offset. `pad0` is written
+    // because it is what puts the transform at 16 — see the record's note.
     const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
     rec.renderableId = id;
     rec.flags = 0; // reserved
-    rec.pad0 = 0; // what puts the transform at 16
-    rec.positionX = x;
-    rec.positionY = y;
-    rec.positionZ = z;
-    rec.pad1 = 0;
-    rec.rotationX = qx;
-    rec.rotationY = qy;
-    rec.rotationZ = qz;
-    rec.rotationW = qw;
-    rec.scaleX = scale;
-    rec.scaleY = scale;
-    rec.scaleZ = scale;
-    rec.pad2 = 0;
+    rec.pad0 = 0;
+    rec.position.x = x;
+    rec.position.y = y;
+    rec.position.z = z;
+    rec.position.pad = 0;
+    rec.rotation.x = qx;
+    rec.rotation.y = qy;
+    rec.rotation.z = qz;
+    rec.rotation.w = qw;
+    rec.scale.x = scale;
+    rec.scale.y = scale;
+    rec.scale.z = scale;
+    rec.scale.pad = 0;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 

@@ -146,18 +146,18 @@ export class BoneBatch {
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
     rec.pad0 = 0; // what puts the transform at 16
-    rec.positionX = x;
-    rec.positionY = y;
-    rec.positionZ = z;
-    rec.pad1 = 0;
-    rec.rotationX = rx;
-    rec.rotationY = ry;
-    rec.rotationZ = rz;
-    rec.rotationW = rw;
-    rec.scaleX = scale;
-    rec.scaleY = scale;
-    rec.scaleZ = scale;
-    rec.pad2 = 0;
+    rec.position.x = x;
+    rec.position.y = y;
+    rec.position.z = z;
+    rec.position.pad = 0;
+    rec.rotation.x = rx;
+    rec.rotation.y = ry;
+    rec.rotation.z = rz;
+    rec.rotation.w = rw;
+    rec.scale.x = scale;
+    rec.scale.y = scale;
+    rec.scale.z = scale;
+    rec.scale.pad = 0;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 }
