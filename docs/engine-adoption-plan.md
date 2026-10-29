@@ -108,10 +108,19 @@ correctly filed under the version it actually shipped as. `@abi.align(N)` itself
 is implemented, with fixtures for the prefix form, the four value refusals and
 the post-type refusal.
 
-**The registry does not have it yet.** As of the same date it serves only
-`0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`). **Phase 1's gate is
-that publish** — nothing else in Phase 1 can start until `0.11.0` is resolvable,
-which is why §8's row for it names the publish rather than the bump.
+**The registry did not have it at first.** As of 2026-10-29 it served only
+`0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`). **Phase 1's gate was
+that publish** — which is why §8's row for it names the publish rather than the
+bump.
+
+**Published 2026-10-29.** The gate is met: `npm view @yabgu_gm/tensionscript
+version` returns **0.11.0**, the version list is
+`['0.0.0-stage', '0.10.0', '0.11.0']`, and the tarball is
+`https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.11.0.tgz`.
+The installed compiler in `tension-framework` is still `@acakar/tensionscript`
+**0.9.0** under the old scope (`node_modules/@yabgu_gm/` does not exist,
+`node_modules/.bin/tensionscript` still points at `@acakar`), so Phase 1's
+install is what fixes the scope and the version at once.
 
 Two consequences for the engine side, both measured: the scope already moved in
 #35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
@@ -275,22 +284,26 @@ reporting `sizeof` 24 and `offsetof("position")` 8 for
 `@unmanaged` (§7), so Phase 4's shape is the supported one. The rule to keep: the
 value twins are leaves — they are never nested inside each other.
 
-**Alignment, if Phase 2 says the GPU path needs 16 (§3.7, §3.8).**
-`@abi.align(16)` on a value twin's field propagates into the nesting record's
-layout. A value type's `alignLog2` **is consumed** by the nesting path — measured
-2026-10-29 on the compiler that ships the attribute: `@inline struct V { x: f64 }`
-nested into an `@unmanaged` record places the field at offset 8, exactly as the
-flat `{ a: u8; v: f64 }` does. So the twins carry `@abi.align(16)` themselves;
-the outer inherits via the `classAlignLog2` max, with no per-field override on
-the outer record needed. This requires Phase 0 (`@abi.align(N)`) published first.
-The attribute goes on the **field declaration** (prefix position) — the post-type
-spelling is refused by name, so `@abi.align(16) x: f32`, never `x: f32
+**Alignment — measured as not needed (§3.7.1); kept here for the record.**
+Phase 2 answered **no**: the GPU path requires no 16-byte alignment on these
+records, so Phase 4 does not apply `@abi.align(16)`. Should that ever change, the
+mechanism is as follows: `@abi.align(16)` on a value twin's field propagates into
+the nesting record's layout. A value type's `alignLog2` **is consumed** by the
+nesting path — measured 2026-10-29 on the compiler that ships the attribute:
+`@inline struct V { x: f64 }` nested into an `@unmanaged` record places the field
+at offset 8, exactly as the flat `{ a: u8; v: f64 }` does. So the twins carry
+`@abi.align(16)` themselves; the outer inherits via the `classAlignLog2` max, with
+no per-field override on the outer record needed. `@abi.align(N)` shipped in
+published `@yabgu_gm/tensionscript@0.11.0`, so the mechanism is available if it is
+ever wanted. The attribute goes on the **field declaration** (prefix position) —
+the post-type spelling is refused by name, so `@abi.align(16) x: f32`, never
+`x: f32
 @abi.align(16)`.
 
-**Measure the aligned shape before writing it:**
+**If it is ever applied, measure the aligned shape before writing it:**
 `sizeof`, `alignof` and every `offsetof`, against the same numbers in the table
 above. If `alignof` still reports log2 2 with the attribute applied, the
-attribute did nothing and that is a Phase 0 defect, not a Phase 4 choice.
+attribute did nothing and that is a TensionScript defect, not a Phase 4 choice.
 
 The `@unmanaged` twin stays for `changetype` views and for the `offsetof`-based
 assertions; the value twin is what makes a field inline.
@@ -345,18 +358,17 @@ their own `offsetof` assertions, which is what §3.4's drift probe compares
 against. And `:942 offsetof<Renderable>("nodeId") != 12` is unchanged and not in
 the table: `nodeId` is not a transform field.
 
-**If `@abi.align` lands (§3.8)**, an alignment assertion is a new shape, not a
-rewrite of these: the sums check offsets, and offsets do not move under a
-16-byte alignment (§3.8). If Phase 2's GPU measurement requires 16-byte
-alignment, the twins declare `@abi.align(16)` on their fields and the outer
-records inherit automatically (the `classAlignLog2` max, §3.4); without it, they
-stay at their natural align-4. `alignof` cannot stand in for the assertion
-either — the manifest
-compares sizes only, and the guest's `manifestProblem` deliberately does not
-compare its `align` entry against `alignof` (`arena.ts`, "alignment is a
-consistency relation, not a comparison"). So an alignment assertion has to be
-written deliberately, against the published compiler's `alignof`, and it is the
-one assertion in Phase 4 that a `@abi.align` regression would catch.
+**`@abi.align` does not land here — Phase 2 answered no (§3.7.1), so Phase 4 is
+Case A (align-4) and these assertions are the sums only.** §3.8's arithmetic
+remains the contingency if that answer ever reverses: the sums check offsets, and
+offsets do not move under a 16-byte alignment. Had it applied, the twins would
+declare `@abi.align(16)` and the outer records inherit automatically (the
+`classAlignLog2` max, §3.4). `alignof` cannot stand in for such an assertion
+either — the manifest compares sizes only, and the guest's `manifestProblem`
+deliberately does not compare its `align` entry against `alignof` (`arena.ts`,
+"alignment is a consistency relation, not a comparison"). Any alignment assertion
+would have to be written deliberately, against the published compiler's
+`alignof`.
 
 ### 3.6 What does not change
 
@@ -382,14 +394,92 @@ comes from the explicit `pad0: u64` (which ends exactly at 16) plus the
 Nothing is broken — the offsets are right — but the *reason* in the comment is
 wrong, and the reason is the thing the nesting work is deleting. Worth correcting
 in the same PR so the next reader does not try to preserve an alignment that was
-never there. If 16-byte alignment is genuinely required for a GPU upload, that is
-a separate, real defect; it is not what makes these records 64 bytes.
+never there.
 
 Confirmed on three compilers 2026-10-28 (installed `@acakar` 0.9.0, published
 `@yabgu_gm` 0.10.0, local `0b67e3cc`): `alignof` of a 16-byte plain struct whose
 leaves are `f32` reports **2** (log2), i.e. 4-byte alignment — unchanged by the
-flip, which moves `sizeof` and storage but not alignment. Whether that 4-byte
-alignment is a defect for the GPU path is Phase 2's question (§3.8).
+flip, which moves `sizeof` and storage but not alignment.
+
+#### 3.7.1 Phase 2 measured: the GPU path needs no 16-byte alignment — Case A
+
+**Answered 2026-10-29 by tracing the adapter, read-only.** The question §3.7 left
+open — *is the 4-byte alignment a defect for the GPU path?* — is **no**. The five
+transform records never reach a GPU buffer. They are read out of guest memory as
+bytes and applied through OGRE's CPU-side scene-graph setters.
+
+The path, end to end:
+
+- **Read as opaque bytes at a fixed stride.** `submit_motion` pulls the whole
+  table in one `guest_read` into a `std::vector<uint8_t>` and walks it by
+  `kMotionRecordBytes` (`adapter.cpp:817-819`; stride `scene.h:49`). Nothing
+  reinterprets the buffer as a struct.
+- **Decoded field by field, at literal offsets.** `decode_motion_at`
+  (`scene.cpp:465`) and `decode_bone_at` (`scene.cpp:477`) both call
+  `read_transform(r, 16, 32, 48, …)` (`scene.cpp:460`, `:472`, `:484`); the
+  renderable's inline transform is the same call at `:460`.
+- **Assembled from bytes, so an unaligned address cannot misbehave.** The readers
+  are `u32()` (`scene.cpp:18`) and `f32()` (`scene.cpp:24`) — four explicit
+  shifts, then `memcpy` into a float. No aligned load, no alignment fault, and no
+  UB to reason about.
+- **Applied as scalars.** `node->setPosition/setOrientation/setScale`
+  (`backend_ogre.cpp:1385-1387`), and the bone setters on the
+  `SkeletonInstance` (`:1926-1928`). `setManualBone` is deliberately *not* called
+  (`backend_ogre.cpp:1874-1878`: it would take the bone from OGRE's own animation
+  system for no gain).
+- **No record bytes are uploaded anywhere.** The only const-buffer writes are the
+  world-matrix cursor, the shadow bias, the light mask and the custom parameter
+  (`hlms_tension_skin.cpp:588-651`); the vertex upload copies position/normal/uv
+  at a 12-byte stride (`adapter.cpp:1069`).
+
+The alignment rule this section went looking for does exist, and does not apply
+here: `hlms_tension_skin.cpp:635` realigns the *texture* cursor with
+`alignToNextMultiple<size_t>(tex_offset, 16u + 16u * !casterPass)`. That rule
+governs the Hlms const and texture buffers — which carry skin matrices at 16-float
+rows — not the five transform records.
+
+**Q2 — the adapter consumes either shape unchanged**, and for a reason worth
+stating: it reads at *literal* byte offsets, not by declared `alignof`. That makes
+Phase 4's contract precise instead of vague:
+
+- offsets `16 / 32 / 48` must not move in `Renderable`, `MotionUpdate`,
+  `BoneUpdate` (`scene.cpp:460`, `:472`, `:484`);
+- `nodeId` stays at offset 12 (`scene.cpp:459`), so the header stays four words;
+- the record sizes stay 64 (`scene.h:39`, `:49`, `:67`), node 80 (`scene.h:35`),
+  material 208 (`scene.h:38`).
+
+**Consequence — Phase 4 runs Case A: align-4.** No `@abi.align(16)` on the twins
+(§3.4), no alignment assertion (§3.5), and §3.8's arithmetic stays a contingency
+note rather than a step. The `wire.ts:457` comment is corrected in Phase 4 as the
+only actual defect this measurement found.
+
+#### 3.7.2 Three corrections the adapter trace turned up
+
+The nesting shape in §3.4 is right about sizes and offsets, and wrong in three
+details that would otherwise mislead the implementation. All three were read out
+of the declarations, not inferred:
+
+**(a) `Transformf` and `Aabbf` do not have a `pad0: u64`.** Both use `pad0: f32`
+at offset 12 to complete the position block to 16 bytes (`wire.ts:91-104`,
+`:107-115`). §3.7's "the explicit `pad0: u64`" describes `MotionUpdate` and
+`BoneUpdate` only. This makes the nesting easier for those two records: the
+`Vec3f16Value` twin already carries `x/y/z/pad` = 16 bytes (`wire.ts:44-49`), so
+`position: Vec3f16Value` needs no pad field of its own.
+
+**(b) `Transformf` and `Aabbf` have no host reader at all.** Zero occurrences in
+`tension-ogre/`; their only consumers are the guest's own `offsetof` assertions
+(`wire.ts:891-895`). Only `Renderable`, `MotionUpdate` and `BoneUpdate` have an
+adapter to satisfy, so nesting the two transform-only types is guest-internal.
+
+**(c) `MotionUpdate` and `BoneUpdate` MUST keep `pad0: u64`.** This is the
+hazard, and it fails silently. `pad0` is what puts `positionX` at 16 — not
+alignment. `Vec3f16Value` is align-4, so a nested `position: Vec3f16Value` placed
+directly after `flags` lands at **offset 8**, and the adapter's
+`read_transform(r, 16, 32, 48, …)` would then read `flags` and `boneIndex` as
+coordinates without raising any error. Keeping `pad0: u64` and appending
+`position`/`rotation`/`scale` twins gives field offsets 0 / 4 / 8 / 16 / 32 / 48
+and `sizeof` 64 — identical bytes, two fewer named pads per record (`pad1` and
+`pad2`; the inner `pad` now belongs to the twin).
 
 ### 3.8 The TYPES verification — does `@abi.align(16)` move `layout_hash`?
 
@@ -591,10 +681,10 @@ yes.
 | Phase | Step | Gate | Repo |
 |---|---|---|---|
 | **0** | **`@abi.align(N)` + the version fix.** The attribute goes on the **field declaration** (prefix position), read by the resolver at the record's `alignLog2` site and validated there (power of two, ≥ 1, ≥ the natural alignment, integer literal); the post-type spelling is refused by name in the parser. Then retitle the CHANGELOG's `## Unreleased — breaking` to `## 0.10.0`, add `## 0.11.0 — @abi.align(N)`, bump `package.json`, publish. **Code landed at TensionScript `a8e79c2a`; the publish is outstanding.** | Published 0.11.0 compiles a fixture; an `@abi.align(16)` record reports `alignof` 4 (log2) with every `offsetof` unchanged | TensionScript |
-| **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | **0.11.0 published to the registry** — pending at time of writing; Phase 1 cannot start until it is. Then: `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
-| **2** | **§3.7 measurement:** read the OGRE/GPU path for a 16-byte requirement on the transform records, and record §3.8's TYPES verdict. | An answer in writing, with the file and the line. If yes → the aligned shape is Phase 4's input; if no → the `wire.ts:457` comment is the only defect and `@abi.align` is not applied here | Tension (read-only) |
+| **1** | **Bump the engine to `^0.11.0`** and reinstall. Baseline first (§8.1). One version number in `tension-framework/package.json` and in the 6 `examples/*/package.json` that declare it — 9 example directories, 3 of them declare no compiler. | **0.11.0 published to the registry** — **met 2026-10-29**. Then: `npm ls @yabgu_gm/tensionscript` resolves to 0.11.0; guest `.wasm`/`.wat` `cmp` clean vs the baseline | Tension |
+| **2** | **§3.7 measurement:** read the OGRE/GPU path for a 16-byte requirement on the transform records, and record §3.8's TYPES verdict. **Answered 2026-10-29 (§3.7.1): no requirement — the records never reach a buffer.** | An answer in writing, with the file and the line. **Met:** no → the `wire.ts:457` comment is the only defect and `@abi.align` is not applied here | Tension (read-only) |
 | **3** | **`Quat` → value** (§4) | The frame-time gate (§4.4) decides the wording, not the change | Tension |
-| **4** | **Value twins + nested transform records** (§3), with `@abi.align(16)` **only if Phase 2 says yes** | Twins probe green; `offsetof` sums green; per-record bytes byte-identical; guest `.wat` byte-identical to pre-nesting; `layout_hash` unchanged | Tension |
+| **4** | **Value twins + nested transform records** (§3), **Case A — align-4**: Phase 2 said no, so no `@abi.align(16)`. `pad0: u64` stays on `MotionUpdate`/`BoneUpdate` (§3.7.2c). | Twins probe green; `offsetof` sums green; per-record bytes byte-identical (offsets 16/32/48, sizes 64); guest `.wat` byte-identical to pre-nesting; `layout_hash` unchanged | Tension |
 | **5** | *(optional)* enum tidy on `LogLevel` / `AiRole` | Types only — no layout assertion moves | Tension |
 | **6** | Verification, CHANGELOG, PR body | The four OGRE fixtures, `cargo test`, the hash from the host binary, one PR for review | Tension |
 
@@ -603,9 +693,9 @@ on the new compiler, nothing else can be attributed. Phases 3 and 4 are
 independent and either may go first; 3 is smaller and self-contained, 4 is the
 structural win.
 
-**Phase 4 without Phase 0 is a supported outcome** — align-4 records, byte-
-identical, `@abi.align` as a follow-up — provided Phase 2 measured that the GPU
-path does not need 16.
+**Phase 4 without `@abi.align` is the measured outcome, not a fallback** —
+align-4 records, byte-identical, because Phase 2 established that the GPU path
+needs no 16-byte alignment (§3.7.1).
 
 ### 8.1 The baseline, captured 2026-10-28
 
