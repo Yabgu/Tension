@@ -896,6 +896,17 @@ under both.)
   settle it.
 - **The C/adapter side of the nested records.** The offsets are unchanged and the
   adapter reads them through `guest_read`, but the adapter was not exercised.
+- **What a green `npm run build` does not cover.** The framework guest's entry
+  barrel (`index.ts` → `assembly/index.ts`) pulls in every module, but the
+  compiler tree-shakes what nothing reaches — and a module it excludes is never
+  type-checked. `MotionBatch` and `BoneBatch` are excluded, so their writers were
+  not checked by the build that reported exit 0. Measured 2026-10-29: after the
+  twin gesture moved the pad out of `Vec3fValue`, `motion.ts` and `bones.ts` still
+  assigned `rec.position.pad = 0` — four assignments to a field that no longer
+  existed — and `npm run build` passed. The `record-bytes` probe caught it by
+  failing to compile. So "the guest builds" is evidence about the code the build
+  emits, not about the code it excludes; a change that touches a tree-shaken
+  module needs a probe that reaches it.
 - **Whether 16-byte alignment matters to the GPU path.** **Answered 2026-10-29
   (§3.7.1): no.** The five transform records never reach a buffer — they are read
   as opaque bytes, decoded at literal offsets, and applied through OGRE's CPU
