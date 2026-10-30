@@ -5,7 +5,7 @@
 // the field order is the wire order. The transform records nest the plain-struct
 // twins (`Vec3fValue`, `QuatfValue`) — a *plain* struct is stored inline, so the
 // nesting is bytes in the record rather than a reference — and everything else
-// stays scalar, so `Mat4f` is sixteen floats.
+// stays scalar, so a matrix, if one is ever wanted, is sixteen floats.
 //
 // Padding is spelled out only where something depends on it: an alignment need,
 // or a host reader's fixed offset. See the rule above `Transformf` for which
@@ -19,123 +19,56 @@
 // check proves its own: `offsetof<T>("lastField")` plus that field's width plus
 // the trailing reserved words, never `sizeof<T>()`.
 //
-// Alignment is a *placement* rule, not something offsetof can check: AS aligns
-// an `@unmanaged` record to its widest scalar field, so a `Vec4f` or a `Mat4f`
-// must sit at a 16-byte offset in whatever record contains it. The container
-// layouts below do that, and the sizes are what the check pins.
+// Alignment is a *placement* rule, not something offsetof can check. Every leaf
+// in these records is an `f32` (align 4), so the 16-byte offsets in the transform
+// records come from explicit pad fields, not from alignment -- measured, and the
+// reason `pad0: u64` is load-bearing in `MotionUpdate`/`BoneUpdate`.
 
 import { REGION_RESOURCE } from "../runtime/wire";
 import { regionOffset } from "../runtime/arena";
 
-// --- math ------------------------------------------------------------------
+// --- the value types -------------------------------------------------------
 
-/** Two floats, 8 bytes. */
-@unmanaged
-export struct Vec2f {
-  x: f32 = 0;
-  y: f32 = 0;
-}
-
-/** Three floats, 12 bytes. */
-@unmanaged
-export struct Vec3f {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-}
-
-/** A `Vec3f` padded to 16 bytes: the alignment a `Vec4f` has, without a w. */
-@unmanaged
-export struct Vec3f16 {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  pad: f32 = 0;
-}
-
-/** Four floats, 16 bytes, align 16. */
-@unmanaged
-export struct Vec4f {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  w: f32 = 0;
-}
-
-/** A quaternion, xyzw, 16 bytes, align 16. */
-@unmanaged
-export struct Quatf {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  w: f32 = 0;
-}
-
-// --- the value twins -------------------------------------------------------
+// The two shapes the transform records nest. As plain structs, a field whose type
+// is one of these is **inline** — 12 or 16 bytes of the record's body rather than
+// a 4-byte reference (0.11.0's struct flip). That is what lets `position:
+// Vec3fValue` be the position, which is the whole point of §3 of the engine
+// adoption plan.
 //
-// The same shapes as plain structs, so a field whose type is one of these is
-// **inline** rather than a 4-byte reference (0.11.0's struct flip). They are what
-// lets `position: Vec3fValue` be 12 bytes of the record's body instead of a
-// pointer, which is the whole point of §3 of the engine adoption plan.
+// These are the only math types left. `Vec2f`, `Vec3f`, `Vec3f16`, `Vec4f`,
+// `Quatf`, `Colourf` and `Mat4f` were declared here and used by nothing: no field
+// nested them, no guest imported them, and the only `offsetof` that named them
+// compared them against themselves. They went on 2026-10-30 — see the wire
+// workaround inventory in `docs/roadmap.md`. If a raw-bytes view of a transform
+// record is ever wanted (`changetype<...>(ptr)`), that is when a second
+// `@unmanaged` declaration earns its place, alongside a check that the two agree.
 //
-// Two names, not one: a second declaration of `Vec3f16` is a redeclaration, and
-// the twin has to be visibly not the other one at every use site. The
-// `@unmanaged` pair above stays for `changetype` views and for the `offsetof`
-// assertions; these are for nesting only.
-//
-// **The naming scheme, and why it is asymmetric.**
-//
-//   wire:  `Vec3f` (12)   `Vec3f16` (16 — the slot shape)   `Quatf` (16)
-//   twin:  `Vec3fValue` (12)                                 `QuatfValue` (16)
-//
-// `Vec3f16`'s suffix is its **slot size**: the wire type with the pad that fills
-// a 16-byte slot, kept because it is that shape and its name says so. The value
-// twin is a pure `Vec3` — 12 bytes, no phantom fourth coordinate — so it carries
-// no suffix and no pad. The 16-byte slot-filling pad lives on the **record**, in
-// an explicit `pad1`/`pad2`, because that is where the slot structure is; hiding
-// it inside a "Vec3+pad" type made a value type out of a layout concern.
+// `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate — so the 16-byte
+// slot-filling pad lives on the **record**, as `pad1`/`pad2`, where the slot
+// structure belongs. `QuatfValue` is 16 bytes on its own; a quaternion fills its
+// slot naturally.
 //
 // **Never nested inside each other.** A plain struct inside a plain struct is
 // refused by name (SROA flattening is deferred), so these are leaves. Every
 // record that carries one is `@unmanaged`, which is the supported shape.
 //
-// Nothing compares the twins against a second declaration any more: after the
-// transform records started nesting them, the `@unmanaged` types they were once
-// checked against had no other consumer, so both that type and its guard went.
-// What remains is the record-level check that a twin occupies its slot —
-// `ogreMotionOffsetsProblem` and `assertOgreWireOffsets`.
+// What keeps them honest is the record-level check: `ogreMotionOffsetsProblem`
+// and `ogreWireOffsetsProblem` assert where each twin lands in the records the
+// adapter reads.
 
-/** A `Vec3f16` as a value — **12 bytes**, a pure Vec3: no pad, no fourth coordinate. */
+/** A Vec3 as a value — **12 bytes**: no pad, no fourth coordinate. */
 export struct Vec3fValue {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
 }
 
-/** `Quatf`, as a value — 16 bytes, `w` last. Naturally a slot-filler: 16 is its size. */
+/** A quaternion as a value — 16 bytes, `w` last. Fills a 16-byte slot on its own. */
 export struct QuatfValue {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
   w: f32 = 0;
-}
-
-/** Linear RGBA, 16 bytes, align 16. */
-@unmanaged
-export struct Colourf {
-  r: f32 = 0;
-  g: f32 = 0;
-  b: f32 = 0;
-  a: f32 = 0;
-}
-
-/** A 4x4 matrix, column-major, 64 bytes, align 16. */
-@unmanaged
-export struct Mat4f {
-  m00: f32 = 0; m01: f32 = 0; m02: f32 = 0; m03: f32 = 0;
-  m10: f32 = 0; m11: f32 = 0; m12: f32 = 0; m13: f32 = 0;
-  m20: f32 = 0; m21: f32 = 0; m22: f32 = 0; m23: f32 = 0;
-  m30: f32 = 0; m31: f32 = 0; m32: f32 = 0; m33: f32 = 0;
 }
 
 // ── Transform record padding: the rule ────────────────────────────────
@@ -183,20 +116,6 @@ export struct Aabbf {
 }
 
 // --- refs ------------------------------------------------------------------
-
-/** A UTF-8 string in the `STRING` region, 8 bytes. */
-@unmanaged
-export struct StringRef {
-  offset: u32 = 0;
-  length: u32 = 0;
-}
-
-/** Bytes in the `BUFFER_POOL` region, 8 bytes. */
-@unmanaged
-export struct BufferRef {
-  offset: u32 = 0;
-  length: u32 = 0;
-}
 
 // --- records ---------------------------------------------------------------
 
@@ -336,15 +255,6 @@ export struct CameraRecord {
   }
 }
 
-/** One texture unit of a material, 16 bytes. */
-@unmanaged
-export struct TextureSlot {
-  resourceId: u32 = 0;
-  sampler: u32 = 0;
-  flags: u32 = 0;
-  uvSet: u32 = 0;
-}
-
 /** A material, 208 bytes: eight texture slots from 80. */
 @unmanaged
 export struct Material {
@@ -409,33 +319,6 @@ export struct Material {
   }
 }
 
-/** A shader, 40 bytes: source bytes live in the `STRING` region. */
-@unmanaged
-export struct ShaderRecord {
-  shaderId: u32 = 0;
-  stage: u32 = 0;
-  sourceKind: u32 = 0;
-  flags: u32 = 0;
-  byteOffset: u32 = 0;
-  byteLength: u32 = 0;
-  entryOffset: u32 = 0;
-  entryLength: u32 = 0;
-  reserved: u64 = 0;
-}
-
-/** A request the guest writes into `RESOURCE_REQ`, 40 bytes. */
-@unmanaged
-export struct ResourceReq {
-  kind: u32 = 0;
-  state: u32 = 0;
-  priority: i32 = 0;
-  flags: u32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  requestedSeq: u64 = 0;
-  reserved: u64 = 0;
-}
-
 /** A resource the session reports into `RESOURCE`, 48 bytes. */
 @unmanaged
 export struct Resource {
@@ -450,21 +333,6 @@ export struct Resource {
   refs: u32 = 0;
   private pad0: u32 = 0;
   seq: u64 = 0;
-}
-
-/** A GPU buffer the adapter describes, 48 bytes. */
-@unmanaged
-export struct Buffer {
-  bufferId: u32 = 0;
-  kind: u32 = 0;
-  usage: u32 = 0;
-  flags: u32 = 0;
-  size: u32 = 0;
-  stride: u32 = 0;
-  dataOffset: u32 = 0;
-  private pad0: u32 = 0;
-  bytes: u64 = 0;
-  reserved: u64 = 0;
 }
 
 /** A drawable, 64 bytes: its transform is inline at 16. */
@@ -519,7 +387,7 @@ export struct Renderable {
  * completed by an explicit `pad1`/`pad2`.
  *
  * **`pad0: u64` is what puts the transform at 16 — not alignment.** The 16-byte
- * offsets do not come from `Quatf` being aligned (its `alignof` is log2 2, i.e.
+ * offsets do not come from the quaternion being aligned (`QuatfValue`'s `alignof` is log2 2, i.e.
  * 4-byte; §3.7 of the plan measured this on three compilers). They come from this
  * explicit 8-byte pad ending exactly at 16, plus the 16-byte twins striding
  * naturally after it. **Do not drop `pad0` while nesting:** `Vec3fValue` is
