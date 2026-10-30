@@ -8,8 +8,8 @@
 // stays scalar, so a matrix, if one is ever wanted, is sixteen floats.
 //
 // Padding is spelled out only where something depends on it: an alignment need,
-// or a host reader's fixed offset. See the rule above `Transformf` for which
-// records carry pads and why.
+// or a host reader's fixed offset. See the rule below for which records carry
+// pads and why.
 //
 // **These field layouts are defined here, for the first time.** The design note
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
@@ -75,9 +75,9 @@ export struct QuatfValue {
 
 // ── Transform record padding: the rule ────────────────────────────────
 //
-// **No transform record carries a pad.** All five are tight: `MotionUpdate` and
-// `BoneUpdate` are 48 bytes with the transform at 8/20/36, `Renderable` is 56
-// with it at 16/28/44, `Transformf` is 40 and `Aabbf` 24.
+// **No transform record carries a pad.** All three are tight: `MotionUpdate` and
+// `BoneUpdate` are 48 bytes with the transform at 8/20/36, and `Renderable` is
+// 56 with it at 16/28/44.
 //
 // The pads these records used to carry were there to land a 16-byte unit on a
 // 16-byte boundary. Measured, nothing here needs one:
@@ -106,20 +106,14 @@ export struct QuatfValue {
 // none needs padding today. If a future field does, pad that field explicitly
 // and say why here — the reason is the alignment arithmetic, never the shape.
 
-/** Position, rotation, uniform scale — 40 bytes (tight: no host reader). */
-@unmanaged
-export struct Transformf {
-  position: Vec3fValue = {}; //  0, 12 bytes
-  rotation: QuatfValue = {}; // 12, 16 bytes — `QuatfValue` is 4-byte aligned
-  scale: Vec3fValue = {}; //    28, 12 bytes — ends the record at 40
-}
-
-/** An axis-aligned box — 24 bytes (tight: no host reader). */
-@unmanaged
-export struct Aabbf {
-  min: Vec3fValue = {}; //  0, 12 bytes
-  max: Vec3fValue = {}; // 12, 12 bytes — ends the record at 24
-}
+// `Transformf` (40 bytes) and `Aabbf` (24) were declared here and nested the
+// twins the same way. Nothing imported them, no field nested them, and their
+// last readers were the `offsetof` assertions that compared them against
+// themselves — so they went on 2026-10-30, with the assertions that had been
+// deleted a day earlier (this tree's `DESIGN.md`, "Wire workaround inventory").
+// A guest that wants a bare transform or a box declares one; if a raw-bytes
+// view over either is ever wanted, that is when a second `@unmanaged`
+// declaration earns its place, alongside a check that the two agree.
 
 // --- refs ------------------------------------------------------------------
 
@@ -812,7 +806,9 @@ function ogreWireOffsetsProblem(): string | null {
   // field. They have no host reader, so each assertion compared the declaration
   // against a literal declared beside it — the two moved together and could
   // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
-  // `tension-ogre/DESIGN.md` ("Wire workaround inventory").
+  // `tension-ogre/DESIGN.md` ("Wire workaround inventory"). `Transformf` and
+  // `Aabbf` themselves followed later that day: with the checks gone, nothing
+  // named them.
 
   // The two moving tables. Checked here as well as by their own assertions so a
   // build that forgets to call them still catches a moved field.

@@ -31,7 +31,9 @@ rather than linked.
 - **Thirteen unused wire types deleted** (commit `88012ee`) — `Vec2f`, `Vec3f`,
   `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `StringRef`, `BufferRef`,
   `TextureSlot`, `ShaderRecord`, `ResourceReq`, `Buffer` — along with the two
-  vestigial pads that went with them.
+  vestigial pads that went with them. **Two more followed on 2026-10-30**,
+  `Transformf` and `Aabbf`, once the assertions that were their last readers had
+  gone: with those removed, nothing in the tree named the declarations at all.
 - **Seven zero-caller check functions and 21 guest-vs-itself assertions deleted**
   (commit `d7a3d66`). The 21 host-vs-guest assertions stayed.
 - **The host decodes by `memcpy`.** Seven packed decoder structs in
