@@ -457,7 +457,7 @@ bool SceneMirror::decode_renderable_at(const uint8_t *r, RenderableRecord &out) 
     // Offset 12: `nodeId` since chunk 5a, `flags` before it. Nothing ever wrote
     // or read the old meaning, which is what made the repurposing free.
     out.node_id = u32(r, 12);
-    read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+    read_transform(r, 16, 28, 44, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;
 }
@@ -469,7 +469,7 @@ bool SceneMirror::decode_motion_at(const uint8_t *r, MotionUpdate &out) {
     out.flags = u32(r, 4);
     // The same three offsets a Renderable's inline transform uses, which is the
     // point of the record's shape: one reading of a transform for both.
-    read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+    read_transform(r, 8, 20, 36, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;
 }
@@ -481,7 +481,7 @@ bool SceneMirror::decode_bone_at(const uint8_t *r, BoneUpdate &out) {
     out.bone_index = u32(r, 4);
     // The motion record's transform offsets, for the motion record's reason: one
     // reading of a transform serves every record that carries one.
-    read_transform(r, 16, 32, 48, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+    read_transform(r, 8, 20, 36, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;
 }

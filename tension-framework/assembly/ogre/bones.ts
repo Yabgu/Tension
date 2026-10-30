@@ -143,22 +143,14 @@ export class BoneBatch {
     // field writes below are the wire's bytes in the wire's order. No header is
     // read or written — the class has none.
     //
-    // **The pad stores look removable and are not.** The adapter never reads
-    // those bytes (`decode_bone_at` reads the id pair, then
-    // `read_transform(r, 16, 32, 48, …)`, leaving 8..16, 28..32 and 60..64
-    // untouched), so a zero store looks like a dead store. Measured 2026-10-30 by
-    // deleting all three: the slots are **not** zero-initialised. They held stale
-    // arena data — `pad0`'s upper half 0x3c, `pad1` 0x24, `pad2` 0x08 — and the
-    // motion record's dump changed at exactly those offsets. The stores are what
-    // makes the record's 64 bytes deterministic; that is their job, not layout.
+    // No pad stores: the record has no pads. It is 48 bytes with the transform at
+    // 8/20/36, which is what `decode_bone_at` reads.
     const rec = changetype<BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
-    rec.pad0 = 0; // zeroed for determinism, not to place the transform
     rec.position.x = x;
     rec.position.y = y;
     rec.position.z = z;
-    rec.pad1 = 0; // zeroed for determinism
     rec.rotation.x = rx;
     rec.rotation.y = ry;
     rec.rotation.z = rz;
@@ -166,7 +158,6 @@ export class BoneBatch {
     rec.scale.x = scale;
     rec.scale.y = scale;
     rec.scale.z = scale;
-    rec.pad2 = 0; // zeroed for determinism
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 }

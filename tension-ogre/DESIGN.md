@@ -463,9 +463,9 @@ as cruft and removed, and what is contract and stayed.
   `Resource`. These compare the guest's declaration against what
   `src/scene.h` / `src/scene.cpp` / `arena.rs` publish, which is the one drift
   that is possible.
-- **4 constants**: `PROCEDURAL_BASE` (256 KiB, which `src/scene.h` derives
-  independently), `PROCEDURAL_CAPACITY`, the `VF_*` element bits and
-  `TOPO_TRIANGLE_LIST`.
+- **4 constants**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
+  independently from the same two strides), `PROCEDURAL_CAPACITY`, the `VF_*`
+  element bits and `TOPO_TRIANGLE_LIST`.
 - **The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`, the
   layout-hash records. This is what catches a `SessionInfo` field move.
 - **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
@@ -528,8 +528,8 @@ the protocol's shape, and `SCENE`'s internal split is the capability's own
 business. Adding a *region* would move the hash, bump `schemaVersion` and force
 every guest to be rebuilt; this does none of that, which is the point.
 
-**A `Renderable` is a self-placed leaf.** Its 64 bytes carry an inline
-transform — position @16, rotation @32, scale @48 — and **no `nodeId`**. So a
+**A `Renderable` is a self-placed leaf.** Its 56 bytes carry an inline
+transform — position @16, rotation @28, scale @44 — and **no `nodeId`**. So a
 renderable is placed by its own transform, and `SceneNode` exists for cameras,
 lights and (later) hierarchy. The guest composes transforms before writing the
 record; the adapter does not resolve a parent chain for a drawable.
@@ -705,7 +705,7 @@ adapter knows both names.** The guest addresses a resource by the id the
 that mapping, wired once at link time from the loader's table, and it is the
 only reason `apply_submissions` can bind an `Item` to a `MeshPtr`.
 
-**The motion table is chunk 4's batch path for transforms.** A table of 64-byte
+**The motion table is chunk 4's batch path for transforms.** A table of 48-byte
 `MotionUpdate` records sits at the start of `BUFFER_POOL` — a region that
 existed, guest-written and 4 MiB, and that nothing had declared until now — and
 one verb, `ogre::submit_motion(count)` (id 10, flags 0), names how much of it is
@@ -721,8 +721,8 @@ does not hold live refuses the whole call with `-ENOENT` and a log line naming
 the index, because a half-applied frame is worse than a refused one.
 
 **The bone table is chunk 5b's batch path for a rig.** A second table of
-64-byte `BoneUpdate` records sits in `BUFFER_POOL` past the motion table
-(`BONE_TABLE_OFFSET` = 128 KiB, so motion is the first 128 KiB and bones the
+48-byte `BoneUpdate` records sits in `BUFFER_POOL` past the motion table
+(`BONE_TABLE_OFFSET` = 96 KiB, so motion is the first 96 KiB and bones the
 next), and one verb, `ogre::submit_bones(count)` (id 11, flags 0), names how
 much of it is live. Same shape as motion, for the same reason: a rig poses many
 bones per frame and wasm→host transitions are the part that does not have to be
@@ -852,8 +852,8 @@ not OGRE.
 **`ogre::create_mesh` builds a mesh from guest-written buffers (chunk 5.5).**
 Verbatim `12`, flags 0, synchronous: `create_mesh(vbOffset, vbBytes, format,
 ibOffset, ibBytes, topology) -> resourceId`. The two arrays live in
-`BUFFER_POOL` **past the bone table** — `PROCEDURAL_BASE` = 256 KiB (motion 128
-KiB, bones the next 128 KiB) and `PROCEDURAL_CAPACITY` = 512 KiB, shared by both
+`BUFFER_POOL` **past the bone table** — `PROCEDURAL_BASE` = 192 KiB (motion 96
+KiB, bones the next 96 KiB) and `PROCEDURAL_CAPACITY` = 512 KiB, shared by both
 buffers. That capacity is what makes a 16-bit index sufficient rather than a
 limitation to design around: 512 KiB is ~43,000 vertices at 12 B, so no mesh
 built this way can reach the 65,536th index. `topology` is 0
