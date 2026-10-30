@@ -147,7 +147,6 @@ export struct ArenaControl {
   faultCode: u32 = 0;
   /** A fault's detail: the callback slot index for a trap. */
   faultDetail: u32 = 0;
-  private pad0: u32 = 0;
   /** A staleness witness: not a secret, and never zero while open. */
   sessionNonce: u64 = 0;
   // 184 .. 256: reserved.
@@ -167,9 +166,10 @@ export struct ArenaControl {
  *
  * The shape is `tension-core/src/session/arena.rs:51-101`: thirteen classes, so
  * thirteen capacities at 48..100, padded to 104, then the nonce at 104..112 and
- * four reserved words to 144. `pad1` is that alignment word — the host's
- * `SESSION_INFO_OPEN_NONCE` is 104 for exactly this reason (a `u64`
- * `put_u64` will not accept at 100).
+ * four reserved words to 144. The 100..104 word is **implicit** — the compiler
+ * aligns the `u64` nonce to 104, and the host's `SESSION_INFO_OPEN_NONCE` is 104
+ * for the same reason (its `put_u64` refuses an unaligned offset). No field is
+ * declared for it; `assertWireOffsets` pins the boundary.
  */
 @unmanaged
 export struct SessionInfo {
@@ -177,7 +177,8 @@ export struct SessionInfo {
   abiVersion: u16 = 0;
   schemaVersion: u16 = 0;
   flags: u16 = 0;
-  private pad0: u16 = 0;
+  /// 4 bytes of implicit padding here: `arenaSize` is a `u32` and the compiler
+  /// aligns it to 16. The explicit word that used to sit here was a no-op.
   arenaSize: u32 = 0;
   /** The ceiling — and the guest's `--memoryBase`. */
   maxArenaSize: u32 = 0;
@@ -201,8 +202,9 @@ export struct SessionInfo {
   capacity10: u32 = 0;
   capacity11: u32 = 0;
   capacity12: u32 = 0;
-  /** 100 .. 104: the `u64` nonce's alignment word (`arena.rs:96-99`). */
-  private pad1: u32 = 0;
+  /// 100 .. 104 is the `u64` nonce's alignment word (`arena.rs:96-99`). It is
+  /// implicit: the compiler aligns `openNonce` to 104, so no field is declared
+  /// for it — the assertion below is what pins the boundary.
   openNonce: u64 = 0;
   // 112 .. 144: reserved. Four words: the record is 144 bytes.
   reserved0: u64 = 0;

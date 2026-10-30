@@ -32,10 +32,11 @@ constexpr uint32_t kLightCapacity = 1024;
 constexpr uint32_t kMaterialCapacity = 256;
 constexpr uint32_t kRenderableCapacity = 2048;
 
-constexpr uint32_t kNodeRecordBytes = 80;
+constexpr uint32_t kNodeRecordBytes = 72;
+// 80, not 60: the two `reserved` u64 words after the viewport round it up.
 constexpr uint32_t kCameraRecordBytes = 80;
-constexpr uint32_t kLightRecordBytes = 96;
-constexpr uint32_t kMaterialRecordBytes = 208;
+constexpr uint32_t kLightRecordBytes = 88;
+constexpr uint32_t kMaterialRecordBytes = 200;
 constexpr uint32_t kRenderableRecordBytes = 56;
 
 /// The longest parent chain a submission may create. OGRE's scene graph walks

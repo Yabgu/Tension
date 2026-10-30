@@ -371,7 +371,7 @@ bool SceneMirror::decode_node_at(const uint8_t *r, SceneNodeRecord &out) {
     out.child_count = u32(r, 12);
     out.name_offset = u32(r, 16);
     out.name_length = u32(r, 20);
-    read_transform(r, 24, 40, 56, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
+    read_transform(r, 24, 36, 52, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
                    out.sy, out.sz);
     return true;
 }
@@ -388,12 +388,12 @@ bool SceneMirror::decode_camera_at(const uint8_t *r, CameraRecord &out) {
     out.px = f32(r, 24);
     out.py = f32(r, 28);
     out.pz = f32(r, 32);
-    out.rx = f32(r, 40);
-    out.ry = f32(r, 44);
-    out.rz = f32(r, 48);
-    out.rw = f32(r, 52);
-    out.viewport_width = u32(r, 56);
-    out.viewport_height = u32(r, 60);
+    out.rx = f32(r, 36);
+    out.ry = f32(r, 40);
+    out.rz = f32(r, 44);
+    out.rw = f32(r, 48);
+    out.viewport_width = u32(r, 52);
+    out.viewport_height = u32(r, 56);
     return true;
 }
 
@@ -403,20 +403,20 @@ bool SceneMirror::decode_light_at(const uint8_t *r, LightRecord &out) {
     out.light_id = u32(r, 0);
     out.kind = u32(r, 4);
     out.flags = u32(r, 8);
-    out.r = f32(r, 16);
-    out.g = f32(r, 20);
-    out.b = f32(r, 24);
-    out.a = f32(r, 28);
-    out.intensity = f32(r, 32);
-    out.range = f32(r, 36);
-    out.spot_inner = f32(r, 40);
-    out.spot_outer = f32(r, 44);
-    out.dx = f32(r, 48);
-    out.dy = f32(r, 52);
-    out.dz = f32(r, 56);
-    out.px = f32(r, 64);
-    out.py = f32(r, 68);
-    out.pz = f32(r, 72);
+    out.r = f32(r, 12);
+    out.g = f32(r, 16);
+    out.b = f32(r, 20);
+    out.a = f32(r, 24);
+    out.intensity = f32(r, 28);
+    out.range = f32(r, 32);
+    out.spot_inner = f32(r, 36);
+    out.spot_outer = f32(r, 40);
+    out.dx = f32(r, 44);
+    out.dy = f32(r, 48);
+    out.dz = f32(r, 52);
+    out.px = f32(r, 56);
+    out.py = f32(r, 60);
+    out.pz = f32(r, 64);
     return true;
 }
 
@@ -426,25 +426,25 @@ bool SceneMirror::decode_material_at(const uint8_t *r, MaterialRecord &out) {
     out.material_id = u32(r, 0);
     out.kind = u32(r, 4);
     out.flags = u32(r, 8);
-    out.dr = f32(r, 16);
-    out.dg = f32(r, 20);
-    out.db = f32(r, 24);
-    out.da = f32(r, 28);
-    out.sr = f32(r, 32);
-    out.sg = f32(r, 36);
-    out.sb = f32(r, 40);
-    out.sa = f32(r, 44);
-    out.er = f32(r, 48);
-    out.eg = f32(r, 52);
-    out.eb = f32(r, 56);
-    out.ea = f32(r, 60);
-    out.roughness = f32(r, 64);
-    out.metalness = f32(r, 68);
-    out.opacity = f32(r, 72);
-    out.slot0_resource = u32(r, 80);
-    out.slot0_sampler = u32(r, 84);
-    out.slot0_flags = u32(r, 88);
-    out.slot0_uv = u32(r, 92);
+    out.dr = f32(r, 12);
+    out.dg = f32(r, 16);
+    out.db = f32(r, 20);
+    out.da = f32(r, 24);
+    out.sr = f32(r, 28);
+    out.sg = f32(r, 32);
+    out.sb = f32(r, 36);
+    out.sa = f32(r, 40);
+    out.er = f32(r, 44);
+    out.eg = f32(r, 48);
+    out.eb = f32(r, 52);
+    out.ea = f32(r, 56);
+    out.roughness = f32(r, 60);
+    out.metalness = f32(r, 64);
+    out.opacity = f32(r, 68);
+    out.slot0_resource = u32(r, 72);
+    out.slot0_sampler = u32(r, 76);
+    out.slot0_flags = u32(r, 80);
+    out.slot0_uv = u32(r, 84);
     return true;
 }
 
