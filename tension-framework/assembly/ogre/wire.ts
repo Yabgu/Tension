@@ -15,12 +15,12 @@
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
 // pin and extends the manifest then; chunk 1's manifest still holds the nine
 // protocol types, so nothing here moves `layoutHash`. What is fixed is the
-// sizes, and `assertOgreWireOffsets` proves them the same way the runtime's
-// check proves its own: `offsetof<T>("lastField")` plus that field's width plus
-// the trailing reserved words, and a separate `sizeof<T>()` against the
-// published size. The offset form alone cannot see a field *appended* after the
-// last one -- the record grows and the constant does not -- so `sizeof` is the
-// half that closes it.
+// sizes, and they are asserted on the *C++* side (`tension-ogre/src/scene.h`,
+// 116 `static_assert`s against `#pragma pack(1)`) and documented above each
+// declaration here. The guest's own per-record offset table was deleted on
+// 2026-10-30 — it restated the same literals in a second language without a
+// second source of truth. What the guest still asserts at startup is the two
+// moving tables and the contract constants (`assertOgreWireOffsets`).
 //
 // Alignment is a *placement* rule, not something offsetof can check. Every leaf
 // in these records is an `f32` (align 4), so nothing here is forced to a 16-byte
@@ -55,8 +55,8 @@ import { regionOffset } from "../runtime/arena";
 // record that carries one is `@unmanaged`, which is the supported shape.
 //
 // What keeps them honest is the record-level check: `ogreMotionOffsetsProblem`
-// and `ogreWireOffsetsProblem` assert where each twin lands in the records the
-// adapter reads.
+// and `ogreBoneOffsetsProblem` assert where each twin lands in the two records
+// the guest writes every frame.
 
 /** A Vec3 as a value — **12 bytes**: no pad, no fourth coordinate. */
 export struct Vec3fValue {
@@ -719,7 +719,7 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
 /**
  * The motion record's offsets, on their own.
  *
- * Separate from `ogreWireOffsetsProblem` so a guest that uses `MotionBatch`
+ * Separate from the wire contract check so a guest that uses `MotionBatch`
  * can assert exactly what it depends on, by name, rather than relying on a
  * larger check happening to include it. The layout is the point: the id pair,
  * then the transform at the offsets `Renderable`'s inline one already uses.
@@ -791,20 +791,25 @@ export function assertOgreBoneOffsets(): void {
   }
 }
 
-function ogreWireOffsetsProblem(): string | null {
-  // The math types, `Transformf`, `Aabbf`, the refs, `TextureSlot`,
-  // `ShaderRecord`, `ResourceReq` and `Buffer` used to be checked here field by
-  // field. They have no host reader, so each assertion compared the declaration
-  // against a literal declared beside it — the two moved together and could
-  // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
-  // `tension-ogre/DESIGN.md` ("Wire workaround inventory"). `Transformf` and
-  // `Aabbf` themselves followed later that day: with the checks gone, nothing
-  // named them.
+function ogreWireContractProblem(): string | null {
+  // The constants the adapter and this file both derive, and the two moving
+  // tables. What is *not* here any more: the per-field `offsetof`/`sizeof`
+  // table over the eight records. Those numbers are asserted on the C++ side
+  // (`tension-ogre/src/scene.h`, 116 `static_assert`s against `#pragma pack(1)`)
+  // and documented above each declaration here, so the guest copy restated the
+  // same literals in a second language without a second source of truth.
+  // Deleted 2026-10-30; see `tension-ogre/DESIGN.md`, "Wire workaround
+  // inventory". The replacement is the OGRE layout hash scoped in
+  // `docs/engine-adoption-plan.md`.
 
   // The two moving tables. Checked here as well as by their own assertions so a
-  // build that forgets to call them still catches a moved field.
+  // build that forgets to call them still catches a moved field: most fixtures
+  // call only this entry point.
   const motion = ogreMotionOffsetsProblem();
   if (motion != null) return motion;
+  const bone = ogreBoneOffsetsProblem();
+  if (bone != null) return bone;
+
   // The procedural window's start is derived here and written as a literal in
   // the adapter (DESIGN.md §5.1 pins it at 192 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
@@ -817,65 +822,22 @@ function ogreWireOffsetsProblem(): string | null {
   // the adapter declares, in the order it declares them.
   if (VF_POSITION != 1 || VF_NORMAL != 2 || VF_UV != 4) return "VF_ bits";
   if (TOPO_TRIANGLE_LIST != 0) return "TOPO_TRIANGLE_LIST";
-  const bone = ogreBoneOffsetsProblem();
-  if (bone != null) return bone;
-
-  // Records.
-  // SceneNode nests the twins: the transform still starts at 24, the rotation at
-  // 36 and the scale at 52, so the bytes are unchanged by the nesting.
-  if (offsetof<SceneNode>("position") + offsetof<Vec3fValue>("x") != 24) {
-    return "SceneNode.position";
-  }
-  if (offsetof<SceneNode>("rotation") + offsetof<QuatfValue>("x") != 36) {
-    return "SceneNode.rotation";
-  }
-  if (offsetof<SceneNode>("scale") + offsetof<Vec3fValue>("x") != 52) {
-    return "SceneNode.scale";
-  }
-  if (offsetof<SceneNode>("reserved") != 64) return "SceneNode.reserved";
-  if (offsetof<SceneNode>("reserved") + 8 != 72) return "SceneNode.reserved end";
-  if (sizeof<SceneNode>() != 72) return "SceneNode size";
-  if (offsetof<LightRecord>("intensity") != 28) return "LightRecord.intensity";
-  if (offsetof<LightRecord>("nameOffset") != 68) return "LightRecord.nameOffset";
-  if (offsetof<LightRecord>("reserved") + 8 != 88) return "LightRecord.reserved end";
-  if (sizeof<LightRecord>() != 88) return "LightRecord size";
-  if (offsetof<CameraRecord>("rotationX") != 36) return "CameraRecord.rotationX";
-  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord.reserved2 end";
-  if (sizeof<CameraRecord>() != 80) return "CameraRecord size";
-  if (offsetof<Material>("slot0Resource") != 72) return "Material.slot0Resource";
-  if (offsetof<Material>("slot7Resource") != 184) return "Material.slot7Resource";
-  if (offsetof<Material>("slot7Uv") + 4 != 200) return "Material.slot7Uv end";
-  if (sizeof<Material>() != 200) return "Material size";
-  if (offsetof<Resource>("seq") != 40) return "Resource.seq";
-  if (offsetof<Resource>("seq") + 8 != 48) return "Resource.seq end";
-  if (sizeof<Resource>() != 48) return "Resource size";
-  // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
-  // The pin is here because the rename is a *semantics* change, and the one
-  // thing that must not change with it is where the field sits.
-  if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
-  if (offsetof<Renderable>("position") + offsetof<Vec3fValue>("x") != 16) {
-    return "Renderable.position";
-  }
-  if (offsetof<Renderable>("rotation") + offsetof<QuatfValue>("x") != 28) {
-    return "Renderable.rotation";
-  }
-  if (offsetof<Renderable>("scale") + sizeof<Vec3fValue>() != sizeof<Renderable>()) {
-    return "Renderable.tail";
-  }
-  if (sizeof<Renderable>() != 56) return "Renderable size";
-  if (offsetof<Job>("priority") != 16) return "Job.priority";
-  if (offsetof<Job>("progress") != 24) return "Job.progress";
-  if (offsetof<Job>("seq") != 40) return "Job.seq";
-  if (offsetof<Job>("reserved2") + 8 != 64) return "Job.reserved2 end";
-  if (sizeof<Job>() != 64) return "Job size";
 
   return null;
 }
 
-/** Assert this build's OGRE wire offsets match the catalogue, naming the field. */
+/**
+ * Assert this build's OGRE *contract constants* -- the procedural window's start
+ * and the vertex-format bits -- and, through them, the two moving tables.
+ *
+ * The per-record offset table this used to carry is gone (2026-10-30): those
+ * numbers live in `tension-ogre/src/scene.h`'s `static_assert`s and in the doc
+ * comment above each declaration here. What remains is what no other side
+ * asserts.
+ */
 export function assertOgreWireOffsets(): void {
-  const problem = ogreWireOffsetsProblem();
+  const problem = ogreWireContractProblem();
   if (problem != null) {
-    assert(false, "the OGRE wire offsets do not match the catalogue: " + problem);
+    assert(false, "the OGRE wire contract does not match the catalogue: " + problem);
   }
 }
