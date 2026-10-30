@@ -139,17 +139,26 @@ export class BoneBatch {
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,
                 ry: f32, rz: f32, rw: f32, scale: f32): void {
     if (index >= BONE_CAPACITY) return; // a slot past the table is not written
-    // `BoneUpdate` is `@unmanaged` (`wire.ts:489`), so this is a view of the
-    // arena slot and the field writes below are the wire's bytes in the wire's
-    // order. No header is read or written — the class has none.
+    // `BoneUpdate` is `@unmanaged`, so this is a view of the arena slot and the
+    // field writes below are the wire's bytes in the wire's order. No header is
+    // read or written — the class has none.
+    //
+    // **The pad stores look removable and are not.** The adapter never reads
+    // those bytes (`decode_bone_at` reads the id pair, then
+    // `read_transform(r, 16, 32, 48, …)`, leaving 8..16, 28..32 and 60..64
+    // untouched), so a zero store looks like a dead store. Measured 2026-10-30 by
+    // deleting all three: the slots are **not** zero-initialised. They held stale
+    // arena data — `pad0`'s upper half 0x3c, `pad1` 0x24, `pad2` 0x08 — and the
+    // motion record's dump changed at exactly those offsets. The stores are what
+    // makes the record's 64 bytes deterministic; that is their job, not layout.
     const rec = changetype<BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
-    rec.pad0 = 0; // what puts the transform at 16
+    rec.pad0 = 0; // zeroed for determinism, not to place the transform
     rec.position.x = x;
     rec.position.y = y;
     rec.position.z = z;
-    rec.pad1 = 0; // fills position's 12-byte value to its 16-byte slot
+    rec.pad1 = 0; // zeroed for determinism
     rec.rotation.x = rx;
     rec.rotation.y = ry;
     rec.rotation.z = rz;
@@ -157,7 +166,7 @@ export class BoneBatch {
     rec.scale.x = scale;
     rec.scale.y = scale;
     rec.scale.z = scale;
-    rec.pad2 = 0; // fills scale's 12-byte value; ends the record at 64
+    rec.pad2 = 0; // zeroed for determinism
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 }
