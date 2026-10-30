@@ -472,8 +472,23 @@ as cruft and removed, and what is contract and stayed.
 - **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
   `assertOgreMotionOffsets`, `assertOgreBoneOffsets`** — the five entry points
   the fixtures actually call.
-- **20 contract pads**: the adapter reads them by fixed offset or through a
-  stride constant, or `layout_hash` folds them.
+- **1 format field**: `ManifestEntry.pad`. It is not a workaround — `arena.rs`
+  documents the entry as `{typeId, size, align, pad}` with the pad always zero,
+  so it is part of the published format.
+
+**Every other pad went, 2026-10-30.** `SceneNode` (72, was 80), `LightRecord`
+(88, was 96), `Material` (200, was 208) and `Resource` lost theirs; `CameraRecord`
+kept its 80 bytes because two `reserved` u64 words round it up, but its transform
+moved to 36. In the runtime wire, `ArenaControl.pad0` and `SessionInfo.pad0`/
+`pad1` went — all three were no-ops, measured: the compiler places the same
+offsets with or without them, and `SESSION_INFO_OPEN_NONCE` stays 104.
+
+**And the strides stopped being hand-kept.** `SCENE_NODE_SIZE`,
+`SCENE_CAMERA_SIZE`, `SCENE_LIGHT_SIZE`, `MATERIAL_SIZE` and `RENDERABLE_SIZE`
+are now `sizeof<T>()` rather than literals. That is not tidiness: while doing
+this, `Renderable` went 64 -> 56 and the untouched `RENDERABLE_SIZE = 64` copied
+8 bytes past the record's slot, which the adapter refused as a broken record.
+`sizeof` at module scope closes that class of bug by construction.
 
 **One gap the cleanup closed.** Every tail check was `offsetof(last) + width !=
 SIZE`, which stays true when a field is *appended* after `last` — the record

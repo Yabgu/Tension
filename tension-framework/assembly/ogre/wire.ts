@@ -130,11 +130,11 @@ export struct SceneNode {
   childCount: u32 = 0;
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
-  // 24: the transform, exactly where the header's six words end.
+  // 24: the transform, exactly where the header's six words end. No pads: the
+  // rotation follows the position at 36 and the scale at 52.
   transformX: f32 = 0;
   transformY: f32 = 0;
   transformZ: f32 = 0;
-  transformPad: f32 = 0;
   rotationX: f32 = 0;
   rotationY: f32 = 0;
   rotationZ: f32 = 0;
@@ -142,7 +142,6 @@ export struct SceneNode {
   scaleX: f32 = 1;
   scaleY: f32 = 1;
   scaleZ: f32 = 1;
-  scalePad: f32 = 0;
   reserved: u64 = 0;
 
   /// A node at a place, with the identity rotation and unit scale the fields
@@ -164,7 +163,6 @@ export struct LightRecord {
   lightId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
-  private pad0: u32 = 0;
   colourR: f32 = 1;
   colourG: f32 = 1;
   colourB: f32 = 1;
@@ -176,11 +174,9 @@ export struct LightRecord {
   directionX: f32 = 0;
   directionY: f32 = -1;
   directionZ: f32 = 0;
-  directionPad: f32 = 0;
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
-  positionPad: f32 = 0;
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
   reserved: u64 = 0;
@@ -230,7 +226,6 @@ export struct CameraRecord {
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
-  positionPad: f32 = 0;
   rotationX: f32 = 0;
   rotationY: f32 = 0;
   rotationZ: f32 = 0;
@@ -257,13 +252,12 @@ export struct CameraRecord {
   }
 }
 
-/** A material, 208 bytes: eight texture slots from 80. */
+/** A material, 200 bytes: eight texture slots from 72. */
 @unmanaged
 export struct Material {
   materialId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
-  private pad0: u32 = 0;
   diffuseR: f32 = 1;
   diffuseG: f32 = 1;
   diffuseB: f32 = 1;
@@ -279,8 +273,7 @@ export struct Material {
   roughness: f32 = 1;
   metalness: f32 = 0;
   opacity: f32 = 1;
-  private pad1: f32 = 0;
-  // Eight TextureSlots, 16 bytes each, from offset 80.
+  // Eight TextureSlots, 16 bytes each, from offset 72.
   slot0Resource: u32 = 0; slot0Sampler: u32 = 0; slot0Flags: u32 = 0; slot0Uv: u32 = 0;
   slot1Resource: u32 = 0; slot1Sampler: u32 = 0; slot1Flags: u32 = 0; slot1Uv: u32 = 0;
   slot2Resource: u32 = 0; slot2Sampler: u32 = 0; slot2Flags: u32 = 0; slot2Uv: u32 = 0;
@@ -333,7 +326,9 @@ export struct Resource {
   nameLength: u32 = 0;
   error: i32 = 0;
   refs: u32 = 0;
-  private pad0: u32 = 0;
+  /// Implicitly 4 bytes of padding here: `seq` is a `u64` and the compiler
+  /// aligns it to 40. The explicit pad that used to sit here was a no-op --
+  /// measured 2026-10-30, same offset and size with and without it.
   seq: u64 = 0;
 }
 
@@ -600,11 +595,17 @@ export const JOB_SIZE: u32 = 64;
 // keeping the guest's idea of a slot and the adapter's in step.
 
 export const SCENE_NODE_COUNT: u32 = 1024;
-export const SCENE_NODE_SIZE: u32 = 80;
 export const SCENE_CAMERA_COUNT: u32 = 512;
-export const SCENE_CAMERA_SIZE: u32 = 80;
 export const SCENE_LIGHT_COUNT: u32 = 1024;
-export const SCENE_LIGHT_SIZE: u32 = 96;
+
+// The strides are **derived**, not hand-kept. They were constants once, and a
+// record whose declaration changed without its constant changing wrote past its
+// own slot -- measured 2026-10-30, when `Renderable` went 64 -> 56 and the
+// untouched `RENDERABLE_SIZE = 64` copied 8 bytes too many. `sizeof` at module
+// scope closes that gap by construction.
+export const SCENE_NODE_SIZE: u32 = sizeof<SceneNode>();
+export const SCENE_CAMERA_SIZE: u32 = sizeof<CameraRecord>();
+export const SCENE_LIGHT_SIZE: u32 = sizeof<LightRecord>();
 
 /** Where the cameras' table starts, in bytes from the region's first node. */
 export const SCENE_CAMERA_BASE: u32 = SCENE_NODE_COUNT * SCENE_NODE_SIZE;
@@ -614,9 +615,9 @@ export const SCENE_LIGHT_BASE: u32 = SCENE_CAMERA_BASE + SCENE_CAMERA_COUNT * SC
 export const SCENE_TABLE_BYTES: u32 = SCENE_LIGHT_BASE + SCENE_LIGHT_COUNT * SCENE_LIGHT_SIZE;
 
 export const MATERIAL_COUNT: u32 = 256;
-export const MATERIAL_SIZE: u32 = 208;
 export const RENDERABLE_COUNT: u32 = 2048;
-export const RENDERABLE_SIZE: u32 = 64;
+export const MATERIAL_SIZE: u32 = sizeof<Material>();
+export const RENDERABLE_SIZE: u32 = sizeof<Renderable>();
 
 // --- the motion table (chunk 4) ---------------------------------------------
 //
@@ -829,20 +830,20 @@ function ogreWireOffsetsProblem(): string | null {
 
   // Records.
   if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
-  if (offsetof<SceneNode>("reserved") != 72) return "SceneNode.reserved";
-  if (offsetof<SceneNode>("reserved") + 8 != 80) return "SceneNode.reserved end";
-  if (sizeof<SceneNode>() != 80) return "SceneNode size";
-  if (offsetof<LightRecord>("intensity") != 32) return "LightRecord.intensity";
-  if (offsetof<LightRecord>("nameOffset") != 80) return "LightRecord.nameOffset";
-  if (offsetof<LightRecord>("reserved") + 8 != 96) return "LightRecord.reserved end";
-  if (sizeof<LightRecord>() != 96) return "LightRecord size";
-  if (offsetof<CameraRecord>("rotationX") != 40) return "CameraRecord.rotationX";
+  if (offsetof<SceneNode>("reserved") != 64) return "SceneNode.reserved";
+  if (offsetof<SceneNode>("reserved") + 8 != 72) return "SceneNode.reserved end";
+  if (sizeof<SceneNode>() != 72) return "SceneNode size";
+  if (offsetof<LightRecord>("intensity") != 28) return "LightRecord.intensity";
+  if (offsetof<LightRecord>("nameOffset") != 68) return "LightRecord.nameOffset";
+  if (offsetof<LightRecord>("reserved") + 8 != 88) return "LightRecord.reserved end";
+  if (sizeof<LightRecord>() != 88) return "LightRecord size";
+  if (offsetof<CameraRecord>("rotationX") != 36) return "CameraRecord.rotationX";
   if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord.reserved2 end";
   if (sizeof<CameraRecord>() != 80) return "CameraRecord size";
-  if (offsetof<Material>("slot0Resource") != 80) return "Material.slot0Resource";
-  if (offsetof<Material>("slot7Resource") != 192) return "Material.slot7Resource";
-  if (offsetof<Material>("slot7Uv") + 4 != 208) return "Material.slot7Uv end";
-  if (sizeof<Material>() != 208) return "Material size";
+  if (offsetof<Material>("slot0Resource") != 72) return "Material.slot0Resource";
+  if (offsetof<Material>("slot7Resource") != 184) return "Material.slot7Resource";
+  if (offsetof<Material>("slot7Uv") + 4 != 200) return "Material.slot7Uv end";
+  if (sizeof<Material>() != 200) return "Material size";
   if (offsetof<Resource>("seq") != 40) return "Resource.seq";
   if (offsetof<Resource>("seq") + 8 != 48) return "Resource.seq end";
   if (sizeof<Resource>() != 48) return "Resource size";
