@@ -36,7 +36,7 @@ constexpr uint32_t kNodeRecordBytes = 80;
 constexpr uint32_t kCameraRecordBytes = 80;
 constexpr uint32_t kLightRecordBytes = 96;
 constexpr uint32_t kMaterialRecordBytes = 208;
-constexpr uint32_t kRenderableRecordBytes = 64;
+constexpr uint32_t kRenderableRecordBytes = 56;
 
 /// The longest parent chain a submission may create. OGRE's scene graph walks
 /// a parent's descendants on every change, so the adapter refuses to build a
@@ -46,7 +46,7 @@ constexpr uint32_t kMaxNodeDepth = 32;
 
 /// One motion-table entry: `wire.ts`'s `MotionUpdate`, whose transform sits at
 /// the same offsets `Renderable`'s inline one does (16/32/48).
-constexpr uint32_t kMotionRecordBytes = 64;
+constexpr uint32_t kMotionRecordBytes = 48;
 /// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
 /// min(2048, 65536) = 2048: the renderable table is the smaller bound, and the
 /// arithmetic is asserted where the region is declared.
@@ -55,7 +55,7 @@ constexpr uint32_t kMotionCapacity = kRenderableCapacity;
 /// One bone-table entry: `wire.ts`'s `BoneUpdate`, the motion record's layout
 /// with `boneIndex` where `flags` was. It lives in `BUFFER_POOL` past the motion
 /// table, so `kBoneTableOffset` is an offset within the region.
-constexpr uint32_t kBoneRecordBytes = 64;
+constexpr uint32_t kBoneRecordBytes = 48;
 constexpr uint32_t kBoneTableOffset = kMotionRecordBytes * kMotionCapacity;
 constexpr uint32_t kBoneCapacity = kRenderableCapacity;
 

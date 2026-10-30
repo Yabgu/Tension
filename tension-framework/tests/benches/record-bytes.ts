@@ -12,7 +12,7 @@
 // Run: tension-core <this>.wasm, then diff the two trees' outputs.
 
 import { print } from "../../assembly/io";
-import { MOTION_SIZE, BONE_SIZE } from "../../assembly/ogre/wire";
+import { MOTION_SIZE, BONE_SIZE, MotionUpdate, BoneUpdate } from "../../assembly/ogre/wire";
 import { MotionBatch, getMotionBase } from "../../assembly/ogre/motion";
 import { BoneBatch, getBoneBase } from "../../assembly/ogre/bones";
 
@@ -38,18 +38,18 @@ export function _start_game(): void {
   const motion = new MotionBatch();
   motion.setPose(0, 7, A, B, C, D, -D, A * 2, 1.0, B);
   print("motion.stride=" + MOTION_SIZE.toString());
-  print("motion.bytes=" + dumpBytes(getMotionBase(), 64));
+  print("motion.bytes=" + dumpBytes(getMotionBase(), <i32>sizeof<MotionUpdate>()));
 
   // And the position-only writer, whose identity rotation is the other half of
   // the pair — written to slot 1 so it cannot be confused with slot 0.
   motion.set(1, 9, C, A, B, B);
-  print("motion.bytes1=" + dumpBytes(getMotionBase() + <usize>MOTION_SIZE, 64));
+  print("motion.bytes1=" + dumpBytes(getMotionBase() + <usize>MOTION_SIZE, <i32>sizeof<MotionUpdate>()));
 
   // ── the bone record ──────────────────────────────────────────────────
   const bones = new BoneBatch();
   bones.set(0, 3, 5, C, A, B, B);
   print("bone.stride=" + BONE_SIZE.toString());
-  print("bone.bytes=" + dumpBytes(getBoneBase(), 64));
+  print("bone.bytes=" + dumpBytes(getBoneBase(), <i32>sizeof<BoneUpdate>()));
 
   print("OK");
 }
