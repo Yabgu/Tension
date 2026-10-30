@@ -26,7 +26,6 @@
 
 import { print } from "../assembly/io";
 import {
-  assertWireOffsets,
   CLASS_JOB_DONE,
   ConfigBuilder,
   makeCallbacks,
@@ -74,7 +73,6 @@ function decimal(value: u32): string {
 }
 
 export function _start_game(): void {
-  assertWireOffsets();
   assertOgreWireOffsets();
 
   const callbacks = makeCallbacks(onBatch, onEvent);

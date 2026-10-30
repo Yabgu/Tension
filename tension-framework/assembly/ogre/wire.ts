@@ -708,15 +708,6 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
 // --- the offset check ------------------------------------------------------
 
 /**
- * The first OGRE wire offset that disagrees with this catalogue, or `null`.
- *
- * Same shape as the runtime's `wireOffsetsProblem`, and for the same reason: a
- * mismatch is a build that will read another field's bytes, and naming the
- * field is the whole diagnostic. Sizes come from the last field's offset plus
- * its width plus the trailing reserved words, because AS's `sizeof` does not
- * report these records the way the wire needs.
- */
-/**
  * The motion record's offsets, on their own.
  *
  * Separate from the wire contract check so a guest that uses `MotionBatch`
