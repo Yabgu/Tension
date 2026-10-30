@@ -32,11 +32,35 @@ constexpr uint32_t kLightCapacity = 1024;
 constexpr uint32_t kMaterialCapacity = 256;
 constexpr uint32_t kRenderableCapacity = 2048;
 
+// ── The record sizes: contract, and the one place they exist twice ─────
+//
+// These eight constants are the *wire* record sizes, and they are not
+// derivable from the structs below: the C++ structs are deliberate prefixes
+// (SceneNode 64 of 72, Camera 60 of 80, Light 68 of 88, Material 88 of 200),
+// so `sizeof` answers a different and smaller question. They are contract.
+//
+// Each one therefore exists twice — here as a literal, and in
+// `tension-framework/assembly/ogre/wire.ts` as the guest's own size. The tie is
+// the guest-side assertion named beside each constant: that is what fails when
+// one side moves. A `static_assert(kNodeRecordBytes == 72)` here would compare
+// the constant against itself and catch nothing. Mechanizing the tie is the
+// generator question in `docs/engine-adoption-plan.md`.
+
+// Must match sizeof<SceneNode>() in tension-framework/assembly/ogre/wire.ts:836
+// (asserted guest-side).
 constexpr uint32_t kNodeRecordBytes = 72;
+// Must match sizeof<CameraRecord>() in tension-framework/assembly/ogre/wire.ts:843
+// (asserted guest-side).
 // 80, not 60: the two `reserved` u64 words after the viewport round it up.
 constexpr uint32_t kCameraRecordBytes = 80;
+// Must match sizeof<LightRecord>() in tension-framework/assembly/ogre/wire.ts:840
+// (asserted guest-side).
 constexpr uint32_t kLightRecordBytes = 88;
+// Must match sizeof<Material>() in tension-framework/assembly/ogre/wire.ts:847
+// (asserted guest-side).
 constexpr uint32_t kMaterialRecordBytes = 200;
+// Must match sizeof<Renderable>() in tension-framework/assembly/ogre/wire.ts:864
+// (asserted guest-side).
 constexpr uint32_t kRenderableRecordBytes = 56;
 
 /// The longest parent chain a submission may create. OGRE's scene graph walks
@@ -47,6 +71,8 @@ constexpr uint32_t kMaxNodeDepth = 32;
 
 /// One motion-table entry: `wire.ts`'s `MotionUpdate`, 48 bytes with the
 /// transform at 8 / 20 / 36 -- right after the id pair, no pads.
+/// Must match sizeof<MotionUpdate>() in tension-framework/assembly/ogre/wire.ts:753
+/// (asserted guest-side).
 constexpr uint32_t kMotionRecordBytes = 48;
 /// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 48)` =
 /// min(2048, 87381) = 2048: the renderable table is the smaller bound, and the
@@ -56,6 +82,8 @@ constexpr uint32_t kMotionCapacity = kRenderableCapacity;
 /// One bone-table entry: `wire.ts`'s `BoneUpdate`, the motion record's layout
 /// with `boneIndex` where `flags` was. It lives in `BUFFER_POOL` past the motion
 /// table, so `kBoneTableOffset` is an offset within the region.
+/// Must match sizeof<BoneUpdate>() in tension-framework/assembly/ogre/wire.ts:790
+/// (asserted guest-side).
 constexpr uint32_t kBoneRecordBytes = 48;
 constexpr uint32_t kBoneTableOffset = kMotionRecordBytes * kMotionCapacity;
 constexpr uint32_t kBoneCapacity = kRenderableCapacity;
@@ -72,6 +100,10 @@ constexpr uint32_t kProceduralCapacity = 512 * 1024;
 /// at the start of the procedural window, then the matrix bytes the records
 /// point at. `wire.ts` derives the same offsets from the same base, so the two
 /// sides agree by construction rather than by comment.
+/// Must match `SKIN_SIZE` in tension-framework/assembly/ogre/wire.ts:681. This
+/// one has *no* struct on either side, so its tie is weaker than the others':
+/// two literals and a guest constant, with no `sizeof` assertion to fail. A
+/// change here is caught by the skin fixtures, not by a layout assert.
 constexpr uint32_t kSkinRecordBytes = 32;
 constexpr uint32_t kSkinCapacity = 64;
 constexpr uint32_t kSkinTableOffset = kProceduralBase;
