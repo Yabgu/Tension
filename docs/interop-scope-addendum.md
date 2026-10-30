@@ -479,15 +479,14 @@ precedent in the tree is std's `MapEntry<K,V>` at `std/assembly/map.ts:24` and
 `c` = embedded `@unmanaged` type; `d` = type parameter. Zero is stated per
 cell, not left blank.
 
+The seven types this table once listed that no longer exist — `Vec2f`, `Vec3f`,
+`Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f` — were pruned from the tree on
+2026-10-30 for zero consumers, and their rows went with them. The
+`ogre/wire.ts` line numbers that remain are the pre-prune ones: the measurement
+is what this table records, and renumbering it would hide that.
+
 | declaration | file:line | (a) | (b) | (c) | (d) |
 |---|---|---|---|---|---|
-| `Vec2f` | `ogre/wire.ts:30` | 0 | 0 | 0 | 0 |
-| `Vec3f` | `ogre/wire.ts:37` | 0 | 0 | 0 | 0 |
-| `Vec3f16` | `ogre/wire.ts:45` | 0 | 0 | 0 | 0 |
-| `Vec4f` | `ogre/wire.ts:54` | 0 | 0 | 0 | 0 |
-| `Quatf` | `ogre/wire.ts:63` | 0 | 0 | 0 | 0 |
-| `Colourf` | `ogre/wire.ts:72` | 0 | 0 | 0 | 0 |
-| `Mat4f` | `ogre/wire.ts:81` | 0 | 0 | 0 | 0 |
 | `Transformf` | `ogre/wire.ts:90` | 0 | 0 | 0 | 0 |
 | `Aabbf` | `ogre/wire.ts:107` | 0 | 0 | 0 | 0 |
 | `StringRef` | `ogre/wire.ts:122` | 0 | 0 | 0 | 0 |
