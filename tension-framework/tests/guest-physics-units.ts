@@ -441,22 +441,22 @@ function test_motionbatch_setPose_writes_correct_offsets(): void {
   batch.setPose(0, 7, 1.5, -2.5, 3.5, 0.25, -0.5, 0.75, 0.8660254037844386, 2.0);
   const at = base + <usize>MOTION_SIZE; // entry 1, since entry 0 is the frame's first body
   const at0 = base;
-  check("position x/y/z at @16/@20/@24",
-        load<f32>(at0 + 16) == 1.5 && load<f32>(at0 + 20) == -2.5 && load<f32>(at0 + 24) == 3.5);
-  check("rotation x/y/z/w at @32/@36/@40/@44",
-        load<f32>(at0 + 32) == 0.25 && load<f32>(at0 + 36) == -0.5 &&
-        load<f32>(at0 + 40) == 0.75 && nearly(load<f32>(at0 + 44), 0.8660254, 1.0e-6));
-  check("scale at @48, repeated across the three axes",
-        load<f32>(at0 + 48) == 2.0 && load<f32>(at0 + 52) == 2.0 && load<f32>(at0 + 56) == 2.0);
-  check("the renderable id at @0 and the reserved fields zeroed",
-        load<u32>(at0 + 0) == 7 && load<u32>(at0 + 4) == 0 && load<u64>(at0 + 8) == 0);
+  check("position x/y/z at @8/@12/@16",
+        load<f32>(at0 + 8) == 1.5 && load<f32>(at0 + 12) == -2.5 && load<f32>(at0 + 16) == 3.5);
+  check("rotation x/y/z/w at @20..@32",
+        load<f32>(at0 + 20) == 0.25 && load<f32>(at0 + 24) == -0.5 &&
+        load<f32>(at0 + 28) == 0.75 && nearly(load<f32>(at0 + 32), 0.8660254, 1.0e-6));
+  check("scale at @36, repeated across the three axes",
+        load<f32>(at0 + 36) == 2.0 && load<f32>(at0 + 40) == 2.0 && load<f32>(at0 + 44) == 2.0);
+  check("the renderable id at @0 and the flags word",
+        load<u32>(at0 + 0) == 7 && load<u32>(at0 + 4) == 0);
 
   batch.set(1, 8, 4.0, 5.0, 6.0, 1.0);
-  check("set writes the identity rotation at @32..@44",
-        load<f32>(at + 32) == 0.0 && load<f32>(at + 36) == 0.0 &&
-        load<f32>(at + 40) == 0.0 && load<f32>(at + 44) == 1.0);
+  check("set writes the identity rotation at @20..@32",
+        load<f32>(at + 20) == 0.0 && load<f32>(at + 24) == 0.0 &&
+        load<f32>(at + 28) == 0.0 && load<f32>(at + 32) == 1.0);
   check("and its own position and scale",
-        load<f32>(at + 16) == 4.0 && load<f32>(at + 48) == 1.0);
+        load<f32>(at + 8) == 4.0 && load<f32>(at + 36) == 1.0);
   check("the batch counts both writers", batch.count() == 2);
   // The batch is not committed here: the adapter half is the acid tier's business.
 }

@@ -1,135 +1,123 @@
 // The OGRE capability's wire, as the guest sees it.
 //
 // Same rules as the session runtime's `wire.ts`: every type is `@unmanaged`
-// with scalar fields in declared order and its padding spelled out, so a
-// `changetype<T>(offset)` is a view and the field order is the wire order. No
-// nested types — an `@unmanaged` class holding another class holds a *reference*
-// to it, which is the one thing a wire record must not do — so a `Transformf`
-// is twelve floats and a `Mat4f` is sixteen.
+// with its fields in declared order, so a `changetype<T>(offset)` is a view and
+// the field order is the wire order. The transform records nest the plain-struct
+// twins (`Vec3fValue`, `QuatfValue`) — a *plain* struct is stored inline, so the
+// nesting is bytes in the record rather than a reference — and everything else
+// stays scalar, so a matrix, if one is ever wanted, is sixteen floats.
+//
+// Padding is spelled out only where something depends on it: an alignment need,
+// or a host reader's fixed offset. See the rule above `Transformf` for which
+// records carry pads and why.
 //
 // **These field layouts are defined here, for the first time.** The design note
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
 // pin and extends the manifest then; chunk 1's manifest still holds the nine
 // protocol types, so nothing here moves `layoutHash`. What is fixed is the
-// sizes, and `checkOgreWireOffsets` proves them the same way the runtime's
+// sizes, and `assertOgreWireOffsets` proves them the same way the runtime's
 // check proves its own: `offsetof<T>("lastField")` plus that field's width plus
 // the trailing reserved words, never `sizeof<T>()`.
 //
-// Alignment is a *placement* rule, not something offsetof can check: AS aligns
-// an `@unmanaged` record to its widest scalar field, so a `Vec4f` or a `Mat4f`
-// must sit at a 16-byte offset in whatever record contains it. The container
-// layouts below do that, and the sizes are what the check pins.
+// Alignment is a *placement* rule, not something offsetof can check. Every leaf
+// in these records is an `f32` (align 4), so nothing here is forced to a 16-byte
+// boundary by the compiler: the transform offsets are simply where the
+// declarations put them, and no record carries a pad.
 
 import { REGION_RESOURCE } from "../runtime/wire";
 import { regionOffset } from "../runtime/arena";
 
-// --- math ------------------------------------------------------------------
+// --- the value types -------------------------------------------------------
 
-/** Two floats, 8 bytes. */
-@unmanaged
-export struct Vec2f {
-  x: f32 = 0;
-  y: f32 = 0;
-}
+// The two shapes the transform records nest. As plain structs, a field whose type
+// is one of these is **inline** — 12 or 16 bytes of the record's body rather than
+// a 4-byte reference (0.11.0's struct flip). That is what lets `position:
+// Vec3fValue` be the position, which is the whole point of §3 of the engine
+// adoption plan.
+//
+// These are the only math types left. `Vec2f`, `Vec3f`, `Vec3f16`, `Vec4f`,
+// `Quatf`, `Colourf` and `Mat4f` were declared here and used by nothing: no field
+// nested them, no guest imported them, and the only `offsetof` that named them
+// compared them against themselves. They went on 2026-10-30 — see the wire
+// workaround inventory in `tension-ogre/DESIGN.md`. If a raw-bytes view of a
+// transform record is ever wanted (`changetype<...>(ptr)`), that is when a second
+// `@unmanaged` declaration earns its place, alongside a check that the two agree.
+//
+// `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate, and no pad:
+// nothing in these records needs a 16-byte boundary. `QuatfValue` is 16 bytes
+// because a quaternion has four components, not because 16 is a slot size.
+//
+// **Never nested inside each other.** A plain struct inside a plain struct is
+// refused by name (SROA flattening is deferred), so these are leaves. Every
+// record that carries one is `@unmanaged`, which is the supported shape.
+//
+// What keeps them honest is the record-level check: `ogreMotionOffsetsProblem`
+// and `ogreWireOffsetsProblem` assert where each twin lands in the records the
+// adapter reads.
 
-/** Three floats, 12 bytes. */
-@unmanaged
-export struct Vec3f {
+/** A Vec3 as a value — **12 bytes**: no pad, no fourth coordinate. */
+export struct Vec3fValue {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
 }
 
-/** A `Vec3f` padded to 16 bytes: the alignment a `Vec4f` has, without a w. */
-@unmanaged
-export struct Vec3f16 {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  pad: f32 = 0;
-}
-
-/** Four floats, 16 bytes, align 16. */
-@unmanaged
-export struct Vec4f {
+/** A quaternion as a value — 16 bytes, `w` last. Fills a 16-byte slot on its own. */
+export struct QuatfValue {
   x: f32 = 0;
   y: f32 = 0;
   z: f32 = 0;
   w: f32 = 0;
 }
 
-/** A quaternion, xyzw, 16 bytes, align 16. */
-@unmanaged
-export struct Quatf {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  w: f32 = 0;
-}
+// ── Transform record padding: the rule ────────────────────────────────
+//
+// **No transform record carries a pad.** All five are tight: `MotionUpdate` and
+// `BoneUpdate` are 48 bytes with the transform at 8/20/36, `Renderable` is 56
+// with it at 16/28/44, `Transformf` is 40 and `Aabbf` 24.
+//
+// The pads these records used to carry were there to land a 16-byte unit on a
+// 16-byte boundary. Measured, nothing here needs one:
+//
+//   - every leaf is an `f32` (align 4), so no offset is forced;
+//   - the adapter decodes through `u32()`/`f32()` byte shifts
+//     (`tension-ogre/src/scene.cpp`), never an aligned load;
+//   - the guest is WASM, where an unaligned load is slower at worst, never a
+//     fault.
+//
+// The rule, stated once:
+//
+//   Padding is added when a smaller field precedes a larger one that needs
+//   stricter alignment — a `u8` before an `f32` on a target that demands it, or
+//   a `u64` at an odd offset. Padding is never added for uniformity ("all
+//   records should be N-byte shaped"), convention ("this is the wire's slot
+//   size"), or "16-byte slots" as a shape preference.
+//
+// Note what the rule does **not** say: "or a host reader needs it". A host
+// reader pins *offsets*, not padding — `scene.cpp` reads the three
+// adapter-visible records at whatever offsets they have, and a changed offset is
+// a coordinated change on both sides, not a reason to keep a pad.
+//
+// No record below contains a `u8`-adjacent-to-`f32` or an odd-offset `u64`, so
+// none needs padding today. If a future field does, pad that field explicitly
+// and say why here — the reason is the alignment arithmetic, never the shape.
 
-/** Linear RGBA, 16 bytes, align 16. */
-@unmanaged
-export struct Colourf {
-  r: f32 = 0;
-  g: f32 = 0;
-  b: f32 = 0;
-  a: f32 = 0;
-}
-
-/** A 4x4 matrix, column-major, 64 bytes, align 16. */
-@unmanaged
-export struct Mat4f {
-  m00: f32 = 0; m01: f32 = 0; m02: f32 = 0; m03: f32 = 0;
-  m10: f32 = 0; m11: f32 = 0; m12: f32 = 0; m13: f32 = 0;
-  m20: f32 = 0; m21: f32 = 0; m22: f32 = 0; m23: f32 = 0;
-  m30: f32 = 0; m31: f32 = 0; m32: f32 = 0; m33: f32 = 0;
-}
-
-/** Position, rotation, uniform scale — 48 bytes, align 16. */
+/** Position, rotation, uniform scale — 40 bytes (tight: no host reader). */
 @unmanaged
 export struct Transformf {
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  pad0: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
-  pad1: f32 = 0;
+  position: Vec3fValue = {}; //  0, 12 bytes
+  rotation: QuatfValue = {}; // 12, 16 bytes — `QuatfValue` is 4-byte aligned
+  scale: Vec3fValue = {}; //    28, 12 bytes — ends the record at 40
 }
 
-/** An axis-aligned box, 32 bytes, align 16. */
+/** An axis-aligned box — 24 bytes (tight: no host reader). */
 @unmanaged
 export struct Aabbf {
-  minX: f32 = 0;
-  minY: f32 = 0;
-  minZ: f32 = 0;
-  pad0: f32 = 0;
-  maxX: f32 = 0;
-  maxY: f32 = 0;
-  maxZ: f32 = 0;
-  pad1: f32 = 0;
+  min: Vec3fValue = {}; //  0, 12 bytes
+  max: Vec3fValue = {}; // 12, 12 bytes — ends the record at 24
 }
 
 // --- refs ------------------------------------------------------------------
-
-/** A UTF-8 string in the `STRING` region, 8 bytes. */
-@unmanaged
-export struct StringRef {
-  offset: u32 = 0;
-  length: u32 = 0;
-}
-
-/** Bytes in the `BUFFER_POOL` region, 8 bytes. */
-@unmanaged
-export struct BufferRef {
-  offset: u32 = 0;
-  length: u32 = 0;
-}
 
 // --- records ---------------------------------------------------------------
 
@@ -142,11 +130,11 @@ export struct SceneNode {
   childCount: u32 = 0;
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
-  // 24: the transform, exactly where the header's six words end.
+  // 24: the transform, exactly where the header's six words end. No pads: the
+  // rotation follows the position at 36 and the scale at 52.
   transformX: f32 = 0;
   transformY: f32 = 0;
   transformZ: f32 = 0;
-  transformPad: f32 = 0;
   rotationX: f32 = 0;
   rotationY: f32 = 0;
   rotationZ: f32 = 0;
@@ -154,7 +142,6 @@ export struct SceneNode {
   scaleX: f32 = 1;
   scaleY: f32 = 1;
   scaleZ: f32 = 1;
-  scalePad: f32 = 0;
   reserved: u64 = 0;
 
   /// A node at a place, with the identity rotation and unit scale the fields
@@ -176,7 +163,6 @@ export struct LightRecord {
   lightId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
-  private pad0: u32 = 0;
   colourR: f32 = 1;
   colourG: f32 = 1;
   colourB: f32 = 1;
@@ -188,11 +174,9 @@ export struct LightRecord {
   directionX: f32 = 0;
   directionY: f32 = -1;
   directionZ: f32 = 0;
-  directionPad: f32 = 0;
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
-  positionPad: f32 = 0;
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
   reserved: u64 = 0;
@@ -242,7 +226,6 @@ export struct CameraRecord {
   positionX: f32 = 0;
   positionY: f32 = 0;
   positionZ: f32 = 0;
-  positionPad: f32 = 0;
   rotationX: f32 = 0;
   rotationY: f32 = 0;
   rotationZ: f32 = 0;
@@ -269,22 +252,12 @@ export struct CameraRecord {
   }
 }
 
-/** One texture unit of a material, 16 bytes. */
-@unmanaged
-export struct TextureSlot {
-  resourceId: u32 = 0;
-  sampler: u32 = 0;
-  flags: u32 = 0;
-  uvSet: u32 = 0;
-}
-
-/** A material, 208 bytes: eight texture slots from 80. */
+/** A material, 200 bytes: eight texture slots from 72. */
 @unmanaged
 export struct Material {
   materialId: u32 = 0;
   kind: u32 = 0;
   flags: u32 = 0;
-  private pad0: u32 = 0;
   diffuseR: f32 = 1;
   diffuseG: f32 = 1;
   diffuseB: f32 = 1;
@@ -300,8 +273,7 @@ export struct Material {
   roughness: f32 = 1;
   metalness: f32 = 0;
   opacity: f32 = 1;
-  private pad1: f32 = 0;
-  // Eight TextureSlots, 16 bytes each, from offset 80.
+  // Eight TextureSlots, 16 bytes each, from offset 72.
   slot0Resource: u32 = 0; slot0Sampler: u32 = 0; slot0Flags: u32 = 0; slot0Uv: u32 = 0;
   slot1Resource: u32 = 0; slot1Sampler: u32 = 0; slot1Flags: u32 = 0; slot1Uv: u32 = 0;
   slot2Resource: u32 = 0; slot2Sampler: u32 = 0; slot2Flags: u32 = 0; slot2Uv: u32 = 0;
@@ -342,33 +314,6 @@ export struct Material {
   }
 }
 
-/** A shader, 40 bytes: source bytes live in the `STRING` region. */
-@unmanaged
-export struct ShaderRecord {
-  shaderId: u32 = 0;
-  stage: u32 = 0;
-  sourceKind: u32 = 0;
-  flags: u32 = 0;
-  byteOffset: u32 = 0;
-  byteLength: u32 = 0;
-  entryOffset: u32 = 0;
-  entryLength: u32 = 0;
-  reserved: u64 = 0;
-}
-
-/** A request the guest writes into `RESOURCE_REQ`, 40 bytes. */
-@unmanaged
-export struct ResourceReq {
-  kind: u32 = 0;
-  state: u32 = 0;
-  priority: i32 = 0;
-  flags: u32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  requestedSeq: u64 = 0;
-  reserved: u64 = 0;
-}
-
 /** A resource the session reports into `RESOURCE`, 48 bytes. */
 @unmanaged
 export struct Resource {
@@ -381,26 +326,13 @@ export struct Resource {
   nameLength: u32 = 0;
   error: i32 = 0;
   refs: u32 = 0;
-  private pad0: u32 = 0;
+  /// Implicitly 4 bytes of padding here: `seq` is a `u64` and the compiler
+  /// aligns it to 40. The explicit pad that used to sit here was a no-op --
+  /// measured 2026-10-30, same offset and size with and without it.
   seq: u64 = 0;
 }
 
-/** A GPU buffer the adapter describes, 48 bytes. */
-@unmanaged
-export struct Buffer {
-  bufferId: u32 = 0;
-  kind: u32 = 0;
-  usage: u32 = 0;
-  flags: u32 = 0;
-  size: u32 = 0;
-  stride: u32 = 0;
-  dataOffset: u32 = 0;
-  private pad0: u32 = 0;
-  bytes: u64 = 0;
-  reserved: u64 = 0;
-}
-
-/** A drawable, 64 bytes: its transform is inline at 16. */
+/** A drawable, 56 bytes: its transform is inline at 16. */
 @unmanaged
 export struct Renderable {
   renderableId: u32 = 0;
@@ -412,18 +344,9 @@ export struct Renderable {
   /// offset moved and `layoutHash` did not either. With a node, the inline
   /// transform below is *local* to it.
   nodeId: u32 = 0;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  positionPad: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
-  scalePad: f32 = 0;
+  position: Vec3fValue = {}; //  16, 12 bytes
+  rotation: QuatfValue = {}; // 28, 16 bytes
+  scale: Vec3fValue = {}; //    44, 12 bytes — ends the record at 56
 
   /// A drawable: a mesh, a material, and a place in the world — the inline
   /// transform this record carries, with the identity rotation it defaults to.
@@ -435,28 +358,35 @@ export struct Renderable {
     const renderable = new Renderable();
     renderable.meshResourceId = meshResourceId;
     renderable.materialId = materialId;
-    renderable.positionX = x;
-    renderable.positionY = y;
-    renderable.positionZ = z;
-    renderable.scaleX = scale;
-    renderable.scaleY = scale;
-    renderable.scaleZ = scale;
+    renderable.position.x = x;
+    renderable.position.y = y;
+    renderable.position.z = z;
+    renderable.rotation.w = 1;
+    renderable.scale.x = scale;
+    renderable.scale.y = scale;
+    renderable.scale.z = scale;
     return renderable;
   }
 }
 
 /**
- * One entry of the motion table, 64 bytes (chunk 4): a renderable's whole
+ * One entry of the motion table, 48 bytes (chunk 4): a renderable's whole
  * transform and nothing else. The table lives at the start of `BUFFER_POOL`,
  * the guest writes it, and `ogre::submit_motion(count)` names how much of it is
  * live — one call per frame instead of one per body.
  *
- * **Flat fields, like every other record here.** An AssemblyScript field whose
- * type is a class is a *reference*: `position: Vec3f` would be a 4-byte pointer
- * and this record would not be 64 bytes. The `Transformf` layout is written out
- * instead, at the offsets `Renderable`'s inline transform already uses
- * (16/32/48), so the two read the same way — and `pad0` is what puts them
- * there, because a record holding a `Quatf` aligns that `Quatf` to 16.
+ * **Nested, and tight.** `position`/`rotation`/`scale` are the value twins:
+ * 12-byte values either side of the 16-byte quaternion, laid out in the record's
+ * body rather than as 4-byte references. The transform starts right after the id
+ * pair — at 8 — and the record is 48 bytes, which is the table's stride.
+ *
+ * **No pads.** An earlier revision put `pad0: u64` in front of the transform to
+ * place it at 16, because the 16-byte offsets looked like an alignment
+ * requirement. They were not: every leaf is an `f32` (align 4), nothing needs a
+ * 16-byte boundary, the adapter reads bytes through `u32()`/`f32()` shifts rather
+ * than aligned loads, and the guest is WASM where an unaligned load is merely
+ * slower. The pads cost 16 bytes per record and bought nothing, so they went —
+ * along with `Renderable`'s, whose record is now 56.
  *
  * **Unmanaged: every use is a pointer view.** The idiom is
  * `changetype<MotionUpdate>(base + index * sizeof<MotionUpdate>())` — a view of
@@ -465,31 +395,21 @@ export struct Renderable {
  * a restatement: the declaration already names the model, and the override emits
  * the same code. Say it once, here.
  *
- * The layout is verified at the record's `pad2` by `ogreMotionOffsetsProblem`,
- * which asserts against `sizeof<MotionUpdate>()` rather than a copied constant —
- * so a field appended after `pad2` fails the check instead of silently widening
- * the record past the table's stride.
+ * The layout is verified by `ogreMotionOffsetsProblem`: the transform at
+ * 8/20/36, `offsetof("scale") + sizeof<Vec3fValue>()` at the record's end, and
+ * `sizeof` exactly 48 — so a field appended after `scale` fails the check
+ * instead of silently widening the record past the table's stride.
  */
 @unmanaged
 export struct MotionUpdate {
   renderableId: u32 = 0;
   flags: u32 = 0;
-  pad0: u64 = 0;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  pad1: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
-  pad2: f32 = 0;
+  position: Vec3fValue = {}; //  8, 12 bytes
+  rotation: QuatfValue = {}; // 20, 16 bytes
+  scale: Vec3fValue = {}; //    36, 12 bytes — ends the record at 48
 }
 
-/** One bone pose, 64 bytes — one entry of the bone table (DESIGN.md §5.1,
+/** One bone pose, 48 bytes — one entry of the bone table (DESIGN.md §5.1,
  * chunk 5b). Same layout as `MotionUpdate`, with `boneIndex` where the motion
  * record carries `flags`: a rig is posed by naming a renderable *and* a bone
  * inside it, and the transform that follows is the bone's local transform.
@@ -502,26 +422,16 @@ export struct MotionUpdate {
  * for identical code. The idiom is
  * `changetype<BoneUpdate>(base + index * sizeof<BoneUpdate>())`.
  *
- * The layout is verified at this record's `pad2` by `ogreBoneOffsetsProblem`,
- * asserting `sizeof<BoneUpdate>()`.
+ * The layout is verified by `ogreBoneOffsetsProblem`: the transform at 8/20/36
+ * and `sizeof` exactly 48, which is the table's stride.
  */
 @unmanaged
 export struct BoneUpdate {
   renderableId: u32 = 0;
   boneIndex: u32 = 0;
-  pad0: u64 = 0;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  pad1: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
-  pad2: f32 = 0;
+  position: Vec3fValue = {}; //  8, 12 bytes
+  rotation: QuatfValue = {}; // 20, 16 bytes
+  scale: Vec3fValue = {}; //    36, 12 bytes — ends the record at 48
 }
 
 /** One job, 64 bytes: what the session reports into `JOB`. */
@@ -685,11 +595,17 @@ export const JOB_SIZE: u32 = 64;
 // keeping the guest's idea of a slot and the adapter's in step.
 
 export const SCENE_NODE_COUNT: u32 = 1024;
-export const SCENE_NODE_SIZE: u32 = 80;
 export const SCENE_CAMERA_COUNT: u32 = 512;
-export const SCENE_CAMERA_SIZE: u32 = 80;
 export const SCENE_LIGHT_COUNT: u32 = 1024;
-export const SCENE_LIGHT_SIZE: u32 = 96;
+
+// The strides are **derived**, not hand-kept. They were constants once, and a
+// record whose declaration changed without its constant changing wrote past its
+// own slot -- measured 2026-10-30, when `Renderable` went 64 -> 56 and the
+// untouched `RENDERABLE_SIZE = 64` copied 8 bytes too many. `sizeof` at module
+// scope closes that gap by construction.
+export const SCENE_NODE_SIZE: u32 = sizeof<SceneNode>();
+export const SCENE_CAMERA_SIZE: u32 = sizeof<CameraRecord>();
+export const SCENE_LIGHT_SIZE: u32 = sizeof<LightRecord>();
 
 /** Where the cameras' table starts, in bytes from the region's first node. */
 export const SCENE_CAMERA_BASE: u32 = SCENE_NODE_COUNT * SCENE_NODE_SIZE;
@@ -699,9 +615,9 @@ export const SCENE_LIGHT_BASE: u32 = SCENE_CAMERA_BASE + SCENE_CAMERA_COUNT * SC
 export const SCENE_TABLE_BYTES: u32 = SCENE_LIGHT_BASE + SCENE_LIGHT_COUNT * SCENE_LIGHT_SIZE;
 
 export const MATERIAL_COUNT: u32 = 256;
-export const MATERIAL_SIZE: u32 = 208;
 export const RENDERABLE_COUNT: u32 = 2048;
-export const RENDERABLE_SIZE: u32 = 64;
+export const MATERIAL_SIZE: u32 = sizeof<Material>();
+export const RENDERABLE_SIZE: u32 = sizeof<Renderable>();
 
 // --- the motion table (chunk 4) ---------------------------------------------
 //
@@ -711,7 +627,7 @@ export const RENDERABLE_SIZE: u32 = 64;
 // region has room for: min(2048, 4 MiB / 64).
 
 /** One `MotionUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
-export const MOTION_SIZE: u32 = 64;
+export const MOTION_SIZE: u32 = 48;
 
 /** How many entries the table can hold. */
 export const MOTION_CAPACITY: u32 = 2048;
@@ -723,7 +639,7 @@ export const MOTION_CAPACITY: u32 = 2048;
 // alongside the motion table, and the arithmetic below is what says so.
 
 /** One `BoneUpdate`, in bytes — the table's stride in `BUFFER_POOL`. */
-export const BONE_SIZE: u32 = 64;
+export const BONE_SIZE: u32 = 48;
 
 /** How many entries the bone table can hold. */
 export const BONE_CAPACITY: u32 = 2048;
@@ -819,25 +735,32 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
  * then the transform at the offsets `Renderable`'s inline one already uses.
  */
 function ogreMotionOffsetsProblem(): string | null {
-  if (offsetof<MotionUpdate>("pad0") != 8) return "MotionUpdate.pad0";
-  if (offsetof<MotionUpdate>("positionX") != 16) return "MotionUpdate.positionX";
-  if (offsetof<MotionUpdate>("rotationX") != 32) return "MotionUpdate.rotationX";
-  if (offsetof<MotionUpdate>("scaleX") != 48) return "MotionUpdate.scaleX";
-  // Bound to the declaration, not to a hand-copied 64: a field appended after
-  // `pad2` used to be invisible here, because the constant would still equal the
-  // offset arithmetic while the record grew past the table's stride.
-  if (offsetof<MotionUpdate>("pad2") + sizeof<f32>() != sizeof<MotionUpdate>()) {
-    return "MotionUpdate size";
+  // No pads: the transform starts right after the id pair, at 8. The offsets are
+  // the adapter's contract (`decode_motion_at`), and `sizeof` catches a field
+  // appended after `scale` -- the form that an `offsetof(last) + width` check
+  // cannot see.
+  if (offsetof<MotionUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
+    return "MotionUpdate.position";
   }
+  if (offsetof<MotionUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
+    return "MotionUpdate.rotation";
+  }
+  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
+    return "MotionUpdate.scale";
+  }
+  if (offsetof<MotionUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<MotionUpdate>()) {
+    return "MotionUpdate tail";
+  }
+  if (sizeof<MotionUpdate>() != 48) return "MotionUpdate size";
   return null;
 }
 
-/** Whether this build's `MotionUpdate` matches the catalogue. */
-export function checkOgreMotionOffsets(): bool {
-  return ogreMotionOffsetsProblem() == null;
-}
-
-/** `checkOgreMotionOffsets`, as an assertion that names the field that moved. */
+/**
+ * Assert this build's `MotionUpdate` matches what the adapter reads: the record
+ * is a pointer view the guest writes and the adapter decodes at literal offsets,
+ * so a moved field is a silent misread rather than an error. Named field first,
+ * because that is what the reader needs.
+ */
 export function assertOgreMotionOffsets(): void {
   const problem = ogreMotionOffsetsProblem();
   if (problem != null) {
@@ -853,24 +776,24 @@ export function assertOgreMotionOffsets(): void {
  * fields by name, and the record's size is the table's stride.
  */
 function ogreBoneOffsetsProblem(): string | null {
-  if (offsetof<BoneUpdate>("pad0") != 8) return "BoneUpdate.pad0";
-  if (offsetof<BoneUpdate>("positionX") != 16) return "BoneUpdate.positionX";
-  if (offsetof<BoneUpdate>("rotationX") != 32) return "BoneUpdate.rotationX";
-  if (offsetof<BoneUpdate>("scaleX") != 48) return "BoneUpdate.scaleX";
-  // As for the motion record: the size comes from the declaration. `BONE_SIZE`
-  // stays the wire's published stride; this check no longer trusts it.
-  if (offsetof<BoneUpdate>("pad2") + sizeof<f32>() != sizeof<BoneUpdate>()) {
-    return "BoneUpdate size";
+  if (offsetof<BoneUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
+    return "BoneUpdate.position";
   }
+  if (offsetof<BoneUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
+    return "BoneUpdate.rotation";
+  }
+  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
+    return "BoneUpdate.scale";
+  }
+  if (offsetof<BoneUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<BoneUpdate>()) {
+    return "BoneUpdate tail";
+  }
+  if (sizeof<BoneUpdate>() != 48) return "BoneUpdate size";
   return null;
 }
 
 /** Whether this build's `BoneUpdate` matches the catalogue. */
-export function checkOgreBoneOffsets(): bool {
-  return ogreBoneOffsetsProblem() == null;
-}
-
-/** `checkOgreBoneOffsets`, as an assertion that names the field that moved. */
+/** Assert this build's `BoneUpdate` matches the catalogue, naming the field. */
 export function assertOgreBoneOffsets(): void {
   const problem = ogreBoneOffsetsProblem();
   if (problem != null) {
@@ -879,24 +802,12 @@ export function assertOgreBoneOffsets(): void {
 }
 
 function ogreWireOffsetsProblem(): string | null {
-  // Math: the small ones are pure width, and the two padded ones carry their
-  // pad as a field so the container arithmetic below stays honest.
-  if (offsetof<Vec2f>("y") != 4 || offsetof<Vec2f>("y") + 4 != 8) return "Vec2f";
-  if (offsetof<Vec3f>("z") != 8 || offsetof<Vec3f>("z") + 4 != 12) return "Vec3f";
-  if (offsetof<Vec3f16>("pad") != 12 || offsetof<Vec3f16>("pad") + 4 != 16) return "Vec3f16";
-  if (offsetof<Vec4f>("w") != 12 || offsetof<Vec4f>("w") + 4 != 16) return "Vec4f";
-  if (offsetof<Quatf>("w") != 12 || offsetof<Quatf>("w") + 4 != 16) return "Quatf";
-  if (offsetof<Colourf>("a") != 12 || offsetof<Colourf>("a") + 4 != 16) return "Colourf";
-  if (offsetof<Mat4f>("m33") != 60 || offsetof<Mat4f>("m33") + 4 != 64) return "Mat4f";
-  if (offsetof<Transformf>("rotationX") != 16) return "Transformf.rotationX";
-  if (offsetof<Transformf>("scaleX") != 32) return "Transformf.scaleX";
-  if (offsetof<Transformf>("pad1") != 44 || offsetof<Transformf>("pad1") + 4 != 48) return "Transformf";
-  if (offsetof<Aabbf>("maxX") != 16) return "Aabbf.maxX";
-  if (offsetof<Aabbf>("pad1") != 28 || offsetof<Aabbf>("pad1") + 4 != 32) return "Aabbf";
-
-  // Refs.
-  if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
-  if (offsetof<BufferRef>("length") != 4 || offsetof<BufferRef>("length") + 4 != 8) return "BufferRef";
+  // The math types, `Transformf`, `Aabbf`, the refs, `TextureSlot`,
+  // `ShaderRecord`, `ResourceReq` and `Buffer` used to be checked here field by
+  // field. They have no host reader, so each assertion compared the declaration
+  // against a literal declared beside it — the two moved together and could
+  // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
+  // `tension-ogre/DESIGN.md` ("Wire workaround inventory").
 
   // The two moving tables. Checked here as well as by their own assertions so a
   // build that forgets to call them still catches a moved field.
@@ -906,7 +817,9 @@ function ogreWireOffsetsProblem(): string | null {
   // the adapter (DESIGN.md §5.1 pins it at 256 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
   // look, so the two are tied together by this.
-  if (PROCEDURAL_BASE != 256 * 1024) return "PROCEDURAL_BASE";
+  // Derived from the two table strides: 48*2048 + 48*2048. The adapter derives
+  // the same number from the same constants (scene.h), so the two move together.
+  if (PROCEDURAL_BASE != 192 * 1024) return "PROCEDURAL_BASE";
   if (PROCEDURAL_CAPACITY == 0) return "PROCEDURAL_CAPACITY";
   // The format bits are a contract with the adapter's element table: the three
   // the adapter declares, in the order it declares them.
@@ -917,51 +830,47 @@ function ogreWireOffsetsProblem(): string | null {
 
   // Records.
   if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
-  if (offsetof<SceneNode>("reserved") != 72) return "SceneNode.reserved";
-  if (offsetof<SceneNode>("reserved") + 8 != 80) return "SceneNode size";
-  if (offsetof<LightRecord>("intensity") != 32) return "LightRecord.intensity";
-  if (offsetof<LightRecord>("nameOffset") != 80) return "LightRecord.nameOffset";
-  if (offsetof<LightRecord>("reserved") + 8 != 96) return "LightRecord size";
-  if (offsetof<CameraRecord>("rotationX") != 40) return "CameraRecord.rotationX";
-  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord size";
-  if (offsetof<TextureSlot>("uvSet") + 4 != 16) return "TextureSlot size";
-  if (offsetof<Material>("slot0Resource") != 80) return "Material.slot0Resource";
-  if (offsetof<Material>("slot7Resource") != 192) return "Material.slot7Resource";
-  if (offsetof<Material>("slot7Uv") + 4 != 208) return "Material size";
-  if (offsetof<ShaderRecord>("reserved") != 32) return "ShaderRecord.reserved";
-  if (offsetof<ShaderRecord>("reserved") + 8 != 40) return "ShaderRecord size";
-  if (offsetof<ResourceReq>("requestedSeq") != 24) return "ResourceReq.requestedSeq";
-  if (offsetof<ResourceReq>("reserved") + 8 != 40) return "ResourceReq size";
+  if (offsetof<SceneNode>("reserved") != 64) return "SceneNode.reserved";
+  if (offsetof<SceneNode>("reserved") + 8 != 72) return "SceneNode.reserved end";
+  if (sizeof<SceneNode>() != 72) return "SceneNode size";
+  if (offsetof<LightRecord>("intensity") != 28) return "LightRecord.intensity";
+  if (offsetof<LightRecord>("nameOffset") != 68) return "LightRecord.nameOffset";
+  if (offsetof<LightRecord>("reserved") + 8 != 88) return "LightRecord.reserved end";
+  if (sizeof<LightRecord>() != 88) return "LightRecord size";
+  if (offsetof<CameraRecord>("rotationX") != 36) return "CameraRecord.rotationX";
+  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord.reserved2 end";
+  if (sizeof<CameraRecord>() != 80) return "CameraRecord size";
+  if (offsetof<Material>("slot0Resource") != 72) return "Material.slot0Resource";
+  if (offsetof<Material>("slot7Resource") != 184) return "Material.slot7Resource";
+  if (offsetof<Material>("slot7Uv") + 4 != 200) return "Material.slot7Uv end";
+  if (sizeof<Material>() != 200) return "Material size";
   if (offsetof<Resource>("seq") != 40) return "Resource.seq";
-  if (offsetof<Resource>("seq") + 8 != 48) return "Resource size";
-  if (offsetof<Buffer>("bytes") != 32) return "Buffer.bytes";
-  if (offsetof<Buffer>("reserved") + 8 != 48) return "Buffer size";
+  if (offsetof<Resource>("seq") + 8 != 48) return "Resource.seq end";
+  if (sizeof<Resource>() != 48) return "Resource size";
   // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
   // The pin is here because the rename is a *semantics* change, and the one
   // thing that must not change with it is where the field sits.
   if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
-  if (offsetof<Renderable>("positionX") != 16) return "Renderable.positionX";
-  if (offsetof<Renderable>("scalePad") + 4 != 64) return "Renderable size";
-  // The motion table's record: the id pair, then the transform at the offsets
-  // Renderable's inline one uses. `pad0` is what makes the transform land on
-  // 16, and the record end at 64. Checked by `ogreMotionOffsetsProblem` so a
-  // guest that uses `MotionBatch` can assert exactly what it depends on.
-  const motion_problem = ogreMotionOffsetsProblem();
-  if (motion_problem != null) return motion_problem;
+  if (offsetof<Renderable>("position") + offsetof<Vec3fValue>("x") != 16) {
+    return "Renderable.position";
+  }
+  if (offsetof<Renderable>("rotation") + offsetof<QuatfValue>("x") != 28) {
+    return "Renderable.rotation";
+  }
+  if (offsetof<Renderable>("scale") + sizeof<Vec3fValue>() != sizeof<Renderable>()) {
+    return "Renderable.tail";
+  }
+  if (sizeof<Renderable>() != 56) return "Renderable size";
   if (offsetof<Job>("priority") != 16) return "Job.priority";
   if (offsetof<Job>("progress") != 24) return "Job.progress";
   if (offsetof<Job>("seq") != 40) return "Job.seq";
-  if (offsetof<Job>("reserved2") + 8 != 64) return "Job size";
+  if (offsetof<Job>("reserved2") + 8 != 64) return "Job.reserved2 end";
+  if (sizeof<Job>() != 64) return "Job size";
 
   return null;
 }
 
-/** Whether this build's OGRE wire offsets match the catalogue. */
-export function checkOgreWireOffsets(): bool {
-  return ogreWireOffsetsProblem() == null;
-}
-
-/** `checkOgreWireOffsets`, as an assertion that names the field that moved. */
+/** Assert this build's OGRE wire offsets match the catalogue, naming the field. */
 export function assertOgreWireOffsets(): void {
   const problem = ogreWireOffsetsProblem();
   if (problem != null) {
