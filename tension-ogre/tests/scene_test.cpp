@@ -38,19 +38,19 @@ bool listed(const std::vector<uint32_t> &list, uint32_t id) {
     return false;
 }
 
-RenderableRecord renderable_using(uint32_t material, uint32_t mesh) {
-    RenderableRecord renderable;
+Renderable renderable_using(uint32_t material, uint32_t mesh) {
+    Renderable renderable;
     renderable.material_id = material;
     renderable.mesh_resource_id = mesh;
-    renderable.sx = renderable.sy = renderable.sz = 1.0f;
-    renderable.rw = 1.0f;
+    renderable.scale.x = renderable.scale.y = renderable.scale.z = 1.0f;
+    renderable.rotation.w = 1.0f;
     return renderable;
 }
 
 void test_upsert_node_marks_dirty() {
     std::printf("test_upsert_node_marks_dirty\n");
     SceneMirror mirror;
-    SceneNodeRecord node;
+    SceneNode node;
     check_eq(mirror.upsert_node(1, node), 0, "a flat node is accepted");
     check(listed(mirror.dirty_nodes(), 1), "and is marked dirty");
     check(mirror.node_live(1), "and is live");
@@ -62,7 +62,7 @@ void test_upsert_node_marks_dirty() {
 void test_upsert_node_with_missing_parent_refused() {
     std::printf("test_upsert_node_with_missing_parent_refused\n");
     SceneMirror mirror;
-    SceneNodeRecord node;
+    SceneNode node;
     node.parent_id = 7;
     check_eq(mirror.upsert_node(1, node), -EINVAL, "a parent that is not a live node is refused");
     check(!mirror.node_live(1), "and nothing was stored");
@@ -74,7 +74,7 @@ void test_upsert_node_with_missing_parent_refused() {
 void test_remove_node_clears_live_and_marks_dirty() {
     std::printf("test_remove_node_clears_live_and_marks_dirty\n");
     SceneMirror mirror;
-    mirror.upsert_node(3, SceneNodeRecord{});
+    mirror.upsert_node(3, SceneNode{});
     mirror.clear_dirty();
     check_eq(mirror.remove_node(3), 0, "remove succeeds");
     check(!mirror.node_live(3), "the entry is no longer live");
@@ -87,7 +87,7 @@ void test_upsert_renderable_validates_material_live() {
     SceneMirror mirror;
     check_eq(mirror.upsert_renderable(1, renderable_using(1, 1)), -EINVAL,
              "a renderable with no material is refused");
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     check_eq(mirror.upsert_material(1, material), 0, "the material is accepted");
     check_eq(mirror.upsert_renderable(1, renderable_using(1, 1)), 0,
@@ -98,7 +98,7 @@ void test_upsert_renderable_validates_material_live() {
 void test_upsert_renderable_validates_mesh_resource_kind() {
     std::printf("test_upsert_renderable_validates_mesh_resource_kind\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
 
@@ -120,7 +120,7 @@ void test_upsert_renderable_validates_mesh_resource_kind() {
 void test_remove_material_in_use_refused() {
     std::printf("test_remove_material_in_use_refused\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.upsert_renderable(1, renderable_using(1, 1));
@@ -134,8 +134,8 @@ void test_remove_material_in_use_refused() {
 // ── chunk 5a: hierarchy ─────────────────────────────────────────────────
 
 /// A node with the given parent, all other fields default.
-SceneNodeRecord node_under(uint32_t parent_id) {
-    SceneNodeRecord node;
+SceneNode node_under(uint32_t parent_id) {
+    SceneNode node;
     node.parent_id = parent_id;
     return node;
 }
@@ -143,7 +143,7 @@ SceneNodeRecord node_under(uint32_t parent_id) {
 void test_upsert_node_with_live_parent_accepted() {
     std::printf("test_upsert_node_with_live_parent_accepted\n");
     SceneMirror mirror;
-    check_eq(mirror.upsert_node(1, SceneNodeRecord{}), 0, "a root node is accepted");
+    check_eq(mirror.upsert_node(1, SceneNode{}), 0, "a root node is accepted");
     check_eq(mirror.upsert_node(2, node_under(1)), 0, "a child of a live node is accepted");
     check(mirror.node_live(2), "the child is live");
     check_eq(mirror.child_count(1), 1, "the parent has one child");
@@ -156,7 +156,7 @@ void test_child_count_nonzero_refused() {
     SceneMirror mirror;
     std::vector<std::string> said;
     mirror.set_log([&said](const std::string &m) { said.push_back(m); });
-    SceneNodeRecord node;
+    SceneNode node;
     node.child_count = 3;
     check_eq(mirror.upsert_node(1, node), -EINVAL, "a guest-written childCount is refused");
     check(!mirror.node_live(1), "and nothing was stored");
@@ -167,7 +167,7 @@ void test_child_count_nonzero_refused() {
 void test_upsert_node_cycle_refused() {
     std::printf("test_upsert_node_cycle_refused\n");
     SceneMirror mirror;
-    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(1, SceneNode{});
     mirror.upsert_node(2, node_under(1));
     mirror.upsert_node(3, node_under(2));
     // The grandparent is re-parented to its grandchild: the chain would close.
@@ -213,7 +213,7 @@ void test_remove_node_with_live_child_refused_ebusy() {
     SceneMirror mirror;
     std::vector<std::string> said;
     mirror.set_log([&said](const std::string &m) { said.push_back(m); });
-    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(1, SceneNode{});
     mirror.upsert_node(2, node_under(1));
     check_eq(mirror.remove_node(1), -EBUSY, "a node with a live child is not removed");
     check(mirror.node_live(1), "so it stays live");
@@ -224,7 +224,7 @@ void test_remove_node_with_live_child_refused_ebusy() {
 void test_remove_node_after_children_removed_succeeds() {
     std::printf("test_remove_node_after_children_removed_succeeds\n");
     SceneMirror mirror;
-    mirror.upsert_node(1, SceneNodeRecord{});
+    mirror.upsert_node(1, SceneNode{});
     mirror.upsert_node(2, node_under(1));
     check_eq(mirror.remove_node(2), 0, "the child goes first");
     check_eq(mirror.remove_node(1), 0, "and then the parent");
@@ -234,14 +234,14 @@ void test_remove_node_after_children_removed_succeeds() {
 void test_remove_node_with_live_renderable_refused() {
     std::printf("test_remove_node_with_live_renderable_refused\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.set_resource_check([](uint32_t id, uint32_t kind) {
         return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
     });
-    mirror.upsert_node(1, SceneNodeRecord{});
-    RenderableRecord renderable = renderable_using(1, 42);
+    mirror.upsert_node(1, SceneNode{});
+    Renderable renderable = renderable_using(1, 42);
     renderable.node_id = 1;
     check_eq(mirror.upsert_renderable(1, renderable), 0, "a drawable on a live node is accepted");
     check_eq(mirror.remove_node(1), -EBUSY, "a node a drawable hangs from is not removed");
@@ -252,13 +252,13 @@ void test_remove_node_with_live_renderable_refused() {
 void test_upsert_renderable_with_missing_node_refused() {
     std::printf("test_upsert_renderable_with_missing_node_refused\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.set_resource_check([](uint32_t id, uint32_t kind) {
         return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
     });
-    RenderableRecord renderable = renderable_using(1, 42);
+    Renderable renderable = renderable_using(1, 42);
     renderable.node_id = 9;
     check_eq(mirror.upsert_renderable(1, renderable), -EINVAL,
              "a drawable naming a node that is not live is refused");
@@ -268,24 +268,24 @@ void test_upsert_renderable_with_missing_node_refused() {
 void test_upsert_renderable_with_live_node_accepted() {
     std::printf("test_upsert_renderable_with_live_node_accepted\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.set_resource_check([](uint32_t id, uint32_t kind) {
         return kind == TENSION_OGRE_RES_KIND_MESH && id == 42;
     });
-    mirror.upsert_node(1, SceneNodeRecord{});
-    RenderableRecord renderable = renderable_using(1, 42);
+    mirror.upsert_node(1, SceneNode{});
+    Renderable renderable = renderable_using(1, 42);
     renderable.node_id = 1;
     check_eq(mirror.upsert_renderable(1, renderable), 0, "a drawable on a live node is accepted");
-    const RenderableRecord *record = mirror.renderable(1);
+    const Renderable *record = mirror.renderable(1);
     check(record != nullptr && record->node_id == 1, "and the record keeps the node");
 }
 
 void test_upsert_renderable_with_node_zero_is_self_placed() {
     std::printf("test_upsert_renderable_with_node_zero_is_self_placed\n");
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.set_resource_check([](uint32_t id, uint32_t kind) {
@@ -293,7 +293,7 @@ void test_upsert_renderable_with_node_zero_is_self_placed() {
     });
     check_eq(mirror.upsert_renderable(1, renderable_using(1, 42)), 0,
              "nodeId 0 is accepted: the drawable is self-placed");
-    const RenderableRecord *record = mirror.renderable(1);
+    const Renderable *record = mirror.renderable(1);
     check(record != nullptr && record->node_id == 0, "and the record says so");
 }
 
@@ -303,7 +303,7 @@ void test_upsert_renderable_with_node_zero_is_self_placed() {
 /// resource 42, which is all a motion test needs to be true.
 SceneMirror mirror_with_one_renderable() {
     SceneMirror mirror;
-    MaterialRecord material;
+    Material material;
     material.kind = TENSION_OGRE_MAT_HLMS_UNLIT;
     mirror.upsert_material(1, material);
     mirror.set_resource_check([](uint32_t id, uint32_t kind) {
@@ -316,11 +316,11 @@ SceneMirror mirror_with_one_renderable() {
 
 MotionUpdate motion_at(float x, float y, float z) {
     MotionUpdate update;
-    update.px = x;
-    update.py = y;
-    update.pz = z;
-    update.rw = 1.0f;
-    update.sx = update.sy = update.sz = 1.0f;
+    update.position.x = x;
+    update.position.y = y;
+    update.position.z = z;
+    update.rotation.w = 1.0f;
+    update.scale.x = update.scale.y = update.scale.z = 1.0f;
     return update;
 }
 
@@ -329,12 +329,12 @@ void test_apply_motion_updates_transform_and_marks_dirty() {
     SceneMirror mirror = mirror_with_one_renderable();
     check_eq(mirror.apply_motion(1, motion_at(0.25f, -0.5f, 0.0f)), 0, "a live renderable moves");
     check(listed(mirror.dirty_renderables(), 1), "and is marked dirty for the render thread");
-    const RenderableRecord *record = mirror.renderable(1);
+    const Renderable *record = mirror.renderable(1);
     check(record != nullptr, "the record is still there");
     if (record != nullptr) {
-        check(record->px > 0.249f && record->px < 0.251f, "x landed in the record");
-        check(record->py > -0.501f && record->py < -0.499f, "y landed in the record");
-        check(record->pz > -0.001f && record->pz < 0.001f, "z landed in the record");
+        check(record->position.x > 0.249f && record->position.x < 0.251f, "x landed in the record");
+        check(record->position.y > -0.501f && record->position.y < -0.499f, "y landed in the record");
+        check(record->position.z > -0.001f && record->position.z < 0.001f, "z landed in the record");
     }
     // A second motion in the same epoch must not double-list the id: the dirty
     // list is what the render thread walks, and a guest stepping at 60 Hz is
@@ -365,13 +365,13 @@ void test_apply_motion_leaves_material_and_mesh_untouched() {
     std::printf("test_apply_motion_leaves_material_and_mesh_untouched\n");
     SceneMirror mirror = mirror_with_one_renderable();
     MotionUpdate update = motion_at(-1.5f, 2.5f, 0.25f);
-    update.rx = 0.0f;
-    update.ry = 0.7071068f;
-    update.rz = 0.0f;
-    update.rw = 0.7071068f;
-    update.sx = update.sy = update.sz = 0.5f;
+    update.rotation.x = 0.0f;
+    update.rotation.y = 0.7071068f;
+    update.rotation.z = 0.0f;
+    update.rotation.w = 0.7071068f;
+    update.scale.x = update.scale.y = update.scale.z = 0.5f;
     check_eq(mirror.apply_motion(1, update), 0, "the motion applies");
-    const RenderableRecord *record = mirror.renderable(1);
+    const Renderable *record = mirror.renderable(1);
     check(record != nullptr, "the record is there");
     if (record != nullptr) {
         // The three fields a motion must never disturb: a solver that moved a
@@ -379,8 +379,8 @@ void test_apply_motion_leaves_material_and_mesh_untouched() {
         check_eq(record->material_id, 1, "the material reference is untouched");
         check_eq(record->mesh_resource_id, 42, "the mesh resource is untouched");
         check_eq(record->renderable_id, 1, "and the id is untouched");
-        check(record->ry > 0.707f && record->ry < 0.708f, "the rotation landed");
-        check(record->sx > 0.499f && record->sx < 0.501f, "the scale landed");
+        check(record->rotation.y > 0.707f && record->rotation.y < 0.708f, "the rotation landed");
+        check(record->scale.x > 0.499f && record->scale.x < 0.501f, "the scale landed");
     }
     check(mirror.material_live(1), "the material is still live");
     check(mirror.renderable_live(1), "and so is the renderable");
@@ -401,9 +401,9 @@ void test_apply_motion_multiple_bodies() {
     check_eq(static_cast<int64_t>(mirror.dirty_renderables().size()), static_cast<int64_t>(bodies),
              "every body is dirty once");
     for (uint32_t id = 1; id <= bodies; ++id) {
-        const RenderableRecord *record = mirror.renderable(id);
+        const Renderable *record = mirror.renderable(id);
         const float want = static_cast<float>(id) * 0.25f;
-        check(record != nullptr && record->px > want - 0.001f && record->px < want + 0.001f,
+        check(record != nullptr && record->position.x > want - 0.001f && record->position.x < want + 0.001f,
               "each body landed at its own x");
     }
 }
@@ -419,14 +419,14 @@ void test_apply_motion_sequence_of_frames() {
         const float x = velocity * dt * static_cast<float>(frame);
         check_eq(mirror.apply_motion(1, motion_at(x, 0.0f, 0.0f)), 0, "the frame's motion applies");
         check(listed(mirror.dirty_renderables(), 1), "the frame is dirty");
-        const RenderableRecord *record = mirror.renderable(1);
-        check(record != nullptr && record->px > x - 0.0001f && record->px < x + 0.0001f,
+        const Renderable *record = mirror.renderable(1);
+        check(record != nullptr && record->position.x > x - 0.0001f && record->position.x < x + 0.0001f,
               "this frame's x landed");
         mirror.clear_dirty();
         check(mirror.dirty_renderables().empty(), "and the list is clear for the next frame");
     }
-    const RenderableRecord *record = mirror.renderable(1);
-    check(record != nullptr && record->px > 0.4916f && record->px < 0.4917f,
+    const Renderable *record = mirror.renderable(1);
+    check(record != nullptr && record->position.x > 0.4916f && record->position.x < 0.4917f,
           "after sixty frames the body is where 59 steps of the solver put it");
 }
 
@@ -447,9 +447,9 @@ BoneUpdate bone_at(uint32_t renderable_id, uint32_t bone_index, float rx) {
     BoneUpdate update;
     update.renderable_id = renderable_id;
     update.bone_index = bone_index;
-    update.rx = rx;
-    update.rw = 1.0f;
-    update.sx = update.sy = update.sz = 1.0f;
+    update.rotation.x = rx;
+    update.rotation.w = 1.0f;
+    update.scale.x = update.scale.y = update.scale.z = 1.0f;
     return update;
 }
 
@@ -463,7 +463,7 @@ void test_apply_bones_accepts_valid_batch() {
              "a valid batch is accepted");
     check_eq(mirror.bone_update_count(), 2, "both entries landed");
     check_eq(mirror.bone_updates()[1].bone_index, 6, "the second entry is the one sent");
-    check(mirror.bone_updates()[1].rx > 0.24f && mirror.bone_updates()[1].rx < 0.26f,
+    check(mirror.bone_updates()[1].rotation.x > 0.24f && mirror.bone_updates()[1].rotation.x < 0.26f,
           "with its own transform");
     check(mirror.bone_generation() > before, "and the generation advanced");
 }
@@ -517,7 +517,7 @@ void test_apply_bones_all_or_nothing() {
     check_eq(mirror.apply_bones(mixed.data(), static_cast<uint32_t>(mixed.size())), -EINVAL,
              "one bad entry refuses the batch");
     check_eq(mirror.bone_update_count(), 1, "the batch's length is unchanged");
-    check(mirror.bone_updates()[0].bone_index == 6 && mirror.bone_updates()[0].rx < 0.11f,
+    check(mirror.bone_updates()[0].bone_index == 6 && mirror.bone_updates()[0].rotation.x < 0.11f,
           "and the entry that was already there is what is still there");
 }
 
@@ -541,7 +541,7 @@ void test_apply_bones_advances_generation() {
 void test_decode_node_bounds_check() {
     std::printf("test_decode_node_bounds_check\n");
     std::vector<uint8_t> region(kNodeRecordBytes * 2, 0);
-    SceneNodeRecord node;
+    SceneNode node;
     check(SceneMirror::decode_node(region.data(), region.size(), 1, node), "slot 1 decodes");
     check(SceneMirror::decode_node(region.data(), region.size(), 2, node), "slot 2 decodes");
     check(!SceneMirror::decode_node(region.data(), region.size(), 3, node),
@@ -571,7 +571,7 @@ void test_decode_record_fields_land_where_wire_says() {
     check(camera.fov_y > 59.9f && camera.fov_y < 60.1f, "fovY at offset 8");
     check(camera.near_clip > 0.09f && camera.near_clip < 0.11f, "near at 16");
     check(camera.far_clip > 99.9f && camera.far_clip < 100.1f, "far at 20");
-    check(camera.pz > 3.9f && camera.pz < 4.1f, "position z at 32");
+    check(camera.position.z > 3.9f && camera.position.z < 4.1f, "position z at 32");
 
     // A camera id past the table is refused even when the region has room
     // (the light table's bytes are not a camera).

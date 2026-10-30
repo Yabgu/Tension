@@ -26,7 +26,7 @@ void SceneMirror::mark(std::vector<uint32_t> &list, uint32_t id) {
 
 // ── upserts ─────────────────────────────────────────────────────────────
 
-int32_t SceneMirror::upsert_node(uint32_t id, const SceneNodeRecord &record) {
+int32_t SceneMirror::upsert_node(uint32_t id, const SceneNode &record) {
     if (id == 0 || id > kNodeCapacity) return -EINVAL; // ids are 1-based
     // The count is the mirror's answer, not the guest's claim. A guest that
     // fills it in is guessing at something this table already knows.
@@ -191,7 +191,7 @@ int32_t SceneMirror::remove_light(uint32_t id) {
     return 0;
 }
 
-int32_t SceneMirror::upsert_material(uint32_t id, const MaterialRecord &record) {
+int32_t SceneMirror::upsert_material(uint32_t id, const Material &record) {
     if (id == 0 || id > kMaterialCapacity) return -EINVAL;
     if (record.kind > TENSION_OGRE_MAT_HLMS_CUSTOM) return -EINVAL;
     materials_[id - 1].live = true;
@@ -213,7 +213,7 @@ int32_t SceneMirror::remove_material(uint32_t id) {
     return 0;
 }
 
-int32_t SceneMirror::upsert_renderable(uint32_t id, const RenderableRecord &record) {
+int32_t SceneMirror::upsert_renderable(uint32_t id, const Renderable &record) {
     if (id == 0 || id > kRenderableCapacity) return -EINVAL;
     if (record.material_id == 0 || record.material_id > kMaterialCapacity) return -EINVAL;
     if (!materials_[record.material_id - 1].live) return -EINVAL;
@@ -262,16 +262,16 @@ int32_t SceneMirror::apply_motion(uint32_t id, const MotionUpdate &update) {
     // object to move and no record to move it for. The mesh and material
     // references a live entry holds were validated at submit time.
     if (!entry.live) return -ENOENT;
-    entry.rec.px = update.px;
-    entry.rec.py = update.py;
-    entry.rec.pz = update.pz;
-    entry.rec.rx = update.rx;
-    entry.rec.ry = update.ry;
-    entry.rec.rz = update.rz;
-    entry.rec.rw = update.rw;
-    entry.rec.sx = update.sx;
-    entry.rec.sy = update.sy;
-    entry.rec.sz = update.sz;
+    entry.rec.position.x = update.position.x;
+    entry.rec.position.y = update.position.y;
+    entry.rec.position.z = update.position.z;
+    entry.rec.rotation.x = update.rotation.x;
+    entry.rec.rotation.y = update.rotation.y;
+    entry.rec.rotation.z = update.rotation.z;
+    entry.rec.rotation.w = update.rotation.w;
+    entry.rec.scale.x = update.scale.x;
+    entry.rec.scale.y = update.scale.y;
+    entry.rec.scale.z = update.scale.z;
     mark(dirty_renderables_, id);
     return 0;
 }
@@ -333,49 +333,49 @@ int32_t SceneMirror::apply_bones(const BoneUpdate *updates, uint32_t count) {
 // submit verb copies out of a region), and the region form bounds-checks the
 // id against a table before calling it.
 
-bool SceneMirror::decode_node_at(const uint8_t *r, SceneNodeRecord &out) {
+bool SceneMirror::decode_node_at(const uint8_t *r, SceneNode &out) {
     if (r == nullptr) return false;
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_camera_at(const uint8_t *r, CameraRecord &out) {
     if (r == nullptr) return false;
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_light_at(const uint8_t *r, LightRecord &out) {
     if (r == nullptr) return false;
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
-bool SceneMirror::decode_material_at(const uint8_t *r, MaterialRecord &out) {
+bool SceneMirror::decode_material_at(const uint8_t *r, Material &out) {
     if (r == nullptr) return false;
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
-bool SceneMirror::decode_renderable_at(const uint8_t *r, RenderableRecord &out) {
+bool SceneMirror::decode_renderable_at(const uint8_t *r, Renderable &out) {
     if (r == nullptr) return false;
     // Offset 12 is `node_id` (wire `nodeId`, since chunk 5a; it was
     // `flags` before that) — pinned in scene.h.
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
@@ -384,9 +384,9 @@ bool SceneMirror::decode_motion_at(const uint8_t *r, MotionUpdate &out) {
     if (r == nullptr) return false;
     // The transform lands at 8/20/36, the same shape a Renderable's inline
     // one has, which is the point of the record.
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
@@ -395,14 +395,14 @@ bool SceneMirror::decode_bone_at(const uint8_t *r, BoneUpdate &out) {
     if (r == nullptr) return false;
     // The motion record's transform offsets, for the motion record's reason:
     // one reading of a transform serves every record that carries one.
-    // One copy: `scene.h` packs this struct and static_asserts every field
-    // against the wire offset, so its bytes *are* the record's. Prefix only —
-    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    // One copy: the struct is the whole wire record (generated from
+    // `schema/ogre.json`, with a static_assert per field), so its bytes *are*
+    // the record's.
     std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
-bool SceneMirror::decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNodeRecord &out) {
+bool SceneMirror::decode_node(const uint8_t *region, size_t len, uint32_t id, SceneNode &out) {
     if (region == nullptr || id == 0 || id > kNodeCapacity) return false;
     const uint32_t at = (id - 1) * kNodeRecordBytes;
     if (!has(len, at, kNodeRecordBytes)) return false;
@@ -424,7 +424,7 @@ bool SceneMirror::decode_light(const uint8_t *region, size_t len, uint32_t id, L
 }
 
 bool SceneMirror::decode_material(const uint8_t *region, size_t len, uint32_t id,
-                                  MaterialRecord &out) {
+                                  Material &out) {
     if (region == nullptr || id == 0 || id > kMaterialCapacity) return false;
     const uint32_t at = (id - 1) * kMaterialRecordBytes;
     if (!has(len, at, kMaterialRecordBytes)) return false;
@@ -432,7 +432,7 @@ bool SceneMirror::decode_material(const uint8_t *region, size_t len, uint32_t id
 }
 
 bool SceneMirror::decode_renderable(const uint8_t *region, size_t len, uint32_t id,
-                                    RenderableRecord &out) {
+                                    Renderable &out) {
     if (region == nullptr || id == 0 || id > kRenderableCapacity) return false;
     const uint32_t at = (id - 1) * kRenderableRecordBytes;
     if (!has(len, at, kRenderableRecordBytes)) return false;
@@ -465,7 +465,7 @@ bool SceneMirror::renderable_live(uint32_t id) const {
     return id != 0 && id <= kRenderableCapacity && renderables_[id - 1].live;
 }
 
-const SceneNodeRecord *SceneMirror::node(uint32_t id) const {
+const SceneNode *SceneMirror::node(uint32_t id) const {
     return node_live(id) ? &nodes_[id - 1].rec : nullptr;
 }
 const CameraRecord *SceneMirror::camera(uint32_t id) const {
@@ -474,10 +474,10 @@ const CameraRecord *SceneMirror::camera(uint32_t id) const {
 const LightRecord *SceneMirror::light(uint32_t id) const {
     return light_live(id) ? &lights_[id - 1].rec : nullptr;
 }
-const MaterialRecord *SceneMirror::material(uint32_t id) const {
+const Material *SceneMirror::material(uint32_t id) const {
     return material_live(id) ? &materials_[id - 1].rec : nullptr;
 }
-const RenderableRecord *SceneMirror::renderable(uint32_t id) const {
+const Renderable *SceneMirror::renderable(uint32_t id) const {
     return renderable_live(id) ? &renderables_[id - 1].rec : nullptr;
 }
 

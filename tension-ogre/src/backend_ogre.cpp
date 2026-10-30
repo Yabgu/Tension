@@ -1333,7 +1333,7 @@ class BackendOgre final : public Backend {
                 destroy_node(id);
                 continue;
             }
-            const SceneNodeRecord *record = mirror.node(id);
+            const SceneNode *record = mirror.node(id);
             if (record == nullptr) continue;
             try {
                 Ogre::SceneNode *node = node_for(id);
@@ -1343,10 +1343,10 @@ class BackendOgre final : public Backend {
                     continue;
                 }
                 reparent(node, record->parent_id);
-                node->setPosition(record->px, record->py, record->pz);
+                node->setPosition(record->position.x, record->position.y, record->position.z);
                 node->setOrientation(
-                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
-                node->setScale(record->sx, record->sy, record->sz);
+                    Ogre::Quaternion(record->rotation.w, record->rotation.x, record->rotation.y, record->rotation.z));
+                node->setScale(record->scale.x, record->scale.y, record->scale.z);
             } catch (const std::exception &e) {
                 refused += 1;
                 refused_entry("node", id, e.what());
@@ -1376,15 +1376,15 @@ class BackendOgre final : public Backend {
         if (id == 0 || id > kNodeCapacity) return nullptr;
         if (Ogre::SceneNode *existing = nodes_[id - 1]) return existing;
         if (applying_ == nullptr || !applying_->node_live(id)) return nullptr;
-        const SceneNodeRecord *record = applying_->node(id);
+        const SceneNode *record = applying_->node(id);
         if (record == nullptr) return nullptr;
         Ogre::SceneNode *node = scene_->getRootSceneNode(Ogre::SCENE_DYNAMIC)
                                     ->createChildSceneNode(Ogre::SCENE_DYNAMIC);
         nodes_[id - 1] = node; // stored before reparent: the chain walks back up
         reparent(node, record->parent_id);
-        node->setPosition(record->px, record->py, record->pz);
-        node->setOrientation(Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
-        node->setScale(record->sx, record->sy, record->sz);
+        node->setPosition(record->position.x, record->position.y, record->position.z);
+        node->setOrientation(Ogre::Quaternion(record->rotation.w, record->rotation.x, record->rotation.y, record->rotation.z));
+        node->setScale(record->scale.x, record->scale.y, record->scale.z);
         return node;
     }
 
@@ -1431,9 +1431,9 @@ class BackendOgre final : public Backend {
                 } else {
                     camera->setAutoAspectRatio(true);
                 }
-                camera->setPosition(record->px, record->py, record->pz);
+                camera->setPosition(record->position.x, record->position.y, record->position.z);
                 camera->setOrientation(
-                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
+                    Ogre::Quaternion(record->rotation.w, record->rotation.x, record->rotation.y, record->rotation.z));
                 // The first live camera is the one the workspace renders
                 // through; a later one is created and stays off screen (§12's
                 // split-screen item is what would change that).
@@ -1523,7 +1523,7 @@ class BackendOgre final : public Backend {
                     case 2: light->setType(Ogre::Light::LT_SPOTLIGHT); break;
                     default: break;
                 }
-                const Ogre::ColourValue colour(record->r, record->g, record->b, record->a);
+                const Ogre::ColourValue colour(record->colour_r, record->colour_g, record->colour_b, record->colour_a);
                 light->setDiffuseColour(colour);
                 light->setSpecularColour(colour);
                 if (record->intensity > 0.0f) light->setPowerScale(record->intensity);
@@ -1540,9 +1540,9 @@ class BackendOgre final : public Backend {
                     light_nodes_[id - 1] = node;
                     node->attachObject(light);
                 }
-                node->setPosition(record->px, record->py, record->pz);
+                node->setPosition(record->position.x, record->position.y, record->position.z);
                 if (record->kind == 0) {
-                    light->setDirection(Ogre::Vector3(record->dx, record->dy, record->dz));
+                    light->setDirection(Ogre::Vector3(record->direction_x, record->direction_y, record->direction_z));
                 }
             } catch (const std::exception &e) {
                 refused += 1;
@@ -1574,7 +1574,7 @@ class BackendOgre final : public Backend {
                 destroy_material(id);
                 continue;
             }
-            const MaterialRecord *record = mirror.material(id);
+            const Material *record = mirror.material(id);
             if (record == nullptr) continue;
             if (record->kind == TENSION_OGRE_MAT_HLMS_CUSTOM) {
                 refused += 1;
@@ -1637,7 +1637,7 @@ class BackendOgre final : public Backend {
     /// texture for logs exactly one line and leaves the datablock's default in
     /// place — that line is what tells "the guest named nothing we can read"
     /// apart from "the pointer was set and the draw still failed", so it stays.
-    void apply_material_values(Ogre::HlmsDatablock *datablock, const MaterialRecord &record) {
+    void apply_material_values(Ogre::HlmsDatablock *datablock, const Material &record) {
         const Ogre::ColourValue diffuse(record.dr, record.dg, record.db, record.da);
         if (record.kind == TENSION_OGRE_MAT_HLMS_PBS) {
             // PBS takes linear colours as vectors, and its own defaults stand
@@ -1708,7 +1708,7 @@ class BackendOgre final : public Backend {
         if (hlms_tension_skin_ == nullptr) return nullptr;
         if (material_id == 0 || material_id > kMaterialCapacity) return nullptr;
         if (skin_datablocks_[material_id - 1] != nullptr) return skin_datablocks_[material_id - 1];
-        const MaterialRecord *record = mirror.material(material_id);
+        const Material *record = mirror.material(material_id);
         if (record == nullptr) return nullptr;
 
         const Ogre::String name = "tension-skin-mat-" + std::to_string(material_id);
@@ -1731,7 +1731,7 @@ class BackendOgre final : public Backend {
                 destroy_renderable(id);
                 continue;
             }
-            const RenderableRecord *record = mirror.renderable(id);
+            const Renderable *record = mirror.renderable(id);
             if (record == nullptr) continue;
             try {
                 Ogre::Item *item = items_[id - 1];
@@ -1852,10 +1852,10 @@ class BackendOgre final : public Backend {
                 // node is a child of the guest's — so the transform below is
                 // local to it and a moving parent carries the drawable.
                 reparent(node, record->node_id);
-                node->setPosition(record->px, record->py, record->pz);
+                node->setPosition(record->position.x, record->position.y, record->position.z);
                 node->setOrientation(
-                    Ogre::Quaternion(record->rw, record->rx, record->ry, record->rz));
-                node->setScale(record->sx, record->sy, record->sz);
+                    Ogre::Quaternion(record->rotation.w, record->rotation.x, record->rotation.y, record->rotation.z));
+                node->setScale(record->scale.x, record->scale.y, record->scale.z);
             } catch (const std::exception &e) {
                 refused += 1;
                 refused_entry("renderable", id, e.what());
