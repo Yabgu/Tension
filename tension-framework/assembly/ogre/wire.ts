@@ -17,7 +17,10 @@
 // protocol types, so nothing here moves `layoutHash`. What is fixed is the
 // sizes, and `assertOgreWireOffsets` proves them the same way the runtime's
 // check proves its own: `offsetof<T>("lastField")` plus that field's width plus
-// the trailing reserved words, never `sizeof<T>()`.
+// the trailing reserved words, and a separate `sizeof<T>()` against the
+// published size. The offset form alone cannot see a field *appended* after the
+// last one -- the record grows and the constant does not -- so `sizeof` is the
+// half that closes it.
 //
 // Alignment is a *placement* rule, not something offsetof can check. Every leaf
 // in these records is an `f32` (align 4), so nothing here is forced to a 16-byte
@@ -80,8 +83,9 @@ export struct QuatfValue {
 // 16-byte boundary. Measured, nothing here needs one:
 //
 //   - every leaf is an `f32` (align 4), so no offset is forced;
-//   - the adapter decodes through `u32()`/`f32()` byte shifts
-//     (`tension-ogre/src/scene.cpp`), never an aligned load;
+//   - the adapter copies each record with one `memcpy` into a packed host
+//     struct (`tension-ogre/src/scene.cpp`), so it never performs an aligned
+//     load of the wire bytes;
 //   - the guest is WASM, where an unaligned load is slower at worst, never a
 //     fault.
 //
@@ -121,7 +125,8 @@ export struct Aabbf {
 
 // --- records ---------------------------------------------------------------
 
-/** A scene node, 80 bytes: `transform` at 24, alignment 16. */
+/** A scene node, 72 bytes: `transform` at 24, alignment 8 (the trailing
+ * `reserved` u64). */
 @unmanaged
 export struct SceneNode {
   nodeId: u32 = 0;
@@ -157,7 +162,7 @@ export struct SceneNode {
   }
 }
 
-/** A light, 96 bytes. */
+/** A light, 88 bytes. */
 @unmanaged
 export struct LightRecord {
   lightId: u32 = 0;
@@ -383,10 +388,10 @@ export struct Renderable {
  * **No pads.** An earlier revision put `pad0: u64` in front of the transform to
  * place it at 16, because the 16-byte offsets looked like an alignment
  * requirement. They were not: every leaf is an `f32` (align 4), nothing needs a
- * 16-byte boundary, the adapter reads bytes through `u32()`/`f32()` shifts rather
- * than aligned loads, and the guest is WASM where an unaligned load is merely
- * slower. The pads cost 16 bytes per record and bought nothing, so they went —
- * along with `Renderable`'s, whose record is now 56.
+ * 16-byte boundary, the adapter `memcpy`s each record into a packed host struct
+ * rather than reading it through aligned loads, and the guest is WASM where an
+ * unaligned load is merely slower. The pads cost 16 bytes per record and bought
+ * nothing, so they went — along with `Renderable`'s, whose record is now 56.
  *
  * **Unmanaged: every use is a pointer view.** The idiom is
  * `changetype<MotionUpdate>(base + index * sizeof<MotionUpdate>())` — a view of
@@ -814,7 +819,7 @@ function ogreWireOffsetsProblem(): string | null {
   const motion = ogreMotionOffsetsProblem();
   if (motion != null) return motion;
   // The procedural window's start is derived here and written as a literal in
-  // the adapter (DESIGN.md §5.1 pins it at 256 KiB); a derivation that drifts
+  // the adapter (DESIGN.md §5.1 pins it at 192 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
   // look, so the two are tied together by this.
   // Derived from the two table strides: 48*2048 + 48*2048. The adapter derives

@@ -730,7 +730,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
 
     // Sized by the *wire* record, not by the decoder struct: `MaterialRecord`
     // decodes the fields this adapter reads (through slot 0) and is 88 bytes,
-    // while the region's record is 208. Reading a wire record into a buffer
+    // while the region's record is 200. Reading a wire record into a buffer
     // sized from the struct is a stack overflow — measured, in this shim's
     // first run, as `*** stack smashing detected ***`.
     constexpr size_t kMaxRecordBytes = kMaterialRecordBytes;

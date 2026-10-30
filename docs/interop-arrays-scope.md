@@ -1,6 +1,13 @@
 # Interop-arrays phase — scoping
 
 **Status:** scoping only. No source changed, no plan, no code.
+
+> **Post-merge note (2026-10-30).** The OGRE-side citations in this document
+> predate PR #38. Thirteen `ogre/wire.ts` declarations were pruned that day for
+> zero consumers (commit `88012ee`) — `Mat4f` among them — and the record sizes
+> moved: `SceneNode` 72, `LightRecord` 88, `Material` 200, `Renderable` 56,
+> `MotionUpdate`/`BoneUpdate` 48. The OGRE lines below are historical. The
+> `input.ts` claims are untouched by that change and are not re-verified here.
 **Base:** TensionScript `next` @ `50cceb36`, package `0.7.1`; Tension `main`
 working tree.
 **Siblings:** `docs/interop-scope.md`, `docs/interop-scope-addendum.md`,

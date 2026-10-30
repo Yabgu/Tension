@@ -535,9 +535,9 @@ shader bug, which is what proved the driver was never the variable). It is a
 candidate CI substrate that needs no Xvfb.
 
 **`SCENE` owns three sub-tables by convention.** The region is 256 KiB and
-holds them end to end from its offset: 1024 × `SceneNode` (80 B), then 512 ×
-`CameraRecord` (80 B), then 1024 × `LightRecord` (96 B) — 216 KiB of the 256,
-with 40 KiB spare. The constants live in `assembly/ogre/wire.ts` and in
+holds them end to end from its offset: 1024 × `SceneNode` (72 B), then 512 ×
+`CameraRecord` (80 B), then 1024 × `LightRecord` (88 B) — 200 KiB of the 256,
+with 56 KiB spare. The constants live in `assembly/ogre/wire.ts` and in
 `tension_ogre.h`, because the guest has to know them to write a camera into the
 right place. **This convention is not part of `layoutHash`**: the hash covers
 the protocol's shape, and `SCENE`'s internal split is the capability's own

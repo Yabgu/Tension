@@ -1,7 +1,84 @@
 # Engine adoption plan — the TensionScript features now on main
 
-**Status:** plan only. No engine source changed, nothing published, no
-opportunity implemented.
+**Status:** historical plan. The adoption landed in PR #38; read the post-merge
+status immediately below before any other section. Nothing here was published by
+this document.
+
+---
+
+## Post-merge status (2026-10-30)
+
+**Merged.** PR #38 (`feat/engine-adoption`) merged as **`023aa6c`** on
+2026-10-30, twenty commits on top of `f77e759`. Everything below this section
+describes the plan as it stood *before* that merge. The numbers here were
+re-measured against the merged tree in a read-only scoping pass the same day;
+that report is not checked in, so the corrections it found are restated below
+rather than linked.
+
+> The sections below describe the pre-merge plan. See the post-merge status
+> above for what actually landed.
+
+**What landed.**
+
+- **The five transform records nest the value twins.** `Vec3fValue` and
+  `QuatfValue` are plain structs stored inline, so `position: Vec3fValue` is
+  bytes in the record rather than a 4-byte reference. `Renderable`,
+  `MotionUpdate`, `BoneUpdate`, `Transformf` and `Aabbf` all carry them.
+- **Every pad is gone.** `Renderable` 64 → 56, `MotionUpdate` 64 → 48,
+  `BoneUpdate` 64 → 48, `SceneNode` 80 → 72, `LightRecord` 96 → 88, `Material`
+  208 → 200, `Aabbf` 32 → 24, `Transformf` 48 → 40. `CameraRecord` keeps 80
+  bytes because two `reserved` u64 words round it up, but its transform moved.
+- **Thirteen unused wire types deleted** (commit `88012ee`) — `Vec2f`, `Vec3f`,
+  `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `StringRef`, `BufferRef`,
+  `TextureSlot`, `ShaderRecord`, `ResourceReq`, `Buffer` — along with the two
+  vestigial pads that went with them.
+- **Seven zero-caller check functions and 21 guest-vs-itself assertions deleted**
+  (commit `d7a3d66`). The 21 host-vs-guest assertions stayed.
+- **The host decodes by `memcpy`.** Seven packed decoder structs in
+  `tension-ogre/src/scene.h` replace the byte-shift readers; `scene.h` carries
+  **116 `static_assert`s** (108 `offsetof`, 7 `sizeof`, 1 window bound), and the
+  guest asserts the same numbers through `assertOgreWireOffsets`.
+- **The five record sizes in `wire.ts` are `sizeof<T>()`**, not literals.
+- **The five transform records are the only place the value twins are used.**
+  `@abi.align` is not used anywhere; neither are sized enums, `@lazy`, or a
+  use-site `@unmanaged` override.
+
+**What remains.**
+
+- **The eight `kXxxRecordBytes` constants have no cross-language tie.** They are
+  contract, not workaround: the C++ structs are deliberate *prefixes*
+  (64/60/68/88), so `sizeof` cannot produce the wire size. But nothing in C++
+  asserts `kNodeRecordBytes == 72` — the only tie today is the guest's
+  `sizeof<SceneNode>() != 72` in another file and another language. Commented
+  cross-references now sit beside each constant in `scene.h`; the mechanical tie
+  is the generator question below.
+- **Tail validation is missing.** The decoders are prefix-only, by design and by
+  comment: `SceneNode`'s `reserved` (64..72) and `CameraRecord`'s
+  `reserved`/`reserved2` (60..80) are written by the guest and read by nobody, so
+  a guest that writes a non-zero tail is silently accepted. PR #39 attempted
+  this and was closed unmerged.
+- **The generator question.** About 290 assertion sites across four languages
+  express the same layouts; see "Generator scope" below.
+
+**Corrections to the sections below.** These numbers were true pre-merge and are
+not any more:
+
+- **§3.5**'s assertion table specifies `pad0`/`pad1`/`pad2` rows and
+  `sizeof<Vec3f16>()`. The landed form has no pads and uses `Vec3fValue` /
+  `QuatfValue`; `wire.ts:742-760` is the current motion check.
+- **§3.7.1**'s trace cites `read_transform` at `scene.cpp:460`, `:472`, `:484`
+  and the `u32()` / `f32()` readers at `:18` / `:24`. Those no longer exist —
+  the decoders are seven `memcpy`s at `scene.cpp:336-401`. The *conclusion* (no
+  16-byte alignment requirement, so no `@abi.align(16)`) is unaffected and was
+  re-verified against the post-merge tree. Its size list — "sizes stay 64, node
+  80, material 208" — is now 48/48/48, 72, 200.
+- **§7** says "zero plain `struct` declarations in the engine" and "34
+  `@unmanaged`, 2 `@managed`". The adoption itself falsified the first half:
+  there are now two plain structs (`Vec3fValue`, `QuatfValue`) and 21
+  `@unmanaged` in the framework (11 OGRE + 10 runtime), plus the 2 `@managed`
+  fixtures.
+
+---
 
 **This plan assumes Phase 0 (`@abi.align(N)`) ships before Phase 4.** If the
 engine adoption ships without it, Phase 4 lands with align-4 records and

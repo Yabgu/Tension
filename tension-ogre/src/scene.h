@@ -9,7 +9,7 @@
 //
 // Capacity and geometry come from the wire catalogue and the arena layout:
 // SCENE is 256 KiB and holds three sub-tables end to end (DESIGN.md §5.1),
-// MATERIAL is 64 KiB of 208-byte records, RENDERABLE 128 KiB of 56-byte ones.
+// MATERIAL is 64 KiB of 200-byte records, RENDERABLE 128 KiB of 56-byte ones.
 
 #ifndef TENSION_OGRE_SCENE_H
 #define TENSION_OGRE_SCENE_H
@@ -63,7 +63,7 @@ constexpr uint32_t kBoneCapacity = kRenderableCapacity;
 /// The procedural-mesh window (chunk 5.5): past the motion table and the bone
 /// table, 512 KiB shared by the vertex and the index array one `create_mesh`
 /// call names. `wire.ts` derives the same start from the same two tables and
-/// pins it at 256 KiB; 512 KiB is ~43,000 vertices at 12 B, which is what makes
+/// pins it at 192 KiB; 512 KiB is ~43,000 vertices at 12 B, which is what makes
 /// a 16-bit index sufficient here rather than merely convenient.
 constexpr uint32_t kProceduralBase = kBoneTableOffset + kBoneRecordBytes * kBoneCapacity;
 constexpr uint32_t kProceduralCapacity = 512 * 1024;
