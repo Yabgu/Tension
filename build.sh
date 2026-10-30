@@ -171,6 +171,16 @@ cargo build --manifest-path tension-core/Cargo.toml
 # for that binary, not for `.bin/asc` -- `asc` is AssemblyScript's name, and a
 # tree whose install produced `asc` but not `tensionscript` would pass this gate
 # and then fail on the build line.
+# ---- generated wire records ----------------------------------------------
+# One schema, two emissions: the guest's record declarations and the adapter's
+# C++ header. Regenerated before either side compiles, so a schema edit reaches
+# both. The generator is idempotent; `test.sh --codegen` is what fails on drift.
+echo "==> generating the OGRE wire records (schema/ogre.json)"
+node tools/codegen/generate.mjs \
+  --schema schema/ogre.json \
+  --out-ts tension-framework/assembly/ogre/generated \
+  --out-h tension-ogre/src/generated
+
 echo "==> building the guest API (tension-framework)"
 if [ ! -x tension-framework/node_modules/.bin/tensionscript ]; then
   echo "    installing tension-framework deps (@yabgu_gm/tensionscript)"
