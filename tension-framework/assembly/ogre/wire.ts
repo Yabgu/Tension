@@ -380,10 +380,12 @@ export struct Renderable {
  *
  * **Unmanaged: every use is a pointer view.** The idiom is
  * `changetype<MotionUpdate>(base + index * sizeof<MotionUpdate>())` — a view of
- * the arena slot with no header read or written. A use-site `@unmanaged`
- * (`changetype<@unmanaged MotionUpdate>(…)`) is therefore not an improvement but
- * a restatement: the declaration already names the model, and the override emits
- * the same code. Say it once, here.
+ * the arena slot with no header read or written. The declaration names the
+ * storage kind. A use site cannot currently override it — `@unmanaged` over a
+ * plain struct is refused (TS6395). A use-site override is the direction the
+ * language is heading (so that declarations can be plain everywhere), and this
+ * declaration will become plain `struct` when that lands; until then,
+ * `@unmanaged` here is the form that compiles.
  *
  * The layout is verified by `ogreMotionOffsetsProblem`: the transform at
  * 8/20/36, `offsetof("scale") + sizeof<Vec3fValue>()` at the record's end, and
