@@ -304,3 +304,47 @@ export struct Job {
   reserved: u64 = 0;
   reserved2: u64 = 0;
 }
+
+/**
+ * Where this build's `MotionUpdate` disagrees with `schema/ogre.json`, or `null`.
+ *
+ * Generated: the offsets are the schema's, the layout is the compiler's.
+ */
+export function ogreMotionOffsetsProblem(): string | null {
+  if (offsetof<MotionUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
+    return "MotionUpdate.position";
+  }
+  if (offsetof<MotionUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
+    return "MotionUpdate.rotation";
+  }
+  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
+    return "MotionUpdate.scale";
+  }
+  if (offsetof<MotionUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<MotionUpdate>()) {
+    return "MotionUpdate tail";
+  }
+  if (sizeof<MotionUpdate>() != 48) return "MotionUpdate size";
+  return null;
+}
+
+/**
+ * Where this build's `BoneUpdate` disagrees with `schema/ogre.json`, or `null`.
+ *
+ * Generated: the offsets are the schema's, the layout is the compiler's.
+ */
+export function ogreBoneOffsetsProblem(): string | null {
+  if (offsetof<BoneUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
+    return "BoneUpdate.position";
+  }
+  if (offsetof<BoneUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
+    return "BoneUpdate.rotation";
+  }
+  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
+    return "BoneUpdate.scale";
+  }
+  if (offsetof<BoneUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<BoneUpdate>()) {
+    return "BoneUpdate tail";
+  }
+  if (sizeof<BoneUpdate>() != 48) return "BoneUpdate size";
+  return null;
+}

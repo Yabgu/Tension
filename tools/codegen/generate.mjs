@@ -94,6 +94,38 @@ function layout(schema) {
   };
 
   for (const rec of schema.records) resolve(rec.name, []);
+
+  // A `checks` block restates offsets the layout just computed. That is
+  // deliberate duplication inside the schema, and it is checked here rather than
+  // trusted: a hand edit to an offset, or a field order change that was not
+  // mirrored, fails generation instead of emitting a check that agrees with
+  // itself.
+  for (const rec of schema.records) {
+    const checks = rec.checks;
+    if (!checks) continue;
+    const built = out.get(rec.name);
+    if (checks.sizeof != null && checks.sizeof !== built.size) {
+      throw new Error(
+        `${rec.name}: checks.sizeof is ${checks.sizeof} but the layout computes ${built.size}`
+      );
+    }
+    for (const check of checks.fields ?? []) {
+      const computed = built.offsets.get(check.name);
+      if (computed == null) throw new Error(`${rec.name}: checks names unknown field '${check.name}'`);
+      if (check.offset != null && check.offset !== computed) {
+        throw new Error(
+          `${rec.name}.${check.name}: checks says offset ${check.offset} but the layout computes ${computed}`
+        );
+      }
+    }
+    if (checks.tail) {
+      const field = rec.fields.find((f) => f.name === checks.tail);
+      if (!field) throw new Error(`${rec.name}: checks.tail names unknown field '${checks.tail}'`);
+      if (SCALARS[field.type]) {
+        throw new Error(`${rec.name}: checks.tail must name a nested field, not a scalar`);
+      }
+    }
+  }
   return out;
 }
 
@@ -134,6 +166,47 @@ function emitTs(schema, layoutMap) {
     lines.push("}");
     lines.push("");
   }
+  // The guest-side record checks, emitted from each record's `checks` block.
+  // They keep the hand-written contract exactly: a string naming the first
+  // disagreeing field, or null. What they now compare is the *compiler's* layout
+  // of the generated struct against the *schema's* computed offsets, so a
+  // compiler whose alignment disagrees with the wire fails a fixture at startup.
+  for (const rec of schema.records) {
+    const checks = rec.checks;
+    if (!checks) continue;
+    const built = layoutMap.get(rec.name);
+    const fn = checks.function;
+    lines.push(`/**`);
+    lines.push(` * Where this build's \`${rec.name}\` disagrees with \`schema/ogre.json\`, or \`null\`.`);
+    lines.push(` *`);
+    lines.push(` * Generated: the offsets are the schema's, the layout is the compiler's.`);
+    lines.push(` */`);
+    lines.push(`export function ${fn}(): string | null {`);
+    for (const check of checks.fields ?? []) {
+      const offset = check.offset ?? built.offsets.get(check.name);
+      const field = rec.fields.find((f) => f.name === check.name);
+      const isScalar = Boolean(SCALARS[field.type]);
+      const lhs = isScalar
+        ? `offsetof<${rec.name}>("${check.name}")`
+        : `offsetof<${rec.name}>("${check.name}") + offsetof<${field.type}>("x")`;
+      lines.push(`  if (${lhs} != ${offset}) {`);
+      lines.push(`    return "${rec.name}.${check.name}";`);
+      lines.push(`  }`);
+    }
+    if (checks.tail) {
+      const field = rec.fields.find((f) => f.name === checks.tail);
+      lines.push(`  if (offsetof<${rec.name}>("${checks.tail}") + sizeof<${field.type}>() != sizeof<${rec.name}>()) {`);
+      lines.push(`    return "${rec.name} tail";`);
+      lines.push(`  }`);
+    }
+    if (checks.sizeof != null) {
+      lines.push(`  if (sizeof<${rec.name}>() != ${checks.sizeof}) return "${rec.name} size";`);
+    }
+    lines.push(`  return null;`);
+    lines.push(`}`);
+    lines.push("");
+  }
+
   return lines.join("\n").replace(/\n+$/, "\n");
 }
 
