@@ -124,7 +124,11 @@ copied and never read), and `#pragma pack(1)` is **removed**, because the wire's
 layout is the naturally aligned one and packing shrinks LightRecord,
 CameraRecord and Resource by 4 bytes each (measured 84/76/44 packed against
 88/80/48 natural). The `layout_hash` constraint stands untouched: the arena
-records are not generated yet, so `786288195` still holds.
+records are not generated yet, so `786288195` still holds. The last two hand-written guest record checks
+(`ogreMotionOffsetsProblem`, `ogreBoneOffsetsProblem`) are generated from the
+same schema as the structs, and the hand-written source now has zero
+`offsetof`/`static_assert` on record layouts — the two survivors are a V2 tag
+length and a skin-window bound, different concerns.
 
 **Corrections to the sections below.** These numbers were true pre-merge and are
 not any more:

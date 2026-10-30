@@ -539,9 +539,24 @@ than by a hand-copied literal, which is the failure this whole section is a
 record of.
 
 **What this retires.** The `wire.ts` record declarations, the C++
-`SceneNodeRecord`/`CameraRecord`/… declarations, and the 108 hand-written
-`static_assert`s that pinned them. All three are generated now. The hand-written
-source has no record declarations and no record layout asserts left.
+`SceneNodeRecord`/`CameraRecord`/… declarations, the 108 hand-written
+`static_assert`s that pinned them, **and the two guest-side record checks**
+(`ogreMotionOffsetsProblem`, `ogreBoneOffsetsProblem`), which are now emitted
+from each record's `checks` block in the schema. The hand-written source has no
+record declarations and no record-layout `offsetof`/`static_assert` left.
+
+Two hand-written `static_assert`s remain, and neither is a record layout: the
+C++ tag-length check in `backend_ogre.cpp` (a `sizeof` on a string literal) and
+the skin-window bound in `scene.h` (a relation between two region constants).
+
+**What the generated guest check can and cannot catch.** It compares the
+*compiler's* layout of the generated struct against the *schema's* computed
+offsets — two independent implementations of the alignment rule — so a compiler
+whose layout departs from the wire fails a fixture at startup. It cannot catch a
+mistake in the schema itself: the struct and the check come from the same field
+list, so they move together by design. That is the price of one source, and the
+guard for a schema error is behavioural (the fixtures), plus the generation-time
+cross-check that a `checks` offset must equal the computed one.
 
 **The prefix design is abandoned, and it costs bytes.** The C++ structs used to
 be deliberately *shorter* than the wire record — SceneNode 64 of 72, Camera 60
