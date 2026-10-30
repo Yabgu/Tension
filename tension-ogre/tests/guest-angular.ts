@@ -316,10 +316,10 @@ export function _start_game(): void {
     const camera = CameraRecord.perspective(<f32>FOV_Y,
                                             <f32>WINDOW_WIDTH / <f32>WINDOW_HEIGHT, 0.1, 100.0,
                                             0.0, <f32>EYE_Y, <f32>EYE_Z);
-    camera.rotationX = <f32>Math.sin(pitch * 0.5);
-    camera.rotationY = 0.0;
-    camera.rotationZ = 0.0;
-    camera.rotationW = <f32>Math.cos(pitch * 0.5);
+    camera.rotation.x = <f32>Math.sin(pitch * 0.5);
+    camera.rotation.y = 0.0;
+    camera.rotation.z = 0.0;
+    camera.rotation.w = <f32>Math.cos(pitch * 0.5);
     camera.cameraId = 1;
     check(ogre.submitCamera(camera) == 0, "submitCamera refused");
 

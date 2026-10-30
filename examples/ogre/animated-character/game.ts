@@ -539,10 +539,10 @@ class Game {
     // Isometric view from top-right.
     const camera = ogre.CameraRecord.perspective(
       45.0 * (3.14159265358979 / 180.0), <f32>640 / <f32>480, 0.1, 100.0, 3.0, 2.5, 3.0);
-    camera.rotationX = -0.23912;
-    camera.rotationY = 0.36964;
-    camera.rotationZ = 0.09905;
-    camera.rotationW = 0.89240;
+    camera.rotation.x = -0.23912;
+    camera.rotation.y = 0.36964;
+    camera.rotation.z = 0.09905;
+    camera.rotation.w = 0.89240;
     camera.cameraId = 1;
     if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
