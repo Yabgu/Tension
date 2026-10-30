@@ -54,13 +54,58 @@ rather than linked.
   `sizeof<SceneNode>() != 72` in another file and another language. Commented
   cross-references now sit beside each constant in `scene.h`; the mechanical tie
   is the generator question below.
-- **Tail validation is missing.** The decoders are prefix-only, by design and by
-  comment: `SceneNode`'s `reserved` (64..72) and `CameraRecord`'s
-  `reserved`/`reserved2` (60..80) are written by the guest and read by nobody, so
-  a guest that writes a non-zero tail is silently accepted. PR #39 attempted
-  this and was closed unmerged.
-- **The generator question.** About 290 assertion sites across four languages
-  express the same layouts; see "Generator scope" below.
+- **Tail validation is missing, and a blanket fix would be wrong.** The decoders
+  are prefix-only: each copies `sizeof(out)` bytes and ignores the rest of the
+  wire record. Measured 2026-10-30 against the current declarations, four
+  records have a tail and three do not (`Renderable` 56/56,
+  `MotionUpdate` 48/48, `BoneUpdate` 48/48 decode whole):
+
+  | record | struct | wire | tail | contents |
+  |---|---|---|---|---|
+  | `SceneNode` | 64 | 72 | 8 | `reserved` u64 at 64 |
+  | `CameraRecord` | 60 | 80 | 20 | 4 B implicit pad, then `reserved` 64, `reserved2` 72 |
+  | `LightRecord` | 68 | 88 | 20 | `nameOffset` 68, `nameLength` 72, 4 B pad, `reserved` 80 |
+  | `Material` | 88 | 200 | 112 | `slot1`..`slot7` (88..200) |
+
+  Only the first two are *reserved* in the sense that a non-zero byte is drift.
+  `LightRecord`'s tail carries `nameOffset`/`nameLength`, and `Material`'s
+  carries seven texture slots — both are declared, authorable fields that this
+  adapter chooses not to read, so "non-zero tail = refuse" would reject a
+  legitimate light-with-a-name or textured material. No guest writes either
+  today, which is why the distinction has not surfaced.
+
+  **Cost is low.** `adapter.cpp:733-737` already copies the *whole* wire record
+  into `record[kMaxRecordBytes]` sized by `kMaterialRecordBytes`, so the tail
+  bytes are in host memory before decoding; validation is a scan from
+  `sizeof(out)` to `record_bytes` with no second `guest_read`. **What it would
+  break:** a guest that sets a reserved word fails — that is the intent; a guest
+  that names a light or fills a texture slot fails — that is not. Sequencing is
+  a correctness call, not feature adoption, and it belongs to the architect.
+  PR #39 (`fix/ogre-wire-tail-validation`) attempted this and was closed
+  unmerged on 2026-10-30 without reaching `main`.
+- **The generator question.** 303 assertion sites across four languages express
+  the same layouts (counted 2026-10-30, not estimated); see "Generator scope"
+  below.
+
+**Generator scope (measured, not designed).** The layouts exist twice per
+record and are verified by hand on both sides:
+
+- **18 OGRE declarations** — 9 `@unmanaged` plus 2 plain value twins in
+  `ogre/wire.ts`, against 7 structs in `tension-ogre/src/scene.h`.
+- **20 runtime declarations** — 10 in `runtime/wire.ts` against the records and
+  field tables in `tension-core/src/session/arena.rs`.
+- **303 assertion sites**: 116 `static_assert` in `scene.h` (108 `offsetof`, 7
+  `sizeof`, 1 window bound), 38 in `ogre/wire.ts`, 83 in `runtime/wire.ts`, and
+  66 `(name, offset)` entries in the nine Rust field tables that feed
+  `layout_hash`.
+- **Plus the 8 `kXxxRecordBytes` constants** with no mechanical tie at all.
+
+What a generator would have to preserve, and therefore what could break: the
+C++ structs are deliberate **prefixes**, so it must emit prefix semantics rather
+than whole records; the guest assertions are runtime-reachable and called by
+fixtures, so they cannot become compile-time-only; `layout_hash` inputs must not
+move (`786288195`, pinned at `arena.rs:1678`); and the C++ emission must keep
+`#pragma pack(1)`. Not designed here — this is the size of the job.
 
 **Corrections to the sections below.** These numbers were true pre-merge and are
 not any more:
