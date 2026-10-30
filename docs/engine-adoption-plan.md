@@ -83,29 +83,34 @@ rather than linked.
   a correctness call, not feature adoption, and it belongs to the architect.
   PR #39 (`fix/ogre-wire-tail-validation`) attempted this and was closed
   unmerged on 2026-10-30 without reaching `main`.
-- **The generator question.** 303 assertion sites across four languages express
-  the same layouts (counted 2026-10-30, not estimated); see "Generator scope"
-  below.
+- **The generator question — now the only question.** The guest-side offset
+  tables are gone (deleted 2026-10-30: 30 OGRE assertions, 86 runtime ones). The
+  message-struct generator — one source emitting both `.ts` and `.h` — is the
+  long-term replacement for those deleted asserts *and* for the hardcoded
+  `(name, offset)` tables the layout hash is built from. Until it lands, a
+  same-size field reorder inside a guest record is caught by nothing; measured,
+  by reordering `regionCount`/`classCount` in `SessionInfo` and watching the
+  build, `guest-open` and all three drift fixtures pass.
 
-**Generator scope (measured, not designed).** The layouts exist twice per
-record and are verified by hand on both sides:
+**Generator scope (measured, not designed).** What a single-source generator
+would have to replace, counted after the deletions:
 
 - **18 OGRE declarations** — 9 `@unmanaged` plus 2 plain value twins in
   `ogre/wire.ts`, against 7 structs in `tension-ogre/src/scene.h`.
-- **20 runtime declarations** — 10 in `runtime/wire.ts` against the records and
-  field tables in `tension-core/src/session/arena.rs`.
-- **303 assertion sites**: 116 `static_assert` in `scene.h` (108 `offsetof`, 7
-  `sizeof`, 1 window bound), 38 in `ogre/wire.ts`, 83 in `runtime/wire.ts`, and
-  66 `(name, offset)` entries in the nine Rust field tables that feed
-  `layout_hash`.
+- **19 runtime declarations** — 10 in `runtime/wire.ts` against the 9 records
+  and field tables in `tension-core/src/session/arena.rs`.
+- **192 assertion sites**: 116 `static_assert` in `scene.h` (108 `offsetof`, 7
+  `sizeof`, 1 window bound), 10 remaining in `ogre/wire.ts` (the motion and bone
+  tables), 0 in `runtime/wire.ts`, and 66 `(name, offset)` entries in the nine
+  Rust field tables that feed `layout_hash`.
 - **Plus the 8 `kXxxRecordBytes` constants** with no mechanical tie at all.
 
 What a generator would have to preserve, and therefore what could break: the
 C++ structs are deliberate **prefixes**, so it must emit prefix semantics rather
-than whole records; the guest assertions are runtime-reachable and called by
-fixtures, so they cannot become compile-time-only; `layout_hash` inputs must not
-move (`786288195`, pinned at `arena.rs:1678`); and the C++ emission must keep
-`#pragma pack(1)`. Not designed here — this is the size of the job.
+than whole records; the guest assertions that remain are runtime-reachable and
+called by fixtures, so they cannot become compile-time-only; `layout_hash` inputs
+must not move (`786288195`, pinned at `arena.rs:1678`); and the C++ emission must
+keep `#pragma pack(1)`. Not designed here — this is the size of the job.
 
 **Corrections to the sections below.** These numbers were true pre-merge and are
 not any more:

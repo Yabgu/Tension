@@ -462,21 +462,31 @@ as cruft and removed, and what is contract and stayed.
   guard itself — the guard and its targets were each other's only reason to
   exist. It had never run: no fixture called it.
 
-**Kept, and why each time.**
+**Kept at the time, and what became of each.**
 
-- **21 host-vs-guest assertions** on the seven records the adapter reads —
+- ~~**Host-vs-guest assertions** on the seven records the adapter reads —
   `SceneNode`, `CameraRecord`, `LightRecord`, `Material`, `Renderable`, `Job`,
-  `Resource`. These compare the guest's declaration against what
-  `src/scene.h` / `src/scene.cpp` / `arena.rs` publish, which is the one drift
-  that is possible.
-- **4 constants**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
+  `Resource`.~~ **Deleted 2026-10-30: 30 assertions.** They compared the guest's
+  declaration against a literal copied from `src/scene.h` by hand, so they
+  proved *declaration == hand-copy*. The C++ `static_assert`s are the
+  authoritative check on that side and verify the `#pragma pack(1)` layout, a
+  concern the guest copy could never see.
+- **4 constants, kept**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
   independently from the same two strides), `PROCEDURAL_CAPACITY`, the `VF_*`
-  element bits and `TOPO_TRIANGLE_LIST`.
-- **The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`, the
-  layout-hash records. This is what catches a `SessionInfo` field move.
-- **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
-  `assertOgreMotionOffsets`, `assertOgreBoneOffsets`** — the five entry points
-  the fixtures actually call.
+  element bits and `TOPO_TRIANGLE_LIST`. They moved into
+  `assertOgreWireOffsets` unchanged when the offset table around them was
+  deleted: nothing else asserts them.
+- ~~**The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`. This
+  is what catches a `SessionInfo` field move.~~ **Deleted 2026-10-30, and the
+  claim was too strong even when it was live.** Measured: reordering
+  `regionCount`/`classCount` in the guest's `SessionInfo` — same size, same
+  alignment — passed the check, the manifest comparison, the layout hash and all
+  three drift fixtures. What actually catches a *size* change is
+  `manifestProblem()` against the host's published entries; nothing on the guest
+  side catches a same-size reorder until the generator lands.
+- **Entry points**: `assertAbiAliases`, `assertOgreWireOffsets`,
+  `assertOgreMotionOffsets` and `assertOgreBoneOffsets` remain — the four the
+  fixtures call. `assertWireOffsets` was deleted with its table.
 - **1 format field**: `ManifestEntry.pad`. It is not a workaround — `arena.rs`
   documents the entry as `{typeId, size, align, pad}` with the pad always zero,
   so it is part of the published format.
