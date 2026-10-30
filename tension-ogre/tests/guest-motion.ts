@@ -227,10 +227,10 @@ export function _start_game(): void {
   camera.aspect = <f32>WINDOW_WIDTH / <f32>WINDOW_HEIGHT;
   camera.nearClip = 0.1;
   camera.farClip = 100.0;
-  camera.positionX = 0.0;
-  camera.positionY = 0.0;
-  camera.positionZ = 4.0;
-  camera.rotationW = 1.0;
+  camera.position.x = 0.0;
+  camera.position.y = 0.0;
+  camera.position.z = 4.0;
+  camera.rotation.w = 1.0;
   submitted(ogre.submitCamera(camera), "camera");
 
   // The hero at the origin; the companions far off screen at x = -100 - i, so

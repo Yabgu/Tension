@@ -164,9 +164,7 @@ export struct LightRecord {
   directionX: f32 = 0;
   directionY: f32 = -1;
   directionZ: f32 = 0;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
+  position: Vec3fValue = {}; // 56, 12 bytes
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
   reserved: u64 = 0;
@@ -196,9 +194,9 @@ export struct LightRecord {
     light.colourG = g;
     light.colourB = b;
     light.intensity = intensity;
-    light.positionX = x;
-    light.positionY = y;
-    light.positionZ = z;
+    light.position.x = x;
+    light.position.y = y;
+    light.position.z = z;
     light.range = range;
     return light;
   }
@@ -213,21 +211,19 @@ export struct CameraRecord {
   aspect: f32 = 1;
   nearClip: f32 = 0.1;
   farClip: f32 = 1000;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
+  position: Vec3fValue = {}; // 24, 12 bytes
+  rotation: QuatfValue = {}; // 36, 16 bytes
   viewportWidth: u32 = 0;
   viewportHeight: u32 = 0;
   reserved: u64 = 0;
   reserved2: u64 = 0;
 
-  /// A perspective camera looking down its own -Z (an OGRE camera's default),
-  /// which is why the rotation is left at the identity the field defaults to.
+  /// A perspective camera looking down its own -Z (an OGRE camera's default).
   /// The viewport stays 0 x 0, which means the window's whole size.
+  ///
+  /// The identity rotation is set here rather than in the declaration: the
+  /// value twin defaults to a zero quaternion, and a field initializer cannot
+  /// carry values (`= { w: 1 }` is refused by name).
   static perspective(fovY: f32, aspect: f32, near: f32, far: f32, x: f32 = 0,
                      y: f32 = 0, z: f32 = 0): CameraRecord {
     const camera = new CameraRecord();
@@ -235,9 +231,10 @@ export struct CameraRecord {
     camera.aspect = aspect;
     camera.nearClip = near;
     camera.farClip = far;
-    camera.positionX = x;
-    camera.positionY = y;
-    camera.positionZ = z;
+    camera.position.x = x;
+    camera.position.y = y;
+    camera.position.z = z;
+    camera.rotation.w = 1;
     return camera;
   }
 }
