@@ -783,7 +783,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
 
 /// `ogre::submit_motion(count)` — the motion table, read in one call (chunk 4).
 ///
-/// The guest writes `count` 64-byte `MotionUpdate` records at the start of
+/// The guest writes `count` 48-byte `MotionUpdate` records at the start of
 /// `BUFFER_POOL` and names them here: one wasm→host transition per frame
 /// instead of one per body. The batch is **all-or-nothing** — an entry naming a
 /// renderable the mirror does not hold live refuses the whole call with
@@ -850,7 +850,7 @@ int32_t shim_submit_motion(void *, const tension_value *args, uint32_t nargs, te
 /// `ogre::submit_bones(count)` — the bone table, read in one call (chunk 5b).
 ///
 /// The same shape as `submit_motion`, one table further into `BUFFER_POOL`: the
-/// guest writes `count` 64-byte `BoneUpdate` records at `BONE_TABLE_OFFSET` and
+/// guest writes `count` 48-byte `BoneUpdate` records at `BONE_TABLE_OFFSET` and
 /// names them here. The batch is all-or-nothing for the same reason motion's is
 /// — a half-applied pose is a rig bent to a shape nobody asked for — and for one
 /// more: validation asks the loader for the target's bone count, so a batch that

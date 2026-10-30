@@ -132,32 +132,32 @@ export class BoneBatch {
     return submitBonesRaw(<i32>this.entries);
   }
 
-  /// The one place an entry is written, so the stride and the offset 16/32/48
-  /// layout have exactly one spelling in this module. The stride is
+  /// The one place an entry is written, so the stride and the 8/20/36 layout
+  /// have exactly one spelling in this module. The stride is
   /// `sizeof<BoneUpdate>()`, not `BONE_SIZE`: the declaration is the source of
   /// truth and the constant is the wire's published copy of it.
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,
                 ry: f32, rz: f32, rw: f32, scale: f32): void {
     if (index >= BONE_CAPACITY) return; // a slot past the table is not written
-    // `BoneUpdate` is `@unmanaged` (`wire.ts:489`), so this is a view of the
-    // arena slot and the field writes below are the wire's bytes in the wire's
-    // order. No header is read or written — the class has none.
+    // `BoneUpdate` is `@unmanaged`, so this is a view of the arena slot and the
+    // field writes below are the wire's bytes in the wire's order. No header is
+    // read or written — the class has none.
+    //
+    // No pad stores: the record has no pads. It is 48 bytes with the transform at
+    // 8/20/36, which is what `decode_bone_at` reads.
     const rec = changetype<BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
-    rec.pad0 = 0; // what puts the transform at 16
-    rec.positionX = x;
-    rec.positionY = y;
-    rec.positionZ = z;
-    rec.pad1 = 0;
-    rec.rotationX = rx;
-    rec.rotationY = ry;
-    rec.rotationZ = rz;
-    rec.rotationW = rw;
-    rec.scaleX = scale;
-    rec.scaleY = scale;
-    rec.scaleZ = scale;
-    rec.pad2 = 0;
+    rec.position.x = x;
+    rec.position.y = y;
+    rec.position.z = z;
+    rec.rotation.x = rx;
+    rec.rotation.y = ry;
+    rec.rotation.z = rz;
+    rec.rotation.w = rw;
+    rec.scale.x = scale;
+    rec.scale.y = scale;
+    rec.scale.z = scale;
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 }

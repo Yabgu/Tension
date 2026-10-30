@@ -400,19 +400,111 @@ sub-chunk may write the capability catalogue that
 `Item::setDatablock`, and attached with `node->attachObject(item)`. Measured,
 after a guess in the other direction cost a probe.
 
-**A capability record's fields are scalars, because a class field is a
-pointer.** The wire catalogue's rule, stated here as the general one it is: in
-an `@unmanaged` record, a field whose type is a class holds a *reference* — four
-bytes pointing at the object — not an inline struct, so `position: Vec3f` is not
-twelve bytes of position and a record written that way does not mean what it
-says. Nested structures are therefore expressed as flat scalar fields at
-explicit offsets, with the padding spelled out. The placement rule that goes
-with it: a 16-byte type (`Vec4f`, `Quatf`, `Colourf`, `Mat4f`) must sit at a
-16-byte offset, or the record carries explicit pad fields to put it there —
-which is why `MotionUpdate` has flat `positionX/Y/Z`, `rotationX/Y/Z/W`,
-`scaleX/Y/Z` with a `pad0 u64` in front rather than `Transformf`-shaped fields.
-The offsets are pinned by `checkOgreWireOffsets` and by `checkOgreMotionOffsets`,
-which a guest can assert on its own.
+**A capability record's fields are scalars or plain structs, because a *class*
+field is a pointer.** The wire catalogue's rule, stated here as the general one
+it is: in an `@unmanaged` record, a field whose type is a class holds a
+*reference* — four bytes pointing at the object — not an inline struct, so
+`position: Vec3f` (a class) is not twelve bytes of position and a record written
+that way does not mean what it says. Since TensionScript 0.10.0 a field whose
+type is a **plain struct** is stored inline, so the transform records nest
+`Vec3fValue` and `QuatfValue` and get the transform as 12 + 16 + 12 bytes of the
+record's body.
+
+The placement rule that goes with it: **padding exists only where something
+depends on it.** Every leaf is an `f32` (align 4), so nothing here is forced to a
+16-byte boundary — and an earlier revision's pads, which did exactly that, have
+gone. **No transform record carries a pad now**: `MotionUpdate` and `BoneUpdate`
+are 48 bytes with the transform at 8/20/36, `Renderable` is 56 with it at
+16/28/44, `Transformf` 40 and `Aabbf` 24. Padding for uniformity, for a "slot
+size", or to land a 16-byte unit on a 16-byte boundary is not a reason; a host
+reader pins *offsets*, which is a coordinated change when they move, not a reason
+to keep a pad.
+
+The offsets are pinned by `assertOgreWireOffsets`, `assertOgreMotionOffsets` and
+`assertOgreBoneOffsets`, which a guest calls at startup: the first compares the
+records against what the adapter publishes, the other two name the field that
+moved in the two table records.
+
+#### Wire workaround inventory (2026-10-30)
+
+The wire layer accumulated hand-rolled offset verification from before
+TensionScript had `@unmanaged` + `offsetof`: code that re-derived at runtime what
+the compiler now knows at compile time. This is the record of what was measured
+as cruft and removed, and what is contract and stayed.
+
+**Removed.** Each deletion was gated on a measurement, not on an impression.
+
+- **7 dead check functions.** `checkOgreMotionOffsets`, `checkOgreBoneOffsets`,
+  `checkOgreWireOffsets`, `checkOgreTwinOffsets`, `assertOgreTwinOffsets`,
+  `ogreTwinOffsetsProblem` and the runtime's `checkWireOffsets`. Every one had
+  zero callers — the fixtures call the `assert*` forms, and the boolean forms
+  existed as an alternative nobody took.
+- **21 redundant assertions** on the 15 types with no host reader (`Vec2f`,
+  `Vec3f`, `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `Transformf`,
+  `Aabbf`, `StringRef`, `BufferRef`, `ShaderRecord`, `ResourceReq`, `TextureSlot`,
+  `Buffer`). Each compared `offsetof<T>("f")` against a literal declared in the
+  same file; the two moved together, so the drift they were written to catch was
+  impossible by construction.
+- **A duplicated check**: `ogreWireOffsetsProblem` called
+  `ogreMotionOffsetsProblem` twice in one function body.
+- **13 unused wire types** — the list above — none nested as a field of another
+  record and none imported anywhere. `Material` is flat rather than
+  `TextureSlot[8]`, and skin matrices never went through `Mat4f`.
+- **2 vestigial pads**, `Vec3f16.pad` and `Buffer.pad0`, which went with their
+  owners.
+- **The twin guard.** It compared the value twins against `@unmanaged` types that,
+  after the transform records began nesting the twins, had no consumer but the
+  guard itself — the guard and its targets were each other's only reason to
+  exist. It had never run: no fixture called it.
+
+**Kept, and why each time.**
+
+- **21 host-vs-guest assertions** on the seven records the adapter reads —
+  `SceneNode`, `CameraRecord`, `LightRecord`, `Material`, `Renderable`, `Job`,
+  `Resource`. These compare the guest's declaration against what
+  `src/scene.h` / `src/scene.cpp` / `arena.rs` publish, which is the one drift
+  that is possible.
+- **4 constants**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
+  independently from the same two strides), `PROCEDURAL_CAPACITY`, the `VF_*`
+  element bits and `TOPO_TRIANGLE_LIST`.
+- **The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`, the
+  layout-hash records. This is what catches a `SessionInfo` field move.
+- **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
+  `assertOgreMotionOffsets`, `assertOgreBoneOffsets`** — the five entry points
+  the fixtures actually call.
+- **1 format field**: `ManifestEntry.pad`. It is not a workaround — `arena.rs`
+  documents the entry as `{typeId, size, align, pad}` with the pad always zero,
+  so it is part of the published format.
+
+**Every other pad went, 2026-10-30.** `SceneNode` (72, was 80), `LightRecord`
+(88, was 96), `Material` (200, was 208) and `Resource` lost theirs; `CameraRecord`
+kept its 80 bytes because two `reserved` u64 words round it up, but its transform
+moved to 36. In the runtime wire, `ArenaControl.pad0` and `SessionInfo.pad0`/
+`pad1` went — all three were no-ops, measured: the compiler places the same
+offsets with or without them, and `SESSION_INFO_OPEN_NONCE` stays 104.
+
+**And the strides stopped being hand-kept.** `SCENE_NODE_SIZE`,
+`SCENE_CAMERA_SIZE`, `SCENE_LIGHT_SIZE`, `MATERIAL_SIZE` and `RENDERABLE_SIZE`
+are now `sizeof<T>()` rather than literals. That is not tidiness: while doing
+this, `Renderable` went 64 -> 56 and the untouched `RENDERABLE_SIZE = 64` copied
+8 bytes past the record's slot, which the adapter refused as a broken record.
+`sizeof` at module scope closes that class of bug by construction.
+
+**One gap the cleanup closed.** Every tail check was `offsetof(last) + width !=
+SIZE`, which stays true when a field is *appended* after `last` — the record
+grows, the constant does not, and the adapter strides past the end. Demonstrated
+by appending a field to `SceneNode` and to `SessionInfo`: both passed. Each
+host-read record now also asserts `sizeof<T>() != <published size>`, and both
+cases fail as they should. The old comment saying AS's `sizeof` "does not report
+these records the way the wire needs" was the reason for the weaker form; it is
+no longer true on 0.11.0, where all ten records report exactly their published
+sizes.
+
+**If a raw-bytes view returns.** A second `@unmanaged` declaration of a twin
+earns its place again the moment something wants `changetype<...>(ptr)` over a
+transform record. Restore it *with* a check that the two declarations agree —
+that pairing is the whole value, and a guard with no caller is what this cleanup
+deleted.
 
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
@@ -452,8 +544,8 @@ the protocol's shape, and `SCENE`'s internal split is the capability's own
 business. Adding a *region* would move the hash, bump `schemaVersion` and force
 every guest to be rebuilt; this does none of that, which is the point.
 
-**A `Renderable` is a self-placed leaf.** Its 64 bytes carry an inline
-transform — position @16, rotation @32, scale @48 — and **no `nodeId`**. So a
+**A `Renderable` is a self-placed leaf.** Its 56 bytes carry an inline
+transform — position @16, rotation @28, scale @44 — and **no `nodeId`**. So a
 renderable is placed by its own transform, and `SceneNode` exists for cameras,
 lights and (later) hierarchy. The guest composes transforms before writing the
 record; the adapter does not resolve a parent chain for a drawable.
@@ -629,30 +721,28 @@ adapter knows both names.** The guest addresses a resource by the id the
 that mapping, wired once at link time from the loader's table, and it is the
 only reason `apply_submissions` can bind an `Item` to a `MeshPtr`.
 
-**The motion table is chunk 4's batch path for transforms.** A table of 64-byte
+**The motion table is chunk 4's batch path for transforms.** A table of 48-byte
 `MotionUpdate` records sits at the start of `BUFFER_POOL` — a region that
 existed, guest-written and 4 MiB, and that nothing had declared until now — and
 one verb, `ogre::submit_motion(count)` (id 10, flags 0), names how much of it is
 live. The guest writes N entries and makes **one** call per frame; the adapter
 reads the whole table during that call. That removes N wasm→host transitions
 per frame and leaves the one O(N) that cannot be amortized: N transforms must
-reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`,
-`pad0 u64@8`, then the transform at **16/32/48** — the same offsets
-`Renderable`'s inline transform uses, with `pad0` being what puts a `Quatf` on a
-16-byte boundary. Capacity is `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
-2048. **The batch is all-or-nothing**: an entry naming a renderable the mirror
+reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`, then the
+transform at **8/20/36** — 48 bytes, no pads. Capacity is
+`min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 48)` = 2048. **The batch is all-or-nothing**: an entry naming a renderable the mirror
 does not hold live refuses the whole call with `-ENOENT` and a log line naming
 the index, because a half-applied frame is worse than a refused one.
 
 **The bone table is chunk 5b's batch path for a rig.** A second table of
-64-byte `BoneUpdate` records sits in `BUFFER_POOL` past the motion table
-(`BONE_TABLE_OFFSET` = 128 KiB, so motion is the first 128 KiB and bones the
+48-byte `BoneUpdate` records sits in `BUFFER_POOL` past the motion table
+(`BONE_TABLE_OFFSET` = 96 KiB, so motion is the first 96 KiB and bones the
 next), and one verb, `ogre::submit_bones(count)` (id 11, flags 0), names how
 much of it is live. Same shape as motion, for the same reason: a rig poses many
 bones per frame and wasm→host transitions are the part that does not have to be
-O(N). The record is `renderableId u32@0`, `boneIndex u32@4`, `pad0 u64@8`, then
-the transform at **16/32/48** — motion's layout with a bone index where `flags`
-was. Capacity 2048. The batch is **all-or-nothing**, and validation asks the
+O(N). The record is `renderableId u32@0`, `boneIndex u32@4`, then the transform
+at **8/20/36** — motion's layout with a bone index where `flags` was, 48 bytes,
+no pads. Capacity 2048. The batch is **all-or-nothing**, and validation asks the
 loader rather than keeping its own copy of an answer only the loader has:
 `renderableId` must be live, that renderable's mesh must be **rigged**, and
 `boneIndex` must be inside that rig — `-ENOENT` and `-EINVAL`, naming the index
@@ -776,8 +866,8 @@ not OGRE.
 **`ogre::create_mesh` builds a mesh from guest-written buffers (chunk 5.5).**
 Verbatim `12`, flags 0, synchronous: `create_mesh(vbOffset, vbBytes, format,
 ibOffset, ibBytes, topology) -> resourceId`. The two arrays live in
-`BUFFER_POOL` **past the bone table** — `PROCEDURAL_BASE` = 256 KiB (motion 128
-KiB, bones the next 128 KiB) and `PROCEDURAL_CAPACITY` = 512 KiB, shared by both
+`BUFFER_POOL` **past the bone table** — `PROCEDURAL_BASE` = 192 KiB (motion 96
+KiB, bones the next 96 KiB) and `PROCEDURAL_CAPACITY` = 512 KiB, shared by both
 buffers. That capacity is what makes a 16-bit index sufficient rather than a
 limitation to design around: 512 KiB is ~43,000 vertices at 12 B, so no mesh
 built this way can reach the 65,536th index. `topology` is 0

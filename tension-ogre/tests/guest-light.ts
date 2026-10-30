@@ -408,17 +408,19 @@ export function _start_game(): void {
   // bytes the adapter's submit shim decodes and the mirror stores.
   const base = regionOffset(REGION_SCENE) + ogre.SCENE_LIGHT_BASE +
                (LIGHT_ID - 1) * ogre.SCENE_LIGHT_SIZE;
+  // Offsets from the declaration: kind@4, colourR@12, intensity@28, dirX@44
+  // (LightRecord is 88 bytes, no pads).
   const kind = load<u32>(base + 4);
-  const colourR = load<f32>(base + 16);
-  const intensity = load<f32>(base + 32);
-  const directionX = load<f32>(base + 48);
+  const colourR = load<f32>(base + 12);
+  const intensity = load<f32>(base + 28);
+  const directionX = load<f32>(base + 44);
   check(kind == ogre.LIGHT_DIRECTIONAL, "the region's light kind is not directional");
   check(colourR == 1.0 && intensity == LIGHT_INTENSITY, "the light's colour/intensity moved");
   check(directionX == LIGHT_DIR_X, "the light's direction moved");
   // A second submit of the same id is an upsert, not a duplicate.
   light.directionY = <f32>-1.0;
   check(ogre.submitLight(light) == 0, "the light's upsert was refused");
-  check(load<f32>(base + 52) == <f32>-1.0, "the upsert did not replace the record");
+  check(load<f32>(base + 48) == <f32>-1.0, "the upsert did not replace the record");
   light.directionY = LIGHT_DIR_Y;
   check(ogre.submitLight(light) == 0, "the light's restore was refused");
   print("3 ok: the light is mirrored (kind " + kind.toString() + ", intensity " +

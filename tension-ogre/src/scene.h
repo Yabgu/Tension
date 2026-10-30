@@ -9,7 +9,7 @@
 //
 // Capacity and geometry come from the wire catalogue and the arena layout:
 // SCENE is 256 KiB and holds three sub-tables end to end (DESIGN.md §5.1),
-// MATERIAL is 64 KiB of 208-byte records, RENDERABLE 128 KiB of 64-byte ones.
+// MATERIAL is 64 KiB of 208-byte records, RENDERABLE 128 KiB of 56-byte ones.
 
 #ifndef TENSION_OGRE_SCENE_H
 #define TENSION_OGRE_SCENE_H
@@ -32,11 +32,12 @@ constexpr uint32_t kLightCapacity = 1024;
 constexpr uint32_t kMaterialCapacity = 256;
 constexpr uint32_t kRenderableCapacity = 2048;
 
-constexpr uint32_t kNodeRecordBytes = 80;
+constexpr uint32_t kNodeRecordBytes = 72;
+// 80, not 60: the two `reserved` u64 words after the viewport round it up.
 constexpr uint32_t kCameraRecordBytes = 80;
-constexpr uint32_t kLightRecordBytes = 96;
-constexpr uint32_t kMaterialRecordBytes = 208;
-constexpr uint32_t kRenderableRecordBytes = 64;
+constexpr uint32_t kLightRecordBytes = 88;
+constexpr uint32_t kMaterialRecordBytes = 200;
+constexpr uint32_t kRenderableRecordBytes = 56;
 
 /// The longest parent chain a submission may create. OGRE's scene graph walks
 /// a parent's descendants on every change, so the adapter refuses to build a
@@ -44,18 +45,18 @@ constexpr uint32_t kRenderableRecordBytes = 64;
 /// depth — `-EINVAL`, with the depth logged.
 constexpr uint32_t kMaxNodeDepth = 32;
 
-/// One motion-table entry: `wire.ts`'s `MotionUpdate`, whose transform sits at
-/// the same offsets `Renderable`'s inline one does (16/32/48).
-constexpr uint32_t kMotionRecordBytes = 64;
-/// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
-/// min(2048, 65536) = 2048: the renderable table is the smaller bound, and the
+/// One motion-table entry: `wire.ts`'s `MotionUpdate`, 48 bytes with the
+/// transform at 8 / 20 / 36 -- right after the id pair, no pads.
+constexpr uint32_t kMotionRecordBytes = 48;
+/// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 48)` =
+/// min(2048, 87381) = 2048: the renderable table is the smaller bound, and the
 /// arithmetic is asserted where the region is declared.
 constexpr uint32_t kMotionCapacity = kRenderableCapacity;
 
 /// One bone-table entry: `wire.ts`'s `BoneUpdate`, the motion record's layout
 /// with `boneIndex` where `flags` was. It lives in `BUFFER_POOL` past the motion
 /// table, so `kBoneTableOffset` is an offset within the region.
-constexpr uint32_t kBoneRecordBytes = 64;
+constexpr uint32_t kBoneRecordBytes = 48;
 constexpr uint32_t kBoneTableOffset = kMotionRecordBytes * kMotionCapacity;
 constexpr uint32_t kBoneCapacity = kRenderableCapacity;
 
@@ -99,12 +100,55 @@ constexpr uint32_t kTopoTriangleList = 0;
 constexpr uint32_t kCameraTableOffset = kNodeCapacity * kNodeRecordBytes;
 constexpr uint32_t kLightTableOffset = kCameraTableOffset + kCameraCapacity * kCameraRecordBytes;
 
-/// The five decoded records — field for field what `wire.ts` lays out.
+// ── The decoded records ────────────────────────────────────────────────
+//
+// **This block is packed, and every field offset is static_asserted.** The
+// adapter decodes a record with one `memcpy` (see `scene.cpp`), so the struct's
+// bytes must be the wire's bytes — no implicit padding anywhere, and no field
+// allowed to move without the build failing here.
+//
+// `#pragma pack(1)` is a no-op today: every field is `uint32_t` or `float`, so
+// the natural layout is already tight (measured: packing changes not one offset).
+// It is here because it *stops* being a no-op the moment a wider field follows a
+// narrower one — that is a padding byte the wire does not have, and without pack
+// the memcpy would silently shift everything after it.
+//
+// The static_asserts are the other half. They pin each field against the offset
+// `wire.ts` publishes (the guest asserts the same numbers at startup through
+// `assertOgreWireOffsets`), so the two sides are checked independently and a
+// mismatch fails a build rather than corrupting a scene.
+//
+// Four structs are **shorter than the wire record they decode** — SceneNode 64
+// of 72, Camera 60 of 80, Light 68 of 88, Material 88 of 200. That is deliberate
+// prefix decoding: the bytes after `sizeof` are the wire's reserved tail or the
+// material's seven unused texture slots, and nothing reads them. The
+// `sizeof` assert is against the *struct*, never the wire record.
+
+#pragma pack(push, 1)
+
 struct SceneNodeRecord {
     uint32_t node_id = 0, parent_id = 0, flags = 0, child_count = 0;
     uint32_t name_offset = 0, name_length = 0;
     float px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, rw = 1, sx = 1, sy = 1, sz = 1;
 };
+
+static_assert(offsetof(tension_ogre::SceneNodeRecord, node_id) == 0, "SceneNodeRecord.node_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, parent_id) == 4, "SceneNodeRecord.parent_id must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, flags) == 8, "SceneNodeRecord.flags must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, child_count) == 12, "SceneNodeRecord.child_count must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, name_offset) == 16, "SceneNodeRecord.name_offset must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, name_length) == 20, "SceneNodeRecord.name_length must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, px) == 24, "SceneNodeRecord.px must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, py) == 28, "SceneNodeRecord.py must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, pz) == 32, "SceneNodeRecord.pz must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, rx) == 36, "SceneNodeRecord.rx must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, ry) == 40, "SceneNodeRecord.ry must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, rz) == 44, "SceneNodeRecord.rz must be at the wire offset 44");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, rw) == 48, "SceneNodeRecord.rw must be at the wire offset 48");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, sx) == 52, "SceneNodeRecord.sx must be at the wire offset 52");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, sy) == 56, "SceneNodeRecord.sy must be at the wire offset 56");
+static_assert(offsetof(tension_ogre::SceneNodeRecord, sz) == 60, "SceneNodeRecord.sz must be at the wire offset 60");
+static_assert(sizeof(tension_ogre::SceneNodeRecord) == 64, "SceneNodeRecord is 64 bytes on the wire (prefix of the 72-byte record)");
 
 struct CameraRecord {
     uint32_t camera_id = 0, flags = 0;
@@ -113,11 +157,47 @@ struct CameraRecord {
     uint32_t viewport_width = 0, viewport_height = 0;
 };
 
+static_assert(offsetof(tension_ogre::CameraRecord, camera_id) == 0, "CameraRecord.camera_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::CameraRecord, flags) == 4, "CameraRecord.flags must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::CameraRecord, fov_y) == 8, "CameraRecord.fov_y must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::CameraRecord, aspect) == 12, "CameraRecord.aspect must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::CameraRecord, near_clip) == 16, "CameraRecord.near_clip must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::CameraRecord, far_clip) == 20, "CameraRecord.far_clip must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::CameraRecord, px) == 24, "CameraRecord.px must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::CameraRecord, py) == 28, "CameraRecord.py must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::CameraRecord, pz) == 32, "CameraRecord.pz must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::CameraRecord, rx) == 36, "CameraRecord.rx must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::CameraRecord, ry) == 40, "CameraRecord.ry must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::CameraRecord, rz) == 44, "CameraRecord.rz must be at the wire offset 44");
+static_assert(offsetof(tension_ogre::CameraRecord, rw) == 48, "CameraRecord.rw must be at the wire offset 48");
+static_assert(offsetof(tension_ogre::CameraRecord, viewport_width) == 52, "CameraRecord.viewport_width must be at the wire offset 52");
+static_assert(offsetof(tension_ogre::CameraRecord, viewport_height) == 56, "CameraRecord.viewport_height must be at the wire offset 56");
+static_assert(sizeof(tension_ogre::CameraRecord) == 60, "CameraRecord is 60 bytes on the wire (prefix of the 80-byte record)");
+
 struct LightRecord {
     uint32_t light_id = 0, kind = 0, flags = 0;
     float r = 1, g = 1, b = 1, a = 1, intensity = 1, range = 0, spot_inner = 0, spot_outer = 0;
     float dx = 0, dy = 0, dz = 0, px = 0, py = 0, pz = 0;
 };
+
+static_assert(offsetof(tension_ogre::LightRecord, light_id) == 0, "LightRecord.light_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::LightRecord, kind) == 4, "LightRecord.kind must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::LightRecord, flags) == 8, "LightRecord.flags must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::LightRecord, r) == 12, "LightRecord.r must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::LightRecord, g) == 16, "LightRecord.g must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::LightRecord, b) == 20, "LightRecord.b must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::LightRecord, a) == 24, "LightRecord.a must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::LightRecord, intensity) == 28, "LightRecord.intensity must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::LightRecord, range) == 32, "LightRecord.range must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::LightRecord, spot_inner) == 36, "LightRecord.spot_inner must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::LightRecord, spot_outer) == 40, "LightRecord.spot_outer must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::LightRecord, dx) == 44, "LightRecord.dx must be at the wire offset 44");
+static_assert(offsetof(tension_ogre::LightRecord, dy) == 48, "LightRecord.dy must be at the wire offset 48");
+static_assert(offsetof(tension_ogre::LightRecord, dz) == 52, "LightRecord.dz must be at the wire offset 52");
+static_assert(offsetof(tension_ogre::LightRecord, px) == 56, "LightRecord.px must be at the wire offset 56");
+static_assert(offsetof(tension_ogre::LightRecord, py) == 60, "LightRecord.py must be at the wire offset 60");
+static_assert(offsetof(tension_ogre::LightRecord, pz) == 64, "LightRecord.pz must be at the wire offset 64");
+static_assert(sizeof(tension_ogre::LightRecord) == 68, "LightRecord is 68 bytes on the wire (prefix of the 88-byte record)");
 
 struct MaterialRecord {
     uint32_t material_id = 0, kind = 0, flags = 0;
@@ -128,6 +208,30 @@ struct MaterialRecord {
     uint32_t slot0_resource = 0, slot0_sampler = 0, slot0_flags = 0, slot0_uv = 0;
 };
 
+static_assert(offsetof(tension_ogre::MaterialRecord, material_id) == 0, "MaterialRecord.material_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::MaterialRecord, kind) == 4, "MaterialRecord.kind must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::MaterialRecord, flags) == 8, "MaterialRecord.flags must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::MaterialRecord, dr) == 12, "MaterialRecord.dr must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::MaterialRecord, dg) == 16, "MaterialRecord.dg must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::MaterialRecord, db) == 20, "MaterialRecord.db must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::MaterialRecord, da) == 24, "MaterialRecord.da must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::MaterialRecord, sr) == 28, "MaterialRecord.sr must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::MaterialRecord, sg) == 32, "MaterialRecord.sg must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::MaterialRecord, sb) == 36, "MaterialRecord.sb must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::MaterialRecord, sa) == 40, "MaterialRecord.sa must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::MaterialRecord, er) == 44, "MaterialRecord.er must be at the wire offset 44");
+static_assert(offsetof(tension_ogre::MaterialRecord, eg) == 48, "MaterialRecord.eg must be at the wire offset 48");
+static_assert(offsetof(tension_ogre::MaterialRecord, eb) == 52, "MaterialRecord.eb must be at the wire offset 52");
+static_assert(offsetof(tension_ogre::MaterialRecord, ea) == 56, "MaterialRecord.ea must be at the wire offset 56");
+static_assert(offsetof(tension_ogre::MaterialRecord, roughness) == 60, "MaterialRecord.roughness must be at the wire offset 60");
+static_assert(offsetof(tension_ogre::MaterialRecord, metalness) == 64, "MaterialRecord.metalness must be at the wire offset 64");
+static_assert(offsetof(tension_ogre::MaterialRecord, opacity) == 68, "MaterialRecord.opacity must be at the wire offset 68");
+static_assert(offsetof(tension_ogre::MaterialRecord, slot0_resource) == 72, "MaterialRecord.slot0_resource must be at the wire offset 72");
+static_assert(offsetof(tension_ogre::MaterialRecord, slot0_sampler) == 76, "MaterialRecord.slot0_sampler must be at the wire offset 76");
+static_assert(offsetof(tension_ogre::MaterialRecord, slot0_flags) == 80, "MaterialRecord.slot0_flags must be at the wire offset 80");
+static_assert(offsetof(tension_ogre::MaterialRecord, slot0_uv) == 84, "MaterialRecord.slot0_uv must be at the wire offset 84");
+static_assert(sizeof(tension_ogre::MaterialRecord) == 88, "MaterialRecord is 88 bytes on the wire (prefix of the 200-byte record)");
+
 struct RenderableRecord {
     /// `node_id` is the field at offset 12 (`wire.ts`'s `nodeId`): the node the
     /// drawable hangs from, or 0 for self-placed at the world root. With a node,
@@ -136,9 +240,22 @@ struct RenderableRecord {
     float px = 0, py = 0, pz = 0, rx = 0, ry = 0, rz = 0, rw = 1, sx = 1, sy = 1, sz = 1;
 };
 
-/// One entry of the motion table (`wire.ts`'s `MotionUpdate`, 64 bytes) — a
-/// renderable's whole transform and nothing else (chunk 4). The transform sits
-/// at the same offsets `Renderable`'s inline one does, so the two read alike.
+static_assert(offsetof(tension_ogre::RenderableRecord, renderable_id) == 0, "RenderableRecord.renderable_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::RenderableRecord, material_id) == 4, "RenderableRecord.material_id must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::RenderableRecord, mesh_resource_id) == 8, "RenderableRecord.mesh_resource_id must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::RenderableRecord, node_id) == 12, "RenderableRecord.node_id must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::RenderableRecord, px) == 16, "RenderableRecord.px must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::RenderableRecord, py) == 20, "RenderableRecord.py must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::RenderableRecord, pz) == 24, "RenderableRecord.pz must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::RenderableRecord, rx) == 28, "RenderableRecord.rx must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::RenderableRecord, ry) == 32, "RenderableRecord.ry must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::RenderableRecord, rz) == 36, "RenderableRecord.rz must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::RenderableRecord, rw) == 40, "RenderableRecord.rw must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::RenderableRecord, sx) == 44, "RenderableRecord.sx must be at the wire offset 44");
+static_assert(offsetof(tension_ogre::RenderableRecord, sy) == 48, "RenderableRecord.sy must be at the wire offset 48");
+static_assert(offsetof(tension_ogre::RenderableRecord, sz) == 52, "RenderableRecord.sz must be at the wire offset 52");
+static_assert(sizeof(tension_ogre::RenderableRecord) == 56, "RenderableRecord is 56 bytes on the wire");
+
 struct MotionUpdate {
     uint32_t renderable_id = 0, flags = 0;
     float px = 0, py = 0, pz = 0;
@@ -146,16 +263,48 @@ struct MotionUpdate {
     float sx = 1, sy = 1, sz = 1;
 };
 
-/// One entry of the bone table (`wire.ts`'s `BoneUpdate`, 64 bytes) — which
-/// bone of which renderable, and its local transform (chunk 5b). A rig is not
-/// a scene node and this is not a motion update: the entry names a bone inside
-/// a renderable, and the transform is the bone's own.
+static_assert(offsetof(tension_ogre::MotionUpdate, renderable_id) == 0, "MotionUpdate.renderable_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::MotionUpdate, flags) == 4, "MotionUpdate.flags must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::MotionUpdate, px) == 8, "MotionUpdate.px must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::MotionUpdate, py) == 12, "MotionUpdate.py must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::MotionUpdate, pz) == 16, "MotionUpdate.pz must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::MotionUpdate, rx) == 20, "MotionUpdate.rx must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::MotionUpdate, ry) == 24, "MotionUpdate.ry must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::MotionUpdate, rz) == 28, "MotionUpdate.rz must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::MotionUpdate, rw) == 32, "MotionUpdate.rw must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::MotionUpdate, sx) == 36, "MotionUpdate.sx must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::MotionUpdate, sy) == 40, "MotionUpdate.sy must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::MotionUpdate, sz) == 44, "MotionUpdate.sz must be at the wire offset 44");
+static_assert(sizeof(tension_ogre::MotionUpdate) == 48, "MotionUpdate is 48 bytes on the wire");
+
 struct BoneUpdate {
     uint32_t renderable_id = 0, bone_index = 0;
     float px = 0, py = 0, pz = 0;
     float rx = 0, ry = 0, rz = 0, rw = 1;
     float sx = 1, sy = 1, sz = 1;
 };
+
+static_assert(offsetof(tension_ogre::BoneUpdate, renderable_id) == 0, "BoneUpdate.renderable_id must be at the wire offset 0");
+static_assert(offsetof(tension_ogre::BoneUpdate, bone_index) == 4, "BoneUpdate.bone_index must be at the wire offset 4");
+static_assert(offsetof(tension_ogre::BoneUpdate, px) == 8, "BoneUpdate.px must be at the wire offset 8");
+static_assert(offsetof(tension_ogre::BoneUpdate, py) == 12, "BoneUpdate.py must be at the wire offset 12");
+static_assert(offsetof(tension_ogre::BoneUpdate, pz) == 16, "BoneUpdate.pz must be at the wire offset 16");
+static_assert(offsetof(tension_ogre::BoneUpdate, rx) == 20, "BoneUpdate.rx must be at the wire offset 20");
+static_assert(offsetof(tension_ogre::BoneUpdate, ry) == 24, "BoneUpdate.ry must be at the wire offset 24");
+static_assert(offsetof(tension_ogre::BoneUpdate, rz) == 28, "BoneUpdate.rz must be at the wire offset 28");
+static_assert(offsetof(tension_ogre::BoneUpdate, rw) == 32, "BoneUpdate.rw must be at the wire offset 32");
+static_assert(offsetof(tension_ogre::BoneUpdate, sx) == 36, "BoneUpdate.sx must be at the wire offset 36");
+static_assert(offsetof(tension_ogre::BoneUpdate, sy) == 40, "BoneUpdate.sy must be at the wire offset 40");
+static_assert(offsetof(tension_ogre::BoneUpdate, sz) == 44, "BoneUpdate.sz must be at the wire offset 44");
+static_assert(sizeof(tension_ogre::BoneUpdate) == 48, "BoneUpdate is 48 bytes on the wire");
+
+#pragma pack(pop)
+
+// The prefix-decode note, once, for the four that are shorter: the bytes after
+// the struct's size are never read, so a field added here must exist at a real
+// offset in the guest's `wire.ts` — and adding one means re-checking
+// `kNodeRecordBytes` / `kCameraRecordBytes` / `kLightRecordBytes` /
+// `kMaterialRecordBytes`, which are the strides the tables are walked by.
 
 /// The five submission verbs' `kind` argument and the two `op`s.
 constexpr uint32_t kSubmitNode = 0;
