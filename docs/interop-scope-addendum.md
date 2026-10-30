@@ -479,27 +479,21 @@ precedent in the tree is std's `MapEntry<K,V>` at `std/assembly/map.ts:24` and
 `c` = embedded `@unmanaged` type; `d` = type parameter. Zero is stated per
 cell, not left blank.
 
-The seven types this table once listed that no longer exist — `Vec2f`, `Vec3f`,
-`Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f` — were pruned from the tree on
-2026-10-30 for zero consumers, and their rows went with them. The
-`ogre/wire.ts` line numbers that remain are the pre-prune ones: the measurement
-is what this table records, and renumbering it would hide that.
+The fifteen types this table once listed that no longer exist — `Vec2f`,
+`Vec3f`, `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `StringRef`,
+`BufferRef`, `TextureSlot`, `ShaderRecord`, `ResourceReq`, `Buffer`,
+`Transformf` and `Aabbf` — were pruned from the tree on 2026-10-30 for zero
+consumers, and their rows went with them. **Every row below names a declaration
+that still exists.** The `ogre/wire.ts` line numbers are the pre-prune ones: the
+measurement is what this table records, and renumbering it would hide that.
 
 | declaration | file:line | (a) | (b) | (c) | (d) |
 |---|---|---|---|---|---|
-| `Transformf` | `ogre/wire.ts:90` | 0 | 0 | 0 | 0 |
-| `Aabbf` | `ogre/wire.ts:107` | 0 | 0 | 0 | 0 |
-| `StringRef` | `ogre/wire.ts:122` | 0 | 0 | 0 | 0 |
-| `BufferRef` | `ogre/wire.ts:129` | 0 | 0 | 0 | 0 |
 | `SceneNode` | `ogre/wire.ts:138` | 0 | 0 | 0 | 0 |
 | `LightRecord` | `ogre/wire.ts:175` | 0 | 0 | 0 | 0 |
 | `CameraRecord` | `ogre/wire.ts:235` | 0 | 0 | 0 | 0 |
-| `TextureSlot` | `ogre/wire.ts:274` | 0 | 0 | 0 | 0 |
 | `Material` | `ogre/wire.ts:283` | 0 | 0 | 0 | 0 |
-| `ShaderRecord` | `ogre/wire.ts:347` | 0 | 0 | 0 | 0 |
-| `ResourceReq` | `ogre/wire.ts:361` | 0 | 0 | 0 | 0 |
 | `Resource` | `ogre/wire.ts:374` | 0 | 0 | 0 | 0 |
-| `Buffer` | `ogre/wire.ts:390` | 0 | 0 | 0 | 0 |
 | `Renderable` | `ogre/wire.ts:405` | 0 | 0 | 0 | 0 |
 | `MotionUpdate` | `ogre/wire.ts:462` | 0 | 0 | 0 | 0 |
 | `BoneUpdate` | `ogre/wire.ts:489` | 0 | 0 | 0 | 0 |
@@ -513,7 +507,7 @@ is what this table records, and renumbering it would hide that.
 | `StringHalf` | `runtime/wire.ts:256` | 0 | 0 | 0 | 0 |
 | `Callbacks` | `runtime/wire.ts:265` | 0 | 0 | 0 | 0 |
 | `Subscription` | `runtime/wire.ts:284` | 0 | 0 | 0 | 0 |
-| **total** | 33 declarations | **0** | **0** | **0** | **0** |
+| **total** | 18 declarations (9 OGRE, 9 runtime) | **0** | **0** | **0** | **0** |
 
 Since all four are zero, **no exclusion is a "no" condition** — the phase can
 proceed as recommended without absorbing any of them. The architect should read
