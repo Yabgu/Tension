@@ -521,6 +521,53 @@ transform record. Restore it *with* a check that the two declarations agree —
 that pairing is the whole value, and a guard with no caller is what this cleanup
 deleted.
 
+#### The records are generated now (2026-10-30)
+
+**One source, two emissions.** `schema/ogre.json` describes the eleven OGRE
+wire records — 137 fields, in dependency order, each tagged `value` (the
+`Vec3fValue`/`QuatfValue` twins) or `view` (the wire records).
+`tools/codegen/generate.mjs` emits both sides from it:
+
+- `tension-framework/assembly/ogre/generated/ogre.generated.ts` — the guest's
+  declarations. `@unmanaged struct` for a view, plain `struct` for a twin.
+- `tension-ogre/src/generated/ogre.generated.h` — the C++ structs plus a
+  `static_assert` for **every** field offset and **every** record size.
+
+The generator computes offsets from field widths; it never reads a layout back
+from a compiler. That is what makes the two sides agree by construction rather
+than by a hand-copied literal, which is the failure this whole section is a
+record of.
+
+**What this retires.** The `wire.ts` record declarations, the C++
+`SceneNodeRecord`/`CameraRecord`/… declarations, and the 108 hand-written
+`static_assert`s that pinned them. All three are generated now. The hand-written
+source has no record declarations and no record layout asserts left.
+
+**The prefix design is abandoned, and it costs bytes.** The C++ structs used to
+be deliberately *shorter* than the wire record — SceneNode 64 of 72, Camera 60
+of 80, Light 68 of 88, Material 88 of 200 — so the decoder copied only the
+fields it read and ignored the tail. Each struct is now the whole record, so one
+`memcpy` decodes one record: **+8 bytes per node, +20 per camera, +20 per light,
++112 per material.** The tail was never read either way; the cost is copying it.
+
+**No `#pragma pack`.** The wire's layout is the naturally aligned one —
+`LightRecord.reserved` sits at 80 and `Resource.seq` at 40 because a `u64`
+aligns to 8 after `u32`s. Packing removes exactly those pads and shrinks three
+records below their wire size. Measured on the same field lists: natural
+88/80/48, packed 84/76/44. The generated asserts would catch it, which is why
+the header relies on natural alignment and asserts every offset.
+
+**Drift is a test failure, not a review note.** `generate.mjs --check`
+regenerates into a temp directory and diffs; `test.sh` runs it as the `codegen`
+suite *before* the fixture producers, so a schema edit that was not regenerated
+fails before anything compiles against it. `build.sh` and `tension-ogre/build.sh`
+both run the generator before their compile step, so a direct adapter build
+cannot use a stale header.
+
+**When the compiler gains use-site `@unmanaged` over an inline type** (refused
+today: TS6395), the template flips from `@unmanaged struct` to plain `struct`
+for the `view` records. The schema does not change — it already carries `kind`.
+
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
 sub-items name the material `RustyBarrel`, OGRE routes an unknown material name
