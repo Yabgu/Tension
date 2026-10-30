@@ -44,6 +44,7 @@ run_ogre=false
 run_ogre_guest=false
 run_input=false
 run_res=false
+run_codegen=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -53,8 +54,9 @@ while [ $# -gt 0 ]; do
     --ogre-guest) run_ogre_guest=true; run_all=false ;;
     --input)      run_input=true; run_all=false ;;
     --res)        run_res=true; run_all=false ;;
+    --codegen)    run_codegen=true; run_all=false ;;
     -h|--help)
-      echo "usage: ./test.sh [--core] [--framework] [--ogre] [--ogre-guest] [--input] [--res]"
+      echo "usage: ./test.sh [--core] [--framework] [--ogre] [--ogre-guest] [--input] [--res] [--codegen]"
       exit 0
       ;;
     *)
@@ -66,6 +68,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ "$run_all" = true ]; then
+  run_codegen=true
   run_framework=true
   run_ogre_guest=true
   run_input=true
@@ -92,6 +95,15 @@ run_suite() {
     failed+=("$name")
   fi
 }
+
+# The generated wire records first: everything below compiles against them, so a
+# schema edit that was not regenerated must fail before the fixtures do.
+if [ "$run_codegen" = true ]; then
+  run_suite "codegen" node tools/codegen/generate.mjs \
+    --schema schema/ogre.json \
+    --out-ts tension-framework/assembly/ogre/generated \
+    --out-h tension-ogre/src/generated --check
+fi
 
 # Fixture producers first: framework guests, then the OGRE guests and volume.
 if [ "$run_framework" = true ]; then
