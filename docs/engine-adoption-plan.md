@@ -207,11 +207,12 @@ What is actually installed is **neither that name nor that version**:
 
 | | declared | installed |
 |---|---|---|
-| package name | `@yabgu_gm/tensionscript` | `@acakar/tensionscript` (the pre-rename scope) |
+| package name | `@yabgu_gm/tensionscript` | the retired pre-rename scope |
 | version | `^0.10.0` | `0.9.0` |
 
-`node_modules/@yabgu_gm/` does not exist at all; `node_modules/@acakar/tensionscript`
-is 0.9.0. So the engine's declared dependency resolves to nothing, and the
+`node_modules/@yabgu_gm/` does not exist at all; what is installed is a 0.9.0
+build under the retired pre-rename scope. So the engine's declared dependency
+resolves to nothing, and the
 compiler it builds with is 0.9.0 — **before** sized enums, before inline nesting
 (#36), before the struct default flip (#38).
 
@@ -234,18 +235,18 @@ The publish is the user's credential action; this plan only states the order:
    tarball, the published `package.json` name is the new scope, and a fixture
    compiles with the *published* rather than the local build.
 3. **Bump the engine to `^0.11.0`** and reinstall, which also fixes the scope
-   mismatch (`@acakar` → `@yabgu_gm`).
+   mismatch (the retired pre-rename scope → `@yabgu_gm`).
 4. **Rebuild the framework and verify the guest is byte-identical** (§8).
 
 **Measured 2026-10-28 22:10 — the release is a re-number, not a rebuild.** The
 registry says `@yabgu_gm/tensionscript` has exactly two versions,
 `0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`, published
-`20:26:54Z`); `@acakar/tensionscript` stops at `0.10.0`. **There is no 0.11.0 to
+`20:26:54Z`); the retired pre-rename scope stops at `0.10.0`. **There is no 0.11.0 to
 install.** What *is* published as 0.10.0 already contains the flip: the tarball's
 `dist/asc.js` is byte-identical to the local build of `0b67e3cc` (915,141 bytes,
 md5 `9e0d04a20c92757bf6e02730c04932d2`), and a probe that nests a plain struct in
 an `@unmanaged` record reports `sizeof` 24 on it versus **16** on the installed
-`@acakar` 0.9.0 — the flip, shipped under an unchanged version number, with its
+0.9.0 build — the flip, shipped under an unchanged version number, with its
 CHANGELOG entry then still headed `## Unreleased — breaking`.
 
 **Status correction, 2026-10-29 — Phase 0's code has landed; only the publish
@@ -266,10 +267,10 @@ bump.
 version` returns **0.11.0**, the version list is
 `['0.0.0-stage', '0.10.0', '0.11.0']`, and the tarball is
 `https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.11.0.tgz`.
-The installed compiler in `tension-framework` is still `@acakar/tensionscript`
-**0.9.0** under the old scope (`node_modules/@yabgu_gm/` does not exist,
-`node_modules/.bin/tensionscript` still points at `@acakar`), so Phase 1's
-install is what fixes the scope and the version at once.
+The installed compiler in `tension-framework` is still a **0.9.0** build under
+the retired pre-rename scope (`node_modules/@yabgu_gm/` does not exist, and
+`node_modules/.bin/tensionscript` still resolves inside that scope), so Phase
+1's install is what fixes the scope and the version at once.
 
 Two consequences for the engine side, both measured: the scope already moved in
 #35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
@@ -280,8 +281,8 @@ run straight from an unpacked tarball needs an install beside it.
 **A symptom worth knowing:** the rename is live, and stale installs fail loudly
 rather than subtly. The TensionScript primary checkout, re-pointed at
 `0b67e3cc` with a `dist/` built before the rename, dies with
-`ERR_MODULE_NOT_FOUND: Cannot find package '@acakar/tensionscript' imported from
-dist/asc.js`. Expect the same shape in the engine until step 3.
+`ERR_MODULE_NOT_FOUND`, naming the retired pre-rename scope, imported from
+`dist/asc.js`. Expect the same shape in the engine until step 3.
 
 ### 1.2 The history divergence — checked, and it is only a rename
 
@@ -296,7 +297,7 @@ git diff 27b57652 0b67e3cc          # not just src/ std/ tests/ docs/
 
 **Result: 14 files, and every changed line is one of two string substitutions.**
 
-- `@acakar/tensionscript` → `@yabgu_gm/tensionscript`
+- the retired pre-rename scope → `@yabgu_gm/tensionscript`
 - `/home/acakar/work` → `/home/yabgu_gm/work`
 
 Filtering those two patterns out of the diff leaves **0 lines**. So the rewrite
@@ -545,7 +546,7 @@ wrong, and the reason is the thing the nesting work is deleting. Worth correctin
 in the same PR so the next reader does not try to preserve an alignment that was
 never there.
 
-Confirmed on three compilers 2026-10-28 (installed `@acakar` 0.9.0, published
+Confirmed on three compilers 2026-10-28 (installed 0.9.0, published
 `@yabgu_gm` 0.10.0, local `0b67e3cc`): `alignof` of a 16-byte plain struct whose
 leaves are `f32` reports **2** (log2), i.e. 4-byte alignment — unchanged by the
 flip, which moves `sizeof` and storage but not alignment.
@@ -941,7 +942,7 @@ because the plan's own branch has no `node_modules` and the main checkout's
 this tree.
 
 ```
-npm install @acakar/tensionscript@0.9.0   # the compiler the tree shipped with
+npm install <retired-scope>/tensionscript@0.9.0   # the compiler the tree shipped with
 npm run build                             # 65627 bytes
 npm install @yabgu_gm/tensionscript@0.10.0  # the published flip
 npm run build                             # 65627 bytes
@@ -1093,4 +1094,4 @@ standalone instantiation harness.
 
 Engine citations to `~/work/Tension` @ `9bf9ba1` (measured) and `4b42251` (this
 branch's base; same tree). Compiler citations to TensionScript `origin/main` @
-`0b67e3cc`, the published `0.10.0` tarball, and the installed `@acakar` `0.9.0`.
+`0b67e3cc`, the published `0.10.0` tarball, and the installed `0.9.0`.
