@@ -89,6 +89,8 @@ import {
   MotionUpdate,
   BoneUpdate,
   Job,
+  ogreMotionOffsetsProblem,
+  ogreBoneOffsetsProblem,
 } from "./generated/ogre.generated";
 
 // Re-exported so every existing `import { SceneNode } from "../ogre/wire"`
@@ -380,27 +382,6 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
  * larger check happening to include it. The layout is the point: the id pair,
  * then the transform at the offsets `Renderable`'s inline one already uses.
  */
-function ogreMotionOffsetsProblem(): string | null {
-  // No pads: the transform starts right after the id pair, at 8. The offsets are
-  // the adapter's contract (`decode_motion_at`), and `sizeof` catches a field
-  // appended after `scale` -- the form that an `offsetof(last) + width` check
-  // cannot see.
-  if (offsetof<MotionUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
-    return "MotionUpdate.position";
-  }
-  if (offsetof<MotionUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
-    return "MotionUpdate.rotation";
-  }
-  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
-    return "MotionUpdate.scale";
-  }
-  if (offsetof<MotionUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<MotionUpdate>()) {
-    return "MotionUpdate tail";
-  }
-  if (sizeof<MotionUpdate>() != 48) return "MotionUpdate size";
-  return null;
-}
-
 /**
  * Assert this build's `MotionUpdate` matches what the adapter reads: the record
  * is a pointer view the guest writes and the adapter decodes at literal offsets,
@@ -421,23 +402,6 @@ export function assertOgreMotionOffsets(): void {
  * separately for the same reason: a guest that poses a rig depends on these
  * fields by name, and the record's size is the table's stride.
  */
-function ogreBoneOffsetsProblem(): string | null {
-  if (offsetof<BoneUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
-    return "BoneUpdate.position";
-  }
-  if (offsetof<BoneUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
-    return "BoneUpdate.rotation";
-  }
-  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
-    return "BoneUpdate.scale";
-  }
-  if (offsetof<BoneUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<BoneUpdate>()) {
-    return "BoneUpdate tail";
-  }
-  if (sizeof<BoneUpdate>() != 48) return "BoneUpdate size";
-  return null;
-}
-
 /** Whether this build's `BoneUpdate` matches the catalogue. */
 /** Assert this build's `BoneUpdate` matches the catalogue, naming the field. */
 export function assertOgreBoneOffsets(): void {

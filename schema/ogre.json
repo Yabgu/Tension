@@ -536,7 +536,26 @@
           "name": "scale",
           "type": "Vec3fValue"
         }
-      ]
+      ],
+      "checks": {
+        "function": "ogreMotionOffsetsProblem",
+        "sizeof": 48,
+        "fields": [
+          {
+            "name": "position",
+            "offset": 8
+          },
+          {
+            "name": "rotation",
+            "offset": 20
+          },
+          {
+            "name": "scale",
+            "offset": 36
+          }
+        ],
+        "tail": "scale"
+      }
     },
     {
       "name": "BoneUpdate",
@@ -562,7 +581,26 @@
           "name": "scale",
           "type": "Vec3fValue"
         }
-      ]
+      ],
+      "checks": {
+        "function": "ogreBoneOffsetsProblem",
+        "sizeof": 48,
+        "fields": [
+          {
+            "name": "position",
+            "offset": 8
+          },
+          {
+            "name": "rotation",
+            "offset": 20
+          },
+          {
+            "name": "scale",
+            "offset": 36
+          }
+        ],
+        "tail": "scale"
+      }
     },
     {
       "name": "Job",
