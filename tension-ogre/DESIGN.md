@@ -424,6 +424,72 @@ The offsets are pinned by `assertOgreWireOffsets`, `assertOgreMotionOffsets` and
 records against what the adapter publishes, the other two name the field that
 moved in the two table records.
 
+#### Wire workaround inventory (2026-10-30)
+
+The wire layer accumulated hand-rolled offset verification from before
+TensionScript had `@unmanaged` + `offsetof`: code that re-derived at runtime what
+the compiler now knows at compile time. This is the record of what was measured
+as cruft and removed, and what is contract and stayed.
+
+**Removed.** Each deletion was gated on a measurement, not on an impression.
+
+- **7 dead check functions.** `checkOgreMotionOffsets`, `checkOgreBoneOffsets`,
+  `checkOgreWireOffsets`, `checkOgreTwinOffsets`, `assertOgreTwinOffsets`,
+  `ogreTwinOffsetsProblem` and the runtime's `checkWireOffsets`. Every one had
+  zero callers — the fixtures call the `assert*` forms, and the boolean forms
+  existed as an alternative nobody took.
+- **21 redundant assertions** on the 15 types with no host reader (`Vec2f`,
+  `Vec3f`, `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `Transformf`,
+  `Aabbf`, `StringRef`, `BufferRef`, `ShaderRecord`, `ResourceReq`, `TextureSlot`,
+  `Buffer`). Each compared `offsetof<T>("f")` against a literal declared in the
+  same file; the two moved together, so the drift they were written to catch was
+  impossible by construction.
+- **A duplicated check**: `ogreWireOffsetsProblem` called
+  `ogreMotionOffsetsProblem` twice in one function body.
+- **13 unused wire types** — the list above — none nested as a field of another
+  record and none imported anywhere. `Material` is flat rather than
+  `TextureSlot[8]`, and skin matrices never went through `Mat4f`.
+- **2 vestigial pads**, `Vec3f16.pad` and `Buffer.pad0`, which went with their
+  owners.
+- **The twin guard.** It compared the value twins against `@unmanaged` types that,
+  after the transform records began nesting the twins, had no consumer but the
+  guard itself — the guard and its targets were each other's only reason to
+  exist. It had never run: no fixture called it.
+
+**Kept, and why each time.**
+
+- **21 host-vs-guest assertions** on the seven records the adapter reads —
+  `SceneNode`, `CameraRecord`, `LightRecord`, `Material`, `Renderable`, `Job`,
+  `Resource`. These compare the guest's declaration against what
+  `src/scene.h` / `src/scene.cpp` / `arena.rs` publish, which is the one drift
+  that is possible.
+- **4 constants**: `PROCEDURAL_BASE` (256 KiB, which `src/scene.h` derives
+  independently), `PROCEDURAL_CAPACITY`, the `VF_*` element bits and
+  `TOPO_TRIANGLE_LIST`.
+- **The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`, the
+  layout-hash records. This is what catches a `SessionInfo` field move.
+- **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
+  `assertOgreMotionOffsets`, `assertOgreBoneOffsets`** — the five entry points
+  the fixtures actually call.
+- **20 contract pads**: the adapter reads them by fixed offset or through a
+  stride constant, or `layout_hash` folds them.
+
+**One gap the cleanup closed.** Every tail check was `offsetof(last) + width !=
+SIZE`, which stays true when a field is *appended* after `last` — the record
+grows, the constant does not, and the adapter strides past the end. Demonstrated
+by appending a field to `SceneNode` and to `SessionInfo`: both passed. Each
+host-read record now also asserts `sizeof<T>() != <published size>`, and both
+cases fail as they should. The old comment saying AS's `sizeof` "does not report
+these records the way the wire needs" was the reason for the weaker form; it is
+no longer true on 0.11.0, where all ten records report exactly their published
+sizes.
+
+**If a raw-bytes view returns.** A second `@unmanaged` declaration of a twin
+earns its place again the moment something wants `changetype<...>(ptr)` over a
+transform record. Restore it *with* a check that the two declarations agree —
+that pairing is the whole value, and a guard with no caller is what this cleanup
+deleted.
+
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
 sub-items name the material `RustyBarrel`, OGRE routes an unknown material name

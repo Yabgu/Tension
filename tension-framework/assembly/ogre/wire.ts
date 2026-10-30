@@ -39,8 +39,8 @@ import { regionOffset } from "../runtime/arena";
 // `Quatf`, `Colourf` and `Mat4f` were declared here and used by nothing: no field
 // nested them, no guest imported them, and the only `offsetof` that named them
 // compared them against themselves. They went on 2026-10-30 — see the wire
-// workaround inventory in `docs/roadmap.md`. If a raw-bytes view of a transform
-// record is ever wanted (`changetype<...>(ptr)`), that is when a second
+// workaround inventory in `tension-ogre/DESIGN.md`. If a raw-bytes view of a
+// transform record is ever wanted (`changetype<...>(ptr)`), that is when a second
 // `@unmanaged` declaration earns its place, alongside a check that the two agree.
 //
 // `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate — so the 16-byte
@@ -835,7 +835,7 @@ function ogreWireOffsetsProblem(): string | null {
   // field. They have no host reader, so each assertion compared the declaration
   // against a literal declared beside it — the two moved together and could
   // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
-  // `docs/roadmap.md`.
+  // `tension-ogre/DESIGN.md` ("Wire workaround inventory").
 
   // The two moving tables. Checked here as well as by their own assertions so a
   // build that forgets to call them still catches a moved field.
