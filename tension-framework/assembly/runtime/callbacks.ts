@@ -49,9 +49,9 @@ export type OnEvent = (class_: u32, ptr: u32) => i32;
  * session then skips that slot's invocations entirely (the records are still
  * published into the ring, and the guest reads them when it likes).
  *
- * The allocation is sized from the wire constant rather than `sizeof`: AS's
- * `sizeof` does not report these `@unmanaged` records the way the wire needs,
- * and every field offset is checked at startup anyway (`wire.checkWireOffsets`).
+ * The allocation is sized from the wire constant, which the manifest also
+ * publishes: `assertWireOffsets` compares the declaration's offsets and sizeof
+ * against that constant at startup, so the two cannot drift silently.
  */
 export function makeCallbacks(onBatch: OnBatch | null = null, onEvent: OnEvent | null = null): Callbacks {
   const record = changetype<Callbacks>(heap.alloc(CALLBACKS_SIZE));

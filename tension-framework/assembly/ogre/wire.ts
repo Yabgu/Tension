@@ -15,7 +15,7 @@
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
 // pin and extends the manifest then; chunk 1's manifest still holds the nine
 // protocol types, so nothing here moves `layoutHash`. What is fixed is the
-// sizes, and `checkOgreWireOffsets` proves them the same way the runtime's
+// sizes, and `assertOgreWireOffsets` proves them the same way the runtime's
 // check proves its own: `offsetof<T>("lastField")` plus that field's width plus
 // the trailing reserved words, never `sizeof<T>()`.
 //
@@ -99,10 +99,11 @@ export struct Quatf {
 // refused by name (SROA flattening is deferred), so these are leaves. Every
 // record that carries one is `@unmanaged`, which is the supported shape.
 //
-// The drift guard is `ogreTwinOffsetsProblem`: the twin's fields must sit where
-// the `@unmanaged` type's do, and the twin must be exactly that type minus its
-// slot pad, because nothing else stops a one-field edit from silently corrupting
-// every record that nests the other.
+// Nothing compares the twins against a second declaration any more: after the
+// transform records started nesting them, the `@unmanaged` types they were once
+// checked against had no other consumer, so both that type and its guard went.
+// What remains is the record-level check that a twin occupies its slot —
+// `ogreMotionOffsetsProblem` and `assertOgreWireOffsets`.
 
 /** A `Vec3f16` as a value — **12 bytes**, a pure Vec3: no pad, no fourth coordinate. */
 export struct Vec3fValue {
@@ -909,12 +910,12 @@ function ogreMotionOffsetsProblem(): string | null {
   return null;
 }
 
-/** Whether this build's `MotionUpdate` matches the catalogue. */
-export function checkOgreMotionOffsets(): bool {
-  return ogreMotionOffsetsProblem() == null;
-}
-
-/** `checkOgreMotionOffsets`, as an assertion that names the field that moved. */
+/**
+ * Assert this build's `MotionUpdate` matches what the adapter reads: the record
+ * is a pointer view the guest writes and the adapter decodes at literal offsets,
+ * so a moved field is a silent misread rather than an error. Named field first,
+ * because that is what the reader needs.
+ */
 export function assertOgreMotionOffsets(): void {
   const problem = ogreMotionOffsetsProblem();
   if (problem != null) {
@@ -952,11 +953,7 @@ function ogreBoneOffsetsProblem(): string | null {
 }
 
 /** Whether this build's `BoneUpdate` matches the catalogue. */
-export function checkOgreBoneOffsets(): bool {
-  return ogreBoneOffsetsProblem() == null;
-}
-
-/** `checkOgreBoneOffsets`, as an assertion that names the field that moved. */
+/** Assert this build's `BoneUpdate` matches the catalogue, naming the field. */
 export function assertOgreBoneOffsets(): void {
   const problem = ogreBoneOffsetsProblem();
   if (problem != null) {
@@ -964,80 +961,13 @@ export function assertOgreBoneOffsets(): void {
   }
 }
 
-/**
- * The twin drift guard: every value twin must sit where its `@unmanaged` original
- * does, and `Vec3fValue` must be exactly the wire type **minus its slot pad**.
- *
- * Nothing else stops the two declarations drifting. A one-field edit to either
- * side silently changes what every record nesting the value twin puts on the
- * wire, and the `offsetof` sums downstream would still pass — they check where
- * the nested field *starts*, not how wide it is. This is the assertion plan
- * §3.4 calls for, and it is the one that makes the whole nesting safe.
- *
- * The two size relations differ, because the types differ in kind:
- *
- *   `Vec3fValue` (12) is `Vec3f16` (16) minus the pad that fills a 16-byte slot.
- *     So the check is `sizeof<Vec3fValue>() == offsetof<Vec3f16>("pad")` — the
- *     twin ends exactly where the wire type's pad begins. Comparing the two
- *     sizes for equality would be wrong now, and would fail.
- *
- *   `QuatfValue` (16) is `Quatf` (16) exactly: a quaternion fills its slot
- *     naturally, so size equality is the right check there.
- */
-function ogreTwinOffsetsProblem(): string | null {
-  if (offsetof<Vec3fValue>("y") != offsetof<Vec3f16>("y")) return "Vec3fValue.y";
-  if (offsetof<Vec3fValue>("z") != offsetof<Vec3f16>("z")) return "Vec3fValue.z";
-  // The twin is the wire type minus its slot pad: it must end where the pad starts.
-  if (sizeof<Vec3fValue>() != offsetof<Vec3f16>("pad")) return "Vec3fValue size";
-  if (offsetof<QuatfValue>("y") != offsetof<Quatf>("y")) return "QuatfValue.y";
-  if (offsetof<QuatfValue>("z") != offsetof<Quatf>("z")) return "QuatfValue.z";
-  if (offsetof<QuatfValue>("w") != offsetof<Quatf>("w")) return "QuatfValue.w";
-  if (sizeof<QuatfValue>() != sizeof<Quatf>()) return "QuatfValue size";
-  return null;
-}
-
-/** Whether this build's value twins match the `@unmanaged` declarations. */
-export function checkOgreTwinOffsets(): bool {
-  return ogreTwinOffsetsProblem() == null;
-}
-
-/** `checkOgreTwinOffsets`, as an assertion that names the field that drifted. */
-export function assertOgreTwinOffsets(): void {
-  const problem = ogreTwinOffsetsProblem();
-  if (problem != null) {
-    assert(false, "the value twins have drifted from the @unmanaged originals: " + problem);
-  }
-}
-
 function ogreWireOffsetsProblem(): string | null {
-  // Math: the small ones are pure width, and the two padded ones carry their
-  // pad as a field so the container arithmetic below stays honest.
-  if (offsetof<Vec2f>("y") != 4 || offsetof<Vec2f>("y") + 4 != 8) return "Vec2f";
-  if (offsetof<Vec3f>("z") != 8 || offsetof<Vec3f>("z") + 4 != 12) return "Vec3f";
-  if (offsetof<Vec3f16>("pad") != 12 || offsetof<Vec3f16>("pad") + 4 != 16) return "Vec3f16";
-  if (offsetof<Vec4f>("w") != 12 || offsetof<Vec4f>("w") + 4 != 16) return "Vec4f";
-  if (offsetof<Quatf>("w") != 12 || offsetof<Quatf>("w") + 4 != 16) return "Quatf";
-  if (offsetof<Colourf>("a") != 12 || offsetof<Colourf>("a") + 4 != 16) return "Colourf";
-  if (offsetof<Mat4f>("m33") != 60 || offsetof<Mat4f>("m33") + 4 != 64) return "Mat4f";
-  // Transformf and Aabbf are tight — no host reader, no alignment need. Each
-  // assertion is the *sum* form, so it still names the field that moved, and
-  // each is paired with the end-of-record check that a full 12-byte value lands
-  // where the next field begins (i.e. that no pad crept back in).
-  if (offsetof<Transformf>("rotation") + offsetof<QuatfValue>("x") != 12) {
-    return "Transformf.rotation";
-  }
-  if (offsetof<Transformf>("scale") + offsetof<Vec3fValue>("x") != 28) {
-    return "Transformf.scale";
-  }
-  if (offsetof<Transformf>("scale") + sizeof<Vec3fValue>() != sizeof<Transformf>()) {
-    return "Transformf size";
-  }
-  if (offsetof<Aabbf>("max") + offsetof<Vec3fValue>("x") != 12) return "Aabbf.max";
-  if (offsetof<Aabbf>("max") + sizeof<Vec3fValue>() != sizeof<Aabbf>()) return "Aabbf size";
-
-  // Refs.
-  if (offsetof<StringRef>("length") != 4 || offsetof<StringRef>("length") + 4 != 8) return "StringRef";
-  if (offsetof<BufferRef>("length") != 4 || offsetof<BufferRef>("length") + 4 != 8) return "BufferRef";
+  // The math types, `Transformf`, `Aabbf`, the refs, `TextureSlot`,
+  // `ShaderRecord`, `ResourceReq` and `Buffer` used to be checked here field by
+  // field. They have no host reader, so each assertion compared the declaration
+  // against a literal declared beside it — the two moved together and could
+  // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
+  // `docs/roadmap.md`.
 
   // The two moving tables. Checked here as well as by their own assertions so a
   // build that forgets to call them still catches a moved field.
@@ -1059,24 +989,22 @@ function ogreWireOffsetsProblem(): string | null {
   // Records.
   if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
   if (offsetof<SceneNode>("reserved") != 72) return "SceneNode.reserved";
-  if (offsetof<SceneNode>("reserved") + 8 != 80) return "SceneNode size";
+  if (offsetof<SceneNode>("reserved") + 8 != 80) return "SceneNode.reserved end";
+  if (sizeof<SceneNode>() != 80) return "SceneNode size";
   if (offsetof<LightRecord>("intensity") != 32) return "LightRecord.intensity";
   if (offsetof<LightRecord>("nameOffset") != 80) return "LightRecord.nameOffset";
-  if (offsetof<LightRecord>("reserved") + 8 != 96) return "LightRecord size";
+  if (offsetof<LightRecord>("reserved") + 8 != 96) return "LightRecord.reserved end";
+  if (sizeof<LightRecord>() != 96) return "LightRecord size";
   if (offsetof<CameraRecord>("rotationX") != 40) return "CameraRecord.rotationX";
-  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord size";
-  if (offsetof<TextureSlot>("uvSet") + 4 != 16) return "TextureSlot size";
+  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord.reserved2 end";
+  if (sizeof<CameraRecord>() != 80) return "CameraRecord size";
   if (offsetof<Material>("slot0Resource") != 80) return "Material.slot0Resource";
   if (offsetof<Material>("slot7Resource") != 192) return "Material.slot7Resource";
-  if (offsetof<Material>("slot7Uv") + 4 != 208) return "Material size";
-  if (offsetof<ShaderRecord>("reserved") != 32) return "ShaderRecord.reserved";
-  if (offsetof<ShaderRecord>("reserved") + 8 != 40) return "ShaderRecord size";
-  if (offsetof<ResourceReq>("requestedSeq") != 24) return "ResourceReq.requestedSeq";
-  if (offsetof<ResourceReq>("reserved") + 8 != 40) return "ResourceReq size";
+  if (offsetof<Material>("slot7Uv") + 4 != 208) return "Material.slot7Uv end";
+  if (sizeof<Material>() != 208) return "Material size";
   if (offsetof<Resource>("seq") != 40) return "Resource.seq";
-  if (offsetof<Resource>("seq") + 8 != 48) return "Resource size";
-  if (offsetof<Buffer>("bytes") != 32) return "Buffer.bytes";
-  if (offsetof<Buffer>("reserved") + 8 != 48) return "Buffer size";
+  if (offsetof<Resource>("seq") + 8 != 48) return "Resource.seq end";
+  if (sizeof<Resource>() != 48) return "Resource size";
   // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
   // The pin is here because the rename is a *semantics* change, and the one
   // thing that must not change with it is where the field sits.
@@ -1088,28 +1016,19 @@ function ogreWireOffsetsProblem(): string | null {
     return "Renderable.pad1";
   }
   if (offsetof<Renderable>("pad2") + sizeof<f32>() != sizeof<Renderable>()) {
-    return "Renderable size";
+    return "Renderable.pad2 end";
   }
-  // The motion table's record: the id pair, then the transform at the offsets
-  // Renderable's inline one uses. `pad0` is what makes the transform land on
-  // 16, and the record end at 64. Checked by `ogreMotionOffsetsProblem` so a
-  // guest that uses `MotionBatch` can assert exactly what it depends on.
-  const motion_problem = ogreMotionOffsetsProblem();
-  if (motion_problem != null) return motion_problem;
+  if (sizeof<Renderable>() != 64) return "Renderable size";
   if (offsetof<Job>("priority") != 16) return "Job.priority";
   if (offsetof<Job>("progress") != 24) return "Job.progress";
   if (offsetof<Job>("seq") != 40) return "Job.seq";
-  if (offsetof<Job>("reserved2") + 8 != 64) return "Job size";
+  if (offsetof<Job>("reserved2") + 8 != 64) return "Job.reserved2 end";
+  if (sizeof<Job>() != 64) return "Job size";
 
   return null;
 }
 
-/** Whether this build's OGRE wire offsets match the catalogue. */
-export function checkOgreWireOffsets(): bool {
-  return ogreWireOffsetsProblem() == null;
-}
-
-/** `checkOgreWireOffsets`, as an assertion that names the field that moved. */
+/** Assert this build's OGRE wire offsets match the catalogue, naming the field. */
 export function assertOgreWireOffsets(): void {
   const problem = ogreWireOffsetsProblem();
   if (problem != null) {

@@ -7,14 +7,17 @@
 // fixed offsets (`tension-core/src/session/arena.rs`) and a field that drifted
 // would be read as another field's bytes.
 //
-// **Offset checks use `offsetof<T>("field")`, not `sizeof<T>()`.** AssemblyScript
-// 0.28's `sizeof` does not report these records' sizes the way the wire needs,
-// while `offsetof` is the compile-time builtin the rest of the framework already
-// relies on. The sizes are checked from the *last field's* offset plus its
-// width, which is a constant known on both sides — `checkWireOffsets` below is
-// that check, and it is called from a guest's first instructions rather than
-// from a module-level statement: a start section would run guest code before
-// the session has verified the arena, and `tension-core` refuses one outright.
+// **Offset checks use `offsetof<T>("field")` for placement and `sizeof<T>()` for
+// the tail.** AS 0.28's `sizeof` did not report these records the way the wire
+// needs, so the original checks were `offsetof(last) + width == SIZE` only — and
+// that form cannot see a field **appended** after `last`: the record grows, the
+// constant does not, and the host strides past it. Measured 2026-10-30 on
+// TensionScript 0.11.0: `sizeof` now reports all ten records exactly (256, 144,
+// 24, 8, 32, 16, 64, 16, 32, 64), so each record is checked both ways — the
+// field offsets for placement, `sizeof` for the tail. `assertWireOffsets` is
+// called from a guest's first instructions rather than from a module-level
+// statement: a start section would run guest code before the session has
+// verified the arena, and `tension-core` refuses one outright.
 //
 // The constants are the frozen layout (`DESIGN.md` §5). The Rust side's
 // `arena::CLASSES` and `arena::REGIONS` are their authority; the cross-check
@@ -366,7 +369,8 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<ArenaControl>("faultCode") != 164) return "ArenaControl.faultCode";
   if (offsetof<ArenaControl>("faultDetail") != 168) return "ArenaControl.faultDetail";
   if (offsetof<ArenaControl>("sessionNonce") != 176) return "ArenaControl.sessionNonce";
-  if (offsetof<ArenaControl>("sessionNonce") + 8 + 9 * 8 != 256) return "ArenaControl size";
+  if (offsetof<ArenaControl>("sessionNonce") + 8 + 9 * 8 != 256) return "ArenaControl tail";
+  if (sizeof<ArenaControl>() != 256) return "ArenaControl size";
 
   // SessionInfo: 144 bytes, thirteen capacities from 48, the nonce at 104.
   if (offsetof<SessionInfo>("magic") != 0) return "SessionInfo.magic";
@@ -384,7 +388,8 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<SessionInfo>("capacity9") != 84) return "SessionInfo.capacity9";
   if (offsetof<SessionInfo>("capacity12") != 96) return "SessionInfo.capacity12";
   if (offsetof<SessionInfo>("openNonce") != 104) return "SessionInfo.openNonce";
-  if (offsetof<SessionInfo>("openNonce") + 8 + 4 * 8 != 144) return "SessionInfo size";
+  if (offsetof<SessionInfo>("openNonce") + 8 + 4 * 8 != 144) return "SessionInfo tail";
+  if (sizeof<SessionInfo>() != 144) return "SessionInfo size";
 
   // RegionDesc: 24 bytes, kind == index, the reserved word last.
   if (offsetof<RegionDesc>("kind") != 0) return "RegionDesc.kind";
@@ -393,7 +398,8 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<RegionDesc>("size") != 12) return "RegionDesc.size";
   if (offsetof<RegionDesc>("align") != 16) return "RegionDesc.align";
   if (offsetof<RegionDesc>("reserved") != 20) return "RegionDesc.reserved";
-  if (offsetof<RegionDesc>("reserved") + 4 != 24) return "RegionDesc size";
+  if (offsetof<RegionDesc>("reserved") + 4 != 24) return "RegionDesc tail";
+  if (sizeof<RegionDesc>() != 24) return "RegionDesc size";
 
   // TableHeader: 32 bytes, the delivered counter a u64 at 24.
   if (offsetof<TableHeader>("head") != 0) return "TableHeader.head";
@@ -403,7 +409,8 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<TableHeader>("generation") != 16) return "TableHeader.generation";
   if (offsetof<TableHeader>("dropped") != 20) return "TableHeader.dropped";
   if (offsetof<TableHeader>("delivered") != 24) return "TableHeader.delivered";
-  if (offsetof<TableHeader>("delivered") + 8 != 32) return "TableHeader size";
+  if (offsetof<TableHeader>("delivered") + 8 != 32) return "TableHeader tail";
+  if (sizeof<TableHeader>() != 32) return "TableHeader size";
 
   // EventRecord: 32 bytes, the two floats last.
   if (offsetof<EventRecord>("seq") != 0) return "EventRecord.seq";
@@ -413,14 +420,16 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<EventRecord>("b") != 20) return "EventRecord.b";
   if (offsetof<EventRecord>("f0") != 24) return "EventRecord.f0";
   if (offsetof<EventRecord>("f1") != 28) return "EventRecord.f1";
-  if (offsetof<EventRecord>("f1") + 4 != 32) return "EventRecord size";
+  if (offsetof<EventRecord>("f1") + 4 != 32) return "EventRecord tail";
+  if (sizeof<EventRecord>() != 32) return "EventRecord size";
 
   // StringHalf: 16 bytes.
   if (offsetof<StringHalf>("offset") != 0) return "StringHalf.offset";
   if (offsetof<StringHalf>("length") != 4) return "StringHalf.length";
   if (offsetof<StringHalf>("capacity") != 8) return "StringHalf.capacity";
   if (offsetof<StringHalf>("flags") != 12) return "StringHalf.flags";
-  if (offsetof<StringHalf>("flags") + 4 != 16) return "StringHalf size";
+  if (offsetof<StringHalf>("flags") + 4 != 16) return "StringHalf tail";
+  if (sizeof<StringHalf>() != 16) return "StringHalf size";
 
   // Callbacks: 64 bytes, the two slots adjacent, 48 reserved bytes after them.
   if (offsetof<Callbacks>("abiVersion") != 0) return "Callbacks.abiVersion";
@@ -428,21 +437,24 @@ function wireOffsetsProblem(): string | null {
   if (offsetof<Callbacks>("flags") != 4) return "Callbacks.flags";
   if (offsetof<Callbacks>("onBatch") != 8) return "Callbacks.onBatch";
   if (offsetof<Callbacks>("onEvent") != 12) return "Callbacks.onEvent";
-  if (offsetof<Callbacks>("onEvent") + 4 + 6 * 8 != 64) return "Callbacks size";
+  if (offsetof<Callbacks>("onEvent") + 4 + 6 * 8 != 64) return "Callbacks tail";
+  if (sizeof<Callbacks>() != 64) return "Callbacks size";
 
   // Subscription: 16 bytes.
   if (offsetof<Subscription>("class_") != 0) return "Subscription.class_";
   if (offsetof<Subscription>("mode") != 4) return "Subscription.mode";
   if (offsetof<Subscription>("flags") != 8) return "Subscription.flags";
   if (offsetof<Subscription>("reserved") != 12) return "Subscription.reserved";
-  if (offsetof<Subscription>("reserved") + 4 != 16) return "Subscription size";
+  if (offsetof<Subscription>("reserved") + 4 != 16) return "Subscription tail";
+  if (sizeof<Subscription>() != 16) return "Subscription size";
 
   // FrameState: 64 bytes, the four defined words first, 48 reserved after them.
   if (offsetof<FrameState>("frameIndex") != 0) return "FrameState.frameIndex";
   if (offsetof<FrameState>("droppedEvents") != 4) return "FrameState.droppedEvents";
   if (offsetof<FrameState>("faultState") != 8) return "FrameState.faultState";
   if (offsetof<FrameState>("lastError") != 12) return "FrameState.lastError";
-  if (offsetof<FrameState>("lastError") + 4 + 6 * 8 != 64) return "FrameState size";
+  if (offsetof<FrameState>("lastError") + 4 + 6 * 8 != 64) return "FrameState tail";
+  if (sizeof<FrameState>() != 64) return "FrameState size";
 
   return null;
 }
@@ -457,14 +469,9 @@ function wireOffsetsProblem(): string | null {
  * SDK's own build avoids the section too: `--exportStart __start` turns the
  * runtime's initializer into an export the host calls after verifying.)
  *
- * Returns false (never throws) so a caller can decide what a bad build means;
- * `assertWireOffsets` is the throwing form, and it names the field that moved.
+ * `assertWireOffsets` is the only entry point: a bad build stops at startup, and
+ * the message names the field that moved. The boolean form was never called.
  */
-export function checkWireOffsets(): bool {
-  return wireOffsetsProblem() == null;
-}
-
-/** `checkWireOffsets`, as an assertion: a bad build stops at startup, named. */
 export function assertWireOffsets(): void {
   const problem = wireOffsetsProblem();
   if (problem != null) {
