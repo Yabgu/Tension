@@ -110,8 +110,8 @@ export struct QuatfValue {
 
 // --- records ---------------------------------------------------------------
 
-/** A scene node, 72 bytes: `transform` at 24, alignment 8 (the trailing
- * `reserved` u64). */
+/** A scene node, 72 bytes: the transform is inline at 24, alignment 8 (the
+ * trailing `reserved` u64). */
 @unmanaged
 export struct SceneNode {
   nodeId: u32 = 0;
@@ -120,29 +120,29 @@ export struct SceneNode {
   childCount: u32 = 0;
   nameOffset: u32 = 0;
   nameLength: u32 = 0;
-  // 24: the transform, exactly where the header's six words end. No pads: the
-  // rotation follows the position at 36 and the scale at 52.
-  transformX: f32 = 0;
-  transformY: f32 = 0;
-  transformZ: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
+  position: Vec3fValue = {}; //  24, 12 bytes — the header's six words end here
+  rotation: QuatfValue = {}; // 36, 16 bytes
+  scale: Vec3fValue = {}; //    52, 12 bytes — ends the transform at 64
   reserved: u64 = 0;
 
-  /// A node at a place, with the identity rotation and unit scale the fields
-  /// already default to. `parentId` stays 0: hierarchy is refused in this
-  /// chunk, and a factory that quietly set a parent would be the wrong kind of
-  /// helpful.
+  /// A node at a place, with the identity rotation and unit scale `at` sets.
+  /// `parentId` stays 0: hierarchy is refused in this chunk, and a factory that
+  /// quietly set a parent would be the wrong kind of helpful.
+  ///
+  /// **The rotation and scale are set here, not in the declaration.** The value
+  /// twins default to zero, and a field initializer cannot carry values
+  /// (`= { w: 1 }` is refused by name), so a bare `new SceneNode()` now has a
+  /// zero quaternion and zero scale where the flat declaration gave identity
+  /// and unit. Every construction in this tree goes through `at`.
   static at(x: f32 = 0, y: f32 = 0, z: f32 = 0): SceneNode {
     const node = new SceneNode();
-    node.transformX = x;
-    node.transformY = y;
-    node.transformZ = z;
+    node.position.x = x;
+    node.position.y = y;
+    node.position.z = z;
+    node.rotation.w = 1;
+    node.scale.x = 1;
+    node.scale.y = 1;
+    node.scale.z = 1;
     return node;
   }
 }
@@ -821,7 +821,17 @@ function ogreWireOffsetsProblem(): string | null {
   if (bone != null) return bone;
 
   // Records.
-  if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
+  // SceneNode nests the twins: the transform still starts at 24, the rotation at
+  // 36 and the scale at 52, so the bytes are unchanged by the nesting.
+  if (offsetof<SceneNode>("position") + offsetof<Vec3fValue>("x") != 24) {
+    return "SceneNode.position";
+  }
+  if (offsetof<SceneNode>("rotation") + offsetof<QuatfValue>("x") != 36) {
+    return "SceneNode.rotation";
+  }
+  if (offsetof<SceneNode>("scale") + offsetof<Vec3fValue>("x") != 52) {
+    return "SceneNode.scale";
+  }
   if (offsetof<SceneNode>("reserved") != 64) return "SceneNode.reserved";
   if (offsetof<SceneNode>("reserved") + 8 != 72) return "SceneNode.reserved end";
   if (sizeof<SceneNode>() != 72) return "SceneNode size";
