@@ -106,15 +106,6 @@ export struct QuatfValue {
 // none needs padding today. If a future field does, pad that field explicitly
 // and say why here — the reason is the alignment arithmetic, never the shape.
 
-// `Transformf` (40 bytes) and `Aabbf` (24) were declared here and nested the
-// twins the same way. Nothing imported them, no field nested them, and their
-// last readers were the `offsetof` assertions that compared them against
-// themselves — so they went on 2026-10-30, with the assertions that had been
-// deleted a day earlier (this tree's `DESIGN.md`, "Wire workaround inventory").
-// A guest that wants a bare transform or a box declares one; if a raw-bytes
-// view over either is ever wanted, that is when a second `@unmanaged`
-// declaration earns its place, alongside a check that the two agree.
-
 // --- refs ------------------------------------------------------------------
 
 // --- records ---------------------------------------------------------------
