@@ -622,5 +622,17 @@
         }
       ]
     }
+  ],
+  "tsImports": [
+    {
+      "from": "../wire",
+      "names": [
+        "LIGHT_DIRECTIONAL",
+        "LIGHT_POINT",
+        "MAT_HLMS_PBS",
+        "MAT_HLMS_UNLIT"
+      ],
+      "why": "the static constructors below name these protocol constants; they are behavior, and they stay in wire.ts so the schema describes layout plus construction, not every constant in the catalogue."
+    }
   ]
 }

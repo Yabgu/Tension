@@ -7,6 +7,9 @@
 // because they must live on the type (66 call sites use them) and the
 // generator is the only thing that may write this file.
 
+import { LIGHT_DIRECTIONAL, LIGHT_POINT, MAT_HLMS_PBS, MAT_HLMS_UNLIT } from "../wire";
+// the static constructors below name these protocol constants; they are behavior, and they stay in wire.ts so the schema describes layout plus construction, not every constant in the catalogue.
+
 /** Vec3fValue — 12 bytes, alignment 4. */
 export struct Vec3fValue {
   x: f32 = 0;

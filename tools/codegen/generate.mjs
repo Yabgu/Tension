@@ -110,6 +110,11 @@ function emitTs(schema, layoutMap) {
     "// generator is the only thing that may write this file.",
     "",
   ];
+  for (const imp of schema.tsImports ?? []) {
+    lines.push(`import { ${imp.names.join(", ")} } from "${imp.from}";`);
+    if (imp.why) lines.push(`// ${imp.why}`);
+    lines.push("");
+  }
   for (const rec of schema.records) {
     const built = layoutMap.get(rec.name);
     lines.push(`/** ${rec.name} — ${built.size} bytes, alignment ${built.align}. */`);
