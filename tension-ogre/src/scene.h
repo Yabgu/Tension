@@ -9,7 +9,7 @@
 //
 // Capacity and geometry come from the wire catalogue and the arena layout:
 // SCENE is 256 KiB and holds three sub-tables end to end (DESIGN.md §5.1),
-// MATERIAL is 64 KiB of 208-byte records, RENDERABLE 128 KiB of 64-byte ones.
+// MATERIAL is 64 KiB of 208-byte records, RENDERABLE 128 KiB of 56-byte ones.
 
 #ifndef TENSION_OGRE_SCENE_H
 #define TENSION_OGRE_SCENE_H
@@ -44,11 +44,11 @@ constexpr uint32_t kRenderableRecordBytes = 56;
 /// depth — `-EINVAL`, with the depth logged.
 constexpr uint32_t kMaxNodeDepth = 32;
 
-/// One motion-table entry: `wire.ts`'s `MotionUpdate`, whose transform sits at
-/// the same offsets `Renderable`'s inline one does (16/32/48).
+/// One motion-table entry: `wire.ts`'s `MotionUpdate`, 48 bytes with the
+/// transform at 8 / 20 / 36 -- right after the id pair, no pads.
 constexpr uint32_t kMotionRecordBytes = 48;
-/// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
-/// min(2048, 65536) = 2048: the renderable table is the smaller bound, and the
+/// The table's capacity. `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 48)` =
+/// min(2048, 87381) = 2048: the renderable table is the smaller bound, and the
 /// arithmetic is asserted where the region is declared.
 constexpr uint32_t kMotionCapacity = kRenderableCapacity;
 

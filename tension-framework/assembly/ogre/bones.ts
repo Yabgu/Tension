@@ -132,8 +132,8 @@ export class BoneBatch {
     return submitBonesRaw(<i32>this.entries);
   }
 
-  /// The one place an entry is written, so the stride and the offset 16/32/48
-  /// layout have exactly one spelling in this module. The stride is
+  /// The one place an entry is written, so the stride and the 8/20/36 layout
+  /// have exactly one spelling in this module. The stride is
   /// `sizeof<BoneUpdate>()`, not `BONE_SIZE`: the declaration is the source of
   /// truth and the constant is the wire's published copy of it.
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,

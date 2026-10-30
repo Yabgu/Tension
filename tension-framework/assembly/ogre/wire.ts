@@ -43,10 +43,9 @@ import { regionOffset } from "../runtime/arena";
 // transform record is ever wanted (`changetype<...>(ptr)`), that is when a second
 // `@unmanaged` declaration earns its place, alongside a check that the two agree.
 //
-// `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate — so the 16-byte
-// slot-filling pad lives on the **record**, as `pad1`/`pad2`, where the slot
-// structure belongs. `QuatfValue` is 16 bytes on its own; a quaternion fills its
-// slot naturally.
+// `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate, and no pad:
+// nothing in these records needs a 16-byte boundary. `QuatfValue` is 16 bytes
+// because a quaternion has four components, not because 16 is a slot size.
 //
 // **Never nested inside each other.** A plain struct inside a plain struct is
 // refused by name (SROA flattening is deferred), so these are leaves. Every
@@ -73,32 +72,35 @@ export struct QuatfValue {
 
 // ── Transform record padding: the rule ────────────────────────────────
 //
-// **Renderable, MotionUpdate and BoneUpdate keep their explicit pads.** The
-// adapter reads those three at literal byte offsets 16 / 32 / 48
-// (`tension-ogre/src/scene.cpp:460`, `:472`, `:484` — one `read_transform(r, 16,
-// 32, 48, …)` call per decoder), and the sizes are the tables' strides
-// (`scene.h:39`, `:49`, `:67`). That is an external contract: the guest cannot
-// move those offsets without the adapter moving with it.
+// **No transform record carries a pad.** All five are tight: `MotionUpdate` and
+// `BoneUpdate` are 48 bytes with the transform at 8/20/36, `Renderable` is 56
+// with it at 16/28/44, `Transformf` is 40 and `Aabbf` 24.
 //
-// **Transformf and Aabbf have no host reader** — zero occurrences in
-// `tension-ogre/`; their only consumers are the `offsetof` assertions below.
-// Their pads were uniformity, so they are gone and both records are tight.
+// The pads these records used to carry were there to land a 16-byte unit on a
+// 16-byte boundary. Measured, nothing here needs one:
+//
+//   - every leaf is an `f32` (align 4), so no offset is forced;
+//   - the adapter decodes through `u32()`/`f32()` byte shifts
+//     (`tension-ogre/src/scene.cpp`), never an aligned load;
+//   - the guest is WASM, where an unaligned load is slower at worst, never a
+//     fault.
 //
 // The rule, stated once:
 //
 //   Padding is added when a smaller field precedes a larger one that needs
 //   stricter alignment — a `u8` before an `f32` on a target that demands it, or
-//   a `u64` at an odd offset — **or** when an external reader depends on a fixed
-//   offset. Padding is never added for uniformity ("all records should be
-//   N-byte shaped"), convention ("this is the wire's slot size"), or "16-byte
-//   slots" as a shape preference.
+//   a `u64` at an odd offset. Padding is never added for uniformity ("all
+//   records should be N-byte shaped"), convention ("this is the wire's slot
+//   size"), or "16-byte slots" as a shape preference.
 //
-// Neither tight record has a field that needs padding, and neither contains a
-// `u8`-adjacent-to-`f32` or an odd-offset `u64` sequence. Measured 2026-10-30:
-// every leaf is `f32` at 4-byte alignment (`Vec3fValue` sizeof 12 / align 4,
-// `QuatfValue` sizeof 16 / align 4), and every field lands on a 4-byte multiple.
-// If a future field does need padding, pad that field explicitly and say why
-// here — the reason is the alignment arithmetic, never the shape.
+// Note what the rule does **not** say: "or a host reader needs it". A host
+// reader pins *offsets*, not padding — `scene.cpp` reads the three
+// adapter-visible records at whatever offsets they have, and a changed offset is
+// a coordinated change on both sides, not a reason to keep a pad.
+//
+// No record below contains a `u8`-adjacent-to-`f32` or an odd-offset `u64`, so
+// none needs padding today. If a future field does, pad that field explicitly
+// and say why here — the reason is the alignment arithmetic, never the shape.
 
 /** Position, rotation, uniform scale — 40 bytes (tight: no host reader). */
 @unmanaged
@@ -335,7 +337,7 @@ export struct Resource {
   seq: u64 = 0;
 }
 
-/** A drawable, 64 bytes: its transform is inline at 16. */
+/** A drawable, 56 bytes: its transform is inline at 16. */
 @unmanaged
 export struct Renderable {
   renderableId: u32 = 0;
@@ -373,7 +375,7 @@ export struct Renderable {
 }
 
 /**
- * One entry of the motion table, 64 bytes (chunk 4): a renderable's whole
+ * One entry of the motion table, 48 bytes (chunk 4): a renderable's whole
  * transform and nothing else. The table lives at the start of `BUFFER_POOL`,
  * the guest writes it, and `ogre::submit_motion(count)` names how much of it is
  * live — one call per frame instead of one per body.
@@ -398,14 +400,10 @@ export struct Renderable {
  * a restatement: the declaration already names the model, and the override emits
  * the same code. Say it once, here.
  *
- * The layout is verified at the record's `pad2` by `ogreMotionOffsetsProblem`,
- * which asserts `offsetof("pad2") + sizeof<f32>() == sizeof<MotionUpdate>()`
- * rather than a copied constant — so a field appended after `pad2` fails the
- * check instead of silently widening the record past the table's stride. The
- * `pad1`/`pad2` fields are **slot-fillers, not value**: each completes a 12-byte
- * `Vec3fValue` to the 16-byte slot its neighbours start on. That is where the
- * padding belongs — on the record, whose slot structure it is — rather than
- * folded into the value type as a phantom fourth coordinate.
+ * The layout is verified by `ogreMotionOffsetsProblem`: the transform at
+ * 8/20/36, `offsetof("scale") + sizeof<Vec3fValue>()` at the record's end, and
+ * `sizeof` exactly 48 — so a field appended after `scale` fails the check
+ * instead of silently widening the record past the table's stride.
  */
 @unmanaged
 export struct MotionUpdate {
@@ -416,7 +414,7 @@ export struct MotionUpdate {
   scale: Vec3fValue = {}; //    36, 12 bytes — ends the record at 48
 }
 
-/** One bone pose, 64 bytes — one entry of the bone table (DESIGN.md §5.1,
+/** One bone pose, 48 bytes — one entry of the bone table (DESIGN.md §5.1,
  * chunk 5b). Same layout as `MotionUpdate`, with `boneIndex` where the motion
  * record carries `flags`: a rig is posed by naming a renderable *and* a bone
  * inside it, and the transform that follows is the bone's local transform.
