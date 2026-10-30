@@ -7,17 +7,29 @@
 // fixed offsets (`tension-core/src/session/arena.rs`) and a field that drifted
 // would be read as another field's bytes.
 //
-// **Offset checks use `offsetof<T>("field")` for placement and `sizeof<T>()` for
-// the tail.** AS 0.28's `sizeof` did not report these records the way the wire
-// needs, so the original checks were `offsetof(last) + width == SIZE` only — and
-// that form cannot see a field **appended** after `last`: the record grows, the
-// constant does not, and the host strides past it. Measured 2026-10-30 on
-// TensionScript 0.11.0: `sizeof` now reports all ten records exactly (256, 144,
-// 24, 8, 32, 16, 64, 16, 32, 64), so each record is checked both ways — the
-// field offsets for placement, `sizeof` for the tail. `assertWireOffsets` is
-// called from a guest's first instructions rather than from a module-level
-// statement: a start section would run guest code before the session has
-// verified the arena, and `tension-core` refuses one outright.
+// **What checks the layout now.** The per-field `offsetof`/`sizeof` table this
+// file used to carry was deleted on 2026-10-30 — it compared each declaration
+// against a literal copied from the host by hand, so it proved *declaration ==
+// hand-copy* and passed while `SessionInfo` drifted for a day (the hand-copy was
+// stale too). Two checks remain, and they compare against what the host actually
+// published:
+//
+//   - `arena.ts`'s `checkLayout` / `assertLayout`: the guest's `LAYOUT_HASH`
+//     literal against the hash the host wrote into the arena at open;
+//   - `arena.ts`'s `manifestProblem()`, called at open from `runtime/index.ts`:
+//     the host's own `{typeId, size, align, pad}` entries against this build's
+//     `sizeof<T>()`.
+//
+// Both are **type level**: the manifest carries no per-field offsets, so a field
+// reorder inside a record that leaves the size unchanged is now unverified on
+// the guest side. The mechanical fix is one source emitting both sides, scoped
+// in `docs/engine-adoption-plan.md`.
+//
+// Measured 2026-10-30 on TensionScript 0.11.0: `sizeof` reports all ten records
+// exactly (256, 144, 24, 8, 32, 16, 64, 16, 32, 64), which is what makes the
+// manifest comparison meaningful. Neither check is a module-level statement on
+// purpose: a start section would run guest code before the session has verified
+// the arena, and `tension-core` refuses one outright.
 //
 // The constants are the frozen layout (`DESIGN.md` §5). The Rust side's
 // `arena::CLASSES` and `arena::REGIONS` are their authority; the cross-check
@@ -169,7 +181,8 @@ export struct ArenaControl {
  * four reserved words to 144. The 100..104 word is **implicit** — the compiler
  * aligns the `u64` nonce to 104, and the host's `SESSION_INFO_OPEN_NONCE` is 104
  * for the same reason (its `put_u64` refuses an unaligned offset). No field is
- * declared for it; `assertWireOffsets` pins the boundary.
+ * declared for it; `manifestProblem()` compares this record's `sizeof` against
+ * the host's published entry, which is the check that survives.
  */
 @unmanaged
 export struct SessionInfo {
@@ -343,143 +356,7 @@ export struct Subscription {
 
 // --- the offset check ------------------------------------------------------
 
-/**
- * The first wire offset that disagrees with the frozen layout, or `null` when
- * every one matches.
- *
- * A reason rather than a boolean because a mismatch is a build that will read
- * another field's bytes, and "which one" is the whole diagnostic. The check is
- * `offsetof<T>("field")` per field — AssemblyScript's compile-time builtin —
- * plus, per record, the offset of its last field and the trailing reserved
- * space the wire fixes, which together pin the record's size without
- * `sizeof<T>()`: AS 0.28 does not report these `@unmanaged` records' sizes the
- * way the wire needs.
- */
-function wireOffsetsProblem(): string | null {
-  // ArenaControl: 256 bytes, with the state report at 160 and 72 reserved
-  // bytes after the nonce.
-  if (offsetof<ArenaControl>("magic") != 0) return "ArenaControl.magic";
-  if (offsetof<ArenaControl>("formatVersion") != 8) return "ArenaControl.formatVersion";
-  if (offsetof<ArenaControl>("abiVersion") != 12) return "ArenaControl.abiVersion";
-  if (offsetof<ArenaControl>("totalSize") != 16) return "ArenaControl.totalSize";
-  if (offsetof<ArenaControl>("layoutHash") != 20) return "ArenaControl.layoutHash";
-  if (offsetof<ArenaControl>("regionCount") != 24) return "ArenaControl.regionCount";
-  if (offsetof<ArenaControl>("regionTableOff") != 28) return "ArenaControl.regionTableOff";
-  if (offsetof<ArenaControl>("manifestOff") != 32) return "ArenaControl.manifestOff";
-  if (offsetof<ArenaControl>("manifestLen") != 36) return "ArenaControl.manifestLen";
-  if (offsetof<ArenaControl>("state") != 160) return "ArenaControl.state";
-  if (offsetof<ArenaControl>("faultCode") != 164) return "ArenaControl.faultCode";
-  if (offsetof<ArenaControl>("faultDetail") != 168) return "ArenaControl.faultDetail";
-  if (offsetof<ArenaControl>("sessionNonce") != 176) return "ArenaControl.sessionNonce";
-  if (offsetof<ArenaControl>("sessionNonce") + 8 + 9 * 8 != 256) return "ArenaControl tail";
-  if (sizeof<ArenaControl>() != 256) return "ArenaControl size";
 
-  // SessionInfo: 144 bytes, thirteen capacities from 48, the nonce at 104.
-  if (offsetof<SessionInfo>("magic") != 0) return "SessionInfo.magic";
-  if (offsetof<SessionInfo>("abiVersion") != 8) return "SessionInfo.abiVersion";
-  if (offsetof<SessionInfo>("flags") != 12) return "SessionInfo.flags";
-  if (offsetof<SessionInfo>("arenaSize") != 16) return "SessionInfo.arenaSize";
-  if (offsetof<SessionInfo>("maxArenaSize") != 20) return "SessionInfo.maxArenaSize";
-  if (offsetof<SessionInfo>("memoryBase") != 24) return "SessionInfo.memoryBase";
-  if (offsetof<SessionInfo>("initialPages") != 28) return "SessionInfo.initialPages";
-  if (offsetof<SessionInfo>("maxPages") != 32) return "SessionInfo.maxPages";
-  if (offsetof<SessionInfo>("layoutHash") != 36) return "SessionInfo.layoutHash";
-  if (offsetof<SessionInfo>("regionCount") != 40) return "SessionInfo.regionCount";
-  if (offsetof<SessionInfo>("classCount") != 44) return "SessionInfo.classCount";
-  if (offsetof<SessionInfo>("capacity0") != 48) return "SessionInfo.capacity0";
-  if (offsetof<SessionInfo>("capacity9") != 84) return "SessionInfo.capacity9";
-  if (offsetof<SessionInfo>("capacity12") != 96) return "SessionInfo.capacity12";
-  if (offsetof<SessionInfo>("openNonce") != 104) return "SessionInfo.openNonce";
-  if (offsetof<SessionInfo>("openNonce") + 8 + 4 * 8 != 144) return "SessionInfo tail";
-  if (sizeof<SessionInfo>() != 144) return "SessionInfo size";
-
-  // RegionDesc: 24 bytes, kind == index, the reserved word last.
-  if (offsetof<RegionDesc>("kind") != 0) return "RegionDesc.kind";
-  if (offsetof<RegionDesc>("flags") != 4) return "RegionDesc.flags";
-  if (offsetof<RegionDesc>("offset") != 8) return "RegionDesc.offset";
-  if (offsetof<RegionDesc>("size") != 12) return "RegionDesc.size";
-  if (offsetof<RegionDesc>("align") != 16) return "RegionDesc.align";
-  if (offsetof<RegionDesc>("reserved") != 20) return "RegionDesc.reserved";
-  if (offsetof<RegionDesc>("reserved") + 4 != 24) return "RegionDesc tail";
-  if (sizeof<RegionDesc>() != 24) return "RegionDesc size";
-
-  // TableHeader: 32 bytes, the delivered counter a u64 at 24.
-  if (offsetof<TableHeader>("head") != 0) return "TableHeader.head";
-  if (offsetof<TableHeader>("tail") != 4) return "TableHeader.tail";
-  if (offsetof<TableHeader>("capacity") != 8) return "TableHeader.capacity";
-  if (offsetof<TableHeader>("stride") != 12) return "TableHeader.stride";
-  if (offsetof<TableHeader>("generation") != 16) return "TableHeader.generation";
-  if (offsetof<TableHeader>("dropped") != 20) return "TableHeader.dropped";
-  if (offsetof<TableHeader>("delivered") != 24) return "TableHeader.delivered";
-  if (offsetof<TableHeader>("delivered") + 8 != 32) return "TableHeader tail";
-  if (sizeof<TableHeader>() != 32) return "TableHeader size";
-
-  // EventRecord: 32 bytes, the two floats last.
-  if (offsetof<EventRecord>("seq") != 0) return "EventRecord.seq";
-  if (offsetof<EventRecord>("class_") != 8) return "EventRecord.class_";
-  if (offsetof<EventRecord>("flags") != 12) return "EventRecord.flags";
-  if (offsetof<EventRecord>("a") != 16) return "EventRecord.a";
-  if (offsetof<EventRecord>("b") != 20) return "EventRecord.b";
-  if (offsetof<EventRecord>("f0") != 24) return "EventRecord.f0";
-  if (offsetof<EventRecord>("f1") != 28) return "EventRecord.f1";
-  if (offsetof<EventRecord>("f1") + 4 != 32) return "EventRecord tail";
-  if (sizeof<EventRecord>() != 32) return "EventRecord size";
-
-  // StringHalf: 16 bytes.
-  if (offsetof<StringHalf>("offset") != 0) return "StringHalf.offset";
-  if (offsetof<StringHalf>("length") != 4) return "StringHalf.length";
-  if (offsetof<StringHalf>("capacity") != 8) return "StringHalf.capacity";
-  if (offsetof<StringHalf>("flags") != 12) return "StringHalf.flags";
-  if (offsetof<StringHalf>("flags") + 4 != 16) return "StringHalf tail";
-  if (sizeof<StringHalf>() != 16) return "StringHalf size";
-
-  // Callbacks: 64 bytes, the two slots adjacent, 48 reserved bytes after them.
-  if (offsetof<Callbacks>("abiVersion") != 0) return "Callbacks.abiVersion";
-  if (offsetof<Callbacks>("slotCount") != 2) return "Callbacks.slotCount";
-  if (offsetof<Callbacks>("flags") != 4) return "Callbacks.flags";
-  if (offsetof<Callbacks>("onBatch") != 8) return "Callbacks.onBatch";
-  if (offsetof<Callbacks>("onEvent") != 12) return "Callbacks.onEvent";
-  if (offsetof<Callbacks>("onEvent") + 4 + 6 * 8 != 64) return "Callbacks tail";
-  if (sizeof<Callbacks>() != 64) return "Callbacks size";
-
-  // Subscription: 16 bytes.
-  if (offsetof<Subscription>("class_") != 0) return "Subscription.class_";
-  if (offsetof<Subscription>("mode") != 4) return "Subscription.mode";
-  if (offsetof<Subscription>("flags") != 8) return "Subscription.flags";
-  if (offsetof<Subscription>("reserved") != 12) return "Subscription.reserved";
-  if (offsetof<Subscription>("reserved") + 4 != 16) return "Subscription tail";
-  if (sizeof<Subscription>() != 16) return "Subscription size";
-
-  // FrameState: 64 bytes, the four defined words first, 48 reserved after them.
-  if (offsetof<FrameState>("frameIndex") != 0) return "FrameState.frameIndex";
-  if (offsetof<FrameState>("droppedEvents") != 4) return "FrameState.droppedEvents";
-  if (offsetof<FrameState>("faultState") != 8) return "FrameState.faultState";
-  if (offsetof<FrameState>("lastError") != 12) return "FrameState.lastError";
-  if (offsetof<FrameState>("lastError") + 4 + 6 * 8 != 64) return "FrameState tail";
-  if (sizeof<FrameState>() != 64) return "FrameState size";
-
-  return null;
-}
-
-/**
- * Check the wire offsets this build compiled against.
- *
- * A guest calls this in its first instructions. It is not a module-level
- * statement on purpose: top-level code becomes a `start` section, and the
- * session refuses a module that has one — the arena is verified between
- * instantiation and `_start_game`, so guest code must not run before that. (The
- * SDK's own build avoids the section too: `--exportStart __start` turns the
- * runtime's initializer into an export the host calls after verifying.)
- *
- * `assertWireOffsets` is the only entry point: a bad build stops at startup, and
- * the message names the field that moved. The boolean form was never called.
- */
-export function assertWireOffsets(): void {
-  const problem = wireOffsetsProblem();
-  if (problem != null) {
-    assert(false, "the runtime's wire offsets do not match the arena layout: " + problem);
-  }
-}
 
 /**
  * The ABI names of the fields whose TypeScript name is not their wire name.
@@ -500,9 +377,9 @@ export function assertWireOffsets(): void {
  *
  * Compile-time: `abiNameOf` folds to a constant, so this costs nothing at
  * runtime, but it must be called from code the build actually emits. It is a
- * separate function from `assertWireOffsets` because the two assert different
- * things -- where a field sits, and what it is called -- and a build can get one
- * right while getting the other wrong.
+ * separate function from `checkLayout` because the two assert different
+ * things -- what a field is called, and whether the arena is the shape this
+ * build expects -- and a build can get one right while getting the other wrong.
  */
 export function assertAbiAliases(): void {
   if (abiNameOf<EventRecord>("class_") != "class") {

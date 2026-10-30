@@ -81,7 +81,7 @@ export class RuntimeSession {
     // return value with `if (open(cfg) != 0) return;` — an invented error there
     // is a plausible-looking value a caller may still ignore, which is the
     // silent-corruption outcome this check exists to prevent. It is the same
-    // shape as `assertWireOffsets` and `assertLayout`.
+    // shape as `assertLayout`.
     const drift = manifestProblem();
     if (drift != null) {
       assert(false, "the session's manifest does not match this guest's declarations: " + drift);

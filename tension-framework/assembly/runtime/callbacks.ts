@@ -50,8 +50,8 @@ export type OnEvent = (class_: u32, ptr: u32) => i32;
  * published into the ring, and the guest reads them when it likes).
  *
  * The allocation is sized from the wire constant, which the manifest also
- * publishes: `assertWireOffsets` compares the declaration's offsets and sizeof
- * against that constant at startup, so the two cannot drift silently.
+ * publishes: `manifestProblem()` compares this record's `sizeof` against the
+ * host's entry at open, so the two cannot drift silently.
  */
 export function makeCallbacks(onBatch: OnBatch | null = null, onEvent: OnEvent | null = null): Callbacks {
   const record = changetype<Callbacks>(heap.alloc(CALLBACKS_SIZE));
