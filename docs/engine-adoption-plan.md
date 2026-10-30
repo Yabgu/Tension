@@ -203,17 +203,14 @@ looked like:
 ### 1.1 The publish gap — step 1 is a release, not an install
 
 `tension-framework/package.json` declares `@yabgu_gm/tensionscript: ^0.10.0`.
-What is actually installed is **neither that name nor that version**:
+What is actually installed is **not that version**:
 
 | | declared | installed |
 |---|---|---|
-| package name | `@yabgu_gm/tensionscript` | the retired pre-rename scope |
 | version | `^0.10.0` | `0.9.0` |
 
-`node_modules/@yabgu_gm/` does not exist at all; what is installed is a 0.9.0
-build under the retired pre-rename scope. So the engine's declared dependency
-resolves to nothing, and the
-compiler it builds with is 0.9.0 — **before** sized enums, before inline nesting
+`node_modules/@yabgu_gm/` does not exist at all, so the engine's declared
+dependency resolves to nothing, and the compiler it builds with is 0.9.0 — **before** sized enums, before inline nesting
 (#36), before the struct default flip (#38).
 
 **And 0.10.0 would not be enough even if it were installed.** Sub-phase A and
@@ -234,14 +231,13 @@ The publish is the user's credential action; this plan only states the order:
    dist contents match the tree, `bin/tensionscript.js` runs from the published
    tarball, the published `package.json` name is the new scope, and a fixture
    compiles with the *published* rather than the local build.
-3. **Bump the engine to `^0.11.0`** and reinstall, which also fixes the scope
-   mismatch (the retired pre-rename scope → `@yabgu_gm`).
+3. **Bump the engine to `^0.11.0`** and reinstall.
 4. **Rebuild the framework and verify the guest is byte-identical** (§8).
 
 **Measured 2026-10-28 22:10 — the release is a re-number, not a rebuild.** The
 registry says `@yabgu_gm/tensionscript` has exactly two versions,
 `0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`, published
-`20:26:54Z`); the retired pre-rename scope stops at `0.10.0`. **There is no 0.11.0 to
+`20:26:54Z`). **There is no 0.11.0 to
 install.** What *is* published as 0.10.0 already contains the flip: the tarball's
 `dist/asc.js` is byte-identical to the local build of `0b67e3cc` (915,141 bytes,
 md5 `9e0d04a20c92757bf6e02730c04932d2`), and a probe that nests a plain struct in
@@ -267,10 +263,9 @@ bump.
 version` returns **0.11.0**, the version list is
 `['0.0.0-stage', '0.10.0', '0.11.0']`, and the tarball is
 `https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.11.0.tgz`.
-The installed compiler in `tension-framework` is still a **0.9.0** build under
-the retired pre-rename scope (`node_modules/@yabgu_gm/` does not exist, and
-`node_modules/.bin/tensionscript` still resolves inside that scope), so Phase
-1's install is what fixes the scope and the version at once.
+The installed compiler in `tension-framework` is still **0.9.0**
+(`node_modules/@yabgu_gm/` does not exist), so Phase 1's install is what fixes
+the version.
 
 Two consequences for the engine side, both measured: the scope already moved in
 #35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
@@ -281,8 +276,8 @@ run straight from an unpacked tarball needs an install beside it.
 **A symptom worth knowing:** the rename is live, and stale installs fail loudly
 rather than subtly. The TensionScript primary checkout, re-pointed at
 `0b67e3cc` with a `dist/` built before the rename, dies with
-`ERR_MODULE_NOT_FOUND`, naming the retired pre-rename scope, imported from
-`dist/asc.js`. Expect the same shape in the engine until step 3.
+`ERR_MODULE_NOT_FOUND` for the package, raised from `dist/asc.js`. Expect the
+same shape in the engine until step 3.
 
 ### 1.2 The history divergence — checked, and it is only a rename
 
@@ -297,7 +292,7 @@ git diff 27b57652 0b67e3cc          # not just src/ std/ tests/ docs/
 
 **Result: 14 files, and every changed line is one of two string substitutions.**
 
-- the retired pre-rename scope → `@yabgu_gm/tensionscript`
+- the package's npm scope, to `@yabgu_gm`
 - `/home/acakar/work` → `/home/yabgu_gm/work`
 
 Filtering those two patterns out of the diff leaves **0 lines**. So the rewrite
@@ -942,8 +937,7 @@ because the plan's own branch has no `node_modules` and the main checkout's
 this tree.
 
 ```
-npm install <retired-scope>/tensionscript@0.9.0   # the compiler the tree shipped with
-npm run build                             # 65627 bytes
+npm run build                             # 65627 bytes, on the 0.9.0 the tree shipped with
 npm install @yabgu_gm/tensionscript@0.10.0  # the published flip
 npm run build                             # 65627 bytes
 ```
