@@ -400,19 +400,29 @@ sub-chunk may write the capability catalogue that
 `Item::setDatablock`, and attached with `node->attachObject(item)`. Measured,
 after a guess in the other direction cost a probe.
 
-**A capability record's fields are scalars, because a class field is a
-pointer.** The wire catalogue's rule, stated here as the general one it is: in
-an `@unmanaged` record, a field whose type is a class holds a *reference* — four
-bytes pointing at the object — not an inline struct, so `position: Vec3f` is not
-twelve bytes of position and a record written that way does not mean what it
-says. Nested structures are therefore expressed as flat scalar fields at
-explicit offsets, with the padding spelled out. The placement rule that goes
-with it: a 16-byte type (`Vec4f`, `Quatf`, `Colourf`, `Mat4f`) must sit at a
-16-byte offset, or the record carries explicit pad fields to put it there —
-which is why `MotionUpdate` has flat `positionX/Y/Z`, `rotationX/Y/Z/W`,
-`scaleX/Y/Z` with a `pad0 u64` in front rather than `Transformf`-shaped fields.
-The offsets are pinned by `checkOgreWireOffsets` and by `checkOgreMotionOffsets`,
-which a guest can assert on its own.
+**A capability record's fields are scalars or plain structs, because a *class*
+field is a pointer.** The wire catalogue's rule, stated here as the general one
+it is: in an `@unmanaged` record, a field whose type is a class holds a
+*reference* — four bytes pointing at the object — not an inline struct, so
+`position: Vec3f` (a class) is not twelve bytes of position and a record written
+that way does not mean what it says. Since TensionScript 0.10.0 a field whose
+type is a **plain struct** is stored inline, so the transform records nest
+`Vec3fValue` and `QuatfValue` and get the transform as 12 + 16 + 12 bytes of the
+record's body.
+
+The placement rule that goes with it: **padding exists only where something
+depends on it.** Every leaf is an `f32` (align 4), so the 16-byte offsets in
+`Renderable`, `MotionUpdate` and `BoneUpdate` come from explicit pad fields, not
+from alignment — and those pads are there because the adapter reads the three
+records at literal offsets 16/32/48 (`src/scene.cpp`) with sizes that are the
+tables' strides (`src/scene.h`). `Transformf` and `Aabbf` have no host reader, so
+they carry no pads at all (40 and 24 bytes). Padding for uniformity or for a
+"slot size" is not a reason.
+
+The offsets are pinned by `assertOgreWireOffsets`, `assertOgreMotionOffsets` and
+`assertOgreBoneOffsets`, which a guest calls at startup: the first compares the
+records against what the adapter publishes, the other two name the field that
+moved in the two table records.
 
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
