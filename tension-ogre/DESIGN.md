@@ -411,13 +411,14 @@ type is a **plain struct** is stored inline, so the transform records nest
 record's body.
 
 The placement rule that goes with it: **padding exists only where something
-depends on it.** Every leaf is an `f32` (align 4), so the 16-byte offsets in
-`Renderable`, `MotionUpdate` and `BoneUpdate` come from explicit pad fields, not
-from alignment — and those pads are there because the adapter reads the three
-records at literal offsets 16/32/48 (`src/scene.cpp`) with sizes that are the
-tables' strides (`src/scene.h`). `Transformf` and `Aabbf` have no host reader, so
-they carry no pads at all (40 and 24 bytes). Padding for uniformity or for a
-"slot size" is not a reason.
+depends on it.** Every leaf is an `f32` (align 4), so nothing here is forced to a
+16-byte boundary — and an earlier revision's pads, which did exactly that, have
+gone. **No transform record carries a pad now**: `MotionUpdate` and `BoneUpdate`
+are 48 bytes with the transform at 8/20/36, `Renderable` is 56 with it at
+16/28/44, `Transformf` 40 and `Aabbf` 24. Padding for uniformity, for a "slot
+size", or to land a 16-byte unit on a 16-byte boundary is not a reason; a host
+reader pins *offsets*, which is a coordinated change when they move, not a reason
+to keep a pad.
 
 The offsets are pinned by `assertOgreWireOffsets`, `assertOgreMotionOffsets` and
 `assertOgreBoneOffsets`, which a guest calls at startup: the first compares the
@@ -712,11 +713,9 @@ one verb, `ogre::submit_motion(count)` (id 10, flags 0), names how much of it is
 live. The guest writes N entries and makes **one** call per frame; the adapter
 reads the whole table during that call. That removes N wasm→host transitions
 per frame and leaves the one O(N) that cannot be amortized: N transforms must
-reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`,
-`pad0 u64@8`, then the transform at **16/32/48** — the same offsets
-`Renderable`'s inline transform uses, with `pad0` being what puts a `Quatf` on a
-16-byte boundary. Capacity is `min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 64)` =
-2048. **The batch is all-or-nothing**: an entry naming a renderable the mirror
+reach N OGRE nodes. The record is `renderableId u32@0`, `flags u32@4`, then the
+transform at **8/20/36** — 48 bytes, no pads. Capacity is
+`min(RENDERABLE_COUNT, BUFFER_POOL_SIZE / 48)` = 2048. **The batch is all-or-nothing**: an entry naming a renderable the mirror
 does not hold live refuses the whole call with `-ENOENT` and a log line naming
 the index, because a half-applied frame is worse than a refused one.
 
@@ -726,9 +725,9 @@ the index, because a half-applied frame is worse than a refused one.
 next), and one verb, `ogre::submit_bones(count)` (id 11, flags 0), names how
 much of it is live. Same shape as motion, for the same reason: a rig poses many
 bones per frame and wasm→host transitions are the part that does not have to be
-O(N). The record is `renderableId u32@0`, `boneIndex u32@4`, `pad0 u64@8`, then
-the transform at **16/32/48** — motion's layout with a bone index where `flags`
-was. Capacity 2048. The batch is **all-or-nothing**, and validation asks the
+O(N). The record is `renderableId u32@0`, `boneIndex u32@4`, then the transform
+at **8/20/36** — motion's layout with a bone index where `flags` was, 48 bytes,
+no pads. Capacity 2048. The batch is **all-or-nothing**, and validation asks the
 loader rather than keeping its own copy of an answer only the loader has:
 `renderableId` must be live, that renderable's mesh must be **rigged**, and
 `boneIndex` must be inside that rig — `-ENOENT` and `-EINVAL`, naming the index
