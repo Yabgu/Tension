@@ -93,16 +93,20 @@ export class MotionBatch {
           qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
     // `MotionUpdate` is `@unmanaged`: a view of the arena slot, so each
-    // assignment is the wire's field at the wire's offset. `pad0` is written
-    // because it is what puts the transform at 16 — see the record's note.
+    // assignment is the wire's field at the wire's offset.
+    //
+    // **The pad stores look removable and are not** — same measurement as
+    // `bones.ts`: the adapter never reads those bytes, but the slots are not
+    // zero-initialised, and deleting the stores left stale arena data (0x3c,
+    // 0x24, 0x08) in the record's pad bytes. They are zeroed for determinism.
     const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
     rec.renderableId = id;
     rec.flags = 0; // reserved
-    rec.pad0 = 0;
+    rec.pad0 = 0; // zeroed for determinism, not to place the transform
     rec.position.x = x;
     rec.position.y = y;
     rec.position.z = z;
-    rec.pad1 = 0; // fills position's 12-byte value to its 16-byte slot
+    rec.pad1 = 0; // zeroed for determinism
     rec.rotation.x = qx;
     rec.rotation.y = qy;
     rec.rotation.z = qz;
@@ -110,7 +114,7 @@ export class MotionBatch {
     rec.scale.x = scale;
     rec.scale.y = scale;
     rec.scale.z = scale;
-    rec.pad2 = 0; // fills scale's 12-byte value; ends the record at 64
+    rec.pad2 = 0; // zeroed for determinism
     if (index + 1 > this.entries) this.entries = index + 1;
   }
 
