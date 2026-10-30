@@ -1638,14 +1638,14 @@ class BackendOgre final : public Backend {
     /// place — that line is what tells "the guest named nothing we can read"
     /// apart from "the pointer was set and the draw still failed", so it stays.
     void apply_material_values(Ogre::HlmsDatablock *datablock, const Material &record) {
-        const Ogre::ColourValue diffuse(record.dr, record.dg, record.db, record.da);
+        const Ogre::ColourValue diffuse(record.diffuse_r, record.diffuse_g, record.diffuse_b, record.diffuse_a);
         if (record.kind == TENSION_OGRE_MAT_HLMS_PBS) {
             // PBS takes linear colours as vectors, and its own defaults stand
             // where the record says nothing.
             auto *pbs = static_cast<Ogre::HlmsPbsDatablock *>(datablock);
-            pbs->setDiffuse(Ogre::Vector3(record.dr, record.dg, record.db));
-            pbs->setSpecular(Ogre::Vector3(record.sr, record.sg, record.sb));
-            pbs->setEmissive(Ogre::Vector3(record.er, record.eg, record.eb));
+            pbs->setDiffuse(Ogre::Vector3(record.diffuse_r, record.diffuse_g, record.diffuse_b));
+            pbs->setSpecular(Ogre::Vector3(record.specular_r, record.specular_g, record.specular_b));
+            pbs->setEmissive(Ogre::Vector3(record.emissive_r, record.emissive_g, record.emissive_b));
             if (record.roughness > 0.0f) pbs->setRoughness(record.roughness);
             if (record.metalness > 0.0f) pbs->setMetalness(record.metalness);
             if (record.slot0_resource != 0) {
@@ -1923,9 +1923,9 @@ class BackendOgre final : public Backend {
             if (update.bone_index >= skeleton->getNumBones()) continue;
             Ogre::Bone *bone = skeleton->getBone(update.bone_index);
             if (bone == nullptr) continue;
-            bone->setPosition(Ogre::Vector3(update.px, update.py, update.pz));
-            bone->setOrientation(Ogre::Quaternion(update.rw, update.rx, update.ry, update.rz));
-            bone->setScale(Ogre::Vector3(update.sx, update.sy, update.sz));
+            bone->setPosition(Ogre::Vector3(update.position.x, update.position.y, update.position.z));
+            bone->setOrientation(Ogre::Quaternion(update.rotation.w, update.rotation.x, update.rotation.y, update.rotation.z));
+            bone->setScale(Ogre::Vector3(update.scale.x, update.scale.y, update.scale.z));
             if (std::find(touched.begin(), touched.end(), skeleton) == touched.end()) {
                 touched.push_back(skeleton);
             }
