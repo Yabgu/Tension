@@ -15,35 +15,6 @@ bool has(size_t len, uint32_t offset, uint32_t width) {
     return static_cast<size_t>(offset) + width <= len;
 }
 
-uint32_t u32(const uint8_t *region, uint32_t offset) {
-    return static_cast<uint32_t>(region[offset]) | (static_cast<uint32_t>(region[offset + 1]) << 8) |
-           (static_cast<uint32_t>(region[offset + 2]) << 16) |
-           (static_cast<uint32_t>(region[offset + 3]) << 24);
-}
-
-float f32(const uint8_t *region, uint32_t offset) {
-    const uint32_t bits = u32(region, offset);
-    float value = 0.0f;
-    std::memcpy(&value, &bits, sizeof(value));
-    return value;
-}
-
-/// The first four floats of a transform triple, for the records that carry one.
-void read_transform(const uint8_t *r, uint32_t position_at, uint32_t rotation_at, uint32_t scale_at,
-                    float &px, float &py, float &pz, float &rx, float &ry, float &rz, float &rw,
-                    float &sx, float &sy, float &sz) {
-    px = f32(r, position_at);
-    py = f32(r, position_at + 4);
-    pz = f32(r, position_at + 8);
-    rx = f32(r, rotation_at);
-    ry = f32(r, rotation_at + 4);
-    rz = f32(r, rotation_at + 8);
-    rw = f32(r, rotation_at + 12);
-    sx = f32(r, scale_at);
-    sy = f32(r, scale_at + 4);
-    sz = f32(r, scale_at + 8);
-}
-
 } // namespace
 
 void SceneMirror::mark(std::vector<uint32_t> &list, uint32_t id) {
@@ -364,125 +335,70 @@ int32_t SceneMirror::apply_bones(const BoneUpdate *updates, uint32_t count) {
 
 bool SceneMirror::decode_node_at(const uint8_t *r, SceneNodeRecord &out) {
     if (r == nullptr) return false;
-    out = SceneNodeRecord{};
-    out.node_id = u32(r, 0);
-    out.parent_id = u32(r, 4);
-    out.flags = u32(r, 8);
-    out.child_count = u32(r, 12);
-    out.name_offset = u32(r, 16);
-    out.name_length = u32(r, 20);
-    read_transform(r, 24, 36, 52, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
-                   out.sy, out.sz);
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_camera_at(const uint8_t *r, CameraRecord &out) {
     if (r == nullptr) return false;
-    out = CameraRecord{};
-    out.camera_id = u32(r, 0);
-    out.flags = u32(r, 4);
-    out.fov_y = f32(r, 8);
-    out.aspect = f32(r, 12);
-    out.near_clip = f32(r, 16);
-    out.far_clip = f32(r, 20);
-    out.px = f32(r, 24);
-    out.py = f32(r, 28);
-    out.pz = f32(r, 32);
-    out.rx = f32(r, 36);
-    out.ry = f32(r, 40);
-    out.rz = f32(r, 44);
-    out.rw = f32(r, 48);
-    out.viewport_width = u32(r, 52);
-    out.viewport_height = u32(r, 56);
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_light_at(const uint8_t *r, LightRecord &out) {
     if (r == nullptr) return false;
-    out = LightRecord{};
-    out.light_id = u32(r, 0);
-    out.kind = u32(r, 4);
-    out.flags = u32(r, 8);
-    out.r = f32(r, 12);
-    out.g = f32(r, 16);
-    out.b = f32(r, 20);
-    out.a = f32(r, 24);
-    out.intensity = f32(r, 28);
-    out.range = f32(r, 32);
-    out.spot_inner = f32(r, 36);
-    out.spot_outer = f32(r, 40);
-    out.dx = f32(r, 44);
-    out.dy = f32(r, 48);
-    out.dz = f32(r, 52);
-    out.px = f32(r, 56);
-    out.py = f32(r, 60);
-    out.pz = f32(r, 64);
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_material_at(const uint8_t *r, MaterialRecord &out) {
     if (r == nullptr) return false;
-    out = MaterialRecord{};
-    out.material_id = u32(r, 0);
-    out.kind = u32(r, 4);
-    out.flags = u32(r, 8);
-    out.dr = f32(r, 12);
-    out.dg = f32(r, 16);
-    out.db = f32(r, 20);
-    out.da = f32(r, 24);
-    out.sr = f32(r, 28);
-    out.sg = f32(r, 32);
-    out.sb = f32(r, 36);
-    out.sa = f32(r, 40);
-    out.er = f32(r, 44);
-    out.eg = f32(r, 48);
-    out.eb = f32(r, 52);
-    out.ea = f32(r, 56);
-    out.roughness = f32(r, 60);
-    out.metalness = f32(r, 64);
-    out.opacity = f32(r, 68);
-    out.slot0_resource = u32(r, 72);
-    out.slot0_sampler = u32(r, 76);
-    out.slot0_flags = u32(r, 80);
-    out.slot0_uv = u32(r, 84);
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_renderable_at(const uint8_t *r, RenderableRecord &out) {
     if (r == nullptr) return false;
-    out = RenderableRecord{};
-    out.renderable_id = u32(r, 0);
-    out.material_id = u32(r, 4);
-    out.mesh_resource_id = u32(r, 8);
-    // Offset 12: `nodeId` since chunk 5a, `flags` before it. Nothing ever wrote
-    // or read the old meaning, which is what made the repurposing free.
-    out.node_id = u32(r, 12);
-    read_transform(r, 16, 28, 44, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
-                   out.sy, out.sz);
+    // Offset 12 is `node_id` (wire `nodeId`, since chunk 5a; it was
+    // `flags` before that) — pinned in scene.h.
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_motion_at(const uint8_t *r, MotionUpdate &out) {
     if (r == nullptr) return false;
-    out = MotionUpdate{};
-    out.renderable_id = u32(r, 0);
-    out.flags = u32(r, 4);
-    // The same three offsets a Renderable's inline transform uses, which is the
-    // point of the record's shape: one reading of a transform for both.
-    read_transform(r, 8, 20, 36, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
-                   out.sy, out.sz);
+    // The transform lands at 8/20/36, the same shape a Renderable's inline
+    // one has, which is the point of the record.
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
 bool SceneMirror::decode_bone_at(const uint8_t *r, BoneUpdate &out) {
     if (r == nullptr) return false;
-    out = BoneUpdate{};
-    out.renderable_id = u32(r, 0);
-    out.bone_index = u32(r, 4);
-    // The motion record's transform offsets, for the motion record's reason: one
-    // reading of a transform serves every record that carries one.
-    read_transform(r, 8, 20, 36, out.px, out.py, out.pz, out.rx, out.ry, out.rz, out.rw, out.sx,
-                   out.sy, out.sz);
+    // The motion record's transform offsets, for the motion record's reason:
+    // one reading of a transform serves every record that carries one.
+    // One copy: `scene.h` packs this struct and static_asserts every field
+    // against the wire offset, so its bytes *are* the record's. Prefix only —
+    // `sizeof(out)` bytes are read; a longer wire record's tail is ignored.
+    std::memcpy(&out, r, sizeof(out));
     return true;
 }
 
