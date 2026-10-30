@@ -414,8 +414,8 @@ The placement rule that goes with it: **padding exists only where something
 depends on it.** Every leaf is an `f32` (align 4), so nothing here is forced to a
 16-byte boundary — and an earlier revision's pads, which did exactly that, have
 gone. **No transform record carries a pad now**: `MotionUpdate` and `BoneUpdate`
-are 48 bytes with the transform at 8/20/36, `Renderable` is 56 with it at
-16/28/44, `Transformf` 40 and `Aabbf` 24. Padding for uniformity, for a "slot
+are 48 bytes with the transform at 8/20/36, and `Renderable` is 56 with it at
+16/28/44. Padding for uniformity, for a "slot
 size", or to land a 16-byte unit on a 16-byte boundary is not a reason; a host
 reader pins *offsets*, which is a coordinated change when they move, not a reason
 to keep a pad.
@@ -450,6 +450,11 @@ as cruft and removed, and what is contract and stayed.
 - **13 unused wire types** — the list above — none nested as a field of another
   record and none imported anywhere. `Material` is flat rather than
   `TextureSlot[8]`, and skin matrices never went through `Mat4f`.
+  The two names on that list that survived this pass, `Transformf` and `Aabbf`,
+  were deleted on 2026-10-30 in a second sweep once their assertion half had
+  already gone: with the checks removed, nothing in the tree named them but the
+  declarations and the prose describing them. That makes **15** types removed in
+  total across the two.
 - **2 vestigial pads**, `Vec3f16.pad` and `Buffer.pad0`, which went with their
   owners.
 - **The twin guard.** It compared the value twins against `@unmanaged` types that,
