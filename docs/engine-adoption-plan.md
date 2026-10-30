@@ -112,6 +112,20 @@ called by fixtures, so they cannot become compile-time-only; `layout_hash` input
 must not move (`786288195`, pinned at `arena.rs:1678`); and the C++ emission must
 keep `#pragma pack(1)`. Not designed here — this is the size of the job.
 
+**Landed 2026-10-30 — the generator exists, and three of those constraints
+changed under measurement.** `schema/ogre.json` + `tools/codegen/generate.mjs`
+emit `ogre.generated.ts` and `ogre.generated.h` from one field list; the guest
+and host record declarations and all 108 hand-written C++ record asserts are
+gone. `generate.mjs --check` is a `test.sh` suite, and both build scripts run
+the generator before their compile step. Two of the four preserved constraints
+were wrong when measured: the prefix design is **abandoned** (full-width structs
+now, costing +8/+20/+20/+112 bytes per node/camera/light/material — the tail is
+copied and never read), and `#pragma pack(1)` is **removed**, because the wire's
+layout is the naturally aligned one and packing shrinks LightRecord,
+CameraRecord and Resource by 4 bytes each (measured 84/76/44 packed against
+88/80/48 natural). The `layout_hash` constraint stands untouched: the arena
+records are not generated yet, so `786288195` still holds.
+
 **Corrections to the sections below.** These numbers were true pre-merge and are
 not any more:
 
