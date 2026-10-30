@@ -146,9 +146,13 @@ constexpr uint32_t kLightTableOffset = kCameraTableOffset + kCameraCapacity * kC
 // the memcpy would silently shift everything after it.
 //
 // The static_asserts are the other half. They pin each field against the offset
-// `wire.ts` publishes (the guest asserts the same numbers at startup through
-// `assertOgreWireOffsets`), so the two sides are checked independently and a
-// mismatch fails a build rather than corrupting a scene.
+// `wire.ts` publishes, so a field that moves without both sides agreeing fails a
+// build rather than corrupting a scene. **The guest-side copy of these numbers
+// was deleted on 2026-10-30** — it asserted the same literals in a second
+// language, so a change that moved both copies still passed. What remains is one
+// authoritative check per side: these asserts for the C++, and the type
+// declarations for the guest. The mechanical tie (one source, two emissions) is
+// the generator scoped in `docs/engine-adoption-plan.md`.
 //
 // Four structs are **shorter than the wire record they decode** — SceneNode 64
 // of 72, Camera 60 of 80, Light 68 of 88, Material 88 of 200. That is deliberate
