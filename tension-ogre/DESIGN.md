@@ -515,11 +515,13 @@ these records the way the wire needs" was the reason for the weaker form; it is
 no longer true on 0.11.0, where all ten records report exactly their published
 sizes.
 
-**If a raw-bytes view returns.** A second `@unmanaged` declaration of a twin
-earns its place again the moment something wants `changetype<...>(ptr)` over a
-transform record. Restore it *with* a check that the two declarations agree —
-that pairing is the whole value, and a guard with no caller is what this cleanup
-deleted.
+**If a raw-bytes view returns, it is a use site, not a declaration.** TensionScript
+0.11.1 made `@unmanaged` a use-site modifier — `changetype<@unmanaged T>(ptr)` —
+so viewing a record's bytes no longer needs a second declaration of it, and the
+duplicate-declaration guard this section was built around has nothing left to
+compare. That is why the generator emits a plain `struct` for every record as of
+2026-10-31: the declaration states the fields, and the three view sites state the
+model. A new declaration is added for a reason, never for a view.
 
 #### The records are generated now (2026-10-30)
 
@@ -529,7 +531,9 @@ wire records — 137 fields, in dependency order, each tagged `value` (the
 `tools/codegen/generate.mjs` emits both sides from it:
 
 - `tension-framework/assembly/ogre/generated/ogre.generated.ts` — the guest's
-  declarations. `@unmanaged struct` for a view, plain `struct` for a twin.
+  declarations. A plain `struct` for every record, view or twin: `@unmanaged` is
+  named at the use site (0.11.1), so no declaration carries it. Changed
+  2026-10-31; before that the generator wrote `@unmanaged struct` for a view.
 - `tension-ogre/src/generated/ogre.generated.h` — the C++ structs plus a
   `static_assert` for **every** field offset and **every** record size.
 
