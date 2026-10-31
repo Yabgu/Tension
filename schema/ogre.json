@@ -1,0 +1,676 @@
+{
+  "$comment": "The OGRE wire records. One source for both sides: tools/codegen emits tension-framework/assembly/ogre/generated/ogre.generated.ts and tension-ogre/src/generated/ogre.generated.h. Field names are the guest's; the .h emits them snake_case by a documented rule. Alignment follows the wire (f32/u32/i32 align 4, u64 align 8) so offsets are computed, never read from a compiler.",
+  "records": [
+    {
+      "name": "Vec3fValue",
+      "kind": "value",
+      "size": 12,
+      "fields": [
+        {
+          "name": "x",
+          "type": "f32"
+        },
+        {
+          "name": "y",
+          "type": "f32"
+        },
+        {
+          "name": "z",
+          "type": "f32"
+        }
+      ]
+    },
+    {
+      "name": "QuatfValue",
+      "kind": "value",
+      "size": 16,
+      "fields": [
+        {
+          "name": "x",
+          "type": "f32"
+        },
+        {
+          "name": "y",
+          "type": "f32"
+        },
+        {
+          "name": "z",
+          "type": "f32"
+        },
+        {
+          "name": "w",
+          "type": "f32"
+        }
+      ]
+    },
+    {
+      "name": "SceneNode",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "nodeId",
+          "type": "u32"
+        },
+        {
+          "name": "parentId",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "childCount",
+          "type": "u32"
+        },
+        {
+          "name": "nameOffset",
+          "type": "u32"
+        },
+        {
+          "name": "nameLength",
+          "type": "u32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "rotation",
+          "type": "QuatfValue"
+        },
+        {
+          "name": "scale",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "reserved",
+          "type": "u64"
+        }
+      ],
+      "statics": "  /// A node at a place, with the identity rotation and unit scale `at` sets.\n  /// `parentId` stays 0: hierarchy is refused in this chunk.\n  static at(x: f32 = 0, y: f32 = 0, z: f32 = 0): SceneNode {\n    const node = new SceneNode();\n    node.position.x = x;\n    node.position.y = y;\n    node.position.z = z;\n    node.rotation.w = 1;\n    node.scale.x = 1;\n    node.scale.y = 1;\n    node.scale.z = 1;\n    return node;\n  }"
+    },
+    {
+      "name": "LightRecord",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "lightId",
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "colourR",
+          "type": "f32"
+        },
+        {
+          "name": "colourG",
+          "type": "f32"
+        },
+        {
+          "name": "colourB",
+          "type": "f32"
+        },
+        {
+          "name": "colourA",
+          "type": "f32"
+        },
+        {
+          "name": "intensity",
+          "type": "f32"
+        },
+        {
+          "name": "range",
+          "type": "f32"
+        },
+        {
+          "name": "spotInner",
+          "type": "f32"
+        },
+        {
+          "name": "spotOuter",
+          "type": "f32"
+        },
+        {
+          "name": "directionX",
+          "type": "f32"
+        },
+        {
+          "name": "directionY",
+          "type": "f32"
+        },
+        {
+          "name": "directionZ",
+          "type": "f32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "nameOffset",
+          "type": "u32"
+        },
+        {
+          "name": "nameLength",
+          "type": "u32"
+        },
+        {
+          "name": "reserved",
+          "type": "u64"
+        }
+      ],
+      "statics": "  /// A directional light: a colour, an intensity, and the direction it travels.\n  static directional(r: f32, g: f32, b: f32, intensity: f32, dx: f32, dy: f32,\n                     dz: f32): LightRecord {\n    const light = new LightRecord();\n    light.kind = LIGHT_DIRECTIONAL;\n    light.colourR = r;\n    light.colourG = g;\n    light.colourB = b;\n    light.intensity = intensity;\n    light.directionX = dx;\n    light.directionY = dy;\n    light.directionZ = dz;\n    return light;\n  }\n\n  /// A point light at a place. `range` of 0 is no attenuation.\n  static point(r: f32, g: f32, b: f32, intensity: f32, x: f32, y: f32, z: f32,\n               range: f32 = 0): LightRecord {\n    const light = new LightRecord();\n    light.kind = LIGHT_POINT;\n    light.colourR = r;\n    light.colourG = g;\n    light.colourB = b;\n    light.intensity = intensity;\n    light.position.x = x;\n    light.position.y = y;\n    light.position.z = z;\n    light.range = range;\n    return light;\n  }"
+    },
+    {
+      "name": "CameraRecord",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "cameraId",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "fovY",
+          "type": "f32"
+        },
+        {
+          "name": "aspect",
+          "type": "f32"
+        },
+        {
+          "name": "nearClip",
+          "type": "f32"
+        },
+        {
+          "name": "farClip",
+          "type": "f32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "rotation",
+          "type": "QuatfValue"
+        },
+        {
+          "name": "viewportWidth",
+          "type": "u32"
+        },
+        {
+          "name": "viewportHeight",
+          "type": "u32"
+        },
+        {
+          "name": "reserved",
+          "type": "u64"
+        },
+        {
+          "name": "reserved2",
+          "type": "u64"
+        }
+      ],
+      "statics": "  /// A perspective camera looking down its own -Z (an OGRE camera's default).\n  /// The viewport stays 0 x 0, which means the window's whole size.\n  /// The identity rotation is set here: the value twin defaults to zero.\n  static perspective(fovY: f32, aspect: f32, near: f32, far: f32, x: f32 = 0,\n                     y: f32 = 0, z: f32 = 0): CameraRecord {\n    const camera = new CameraRecord();\n    camera.fovY = fovY;\n    camera.aspect = aspect;\n    camera.nearClip = near;\n    camera.farClip = far;\n    camera.position.x = x;\n    camera.position.y = y;\n    camera.position.z = z;\n    camera.rotation.w = 1;\n    return camera;\n  }"
+    },
+    {
+      "name": "Material",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "materialId",
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "diffuseR",
+          "type": "f32"
+        },
+        {
+          "name": "diffuseG",
+          "type": "f32"
+        },
+        {
+          "name": "diffuseB",
+          "type": "f32"
+        },
+        {
+          "name": "diffuseA",
+          "type": "f32"
+        },
+        {
+          "name": "specularR",
+          "type": "f32"
+        },
+        {
+          "name": "specularG",
+          "type": "f32"
+        },
+        {
+          "name": "specularB",
+          "type": "f32"
+        },
+        {
+          "name": "specularA",
+          "type": "f32"
+        },
+        {
+          "name": "emissiveR",
+          "type": "f32"
+        },
+        {
+          "name": "emissiveG",
+          "type": "f32"
+        },
+        {
+          "name": "emissiveB",
+          "type": "f32"
+        },
+        {
+          "name": "emissiveA",
+          "type": "f32"
+        },
+        {
+          "name": "roughness",
+          "type": "f32"
+        },
+        {
+          "name": "metalness",
+          "type": "f32"
+        },
+        {
+          "name": "opacity",
+          "type": "f32"
+        },
+        {
+          "name": "slot0Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot0Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot0Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot0Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot1Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot1Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot1Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot1Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot2Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot2Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot2Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot2Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot3Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot3Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot3Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot3Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot4Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot4Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot4Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot4Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot5Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot5Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot5Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot5Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot6Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot6Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot6Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot6Uv",
+          "type": "u32"
+        },
+        {
+          "name": "slot7Resource",
+          "type": "u32"
+        },
+        {
+          "name": "slot7Sampler",
+          "type": "u32"
+        },
+        {
+          "name": "slot7Flags",
+          "type": "u32"
+        },
+        {
+          "name": "slot7Uv",
+          "type": "u32"
+        }
+      ],
+      "statics": "  /// An Unlit material: a diffuse colour and nothing else.\n  static unlit(r: f32, g: f32, b: f32, a: f32 = 1.0): Material {\n    const material = new Material();\n    material.kind = MAT_HLMS_UNLIT;\n    material.diffuseR = r;\n    material.diffuseG = g;\n    material.diffuseB = b;\n    material.diffuseA = a;\n    material.opacity = a;\n    return material;\n  }\n\n  /// A PBS material: physically based, and black until the scene has a light rig.\n  static pbs(r: f32, g: f32, b: f32, roughness: f32 = 0.5, metalness: f32 = 0.0,\n             a: f32 = 1.0): Material {\n    const material = new Material();\n    material.kind = MAT_HLMS_PBS;\n    material.diffuseR = r;\n    material.diffuseG = g;\n    material.diffuseB = b;\n    material.diffuseA = a;\n    material.roughness = roughness;\n    material.metalness = metalness;\n    material.opacity = a;\n    return material;\n  }"
+    },
+    {
+      "name": "Resource",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "resourceId",
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "type": "u32"
+        },
+        {
+          "name": "state",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "size",
+          "type": "u32"
+        },
+        {
+          "name": "nameOffset",
+          "type": "u32"
+        },
+        {
+          "name": "nameLength",
+          "type": "u32"
+        },
+        {
+          "name": "error",
+          "type": "i32"
+        },
+        {
+          "name": "refs",
+          "type": "u32"
+        },
+        {
+          "name": "seq",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "Renderable",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "renderableId",
+          "type": "u32"
+        },
+        {
+          "name": "materialId",
+          "type": "u32"
+        },
+        {
+          "name": "meshResourceId",
+          "type": "u32"
+        },
+        {
+          "name": "nodeId",
+          "type": "u32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "rotation",
+          "type": "QuatfValue"
+        },
+        {
+          "name": "scale",
+          "type": "Vec3fValue"
+        }
+      ],
+      "statics": "  /// A drawable: a mesh, a material, and a place in the world.\n  static at(meshResourceId: u32, materialId: u32, x: f32 = 0, y: f32 = 0,\n            z: f32 = 0, scale: f32 = 1.0): Renderable {\n    const renderable = new Renderable();\n    renderable.meshResourceId = meshResourceId;\n    renderable.materialId = materialId;\n    renderable.position.x = x;\n    renderable.position.y = y;\n    renderable.position.z = z;\n    renderable.rotation.w = 1;\n    renderable.scale.x = scale;\n    renderable.scale.y = scale;\n    renderable.scale.z = scale;\n    return renderable;\n  }"
+    },
+    {
+      "name": "MotionUpdate",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "renderableId",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "rotation",
+          "type": "QuatfValue"
+        },
+        {
+          "name": "scale",
+          "type": "Vec3fValue"
+        }
+      ],
+      "checks": {
+        "function": "ogreMotionOffsetsProblem",
+        "sizeof": 48,
+        "fields": [
+          {
+            "name": "position",
+            "offset": 8
+          },
+          {
+            "name": "rotation",
+            "offset": 20
+          },
+          {
+            "name": "scale",
+            "offset": 36
+          }
+        ],
+        "tail": "scale"
+      }
+    },
+    {
+      "name": "BoneUpdate",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "renderableId",
+          "type": "u32"
+        },
+        {
+          "name": "boneIndex",
+          "type": "u32"
+        },
+        {
+          "name": "position",
+          "type": "Vec3fValue"
+        },
+        {
+          "name": "rotation",
+          "type": "QuatfValue"
+        },
+        {
+          "name": "scale",
+          "type": "Vec3fValue"
+        }
+      ],
+      "checks": {
+        "function": "ogreBoneOffsetsProblem",
+        "sizeof": 48,
+        "fields": [
+          {
+            "name": "position",
+            "offset": 8
+          },
+          {
+            "name": "rotation",
+            "offset": 20
+          },
+          {
+            "name": "scale",
+            "offset": 36
+          }
+        ],
+        "tail": "scale"
+      }
+    },
+    {
+      "name": "Job",
+      "kind": "view",
+      "fields": [
+        {
+          "name": "jobId",
+          "type": "u32"
+        },
+        {
+          "name": "state",
+          "type": "u32"
+        },
+        {
+          "name": "kind",
+          "type": "u32"
+        },
+        {
+          "name": "flags",
+          "type": "u32"
+        },
+        {
+          "name": "priority",
+          "type": "i32"
+        },
+        {
+          "name": "resourceId",
+          "type": "u32"
+        },
+        {
+          "name": "progress",
+          "type": "f32"
+        },
+        {
+          "name": "error",
+          "type": "i32"
+        },
+        {
+          "name": "nameOffset",
+          "type": "u32"
+        },
+        {
+          "name": "nameLength",
+          "type": "u32"
+        },
+        {
+          "name": "seq",
+          "type": "u64"
+        },
+        {
+          "name": "reserved",
+          "type": "u64"
+        },
+        {
+          "name": "reserved2",
+          "type": "u64"
+        }
+      ]
+    }
+  ],
+  "tsImports": [
+    {
+      "from": "../wire",
+      "names": [
+        "LIGHT_DIRECTIONAL",
+        "LIGHT_POINT",
+        "MAT_HLMS_PBS",
+        "MAT_HLMS_UNLIT"
+      ],
+      "why": "the static constructors below name these protocol constants; they are behavior, and they stay in wire.ts so the schema describes layout plus construction, not every constant in the catalogue."
+    }
+  ]
+}

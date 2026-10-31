@@ -218,6 +218,17 @@ fi
 # -fPIC: the object is dlopen'd, not linked into a PIE.
 # -Wall -Wextra: warnings are the point of a build recipe that a reviewer reads.
 # -lpthread is not optional: the render thread and its condvar need it.
+# The wire records the adapter decodes are generated from the schema in the
+# repository root. Regenerate before compiling so a schema edit is never half
+# applied; `test.sh --codegen` is the drift gate.
+node "$here/../tools/codegen/generate.mjs" \
+    --schema "$here/../schema/ogre.json" \
+    --out-ts "$here/../tension-framework/assembly/ogre/generated" \
+    --out-h "$here/src/generated" >/dev/null || {
+    echo "tension-ogre: the codegen step failed (schema/ogre.json)" >&2
+    exit 1
+}
+
 mkdir -p "$out"
 # shellcheck disable=SC2086  # the flag lists are deliberate word splits
 "${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \

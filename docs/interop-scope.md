@@ -297,8 +297,8 @@ never hand-edited.
 
 | file | lines | offsets | type | already `@unmanaged`? |
 |---|---|---|---|---|
-| `ogre/wire.ts` | 29-509 | 24 classes: Vec2f, Vec3f, Vec3f16, Vec4f, Quatf, Colourf, Mat4f, Transformf, Aabbf, StringRef, BufferRef, SceneNode, LightRecord, CameraRecord, TextureSlot, Material, ShaderRecord, ResourceReq, Resource, Buffer, Renderable, MotionUpdate, BoneUpdate, Job | declarations | **yes** |
-| `ogre/wire.ts` | 581-755 | `RESOURCE_SIZE` 48, `RESOURCE_*_OFFSET` 8/12/16/40, `JOB_SIZE` 64, `SCENE_*_SIZE` 80/80/96, `MATERIAL_SIZE` 208, `RENDERABLE_SIZE` 64, `MOTION_SIZE` 64, `BONE_SIZE` 64, `SKIN_SIZE` 32, table bases | size constants | partly — sizes duplicate the declarations |
+| `ogre/wire.ts` | 62-451 | 11 declarations: **9 `@unmanaged`** — SceneNode, LightRecord, CameraRecord, Material, Resource, Renderable, MotionUpdate, BoneUpdate, Job — and **2 plain structs**, Vec3fValue and QuatfValue, the value twins the transform records nest. Fifteen further declarations were pruned for zero consumers on 2026-10-30: Vec2f, Vec3f, Vec3f16, Vec4f, Quatf, Colourf, Mat4f, StringRef, BufferRef, TextureSlot, ShaderRecord, ResourceReq, Buffer (commit `88012ee`), then Transformf and Aabbf once their assertions had gone | declarations | **yes** |
+| `ogre/wire.ts` | 510-681 | `RESOURCE_SIZE` 48, `RESOURCE_*_OFFSET` 8/12/16/40, `JOB_SIZE` 64, `SCENE_*_SIZE` (72/80/88), `MATERIAL_SIZE` (200), `RENDERABLE_SIZE` (56), `MOTION_SIZE` 48, `BONE_SIZE` 48, `SKIN_SIZE` 32, table bases | size constants | **derived** — the five record sizes are `sizeof<T>()` since 2026-10-30; `RESOURCE_SIZE`, `JOB_SIZE`, `MOTION_SIZE`, `BONE_SIZE` and `SKIN_SIZE` are still literals |
 | `ogre/index.ts` | 226, 351-358, 364-406 | `changetype<Job>(regionOffset(REGION_JOB) + (id-1)*JOB_SIZE)`; `recordSlot` + `memory.copy(at, record, SIZE)` | view + copy | yes (constant-sized copy) |
 | `ogre/bones.ts` | 141-155 | 0,4,8,16..60 | 15 `store<u32/f32/u64>` | **no** — raw writes into a `BoneUpdate`-shaped slot |
 | `ogre/motion.ts` | 79-93, 111-125 | 0,4,8,16..60 | 30 `store<…>` | **no** — raw |

@@ -335,10 +335,10 @@ class Game {
     const pitch = Math.atan2(aim_y - eye_y, eye_z);
     const camera = ogre.CameraRecord.perspective(45.0 * (3.14159265358979 / 180.0),
                                                  <f32>640 / <f32>480, 0.1, 200.0, 0.0, <f32>eye_y, <f32>eye_z);
-    camera.rotationX = <f32>Math.sin(pitch * 0.5);
-    camera.rotationY = 0.0;
-    camera.rotationZ = 0.0;
-    camera.rotationW = <f32>Math.cos(pitch * 0.5);
+    camera.rotation.x = <f32>Math.sin(pitch * 0.5);
+    camera.rotation.y = 0.0;
+    camera.rotation.z = 0.0;
+    camera.rotation.w = <f32>Math.cos(pitch * 0.5);
     camera.cameraId = 1;
     if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 

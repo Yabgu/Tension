@@ -68,6 +68,13 @@ import { regionOffset, regionSize } from "../runtime/arena";
 import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
 import { rt } from "../runtime/rt";
 
+// The records live in the generated module now. `wire` re-exports them, and a
+// *named* import from `wire` resolves — but `export *` does not carry a
+// re-exported name, so `import * as ogre` would not see `ogre.SceneNode`.
+// Exporting straight from the module that declares them is one hop, which does
+// propagate. Measured: one `export *` from a declaring module resolves, two
+// levels through a re-export do not.
+export * from "./generated/ogre.generated";
 export * from "./wire";
 export * from "./motion";
 export * from "./animation";

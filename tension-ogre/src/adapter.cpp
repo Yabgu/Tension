@@ -728,9 +728,9 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     if (id == 0 || id > capacity) return refuse(ret, -EINVAL);
     if (s.api == nullptr || s.api->guest_read == nullptr) return refuse(ret, -EBUSY);
 
-    // Sized by the *wire* record, not by the decoder struct: `MaterialRecord`
+    // Sized by the *wire* record, not by the decoder struct: `Material`
     // decodes the fields this adapter reads (through slot 0) and is 88 bytes,
-    // while the region's record is 208. Reading a wire record into a buffer
+    // while the region's record is 200. Reading a wire record into a buffer
     // sized from the struct is a stack overflow — measured, in this shim's
     // first run, as `*** stack smashing detected ***`.
     constexpr size_t kMaxRecordBytes = kMaterialRecordBytes;
@@ -741,7 +741,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
     int32_t rc = 0;
     switch (kind) {
         case kSubmitNode: {
-            SceneNodeRecord decoded;
+            SceneNode decoded;
             if (!SceneMirror::decode_node_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_node(id, decoded);
             break;
@@ -759,7 +759,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
             break;
         }
         case kSubmitMaterial: {
-            MaterialRecord decoded;
+            Material decoded;
             if (!SceneMirror::decode_material_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_material(id, decoded);
             break;
@@ -769,7 +769,7 @@ int32_t shim_submit(void *, const tension_value *args, uint32_t nargs, tension_v
         // next kind added to the wire into a silently misrouted record. The
         // remove switch below already refuses by name for the same reason.
         case kSubmitRenderable: {
-            RenderableRecord decoded;
+            Renderable decoded;
             if (!SceneMirror::decode_renderable_at(record, decoded)) return refuse(ret, -EINVAL);
             rc = s.scene.upsert_renderable(id, decoded);
             break;

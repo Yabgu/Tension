@@ -267,10 +267,10 @@ class Game {
         45.0 * (3.14159265358979 / 180.0), <f32>WIDTH / <f32>HEIGHT, 0.1, 200.0,
         this.x, this.y, this.z);
       camera.cameraId = 1;
-      camera.rotationX = cyq * spq;
-      camera.rotationY = syq * cpq;
-      camera.rotationZ = -syq * spq;
-      camera.rotationW = cyq * cpq;
+      camera.rotation.x = cyq * spq;
+      camera.rotation.y = syq * cpq;
+      camera.rotation.z = -syq * spq;
+      camera.rotation.w = cyq * cpq;
       if (ogre.submitCamera(camera) != 0) fail("submitCamera refused");
 
       this.frames++;
