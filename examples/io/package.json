@@ -23,6 +23,6 @@
     "tension-framework": "file:../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.11.2"
+    "@yabgu_gm/tensionscript": "^0.11.4"
   }
 }
