@@ -1,7 +1,154 @@
 # Engine adoption plan — the TensionScript features now on main
 
-**Status:** plan only. No engine source changed, nothing published, no
-opportunity implemented.
+**Status:** historical plan. The adoption landed in PR #38; read the post-merge
+status immediately below before any other section. Nothing here was published by
+this document.
+
+---
+
+## Post-merge status (2026-10-30)
+
+**Merged.** PR #38 (`feat/engine-adoption`) merged as **`023aa6c`** on
+2026-10-30, twenty commits on top of `f77e759`. Everything below this section
+describes the plan as it stood *before* that merge. The numbers here were
+re-measured against the merged tree in a read-only scoping pass the same day;
+that report is not checked in, so the corrections it found are restated below
+rather than linked.
+
+> The sections below describe the pre-merge plan. See the post-merge status
+> above for what actually landed.
+
+**What landed.**
+
+- **The five transform records nest the value twins.** `Vec3fValue` and
+  `QuatfValue` are plain structs stored inline, so `position: Vec3fValue` is
+  bytes in the record rather than a 4-byte reference. `Renderable`,
+  `MotionUpdate`, `BoneUpdate`, `Transformf` and `Aabbf` all carry them.
+- **Every pad is gone.** `Renderable` 64 → 56, `MotionUpdate` 64 → 48,
+  `BoneUpdate` 64 → 48, `SceneNode` 80 → 72, `LightRecord` 96 → 88, `Material`
+  208 → 200, `Aabbf` 32 → 24, `Transformf` 48 → 40. `CameraRecord` keeps 80
+  bytes because two `reserved` u64 words round it up, but its transform moved.
+- **Thirteen unused wire types deleted** (commit `88012ee`) — `Vec2f`, `Vec3f`,
+  `Vec3f16`, `Vec4f`, `Quatf`, `Colourf`, `Mat4f`, `StringRef`, `BufferRef`,
+  `TextureSlot`, `ShaderRecord`, `ResourceReq`, `Buffer` — along with the two
+  vestigial pads that went with them. **Two more followed on 2026-10-30**,
+  `Transformf` and `Aabbf`, once the assertions that were their last readers had
+  gone: with those removed, nothing in the tree named the declarations at all.
+- **Seven zero-caller check functions and 21 guest-vs-itself assertions deleted**
+  (commit `d7a3d66`). The 21 host-vs-guest assertions stayed.
+- **The host decodes by `memcpy`.** Seven packed decoder structs in
+  `tension-ogre/src/scene.h` replace the byte-shift readers; `scene.h` carries
+  **116 `static_assert`s** (108 `offsetof`, 7 `sizeof`, 1 window bound), and the
+  guest asserts the same numbers through `assertOgreWireOffsets`.
+- **The five record sizes in `wire.ts` are `sizeof<T>()`**, not literals.
+- **The five transform records are the only place the value twins are used.**
+  `@abi.align` is not used anywhere; neither are sized enums, `@lazy`, or a
+  use-site `@unmanaged` override.
+
+**What remains.**
+
+- **The eight `kXxxRecordBytes` constants have no cross-language tie.** They are
+  contract, not workaround: the C++ structs are deliberate *prefixes*
+  (64/60/68/88), so `sizeof` cannot produce the wire size. But nothing in C++
+  asserts `kNodeRecordBytes == 72` — the only tie today is the guest's
+  `sizeof<SceneNode>() != 72` in another file and another language. Commented
+  cross-references now sit beside each constant in `scene.h`; the mechanical tie
+  is the generator question below.
+- **Tail validation is missing, and a blanket fix would be wrong.** The decoders
+  are prefix-only: each copies `sizeof(out)` bytes and ignores the rest of the
+  wire record. Measured 2026-10-30 against the current declarations, four
+  records have a tail and three do not (`Renderable` 56/56,
+  `MotionUpdate` 48/48, `BoneUpdate` 48/48 decode whole):
+
+  | record | struct | wire | tail | contents |
+  |---|---|---|---|---|
+  | `SceneNode` | 64 | 72 | 8 | `reserved` u64 at 64 |
+  | `CameraRecord` | 60 | 80 | 20 | 4 B implicit pad, then `reserved` 64, `reserved2` 72 |
+  | `LightRecord` | 68 | 88 | 20 | `nameOffset` 68, `nameLength` 72, 4 B pad, `reserved` 80 |
+  | `Material` | 88 | 200 | 112 | `slot1`..`slot7` (88..200) |
+
+  Only the first two are *reserved* in the sense that a non-zero byte is drift.
+  `LightRecord`'s tail carries `nameOffset`/`nameLength`, and `Material`'s
+  carries seven texture slots — both are declared, authorable fields that this
+  adapter chooses not to read, so "non-zero tail = refuse" would reject a
+  legitimate light-with-a-name or textured material. No guest writes either
+  today, which is why the distinction has not surfaced.
+
+  **Cost is low.** `adapter.cpp:733-737` already copies the *whole* wire record
+  into `record[kMaxRecordBytes]` sized by `kMaterialRecordBytes`, so the tail
+  bytes are in host memory before decoding; validation is a scan from
+  `sizeof(out)` to `record_bytes` with no second `guest_read`. **What it would
+  break:** a guest that sets a reserved word fails — that is the intent; a guest
+  that names a light or fills a texture slot fails — that is not. Sequencing is
+  a correctness call, not feature adoption, and it belongs to the architect.
+  PR #39 (`fix/ogre-wire-tail-validation`) attempted this and was closed
+  unmerged on 2026-10-30 without reaching `main`.
+- **The generator question — now the only question.** The guest-side offset
+  tables are gone (deleted 2026-10-30: 30 OGRE assertions, 86 runtime ones). The
+  message-struct generator — one source emitting both `.ts` and `.h` — is the
+  long-term replacement for those deleted asserts *and* for the hardcoded
+  `(name, offset)` tables the layout hash is built from. Until it lands, a
+  same-size field reorder inside a guest record is caught by nothing; measured,
+  by reordering `regionCount`/`classCount` in `SessionInfo` and watching the
+  build, `guest-open` and all three drift fixtures pass.
+
+**Generator scope (measured, not designed).** What a single-source generator
+would have to replace, counted after the deletions:
+
+- **18 OGRE declarations** — 9 `@unmanaged` plus 2 plain value twins in
+  `ogre/wire.ts`, against 7 structs in `tension-ogre/src/scene.h`.
+- **19 runtime declarations** — 10 in `runtime/wire.ts` against the 9 records
+  and field tables in `tension-core/src/session/arena.rs`.
+- **192 assertion sites**: 116 `static_assert` in `scene.h` (108 `offsetof`, 7
+  `sizeof`, 1 window bound), 10 remaining in `ogre/wire.ts` (the motion and bone
+  tables), 0 in `runtime/wire.ts`, and 66 `(name, offset)` entries in the nine
+  Rust field tables that feed `layout_hash`.
+- **Plus the 8 `kXxxRecordBytes` constants** with no mechanical tie at all.
+
+What a generator would have to preserve, and therefore what could break: the
+C++ structs are deliberate **prefixes**, so it must emit prefix semantics rather
+than whole records; the guest assertions that remain are runtime-reachable and
+called by fixtures, so they cannot become compile-time-only; `layout_hash` inputs
+must not move (`786288195`, pinned at `arena.rs:1678`); and the C++ emission must
+keep `#pragma pack(1)`. Not designed here — this is the size of the job.
+
+**Landed 2026-10-30 — the generator exists, and three of those constraints
+changed under measurement.** `schema/ogre.json` + `tools/codegen/generate.mjs`
+emit `ogre.generated.ts` and `ogre.generated.h` from one field list; the guest
+and host record declarations and all 108 hand-written C++ record asserts are
+gone. `generate.mjs --check` is a `test.sh` suite, and both build scripts run
+the generator before their compile step. Two of the four preserved constraints
+were wrong when measured: the prefix design is **abandoned** (full-width structs
+now, costing +8/+20/+20/+112 bytes per node/camera/light/material — the tail is
+copied and never read), and `#pragma pack(1)` is **removed**, because the wire's
+layout is the naturally aligned one and packing shrinks LightRecord,
+CameraRecord and Resource by 4 bytes each (measured 84/76/44 packed against
+88/80/48 natural). The `layout_hash` constraint stands untouched: the arena
+records are not generated yet, so `786288195` still holds. The last two hand-written guest record checks
+(`ogreMotionOffsetsProblem`, `ogreBoneOffsetsProblem`) are generated from the
+same schema as the structs, and the hand-written source now has zero
+`offsetof`/`static_assert` on record layouts — the two survivors are a V2 tag
+length and a skin-window bound, different concerns.
+
+**Corrections to the sections below.** These numbers were true pre-merge and are
+not any more:
+
+- **§3.5**'s assertion table specifies `pad0`/`pad1`/`pad2` rows and
+  `sizeof<Vec3f16>()`. The landed form has no pads and uses `Vec3fValue` /
+  `QuatfValue`; `wire.ts:742-760` is the current motion check.
+- **§3.7.1**'s trace cites `read_transform` at `scene.cpp:460`, `:472`, `:484`
+  and the `u32()` / `f32()` readers at `:18` / `:24`. Those no longer exist —
+  the decoders are seven `memcpy`s at `scene.cpp:336-401`. The *conclusion* (no
+  16-byte alignment requirement, so no `@abi.align(16)`) is unaffected and was
+  re-verified against the post-merge tree. Its size list — "sizes stay 64, node
+  80, material 208" — is now 48/48/48, 72, 200.
+- **§7** says "zero plain `struct` declarations in the engine" and "34
+  `@unmanaged`, 2 `@managed`". The adoption itself falsified the first half:
+  there are now two plain structs (`Vec3fValue`, `QuatfValue`) and 21
+  `@unmanaged` in the framework (11 OGRE + 10 runtime), plus the 2 `@managed`
+  fixtures.
+
+---
 
 **This plan assumes Phase 0 (`@abi.align(N)`) ships before Phase 4.** If the
 engine adoption ships without it, Phase 4 lands with align-4 records and
@@ -56,16 +203,14 @@ looked like:
 ### 1.1 The publish gap — step 1 is a release, not an install
 
 `tension-framework/package.json` declares `@yabgu_gm/tensionscript: ^0.10.0`.
-What is actually installed is **neither that name nor that version**:
+What is actually installed is **not that version**:
 
 | | declared | installed |
 |---|---|---|
-| package name | `@yabgu_gm/tensionscript` | `@acakar/tensionscript` (the pre-rename scope) |
 | version | `^0.10.0` | `0.9.0` |
 
-`node_modules/@yabgu_gm/` does not exist at all; `node_modules/@acakar/tensionscript`
-is 0.9.0. So the engine's declared dependency resolves to nothing, and the
-compiler it builds with is 0.9.0 — **before** sized enums, before inline nesting
+`node_modules/@yabgu_gm/` does not exist at all, so the engine's declared
+dependency resolves to nothing, and the compiler it builds with is 0.9.0 — **before** sized enums, before inline nesting
 (#36), before the struct default flip (#38).
 
 **And 0.10.0 would not be enough even if it were installed.** Sub-phase A and
@@ -86,19 +231,18 @@ The publish is the user's credential action; this plan only states the order:
    dist contents match the tree, `bin/tensionscript.js` runs from the published
    tarball, the published `package.json` name is the new scope, and a fixture
    compiles with the *published* rather than the local build.
-3. **Bump the engine to `^0.11.0`** and reinstall, which also fixes the scope
-   mismatch (`@acakar` → `@yabgu_gm`).
+3. **Bump the engine to `^0.11.0`** and reinstall.
 4. **Rebuild the framework and verify the guest is byte-identical** (§8).
 
 **Measured 2026-10-28 22:10 — the release is a re-number, not a rebuild.** The
 registry says `@yabgu_gm/tensionscript` has exactly two versions,
 `0.0.0-stage` and `0.10.0` (`dist-tags.latest = 0.10.0`, published
-`20:26:54Z`); `@acakar/tensionscript` stops at `0.10.0`. **There is no 0.11.0 to
+`20:26:54Z`). **There is no 0.11.0 to
 install.** What *is* published as 0.10.0 already contains the flip: the tarball's
 `dist/asc.js` is byte-identical to the local build of `0b67e3cc` (915,141 bytes,
 md5 `9e0d04a20c92757bf6e02730c04932d2`), and a probe that nests a plain struct in
 an `@unmanaged` record reports `sizeof` 24 on it versus **16** on the installed
-`@acakar` 0.9.0 — the flip, shipped under an unchanged version number, with its
+0.9.0 build — the flip, shipped under an unchanged version number, with its
 CHANGELOG entry then still headed `## Unreleased — breaking`.
 
 **Status correction, 2026-10-29 — Phase 0's code has landed; only the publish
@@ -119,10 +263,9 @@ bump.
 version` returns **0.11.0**, the version list is
 `['0.0.0-stage', '0.10.0', '0.11.0']`, and the tarball is
 `https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.11.0.tgz`.
-The installed compiler in `tension-framework` is still `@acakar/tensionscript`
-**0.9.0** under the old scope (`node_modules/@yabgu_gm/` does not exist,
-`node_modules/.bin/tensionscript` still points at `@acakar`), so Phase 1's
-install is what fixes the scope and the version at once.
+The installed compiler in `tension-framework` is still **0.9.0**
+(`node_modules/@yabgu_gm/` does not exist), so Phase 1's install is what fixes
+the version.
 
 Two consequences for the engine side, both measured: the scope already moved in
 #35 — `tension-framework/package.json` declares `@yabgu_gm/tensionscript
@@ -133,8 +276,8 @@ run straight from an unpacked tarball needs an install beside it.
 **A symptom worth knowing:** the rename is live, and stale installs fail loudly
 rather than subtly. The TensionScript primary checkout, re-pointed at
 `0b67e3cc` with a `dist/` built before the rename, dies with
-`ERR_MODULE_NOT_FOUND: Cannot find package '@acakar/tensionscript' imported from
-dist/asc.js`. Expect the same shape in the engine until step 3.
+`ERR_MODULE_NOT_FOUND` for the package, raised from `dist/asc.js`. Expect the
+same shape in the engine until step 3.
 
 ### 1.2 The history divergence — checked, and it is only a rename
 
@@ -149,7 +292,7 @@ git diff 27b57652 0b67e3cc          # not just src/ std/ tests/ docs/
 
 **Result: 14 files, and every changed line is one of two string substitutions.**
 
-- `@acakar/tensionscript` → `@yabgu_gm/tensionscript`
+- the package's npm scope, to `@yabgu_gm`
 - `/home/acakar/work` → `/home/yabgu_gm/work`
 
 Filtering those two patterns out of the diff leaves **0 lines**. So the rewrite
@@ -398,7 +541,7 @@ wrong, and the reason is the thing the nesting work is deleting. Worth correctin
 in the same PR so the next reader does not try to preserve an alignment that was
 never there.
 
-Confirmed on three compilers 2026-10-28 (installed `@acakar` 0.9.0, published
+Confirmed on three compilers 2026-10-28 (installed 0.9.0, published
 `@yabgu_gm` 0.10.0, local `0b67e3cc`): `alignof` of a 16-byte plain struct whose
 leaves are `f32` reports **2** (log2), i.e. 4-byte alignment — unchanged by the
 flip, which moves `sizeof` and storage but not alignment.
@@ -794,8 +937,7 @@ because the plan's own branch has no `node_modules` and the main checkout's
 this tree.
 
 ```
-npm install @acakar/tensionscript@0.9.0   # the compiler the tree shipped with
-npm run build                             # 65627 bytes
+npm run build                             # 65627 bytes, on the 0.9.0 the tree shipped with
 npm install @yabgu_gm/tensionscript@0.10.0  # the published flip
 npm run build                             # 65627 bytes
 ```
@@ -946,4 +1088,4 @@ standalone instantiation harness.
 
 Engine citations to `~/work/Tension` @ `9bf9ba1` (measured) and `4b42251` (this
 branch's base; same tree). Compiler citations to TensionScript `origin/main` @
-`0b67e3cc`, the published `0.10.0` tarball, and the installed `@acakar` `0.9.0`.
+`0b67e3cc`, the published `0.10.0` tarball, and the installed `0.9.0`.

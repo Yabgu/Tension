@@ -112,19 +112,20 @@ export function assertLayout(): void {
  * only schema the host ever sends, and until this check existed nothing in the
  * guest read it.
  *
- * **What this proves that `assertWireOffsets` cannot.** The offset checks
- * compare a declaration against a literal copied from the host by hand, so they
- * prove *declaration == hand-copy*. `SessionInfo` drifted for a day with every
- * check passing, because the hand-copy was stale too: the guest declared 128
- * bytes / 10 capacities / the nonce at 88, the host wrote 144 / 13 / 104, and
- * the check agreed with the guest. This one compares against what the host
- * actually wrote into the arena at open. It would have named that drift on the
- * first open.
+ * **Why this exists rather than a per-field offset check.** The offset table
+ * this file's sibling used to carry compared each declaration against a literal
+ * copied from the host by hand, so it proved *declaration == hand-copy*.
+ * `SessionInfo` drifted for a day with every one of those checks passing,
+ * because the hand-copy was stale too: the guest declared 128 bytes / 10
+ * capacities / the nonce at 88, the host wrote 144 / 13 / 104, and the check
+ * agreed with the guest. This one compares against what the host actually wrote
+ * into the arena at open. It would have named that drift on the first open. The
+ * per-field table was deleted on 2026-10-30 for exactly that reason.
  *
  * **Type level, not field level.** The manifest carries no per-field offsets, so
  * this catches a record whose size or alignment changed, not a reorder inside
- * one. The per-field half stays with `assertWireOffsets`; the two checks are
- * complementary, neither subsumes the other.
+ * one. Nothing on the guest side covers a same-size reorder any more; the
+ * generator scoped in `docs/engine-adoption-plan.md` is the fix.
  *
  * **Sizes only — alignment is a consistency relation, not a comparison.**
  * `entry.size % entry.align` is checked because a manifest whose size is not a

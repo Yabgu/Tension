@@ -8,16 +8,19 @@
 // stays scalar, so a matrix, if one is ever wanted, is sixteen floats.
 //
 // Padding is spelled out only where something depends on it: an alignment need,
-// or a host reader's fixed offset. See the rule above `Transformf` for which
-// records carry pads and why.
+// or a host reader's fixed offset. See the rule below for which records carry
+// pads and why.
 //
 // **These field layouts are defined here, for the first time.** The design note
 // (§5.1) defers the capability catalogue's *field sets* until the OGRE version
 // pin and extends the manifest then; chunk 1's manifest still holds the nine
 // protocol types, so nothing here moves `layoutHash`. What is fixed is the
-// sizes, and `assertOgreWireOffsets` proves them the same way the runtime's
-// check proves its own: `offsetof<T>("lastField")` plus that field's width plus
-// the trailing reserved words, never `sizeof<T>()`.
+// sizes, and they are asserted on the *C++* side (`tension-ogre/src/scene.h`,
+// 116 `static_assert`s against `#pragma pack(1)`) and documented above each
+// declaration here. The guest's own per-record offset table was deleted on
+// 2026-10-30 — it restated the same literals in a second language without a
+// second source of truth. What the guest still asserts at startup is the two
+// moving tables and the contract constants (`assertOgreWireOffsets`).
 //
 // Alignment is a *placement* rule, not something offsetof can check. Every leaf
 // in these records is an `f32` (align 4), so nothing here is forced to a 16-byte
@@ -52,405 +55,59 @@ import { regionOffset } from "../runtime/arena";
 // record that carries one is `@unmanaged`, which is the supported shape.
 //
 // What keeps them honest is the record-level check: `ogreMotionOffsetsProblem`
-// and `ogreWireOffsetsProblem` assert where each twin lands in the records the
-// adapter reads.
+// and `ogreBoneOffsetsProblem` assert where each twin lands in the two records
+// the guest writes every frame.
 
-/** A Vec3 as a value — **12 bytes**: no pad, no fourth coordinate. */
-export struct Vec3fValue {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-}
-
-/** A quaternion as a value — 16 bytes, `w` last. Fills a 16-byte slot on its own. */
-export struct QuatfValue {
-  x: f32 = 0;
-  y: f32 = 0;
-  z: f32 = 0;
-  w: f32 = 0;
-}
-
-// ── Transform record padding: the rule ────────────────────────────────
+// --- the record declarations ------------------------------------------------
 //
-// **No transform record carries a pad.** All five are tight: `MotionUpdate` and
-// `BoneUpdate` are 48 bytes with the transform at 8/20/36, `Renderable` is 56
-// with it at 16/28/44, `Transformf` is 40 and `Aabbf` 24.
+// **The 11 records below are generated.** `schema/ogre.json` is the single
+// source; `tools/codegen/generate.mjs` emits them here and, from the same
+// field lists, the adapter's C++ header. A guest field that moves and a host
+// field that does not is therefore a compile error on the host side (the
+// generated `static_assert`s) rather than a silent misread at run time.
 //
-// The pads these records used to carry were there to land a 16-byte unit on a
-// 16-byte boundary. Measured, nothing here needs one:
+// `codegen --check` in `test.sh` fails when the committed files and the schema
+// disagree, so the schema cannot drift from what is compiled.
 //
-//   - every leaf is an `f32` (align 4), so no offset is forced;
-//   - the adapter decodes through `u32()`/`f32()` byte shifts
-//     (`tension-ogre/src/scene.cpp`), never an aligned load;
-//   - the guest is WASM, where an unaligned load is slower at worst, never a
-//     fault.
+// What the generator emits: `@unmanaged struct` for the wire records (a
+// pointer view over arena bytes) and a plain `struct` for the two value twins
+// (`Vec3fValue`, `QuatfValue`), which are stored inline inside those records.
+// The static constructors live on the types and are emitted with them.
 //
-// The rule, stated once:
-//
-//   Padding is added when a smaller field precedes a larger one that needs
-//   stricter alignment — a `u8` before an `f32` on a target that demands it, or
-//   a `u64` at an odd offset. Padding is never added for uniformity ("all
-//   records should be N-byte shaped"), convention ("this is the wire's slot
-//   size"), or "16-byte slots" as a shape preference.
-//
-// Note what the rule does **not** say: "or a host reader needs it". A host
-// reader pins *offsets*, not padding — `scene.cpp` reads the three
-// adapter-visible records at whatever offsets they have, and a changed offset is
-// a coordinated change on both sides, not a reason to keep a pad.
-//
-// No record below contains a `u8`-adjacent-to-`f32` or an odd-offset `u64`, so
-// none needs padding today. If a future field does, pad that field explicitly
-// and say why here — the reason is the alignment arithmetic, never the shape.
+// The padding rule that used to be argued at length here is now enforced by
+// construction: the generator computes every offset from field widths, and the
+// host asserts each one.
+import {
+  Vec3fValue,
+  QuatfValue,
+  SceneNode,
+  LightRecord,
+  CameraRecord,
+  Material,
+  Resource,
+  Renderable,
+  MotionUpdate,
+  BoneUpdate,
+  Job,
+  ogreMotionOffsetsProblem,
+  ogreBoneOffsetsProblem,
+} from "./generated/ogre.generated";
 
-/** Position, rotation, uniform scale — 40 bytes (tight: no host reader). */
-@unmanaged
-export struct Transformf {
-  position: Vec3fValue = {}; //  0, 12 bytes
-  rotation: QuatfValue = {}; // 12, 16 bytes — `QuatfValue` is 4-byte aligned
-  scale: Vec3fValue = {}; //    28, 12 bytes — ends the record at 40
-}
-
-/** An axis-aligned box — 24 bytes (tight: no host reader). */
-@unmanaged
-export struct Aabbf {
-  min: Vec3fValue = {}; //  0, 12 bytes
-  max: Vec3fValue = {}; // 12, 12 bytes — ends the record at 24
-}
-
-// --- refs ------------------------------------------------------------------
-
-// --- records ---------------------------------------------------------------
-
-/** A scene node, 80 bytes: `transform` at 24, alignment 16. */
-@unmanaged
-export struct SceneNode {
-  nodeId: u32 = 0;
-  parentId: u32 = 0;
-  flags: u32 = 0;
-  childCount: u32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  // 24: the transform, exactly where the header's six words end. No pads: the
-  // rotation follows the position at 36 and the scale at 52.
-  transformX: f32 = 0;
-  transformY: f32 = 0;
-  transformZ: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  scaleX: f32 = 1;
-  scaleY: f32 = 1;
-  scaleZ: f32 = 1;
-  reserved: u64 = 0;
-
-  /// A node at a place, with the identity rotation and unit scale the fields
-  /// already default to. `parentId` stays 0: hierarchy is refused in this
-  /// chunk, and a factory that quietly set a parent would be the wrong kind of
-  /// helpful.
-  static at(x: f32 = 0, y: f32 = 0, z: f32 = 0): SceneNode {
-    const node = new SceneNode();
-    node.transformX = x;
-    node.transformY = y;
-    node.transformZ = z;
-    return node;
-  }
-}
-
-/** A light, 96 bytes. */
-@unmanaged
-export struct LightRecord {
-  lightId: u32 = 0;
-  kind: u32 = 0;
-  flags: u32 = 0;
-  colourR: f32 = 1;
-  colourG: f32 = 1;
-  colourB: f32 = 1;
-  colourA: f32 = 1;
-  intensity: f32 = 1;
-  range: f32 = 0;
-  spotInner: f32 = 0;
-  spotOuter: f32 = 0;
-  directionX: f32 = 0;
-  directionY: f32 = -1;
-  directionZ: f32 = 0;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  reserved: u64 = 0;
-
-  /// A directional light: a colour, an intensity, and the direction the light
-  /// travels in. No position — a directional light is everywhere.
-  static directional(r: f32, g: f32, b: f32, intensity: f32, dx: f32, dy: f32,
-                     dz: f32): LightRecord {
-    const light = new LightRecord();
-    light.kind = LIGHT_DIRECTIONAL;
-    light.colourR = r;
-    light.colourG = g;
-    light.colourB = b;
-    light.intensity = intensity;
-    light.directionX = dx;
-    light.directionY = dy;
-    light.directionZ = dz;
-    return light;
-  }
-
-  /// A point light at a place. `range` of 0 is no attenuation.
-  static point(r: f32, g: f32, b: f32, intensity: f32, x: f32, y: f32, z: f32,
-               range: f32 = 0): LightRecord {
-    const light = new LightRecord();
-    light.kind = LIGHT_POINT;
-    light.colourR = r;
-    light.colourG = g;
-    light.colourB = b;
-    light.intensity = intensity;
-    light.positionX = x;
-    light.positionY = y;
-    light.positionZ = z;
-    light.range = range;
-    return light;
-  }
-}
-
-/** A camera, 80 bytes. */
-@unmanaged
-export struct CameraRecord {
-  cameraId: u32 = 0;
-  flags: u32 = 0;
-  fovY: f32 = 1;
-  aspect: f32 = 1;
-  nearClip: f32 = 0.1;
-  farClip: f32 = 1000;
-  positionX: f32 = 0;
-  positionY: f32 = 0;
-  positionZ: f32 = 0;
-  rotationX: f32 = 0;
-  rotationY: f32 = 0;
-  rotationZ: f32 = 0;
-  rotationW: f32 = 1;
-  viewportWidth: u32 = 0;
-  viewportHeight: u32 = 0;
-  reserved: u64 = 0;
-  reserved2: u64 = 0;
-
-  /// A perspective camera looking down its own -Z (an OGRE camera's default),
-  /// which is why the rotation is left at the identity the field defaults to.
-  /// The viewport stays 0 x 0, which means the window's whole size.
-  static perspective(fovY: f32, aspect: f32, near: f32, far: f32, x: f32 = 0,
-                     y: f32 = 0, z: f32 = 0): CameraRecord {
-    const camera = new CameraRecord();
-    camera.fovY = fovY;
-    camera.aspect = aspect;
-    camera.nearClip = near;
-    camera.farClip = far;
-    camera.positionX = x;
-    camera.positionY = y;
-    camera.positionZ = z;
-    return camera;
-  }
-}
-
-/** A material, 200 bytes: eight texture slots from 72. */
-@unmanaged
-export struct Material {
-  materialId: u32 = 0;
-  kind: u32 = 0;
-  flags: u32 = 0;
-  diffuseR: f32 = 1;
-  diffuseG: f32 = 1;
-  diffuseB: f32 = 1;
-  diffuseA: f32 = 1;
-  specularR: f32 = 1;
-  specularG: f32 = 1;
-  specularB: f32 = 1;
-  specularA: f32 = 1;
-  emissiveR: f32 = 0;
-  emissiveG: f32 = 0;
-  emissiveB: f32 = 0;
-  emissiveA: f32 = 0;
-  roughness: f32 = 1;
-  metalness: f32 = 0;
-  opacity: f32 = 1;
-  // Eight TextureSlots, 16 bytes each, from offset 72.
-  slot0Resource: u32 = 0; slot0Sampler: u32 = 0; slot0Flags: u32 = 0; slot0Uv: u32 = 0;
-  slot1Resource: u32 = 0; slot1Sampler: u32 = 0; slot1Flags: u32 = 0; slot1Uv: u32 = 0;
-  slot2Resource: u32 = 0; slot2Sampler: u32 = 0; slot2Flags: u32 = 0; slot2Uv: u32 = 0;
-  slot3Resource: u32 = 0; slot3Sampler: u32 = 0; slot3Flags: u32 = 0; slot3Uv: u32 = 0;
-  slot4Resource: u32 = 0; slot4Sampler: u32 = 0; slot4Flags: u32 = 0; slot4Uv: u32 = 0;
-  slot5Resource: u32 = 0; slot5Sampler: u32 = 0; slot5Flags: u32 = 0; slot5Uv: u32 = 0;
-  slot6Resource: u32 = 0; slot6Sampler: u32 = 0; slot6Flags: u32 = 0; slot6Uv: u32 = 0;
-  slot7Resource: u32 = 0; slot7Sampler: u32 = 0; slot7Flags: u32 = 0; slot7Uv: u32 = 0;
-
-  /// An Unlit material: a diffuse colour and nothing else, which is the
-  /// simplest thing a mesh can be drawn with — no lights, no texture slots.
-  static unlit(r: f32, g: f32, b: f32, a: f32 = 1.0): Material {
-    const material = new Material();
-    material.kind = MAT_HLMS_UNLIT;
-    material.diffuseR = r;
-    material.diffuseG = g;
-    material.diffuseB = b;
-    material.diffuseA = a;
-    material.opacity = a;
-    return material;
-  }
-
-  /// A PBS material: physically based, and *black* until the scene has a light
-  /// rig, which is why the examples use `unlit`. Here so the surface is
-  /// complete rather than half-documented.
-  static pbs(r: f32, g: f32, b: f32, roughness: f32 = 0.5, metalness: f32 = 0.0,
-             a: f32 = 1.0): Material {
-    const material = new Material();
-    material.kind = MAT_HLMS_PBS;
-    material.diffuseR = r;
-    material.diffuseG = g;
-    material.diffuseB = b;
-    material.diffuseA = a;
-    material.roughness = roughness;
-    material.metalness = metalness;
-    material.opacity = a;
-    return material;
-  }
-}
-
-/** A resource the session reports into `RESOURCE`, 48 bytes. */
-@unmanaged
-export struct Resource {
-  resourceId: u32 = 0;
-  kind: u32 = 0;
-  state: u32 = 0;
-  flags: u32 = 0;
-  size: u32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  error: i32 = 0;
-  refs: u32 = 0;
-  /// Implicitly 4 bytes of padding here: `seq` is a `u64` and the compiler
-  /// aligns it to 40. The explicit pad that used to sit here was a no-op --
-  /// measured 2026-10-30, same offset and size with and without it.
-  seq: u64 = 0;
-}
-
-/** A drawable, 56 bytes: its transform is inline at 16. */
-@unmanaged
-export struct Renderable {
-  renderableId: u32 = 0;
-  materialId: u32 = 0;
-  meshResourceId: u32 = 0;
-  /// The node this drawable hangs from, or 0 for self-placed at the world root.
-  /// This word was `flags` until chunk 5a: nothing wrote it and nothing read it
-  /// but the decoder, so the repurposing changed semantics and not shape — no
-  /// offset moved and `layoutHash` did not either. With a node, the inline
-  /// transform below is *local* to it.
-  nodeId: u32 = 0;
-  position: Vec3fValue = {}; //  16, 12 bytes
-  rotation: QuatfValue = {}; // 28, 16 bytes
-  scale: Vec3fValue = {}; //    44, 12 bytes — ends the record at 56
-
-  /// A drawable: a mesh, a material, and a place in the world — the inline
-  /// transform this record carries, with the identity rotation it defaults to.
-  /// The id is yours to set; it is the guest's own handle, not part of the
-  /// shape. `nodeId` stays 0: a drawable that hangs from a node is a different
-  /// sentence, and the factory should not guess which one you meant.
-  static at(meshResourceId: u32, materialId: u32, x: f32 = 0, y: f32 = 0,
-            z: f32 = 0, scale: f32 = 1.0): Renderable {
-    const renderable = new Renderable();
-    renderable.meshResourceId = meshResourceId;
-    renderable.materialId = materialId;
-    renderable.position.x = x;
-    renderable.position.y = y;
-    renderable.position.z = z;
-    renderable.rotation.w = 1;
-    renderable.scale.x = scale;
-    renderable.scale.y = scale;
-    renderable.scale.z = scale;
-    return renderable;
-  }
-}
-
-/**
- * One entry of the motion table, 48 bytes (chunk 4): a renderable's whole
- * transform and nothing else. The table lives at the start of `BUFFER_POOL`,
- * the guest writes it, and `ogre::submit_motion(count)` names how much of it is
- * live — one call per frame instead of one per body.
- *
- * **Nested, and tight.** `position`/`rotation`/`scale` are the value twins:
- * 12-byte values either side of the 16-byte quaternion, laid out in the record's
- * body rather than as 4-byte references. The transform starts right after the id
- * pair — at 8 — and the record is 48 bytes, which is the table's stride.
- *
- * **No pads.** An earlier revision put `pad0: u64` in front of the transform to
- * place it at 16, because the 16-byte offsets looked like an alignment
- * requirement. They were not: every leaf is an `f32` (align 4), nothing needs a
- * 16-byte boundary, the adapter reads bytes through `u32()`/`f32()` shifts rather
- * than aligned loads, and the guest is WASM where an unaligned load is merely
- * slower. The pads cost 16 bytes per record and bought nothing, so they went —
- * along with `Renderable`'s, whose record is now 56.
- *
- * **Unmanaged: every use is a pointer view.** The idiom is
- * `changetype<MotionUpdate>(base + index * sizeof<MotionUpdate>())` — a view of
- * the arena slot with no header read or written. A use-site `@unmanaged`
- * (`changetype<@unmanaged MotionUpdate>(…)`) is therefore not an improvement but
- * a restatement: the declaration already names the model, and the override emits
- * the same code. Say it once, here.
- *
- * The layout is verified by `ogreMotionOffsetsProblem`: the transform at
- * 8/20/36, `offsetof("scale") + sizeof<Vec3fValue>()` at the record's end, and
- * `sizeof` exactly 48 — so a field appended after `scale` fails the check
- * instead of silently widening the record past the table's stride.
- */
-@unmanaged
-export struct MotionUpdate {
-  renderableId: u32 = 0;
-  flags: u32 = 0;
-  position: Vec3fValue = {}; //  8, 12 bytes
-  rotation: QuatfValue = {}; // 20, 16 bytes
-  scale: Vec3fValue = {}; //    36, 12 bytes — ends the record at 48
-}
-
-/** One bone pose, 48 bytes — one entry of the bone table (DESIGN.md §5.1,
- * chunk 5b). Same layout as `MotionUpdate`, with `boneIndex` where the motion
- * record carries `flags`: a rig is posed by naming a renderable *and* a bone
- * inside it, and the transform that follows is the bone's local transform.
- *
- * The table lives in `BUFFER_POOL` after the motion table, so `BONE_TABLE_OFFSET`
- * is an offset *within the region*, not a region.
- *
- * **Unmanaged: every use is a pointer view.** As for `MotionUpdate`, the
- * declaration is where the model is stated; a use-site `@unmanaged` restates it
- * for identical code. The idiom is
- * `changetype<BoneUpdate>(base + index * sizeof<BoneUpdate>())`.
- *
- * The layout is verified by `ogreBoneOffsetsProblem`: the transform at 8/20/36
- * and `sizeof` exactly 48, which is the table's stride.
- */
-@unmanaged
-export struct BoneUpdate {
-  renderableId: u32 = 0;
-  boneIndex: u32 = 0;
-  position: Vec3fValue = {}; //  8, 12 bytes
-  rotation: QuatfValue = {}; // 20, 16 bytes
-  scale: Vec3fValue = {}; //    36, 12 bytes — ends the record at 48
-}
-
-/** One job, 64 bytes: what the session reports into `JOB`. */
-@unmanaged
-export struct Job {
-  jobId: u32 = 0;
-  state: u32 = 0;
-  kind: u32 = 0;
-  flags: u32 = 0;
-  priority: i32 = 0;
-  resourceId: u32 = 0;
-  progress: f32 = 0;
-  error: i32 = 0;
-  nameOffset: u32 = 0;
-  nameLength: u32 = 0;
-  seq: u64 = 0;
-  reserved: u64 = 0;
-  reserved2: u64 = 0;
-}
+// Re-exported so every existing `import { SceneNode } from "../ogre/wire"`
+// keeps working; the names are the same, the declarations moved.
+export {
+  Vec3fValue,
+  QuatfValue,
+  SceneNode,
+  LightRecord,
+  CameraRecord,
+  Material,
+  Resource,
+  Renderable,
+  MotionUpdate,
+  BoneUpdate,
+  Job,
+};
 
 // --- constants -------------------------------------------------------------
 
@@ -718,43 +375,13 @@ export const TOPO_TRIANGLE_LIST: u32 = 0;
 // --- the offset check ------------------------------------------------------
 
 /**
- * The first OGRE wire offset that disagrees with this catalogue, or `null`.
- *
- * Same shape as the runtime's `wireOffsetsProblem`, and for the same reason: a
- * mismatch is a build that will read another field's bytes, and naming the
- * field is the whole diagnostic. Sizes come from the last field's offset plus
- * its width plus the trailing reserved words, because AS's `sizeof` does not
- * report these records the way the wire needs.
- */
-/**
  * The motion record's offsets, on their own.
  *
- * Separate from `ogreWireOffsetsProblem` so a guest that uses `MotionBatch`
+ * Separate from the wire contract check so a guest that uses `MotionBatch`
  * can assert exactly what it depends on, by name, rather than relying on a
  * larger check happening to include it. The layout is the point: the id pair,
  * then the transform at the offsets `Renderable`'s inline one already uses.
  */
-function ogreMotionOffsetsProblem(): string | null {
-  // No pads: the transform starts right after the id pair, at 8. The offsets are
-  // the adapter's contract (`decode_motion_at`), and `sizeof` catches a field
-  // appended after `scale` -- the form that an `offsetof(last) + width` check
-  // cannot see.
-  if (offsetof<MotionUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
-    return "MotionUpdate.position";
-  }
-  if (offsetof<MotionUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
-    return "MotionUpdate.rotation";
-  }
-  if (offsetof<MotionUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
-    return "MotionUpdate.scale";
-  }
-  if (offsetof<MotionUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<MotionUpdate>()) {
-    return "MotionUpdate tail";
-  }
-  if (sizeof<MotionUpdate>() != 48) return "MotionUpdate size";
-  return null;
-}
-
 /**
  * Assert this build's `MotionUpdate` matches what the adapter reads: the record
  * is a pointer view the guest writes and the adapter decodes at literal offsets,
@@ -775,23 +402,6 @@ export function assertOgreMotionOffsets(): void {
  * separately for the same reason: a guest that poses a rig depends on these
  * fields by name, and the record's size is the table's stride.
  */
-function ogreBoneOffsetsProblem(): string | null {
-  if (offsetof<BoneUpdate>("position") + offsetof<Vec3fValue>("x") != 8) {
-    return "BoneUpdate.position";
-  }
-  if (offsetof<BoneUpdate>("rotation") + offsetof<QuatfValue>("x") != 20) {
-    return "BoneUpdate.rotation";
-  }
-  if (offsetof<BoneUpdate>("scale") + offsetof<Vec3fValue>("x") != 36) {
-    return "BoneUpdate.scale";
-  }
-  if (offsetof<BoneUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<BoneUpdate>()) {
-    return "BoneUpdate tail";
-  }
-  if (sizeof<BoneUpdate>() != 48) return "BoneUpdate size";
-  return null;
-}
-
 /** Whether this build's `BoneUpdate` matches the catalogue. */
 /** Assert this build's `BoneUpdate` matches the catalogue, naming the field. */
 export function assertOgreBoneOffsets(): void {
@@ -801,20 +411,27 @@ export function assertOgreBoneOffsets(): void {
   }
 }
 
-function ogreWireOffsetsProblem(): string | null {
-  // The math types, `Transformf`, `Aabbf`, the refs, `TextureSlot`,
-  // `ShaderRecord`, `ResourceReq` and `Buffer` used to be checked here field by
-  // field. They have no host reader, so each assertion compared the declaration
-  // against a literal declared beside it — the two moved together and could
-  // catch nothing. Removed 2026-10-30; see the wire workaround inventory in
-  // `tension-ogre/DESIGN.md` ("Wire workaround inventory").
+function ogreWireContractProblem(): string | null {
+  // The constants the adapter and this file both derive, and the two moving
+  // tables. What is *not* here any more: the per-field `offsetof`/`sizeof`
+  // table over the eight records. Those numbers are asserted on the C++ side
+  // (`tension-ogre/src/scene.h`, 116 `static_assert`s against `#pragma pack(1)`)
+  // and documented above each declaration here, so the guest copy restated the
+  // same literals in a second language without a second source of truth.
+  // Deleted 2026-10-30; see `tension-ogre/DESIGN.md`, "Wire workaround
+  // inventory". The replacement is the OGRE layout hash scoped in
+  // `docs/engine-adoption-plan.md`.
 
   // The two moving tables. Checked here as well as by their own assertions so a
-  // build that forgets to call them still catches a moved field.
+  // build that forgets to call them still catches a moved field: most fixtures
+  // call only this entry point.
   const motion = ogreMotionOffsetsProblem();
   if (motion != null) return motion;
+  const bone = ogreBoneOffsetsProblem();
+  if (bone != null) return bone;
+
   // The procedural window's start is derived here and written as a literal in
-  // the adapter (DESIGN.md §5.1 pins it at 256 KiB); a derivation that drifts
+  // the adapter (DESIGN.md §5.1 pins it at 192 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
   // look, so the two are tied together by this.
   // Derived from the two table strides: 48*2048 + 48*2048. The adapter derives
@@ -825,55 +442,22 @@ function ogreWireOffsetsProblem(): string | null {
   // the adapter declares, in the order it declares them.
   if (VF_POSITION != 1 || VF_NORMAL != 2 || VF_UV != 4) return "VF_ bits";
   if (TOPO_TRIANGLE_LIST != 0) return "TOPO_TRIANGLE_LIST";
-  const bone = ogreBoneOffsetsProblem();
-  if (bone != null) return bone;
-
-  // Records.
-  if (offsetof<SceneNode>("transformX") != 24) return "SceneNode.transformX";
-  if (offsetof<SceneNode>("reserved") != 64) return "SceneNode.reserved";
-  if (offsetof<SceneNode>("reserved") + 8 != 72) return "SceneNode.reserved end";
-  if (sizeof<SceneNode>() != 72) return "SceneNode size";
-  if (offsetof<LightRecord>("intensity") != 28) return "LightRecord.intensity";
-  if (offsetof<LightRecord>("nameOffset") != 68) return "LightRecord.nameOffset";
-  if (offsetof<LightRecord>("reserved") + 8 != 88) return "LightRecord.reserved end";
-  if (sizeof<LightRecord>() != 88) return "LightRecord size";
-  if (offsetof<CameraRecord>("rotationX") != 36) return "CameraRecord.rotationX";
-  if (offsetof<CameraRecord>("reserved2") + 8 != 80) return "CameraRecord.reserved2 end";
-  if (sizeof<CameraRecord>() != 80) return "CameraRecord size";
-  if (offsetof<Material>("slot0Resource") != 72) return "Material.slot0Resource";
-  if (offsetof<Material>("slot7Resource") != 184) return "Material.slot7Resource";
-  if (offsetof<Material>("slot7Uv") + 4 != 200) return "Material.slot7Uv end";
-  if (sizeof<Material>() != 200) return "Material size";
-  if (offsetof<Resource>("seq") != 40) return "Resource.seq";
-  if (offsetof<Resource>("seq") + 8 != 48) return "Resource.seq end";
-  if (sizeof<Resource>() != 48) return "Resource size";
-  // Offset 12 is `nodeId` since chunk 5a — the field that used to be `flags`.
-  // The pin is here because the rename is a *semantics* change, and the one
-  // thing that must not change with it is where the field sits.
-  if (offsetof<Renderable>("nodeId") != 12) return "Renderable.nodeId";
-  if (offsetof<Renderable>("position") + offsetof<Vec3fValue>("x") != 16) {
-    return "Renderable.position";
-  }
-  if (offsetof<Renderable>("rotation") + offsetof<QuatfValue>("x") != 28) {
-    return "Renderable.rotation";
-  }
-  if (offsetof<Renderable>("scale") + sizeof<Vec3fValue>() != sizeof<Renderable>()) {
-    return "Renderable.tail";
-  }
-  if (sizeof<Renderable>() != 56) return "Renderable size";
-  if (offsetof<Job>("priority") != 16) return "Job.priority";
-  if (offsetof<Job>("progress") != 24) return "Job.progress";
-  if (offsetof<Job>("seq") != 40) return "Job.seq";
-  if (offsetof<Job>("reserved2") + 8 != 64) return "Job.reserved2 end";
-  if (sizeof<Job>() != 64) return "Job size";
 
   return null;
 }
 
-/** Assert this build's OGRE wire offsets match the catalogue, naming the field. */
+/**
+ * Assert this build's OGRE *contract constants* -- the procedural window's start
+ * and the vertex-format bits -- and, through them, the two moving tables.
+ *
+ * The per-record offset table this used to carry is gone (2026-10-30): those
+ * numbers live in `tension-ogre/src/scene.h`'s `static_assert`s and in the doc
+ * comment above each declaration here. What remains is what no other side
+ * asserts.
+ */
 export function assertOgreWireOffsets(): void {
-  const problem = ogreWireOffsetsProblem();
+  const problem = ogreWireContractProblem();
   if (problem != null) {
-    assert(false, "the OGRE wire offsets do not match the catalogue: " + problem);
+    assert(false, "the OGRE wire contract does not match the catalogue: " + problem);
   }
 }

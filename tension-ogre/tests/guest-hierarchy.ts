@@ -190,10 +190,10 @@ export function _start_game(): void {
   // 180 degrees about Y. The drawable's own record is not touched again: if the
   // pixels move, the parent carried it.
   clause = 5;
-  parent.rotationX = 0.0;
-  parent.rotationY = 1.0;
-  parent.rotationZ = 0.0;
-  parent.rotationW = 0.0;
+  parent.rotation.x = 0.0;
+  parent.rotation.y = 1.0;
+  parent.rotation.z = 0.0;
+  parent.rotation.w = 0.0;
   submitted(ogre.submitNode(parent), "parent node, rotated");
   const turned_at = ogre.frameCount();
   while (ogre.frameCount() < turned_at + 3) RuntimeSession.wait(16);

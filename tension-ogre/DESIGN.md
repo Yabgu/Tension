@@ -414,8 +414,8 @@ The placement rule that goes with it: **padding exists only where something
 depends on it.** Every leaf is an `f32` (align 4), so nothing here is forced to a
 16-byte boundary — and an earlier revision's pads, which did exactly that, have
 gone. **No transform record carries a pad now**: `MotionUpdate` and `BoneUpdate`
-are 48 bytes with the transform at 8/20/36, `Renderable` is 56 with it at
-16/28/44, `Transformf` 40 and `Aabbf` 24. Padding for uniformity, for a "slot
+are 48 bytes with the transform at 8/20/36, and `Renderable` is 56 with it at
+16/28/44. Padding for uniformity, for a "slot
 size", or to land a 16-byte unit on a 16-byte boundary is not a reason; a host
 reader pins *offsets*, which is a coordinated change when they move, not a reason
 to keep a pad.
@@ -450,6 +450,11 @@ as cruft and removed, and what is contract and stayed.
 - **13 unused wire types** — the list above — none nested as a field of another
   record and none imported anywhere. `Material` is flat rather than
   `TextureSlot[8]`, and skin matrices never went through `Mat4f`.
+  The two names on that list that survived this pass, `Transformf` and `Aabbf`,
+  were deleted on 2026-10-30 in a second sweep once their assertion half had
+  already gone: with the checks removed, nothing in the tree named them but the
+  declarations and the prose describing them. That makes **15** types removed in
+  total across the two.
 - **2 vestigial pads**, `Vec3f16.pad` and `Buffer.pad0`, which went with their
   owners.
 - **The twin guard.** It compared the value twins against `@unmanaged` types that,
@@ -457,21 +462,31 @@ as cruft and removed, and what is contract and stayed.
   guard itself — the guard and its targets were each other's only reason to
   exist. It had never run: no fixture called it.
 
-**Kept, and why each time.**
+**Kept at the time, and what became of each.**
 
-- **21 host-vs-guest assertions** on the seven records the adapter reads —
+- ~~**Host-vs-guest assertions** on the seven records the adapter reads —
   `SceneNode`, `CameraRecord`, `LightRecord`, `Material`, `Renderable`, `Job`,
-  `Resource`. These compare the guest's declaration against what
-  `src/scene.h` / `src/scene.cpp` / `arena.rs` publish, which is the one drift
-  that is possible.
-- **4 constants**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
+  `Resource`.~~ **Deleted 2026-10-30: 30 assertions.** They compared the guest's
+  declaration against a literal copied from `src/scene.h` by hand, so they
+  proved *declaration == hand-copy*. The C++ `static_assert`s are the
+  authoritative check on that side and verify the `#pragma pack(1)` layout, a
+  concern the guest copy could never see.
+- **4 constants, kept**: `PROCEDURAL_BASE` (192 KiB, which `src/scene.h` derives
   independently from the same two strides), `PROCEDURAL_CAPACITY`, the `VF_*`
-  element bits and `TOPO_TRIANGLE_LIST`.
-- **The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`, the
-  layout-hash records. This is what catches a `SessionInfo` field move.
-- **`assertWireOffsets`, `assertAbiAliases`, `assertOgreWireOffsets`,
-  `assertOgreMotionOffsets`, `assertOgreBoneOffsets`** — the five entry points
-  the fixtures actually call.
+  element bits and `TOPO_TRIANGLE_LIST`. They moved into
+  `assertOgreWireOffsets` unchanged when the offset table around them was
+  deleted: nothing else asserts them.
+- ~~**The runtime's `wireOffsetsProblem`** — 76 checks against `arena.rs`. This
+  is what catches a `SessionInfo` field move.~~ **Deleted 2026-10-30, and the
+  claim was too strong even when it was live.** Measured: reordering
+  `regionCount`/`classCount` in the guest's `SessionInfo` — same size, same
+  alignment — passed the check, the manifest comparison, the layout hash and all
+  three drift fixtures. What actually catches a *size* change is
+  `manifestProblem()` against the host's published entries; nothing on the guest
+  side catches a same-size reorder until the generator lands.
+- **Entry points**: `assertAbiAliases`, `assertOgreWireOffsets`,
+  `assertOgreMotionOffsets` and `assertOgreBoneOffsets` remain — the four the
+  fixtures call. `assertWireOffsets` was deleted with its table.
 - **1 format field**: `ManifestEntry.pad`. It is not a workaround — `arena.rs`
   documents the entry as `{typeId, size, align, pad}` with the pad always zero,
   so it is part of the published format.
@@ -506,6 +521,68 @@ transform record. Restore it *with* a check that the two declarations agree —
 that pairing is the whole value, and a guard with no caller is what this cleanup
 deleted.
 
+#### The records are generated now (2026-10-30)
+
+**One source, two emissions.** `schema/ogre.json` describes the eleven OGRE
+wire records — 137 fields, in dependency order, each tagged `value` (the
+`Vec3fValue`/`QuatfValue` twins) or `view` (the wire records).
+`tools/codegen/generate.mjs` emits both sides from it:
+
+- `tension-framework/assembly/ogre/generated/ogre.generated.ts` — the guest's
+  declarations. `@unmanaged struct` for a view, plain `struct` for a twin.
+- `tension-ogre/src/generated/ogre.generated.h` — the C++ structs plus a
+  `static_assert` for **every** field offset and **every** record size.
+
+The generator computes offsets from field widths; it never reads a layout back
+from a compiler. That is what makes the two sides agree by construction rather
+than by a hand-copied literal, which is the failure this whole section is a
+record of.
+
+**What this retires.** The `wire.ts` record declarations, the C++
+`SceneNodeRecord`/`CameraRecord`/… declarations, the 108 hand-written
+`static_assert`s that pinned them, **and the two guest-side record checks**
+(`ogreMotionOffsetsProblem`, `ogreBoneOffsetsProblem`), which are now emitted
+from each record's `checks` block in the schema. The hand-written source has no
+record declarations and no record-layout `offsetof`/`static_assert` left.
+
+Two hand-written `static_assert`s remain, and neither is a record layout: the
+C++ tag-length check in `backend_ogre.cpp` (a `sizeof` on a string literal) and
+the skin-window bound in `scene.h` (a relation between two region constants).
+
+**What the generated guest check can and cannot catch.** It compares the
+*compiler's* layout of the generated struct against the *schema's* computed
+offsets — two independent implementations of the alignment rule — so a compiler
+whose layout departs from the wire fails a fixture at startup. It cannot catch a
+mistake in the schema itself: the struct and the check come from the same field
+list, so they move together by design. That is the price of one source, and the
+guard for a schema error is behavioural (the fixtures), plus the generation-time
+cross-check that a `checks` offset must equal the computed one.
+
+**The prefix design is abandoned, and it costs bytes.** The C++ structs used to
+be deliberately *shorter* than the wire record — SceneNode 64 of 72, Camera 60
+of 80, Light 68 of 88, Material 88 of 200 — so the decoder copied only the
+fields it read and ignored the tail. Each struct is now the whole record, so one
+`memcpy` decodes one record: **+8 bytes per node, +20 per camera, +20 per light,
++112 per material.** The tail was never read either way; the cost is copying it.
+
+**No `#pragma pack`.** The wire's layout is the naturally aligned one —
+`LightRecord.reserved` sits at 80 and `Resource.seq` at 40 because a `u64`
+aligns to 8 after `u32`s. Packing removes exactly those pads and shrinks three
+records below their wire size. Measured on the same field lists: natural
+88/80/48, packed 84/76/44. The generated asserts would catch it, which is why
+the header relies on natural alignment and asserts every offset.
+
+**Drift is a test failure, not a review note.** `generate.mjs --check`
+regenerates into a temp directory and diffs; `test.sh` runs it as the `codegen`
+suite *before* the fixture producers, so a schema edit that was not regenerated
+fails before anything compiles against it. `build.sh` and `tension-ogre/build.sh`
+both run the generator before their compile step, so a direct adapter build
+cannot use a stale header.
+
+**When the compiler gains use-site `@unmanaged` over an inline type** (refused
+today: TS6395), the template flips from `@unmanaged struct` to plain `struct`
+for the `view` records. The schema does not change — it already carries `kind`.
+
 **`createItem` needs both Hlms registered, not just the one its datablock
 comes from.** Measured while writing the motion probe: `Barrel.mesh`'s
 sub-items name the material `RustyBarrel`, OGRE routes an unknown material name
@@ -535,9 +612,9 @@ shader bug, which is what proved the driver was never the variable). It is a
 candidate CI substrate that needs no Xvfb.
 
 **`SCENE` owns three sub-tables by convention.** The region is 256 KiB and
-holds them end to end from its offset: 1024 × `SceneNode` (80 B), then 512 ×
-`CameraRecord` (80 B), then 1024 × `LightRecord` (96 B) — 216 KiB of the 256,
-with 40 KiB spare. The constants live in `assembly/ogre/wire.ts` and in
+holds them end to end from its offset: 1024 × `SceneNode` (72 B), then 512 ×
+`CameraRecord` (80 B), then 1024 × `LightRecord` (88 B) — 200 KiB of the 256,
+with 56 KiB spare. The constants live in `assembly/ogre/wire.ts` and in
 `tension_ogre.h`, because the guest has to know them to write a camera into the
 right place. **This convention is not part of `layoutHash`**: the hash covers
 the protocol's shape, and `SCENE`'s internal split is the capability's own

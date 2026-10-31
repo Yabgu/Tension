@@ -109,6 +109,22 @@ bytes.
 
 ### Finding: strengthening a live check cannot be byte-identical
 
+> **Historical snapshot, re-stamped 2026-10-30.** The two code quotes below are
+> the *pre-nesting* form of the check — `pad2`, and 64-byte records. PR #38
+> deleted the pads and nested the transform, so the check it names no longer
+> exists in this shape. The current form is
+> `wire.ts:755-759`:
+>
+> ```ts
+> if (offsetof<MotionUpdate>("scale") + sizeof<Vec3fValue>() != sizeof<MotionUpdate>()) {
+>   return "MotionUpdate tail";
+> }
+> if (sizeof<MotionUpdate>() != 48) return "MotionUpdate size";
+> ```
+>
+> The finding below is what produced that `sizeof` half, so it is kept as the
+> record of why rather than as a description of the tree.
+
 `ogre/wire.ts` binds the records' sizes to their declarations:
 
 ```ts

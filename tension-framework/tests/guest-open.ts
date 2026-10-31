@@ -7,8 +7,9 @@
 //
 // What it proves, in order:
 //
-//   1. the wire offsets this build compiled against are the arena's
-//      (`assertWireOffsets`, which uses `offsetof`);
+//   1. the layout hash this build compiled against is the arena's
+//      (`checkLayout` runs inside `session_open`, comparing the guest's
+//      `LAYOUT_HASH` against the value the host wrote at open);
 //   2. `session_open` accepts a config built by the runtime, which means the
 //      TLV encodes what `config.rs` decodes, the layout hash matches the Rust
 //      side's, and the memory this guest imported is the arena the session
@@ -26,7 +27,6 @@
 import { print } from "../assembly/io";
 import {
   assertAbiAliases,
-  assertWireOffsets,
   ConfigBuilder,
   makeCallbacks,
   RuntimeSession
@@ -45,7 +45,6 @@ function onEvent(class_: u32, ptr: u32): i32 {
 }
 
 export function _start_game(): void {
-  assertWireOffsets();
   // The two ABI aliases, compile-time folded: a field's *name* is a separate
   // contract from its offset, and `class_` is the one place they differ.
   assertAbiAliases();
