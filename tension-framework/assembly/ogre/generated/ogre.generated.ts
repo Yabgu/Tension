@@ -26,7 +26,6 @@ export struct QuatfValue {
 }
 
 /** SceneNode — 72 bytes, alignment 8. */
-@unmanaged
 export struct SceneNode {
   nodeId: u32 = 0;
   parentId: u32 = 0;
@@ -55,7 +54,6 @@ export struct SceneNode {
 }
 
 /** LightRecord — 88 bytes, alignment 8. */
-@unmanaged
 export struct LightRecord {
   lightId: u32 = 0;
   kind: u32 = 0;
@@ -109,7 +107,6 @@ export struct LightRecord {
 }
 
 /** CameraRecord — 80 bytes, alignment 8. */
-@unmanaged
 export struct CameraRecord {
   cameraId: u32 = 0;
   flags: u32 = 0;
@@ -143,7 +140,6 @@ export struct CameraRecord {
 }
 
 /** Material — 200 bytes, alignment 4. */
-@unmanaged
 export struct Material {
   materialId: u32 = 0;
   kind: u32 = 0;
@@ -225,7 +221,6 @@ export struct Material {
 }
 
 /** Resource — 48 bytes, alignment 8. */
-@unmanaged
 export struct Resource {
   resourceId: u32 = 0;
   kind: u32 = 0;
@@ -240,7 +235,6 @@ export struct Resource {
 }
 
 /** Renderable — 56 bytes, alignment 4. */
-@unmanaged
 export struct Renderable {
   renderableId: u32 = 0;
   materialId: u32 = 0;
@@ -268,7 +262,6 @@ export struct Renderable {
 }
 
 /** MotionUpdate — 48 bytes, alignment 4. */
-@unmanaged
 export struct MotionUpdate {
   renderableId: u32 = 0;
   flags: u32 = 0;
@@ -278,7 +271,6 @@ export struct MotionUpdate {
 }
 
 /** BoneUpdate — 48 bytes, alignment 4. */
-@unmanaged
 export struct BoneUpdate {
   renderableId: u32 = 0;
   boneIndex: u32 = 0;
@@ -288,7 +280,6 @@ export struct BoneUpdate {
 }
 
 /** Job — 64 bytes, alignment 8. */
-@unmanaged
 export struct Job {
   jobId: u32 = 0;
   state: u32 = 0;
