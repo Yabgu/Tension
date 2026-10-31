@@ -160,8 +160,20 @@ asconfig_doc = {
         # two-instruction inline load/store it becomes at -O1 and above.
         # Measured (docs/interop-surface-scope.md §2.1): 7 accessor call sites
         # and 335 wasm bytes at -O0, 0 sites and 204 bytes at -O3, on the same
-        # source. The four OGRE fixtures and every example pass at -O3.
-        "optimizeLevel": 3,
+        # source.
+        #
+        # **2, not 3, and deliberately.** Binaryen's -O3 pipeline aborts on a
+        # live in-memory module in `wasm-interpreter.h` (`getSingleValue`); see
+        # `docs/known-issues.md` KS-1, which lists the five falsified hypotheses
+        # and the upstream report this waits on. All 17 guest fixtures compile
+        # clean at -O2, and the cost is small and sometimes negative — measured
+        # on this tree: `guest-hierarchy` 39,114 B at -O2 vs 39,606 at -O3,
+        # `guest-skinning` 44,900 vs 45,321; the largest regression across the
+        # fixtures is +0.54% (`guest-angular`).
+        #
+        # Raise to 3 when binaryen resolves the live-module assertion, at which
+        # point this comment and KS-1 both go.
+        "optimizeLevel": 2,
         "importMemory": True,
         "memoryBase": ceiling,
         "initialMemory": initial,
