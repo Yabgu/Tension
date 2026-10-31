@@ -139,13 +139,14 @@ export class BoneBatch {
   private write(index: u32, renderableId: u32, boneIndex: u32, x: f32, y: f32, z: f32, rx: f32,
                 ry: f32, rz: f32, rw: f32, scale: f32): void {
     if (index >= BONE_CAPACITY) return; // a slot past the table is not written
-    // `BoneUpdate` is `@unmanaged`, so this is a view of the arena slot and the
-    // field writes below are the wire's bytes in the wire's order. No header is
-    // read or written — the class has none.
+    // `BoneUpdate` is a plain struct — a value, one WASM local per leaf — so the
+    // view is named here, at the use site, and nowhere on the declaration. The
+    // field writes below are the wire's bytes in the wire's order; no header is
+    // read or written, because an `@unmanaged` view has none.
     //
     // No pad stores: the record has no pads. It is 48 bytes with the transform at
     // 8/20/36, which is what `decode_bone_at` reads.
-    const rec = changetype<BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
+    const rec = changetype<@unmanaged BoneUpdate>(this.base + <usize>index * sizeof<BoneUpdate>());
     rec.renderableId = renderableId;
     rec.boneIndex = boneIndex;
     rec.position.x = x;
