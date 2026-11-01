@@ -45,6 +45,40 @@ rather than linked.
   `@abi.align` is not used anywhere; neither are sized enums, `@lazy`, or a
   use-site `@unmanaged` override.
 
+**The declaration flip (2026-10-31).** TensionScript 0.11.1 landed the use-site
+`@unmanaged` override — a record may be declared plain and viewed as
+`changetype<@unmanaged T>(ptr)` where its bytes are read — together with deep
+SROA, so a plain struct may nest a plain struct. 0.11.2 added the sret
+default-argument fill that the flip's factories needed. The engine adopted all
+three:
+
+- **The generator emits a plain `struct` for every record.**
+  `tools/codegen/generate.mjs` no longer writes `@unmanaged` for a `view`; the
+  `.h` side is byte-identical because C++ never saw the guest declaration form.
+  `kind` stays in `schema/ogre.json` as metadata with no emitter reading it.
+- **Three use-site `@unmanaged` sites**, all in hand-written source:
+  `BoneBatch.write` (`bones.ts`), `MotionBatch.setPose` (`motion.ts`) and the
+  `Job` accessors in `ogre/index.ts`. `Job` is a view record too, so the flip is
+  three sites, not the two the wire records' names suggest.
+- **The five `submit*` functions take the record and materialize it with
+  `copyInto(slot, record)`** instead of `changetype<usize>(record)`, which a value
+  cannot satisfy — a plain record has no address. `placeRecord` went with it.
+- **`jobRecordOf` returns `usize`, not `Job | null`**: the address of the slot,
+  0 when out of range, because a value cannot be handed back by reference.
+- **The OGRE tree names `@unmanaged` on no declaration.** The session runtime's
+  `wire.ts` still declares 10, unchanged by this flip and outside the generated
+  schema.
+
+**State of the flip: staged, not pushed.** Its `--ogre-guest` gate is red on a
+pre-existing, unrelated defect: `-O3` aborts in binaryen's
+`wasm-interpreter.h:101` (`getSingleValue`) on `guest-triangle`, `guest-motion`
+and `guest-resource-errors`, and on `examples/ogre/bouncing-bodies`. All four
+compile clean on the pre-flip tree with the same compiler, so the crash is
+triggered by the flip's emitted shapes; fixing it is the TensionScript work that
+has to land before this merges. The other four OGRE examples build;
+`bouncing-ball` fails `AS105` (needs 133 initial pages against `session.json`'s
+132) on the pre-flip tree too, so it is a separate config gap.
+
 **What remains.**
 
 - **The eight `kXxxRecordBytes` constants have no cross-language tie.** They are
