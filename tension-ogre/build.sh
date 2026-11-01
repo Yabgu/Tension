@@ -132,9 +132,20 @@ ogre_lib=
 plugin_dir=
 if [ "$backend" = ogre ]; then
     if [ -n "${TENSION_OGRE_PREFIX:-}" ]; then
-        ogre_include="-isystem $TENSION_OGRE_PREFIX/include -isystem $TENSION_OGRE_PREFIX/include/OGRE-Next"
-        ogre_lib="-L$TENSION_OGRE_PREFIX/lib -lOgreNextMain"
-        plugin_dir="$TENSION_OGRE_PREFIX/lib/OGRE-Next"
+        prefix=$(CDPATH= cd -- "$TENSION_OGRE_PREFIX" && pwd)
+        # The Hlms headers include their siblings by bare name
+        # (`#include "OgreHlmsBufferManager.h"`), so the three Hlms include
+        # roots are not optional — the in-tree and pkg-config branches below
+        # both add them. Without them this branch cannot compile
+        # `hlms_tension_skin.cpp`, which is why a relocated prefix (the shape
+        # `packages/ogre-next` uses) did not build.
+        ogre_include="-isystem $prefix/include -isystem $prefix/include/OGRE-Next"
+        ogre_include="$ogre_include -isystem $prefix/include/OGRE-Next/Hlms/Common -isystem $prefix/include/OGRE-Next/Hlms/Unlit -isystem $prefix/include/OGRE-Next/Hlms/Pbs"
+        # The Hlms classes live in their own libraries, not in OgreNextMain —
+        # the adapter links the two it uses directly.
+        ogre_lib="-L$prefix/lib -lOgreNextMain -lOgreNextHlmsUnlit -lOgreNextHlmsPbs"
+        plugin_dir="$prefix/lib/OGRE-Next"
+        media_dir="$prefix/share/OGRE-Next/Media"
     elif [ -f "$here/../third_party/ogre-next-install/lib/libOgreNextMain.so" ]; then
         # In-tree first: `third_party/bootstrap.sh` built Ogre-Next from the
         # pinned submodule. Preferred over the system install because the
@@ -230,6 +241,28 @@ node "$here/../tools/codegen/generate.mjs" \
 }
 
 mkdir -p "$out"
+# RUNPATH, so a relocated adapter finds its own libraries instead of relying on
+# `LD_LIBRARY_PATH` being set by whatever launches it. Two spellings, both
+# relative to the DSO's own directory:
+#   $ORIGIN                        a self-contained drop (all libs beside it)
+#   $ORIGIN/../../tension-ogre-next/lib   npm's flat layout, where the packages
+#                                  are siblings under node_modules/@yabgu_gm/
+# The second is what `file:` dependencies produce; the first is what a tarball
+# install or a plain copy produces. Listing both costs nothing and means the
+# same .so works in either arrangement.
+#
+# `--disable-new-dtags` makes the linker emit DT_RPATH rather than DT_RUNPATH.
+# Deliberate: DT_RPATH is consulted *before* `LD_LIBRARY_PATH`, DT_RUNPATH after.
+# The in-tree sonames (`libOgreNextMain.so.4.0`) are identical to a distro
+# package's, so the search order is what decides which one a process gets —
+# third_party/README.md is explicit that the path must win.
+# Two sibling spellings, because the DSO is reached both ways:
+#   .../tension-ogre/lib         npm's symlink, so the package name is the
+#                                directory name (tension-ogre-next)
+#   .../ogre/lib                 the realpath of that symlink, which is what
+#                                glibc uses for $ORIGIN, and where the sibling
+#                                is `ogre-next` (the repository's own name)
+rpath='$ORIGIN:$ORIGIN/../../tension-ogre-next/lib:$ORIGIN/../../tension-freeimage/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../../freeimage/lib'
 # shellcheck disable=SC2086  # the flag lists are deliberate word splits
 "${CXX:-c++}" -std=c++17 -O2 -fPIC -Wall -Wextra \
     -I"$here/include" -I"$here/src" -I"$here/../tension-core/include" $res_include $ogre_include \
@@ -238,7 +271,7 @@ mkdir -p "$out"
     -DTENSION_OGRE_BACKEND="${backend}" \
     $sources \
     -shared -o "$out/libtension_ogre.so" \
-    $ogre_lib $res_archive -Wl,--exclude-libs,ALL -lpthread $ntdll_lib
+    $ogre_lib $res_archive -Wl,--exclude-libs,ALL -Wl,--disable-new-dtags,-rpath,"$rpath" -lpthread $ntdll_lib
 
 echo "tension-ogre: $out/libtension_ogre.so (backend $backend)"
 if [ "$backend" = ogre ]; then
