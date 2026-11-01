@@ -32,6 +32,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { staleness } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -186,6 +187,31 @@ if (process.argv.includes('--fetch-model')) {
 if (process.argv.includes('--pack-only')) {
   bash(join(exampleDir, 'pack.sh'));
   process.exit(0);
+}
+
+// ── are the packaged binaries current? ───────────────────────────────────────
+// Two binaries ship and both are rebuilt by the same command, so a stale one is
+// almost always "you pulled, then did not rebuild". The failure that motivates
+// this guard is quiet and expensive: an adapter built before a wire-record
+// change decodes the guest's records with the old layout and answers -EINVAL,
+// which surfaces as `submitCamera refused` in the example rather than as
+// anything about a build. Say it plainly here instead.
+//
+// Content hash, not mtime — `build:framework` rewrites layout.ts and
+// manifest.ts with identical content on every build, so mtimes are always
+// newer than the binaries. scripts/build-stamp.mjs has the detail.
+{
+  const check = staleness(repo);
+  if (check.missing) {
+    die('packaged binaries not found. Run: npm run build:native\n' +
+        '  (at the repository root; it fills packages/ from the build)');
+  }
+  if (check.stale.length) {
+    for (const { name, built_at } of check.stale) {
+      console.error(`${pkg.name}: ${name} is stale (built at ${built_at}, sources changed). Run: npm run build`);
+    }
+    process.exit(1);
+  }
 }
 
 const host = hostBinary();
