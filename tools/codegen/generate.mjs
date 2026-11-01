@@ -150,7 +150,6 @@ function emitTs(schema, layoutMap) {
   for (const rec of schema.records) {
     const built = layoutMap.get(rec.name);
     lines.push(`/** ${rec.name} — ${built.size} bytes, alignment ${built.align}. */`);
-    if (rec.kind === "view") lines.push("@unmanaged");
     lines.push(`export struct ${rec.name} {`);
     for (const field of rec.fields) {
       const scalar = SCALARS[field.type];

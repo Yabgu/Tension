@@ -1,8 +1,8 @@
 // The OGRE capability's wire, as the guest sees it.
 //
-// Same rules as the session runtime's `wire.ts`: every type is `@unmanaged`
-// with its fields in declared order, so a `changetype<T>(offset)` is a view and
-// the field order is the wire order. The transform records nest the plain-struct
+// Same rules as the session runtime's `wire.ts`: every type has its fields in
+// declared order, so a `changetype<@unmanaged T>(offset)` is a view and the
+// field order is the wire order. The transform records nest the plain-struct
 // twins (`Vec3fValue`, `QuatfValue`) — a *plain* struct is stored inline, so the
 // nesting is bytes in the record rather than a reference — and everything else
 // stays scalar, so a matrix, if one is ever wanted, is sixteen floats.
@@ -42,17 +42,20 @@ import { regionOffset } from "../runtime/arena";
 // `Quatf`, `Colourf` and `Mat4f` were declared here and used by nothing: no field
 // nested them, no guest imported them, and the only `offsetof` that named them
 // compared them against themselves. They went on 2026-10-30 — see the wire
-// workaround inventory in `tension-ogre/DESIGN.md`. If a raw-bytes view of a
-// transform record is ever wanted (`changetype<...>(ptr)`), that is when a second
-// `@unmanaged` declaration earns its place, alongside a check that the two agree.
+// workaround inventory in `tension-ogre/DESIGN.md`. A raw-bytes view of a
+// transform record still costs nothing to write: `@unmanaged` is a use-site
+// modifier since 0.11.1 (`changetype<@unmanaged T>(ptr)`), so it needs no second
+// declaration to sit beside the first.
 //
 // `Vec3fValue` is a pure Vec3 — 12 bytes, no fourth coordinate, and no pad:
 // nothing in these records needs a 16-byte boundary. `QuatfValue` is 16 bytes
 // because a quaternion has four components, not because 16 is a slot size.
 //
-// **Never nested inside each other.** A plain struct inside a plain struct is
-// refused by name (SROA flattening is deferred), so these are leaves. Every
-// record that carries one is `@unmanaged`, which is the supported shape.
+// **Leaves, by choice.** They are not nested inside each other because nothing
+// needs a nested value twin — not because the compiler refuses one. (The refusal
+// this comment used to cite, "a plain struct inside a plain struct is refused by
+// name", went with deep SROA in 0.11.1; measured, a plain nested in a plain now
+// compiles.)
 //
 // What keeps them honest is the record-level check: `ogreMotionOffsetsProblem`
 // and `ogreBoneOffsetsProblem` assert where each twin lands in the two records
@@ -69,10 +72,12 @@ import { regionOffset } from "../runtime/arena";
 // `codegen --check` in `test.sh` fails when the committed files and the schema
 // disagree, so the schema cannot drift from what is compiled.
 //
-// What the generator emits: `@unmanaged struct` for the wire records (a
-// pointer view over arena bytes) and a plain `struct` for the two value twins
-// (`Vec3fValue`, `QuatfValue`), which are stored inline inside those records.
-// The static constructors live on the types and are emitted with them.
+// What the generator emits: a plain `struct` for every record — the eleven wire
+// records and the two value twins alike. The declaration states the fields and
+// nothing else; the records are viewed `@unmanaged` at each use site (three in
+// this engine: `BoneBatch.write`, `MotionBatch.setPose`, and the job accessors in
+// `ogre/index.ts`). The static constructors live on the types and are emitted
+// with them.
 //
 // The padding rule that used to be argued at length here is now enforced by
 // construction: the generator computes every offset from field widths, and the
