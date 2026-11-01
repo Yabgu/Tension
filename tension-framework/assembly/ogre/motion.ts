@@ -92,11 +92,11 @@ export class MotionBatch {
   setPose(index: u32, id: u32, x: f32, y: f32, z: f32,
           qx: f32, qy: f32, qz: f32, qw: f32, scale: f32 = 1.0): void {
     if (index >= MOTION_CAPACITY) return; // a slot past the table is not written
-    // `MotionUpdate` is `@unmanaged`: a view of the arena slot, so each
+    // `MotionUpdate` is a plain struct, viewed `@unmanaged` here: each
     // assignment is the wire's field at the wire's offset. There are no pad
     // stores because the record has no pads — it is 48 bytes, the transform at
     // 8/20/36, and `decode_motion_at` reads exactly those offsets.
-    const rec = changetype<MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
+    const rec = changetype<@unmanaged MotionUpdate>(this.base + <usize>index * sizeof<MotionUpdate>());
     rec.renderableId = id;
     rec.flags = 0; // reserved
     rec.position.x = x;
