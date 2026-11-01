@@ -59,6 +59,19 @@ struct SphereProps {
   m: f64;
 }
 
+// The state vector's layout, typed. The solver hands `_derivative` four f64
+// slots per body — [x, y, vx, vy], no time slot, because `t` is a parameter —
+// so a body's view is exactly this record at `(i << 5)`. Adding a field here
+// is the only way to change the offsets the derivative reads and writes; they
+// are no longer written out as `+ 8`, `+ 16`, `+ 24` at each site.
+@unmanaged
+struct BodyState {
+  x: f64;
+  y: f64;
+  vx: f64;
+  vy: f64;
+}
+
 // offsetof<SphereProps>() is the byte size of the layout — 16 for two f64s,
 // r at 0 and m at 8 — and folds to a constant at compile time. Verified
 // against the generated wasm for the pinned compiler (AS 0.28.8): the
@@ -70,30 +83,38 @@ const PROPS_BASE: usize = memory.data(<i32>PROPS_STRIDE * 2, 8);
 function propsAt(i: i32): usize { return PROPS_BASE + <usize>i * PROPS_STRIDE; }
 
 function setProps(i: i32, r: f64, m: f64): void {
-  const at = propsAt(i);
-  store<f64>(at, r);
-  store<f64>(at + 8, m);
+  const p = changetype<@unmanaged SphereProps>(propsAt(i));
+  p.r = r;
+  p.m = m;
 }
 
-function propRadius(i: i32): f64 { return load<f64>(propsAt(i)); }
-function propMass(i: i32): f64 { return load<f64>(propsAt(i) + 8); }
+function propRadius(i: i32): f64 {
+  return changetype<@unmanaged SphereProps>(propsAt(i)).r;
+}
+function propMass(i: i32): f64 {
+  return changetype<@unmanaged SphereProps>(propsAt(i)).m;
+}
 
 // ── the right-hand side ──────────────────────────────────────────────────
 
 // f(t, y): pure — the only state it reads is the state vector (plus the
-// static props, which never change during a run). Address arithmetic is the
-// raw inline form of GUEST_ABI.md §3.7 (pattern 1a), like the shipped
-// examples/solver/wasm/game.ts: one f64 load or store per slot.
+// static props, which never change during a run). Each body is a `BodyState`
+// view over its four slots (GUEST_ABI.md §3.7, pattern 1a, like the shipped
+// examples/solver/wasm/game.ts): the body stride stays here, the field offsets
+// live in the record. At -O3 a view folds to the same load at the same offset
+// that `load<f64>(yPtr + at + 16)` used to emit.
 export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   if (len < 8 || dyCap < len) return -22;
   const bodies: i32 = len >> 2; // 4 f64 slots per body
 
   for (let i = 0; i < bodies; i++) {
     const at: usize = <usize>i << 5; // 4 f64 = 32 bytes per body
-    const x = load<f64>(yPtr + at);
-    const y = load<f64>(yPtr + at + 8);
-    const vx = load<f64>(yPtr + at + 16);
-    const vy = load<f64>(yPtr + at + 24);
+    const b = changetype<@unmanaged BodyState>(yPtr + at);
+    const d = changetype<@unmanaged BodyState>(dyPtr + at);
+    const x = b.x;
+    const y = b.y;
+    const vx = b.vx;
+    const vy = b.vy;
     const r = propRadius(i);
     const m = propMass(i);
 
@@ -131,8 +152,9 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
     for (let j = 0; j < bodies; j++) {
       if (j == i) continue;
       const bt: usize = <usize>j << 5;
-      const dx = x - load<f64>(yPtr + bt);
-      const dy = y - load<f64>(yPtr + bt + 8);
+      const bj = changetype<@unmanaged BodyState>(yPtr + bt);
+      const dx = x - bj.x;
+      const dy = y - bj.y;
       const dist2 = dx * dx + dy * dy;
       const minDist = r + propRadius(j);
       if (dist2 < minDist * minDist) {
@@ -142,18 +164,18 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
         const ny = dy / dist;
         ax += K_CC * penetration * nx / m;
         ay += K_CC * penetration * ny / m;
-        const vrel = (vx - load<f64>(yPtr + bt + 16)) * nx
-                   + (vy - load<f64>(yPtr + bt + 24)) * ny;
+        const vrel = (vx - bj.vx) * nx
+                   + (vy - bj.vy) * ny;
         ax -= DAMPING * vrel * nx / m;
         ay -= DAMPING * vrel * ny / m;
       }
     }
 
     // 4. d/dt [x, y] = [vx, vy]; d/dt [vx, vy] = [ax, ay].
-    store<f64>(dyPtr + at, vx);
-    store<f64>(dyPtr + at + 8, vy);
-    store<f64>(dyPtr + at + 16, ax);
-    store<f64>(dyPtr + at + 24, ay);
+    d.x = vx;
+    d.y = vy;
+    d.vx = ax;
+    d.vy = ay;
   }
   return 0;
 }
