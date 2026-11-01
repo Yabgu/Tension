@@ -228,9 +228,16 @@ export function shutdown(): i32 {
   return shutdownRaw();
 }
 
-/** Where job `jobId`'s record lives in the `JOB` region. */
-function jobRecord(jobId: i32): Job {
-  return changetype<Job>(regionOffset(REGION_JOB) + <u32>(jobId - 1) * JOB_SIZE);
+/**
+ * Where job `jobId`'s record lives in the `JOB` region.
+ *
+ * The **address**, not the record: `Job` is a plain struct (a value, one WASM
+ * local per leaf), and a value has no address to return. Callers name the view
+ * at their own use site — `changetype<@unmanaged Job>(jobRecordAddress(id))` —
+ * which is the same shape `getMotionBase`/`getBoneBase` already use.
+ */
+function jobRecordAddress(jobId: i32): usize {
+  return regionOffset(REGION_JOB) + <u32>(jobId - 1) * JOB_SIZE;
 }
 
 /** Whether `jobId` names a slot inside the `JOB` region. */
@@ -286,19 +293,19 @@ export function mountTns(prefix: string, tnsPath: string): i32 {
 /** A job's state (`JOB_*`), or `JOB_FAILED` for an id outside the table. */
 export function jobState(jobId: i32): u32 {
   if (!jobInRange(jobId)) return JOB_FAILED;
-  return jobRecord(jobId).state;
+  return changetype<@unmanaged Job>(jobRecordAddress(jobId)).state;
 }
 
 /** A job's resource id once it has one, else 0. */
 export function jobResult(jobId: i32): u32 {
   if (!jobInRange(jobId)) return 0;
-  return jobRecord(jobId).resourceId;
+  return changetype<@unmanaged Job>(jobRecordAddress(jobId)).resourceId;
 }
 
 /** A job's error, or 0. */
 export function jobError(jobId: i32): i32 {
   if (!jobInRange(jobId)) return -2;
-  return jobRecord(jobId).error;
+  return changetype<@unmanaged Job>(jobRecordAddress(jobId)).error;
 }
 
 /** Free a job's slot. Terminal jobs are not freed automatically: the guest
@@ -307,10 +314,17 @@ export function releaseJob(jobId: i32): i32 {
   return jobReleaseRaw(jobId);
 }
 
-/** A job's whole record, for a caller that wants more than state and result. */
-export function jobRecordOf(jobId: i32): Job | null {
-  if (!jobInRange(jobId)) return null;
-  return jobRecord(jobId);
+/**
+ * Where a job's whole record lives, or 0 when `jobId` is out of range.
+ *
+ * Returns an **address**, not the record: `Job` is a plain struct, and a value
+ * has no address to hand back (`changetype<usize>(value)` is refused by design —
+ * `copyInto` is the way a value reaches memory). A caller reads it with
+ * `changetype<@unmanaged Job>(addr)`, or copies it out with `copyInto`.
+ */
+export function jobRecordOf(jobId: i32): usize {
+  if (!jobInRange(jobId)) return 0;
+  return jobRecordAddress(jobId);
 }
 
 /** The `JOB` table's capacity, in jobs. */
@@ -359,11 +373,6 @@ function recordSlot(regionKind: u32, tableBase: u32, id: u32, size: u32): usize 
   return regionOffset(regionKind) + tableBase + (id - 1) * size;
 }
 
-/** Copy `bytes` of a record into its slot. The caller has bounds-checked. */
-function placeRecord(at: usize, record: usize, bytes: u32): void {
-  memory.copy(at, record, bytes);
-}
-
 /**
  * Submit a scene node. Nodes carry cameras and lights; 3b's renderables place
  * themselves, and a `parentId` other than 0 is refused by the adapter.
@@ -371,8 +380,7 @@ function placeRecord(at: usize, record: usize, bytes: u32): void {
 export function submitNode(record: SceneNode): i32 {
   const id = record.nodeId;
   if (id == 0 || id > SCENE_NODE_COUNT) return -22; // -EINVAL
-  placeRecord(recordSlot(REGION_SCENE, 0, id, SCENE_NODE_SIZE), changetype<usize>(record),
-              SCENE_NODE_SIZE);
+  copyInto(recordSlot(REGION_SCENE, 0, id, SCENE_NODE_SIZE), record);
   return submitRaw(SUBMIT_NODE, <i32>id, SUBMIT_UPSERT);
 }
 
@@ -380,8 +388,7 @@ export function submitNode(record: SceneNode): i32 {
 export function submitCamera(record: CameraRecord): i32 {
   const id = record.cameraId;
   if (id == 0 || id > SCENE_CAMERA_COUNT) return -22;
-  placeRecord(recordSlot(REGION_SCENE, SCENE_CAMERA_BASE, id, SCENE_CAMERA_SIZE),
-              changetype<usize>(record), SCENE_CAMERA_SIZE);
+  copyInto(recordSlot(REGION_SCENE, SCENE_CAMERA_BASE, id, SCENE_CAMERA_SIZE), record);
   return submitRaw(SUBMIT_CAMERA, <i32>id, SUBMIT_UPSERT);
 }
 
@@ -389,8 +396,7 @@ export function submitCamera(record: CameraRecord): i32 {
 export function submitLight(record: LightRecord): i32 {
   const id = record.lightId;
   if (id == 0 || id > SCENE_LIGHT_COUNT) return -22;
-  placeRecord(recordSlot(REGION_SCENE, SCENE_LIGHT_BASE, id, SCENE_LIGHT_SIZE),
-              changetype<usize>(record), SCENE_LIGHT_SIZE);
+  copyInto(recordSlot(REGION_SCENE, SCENE_LIGHT_BASE, id, SCENE_LIGHT_SIZE), record);
   return submitRaw(SUBMIT_LIGHT, <i32>id, SUBMIT_UPSERT);
 }
 
@@ -398,8 +404,7 @@ export function submitLight(record: LightRecord): i32 {
 export function submitMaterial(record: Material): i32 {
   const id = record.materialId;
   if (id == 0 || id > MATERIAL_COUNT) return -22;
-  placeRecord(recordSlot(REGION_MATERIAL, 0, id, MATERIAL_SIZE), changetype<usize>(record),
-              MATERIAL_SIZE);
+  copyInto(recordSlot(REGION_MATERIAL, 0, id, MATERIAL_SIZE), record);
   return submitRaw(SUBMIT_MATERIAL, <i32>id, SUBMIT_UPSERT);
 }
 
@@ -407,8 +412,7 @@ export function submitMaterial(record: Material): i32 {
 export function submitRenderable(record: Renderable): i32 {
   const id = record.renderableId;
   if (id == 0 || id > RENDERABLE_COUNT) return -22;
-  placeRecord(recordSlot(REGION_RENDERABLE, 0, id, RENDERABLE_SIZE),
-              changetype<usize>(record), RENDERABLE_SIZE);
+  copyInto(recordSlot(REGION_RENDERABLE, 0, id, RENDERABLE_SIZE), record);
   return submitRaw(SUBMIT_RENDERABLE, <i32>id, SUBMIT_UPSERT);
 }
 
