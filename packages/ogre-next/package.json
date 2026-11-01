@@ -1,0 +1,9 @@
+{
+  "name": "@yabgu_gm/tension-ogre-next",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ogre-Next 3.0 runtime (pinned submodule build): shared libraries, headers and the Hlms shader media.",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["lib/", "include/", "Media/"]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "@yabgu_gm/tension-freeimage",
+  "version": "0.1.0",
+  "private": true,
+  "description": "FreeImage 3.19 shared library and headers, as Ogre-Next's find_package(FreeImage) expects them.",
+  "os": ["linux"],
+  "cpu": ["x64"],
+  "files": ["lib/", "include/"]
+}
