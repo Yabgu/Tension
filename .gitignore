@@ -103,3 +103,8 @@ packages/core/bin/
 !packages/dist/
 packages/dist/*
 !packages/dist/.gitkeep
+
+# What the packaged binaries were built from. Written by build-native.mjs; a
+# machine-local fact (timestamps, the local commit), and run-example.mjs
+# regenerates its expectations from the sources, so it does not travel.
+packages/build-stamp.json

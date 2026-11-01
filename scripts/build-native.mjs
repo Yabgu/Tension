@@ -22,8 +22,9 @@
 
 import { spawnSync } from 'node:child_process';
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeStamp } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -144,6 +145,17 @@ mkdirSync(dirname(dest), { recursive: true });
 cpSync(coreBin, dest);
 // npm runs `bin` entries by exec; the copy has to keep the mode cargo gave it.
 spawnSync('chmod', ['755', dest]);
+
+// ── build stamp ──────────────────────────────────────────────────────────────
+// Both binaries are now in place, so record what they were built from. The
+// inputs are the declared sets in scripts/build-stamp.mjs — the adapter's C++
+// and generated headers, the core's Rust and Cargo manifests, and the
+// tension-res Zig archive both of them link. content, not mtime: see the header
+// of that file for why. run-example.mjs reads this back and refuses to run a
+// stale binary.
+const stamped = writeStamp(repo);
+note(`stamp: ${stamped.counts.adapter} adapter input(s), ${stamped.counts.core} core input(s)`);
+note(`stamp: wrote ${relative(repo, stamped.path).split('\\').join('/')}`);
 
 // ── budget ───────────────────────────────────────────────────────────────────
 // These are the thresholds the packages were given. A number over budget is a
