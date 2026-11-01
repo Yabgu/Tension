@@ -95,3 +95,11 @@ packages/freeimage/lib/
 packages/freeimage/include/
 packages/ogre/lib/
 packages/core/bin/
+
+# packages/dist/ holds `npm pack` output for the future publish path. The root
+# `dist/` rule above excludes it (and a negative rule cannot re-include a file
+# whose parent directory is excluded), so the directory is un-ignored first and
+# then its contents except the placeholder.
+!packages/dist/
+packages/dist/*
+!packages/dist/.gitkeep
