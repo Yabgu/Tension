@@ -15,7 +15,8 @@
     "wasm": "build/demo.wasm"
   },
   "dependencies": {
-    "tension-framework": "file:../../tension-framework"
+    "tension-framework": "file:../../tension-framework",
+    "@yabgu_gm/tension-core": "file:../../packages/core"
   },
   "devDependencies": {
     "@yabgu_gm/tensionscript": "^0.11.4"

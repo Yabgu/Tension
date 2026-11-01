@@ -68,8 +68,27 @@ function capture(command, args) {
   return result.stdout;
 }
 
+/// Resolve a `@yabgu_gm/tension-*` dependency from the example's own tree.
+///
+/// The native side is npm packages now (see `packages/`), so an example finds
+/// its interpreter and adapter the same way it finds its compiler: through
+/// `node_modules`, resolved from the example directory. `file:` dependencies
+/// make those symlinks into `packages/`, so this is a real install rather than
+/// a path the runner recomputes from the repository layout.
+function pkgDir(name) {
+  return join(exampleDir, 'node_modules', ...name.split('/'));
+}
+
+function pkgFile(name, ...rest) {
+  return join(pkgDir(name), ...rest);
+}
+
 function hostBinary() {
   if (process.env.TENSION_CORE) return process.env.TENSION_CORE;
+  const installed = pkgFile('@yabgu_gm/tension-core', 'bin', `tension-core${EXE}`);
+  if (existsSync(installed)) return installed;
+  // Fall back to the cargo tree: an example can still be run straight out of a
+  // checkout that has not had `npm run build:native` yet.
   const profile = cfg.release ? 'release' : 'debug';
   return join(repo, 'tension-core', 'target', profile, `tension-core${EXE}`);
 }
@@ -196,11 +215,39 @@ if (kind === 'ogre') {
     console.log('generating the framework session config...');
     bash(join(repo, 'tension-framework', 'build.sh'), ['--hash', capture(host, ['layout-hash']).trim()]);
   }
-  adapter = process.env.TENSION_OGRE_DSO ?? join(repo, 'tension-ogre', 'build', 'libtension_ogre.so');
+  adapter = process.env.TENSION_OGRE_DSO ?? pkgFile('@yabgu_gm/tension-ogre', 'lib', 'libtension_ogre.so');
   if (!existsSync(adapter)) {
+    // No fallback to tension-ogre/build: that adapter has no rpath into the
+    // packages and no siblings that satisfy it, so using it trades a clear "not
+    // installed" for a confusing loader error three lines later.
     die(`no OGRE adapter at ${adapter}\n` +
-        `  Windows:  build.bat\n` +
-        `  Unix:     tension-ogre/build.sh`);
+        `  run:  npm run build:native   (at the repository root)\n` +
+        `  it builds the adapter against packages/ogre-next and installs it here`);
+  }
+  // The adapter resolves its libraries through its own DT_RPATH, but it still
+  // needs to be told where the render-system plugins and the Hlms media are:
+  // build.sh bakes an absolute path, which is wrong once the package moves.
+  // Set both from the installed packages so `npm start` needs no environment.
+  const ogreNext = pkgDir('@yabgu_gm/tension-ogre-next');
+  if (existsSync(ogreNext)) {
+    process.env.TENSION_OGRE_PLUGIN_DIR ??= join(ogreNext, 'lib', 'OGRE-Next');
+    process.env.TENSION_OGRE_MEDIA_DIR ??= join(ogreNext, 'Media');
+  }
+  // The adapter's own DT_RPATH covers its direct dependencies, but not theirs:
+  // the packaged Ogre libraries carry a DT_RUNPATH baked at build time that
+  // points into this repository's third_party/, and glibc stops honouring an
+  // inherited DT_RPATH once it meets a DT_RUNPATH. Without patchelf there is no
+  // way to rewrite that here, so the loader path is set explicitly — computed
+  // from the installed packages, not from the repository layout.
+  const libDirs = [
+    pkgFile('@yabgu_gm/tension-ogre', 'lib'),
+    pkgFile('@yabgu_gm/tension-ogre-next', 'lib'),
+    pkgFile('@yabgu_gm/tension-freeimage', 'lib'),
+  ].filter(existsSync);
+  if (libDirs.length) {
+    const existing = process.env.LD_LIBRARY_PATH;
+    process.env.LD_LIBRARY_PATH =
+      existing ? `${libDirs.join(delimiter)}${delimiter}${existing}` : libDirs.join(delimiter);
   }
   if (cfg.extraCapability) {
     extraCapability = resolve(exampleDir, cfg.extraCapability);
