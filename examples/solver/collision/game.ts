@@ -61,9 +61,11 @@ struct SphereProps {
 
 // The state vector's layout, typed. The solver hands `_derivative` four f64
 // slots per body — [x, y, vx, vy], no time slot, because `t` is a parameter —
-// so a body's view is exactly this record at `(i << 5)`. Adding a field here
-// is the only way to change the offsets the derivative reads and writes; they
-// are no longer written out as `+ 8`, `+ 16`, `+ 24` at each site.
+// so a body's view is exactly this record at body index `i`. Adding a field
+// here is the only way to change the offsets the derivative reads and writes;
+// they are never written out as `+ 8`, `+ 16`, `+ 24` at each site, and the
+// stride (32 bytes) comes from the `[BodyState *]` array type, not from a
+// hand-written `i << 5`.
 @unmanaged
 struct BodyState {
   x: f64;
@@ -73,26 +75,25 @@ struct BodyState {
 }
 
 // offsetof<SphereProps>() is the byte size of the layout — 16 for two f64s,
-// r at 0 and m at 8 — and folds to a constant at compile time. Verified
-// against the generated wasm for the pinned compiler (AS 0.28.8): the
-// constant is emitted as 16. `sizeof<SphereProps>()` is *not* the same
-// number there (it is the size of a reference, 4), so it is not used.
-const PROPS_STRIDE: usize = offsetof<SphereProps>();
-const PROPS_BASE: usize = memory.data(<i32>PROPS_STRIDE * 2, 8);
-
-function propsAt(i: i32): usize { return PROPS_BASE + <usize>i * PROPS_STRIDE; }
+// r at 0 and m at 8 — and folds to a constant at compile time. It is used for
+// `memory.data` because an expression-position `sizeof<SphereProps>()` is the
+// size of a reference (4) on the compiler this example pinned before 0.12,
+// not the layout. The `[SphereProps *]` stride below does not depend on that
+// quirk: the array type carries its own element size, and indexing at -O3
+// folds to `p + (i << 4)`.
+const PROPS_BASE: usize = memory.data(<i32>offsetof<SphereProps>() * 2, 8);
+const props = changetype<[SphereProps *]>(PROPS_BASE);
 
 function setProps(i: i32, r: f64, m: f64): void {
-  const p = changetype<@unmanaged SphereProps>(propsAt(i));
-  p.r = r;
-  p.m = m;
+  props[i].r = r;
+  props[i].m = m;
 }
 
 function propRadius(i: i32): f64 {
-  return changetype<@unmanaged SphereProps>(propsAt(i)).r;
+  return props[i].r;
 }
 function propMass(i: i32): f64 {
-  return changetype<@unmanaged SphereProps>(propsAt(i)).m;
+  return props[i].m;
 }
 
 // ── the right-hand side ──────────────────────────────────────────────────
@@ -100,21 +101,22 @@ function propMass(i: i32): f64 {
 // f(t, y): pure — the only state it reads is the state vector (plus the
 // static props, which never change during a run). Each body is a `BodyState`
 // view over its four slots (GUEST_ABI.md §3.7, pattern 1a, like the shipped
-// examples/solver/wasm/game.ts): the body stride stays here, the field offsets
-// live in the record. At -O3 a view folds to the same load at the same offset
-// that `load<f64>(yPtr + at + 16)` used to emit.
+// examples/solver/wasm/game.ts): the record declares the field offsets, the
+// `[BodyState *]` array type carries the stride. At -O3 `ys[i].vx` folds to
+// the same load at the same offset that `load<f64>(yPtr + at + 16)` used to
+// emit.
 export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: i32): i32 {
   if (len < 8 || dyCap < len) return -22;
   const bodies: i32 = len >> 2; // 4 f64 slots per body
 
+  const ys = changetype<[BodyState *]>(yPtr);
+  const dys = changetype<[BodyState *]>(dyPtr);
+
   for (let i = 0; i < bodies; i++) {
-    const at: usize = <usize>i << 5; // 4 f64 = 32 bytes per body
-    const b = changetype<@unmanaged BodyState>(yPtr + at);
-    const d = changetype<@unmanaged BodyState>(dyPtr + at);
-    const x = b.x;
-    const y = b.y;
-    const vx = b.vx;
-    const vy = b.vy;
+    const x = ys[i].x;
+    const y = ys[i].y;
+    const vx = ys[i].vx;
+    const vy = ys[i].vy;
     const r = propRadius(i);
     const m = propMass(i);
 
@@ -151,10 +153,8 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
     // own pass through this loop.
     for (let j = 0; j < bodies; j++) {
       if (j == i) continue;
-      const bt: usize = <usize>j << 5;
-      const bj = changetype<@unmanaged BodyState>(yPtr + bt);
-      const dx = x - bj.x;
-      const dy = y - bj.y;
+      const dx = x - ys[j].x;
+      const dy = y - ys[j].y;
       const dist2 = dx * dx + dy * dy;
       const minDist = r + propRadius(j);
       if (dist2 < minDist * minDist) {
@@ -164,18 +164,18 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
         const ny = dy / dist;
         ax += K_CC * penetration * nx / m;
         ay += K_CC * penetration * ny / m;
-        const vrel = (vx - bj.vx) * nx
-                   + (vy - bj.vy) * ny;
+        const vrel = (vx - ys[j].vx) * nx
+                   + (vy - ys[j].vy) * ny;
         ax -= DAMPING * vrel * nx / m;
         ay -= DAMPING * vrel * ny / m;
       }
     }
 
     // 4. d/dt [x, y] = [vx, vy]; d/dt [vx, vy] = [ax, ay].
-    d.x = vx;
-    d.y = vy;
-    d.vx = ax;
-    d.vy = ay;
+    dys[i].x = vx;
+    dys[i].y = vy;
+    dys[i].vx = ax;
+    dys[i].vy = ay;
   }
   return 0;
 }
