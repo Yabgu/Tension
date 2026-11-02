@@ -28,6 +28,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.11.4"
+    "@yabgu_gm/tensionscript": "^0.12.0"
   }
 }
