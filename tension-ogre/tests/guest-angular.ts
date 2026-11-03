@@ -431,6 +431,24 @@ export function _start_game(): void {
       if (world!.step(DT) != 0) {
         fail("world.step refused at frame " + frame_now.toString());
       }
+      // Clause 7's measurement is per **frame**, so it is taken per frame, here.
+      // It used to sit after the batch, in the outer loop, where it counted
+      // *iterations*: one iteration advances `advance` frames, and an
+      // `elapsed == 0` iteration is skipped outright, so the same 13-frame fall
+      // read 10-13 depending on how the host paced it. A batch of two that
+      // landed on the contact frame also credited two frames as free and then
+      // recorded contact, so `+= advance` outside would still have been short by
+      // one. Per frame, there is nothing to reconstruct.
+      if (spinner_contact_frame < 0) {
+        if (body.pos(SPINNER, 1) <= RADIUS + 0.01) {
+          spinner_contact_frame = frame_now;
+        } else {
+          spinner_free_frames += 1;
+          const w = body.omega(SPINNER, 1);
+          const err = abs(w - SPIN_RATE);
+          if (err > spinner_free_w_error) spinner_free_w_error = err;
+        }
+      }
     }
     if (batch != null) {
       world!.pose(batch);
@@ -455,16 +473,8 @@ export function _start_game(): void {
     read_quat(world!, SPINNER, now_quat);
     spinner_turned += quat_delta(prev_spinner, now_quat);
     for (let k: i32 = 0; k < 4; k++) prev_spinner[k] = now_quat[k];
-    if (spinner_contact_frame < 0) {
-      if (body.pos(SPINNER, 1) <= RADIUS + 0.01) {
-        spinner_contact_frame = frame_now;
-      } else {
-        spinner_free_frames += 1;
-        const w = body.omega(SPINNER, 1);
-        const err = abs(w - SPIN_RATE);
-        if (err > spinner_free_w_error) spinner_free_w_error = err;
-      }
-    }
+    // Clause 7's free-frame count is taken inside the per-frame loop above, not
+    // here: see the comment there.
     // The spinner's displacement, the largest it ever is.
     const dx = body.pos(SPINNER, 0) - spinner_home[0];
     const dy = body.pos(SPINNER, 1) - spinner_home[1];
