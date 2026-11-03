@@ -74,26 +74,21 @@ struct BodyState {
   vy: f64;
 }
 
-// offsetof<SphereProps>() is the byte size of the layout — 16 for two f64s,
-// r at 0 and m at 8 — and folds to a constant at compile time. It is used for
-// `memory.data` because an expression-position `sizeof<SphereProps>()` is the
-// size of a reference (4) on the compiler this example pinned before 0.12,
-// not the layout. The `[SphereProps *]` stride below does not depend on that
-// quirk: the array type carries its own element size, and indexing at -O3
-// folds to `p + (i << 4)`.
-const PROPS_BASE: usize = memory.data(<i32>offsetof<SphereProps>() * 2, 8);
-const props = changetype<[SphereProps *]>(PROPS_BASE);
+// The view is `[SphereProps * 2]`, not `[SphereProps *]`: the count is part of
+// the type, so the record type plus the extent say exactly what the region
+// holds, and a third sphere would be a change to the type rather than a silent
+// third write past a bare pointer. Indexing still folds to `p + (i << 4)`.
+//
+// The region is sized by `sizeof<SphereProps>()` — the layout, 16 bytes for two
+// f64s, r at 0 and m at 8. Before 0.13 an expression-position `sizeof` of a
+// class was the size of a *reference* (4), which is why this line used to read
+// `offsetof<SphereProps>()`; that quirk is gone and the workaround with it.
+const PROPS_BASE: usize = memory.data(<i32>sizeof<SphereProps>() * 2, 8);
+const props = changetype<@unmanaged [SphereProps * 2]>(PROPS_BASE);
 
 function setProps(i: i32, r: f64, m: f64): void {
   props[i].r = r;
   props[i].m = m;
-}
-
-function propRadius(i: i32): f64 {
-  return props[i].r;
-}
-function propMass(i: i32): f64 {
-  return props[i].m;
 }
 
 // ── the right-hand side ──────────────────────────────────────────────────
@@ -117,8 +112,8 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
     const y = ys[i].y;
     const vx = ys[i].vx;
     const vy = ys[i].vy;
-    const r = propRadius(i);
-    const m = propMass(i);
+    const r = props[i].r;
+    const m = props[i].m;
 
     // 1. gravity: an acceleration, not a force — mass does not enter.
     let ax = 0.0;
@@ -156,7 +151,7 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
       const dx = x - ys[j].x;
       const dy = y - ys[j].y;
       const dist2 = dx * dx + dy * dy;
-      const minDist = r + propRadius(j);
+      const minDist = r + props[j].r;
       if (dist2 < minDist * minDist) {
         const dist = Math.sqrt(dist2) + EPSILON;
         const penetration = minDist - dist;

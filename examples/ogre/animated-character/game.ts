@@ -144,7 +144,12 @@ function changed_count(a: ArrayBuffer, b: ArrayBuffer): f64 {
 function quadrant_report(frame: ArrayBuffer): string {
   const pixels = Uint8Array.wrap(frame);
   const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
-  const counts = new Float64Array(4);
+  // `counts` is a value-form array: four `f64` leaves in this frame, no heap
+  // record, no address to keep alive. `sums` stays a `Float64Array` because it
+  // is twelve elements indexed at `quadrant * 3` — a runtime index — and a
+  // value-form array is dispatched over its element leaves, which the compiler
+  // emits up to an extent of 8 (see `character_patch_spread`).
+  let counts: [f64 * 4];
   const sums = new Float64Array(12);
   const width = 640, height = 480;
   for (let y: i32 = 0; y < height; y++) {
@@ -194,9 +199,13 @@ function character_patch_spread(frame: ArrayBuffer, label: string): f64 {
   const pixels = Uint8Array.wrap(frame);
   const bg0 = pixels[0], bg1 = pixels[1], bg2 = pixels[2];
   const width = 640, height = 480;
-  const counts = new Float64Array(4);
-  const cx = new Float64Array(4);
-  const cy = new Float64Array(4);
+  // Three accumulators, one per quadrant, each four `f64` leaves in this frame
+  // rather than a heap record: a fixed count is known here, so nothing has to
+  // be allocated or collected. They are read and written at a runtime index
+  // (`quadrant`); the compiler dispatches over the leaves for that.
+  let counts: [f64 * 4];
+  let cx: [f64 * 4];
+  let cy: [f64 * 4];
   for (let y: i32 = 0; y < height; y++) {
     for (let x: i32 = 0; x < width; x++) {
       const at: i32 = (y * width + x) * 4;
