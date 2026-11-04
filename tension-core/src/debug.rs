@@ -9,13 +9,14 @@
 //! breaking on `wasmtime_jit_debug::gdb_jit_int::register_gdb_jit_image` is
 //! reached with the flag and never without it.
 //!
-//! What that buys depends on the guest, and for an AssemblyScript guest the
-//! host has to supply the missing half: `asc` (AssemblyScript 0.28) emits no
-//! DWARF — only a `name` custom section and, with `--sourceMap`, a
-//! `sourceMappingURL`. Rather than leave the guest's source unrepresentable,
-//! the host **synthesizes DWARF for it from the source map** before handing the
-//! module to wasmtime (see `dwarf.rs`), so under `--debug` an ordinary source
-//! breakpoint resolves:
+//! What that buys depends on the guest. TensionScript 0.14 and later embed
+//! DWARF at compile time (`--debug --sourceMap`), and such a guest is passed
+//! through untouched. A guest from an earlier compiler carries only a `name`
+//! custom section and, with `--sourceMap`, a `sourceMappingURL`; for those the
+//! host **synthesizes DWARF from the source map** before handing the module to
+//! wasmtime (see `dwarf.rs`). That fallback is deprecated — it announces itself
+//! when it fires — but keeps such a guest source-debuggable, so under
+//! `--debug` an ordinary source breakpoint resolves:
 //!
 //! ```text
 //! frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8
@@ -44,9 +45,12 @@ pub struct GuestDebugInfo {
     /// the JIT image as `wasm[0]::function[N]::<module>/<name>`, which is
     /// enough for a function breakpoint (not for a source line).
     pub names: bool,
-    /// The `sourceMappingURL` value, if present: the source map the host
-    /// synthesizes DWARF from under `--debug`. Without it the guest's wasm
-    /// addresses carry no path back to `game.ts`.
+    /// The `sourceMappingURL` value, if present. It is the input to the
+    /// deprecated `--debug` fallback, which synthesizes DWARF for a guest that
+    /// carries none (a build from TensionScript 0.13.2 or earlier). A guest
+    /// built by a compiler that embeds `.debug_*` needs no source map to be
+    /// source-debuggable; the field is still reported because its presence is
+    /// what tells the fallback it has anything to synthesize from.
     pub source_map: Option<String>,
 }
 
