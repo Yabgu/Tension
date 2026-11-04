@@ -145,7 +145,29 @@ if [ "$backend" = ogre ]; then
         # the adapter links the two it uses directly.
         ogre_lib="-L$prefix/lib -lOgreNextMain -lOgreNextHlmsUnlit -lOgreNextHlmsPbs"
         plugin_dir="$prefix/lib/OGRE-Next"
-        media_dir="$prefix/share/OGRE-Next/Media"
+        # `packages/ogre-next` is a **flat package**, not an install prefix:
+        # `lib/`, `include/` and `Media/` sit at its root — its README says
+        # exactly that, and the packer (`scripts/build-native.mjs`) writes the
+        # Hlms shaders to `Media/`. A real Ogre-Next install puts them under
+        # `share/OGRE-Next/Media` instead, and this branch used to assume only
+        # that shape: built against the package, it compiled in
+        # `packages/ogre-next/share/OGRE-Next/Media`, a directory the packer
+        # never creates. Every Hlms start then failed with "Data folder provided
+        # contains no valid template shader files" and the only way to run a
+        # guest was to override `TENSION_OGRE_MEDIA_DIR` by hand.
+        #
+        # Keyed on `Hlms/` rather than on the directory: an install prefix can
+        # have `share/OGRE-Next/Media` half-created by another tool, and the
+        # question here is which tree actually holds the shaders.
+        if [ -d "$prefix/Media/Hlms" ]; then
+            media_dir="$prefix/Media"
+        elif [ -d "$prefix/share/OGRE-Next/Media/Hlms" ]; then
+            media_dir="$prefix/share/OGRE-Next/Media"
+        else
+            # Neither: name the package layout, which is what TENSION_OGRE_PREFIX
+            # is for. The runtime reports the missing folder by name.
+            media_dir="$prefix/Media"
+        fi
     elif [ -f "$here/../third_party/ogre-next-install/lib/libOgreNextMain.so" ]; then
         # In-tree first: `third_party/bootstrap.sh` built Ogre-Next from the
         # pinned submodule. Preferred over the system install because the
