@@ -67,6 +67,10 @@ jobs:
           zig version
           gfortran --version | head -1
           cc --version | head -1
+          # Diagnostic, not a gate: the lldb test skips cleanly when this is
+          # absent (and libtest hides a passing test's output, so the skip
+          # message is otherwise invisible in the log).
+          command -v lldb || echo "lldb: absent - the behavioural smoke will skip"
 
       - name: E2E debug assertions
         run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
