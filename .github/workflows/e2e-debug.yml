@@ -40,6 +40,15 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Caches the cargo registry and tension-core/target. Placed after the
+      # toolchain step on purpose: rust-cache keys on `rustc -V`, so it must
+      # see the final toolchain. The measured run was 3 m 36 s, of which
+      # ~3 m 10 s was compiling dependencies and ~4 s was the tests - the
+      # cache attacks that ratio, not the test time.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "tension-core -> target"
+
       - name: Install gfortran
         run: |
           sudo apt-get update
