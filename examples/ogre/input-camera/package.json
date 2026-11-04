@@ -22,6 +22,6 @@
     "@yabgu_gm/tension-freeimage": "file:../../../packages/freeimage"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.11.4"
+    "@yabgu_gm/tensionscript": "^0.14.0"
   }
 }
