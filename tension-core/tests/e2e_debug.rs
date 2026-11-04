@@ -18,6 +18,42 @@
 //! third test needs is a test-only flag — see the `test-dump` feature comment in
 //! `Cargo.toml`; in a release build without that feature the flag does not
 //! exist, and the test says so and skips rather than pretending to pass.
+//!
+//! # Which profile covers what (measured)
+//!
+//! | command | A1 | A2 | A3 comp_dir | A3 search-path | lldb |
+//! | --- | --- | --- | --- | --- | --- |
+//! | `cargo test --test e2e_debug` | runs | runs | runs | runs | skip if absent |
+//! | `cargo test --release --test e2e_debug` | runs | runs | **skipped** | runs | skip if absent |
+//! | `cargo test --release --features test-dump --test e2e_debug` | runs | runs | runs | runs | skip if absent |
+//!
+//! The middle row still reports `4 passed`. That is not a failure and not a
+//! lie — A3's search-path half does run — but the `DW_AT_comp_dir` assertion is
+//! compiled out, because `debug_assertions` is false for both the test crate
+//! and the binary it spawns. **Use the first or third command in CI.** The
+//! default (`cargo test`) is enough, and is what the repo's own `test.sh` runs.
+//!
+//! # CI toolchain requirement (measured, and not what it looks like)
+//!
+//! `--no-default-features` does **not** make this suite runnable without Zig and
+//! gfortran. The features gate `cpal` and `llama-cpp-2` only; `build.rs` calls
+//! `zig build` (for `tension-res`) and `tension-solver/build.sh` (gfortran)
+//! unconditionally, with no `#[cfg(feature = ...)]` on either path. Verified by
+//! putting a failing `zig` stub first on `PATH`: `--no-default-features` still
+//! reaches `build.rs:65`'s panic. Same for a `gfortran` stub (`build.rs:165`).
+//!
+//! A clean `--no-default-features --release` build on a machine that *has* both
+//! took 1 m 42 s and peaked at ~1051 MB RSS. So the recipe is:
+//!
+//! ```sh
+//! cargo test --manifest-path tension-core/Cargo.toml --test e2e_debug
+//! ```
+//!
+//! on a runner that installs Zig (>= 0.16), gfortran (>= 14) and, for the
+//! default features, `libasound2-dev`. Dropping features buys compile time for
+//! `cpal`/llama.cpp, not toolchain freedom. Making this suite toolchain-free
+//! would mean making `build.rs` feature-gate `tension-res` and `tension-solver`
+//! — a host change, out of scope for the test that pins the behaviour.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
