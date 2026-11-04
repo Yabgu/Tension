@@ -1,0 +1,72 @@
+# The DWARF E2E assertions, on every push.
+#
+# Scope: exactly one integration target, tests/e2e_debug.rs — the four tests
+# that pin the host's `--debug` behaviours (pass-through, the legacy fallback
+# and its deprecation, and `--symbol-path` not moving `DW_AT_comp_dir`). The
+# full suite (`./test.sh`) is not run here: it needs the OGRE fixtures and a
+# display, which is what ci/Dockerfile is for.
+#
+# Why not the container (`ci/docker.sh test`): the image is built from
+# ci/Dockerfile, whose line 30 copies locally built OGRE-Next and freeimage
+# packages out of ci/ogre-next-pkg/. That directory is not in the tree and the
+# packages are not published anywhere, so the image cannot be built on a
+# runner. Wiring the container is a follow-up that needs those packages
+# published first; this job takes the toolchain directly instead.
+#
+# The toolchain is what build.rs requires, measured rather than guessed:
+#   zig        - `zig build` for tension-res (build.rs:57)
+#   gfortran   - tension-solver/build.sh, run from build.rs:162
+#   cc         - five C fixtures compiled unconditionally (build.rs:239-381);
+#                present in the runner image via build-essential
+# Nothing else is needed because `--no-default-features` drops cpal (no ALSA
+# headers) and llama-cpp-2 (no CMake/libclang C++ build). The E2E tests touch
+# neither; `--no-default-features --test e2e_debug` was measured green before
+# this file was written.
+
+name: E2E debug
+
+on:
+  push:
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  e2e-debug:
+    name: "E2E debug"
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install gfortran
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends gfortran
+
+      # Zig is pinned to the version this tree is built and tested with
+      # locally (0.17.0), and the download is checksum-verified: a build
+      # script that shells out to a compiler should not silently change
+      # compiler because a URL moved. build.rs accepts Zig >= 0.16; 0.17.0 is
+      # what the Dockerfile's `pacman -S zig` resolves to in the project's own
+      # image at the time of writing.
+      - name: Install Zig 0.17.0
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/zig.tar.xz" \
+            https://ziglang.org/download/0.17.0/zig-x86_64-linux-0.17.0.tar.xz
+          echo "1cbe9df9f27e6b78d14ccbca43b6703a404ef79ef1c463de901d7f088d4e2026  $RUNNER_TEMP/zig.tar.xz" \
+            | sha256sum -c -
+          tar -xf "$RUNNER_TEMP/zig.tar.xz" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/zig-x86_64-linux-0.17.0" >> "$GITHUB_PATH"
+
+      - name: Show toolchain
+        run: |
+          rustc --version
+          cargo --version
+          zig version
+          gfortran --version | head -1
+          cc --version | head -1
+
+      - name: E2E debug assertions
+        run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
