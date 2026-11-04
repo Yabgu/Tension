@@ -55,10 +55,18 @@ jobs:
       # tension-res build measures 137 s against 0.06 s warm - which is where
       # almost all of the remaining job time goes. The cache is
       # content-addressed, so a stale entry is harmless: zig revalidates it.
-      - name: Cache Zig's global cache
+      #
+      # Both directories are needed, and the second is the one that matters:
+      # `zig build` keys its step graph on the *local* cache at
+      # tension-res/.zig-cache (inside the checkout, so wiped every run), and
+      # only falls back to ~/.cache/zig for content. Caching the global one
+      # alone was measured as no improvement at all.
+      - name: Cache Zig's build caches
         uses: actions/cache@v4
         with:
-          path: ~/.cache/zig
+          path: |
+            ~/.cache/zig
+            tension-res/.zig-cache
           key: zig-0.17.0-${{ runner.os }}-${{ hashFiles('tension-res/build.zig', 'tension-res/src/**', 'tension-res/include/**') }}
           restore-keys: |
             zig-0.17.0-${{ runner.os }}-
