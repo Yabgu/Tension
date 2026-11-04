@@ -35,3 +35,22 @@ Nothing here asserts on wasm bytes. `dwarf-guest` is checked for the presence of
 report string it produces; `legacy-guest` is checked for the absence of any
 `.debug_*` section and for the synthesis report. A field-level check reads
 `DW_AT_comp_dir` out of one synthesised dump. See `e2e_debug.rs`.
+
+## Running the suite that consumes them
+
+```sh
+cargo test --manifest-path tension-core/Cargo.toml --test e2e_debug
+```
+
+Use that command, or `--release --features test-dump`; plain `--release` reports
+`4 passed` while silently skipping the `DW_AT_comp_dir` half of A3 (it needs the
+test-only dump flag, which a release build without that feature does not have).
+The table in `e2e_debug.rs`'s header states which profile covers what.
+
+CI still needs **Zig (>= 0.16)** and **gfortran (>= 14)** on the runner.
+`--no-default-features` does not remove that requirement: the features gate
+`cpal` and `llama-cpp-2` only, while `build.rs` runs `zig build` and
+`tension-solver/build.sh` unconditionally. A clean
+`--no-default-features --release` build took 1 m 42 s at ~1051 MB RSS here, on a
+machine that already had both toolchains. See the header of `e2e_debug.rs` for
+the measurement that shows this.
