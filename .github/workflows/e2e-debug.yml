@@ -67,9 +67,9 @@ jobs:
           path: |
             ~/.cache/zig
             tension-res/.zig-cache
-          key: zig-0.17.0-${{ runner.os }}-${{ hashFiles('tension-res/build.zig', 'tension-res/src/**', 'tension-res/include/**') }}
+          key: zig-0.17.0-v2-${{ runner.os }}-${{ hashFiles('tension-res/build.zig', 'tension-res/src/**', 'tension-res/include/**') }}
           restore-keys: |
-            zig-0.17.0-${{ runner.os }}-
+            zig-0.17.0-v2-${{ runner.os }}-
 
       - name: Install gfortran
         run: |
