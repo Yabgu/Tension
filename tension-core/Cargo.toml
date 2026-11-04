@@ -11,6 +11,12 @@ audio = ["dep:cpal"]
 # (needs cmake + g++). Build with `--no-default-features --features audio`
 # and `ai` falls back to the deterministic stub.
 ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
+# Test-only: lets the binary write the DWARF it synthesised to a file, so the
+# E2E test can read `DW_AT_comp_dir` out of an external process instead of
+# under lldb. The flag is also compiled in for debug builds (see main.rs), which
+# is what `cargo test` hands an integration test; a release build without this
+# feature does not contain it at all.
+test-dump = []
 
 [[bin]]
 name = "tension-core"
