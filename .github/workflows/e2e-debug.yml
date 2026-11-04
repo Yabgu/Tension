@@ -49,6 +49,20 @@ jobs:
         with:
           workspaces: "tension-core -> target"
 
+      # Zig's own compilation cache. Without this, build.rs re-runs `zig build`
+      # on every job (a fresh checkout gives every file a new mtime, so
+      # `cargo:rerun-if-changed` on a directory always fires), and a cold
+      # tension-res build measures 137 s against 0.06 s warm - which is where
+      # almost all of the remaining job time goes. The cache is
+      # content-addressed, so a stale entry is harmless: zig revalidates it.
+      - name: Cache Zig's global cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/zig
+          key: zig-0.17.0-${{ runner.os }}-${{ hashFiles('tension-res/build.zig', 'tension-res/src/**', 'tension-res/include/**') }}
+          restore-keys: |
+            zig-0.17.0-${{ runner.os }}-
+
       - name: Install gfortran
         run: |
           sudo apt-get update
