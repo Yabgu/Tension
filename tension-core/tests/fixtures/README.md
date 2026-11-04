@@ -8,7 +8,7 @@ Two guests, chosen because they exercise the two states `--debug` can see:
 
 | fixture | built by | carries DWARF | what it pins |
 | --- | --- | --- | --- |
-| `dwarf-guest/` | TensionScript with DWARF emission | yes | pass-through |
+| `dwarf-guest/` | `@yabgu_gm/tensionscript@0.14.0` | yes | pass-through |
 | `legacy-guest/` | `@yabgu_gm/tensionscript@0.13.2` | no | synthesised fallback |
 
 The distinction is the whole point: the host must leave a compiler-emitted
