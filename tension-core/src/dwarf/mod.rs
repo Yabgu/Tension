@@ -294,6 +294,16 @@ pub fn augment(wasm_path: &Path) -> AugmentResult {
     };
     match synthesize(&wasm, &map, wasm_path) {
         Ok((bytes, stats)) => {
+            // Printed here, not in `debug::report`, because this is the only
+            // point where synthesis actually happened: the report runs before
+            // the source map is even read, and a guest without one never
+            // reaches this branch. TensionScript 0.14.0 is the first release
+            // that embeds DWARF at compile time, so it is the first version a
+            // guest can be rebuilt with to stop needing this fallback.
+            eprintln!(
+                "[tension-core] debug:   DWARF: none — synthesizing from source map. \
+                 Deprecated; rebuild with TensionScript 0.14.0 or later to embed DWARF at compile time."
+            );
             eprintln!(
                 "[tension-core] debug: synthesized DWARF - {} files, {} line rows ({} outside the code section), {} functions, {} locals",
                 stats.files, stats.rows, stats.dropped, stats.functions, stats.locals
