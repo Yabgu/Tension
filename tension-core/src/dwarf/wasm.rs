@@ -225,12 +225,12 @@ impl Layout {
     }
 
     /// Absolute directory guest sources are relative to.
-    pub(crate) fn comp_dir(roots: &[PathBuf], wasm: &Path) -> String {
-        for root in roots {
-            if root.is_dir() {
-                return root.display().to_string();
-            }
-        }
+    ///
+    /// The guest's own directory, never `--symbol-path`: that flag means
+    /// lldb's `target.debug-file-search-paths` and nothing else (see
+    /// `debug::report`). A guest built by the current compiler does not come
+    /// through here at all - it carries its own `DW_AT_comp_dir`.
+    pub(crate) fn comp_dir(wasm: &Path) -> String {
         let dir = wasm
             .parent()
             .map(|p| p.to_path_buf())

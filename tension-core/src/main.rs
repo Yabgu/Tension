@@ -584,7 +584,7 @@ fn main() -> anyhow::Result<()> {
         let guest = std::path::Path::new(&cli.wasm_path);
         let info = debug::probe(guest);
         debug::report(guest, &info, &cli.symbol_paths);
-        augmented = match dwarf::augment(guest, &cli.symbol_paths) {
+        augmented = match dwarf::augment(guest) {
             dwarf::AugmentResult::Augmented(bytes) => Some(bytes),
             dwarf::AugmentResult::Unchanged(reason) => {
                 logging::log(Level::Info, "core", &format!("debug: {reason}"));

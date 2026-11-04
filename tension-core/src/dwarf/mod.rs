@@ -51,16 +51,16 @@ pub struct Stats {
 /// and `.debug_ranges` appended: line tables for source breakpoints, function
 /// DIEs for the call stack, and variable DIEs for locals.
 ///
-/// The first existing entry of `symbol_roots` becomes the compile directory,
-/// and so the base for every file-table entry.
+/// The compile directory is the guest's own directory (see `Layout::comp_dir`),
+/// and it is the base for every file-table entry. `--symbol-path` does not
+/// reach this function: it names lldb's search paths, not the guest's sources.
 pub fn synthesize(
     wasm: &[u8],
     map: &SourceMap,
-    symbol_roots: &[PathBuf],
     wasm_path: &Path,
 ) -> Result<(Vec<u8>, Stats), String> {
     let layout = Layout::parse(wasm)?;
-    let comp_dir = Layout::comp_dir(symbol_roots, wasm_path);
+    let comp_dir = Layout::comp_dir(wasm_path);
     let end_addr = layout.code_payload_size as u32;
 
     // Source-map offsets are absolute file offsets; DWARF is payload-relative.
@@ -253,7 +253,7 @@ pub enum AugmentResult {
     Failed(String),
 }
 
-pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> AugmentResult {
+pub fn augment(wasm_path: &Path) -> AugmentResult {
     let wasm = match std::fs::read(wasm_path) {
         Ok(b) => b,
         Err(e) => {
@@ -292,7 +292,7 @@ pub fn augment(wasm_path: &Path, symbol_roots: &[PathBuf]) -> AugmentResult {
             return AugmentResult::Failed(format!("source map {}: {e}", map_path.display()));
         }
     };
-    match synthesize(&wasm, &map, symbol_roots, wasm_path) {
+    match synthesize(&wasm, &map, wasm_path) {
         Ok((bytes, stats)) => {
             eprintln!(
                 "[tension-core] debug: synthesized DWARF - {} files, {} line rows ({} outside the code section), {} functions, {} locals",
@@ -630,7 +630,7 @@ mod tests {
             vlq_encode(100 - 2),
         );
         let map = parse_source_map(&format!(r#"{{"sources":["game.ts"],"mappings":"{mappings}"}}"#)).unwrap();
-        let (out, stats) = synthesize(&wasm, &map, &[], Path::new("game.wasm")).unwrap();
+        let (out, stats) = synthesize(&wasm, &map, Path::new("game.wasm")).unwrap();
         assert_eq!(stats.rows, 1, "only the in-range address becomes a line row");
         assert_eq!(stats.dropped, 1, "the out-of-range address is dropped, not remapped");
 
@@ -659,7 +659,7 @@ mod tests {
         let mappings = format!("{}AIA,{}AIA", vlq_encode(start + 2), vlq_encode(1));
         let map = parse_source_map(&format!(r#"{{"sources":["game.ts"],"mappings":"{mappings}"}}"#))
             .unwrap();
-        let (out, stats) = synthesize(&wasm, &map, &[], Path::new("game.wasm")).unwrap();
+        let (out, stats) = synthesize(&wasm, &map, Path::new("game.wasm")).unwrap();
         assert_eq!(stats.rows, 2);
 
         // The CU range list is one entry per row interval plus the end
@@ -807,7 +807,7 @@ mod tests {
         }
         let wasm = std::fs::read(&wasm_path).unwrap();
         let map = parse_source_map(&std::fs::read_to_string(&map_path).unwrap()).unwrap();
-        let (out, stats) = synthesize(&wasm, &map, std::slice::from_ref(&dir), &wasm_path).unwrap();
+        let (out, stats) = synthesize(&wasm, &map, &wasm_path).unwrap();
         assert!(stats.rows > 0, "the example maps some wasm offsets to lines");
         if stats.functions == 0 || stats.locals == 0 {
             // A release `npm run build` overwrites the wasm but not the
