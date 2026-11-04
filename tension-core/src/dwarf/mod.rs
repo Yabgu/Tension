@@ -593,7 +593,7 @@ mod tests {
             r#"{"version":3,"sources":["game.ts"],"mappings":"AAAA"}"#,
         )
         .unwrap();
-        let out = augment(&dir.join("partial.wasm"), &[]);
+        let out = augment(&dir.join("partial.wasm"));
         assert!(
             matches!(out, AugmentResult::Augmented(_)),
             "a lone .debug_line must not skip synthesis"
@@ -615,7 +615,7 @@ mod tests {
             r#"{"version":3,"sources":["game.ts"],"mappings":"AAAA"}"#,
         )
         .unwrap();
-        let out = augment(&dir.join("full.wasm"), &[]);
+        let out = augment(&dir.join("full.wasm"));
         assert!(
             matches!(
                 out,
