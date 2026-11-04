@@ -119,11 +119,15 @@ pub fn report(guest: &Path, info: &GuestDebugInfo, symbol_paths: &[PathBuf]) {
     eprintln!("[tension-core] debug: guest {}", guest.display());
 
     if info.dwarf {
-        eprintln!("[tension-core] debug:   DWARF: present — passed through as-is");
+        eprintln!("[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is");
     } else {
-        eprintln!("[tension-core] debug:   DWARF: none — `asc` writes `name` + `sourceMappingURL` only");
-        eprintln!("[tension-core] debug:   the host synthesizes it from the source map, so `game.ts`");
-        eprintln!("[tension-core] debug:   line breakpoints resolve against this guest");
+        // The guest was built by a compiler that emitted no DWARF, so the host
+        // falls back to synthesizing it from the source map. That fallback is
+        // deprecated; the deprecation itself is printed where the synthesis
+        // actually happens (see `dwarf::augment`), so this line promises
+        // nothing when there is no source map to synthesize from.
+        eprintln!("[tension-core] debug:   DWARF: absent — no `.debug_*` sections in the module (legacy guest)");
+        eprintln!("[tension-core] debug:   the host can synthesize it from the source map (deprecated fallback)");
         if !info.names {
             eprintln!("[tension-core] debug:   (no `name` section either, so guest functions are anonymous)");
         }
