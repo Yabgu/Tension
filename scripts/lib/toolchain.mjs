@@ -128,13 +128,41 @@ function msvcEnvironment() {
 
 let cachedBaseEnv = null;
 
+/// Marker set on every environment this module assembles.
+///
+/// Without it the assembly is not idempotent, and that is not academic: a build
+/// script that spawns another Node script (`test.mjs` -> `test-framework.mjs`)
+/// re-runs `vcvars64.bat` and prepends its PATH again. Measured on this tree, two
+/// levels of nesting produced a 9,898-character PATH — past `cmd.exe`'s
+/// 8,191-character limit for a single variable. cmd truncates it silently, the
+/// tail (where `C:\Program Files\nodejs` lives) is lost, and every npm `.cmd` shim
+/// then fails with `'node' is not recognized`.
+const MARKER = 'TENSION_TOOLCHAIN_ENV';
+
+/// Split a PATH, drop empties, and keep the first occurrence of each directory.
+/// Case-insensitive on Windows, where `C:\Foo` and `c:\foo` are one directory.
+function dedupePath(value) {
+  const seen = new Set();
+  const keep = [];
+  for (const entry of value.split(delimiter)) {
+    const key = WIN ? entry.toLowerCase() : entry;
+    if (!entry || seen.has(key)) continue;
+    seen.add(key);
+    keep.push(entry);
+  }
+  return keep;
+}
+
 /// The environment every child build process starts from.
 ///
 /// On Windows this is the MSVC environment (so `cargo` can link) with MSYS2's
 /// UCRT64 `bin` appended (so `gcc`, `gfortran`, `cmake`, `ninja` and
-/// `pkg-config` resolve). Appended, not prepended, and in that order: MSVC must
-/// win for `link.exe` and the C runtime, while UCRT64 supplies the GNU
-/// compilers cargo's build script needs for the Fortran and C sources.
+/// `pkg-config` resolve), plus the directory of any tool installed without a
+/// PATH shim (WinGet's Zig).
+///
+/// MSVC first, then the inherited PATH, then UCRT64: MSVC must win for `link.exe`
+/// and the C runtime, while UCRT64 supplies the GNU compilers cargo's build
+/// script needs for the Fortran and C sources.
 ///
 /// `DONT_SHOW_UI_ERRORS=1` is set for the same reason AGENTS.md requires it:
 /// a crashing MSYS2 compiler raises a modal Windows Error Reporting dialog that
@@ -151,6 +179,15 @@ export function baseEnv() {
   env.DONT_SHOW_UI_ERRORS ??= '1';
   env.MSYS = env.MSYS ?? 'winsymlinks:nativestrict';
 
+  // Already assembled by an outer Tension process: take it as-is. Re-running
+  // vcvars here would duplicate the Visual Studio paths, and PATH length is a
+  // hard constraint, not a preference.
+  if (env[MARKER] === '1') {
+    env.PATH = dedupePath(env.PATH ?? '').join(delimiter);
+    cachedBaseEnv = env;
+    return { ...env };
+  }
+
   const msvc = msvcEnvironment();
   if (msvc) {
     for (const [key, value] of Object.entries(msvc)) {
@@ -161,20 +198,14 @@ export function baseEnv() {
     }
   }
 
-  // MSVC first (link.exe, the C runtime), then the inherited PATH (cargo, zig,
-  // node), then MSYS2's UCRT64 bin (gcc, gfortran, cmake, ninja, pkg-config),
-  // then the directories of tools that are installed but not on PATH.
-  //
-  // The last group exists for `cargo`'s build script, which spawns `zig` by
-  // name itself: resolving it in this process is not enough, the child's PATH
-  // has to carry it too.
   const parts = [];
   if (msvc?.PATH) parts.push(msvc.PATH);
   parts.push(env.PATH ?? '');
   const ucrt = ucrt64Bin();
   if (ucrt) parts.push(ucrt);
   for (const name of ['zig']) parts.push(...extraDirs(name));
-  env.PATH = parts.filter(Boolean).join(delimiter);
+  env.PATH = dedupePath(parts.filter(Boolean).join(delimiter)).join(delimiter);
+  env[MARKER] = '1';
 
   cachedBaseEnv = env;
   return { ...env };
@@ -189,6 +220,17 @@ export function toolchainReport() {
     msvc ? 'MSVC' : 'MSVC MISSING',
     ucrt ? `UCRT64 at ${ucrt}` : 'UCRT64 MISSING',
   ].join(', ');
+}
+
+/// A program installed by npm into a project's `node_modules/.bin`.
+///
+/// npm writes three files on Windows — `name`, `name.cmd`, `name.ps1` — and the
+/// extensionless one is a POSIX shell script that Windows cannot execute. So the
+/// suffix is npm's (`.cmd`), not the platform's executable suffix (`.exe`), which
+/// does not exist there at all. Getting this wrong is an ENOENT on the one file
+/// that looked right.
+export function npmBin(dir, name) {
+  return join(dir, 'node_modules', '.bin', WIN ? `${name}.cmd` : name);
 }
 
 /// Directories a tool may live in without being on PATH.
