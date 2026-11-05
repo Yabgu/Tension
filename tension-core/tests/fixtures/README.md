@@ -9,11 +9,13 @@ Two guests, chosen because they exercise the two states `--debug` can see:
 | fixture | built by | carries DWARF | what it pins |
 | --- | --- | --- | --- |
 | `dwarf-guest/` | `@yabgu_gm/tensionscript@0.14.0` | yes | pass-through |
-| `legacy-guest/` | `@yabgu_gm/tensionscript@0.13.2` | no | synthesised fallback |
+| `legacy-guest/` | `@yabgu_gm/tensionscript@0.13.2` | no | the no-DWARF report |
 
-The distinction is the whole point: the host must leave a compiler-emitted
-guest alone and must still synthesise for an older one. The fixtures make both
-observable without a compiler in the loop.
+The distinction is the whole point: the host leaves a compiler-emitted guest
+alone, and for an older one it reports what is missing and names the fix without
+inventing anything. `legacy-guest` still runs — the host does not refuse it — so
+the fixture also pins that a pre-0.14.0 guest is not broken by the removal of the
+fallback.
 
 ## Contract
 
@@ -21,7 +23,8 @@ observable without a compiler in the loop.
   compiler version emitted; rebuilding it silently would let a regression in the
   compiler masquerade as a pass here.
 - **Regenerate when** the compiler's DWARF changes shape in a way the host must
-  accommodate, or when a new compiler release retires the fallback.
+  accommodate, or when a compiler release changes the no-DWARF case this pairing
+  distinguishes.
 - **When you do**, re-run the fixture's own README recipe, update the checksum
   line in this file, and say in the commit message what changed and why.
 
@@ -33,8 +36,8 @@ version, size, section list, and SHA-256. Those are the version-lock facts.
 Nothing here asserts on wasm bytes. `dwarf-guest` is checked for the presence of
 `.debug_info` + `.debug_line` (the host's pass-through condition) and for the
 report string it produces; `legacy-guest` is checked for the absence of any
-`.debug_*` section and for the synthesis report. A field-level check reads
-`DW_AT_comp_dir` out of one synthesised dump. See `e2e_debug.rs`.
+`.debug_*` section and for the report that says so, and for the absence of any
+offer to synthesise or any "deprecated" wording. See `e2e_debug.rs`.
 
 ## Running the suite that consumes them
 
@@ -42,10 +45,10 @@ report string it produces; `legacy-guest` is checked for the absence of any
 cargo test --manifest-path tension-core/Cargo.toml --test e2e_debug
 ```
 
-Use that command, or `--release --features test-dump`; plain `--release` reports
-`4 passed` while silently skipping the `DW_AT_comp_dir` half of A3 (it needs the
-test-only dump flag, which a release build without that feature does not have).
-The table in `e2e_debug.rs`'s header states which profile covers what.
+That is the only command needed. There is no profile-dependent test any more:
+the three report assertions and the optional lldb smoke all run under plain
+`cargo test`. The lldb smoke skips on a machine with no lldb or no standalone
+Wasmtime, and says which one is missing.
 
 CI still needs **Zig (>= 0.16)** and **gfortran (>= 14)** on the runner.
 `--no-default-features` does not remove that requirement: the features gate
