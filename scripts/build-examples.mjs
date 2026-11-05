@@ -37,6 +37,17 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
 const examplesRoot = join(repo, 'examples');
 
+/// An example's name relative to examples/, with POSIX separators.
+///
+/// Windows hands back `ogre\\bouncing-ball`; every key in this file — the
+/// TENSION_EXAMPLES filter and KNOWN_BROKEN — is written `ogre/bouncing-ball`,
+/// and comparing a backslash path against them silently matches nothing. That
+/// is not cosmetic: it made the known-broken skip a no-op on Windows, so a
+/// broken example was attempted instead of named.
+function relativeName(dir) {
+  return dir.slice(examplesRoot.length + 1).split(/[\\/]/).join('/');
+}
+
 /// Every directory under examples/ that has a package.json with a `build`
 /// script, at depth 1 or 2 (examples/io, examples/ogre/hello-triangle).
 function findExamples() {
@@ -67,7 +78,11 @@ function findExamples() {
 /// example", and a reader who wonders about one of these should be able to see
 /// why without bisecting.
 const KNOWN_BROKEN = new Map([
-  ['ogre/bouncing-ball', 'AS105: needs 133 initial pages, session.json declares 132 (docs/known-issues.md)'],
+  // Empty, deliberately. `ogre/bouncing-ball` was listed here for AS105 ("needs
+  // 133 initial pages, session.json declares 132"); the framework raised
+  // initial_pages to 133 in c24f39f, and the example builds. The mechanism stays:
+  // a genuinely broken example should be named here rather than dropped from
+  // the count without a word.
 ]);
 
 const filter = (process.env.TENSION_EXAMPLES ?? '')
@@ -77,7 +92,7 @@ const filter = (process.env.TENSION_EXAMPLES ?? '')
 let examples = findExamples();
 if (filter.length) {
   examples = examples.filter((dir) => {
-    const rel = dir.slice(examplesRoot.length + 1);
+    const rel = relativeName(dir);
     return filter.some((want) => rel === want || rel.endsWith(`/${want}`));
   });
   if (!examples.length) {
@@ -98,7 +113,7 @@ if (!existsSync(framework)) {
 let failed = 0;
 let skipped = 0;
 for (const dir of examples) {
-  const rel = dir.slice(examplesRoot.length + 1);
+  const rel = relativeName(dir);
   if (!filter.length && KNOWN_BROKEN.has(rel)) {
     console.log(`==> skipping ${rel}: ${KNOWN_BROKEN.get(rel)}`);
     skipped++;
