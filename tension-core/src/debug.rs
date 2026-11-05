@@ -218,7 +218,7 @@ mod tests {
     }
 
     #[test]
-    fn reads_the_io_example_guest_shape() {
+    fn reads_the_pre_0_14_guest_shape() {
         // The pre-0.14.0 shape: a `name` section plus a source map, and no
         // DWARF. 0.14.0 emits `.debug_*` as well; this pins the legacy shape
         // the detector must still classify correctly.
@@ -227,8 +227,8 @@ mod tests {
             custom("sourceMappingURL", b"\x0f./game.wasm.map"),
         ]);
         let info = probe_bytes(&bytes);
-        assert!(!info.dwarf, "`asc` emits no DWARF");
-        assert!(info.names, "`asc` does emit the name section");
+        assert!(!info.dwarf, "a pre-0.14.0 guest carries no DWARF");
+        assert!(info.names, "a pre-0.14.0 guest does emit the name section");
         assert_eq!(info.source_map.as_deref(), Some("./game.wasm.map"));
     }
 
