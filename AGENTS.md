@@ -75,6 +75,16 @@ core            cargo build --release --no-default-features --features audio
 core tests      cargo test  --no-default-features --features audio
 ```
 
+`npm test` runs every suite (`eol`, `codegen`, `framework`, `ogre-guest`,
+`ogre-unit`, `input`, `res`, `core`) and prints a per-suite verdict. It runs the
+suites **concurrently on a workstation and serially on CI**: a failing CI job is
+diagnosed from a log tail by someone who was not there, and interleaved output
+from four suites hides which one broke. `--serial` and `--jobs N` override either
+default, and a failure in a suite another depends on skips the dependent rather
+than reporting the same cause twice.
+
+`npm test -- <name>` runs one suite (`--list` prints the names).
+
 - The Zig archive **must** use `-Dtarget=x86_64-windows-msvc` when the Rust
   host is MSVC; a default-ABI build yields a MinGW archive that `link.exe`
   rejects with `LNK1143`. `scripts/build-native.mjs` reads the host triple and

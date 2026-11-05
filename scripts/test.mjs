@@ -207,11 +207,38 @@ if (argv.includes('--list')) {
   process.exit(0);
 }
 
-const SERIAL = argv.includes('--serial');
+// ── how wide to run ────────────────────────────────────────────────────────
+//
+// Local machines parallelise; CI runs serially by default. The reason is not
+// speed on CI — it is diagnosis. A failing CI job is read by someone who was not
+// there, often from a log tail, and interleaved output from four suites plus a
+// 4-way compile often hides which one broke. Locally the same person knows what
+// they just changed and reads the whole log.
+//
+// CI also tends to have fewer cores than a dev box, so the parallelism buys less
+// there anyway.
+//
+// `--serial` and `--jobs N` override either default, so the choice is never taken
+// away: `npm test -- --jobs 4` on CI is one flag.
+const SERIAL_FLAG = argv.includes('--serial');
 const jobsFlag = argv.indexOf('--jobs');
 const requestedJobs = jobsFlag >= 0 ? Number(argv[jobsFlag + 1]) : 0;
-const JOBS = SERIAL ? 1
+
+/// Whether this looks like a CI run.
+///
+/// The conventional variables, not one vendor's: `CI` is set by GitHub Actions,
+/// GitLab, CircleCI, Travis, Buildkite and most others; the vendor-specific ones
+/// are here because a few set only their own.
+const CI = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS',
+            'BUILDKITE', 'TF_BUILD', 'JENKINS_URL']
+  .some((name) => {
+    const value = process.env[name];
+    return value !== undefined && value !== '' && value !== 'false' && value !== '0';
+  });
+
+const JOBS = SERIAL_FLAG ? 1
   : requestedJobs > 0 ? requestedJobs
+  : CI ? 1
   : Math.max(1, Math.min(4, availableParallelism()));
 
 /// `--core` or `core` selects one suite. The filter strips the `--` prefix from
@@ -326,7 +353,8 @@ function skip(name, reason) {
 }
 
 console.log(`test: ${order.length} suite(s), ${JOBS} at a time`
-  + (SERIAL ? ' (--serial)' : ''));
+  + (JOBS === 1 && CI && !SERIAL_FLAG && requestedJobs <= 0 ? ' (CI: serial by default; --jobs N to override)' : '')
+  + (SERIAL_FLAG ? ' (--serial)' : ''));
 
 let runningCount = 0;
 
