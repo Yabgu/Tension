@@ -1,0 +1,13 @@
+{
+  "name": "tension-e2e",
+  "private": true,
+  "description": "End-to-end tests for tension-core; not published",
+  "type": "module",
+  "optionalDependencies": {
+    "@debugmcp/codelldb-linux-x64": "^1.11.8",
+    "@debugmcp/codelldb-linux-arm64": "^1.11.8",
+    "@debugmcp/codelldb-darwin-x64": "^1.11.8",
+    "@debugmcp/codelldb-darwin-arm64": "^1.11.8",
+    "@debugmcp/codelldb-win32-x64": "^1.11.8"
+  }
+}
