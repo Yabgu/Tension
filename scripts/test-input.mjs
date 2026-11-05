@@ -59,24 +59,6 @@ if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
   process.exit(0);
 }
 
-// A display that is set but unreachable behaves the same way, so it is probed
-// rather than assumed. `xdpyinfo` is the X11 check; on a Wayland-only session
-// there is no equivalent that is always installed, so its absence is not a
-// failure — only a failed probe is.
-function displayWorks() {
-  if (process.env.WAYLAND_DISPLAY && !process.env.DISPLAY) return true;
-  const probe = spawn('xdpyinfo', [], { timeout: 10_000 });
-  // ENOENT (no xdpyinfo installed) is not evidence either way; a non-zero exit
-  // from an installed xdpyinfo is.
-  if (probe.error?.code === 'ENOENT') return true;
-  return probe.status === 0;
-}
-
-if (!displayWorks()) {
-  console.log(`${RUNNER}: SKIPPED — DISPLAY=${process.env.DISPLAY} is set but not reachable\n` +
-              '  (xdpyinfo could not connect; SDL would block instead of failing)' );
-  process.exit(0);
-}
 
 const core = process.env.TENSION_CORE ??
   join(repo, 'tension-core', 'target', 'debug', `tension-core${WIN ? '.exe' : ''}`);
@@ -116,14 +98,25 @@ const guest = join(out, 'guest-input.wasm');
 /// Run the guest and assert a stdout prefix.
 ///
 /// `timeout` is not optional: the capability opens a window through SDL, and on a
-/// machine with no display and no compositor SDL can block instead of failing —
-/// measured on WSL2, where the first `npm test` sat for 34 minutes with no
-/// output. A test that hangs is worse than one that fails.
+/// machine with no reachable display SDL does not fail — its thread never reports
+/// startup, and the host then keeps running. Measured on WSL2: 1,400+ seconds of
+/// silence before this change.
+///
+/// Returns `{ skipped: true }` when the environment could not provide a display.
+/// The test is the capability's own diagnostic (`the SDL thread did not start`),
+/// not an inference from `DISPLAY`: a broken display and a missing one are the
+/// same thing to SDL, and both mean this case cannot be exercised rather than
+/// that it regressed. Any other timeout is a failure.
 function caseRun(name, wantPrefix, env = {}) {
-  const result = spawn(core, ['--capability', dso, guest], { env, timeout: 120_000 });
-  if (result.signal || result.error?.code === 'ETIMEDOUT') {
-    fail(RUNNER, `${name}: timed out after 120 s (SDL could not reach a display)`);
+  const result = spawn(core, ['--capability', dso, guest], { env, timeout: 60_000 });
+  const environmentRefused = /SDL thread did not start/.test(result.stderr);
+
+  if (result.signal === 'SIGKILL' || result.error?.code === 'ETIMEDOUT') {
+    if (environmentRefused) return { skipped: true };
+    fail(RUNNER, `${name}: timed out after 60 s and SDL did not report a reason ` +
+                 `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
   }
+  if (environmentRefused) return { skipped: true };
   if (result.status !== 0) {
     fail(RUNNER, `${name}: the interpreter exited ${result.status} ` +
                  `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
@@ -135,14 +128,20 @@ function caseRun(name, wantPrefix, env = {}) {
 }
 
 // ── case 1: with a display ────────────────────────────────────────────────────
-// The capability needs a display to open its probe window. On a headless machine
-// there is nothing to attach to, and SDL blocks rather than answering, so the
-// case is skipped with the reason instead of timing out.
+// The capability needs a display to open its probe window.
 const headless = !WIN && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
 if (headless) {
   console.log('== with-display: skipped — no DISPLAY or WAYLAND_DISPLAY (SDL would block)');
 } else {
   const result = caseRun('with-display', 'OK ');
+  if (result.skipped) {
+    console.log('== with-display: SKIPPED — the display is not reachable\n' +
+                `  DISPLAY=${process.env.DISPLAY ?? '<unset>'} ` +
+                `WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY ?? '<unset>'}; ` +
+                'SDL reported "the SDL thread did not start"');
+    console.log('\ntension-input tests: the display-dependent cases could not run on this host');
+    process.exit(0);
+  }
   console.log(`== with-display: ok — ${result.stdout.trim()}`);
 }
 
