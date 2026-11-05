@@ -20,6 +20,19 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+const WIN = process.platform === 'win32';
+
+/// `npm` is a `.cmd` shim on Windows, which Node cannot spawn without a shell:
+/// the failure is `status: null` and an ENOENT error, and a caller that only
+/// checks `status !== 0` reports it as "failed (null)". Unix runs it directly.
+function npm(args, options = {}) {
+  const result = spawnSync('npm', args, { shell: WIN, ...options });
+  if (result.error) {
+    console.error(`build-examples: npm ${args.join(' ')}: ${result.error.message}`);
+  }
+  return result;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
 const examplesRoot = join(repo, 'examples');
@@ -98,7 +111,7 @@ for (const dir of examples) {
   const wired = existsSync(join(dir, 'node_modules', '@yabgu_gm', 'tension-core'));
   if (!wired) {
     console.log(`    installing ${rel} deps`);
-    const install = spawnSync('npm', ['install', '--no-audit', '--no-fund'], {
+    const install = npm(['install', '--no-audit', '--no-fund'], {
       cwd: dir, stdio: 'inherit',
       env: { ...process.env, TENSION_SKIP_MODEL_FETCH: '1' },
     });
@@ -108,7 +121,7 @@ for (const dir of examples) {
       continue;
     }
   }
-  const built = spawnSync('npm', ['run', 'build'], { cwd: dir, stdio: 'inherit' });
+  const built = npm(['run', 'build'], { cwd: dir, stdio: 'inherit' });
   if (built.status !== 0) {
     console.error(`build-examples: ${rel}: build failed (${built.status})`);
     failed++;
