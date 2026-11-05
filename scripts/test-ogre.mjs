@@ -86,11 +86,18 @@ const guestEnv = envWithOgreLibs();
 // One source of truth for the memory relation: the same session.asconfig.json
 // every other guest is compiled with, regenerated against this interpreter's
 // layout hash.
-const hash = spawn(core, ['layout-hash']).stdout.trim();
-const generated = inherit(process.execPath,
-                          [join(repo, 'scripts', 'gen-session.mjs'), '--hash', hash]);
-if (generated.status !== 0) {
-  fail(RUNNER, `the framework's generator refused the layout hash (${hash})`);
+//
+// `TENSION_SESSION_READY=1` means `scripts/test.mjs` generated it once before
+// starting the suites; running this script alone generates it here.
+if (process.env.TENSION_SESSION_READY === '1') {
+  console.log('==> using the session constants the runner generated');
+} else {
+  const hash = spawn(core, ['layout-hash']).stdout.trim();
+  const generated = inherit(process.execPath,
+                            [join(repo, 'scripts', 'gen-session.mjs'), '--hash', hash]);
+  if (generated.status !== 0) {
+    fail(RUNNER, `the framework's generator refused the layout hash (${hash})`);
+  }
 }
 
 const asc = npmBin(framework, 'tensionscript');
