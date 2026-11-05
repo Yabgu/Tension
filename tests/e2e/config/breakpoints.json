@@ -1,0 +1,92 @@
+[
+  {
+    "example": "ai",
+    "file": "examples/ai/story.ts",
+    "line": 193,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "async-io",
+    "file": "examples/async-io/game.ts",
+    "line": 96,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "audio",
+    "file": "examples/audio/demo.ts",
+    "line": 55,
+    "note": "first executable statement in _start_game (print)"
+  },
+  {
+    "example": "io",
+    "file": "examples/io/game.ts",
+    "line": 10,
+    "note": "first executable statement in _start_game (print)"
+  },
+  {
+    "example": "log",
+    "file": "examples/log/game.ts",
+    "line": 32,
+    "note": "first executable statement in _start_game (Logger.get)"
+  },
+  {
+    "example": "ogre/animated-character",
+    "file": "examples/ogre/animated-character/game.ts",
+    "line": 680,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "ogre/bouncing-ball",
+    "file": "examples/ogre/bouncing-ball/game.ts",
+    "line": 280,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "ogre/bouncing-bodies",
+    "file": "examples/ogre/bouncing-bodies/game.ts",
+    "line": 559,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "ogre/hello-mesh",
+    "file": "examples/ogre/hello-mesh/game.ts",
+    "line": 201,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "ogre/hello-triangle",
+    "file": "examples/ogre/hello-triangle/game.ts",
+    "line": 204,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "ogre/input-camera",
+    "file": "examples/ogre/input-camera/game.ts",
+    "line": 294,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "res",
+    "file": "assembly/index.ts",
+    "line": 54,
+    "note": "first executable statement in _start_game (print)"
+  },
+  {
+    "example": "solver/collision",
+    "file": "examples/solver/collision/game.ts",
+    "line": 202,
+    "note": "first executable statement in _start_game (print)"
+  },
+  {
+    "example": "solver/wasm",
+    "file": "examples/solver/wasm/game.ts",
+    "line": 31,
+    "note": "first executable statement in _start_game (print)"
+  },
+  {
+    "example": "solver/world",
+    "file": "examples/solver/world/game.ts",
+    "line": 46,
+    "note": "first executable statement in _start_game (print)"
+  }
+]

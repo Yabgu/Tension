@@ -353,14 +353,13 @@ repository bind-mounted and X available. See `ci/README.md` for details.
 The host is an ordinary native process holding a JIT'd guest, so the host side
 is ordinary Rust debugging, and two flags shape the session:
 
-- **`--debug`** — turns on wasmtime's DWARF handling (`Config::debug_info(true)`),
-  and, when the guest carries none of its own, synthesizes it from the guest's
-  source map before the module is loaded (see below). Before the guest runs it
-  also reports what a debugger can actually see: DWARF sections, the `name`
-  section, the source map (and where it resolved to). It is what makes wasmtime
-  register the compiled guest with the platform debugger through the GDB JIT
-  interface — **with the flag, lldb lists the guest as a `JIT(0x…)` image;
-  without it, nothing is registered and no guest breakpoint can bind.**
+- **`--debug`** — turns on wasmtime's DWARF handling (`Config::debug_info(true)`).
+  Before the guest runs it reports what a debugger can actually see: DWARF
+  sections, the `name` section, the source map (and where it resolved to). It is
+  what makes wasmtime register the compiled guest with the platform debugger
+  through the GDB JIT interface — **with the flag, lldb lists the guest as a
+  `JIT(0x…)` image; without it, nothing is registered and no guest breakpoint
+  can bind.**
 - **`--symbol-path <PATH>`** — where the debugger should look for the guest's
   symbols and sources (lldb's `target.debug-file-search-paths`); repeatable.
 
@@ -375,26 +374,28 @@ missing guest file, an unknown option, or a `--symbol-path` with no value exits
   --debug --symbol-path . build/game.wasm alpha beta gamma
 ```
 
-### It still works: the host synthesizes the DWARF `asc` leaves out
+### The compiler emits the DWARF
 
-`asc` (AssemblyScript 0.28) emits **no DWARF** — a guest carries only a `name`
-custom section and, with `--sourceMap`, a `sourceMappingURL` (verified by
-parsing `examples/io/build/game.wasm`). Nothing in the binary records which
-source line a wasm instruction came from, so a debugger attached to wasmtime
-would have no line table to break on at all.
+TensionScript 0.14.0 and later embed DWARF in the guest itself: with
+`--debug --sourceMap`, `tensionscript` writes `.debug_abbrev`, `.debug_info`,
+`.debug_line` and `.debug_ranges` alongside the code. The host's job is to keep
+its hands off: it detects those sections and passes the module through
+untouched, and Cranelift carries that DWARF across the JIT boundary —
+translating the guest's wasm addresses to the native code it actually emitted —
+while wasmtime registers the result through the GDB JIT interface.
 
-Rather than hand source debugging to a second, JavaScript runtime, the host
-supplies what `asc` leaves out. With `--debug`, `tension-core` reads the guest's
-source map, maps every wasm instruction offset to a `game.ts` line and column,
-and **synthesizes `.debug_line`, `.debug_info`, `.debug_abbrev` and
-`.debug_ranges` for the guest in memory** before the module reaches wasmtime
-(`tension-core/src/dwarf.rs`). Cranelift carries that DWARF across the JIT
-boundary — translating the guest's wasm addresses to the native code it
-actually emitted — and wasmtime registers the result through the GDB JIT
-interface. **`game.wasm` on disk is never touched.**
+A guest from an **older** compiler (0.13.2 or earlier) carries only a `name`
+custom section and, with `--sourceMap`, a `sourceMappingURL`. The host does not
+build DWARF for it. It runs the guest and says what is missing:
 
-The upshot: an ordinary source breakpoint in `game.ts` resolves and hits against
-the real guest, in the real interpreter, with no Node process anywhere.
+```text
+[tension-core] debug:   DWARF: absent — no .debug_* sections in the module
+[tension-core] debug:   rebuild with TensionScript 0.14.0 or later to embed DWARF at compile time
+```
+
+The upshot for an up-to-date guest: an ordinary source breakpoint in `game.ts`
+resolves and hits against the real guest, in the real interpreter, with no Node
+process anywhere.
 
 ```
 (lldb) breakpoint set -f game.ts -l 11
@@ -425,13 +426,11 @@ functions appear as `wasm[0]::function[N]::<module>/<name>` — for this example
 
 ### Local variables, and one line of noise
 
-- **Locals work — with the names `asc` kept.** In a `--debug` build the guest's
-  `name` section also carries a local-name subsection, and the host turns each
-  wasm local into a `DW_TAG_variable` whose location is the standard
-  `DW_OP_WASM_location 0x00 <index> DW_OP_stack_value` expression. wasmtime's
-  transform rewrites those through cranelift's value-label ranges into real
-  register / stack-slot locations, so `frame variable` prints the guest's
-  variables:
+- **Locals work.** The compiler emits a `DW_TAG_variable` per wasm local with
+  the standard `DW_OP_WASM_location 0x00 <index> DW_OP_stack_value` location.
+  wasmtime's transform rewrites those through cranelift's value-label ranges
+  into real register / stack-slot locations, so `frame variable` prints the
+  guest's variables:
 
   ```
   (lldb) breakpoint set -f game.ts -l 14
@@ -447,15 +446,15 @@ functions appear as `wasm[0]::function[N]::<module>/<name>` — for this example
 
   - **Types are the four wasm scalars.** Locals show as `i32`/`i64`/`f32`/
     `f64`; an AssemblyScript object is a heap pointer, so it appears as an
-    `i32`. No structure types are synthesized.
+    `i32`. Structure types are not emitted, so only the scalar shape is shown.
   - **A local is available exactly where its value is live.** Before the
     statement that assigns it (and after its last use is optimized away), lldb
     prints `<variable not available>` — cranelift simply has no machine
     location holding it there. That is the same contract a C debugger offers
     for register-allocated locals.
-  - **Names need `--debug`.** Without it, `asc` drops the local-name
-    subsection and the host falls back to `param0`/`local1`-style names; the
-    values still appear.
+  - **Names need `--debug`.** Without it the compiler emits no DWARF, so there
+    is no line table and no local names; the host reports the guest as having
+    no `.debug_*` sections rather than guessing.
 - **Three lines of lldb noise at launch.** On this guest lldb prints
   `error: JIT(0x…) unable to resolve a line table file address 0x… back to a
   compile unit, please file a bug …` three times before it stops. They are line

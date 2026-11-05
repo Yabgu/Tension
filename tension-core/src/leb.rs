@@ -1,8 +1,8 @@
-//! LEB128, shared by the wasm readers and the DWARF encoder.
+//! LEB128, for the wasm section walks.
 //!
-//! `read_uleb` is the byte-oriented reader the diagnostics and section walks
-//! use (it advances an external cursor); the DWARF encoder writes through
-//! `write_uleb` / `write_sleb`.
+//! `read_uleb` is the byte-oriented reader the guest diagnostics and the DWARF
+//! section check use (it advances an external cursor). The encode halves went
+//! with the DWARF encoder that was their only caller.
 
 /// Decode an unsigned LEB128 from `bytes` at `*p`, advancing `*p` past it.
 ///
@@ -28,6 +28,11 @@ pub fn read_uleb(bytes: &[u8], p: &mut usize) -> Option<usize> {
 }
 
 /// Encode `v` as unsigned LEB128.
+///
+/// Test-only: the one caller left builds wasm modules out of `(id, payload)`
+/// pairs so a section walk has something real to walk. The encoder that used
+/// this in production went with the DWARF synthesiser.
+#[cfg(test)]
 pub fn write_uleb(out: &mut Vec<u8>, mut v: u64) {
     loop {
         let mut b = (v & 0x7f) as u8;
@@ -37,19 +42,6 @@ pub fn write_uleb(out: &mut Vec<u8>, mut v: u64) {
         }
         out.push(b);
         if v == 0 {
-            break;
-        }
-    }
-}
-
-/// Encode `v` as signed LEB128.
-pub fn write_sleb(out: &mut Vec<u8>, mut v: i64) {
-    loop {
-        let b = (v & 0x7f) as u8;
-        v >>= 7;
-        let done = (v == 0 && b & 0x40 == 0) || (v == -1 && b & 0x40 != 0);
-        out.push(if done { b } else { b | 0x80 });
-        if done {
             break;
         }
     }
@@ -88,32 +80,11 @@ mod tests {
     }
 
     #[test]
-    fn write_read_round_trips() {
+    fn write_uleb_round_trips() {
         for v in [0u64, 1, 127, 128, 624485, u32::MAX as u64, u64::MAX] {
             let mut out = Vec::new();
             write_uleb(&mut out, v);
             assert_eq!(read_all(&out), Some(v as usize), "round trip {v}");
-        }
-        for v in [0i64, 1, -1, 63, 64, -64, -65, i64::MIN, i64::MAX] {
-            let mut out = Vec::new();
-            write_sleb(&mut out, v);
-            // Decode by hand: read_uleb cannot decode signed values.
-            let mut p = 0;
-            let mut result = 0i64;
-            let mut shift = 0u32;
-            loop {
-                let byte = out[p];
-                p += 1;
-                result |= ((byte & 0x7f) as i64) << shift;
-                shift += 7;
-                if byte & 0x80 == 0 {
-                    if shift < 64 && byte & 0x40 != 0 {
-                        result |= !0i64 << shift;
-                    }
-                    break;
-                }
-            }
-            assert_eq!(result, v, "round trip {v}");
         }
     }
 }

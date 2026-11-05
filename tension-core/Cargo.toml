@@ -33,3 +33,9 @@ yaml-rust2 = "=0.13.0"
 # loading crate. libc is already in the tree through wasmtime; naming it makes
 # the dependency honest rather than implicit.
 libc = "0.2"
+
+[dev-dependencies]
+# Already in the tree through wasmtime, so this adds no download. `example_adoption`
+# parses the examples' package.json and (JSONC) launch.json as data rather than
+# grepping them: a structural check that cannot be fooled by a comment.
+serde_json = "1.0"
