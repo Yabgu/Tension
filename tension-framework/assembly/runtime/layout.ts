@@ -8,7 +8,7 @@
 //
 // Memory flags this file implies (also generated, as an asconfig):
 //   --importMemory --memoryBase 8388608 \
-//   --initialMemory 132 --maximumMemory 512 \
+//   --initialMemory 133 --maximumMemory 512 \
 //   --exportTable --runtime incremental
 // `--noExportMemory` is forbidden (F2) and `--lowMemoryLimit` likewise.
 
@@ -19,7 +19,7 @@ export const ARENA_SIZE: u32 = 6250528;
 /** The ceiling, and therefore the guest's `--memoryBase`. */
 export const MAX_ARENA_SIZE: u32 = 8388608;
 export const MEMORY_BASE: u32 = 8388608;
-export const INITIAL_PAGES: u32 = 132;
+export const INITIAL_PAGES: u32 = 133;
 export const MAXIMUM_PAGES: u32 = 512;
 export const CLASS_COUNT: u32 = 13;
 /** Per-class ring capacities, in class-id order. */
