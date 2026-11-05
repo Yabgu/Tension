@@ -35,7 +35,7 @@ import { resolveLldb, resolveTensionCore } from "./lib/resolve.js";
 import { reportsMissingGuest, runTensionCore, unknownFlagIn } from "./lib/run-tension-core.js";
 import { runUnderLldb } from "./lib/run-lldb.js";
 
-const MODES = ["launch", "smoke"];
+const MODES = ["launch", "smoke", "debug"];
 
 const LAUNCH_TIMEOUT_MS = 15_000;
 const SMOKE_TIMEOUT_MS = 2_000;
@@ -263,6 +263,78 @@ async function runSmokeMode({ examples, knownSkips, report, binary }) {
   }
 }
 
+// -------------------------------------------------------------- debug ---
+
+async function runDebugMode({ examples, knownSkips, breakpoints, report, binary, lldb }) {
+  if (!lldb) {
+    report.skipAll("debug", "lldb not on PATH");
+    return;
+  }
+
+  const byName = new Map(examples.map((example) => [example.name, example]));
+
+  for (const [name, breakpoint] of breakpoints) {
+    const example = byName.get(name);
+    if (!example) {
+      report.fail("debug", name, "breakpoints.json names an example that does not exist");
+      continue;
+    }
+    const known = knownSkips.get(name);
+    if (known) {
+      report.skip("debug", name, known);
+      continue;
+    }
+    if (example.artifacts.length === 0) {
+      report.skip("debug", name, "no build/*.wasm artifact");
+      continue;
+    }
+
+    const artifact = example.artifacts[0];
+    const args = runArguments(example, artifact, missingGuestPath());
+    const missingInput = missingDeclaredInput(args);
+    if (missingInput) {
+      report.skip(
+        "debug",
+        name,
+        `declared input missing (${missingInput}) — path as written in launch.json`
+      );
+      continue;
+    }
+
+    const workDir = path.join("/tmp", `e2e-debug-${name.replace(/\//g, "-")}-${process.pid}`);
+    let observed;
+    try {
+      observed = runUnderLldb({
+        lldb,
+        binary,
+        args,
+        cwd: example.dir,
+        symbolPath: example.dir,
+        breakpoints: [{ file: path.basename(breakpoint.file), line: breakpoint.line }],
+        workDir,
+        timeoutMs: DEBUG_TIMEOUT_MS,
+      });
+    } catch (error) {
+      report.fail("debug", name, error.message.split("\n")[0]);
+      continue;
+    } finally {
+      fs.rmSync(workDir, { recursive: true, force: true });
+    }
+
+    const stop = observed.stops?.[0];
+    if (observed.resolved && stop) {
+      report.pass("debug", name, `${stop.file}:${stop.line} (${stop.function || "?"})`);
+    } else {
+      report.fail(
+        "debug",
+        name,
+        `breakpoint at ${path.basename(breakpoint.file)}:${breakpoint.line} never resolved` +
+          (observed.timedOut ? " (lldb timed out)" : "")
+      );
+    }
+  }
+}
+
 // --------------------------------------------------------------- main ---
 
 async function main() {
@@ -300,7 +372,9 @@ async function main() {
     const started = Date.now();
     if (mode === "launch") await runLaunchMode({ examples, knownSkips, report, binary });
     else if (mode === "smoke") await runSmokeMode({ examples, knownSkips, report, binary });
-
+    else if (mode === "debug") {
+      await runDebugMode({ examples, knownSkips, breakpoints, report, binary, lldb });
+    }
     console.log(`\n-- ${mode} (${Date.now() - started}ms) --`);
   }
 
