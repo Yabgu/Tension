@@ -115,6 +115,22 @@ fi_flags=(
 case "$(uname -s)" in
     *MINGW*|*MSYS*|*CYGWIN*|*Windows*)
         fi_flags+=(-G Ninja)
+        # The Windows build compiles LibTIFF4's tif_win32.c for its
+        # wide-char and file-I/O entry points, and that file also defines
+        # _TIFFerrorHandler/_TIFFwarningHandler — which
+        # Source/FreeImage/PluginTIFF.cpp defines again, deliberately, as
+        # no-ops ("in FreeImage warnings and errors are disabled"). MSVC's
+        # project files keep the two in separate static libraries; this CMake
+        # build links both objects into one DLL, and GNU ld refuses the
+        # duplicate (measured, gcc 16.2.0, FreeImage 3.19.25):
+        #
+        #   tif_win32.c:(.data+0x0): multiple definition of `_TIFFerrorHandler';
+        #   PluginTIFF.cpp:(.data+0x0): first defined here
+        #
+        # -fcommon does not help: both are initialized definitions, not
+        # tentative ones. The first definition in link order wins, and that is
+        # PluginTIFF's no-op pair — the behaviour FreeImage intends.
+        fi_flags+=(-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--allow-multiple-definition)
         ;;
     Linux*)
         # The layout of the distro package this repository was measured
@@ -175,8 +191,26 @@ fi_lib_dir="$(dirname "$fi_lib")"
 # here would never reach that check.
 # The media tree is part of "installed": without it the Hlms has no
 # materials (see the OGRE_INSTALL_SAMPLES note below).
+#
+# The layout is platform-dependent, and asking for one platform's spelling of
+# it made this check answer "not installed" on the other: Linux installs the
+# media under share/OGRE-Next/ and the library in lib/, while Windows puts
+# Media/ at the prefix root and the library in lib/Release (import) and
+# bin/Release (DLL). Measured on MSYS2/UCRT64 with this script's own flags —
+# the install there is bin/Release/OgreNextMain.dll +
+# lib/Release/libOgreNextMain.dll.a + Media/ — which is why a Windows tree that
+# was already built still rebuilt from scratch on every run.
+ogre_media_ok=0
+for media_dir in "$INSTALL/share/OGRE-Next/Media" "$INSTALL/Media"; do
+    if [ -d "$media_dir" ]; then ogre_media_ok=1; break; fi
+done
+ogre_main_lib="$(find "$INSTALL/lib" "$INSTALL/bin" \
+    \( -iname 'libOgreNextMain.so*' -o -iname 'libOgreNextMain.dll.a' \
+       -o -iname 'libOgreNextMain.dll' -o -iname 'OgreNextMain.dll' \
+       -o -iname 'OgreNextMain.lib' \) \
+    -print -quit 2>/dev/null || true)"
 is_installed=0
-if [ -d "$INSTALL/share/OGRE-Next/Media" ] && { [ -f "$INSTALL/lib/libOgreNextMain.so" ] || [ -f "$INSTALL/lib/libOgreNextMain.dll.a" ] || [ -f "$INSTALL/bin/libOgreNextMain.dll" ]; }; then
+if [ "$ogre_media_ok" -eq 1 ] && [ -n "$ogre_main_lib" ]; then
     is_installed=1
 fi
 # The Vulkan plugin is part of what this install is for, and its absence
