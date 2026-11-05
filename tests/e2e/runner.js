@@ -1,0 +1,251 @@
+#!/usr/bin/env node
+// End-to-end checks for the examples against the real engine.
+//
+// The Rust suites answer static questions — does every example pin a
+// DWARF-emitting compiler, does every artifact carry .debug_info, is every
+// launch.json well formed. This runner answers the one a static check cannot:
+// when the declared command is actually executed, does the engine accept it,
+// does the guest run, and does a breakpoint bind?
+//
+//   node tests/e2e/runner.js                  # all three modes (--check)
+//   node tests/e2e/runner.js --only launch    # launch | smoke | debug
+//   node tests/e2e/runner.js --example io     # one example
+//   node tests/e2e/runner.js --help
+//
+// Exit 0 when every case passes or skips; 1 when any case fails.
+
+import fs from "node:fs";
+import path from "node:path";
+
+import {
+  discoverExamples,
+  loadBreakpoints,
+  loadKnownSkips,
+  relativePath,
+} from "./lib/examples.js";
+import {
+  expand,
+  expandArgs,
+  missingDeclaredInput,
+  readLaunchConfigs,
+  unexpandedVariables,
+} from "./lib/launch-json.js";
+import { createReport, firstLineOf } from "./lib/report.js";
+import { resolveLldb, resolveTensionCore } from "./lib/resolve.js";
+import { reportsMissingGuest, runTensionCore, unknownFlagIn } from "./lib/run-tension-core.js";
+import { runUnderLldb } from "./lib/run-lldb.js";
+
+const MODES = ["launch"];
+
+const LAUNCH_TIMEOUT_MS = 15_000;
+const SMOKE_TIMEOUT_MS = 2_000;
+const DEBUG_TIMEOUT_MS = 10_000;
+
+/// A guest path that cannot exist. Every launch configuration is rewritten to
+/// use it, so a run that gets past argument parsing must stop at the file check.
+function missingGuestPath() {
+  return path.join("/tmp", `e2e-missing-${process.pid}.wasm`);
+}
+
+function parseArgs(argv) {
+  const options = { check: true, only: null, example: null, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--check") options.check = true;
+    else if (arg === "--only") {
+      options.only = argv[index + 1];
+      index += 1;
+    } else if (arg === "--example") {
+      options.example = argv[index + 1];
+      index += 1;
+    } else if (arg === "--help" || arg === "-h") options.help = true;
+    else throw new Error(`unknown argument ${arg}`);
+  }
+  if (options.only && !MODES.includes(options.only)) {
+    throw new Error(`--only takes one of ${MODES.join(", ")}, not "${options.only}"`);
+  }
+  return options;
+}
+
+function usage() {
+  return [
+    "usage: node tests/e2e/runner.js [--check] [--only <mode>] [--example <name>]",
+    "",
+    "modes:",
+    "  launch  rebuild each .vscode/launch.json command and prove its flags parse",
+    "  smoke   run each built artifact under `--debug` and look for a crash",
+    "  debug   bind a source breakpoint per config/breakpoints.json under lldb",
+    "",
+    "environment:",
+    "  TENSION_CORE  path to the tension-core binary (default: target/release)",
+  ].join("\n");
+}
+
+/// The arguments an example's own launch configuration declares, with the guest
+/// replaced by a real artifact.
+///
+/// The headless configuration is preferred when an example declares both: a
+/// test must not need a display, and the windowed OGRE path has a pre-existing
+/// teardown segfault that is not what this suite is about.
+function runArguments(example, artifact, missingGuest) {
+  const configurations = readLaunchConfigs(example.dir);
+  const headless = configurations.find(
+    (configuration) =>
+      Array.isArray(configuration.args) &&
+      configuration.args.some((value) => String(value) === "--renderer=null")
+  );
+  const chosen = headless ?? configurations[0];
+  const guest = artifact ?? missingGuest;
+  if (!chosen) return ["--debug", guest];
+
+  const { args, guestIndex } = expandArgs(chosen, example.dir);
+  if (guestIndex >= 0) args[guestIndex] = guest;
+  else args.push(guest);
+  return args;
+}
+
+// ------------------------------------------------------------- launch ---
+
+async function runLaunchMode({ examples, knownSkips, report, binary }) {
+  const missing = missingGuestPath();
+
+  for (const example of examples) {
+    const known = knownSkips.get(example.name);
+    if (known) {
+      report.skip("launch", example.name, known);
+      continue;
+    }
+
+    let configurations;
+    try {
+      configurations = readLaunchConfigs(example.dir);
+    } catch (error) {
+      report.fail("launch", example.name, error.message);
+      continue;
+    }
+    if (configurations.length === 0) {
+      report.skip("launch", example.name, "no .vscode/launch.json");
+      continue;
+    }
+
+    for (const [index, configuration] of configurations.entries()) {
+      const label = configurations.length > 1 ? `${example.name}#${index}` : example.name;
+      const program = expand(configuration.program ?? "", example.dir);
+
+      const programVariables = unexpandedVariables(program);
+      if (programVariables.length > 0) {
+        report.skip("launch", label, `unexpanded variable in program (${programVariables.join(", ")})`);
+        continue;
+      }
+      if (!program) {
+        report.fail("launch", label, "launch.json declares no \"program\"");
+        continue;
+      }
+      if (!fs.existsSync(program)) {
+        report.fail(
+          "launch",
+          label,
+          `program does not resolve to a file: ${program}`
+        );
+        continue;
+      }
+
+      const { args } = expandArgs(configuration, example.dir);
+      const expandedVariables = args.flatMap((value) => unexpandedVariables(value));
+      if (expandedVariables.length > 0) {
+        report.skip("launch", label, `unexpanded variable in args (${expandedVariables.join(", ")})`);
+        continue;
+      }
+
+      // Everything the configuration would have loaded is routed through the
+      // missing-guest path: the point is to exercise the option parser, not the
+      // example's resources.
+      const guestIndex = args.findIndex((value) => value.endsWith(".wasm"));
+      const runArgs = [...args];
+      if (guestIndex >= 0) runArgs[guestIndex] = missing;
+      else runArgs.push(missing);
+
+      const run = await runTensionCore({
+        binary,
+        args: runArgs,
+        cwd: example.dir,
+        timeoutMs: LAUNCH_TIMEOUT_MS,
+      });
+
+      if (run.timedOut) {
+        report.fail("launch", label, `did not exit within ${LAUNCH_TIMEOUT_MS}ms while reporting a missing guest`);
+        continue;
+      }
+      const flag = unknownFlagIn(run.stderr);
+      if (flag) {
+        report.fail(
+          "launch",
+          label,
+          `launch.json passes \`${flag}\`, which the engine rejected (removed or renamed flag)`
+        );
+        continue;
+      }
+      if (reportsMissingGuest(run.stderr)) {
+        report.pass("launch", label);
+        continue;
+      }
+      report.fail(
+        "launch",
+        label,
+        `expected a missing-file report, got exit ${run.code}: ${firstLineOf(run.stderr)}`
+      );
+    }
+  }
+}
+
+// --------------------------------------------------------------- main ---
+
+async function main() {
+  const options = parseArgs(process.argv.slice(2));
+  if (options.help) {
+    console.log(usage());
+    return 0;
+  }
+
+  const { path: binary, release } = resolveTensionCore();
+  const lldb = resolveLldb();
+  const knownSkips = loadKnownSkips();
+  const breakpoints = loadBreakpoints();
+
+  let examples = discoverExamples();
+  if (options.example) {
+    examples = examples.filter((example) => example.name === options.example);
+    if (examples.length === 0) {
+      throw new Error(`no example named "${options.example}"`);
+    }
+  }
+
+  console.log(
+    `e2e: ${examples.length} example(s); tension-core ${release ? "release" : "debug"} at ${relativePath(binary)}`
+  );
+  console.log(
+    `e2e: lldb ${lldb ? relativePath(lldb) : "not on PATH (debug mode will skip)"}; ` +
+      `${breakpoints.size} breakpoint(s) configured, ${knownSkips.size} known skip(s)`
+  );
+
+  const report = createReport();
+  const modes = options.only ? [options.only] : MODES;
+
+  for (const mode of modes) {
+    const started = Date.now();
+    if (mode === "launch") await runLaunchMode({ examples, knownSkips, report, binary });
+    console.log(`\n-- ${mode} (${Date.now() - started}ms) --`);
+  }
+
+  console.log(`\n${report.summary()}`);
+  return report.failures().length === 0 ? 0 : 1;
+}
+
+main()
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(`e2e: ${error.message}`);
+    process.exitCode = 1;
+  });
