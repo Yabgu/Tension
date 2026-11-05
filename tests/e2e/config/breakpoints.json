@@ -36,6 +36,12 @@
     "note": "first executable statement in _start_game (rt.start())"
   },
   {
+    "example": "ogre/bouncing-ball",
+    "file": "examples/ogre/bouncing-ball/game.ts",
+    "line": 280,
+    "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
     "example": "ogre/bouncing-bodies",
     "file": "examples/ogre/bouncing-bodies/game.ts",
     "line": 559,
@@ -58,6 +64,12 @@
     "file": "examples/ogre/input-camera/game.ts",
     "line": 294,
     "note": "first executable statement in _start_game (rt.start())"
+  },
+  {
+    "example": "res",
+    "file": "assembly/index.ts",
+    "line": 54,
+    "note": "first executable statement in _start_game (print)"
   },
   {
     "example": "solver/collision",
