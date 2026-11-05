@@ -52,19 +52,35 @@ mkdirSync(out, { recursive: true });
 
 // The adapter's directory carries Ogre's DLLs beside it (the CMake post-build
 // step stages them there). Windows resolves imports through PATH, so that
-// directory has to be on it before the host loads the capability.
+// directory has to be on it before the host loads the capability. On Unix the
+// adapter's RPATH covers the in-tree install, but a missing or old RPATH should
+// not turn into a confusing loader error, so the directories are named as well —
+// the same thing test.sh did with LD_LIBRARY_PATH.
+const libDirs = [
+  out,
+  join(repo, 'third_party', 'ogre-next-install', 'lib'),
+  join(repo, 'third_party', 'freeimage-install', 'lib'),
+].filter(existsSync);
+
 if (WIN) {
-  process.env.PATH = `${out}${delimiter}${process.env.PATH ?? ''}`;
+  process.env.PATH = `${[out, ...libDirs].join(delimiter)}${delimiter}${process.env.PATH ?? ''}`;
+} else if (libDirs.length) {
+  const existing = process.env.LD_LIBRARY_PATH;
+  process.env.LD_LIBRARY_PATH = existing
+    ? `${libDirs.join(delimiter)}${delimiter}${existing}`
+    : libDirs.join(delimiter);
 }
 
-/// Fixtures and cases run through `spawn`, which reads `baseEnv()` — so the PATH
-/// change above is only visible to this process, not to the hosts it starts.
-/// This keeps the two in step.
+/// Fixtures and cases run through `spawn`, which reads `baseEnv()` — so the
+/// PATH/LD_LIBRARY_PATH changes above are only visible to this process, not to
+/// the hosts it starts. This keeps the two in step.
 function envWithOgreLibs() {
-  return { PATH: process.env.PATH };
+  return WIN
+    ? { PATH: process.env.PATH }
+    : { LD_LIBRARY_PATH: process.env.LD_LIBRARY_PATH };
 }
 
-const guestEnv = WIN ? envWithOgreLibs() : {};
+const guestEnv = envWithOgreLibs();
 
 // ── the guest's flags come from the framework's generator ────────────────
 // One source of truth for the memory relation: the same session.asconfig.json

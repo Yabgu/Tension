@@ -197,8 +197,18 @@ if (process.argv.includes('--fetch-model')) {
   process.exit(0);
 }
 if (process.argv.includes('--pack-only')) {
-  bash(join(exampleDir, 'pack.sh'));
+  packVolume();
   process.exit(0);
+}
+
+/// Pack this example's volume, if its `tension` block declares one.
+///
+/// The declaration is data — `tension.pack` names the input tree, the output and
+/// any generated files — so an example adds a volume by describing it rather than
+/// by shipping a shell script.
+function packVolume() {
+  if (!cfg.pack) return;
+  run(process.execPath, [join(repo, 'scripts', 'pack-example.mjs'), exampleDir]);
 }
 
 // ── are the packaged binaries current? ───────────────────────────────────────
@@ -325,10 +335,7 @@ if (!skipBuild) {
 }
 
 // ── pack a volume, if this example has one ───────────────────────────────────
-const packScript = join(exampleDir, 'pack.sh');
-if (existsSync(packScript)) {
-  bash(packScript);
-}
+packVolume();
 
 // ── compose the host command line ────────────────────────────────────────────
 const wasm = cfg.wasm ?? 'build/game.wasm';
@@ -340,7 +347,7 @@ if (kind === 'res') {
 } else if (kind === 'ogre') {
   if (existsSync(assets)) {
     // The same volume, once for the adapter's loader (--tns) and once for
-    // `tension::res` (--res); they are separate tables (see examples/ogre/run.sh).
+    // `tension::res` (--res); they are separate tables (see scripts/run-example.mjs).
     args.push('--res', assets);
   }
   args.push('--capability', adapter);

@@ -149,7 +149,14 @@ endif()
 # adapter and tension-core loads it with LOAD_WITH_ALTERED_SEARCH_PATH.
 if(UNIX)
     set_target_properties(tension_ogre PROPERTIES
-        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib"
+        # Every layout the DSO is reached through, relative to itself:
+        #   $ORIGIN                                  a self-contained drop
+        #   $ORIGIN/../ogre-next/lib                 packages/ (npm payloads)
+        #   $ORIGIN/../../ogre-next/lib              ...after a realpath through packages/
+        #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
+        # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
+        # without LD_LIBRARY_PATH, which is how the test suite runs it.
+        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib:$ORIGIN/../../third_party/ogre-next-install/lib:$ORIGIN/../../third_party/freeimage-install/lib"
         BUILD_WITH_INSTALL_RPATH TRUE
         LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
     )
