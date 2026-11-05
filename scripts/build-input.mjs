@@ -139,7 +139,3 @@ if (objdump) {
     // Diagnostics only.
   }
 }
-
-// Unused import guard: `readdirSync` is imported for symmetry with the other
-// build scripts and may become useful; drop it if that stops being true.
-void readdirSync;
