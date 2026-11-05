@@ -392,7 +392,23 @@ fn main() {
         command,
         &format!("compiling the log harness {}", log_harness_src.display()),
     );
-    println!("cargo:rustc-link-arg-tests={}", log_harness_obj.display());
+    // A static archive, not the bare object. `rustc-link-arg-tests` applies to
+    // *every* test target, and on MSVC a command-line object is always linked:
+    // tests that never touch this crate's rlib (the solver probes) then fail with
+    // `unresolved external symbol tension_log`. An archive is only searched when
+    // a symbol is needed, so the harness reaches `log_ffi` — the one test that
+    // declares `log_harness_emit` — and nothing else.
+    let log_harness_lib = out_dir.join("libtension_log_harness.a");
+    let _ = std::fs::remove_file(&log_harness_lib);
+    let mut ar = Command::new("ar");
+    ar.args(["rcs"]).arg(&log_harness_lib).arg(&log_harness_obj);
+    prefer_tool_own_dir(&mut ar, "ar");
+    run_or_panic(
+        ar,
+        &format!("archiving the log harness into {}", log_harness_lib.display()),
+    );
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-arg-tests={}", log_harness_lib.display());
 
     // ── llama.cpp build-info support for MinGW/Windows ─────────────────────
     if std::env::var("CARGO_FEATURE_AI").is_ok() {

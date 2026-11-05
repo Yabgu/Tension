@@ -108,6 +108,13 @@ fn test_ogre_null_window_headless() {
 }
 
 #[test]
+// The scenario this pins is X11-only. The test clears DISPLAY so the GL3+ plugin
+// throws on the X connection and the backend has to catch it; on Windows there is
+// no DISPLAY to clear and GL3+ opens a WGL window instead, so the guest reaches
+// the frame loop and reports success. That is the correct behaviour there, not a
+// regression, so the test is skipped on Windows with the reason attached rather
+// than deleted or made to accept both outcomes.
+#[cfg_attr(windows, ignore = "no DISPLAY on Windows; GL3+ uses WGL and opens a window")]
 fn test_ogre_gl3plus_no_display_refused() {
     let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
     let run = run(

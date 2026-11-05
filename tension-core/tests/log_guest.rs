@@ -31,8 +31,21 @@ const GUEST: &str = r#"(module
 "#;
 
 /// Write the guest once and run the interpreter with `extra` flags before it.
+///
+/// The directory is unique per call, not per process. Rust runs the tests in this
+/// file on parallel threads of one process, so a PID-keyed directory is shared by
+/// all of them — and the first test to finish deleted `guest.wat` while another
+/// was still starting the interpreter. That surfaces on Windows as
+/// "The system cannot find the file specified (os error 2)" from the host.
 fn run_host(extra: &[&str]) -> Output {
-    let dir = std::env::temp_dir().join(format!("tension-log-guest-{}", std::process::id()));
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+    let dir = std::env::temp_dir().join(format!(
+        "tension-log-guest-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     std::fs::create_dir_all(&dir).expect("temp dir");
     let guest = dir.join("guest.wat");
     std::fs::write(&guest, GUEST).expect("write the guest");
@@ -43,7 +56,7 @@ fn run_host(extra: &[&str]) -> Output {
         .output()
         .expect("run tension-core");
 
-    let _ = std::fs::remove_file(&guest);
+    let _ = std::fs::remove_dir_all(&dir);
     output
 }
 
