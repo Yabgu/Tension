@@ -47,5 +47,5 @@ report string — but a debugger resolving `game.ts` against these bytes needs
 source is committed alongside the bytes so a fresh checkout has it.
 
 The `.wasm.map` this build produced is intentionally not committed: a guest
-that carries `.debug_info` + `.debug_line` is never synthesised for, so the map
-is not an input to anything under test.
+that carries `.debug_info` + `.debug_line` is passed through untouched, so the
+map is not an input to anything under test.
