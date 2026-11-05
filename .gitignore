@@ -97,6 +97,19 @@ packages/*-win32-*/.package-lock.json
 # The runner shims and resolvers in the meta packages are source: keep them.
 !packages/core/bin/tension-core.js
 
+# The pre-payload build copied lib/, include/ and Media/ into the meta packages
+# themselves. Anything left there is a stale local build: the current build
+# writes only to the platform payload packages above, so it must not travel.
+packages/ogre/lib/
+packages/ogre-next/lib/
+packages/ogre-next/include/
+packages/ogre-next/Media/
+packages/freeimage/lib/
+packages/freeimage/include/
+packages/freeimage/bin/
+packages/core/bin/*
+!packages/core/bin/tension-core.js
+
 # packages/dist/ holds `npm pack` output for the future publish path. The root
 # `dist/` rule above excludes it (and a negative rule cannot re-include a file
 # whose parent directory is excluded), so the directory is un-ignored first and
