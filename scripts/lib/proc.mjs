@@ -25,6 +25,15 @@ function cmdQuote(value) {
 /// `env` is layered over the build environment and may set a variable to
 /// `undefined`, which removes it — that is how the `no-display` cases unset
 /// `DISPLAY` and `WAYLAND_DISPLAY` without a shell's `env -u`.
+///
+/// ## Timeouts kill with SIGKILL, not SIGTERM
+///
+/// `spawnSync`'s own timeout sends `killSignal` **once** and then waits for the
+/// child to exit. If the child survives that signal, the call never returns —
+/// there is no escalation. Measured here: `test-input` against a guest that
+/// blocks in SDL sat for 1,400+ seconds with `timeout: 120_000` set, because the
+/// process ignored the single SIGTERM. SIGKILL cannot be caught, so a timeout is
+/// a timeout.
 export function spawn(command, args = [], options = {}) {
   const { env: extra, ...rest } = options;
   const env = baseEnv();
@@ -42,11 +51,11 @@ export function spawn(command, args = [], options = {}) {
 
   // npm's shims are `.cmd` files on Windows, and those only run through cmd.exe.
   const needsShell = process.platform === 'win32' && /\.cmd$/i.test(executable);
+  const limits = { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, env,
+                   ...(rest.timeout ? { killSignal: 'SIGKILL' } : {}), ...rest };
   const result = needsShell
-    ? spawnSync('cmd.exe', ['/d', '/c', [executable, ...args].map(cmdQuote).join(' ')],
-                { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, env, ...rest })
-    : spawnSync(executable, args,
-                { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, env, ...rest });
+    ? spawnSync('cmd.exe', ['/d', '/c', [executable, ...args].map(cmdQuote).join(' ')], limits)
+    : spawnSync(executable, args, limits);
 
   return {
     status: result.status ?? (result.error ? 1 : 0),
@@ -76,8 +85,9 @@ export function inherit(command, args = [], options = {}) {
   const needsShell = process.platform === 'win32' && /\.cmd$/i.test(executable);
   const result = needsShell
     ? spawnSync('cmd.exe', ['/d', '/c', [executable, ...args].map(cmdQuote).join(' ')],
-                { stdio: 'inherit', env, ...rest })
-    : spawnSync(executable, args, { stdio: 'inherit', env, ...rest });
+                { stdio: 'inherit', env, ...(rest.timeout ? { killSignal: 'SIGKILL' } : {}), ...rest })
+    : spawnSync(executable, args,
+                { stdio: 'inherit', env, ...(rest.timeout ? { killSignal: 'SIGKILL' } : {}), ...rest });
   return {
     status: result.status ?? (result.error ? 1 : 0),
     signal: result.signal ?? null,
