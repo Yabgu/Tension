@@ -12,7 +12,9 @@
     "build:native": "node scripts/build-native.mjs",
     "bootstrap": "node scripts/bootstrap.mjs",
     "pack:all": "node scripts/pack-all.mjs",
-    "test": "bash test.sh"
+    "test": "node scripts/test.mjs",
+    "check:eol": "node scripts/normalize-eol.mjs --check",
+    "fix:eol": "node scripts/normalize-eol.mjs"
   },
   "engines": {
     "node": ">=20"
