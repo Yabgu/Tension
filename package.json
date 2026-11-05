@@ -10,6 +10,7 @@
     "build:framework": "node scripts/build-framework.mjs",
     "build:examples": "node scripts/build-examples.mjs",
     "build:native": "node scripts/build-native.mjs",
+    "bootstrap": "node scripts/bootstrap.mjs",
     "pack:all": "node scripts/pack-all.mjs",
     "test": "bash test.sh"
   },

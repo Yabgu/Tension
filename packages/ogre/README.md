@@ -31,7 +31,7 @@ gets — `third_party/README.md` requires the in-tree build to win.
 ## Runtime directories
 
 The adapter also needs to know where the render-system plugins and the Hlms
-media are. `build.sh` bakes an absolute path, which is wrong for a relocated
+media are. the adapter build bakes an absolute path, which is wrong for a relocated
 package, so both have environment overrides that a launcher sets instead:
 
     TENSION_OGRE_PLUGIN_DIR   <this prefix>/lib/OGRE-Next

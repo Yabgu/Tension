@@ -9,7 +9,7 @@ come first; the rest is the Windows build cheat-sheet.
    or delete anything there — including its build trees (`ogre-next-build*`,
    `ogre-next-install`) and the `ogre-next` submodule. `.gitignore` may cover
    paths there, but the tree itself is off limits. Build OGRE only through
-   `third_party/bootstrap.sh`.
+   `npm run bootstrap` (`scripts/bootstrap.mjs`).
 2. **TensionScript is a sibling repo, not a submodule.** The language lives at
    `~/work/TensionScript` (the canonical checkout). Tension consumes the
    compiler as the published `@yabgu_gm/tensionscript` npm package, which each
@@ -56,27 +56,38 @@ c:\msys64\msys2_shell.cmd -ucrt64 -defterm -no-start -where C:\Work\Tension -c "
 
 ## Windows build and test
 
-`build.bat` at the repo root is the entry point: it finds vcvars (VS 18),
-Zig, and MSYS2 UCRT64 itself, then builds `tension-res` → `tension-ogre` →
-`tension-core` (release, audio-only by default; `set AI=1` to include `ai`).
+**`npm run build` is the build, on every platform.** It runs the same steps on
+Windows that it runs on Linux: the toolchain differences (MSVC through vcvars,
+MSYS2 UCRT64 for the GNU compilers, WinGet's Zig) are resolved inside
+`scripts/lib/toolchain.mjs`, not by a different entry point.
 
-Manual equivalents:
+It builds `tension-res` → `tension-ogre` → `tension-core` for the native side
+(release, audio-only by default; `TENSION_AI=1` includes `ai`), generates the
+session constants, compiles the framework guest, and builds every example.
+
+Manual equivalents, when one target needs rebuilding on its own:
 
 ```
-tension-res     zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc
-tension-ogre    cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+res             zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc
+adapter         cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
                 cmake --build tension-ogre\build-cmake
-tension-core    cargo build --release --no-default-features --features audio
-tests           cargo test  --no-default-features --features audio
+core            cargo build --release --no-default-features --features audio
+core tests      cargo test  --no-default-features --features audio
 ```
 
 - The Zig archive **must** use `-Dtarget=x86_64-windows-msvc` when the Rust
   host is MSVC; a default-ABI build yields a MinGW archive that `link.exe`
-  rejects with `LNK1143`.
+  rejects with `LNK1143`. `scripts/build-native.mjs` reads the host triple and
+  passes it.
+- The adapter is built with the **MinGW** compilers when the Ogre install is a
+  MinGW build (it ships `libOgreNextMain.dll.a`), because MSVC cannot link those
+  import libraries. That mix — MinGW adapter, MSVC host — is deliberate.
 - The default `ai` feature pulls a vendored llama.cpp C++ build and needs
   `LIBCLANG_PATH=C:\msys64\ucrt64\bin`; it is not required for the host or the
   test suite.
-- OGRE-Next must already be installed at `third_party\ogre-next-install`.
+- OGRE-Next is bootstrapped automatically when `third_party\ogre-next-install`
+  is missing or incomplete; `npm run bootstrap` runs that step on its own, and
+  `node scripts/bootstrap.mjs --force` rebuilds it.
 
 ### PATH-shadowing gotcha
 
