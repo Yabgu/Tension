@@ -7,14 +7,6 @@
 //! what is exercised is the real run path in `main` — argument parsing, the
 //! report, and the load.
 //!
-//! One test is the exception. The optional lldb smoke at the bottom runs
-//! standalone Wasmtime over the fixture rather than the host. What it answers
-//! is whether the compiler's DWARF binds a breakpoint at all; the host's own
-//! breakpoint path is the Node suite's `debug` mode
-//! (`node tests/e2e/runner.js --only debug`), which drives lldb over
-//! `tension-core` for every example. Read the two as complementary — one pins
-//! the compiler's output, the other pins what the host does with it.
-//!
 //! Inputs are committed bytes under `tests/fixtures/` (see the READMEs there):
 //! `dwarf-guest` was built by TensionScript 0.14.0, which embeds DWARF;
 //! `legacy-guest` by 0.13.2, which does not. Nothing here compiles a guest,
@@ -183,98 +175,10 @@ fn test_symbol_path_prints_lldb_hint() {
     let _ = std::fs::remove_dir_all(&elsewhere);
 }
 
-// ------------------------------------------------------- optional smoke ---
-
-/// A source-line breakpoint against `dwarf-guest`, if this machine can do it.
-///
-/// The inferior is standalone Wasmtime, not `tension-core`, so this measures
-/// compiler-emitted DWARF rather than the host's use of it. The host's own path
-/// is the Node suite's `debug` mode, which spawns lldb over `tension-core`
-/// itself; neither check substitutes for the other.
-///
-/// Skipped — not failed — when lldb or the pinned Wasmtime is absent: the three
-/// assertions above are the regression gate, and requiring a debugger on every
-/// machine would make the suite unusable in CI. Both are required by the body,
-/// so both are checked: lldb from `PATH`, and Wasmtime from `PATH` or the
-/// TensionScript harness cache, which is where this project's tooling already
-/// puts it.
-#[test]
-fn test_lldb_breakpoint_if_available() {
-    let Some(lldb) = tool("lldb").or_else(|| tool("lldb-22")) else {
-        eprintln!("lldb not on PATH — behavioural breakpoint smoke skipped");
-        return;
-    };
-    let Some(wasmtime) = tool("wasmtime").or_else(harness_wasmtime) else {
-        eprintln!("wasmtime not available — behavioural breakpoint smoke skipped");
-        return;
-    };
-
-    let guest = fixture_wasm("dwarf-guest");
-    let dir = std::env::temp_dir().join(format!("tension-e2e-lldb-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).expect("create lldb scratch dir");
-    let commands = dir.join("lldb.cmds");
-    std::fs::write(
-        &commands,
-        format!(
-            "settings set plugin.jit-loader.gdb.enable on\n\
-             settings set target.debug-file-search-paths \"{}\"\n\
-             breakpoint set -f game.ts -l 3\n\
-             run\n\
-             quit\n",
-            fixture_dir("dwarf-guest").display()
-        ),
-    )
-    .expect("write lldb commands");
-
-    let output = Command::new(&lldb)
-        .args(["-b", "-s"])
-        .arg(&commands)
-        .arg("--")
-        .arg(&wasmtime)
-        .args(["run", "-D", "debug-info", "--invoke", "_start_game"])
-        .arg(&guest)
-        .output()
-        .expect("spawn lldb");
-
-    let text = format!(
-        "{}{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(
-        text.contains("stop reason = breakpoint") && text.contains("game.ts:3"),
-        "the source breakpoint must resolve and stop in game.ts.\n{text}"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// `which`-style lookup that needs no dependency.
-fn tool(name: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
-}
-
-/// The Wasmtime the TensionScript harness pins, if that checkout is present.
-fn harness_wasmtime() -> Option<PathBuf> {
-    let repo = std::env::var_os("TENSIONSCRIPT_REPO")
-        .map(PathBuf::from)
-        .or_else(|| {
-            let sibling = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("TensionScript");
-            sibling.is_dir().then_some(sibling)
-        })?;
-    let cache = repo.join("tests").join("debug").join(".cache");
-    let entries = std::fs::read_dir(cache).ok()?;
-    for entry in entries.flatten() {
-        let candidate = entry.path().join("wasmtime");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
-}
+// The lldb breakpoint test that used to live here spawned standalone wasmtime
+// under lldb against the dwarf-guest fixture. That tests compiler-emitted DWARF
+// under a debugger — a TensionScript-side claim, covered by TensionScript's
+// tests/debug/ and by this repo's Node E2E debug mode (which runs 10 live
+// examples under lldb through tension-core). It was removed because it measured
+// neither the host's pass-through nor any tension-core behaviour, and because it
+// required a sibling ~/work/TensionScript checkout for its wasmtime lookup.
