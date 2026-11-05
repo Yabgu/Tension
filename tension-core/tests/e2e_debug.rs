@@ -7,6 +7,14 @@
 //! what is exercised is the real run path in `main` — argument parsing, the
 //! report, and the load.
 //!
+//! One test is the exception. The optional lldb smoke at the bottom runs
+//! standalone Wasmtime over the fixture rather than the host. What it answers
+//! is whether the compiler's DWARF binds a breakpoint at all; the host's own
+//! breakpoint path is the Node suite's `debug` mode
+//! (`node tests/e2e/runner.js --only debug`), which drives lldb over
+//! `tension-core` for every example. Read the two as complementary — one pins
+//! the compiler's output, the other pins what the host does with it.
+//!
 //! Inputs are committed bytes under `tests/fixtures/` (see the READMEs there):
 //! `dwarf-guest` was built by TensionScript 0.14.0, which embeds DWARF;
 //! `legacy-guest` by 0.13.2, which does not. Nothing here compiles a guest,
@@ -179,11 +187,17 @@ fn test_symbol_path_prints_lldb_hint() {
 
 /// A source-line breakpoint against `dwarf-guest`, if this machine can do it.
 ///
+/// The inferior is standalone Wasmtime, not `tension-core`, so this measures
+/// compiler-emitted DWARF rather than the host's use of it. The host's own path
+/// is the Node suite's `debug` mode, which spawns lldb over `tension-core`
+/// itself; neither check substitutes for the other.
+///
 /// Skipped — not failed — when lldb or the pinned Wasmtime is absent: the three
 /// assertions above are the regression gate, and requiring a debugger on every
-/// machine would make the suite unusable in CI. Wasmtime is looked for on
-/// `PATH` and in the TensionScript harness cache, because that is where this
-/// project's tooling already puts it.
+/// machine would make the suite unusable in CI. Both are required by the body,
+/// so both are checked: lldb from `PATH`, and Wasmtime from `PATH` or the
+/// TensionScript harness cache, which is where this project's tooling already
+/// puts it.
 #[test]
 fn test_lldb_breakpoint_if_available() {
     let Some(lldb) = tool("lldb").or_else(|| tool("lldb-22")) else {
