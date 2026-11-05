@@ -219,7 +219,9 @@ mod tests {
 
     #[test]
     fn reads_the_io_example_guest_shape() {
-        // What `asc` actually emits: a `name` section plus a source map.
+        // The pre-0.14.0 shape: a `name` section plus a source map, and no
+        // DWARF. 0.14.0 emits `.debug_*` as well; this pins the legacy shape
+        // the detector must still classify correctly.
         let bytes = guest(&[
             custom("name", b"\x01\x02\x00\x00"),
             custom("sourceMappingURL", b"\x0f./game.wasm.map"),

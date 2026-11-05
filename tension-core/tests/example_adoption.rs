@@ -2,8 +2,8 @@
 //!
 //! TensionScript 0.14.0 emits `.debug_abbrev` / `.debug_info` / `.debug_line` /
 //! `.debug_ranges` itself when `--debug` **and** `--sourceMap` are set, so the
-//! host's synthesiser is now a fallback for older guests rather than the normal
-//! path. This suite pins the adoption at three levels:
+//! host only has to pass them through — it no longer builds DWARF at all. This
+//! suite pins the adoption at three levels:
 //!
 //! | test | what it locks | failure mode |
 //! | --- | --- | --- |
