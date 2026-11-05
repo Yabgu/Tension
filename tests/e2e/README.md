@@ -19,9 +19,31 @@ node tests/e2e/runner.js --example ogre/hello-triangle
 ```
 
 Requires a built `tension-core` (`cargo build --manifest-path
-tension-core/Cargo.toml --release`). Node 20+, built-ins only — there is no
-`package.json` here and nothing to `npm install`. Set `TENSION_CORE` to point at
+tension-core/Cargo.toml --release`) and Node 20+. Set `TENSION_CORE` to point at
 a binary built elsewhere.
+
+Debug mode additionally needs a debugger. Install it once:
+
+```sh
+cd tests/e2e && npm install
+```
+
+That installs `@debugmcp/codelldb-*` — the same package family and version
+TensionScript uses — as optional dependencies, so only this platform's package
+lands. `node_modules/` and `package-lock.json` are gitignored: which package
+installs is a per-host fact. Launch and smoke modes do not need it; the runner's
+own code uses Node built-ins only.
+
+The runner reports where its debugger came from on startup:
+
+```
+e2e: lldb = tests/e2e/node_modules/@debugmcp/codelldb-linux-x64/lldb/bin/lldb (source: npm)
+e2e: lldb = absent (debug mode will skip)
+```
+
+Resolution order is `PATH` first, then the npm package: a developer who
+installed lldb deliberately should get that one, and the npm package is the
+fallback that makes debug mode runnable on a machine with no system lldb.
 
 ## Modes
 
@@ -35,7 +57,11 @@ a binary built elsewhere.
   deadline" both count as no crash; any other exit is a failure, because "it
   stopped for a reason I did not anticipate" is what a regression looks like.
 - **debug** — bind a source breakpoint from `config/breakpoints.json` under
-  lldb and confirm it resolves. Skips entirely when lldb is absent, saying so.
+  lldb and confirm it resolves. The breakpoint is the first **executable
+  statement** inside `_start_game`, not the declaration line: a declaration
+  with comments after it has no line-table entry, so a breakpoint set there
+  never binds (measured — `log` failed on its declaration line, passes on the
+  statement). Skips when neither a system lldb nor the npm package is available.
 
 ## Config
 

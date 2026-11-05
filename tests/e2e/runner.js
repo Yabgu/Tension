@@ -31,7 +31,7 @@ import {
   unexpandedVariables,
 } from "./lib/launch-json.js";
 import { createReport, firstLineOf } from "./lib/report.js";
-import { resolveLldb, resolveTensionCore } from "./lib/resolve.js";
+import { lldbSkipReason, resolveLldb, resolveTensionCore } from "./lib/resolve.js";
 import { reportsMissingGuest, runTensionCore, unknownFlagIn } from "./lib/run-tension-core.js";
 import { runUnderLldb } from "./lib/run-lldb.js";
 
@@ -265,13 +265,18 @@ async function runSmokeMode({ examples, knownSkips, report, binary }) {
 
 // -------------------------------------------------------------- debug ---
 
-async function runDebugMode({ examples, knownSkips, breakpoints, report, binary, lldb }) {
+async function runDebugMode({ examples, allExamples, knownSkips, breakpoints, report, binary, lldbInfo }) {
+  const lldb = lldbInfo.path;
   if (!lldb) {
-    report.skipAll("debug", "lldb not on PATH");
+    report.skipAll("debug", lldbSkipReason(lldbInfo));
     return;
   }
 
-  const byName = new Map(examples.map((example) => [example.name, example]));
+  // `byName` holds every example so a config entry naming a missing example is
+  // a failure; `selected` is the --example filter, which narrows what runs
+  // without making the unselected entries look broken.
+  const byName = new Map(allExamples.map((example) => [example.name, example]));
+  const selected = new Set(examples.map((example) => example.name));
 
   for (const [name, breakpoint] of breakpoints) {
     const example = byName.get(name);
@@ -279,6 +284,7 @@ async function runDebugMode({ examples, knownSkips, breakpoints, report, binary,
       report.fail("debug", name, "breakpoints.json names an example that does not exist");
       continue;
     }
+    if (!selected.has(name)) continue;
     const known = knownSkips.get(name);
     if (known) {
       report.skip("debug", name, known);
@@ -345,11 +351,12 @@ async function main() {
   }
 
   const { path: binary, release } = resolveTensionCore();
-  const lldb = resolveLldb();
+  const lldbInfo = resolveLldb();
   const knownSkips = loadKnownSkips();
   const breakpoints = loadBreakpoints();
 
-  let examples = discoverExamples();
+  const allExamples = discoverExamples();
+  let examples = allExamples;
   if (options.example) {
     examples = examples.filter((example) => example.name === options.example);
     if (examples.length === 0) {
@@ -361,7 +368,7 @@ async function main() {
     `e2e: ${examples.length} example(s); tension-core ${release ? "release" : "debug"} at ${relativePath(binary)}`
   );
   console.log(
-    `e2e: lldb ${lldb ? relativePath(lldb) : "not on PATH (debug mode will skip)"}; ` +
+    `e2e: lldb = ${lldbInfo.path ? `${relativePath(lldbInfo.path)} (source: ${lldbInfo.source})` : "absent (debug mode will skip)"}; ` +
       `${breakpoints.size} breakpoint(s) configured, ${knownSkips.size} known skip(s)`
   );
 
@@ -373,7 +380,15 @@ async function main() {
     if (mode === "launch") await runLaunchMode({ examples, knownSkips, report, binary });
     else if (mode === "smoke") await runSmokeMode({ examples, knownSkips, report, binary });
     else if (mode === "debug") {
-      await runDebugMode({ examples, knownSkips, breakpoints, report, binary, lldb });
+      await runDebugMode({
+        examples,
+        allExamples,
+        knownSkips,
+        breakpoints,
+        report,
+        binary,
+        lldbInfo,
+      });
     }
     console.log(`\n-- ${mode} (${Date.now() - started}ms) --`);
   }
