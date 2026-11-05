@@ -7,7 +7,9 @@
 // `packages/*/package.json` + `files` say which parts travel if one ever is
 // packed. Everything this script writes is gitignored.
 //
-// Run it once after a clone (`npm run build:native`), before `npm run build`.
+// `npm run build` runs this after codegen; `npm run build:native` on its own is
+// the same step. The Ogre-Next install it packages is bootstrapped on demand
+// (scripts/ensure-ogre.mjs), so a fresh clone needs no manual first step.
 //
 //   @yabgu_gm/tension-ogre-next   third_party/ogre-next-install, sample assets pruned
 //   @yabgu_gm/tension-freeimage   third_party/freeimage-install
@@ -25,6 +27,7 @@ import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync } from 'n
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
+import { ensureOgre } from './ensure-ogre.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -80,9 +83,16 @@ function mb(bytes) {
 }
 
 // ── ogre-next ────────────────────────────────────────────────────────────────
+// The install is a build product, not a prerequisite to remember: bootstrap it
+// here if this checkout has never built it. On every later build this is a
+// few stat calls and a short walk of the install.
+ensureOgre({ note, fail });
 if (!existsSync(join(OGRE_SRC, 'lib', 'libOgreNextMain.so'))) {
+  const hint = process.platform === 'win32'
+    ? '\n  this npm build packages Linux ELF binaries; run build.bat on Windows'
+    : '';
   fail(`no Ogre-Next install at ${OGRE_SRC}\n` +
-       `  build it first: third_party/bootstrap.sh`);
+       `  expected lib/libOgreNextMain.so${hint}`);
 }
 note('ogre-next: copying lib/, include/, Media/ (sample assets pruned)');
 copyTree(join(OGRE_SRC, 'lib'), join(packages, 'ogre-next', 'lib'));

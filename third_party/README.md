@@ -20,6 +20,10 @@ OGRE cannot be configured without FreeImage either way — see below.
     third_party/bootstrap.sh          # configure, build, install (skips if done)
     third_party/bootstrap.sh --force  # reconfigure, rebuild, reinstall
 
+`npm run build` runs the first form itself when `third_party/ogre-next-install`
+is missing or incomplete, then continues. The manual command is still the way
+to run the step on its own or to force a rebuild.
+
 Needs (Arch names, the PKGBUILD's dependency set): `cmake git glslang
 spirv-tools vulkan-headers mesa freetype2 glu libxaw libxrandr rapidjson
 tinyxml zziplib vulkan-icd-loader`. FreeImage is not on that list — it is
