@@ -175,7 +175,7 @@ plugin, the OGRE media at `/usr/share/OGRE-Next/Media`, and a display.
 ```sh
 # 1. build — lands `probe` beside these sources (gitignored)
 cd tension-ogre/tests/hlms-skin
-./build.sh
+npm run build
 
 # 2. stage the resource directories: a v2 mesh with its sibling skeleton, and the
 #    same mesh without the skeleton (the no-.skeleton state).
@@ -204,7 +204,7 @@ dies with `Cannot initialise - no render system has been selected`. Run from a d
 you can write to (as above); the file only needs `PluginFolder` and a render-system plugin,
 and `RenderSystem_NULL` is enough.
 
-**This probe runs manually, not in `tension-ogre/tests/run.sh`.** That harness builds the
+**This probe runs manually, not in `scripts/test-ogre.mjs`.** That harness builds the
 adapter and runs guest fixtures through the interpreter, headless by default, with its one
 windowed case opt-in. This program is the opposite: it needs a real GL context, a display,
 the OGRE media tree and an `OgreMeshTool`-converted asset, and it asserts on pixels.

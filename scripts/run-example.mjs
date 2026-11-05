@@ -21,7 +21,7 @@
 //                     the example's own flags, so a reader can see them
 //
 // Steps that belong to the repository's own build scripts — the framework's
-// session-config generator and `pack.sh` — are run through bash, because
+// session-config generator and packing — used to run through bash, because
 // single-sourcing that logic matters more than avoiding the shell, and this
 // repository already needs MSYS2 or Git Bash on Windows. Everything else is
 // native. Set TENSION_BASH to point at a specific bash.

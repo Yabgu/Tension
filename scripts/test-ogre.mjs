@@ -55,7 +55,7 @@ mkdirSync(out, { recursive: true });
 // directory has to be on it before the host loads the capability. On Unix the
 // adapter's RPATH covers the in-tree install, but a missing or old RPATH should
 // not turn into a confusing loader error, so the directories are named as well —
-// the same thing test.sh did with LD_LIBRARY_PATH.
+// the same thing the shell runner did with LD_LIBRARY_PATH.
 const libDirs = [
   out,
   join(repo, 'third_party', 'ogre-next-install', 'lib'),

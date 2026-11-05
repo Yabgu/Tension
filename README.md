@@ -247,7 +247,7 @@ read it before touching the adapter.
 Notable pieces:
 
 - **Assets are packed, not on disk.** Every example and fixture carries a
-  `resources/` tree; `pack.sh` runs `tension-pack` to produce a `.tns`
+  `resources/` tree; `npm run pack` runs `tension-pack` to produce a `.tns`
   archive (Tension Volume, ECMA-208 SIDF profile); the guest calls
   `ogre.mountTns(prefix, path)` and loads through prefixed paths. There is
   no filesystem fallback.
@@ -262,7 +262,7 @@ Notable pieces:
 Five examples demonstrate it: `hello-triangle`, `hello-mesh`,
 `bouncing-ball`, `animated-character`, `bouncing-bodies`. All five are
 class-shaped, share a common structure (`Options` + `Game` + a short
-composition root), and run through the shared `examples/ogre/run.sh`.
+composition root), and run through the shared `scripts/run-example.mjs`.
 
 ## The `solver` capability
 
@@ -325,7 +325,7 @@ printf 'hello\n' \
 Or use the demo runner:
 
 ```sh
-./demo.sh          # builds and runs io, audio, ai
+npm run demo          # builds and runs io, audio, ai
 npm run build      # the build: interpreter, guest API, framework, every example
 ```
 
@@ -333,18 +333,18 @@ The OGRE examples need the adapter built and the framework's generated
 layout, so they run through their own script:
 
 ```sh
-cd examples/ogre/hello-triangle && ./run.sh                          # a real window
-cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only
+cd examples/ogre/hello-triangle && npm start                          # a real window
+cd examples/ogre/hello-triangle && TENSION_OGRE_HEADLESS=1 npm start  # structural only
 ```
 
-`examples/ogre/run.sh` is the shared mechanism; each example's `run.sh`
+`scripts/run-example.mjs` is the shared mechanism; each example's `npm start`
 is an 8-line wrapper naming its banner and calling the shared script.
 
 ## Container / CI
 
-`ci/` holds the development/CI image and its scripts: `ci/docker.sh build`
-builds the image, `ci/docker.sh test` runs the full test suite inside it,
-and `ci/docker.sh dev` drops you into a development shell with the
+`ci/` holds the development/CI image and its scripts: `node ci/docker.mjs build`
+builds the image, `node ci/docker.mjs test` runs the full test suite inside it,
+and `node ci/docker.mjs dev` drops you into a development shell with the
 repository bind-mounted and X available. See `ci/README.md` for details.
 
 ## Debugging

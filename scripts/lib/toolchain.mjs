@@ -237,7 +237,7 @@ export function npmBin(dir, name) {
 ///
 /// Zig is the measured case: `winget install zig` places it under
 /// `%LOCALAPPDATA%\Microsoft\WinGet\Packages\zig.zig_*\zig-*\` with no shim
-/// on PATH. `build.bat` located it there; that lookup moves here so the build
+/// on PATH. That lookup lives here so the build
 /// keeps working on a machine that installed it the documented way.
 function extraDirs(name) {
   if (!WIN || name !== 'zig') return [];
