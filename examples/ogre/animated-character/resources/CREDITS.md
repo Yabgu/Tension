@@ -1,6 +1,6 @@
 # Asset credits
 
-`resources/` is this example's own copy of what it loads: `pack.sh` builds the
+`resources/` is this example's own copy of what it loads: `npm run pack` builds the
 volume from the repository, the guest mounts it under `resources/`, and every
 load path starts with that prefix.
 

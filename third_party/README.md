@@ -17,8 +17,17 @@ OGRE cannot be configured without FreeImage either way — see below.
 
 ## Bootstrap
 
-    third_party/bootstrap.sh          # configure, build, install (skips if done)
-    third_party/bootstrap.sh --force  # reconfigure, rebuild, reinstall
+    npm run bootstrap                  # configure, build, install (skips if done)
+    node scripts/bootstrap.mjs --force  # reconfigure, rebuild, reinstall
+
+`npm run build` runs the first form itself when `third_party/ogre-next-install`
+is missing or incomplete, then continues. The command is still the way to run
+the step on its own or to force a rebuild.
+
+It is `scripts/bootstrap.mjs`, not a shell script: `npm run build` runs the same
+steps on every platform, and the platform differences (MSYS2's UCRT64 for the
+GNU compilers on Windows, glslang discovery by `pkg-config` or by an installed
+header on Linux) live inside it.
 
 Needs (Arch names, the PKGBUILD's dependency set): `cmake git glslang
 spirv-tools vulkan-headers mesa freetype2 glu libxaw libxrandr rapidjson
@@ -101,7 +110,7 @@ for all 40 formats, `FreeImage_FIFSupportsReading(FIF_RAW)` false, zero
 
 Nothing here reads camera RAW: the loader sniffs PNG/DDS magic and the
 adapter hands bytes to `Ogre::Image2`, which never opens a `.CR2`/`.NEF`/`.DNG`.
-Turning it back on is one flag in `bootstrap.sh`, and it reinstates the
+Turning it back on is one flag in `scripts/bootstrap.mjs`, and it reinstates the
 LGPL-2.1/CDDL choice — elect CDDL if that ever happens, not LGPL-2.1, because
 CDDL's larger-work clause avoids LGPL §6 relinking obligations for a
 statically-linked library.
@@ -114,7 +123,7 @@ codec choice that would put a static LGPL-3 library inside the shipped `.so`.
 
 ## How the tree prefers it
 
-`tension-ogre/build.sh` uses the in-tree install when
+`scripts/build-native.mjs` uses the in-tree install when
 `third_party/ogre-next-install/lib/libOgreNextMain.so` exists; the system
 install (pkg-config) remains the fallback, so a contributor who never runs
 bootstrap still builds against the distro package. The example and test

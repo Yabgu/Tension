@@ -2,10 +2,15 @@
   "name": "@yabgu_gm/tension-ogre",
   "version": "0.1.0",
   "private": true,
-  "description": "The OGRE capability adapter (libtension_ogre.so): tension-core dlopens it for --capability.",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "files": ["lib/"],
+  "description": "The OGRE capability adapter that tension-core dlopens for --capability. Resolves the platform build.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ],
   "dependencies": {
     "@yabgu_gm/tension-ogre-next": "0.1.0",
     "@yabgu_gm/tension-freeimage": "0.1.0"

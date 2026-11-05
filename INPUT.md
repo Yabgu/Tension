@@ -6,7 +6,7 @@ engine, and the shape it should take.
 **This is a design statement for the shape of the capability; the code is
 described in `tension-input/DESIGN.md`.** The design has since been built:
 `tension-input/` exists, builds `libtension_input.so`, and registers the
-`tension::input` module (`tension-input/tests/run.sh` exercises it). Where
+`tension::input` module (`scripts/test-input.mjs` exercises it). Where
 the two disagree, `INPUT.md` is the argument and `tension-input/DESIGN.md` is
 the bug. Where the design leans on something that *is* implemented it cites
 file and line; where it leans on measurement it cites round 20's feasibility
@@ -198,7 +198,7 @@ through a verb rather than a region, capacity 1, **no gamepad** (edges need a
 class that does not exist — §5 M3 — and no custom abstraction is permitted, §6).
 A headless build is the *same binary* refusing at attach with `-ENODEV`, the
 mirror of the ogre capability's no-display case
-(`tension-ogre/tests/run.sh:125-135`).
+(`scripts/test-ogre.mjs:125-135`).
 
 ### Q3 — events or polled state?
 
@@ -522,7 +522,7 @@ recoverable: close, open, attach again.
 
 **The v0 gate.** A keyboard-and-mouse example under `examples/ogre/` (a camera
 moved by WASD, turned by the mouse) plus a headless case that asserts the
-no-display refusal, mirroring `tension-ogre/tests/run.sh:125-135`. The full-stack
+no-display refusal, mirroring `scripts/test-ogre.mjs:125-135`. The full-stack
 target this feeds is already written down: *"a small controllable game with
 input, a light and a shadow"* (`tension-ogre/DESIGN.md:2719`).
 

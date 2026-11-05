@@ -19,7 +19,7 @@
 //! the warning for whichever floor is involved.
 //!
 //! The same pattern runs for tension-solver: its Fortran core is built by
-//! `tension-solver/build.sh` (which pins the determinism flags) and linked
+//! the recipe below (which pins the determinism flags) and linked
 //! as `libtension_solver.a`, with the Fortran runtime on the link line.
 //! gfortran has a floor too — 14.0, for the same reason: the numerical core's
 //! results are compiled, and a different compiler is a different contract
@@ -93,7 +93,6 @@ fn main() {
         .expect("tension-core lives next to tension-solver")
         .join("tension-solver");
 
-    println!("cargo:rerun-if-changed={}", solver_dir.join("build.sh").display());
     println!("cargo:rerun-if-changed={}", solver_dir.join("src").display());
     println!("cargo:rerun-if-changed={}", solver_dir.join("include").display());
 
@@ -103,13 +102,13 @@ fn main() {
     let solver_archive = solver_lib.join("libtension_solver.a");
     // Always rebuild: the recipe is cheap, and an "archive exists" short-cut
     // would let a changed Fortran source link stale objects (cargo reruns this
-    // script on a source change, but the archive would already be sitting
-    // there). `tension-solver/build.sh` carries the same unconditional-rebuild
-    // discipline.
-    if cfg!(windows) {
-        // Windows has no `sh` guarantee, so the recipe's steps run here; the
-        // flags are the pinned set from tension-solver/build.sh (DESIGN.md §2),
-        // restated because that file is the Linux entry point.
+    // script on a source change, but the archive would already be sitting there).
+    //
+    // The recipe runs here, on every platform. It used to live in
+    // `tension-solver/build.sh` on Unix and be restated inline on Windows, which
+    // meant two copies of the pinned flags (DESIGN.md §2) and a shell the build
+    // otherwise does not need. One copy, no shell.
+    {
         let out = &solver_lib;
         let _ = std::fs::create_dir_all(out);
         let fflags = [
@@ -157,18 +156,6 @@ fn main() {
             .args([&erk_o, &sym_o, &imp_o, &c_o]);
         prefer_tool_own_dir(&mut command, "ar");
         run_or_panic(command, &format!("archiving {}", solver_archive.display()));
-    } else {
-        let script = solver_dir.join("build.sh");
-        let status = Command::new(&script).status();
-        match status {
-            Ok(s) if s.success() => {}
-            Ok(s) => panic!("`build.sh` failed in {solver_dir:?} with {s}"),
-            Err(e) => panic!(
-                "could not run {script:?} ({e}) — tension-core links the solver core, so \
-                 gfortran {}.{} or newer must be on PATH (see tension-solver/DESIGN.md §2)",
-                MIN_GFORTRAN.0, MIN_GFORTRAN.1
-            ),
-        }
     }
 
     if !solver_archive.exists() {
@@ -392,7 +379,23 @@ fn main() {
         command,
         &format!("compiling the log harness {}", log_harness_src.display()),
     );
-    println!("cargo:rustc-link-arg-tests={}", log_harness_obj.display());
+    // A static archive, not the bare object. `rustc-link-arg-tests` applies to
+    // *every* test target, and on MSVC a command-line object is always linked:
+    // tests that never touch this crate's rlib (the solver probes) then fail with
+    // `unresolved external symbol tension_log`. An archive is only searched when
+    // a symbol is needed, so the harness reaches `log_ffi` — the one test that
+    // declares `log_harness_emit` — and nothing else.
+    let log_harness_lib = out_dir.join("libtension_log_harness.a");
+    let _ = std::fs::remove_file(&log_harness_lib);
+    let mut ar = Command::new("ar");
+    ar.args(["rcs"]).arg(&log_harness_lib).arg(&log_harness_obj);
+    prefer_tool_own_dir(&mut ar, "ar");
+    run_or_panic(
+        ar,
+        &format!("archiving the log harness into {}", log_harness_lib.display()),
+    );
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-arg-tests={}", log_harness_lib.display());
 
     // ── llama.cpp build-info support for MinGW/Windows ─────────────────────
     if std::env::var("CARGO_FEATURE_AI").is_ok() {
@@ -526,7 +529,7 @@ fn check_gfortran_version() {
 }
 
 /// The escape hatch for the two version pins above. A machine that must build
-/// with what it has — a distro Zig, a system gfortran, `build.sh` on a CI image
+/// with what it has — a distro Zig or a system gfortran on a CI image
 /// that does not stock the pinned toolchain — sets `TENSION_ALLOW_UNPINNED=1`
 /// and the pins demote from a refusal to a `cargo:warning`.
 fn unpinned_allowed() -> bool {

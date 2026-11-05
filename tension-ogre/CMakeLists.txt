@@ -14,8 +14,26 @@ if(NOT DEFINED TENSION_OGRE_BACKEND)
     set(TENSION_OGRE_BACKEND "ogre")
 endif()
 
-set(OGRE_MEDIA_DIR "${OGRE_NEXT_PREFIX}/Media")
+# Where the media and the render-system plugins are, keyed on what is actually
+# on disk rather than on one platform's install layout. The prefix is not always
+# a real Ogre install: it can also be the flat `packages/ogre-next-*` payload,
+# where `lib/`, `include/` and `Media/` sit at the root. A real install puts the
+# media under `share/OGRE-Next/Media` and the plugins under `lib/OGRE-Next`
+# (Unix) or `bin/` and `bin/Release` (Windows). Getting this wrong is not a
+# build failure — it is a runtime "no valid template shader files" — so it is
+# decided here, once, from the tree.
+if(EXISTS "${OGRE_NEXT_PREFIX}/Media/Hlms")
+    set(OGRE_MEDIA_DIR "${OGRE_NEXT_PREFIX}/Media")
+elseif(EXISTS "${OGRE_NEXT_PREFIX}/share/OGRE-Next/Media/Hlms")
+    set(OGRE_MEDIA_DIR "${OGRE_NEXT_PREFIX}/share/OGRE-Next/Media")
+else()
+    set(OGRE_MEDIA_DIR "${OGRE_NEXT_PREFIX}/Media")
+endif()
+
 set(OGRE_PLUGIN_DIR "${OGRE_NEXT_PREFIX}/bin")
+if(EXISTS "${OGRE_NEXT_PREFIX}/lib/OGRE-Next")
+    set(OGRE_PLUGIN_DIR "${OGRE_NEXT_PREFIX}/lib/OGRE-Next")
+endif()
 if(EXISTS "${OGRE_NEXT_PREFIX}/bin/Release")
     set(OGRE_PLUGIN_DIR "${OGRE_NEXT_PREFIX}/bin/Release")
 endif()
@@ -113,6 +131,37 @@ else()
     target_link_libraries(tension_ogre PRIVATE pthread dl)
 endif()
 
+# The in-tree Ogre-Next lives outside the loader's default search path, and its
+# sonames are identical to a distro package's, so which one a process gets is
+# decided by the search path. Two spellings, both relative to the DSO's own
+# directory:
+#   $ORIGIN                        a self-contained drop (all libs beside it)
+#   $ORIGIN/../ogre-next/lib       this repository's packages/ layout, where the
+#                                  payload packages are siblings
+#
+# `--disable-new-dtags` emits DT_RPATH rather than DT_RUNPATH on purpose:
+# DT_RPATH is consulted *before* LD_LIBRARY_PATH and DT_RUNPATH after, and the
+# in-tree libraries must win. `--exclude-libs,ALL` keeps the static
+# tension_res archive's ~120 exported symbols out of this DSO's dynamic table —
+# the adapter's own entry points are the ones that must be visible to dlopen.
+#
+# Windows needs none of this: the post-build step copies Ogre's DLLs beside the
+# adapter and tension-core loads it with LOAD_WITH_ALTERED_SEARCH_PATH.
+if(UNIX)
+    set_target_properties(tension_ogre PROPERTIES
+        # Every layout the DSO is reached through, relative to itself:
+        #   $ORIGIN                                  a self-contained drop
+        #   $ORIGIN/../ogre-next/lib                 packages/ (npm payloads)
+        #   $ORIGIN/../../ogre-next/lib              ...after a realpath through packages/
+        #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
+        # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
+        # without LD_LIBRARY_PATH, which is how the test suite runs it.
+        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib:$ORIGIN/../../third_party/ogre-next-install/lib:$ORIGIN/../../third_party/freeimage-install/lib"
+        BUILD_WITH_INSTALL_RPATH TRUE
+        LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
+    )
+endif()
+
 # Post-build step: stage the adapter where the Rust tests look for it. The
 # `libtension_ogre.so` name is deliberate — the DSO's loader looks for that
 # soname on every platform, and Windows LoadLibrary does not care about the
@@ -132,4 +181,42 @@ if(TENSION_OGRE_BACKEND STREQUAL "ogre")
             COMMAND ${CMAKE_COMMAND} -E copy_if_different ${OGRE_RUNTIME_DLLS} "${TENSION_OGRE_ROOT}/build"
         )
     endif()
+endif()
+
+# ── unit tests ──────────────────────────────────────────────────────────────
+#
+# The loader's worker reads bytes and the backend is a mock, the config decoder
+# is pure parsing: none of these need OGRE, and `loader_test` links the same
+# static archive the adapter does. Built only when asked (`npm test`), so a
+# plain build stays a build.
+option(TENSION_OGRE_BUILD_TESTS "Build the adapter's unit tests" OFF)
+if(TENSION_OGRE_BUILD_TESTS)
+    add_executable(config_test src/config.cpp tests/config_test.cpp)
+    target_include_directories(config_test PRIVATE
+        ${TENSION_OGRE_ROOT}/include ${TENSION_OGRE_ROOT}/src)
+
+    add_executable(scene_test src/scene.cpp tests/scene_test.cpp)
+    target_include_directories(scene_test PRIVATE
+        ${TENSION_OGRE_ROOT}/include ${TENSION_OGRE_ROOT}/src)
+
+    add_executable(loader_test src/loader.cpp src/mounts.cpp tests/loader_test.cpp)
+    target_include_directories(loader_test PRIVATE
+        ${TENSION_OGRE_ROOT}/include ${TENSION_OGRE_ROOT}/src
+        ${TENSION_RES_DIR}/include)
+    target_link_libraries(loader_test PRIVATE ${TENSION_RES_LIB})
+    if(WIN32)
+        target_link_libraries(loader_test PRIVATE ntdll)
+    else()
+        target_link_libraries(loader_test PRIVATE pthread)
+    endif()
+
+    foreach(test_target config_test scene_test loader_test)
+        if(MSVC)
+            target_compile_options(${test_target} PRIVATE /W3 /utf-8 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS)
+        else()
+            target_compile_options(${test_target} PRIVATE -Wall -Wextra)
+        endif()
+        set_target_properties(${test_target} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
+    endforeach()
 endif()
