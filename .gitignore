@@ -108,3 +108,12 @@ packages/dist/*
 # machine-local fact (timestamps, the local commit), and run-example.mjs
 # regenerates its expectations from the sources, so it does not travel.
 packages/build-stamp.json
+
+# Exception: these two guest modules are committed on purpose. They are the
+# version-locked inputs to the DWARF E2E test (tests/e2e_debug.rs): one built by
+# a compiler that embeds DWARF, one by a release that does not. Rebuilding them
+# needs a specific compiler version, so drift would defeat the test. See the
+# READMEs beside them.
+!tension-core/tests/fixtures/dwarf-guest/game.wasm
+!tension-core/tests/fixtures/legacy-guest/game.wasm
+!tension-core/tests/fixtures/legacy-guest/game.wasm.map

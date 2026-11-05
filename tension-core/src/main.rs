@@ -577,28 +577,22 @@ fn main() -> anyhow::Result<()> {
     // `--debug` is the whole host-side switch; see `debug` for what it can and
     // cannot buy. The report runs before the load so a guest that fails to load
     // still shows what was being asked of it.
-    // Synthesized guest DWARF, when `--debug` managed to produce any. `None`
-    // means the module is loaded from disk exactly as it always was.
-    let mut augmented: Option<Vec<u8>> = None;
+    //
+    // The host does not augment the guest. It asks whether the compiler already
+    // emitted DWARF and, if not, says so; the bytes handed to wasmtime are the
+    // bytes on disk. Anything else would be the host guessing at a debuggee
+    // that its own producer describes better.
     if cli.debug {
         let guest = std::path::Path::new(&cli.wasm_path);
         let info = debug::probe(guest);
         debug::report(guest, &info, &cli.symbol_paths);
-        augmented = match dwarf::augment(guest, &cli.symbol_paths) {
-            dwarf::AugmentResult::Augmented(bytes) => Some(bytes),
-            dwarf::AugmentResult::Unchanged(reason) => {
-                logging::log(Level::Info, "core", &format!("debug: {reason}"));
-                None
-            }
-            dwarf::AugmentResult::Failed(err) => {
-                logging::log(
-                    Level::Warn,
-                    "core",
-                    &format!("debug: {err}; running the game unchanged"),
-                );
-                None
-            }
-        };
+        // The report above already says whether the guest carries DWARF, and
+        // says what to do when it does not. This adds the one thing the report
+        // cannot: a log record for the pass-through, since "the host did
+        // nothing" is exactly the case a reader of the log would wonder about.
+        if info.dwarf {
+            logging::log(Level::Info, "core", "debug: guest already carries DWARF; leaving it alone");
+        }
     }
 
     // With this on, wasmtime keeps the guest's DWARF and registers the JIT'd
@@ -614,11 +608,8 @@ fn main() -> anyhow::Result<()> {
     // the module itself. `Module::new` takes the text format as well as the
     // binary one, so a hand-written `.wat` fixture loads the way a compiled
     // `game.wasm` does (§7 Appendix B's smoke path).
-    let guest_bytes = match augmented.take() {
-        Some(bytes) => bytes,
-        None => std::fs::read(&cli.wasm_path)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?,
-    };
+    let guest_bytes =
+        std::fs::read(&cli.wasm_path).map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
     // A malformed guest is reported with the file's name in front of wasmtime's
     // own parse error: `Module::new` does not know where the bytes came from,
     // and "expected a module" with no path in it is a bad diagnostic.

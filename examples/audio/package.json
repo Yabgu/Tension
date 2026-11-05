@@ -6,7 +6,7 @@
   "description": "TensionCore example: guest-synthesised PCM playback over the tension::audio ABI",
   "scripts": {
     "build": "tensionscript demo.ts -o build/demo.wasm --runtime incremental --target release --optimizeLevel 3",
-    "build:debug": "tensionscript demo.ts -o build/demo.wasm --runtime incremental --target debug",
+    "build:debug": "tensionscript demo.ts -o build/demo.wasm --runtime incremental --target debug --debug --sourceMap",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
   },
@@ -19,6 +19,6 @@
     "@yabgu_gm/tension-core": "file:../../packages/core"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.11.4"
+    "@yabgu_gm/tensionscript": "^0.14.1"
   }
 }

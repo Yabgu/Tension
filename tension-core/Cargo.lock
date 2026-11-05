@@ -1686,6 +1686,7 @@ dependencies = [
  "encoding_rs 0.8.40",
  "libc",
  "llama-cpp-2",
+ "serde_json",
  "wasmtime",
  "yaml-rust2",
 ]
