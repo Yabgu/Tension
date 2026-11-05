@@ -361,9 +361,6 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
-    /// Test-only: where to write synthesised DWARF, if it was synthesised.
-    #[cfg(any(feature = "test-dump", debug_assertions))]
-    debug_dump_synth: Option<PathBuf>,
     wasm_path: String,
     args: Vec<String>,
 }
@@ -384,8 +381,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
-    #[cfg(any(feature = "test-dump", debug_assertions))]
-    let mut debug_dump_synth: Option<PathBuf> = None;
     let mut wasm_path = None;
     let mut rest = argv.into_iter();
     while wasm_path.is_none() {
@@ -420,11 +415,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         }
         match arg.as_str() {
             "--debug" => debug = true,
-            #[cfg(any(feature = "test-dump", debug_assertions))]
-            "--debug-dump-synth" => {
-                let value = rest.next().ok_or("`--debug-dump-synth` needs a path")?;
-                debug_dump_synth = Some(PathBuf::from(value));
-            }
             "--session-open" => session_open = true,
             "--post-test-events" => post_test_events = true,
             "--session-callbacks" => {
@@ -486,8 +476,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
-        #[cfg(any(feature = "test-dump", debug_assertions))]
-        debug_dump_synth,
         wasm_path,
         args: rest.collect(),
     })
@@ -589,55 +577,21 @@ fn main() -> anyhow::Result<()> {
     // `--debug` is the whole host-side switch; see `debug` for what it can and
     // cannot buy. The report runs before the load so a guest that fails to load
     // still shows what was being asked of it.
-    // Synthesized guest DWARF, when `--debug` managed to produce any. `None`
-    // means the module is loaded from disk exactly as it always was.
-    let mut augmented: Option<Vec<u8>> = None;
+    //
+    // The host does not augment the guest. It asks whether the compiler already
+    // emitted DWARF and, if not, says so; the bytes handed to wasmtime are the
+    // bytes on disk. Anything else would be the host guessing at a debuggee
+    // that its own producer describes better.
     if cli.debug {
         let guest = std::path::Path::new(&cli.wasm_path);
         let info = debug::probe(guest);
         debug::report(guest, &info, &cli.symbol_paths);
-        augmented = match dwarf::augment(guest) {
-            dwarf::AugmentResult::Augmented(bytes) => Some(bytes),
-            dwarf::AugmentResult::Unchanged(reason) => {
-                logging::log(Level::Info, "core", &format!("debug: {reason}"));
-                None
-            }
-            dwarf::AugmentResult::Failed(err) => {
-                logging::log(
-                    Level::Warn,
-                    "core",
-                    &format!("debug: {err}; running the game unchanged"),
-                );
-                None
-            }
-        };
-    }
-
-    // Test-only: hand the synthesised DWARF to a caller that cannot see it
-    // otherwise (it lives only in `augmented`, and the module on disk is never
-    // touched). Used by `tests/e2e_debug.rs` to read `DW_AT_comp_dir` out of an
-    // external process. Never compiled into a release build unless the
-    // `test-dump` feature asked for it - see the `test-dump` feature comment in
-    // Cargo.toml.
-    #[cfg(any(feature = "test-dump", debug_assertions))]
-    if let Some(path) = cli.debug_dump_synth.as_deref() {
-        match augmented.as_deref() {
-            Some(bytes) => {
-                if let Err(e) = std::fs::write(path, bytes) {
-                    eprintln!(
-                        "tension-core: --debug-dump-synth {}: {e}",
-                        path.display()
-                    );
-                    std::process::exit(2);
-                }
-            }
-            // Not an error: a guest with no source map, or one that already
-            // carries DWARF, is simply not synthesised for. Say so rather than
-            // leaving the caller waiting for a file that will never appear.
-            None => eprintln!(
-                "tension-core: --debug-dump-synth {}: nothing synthesised, no file written",
-                path.display()
-            ),
+        // The report above already says whether the guest carries DWARF, and
+        // says what to do when it does not. This adds the one thing the report
+        // cannot: a log record for the pass-through, since "the host did
+        // nothing" is exactly the case a reader of the log would wonder about.
+        if info.dwarf {
+            logging::log(Level::Info, "core", "debug: guest already carries DWARF; leaving it alone");
         }
     }
 
@@ -654,11 +608,8 @@ fn main() -> anyhow::Result<()> {
     // the module itself. `Module::new` takes the text format as well as the
     // binary one, so a hand-written `.wat` fixture loads the way a compiled
     // `game.wasm` does (§7 Appendix B's smoke path).
-    let guest_bytes = match augmented.take() {
-        Some(bytes) => bytes,
-        None => std::fs::read(&cli.wasm_path)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?,
-    };
+    let guest_bytes =
+        std::fs::read(&cli.wasm_path).map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
     // A malformed guest is reported with the file's name in front of wasmtime's
     // own parse error: `Module::new` does not know where the bytes came from,
     // and "expected a module" with no path in it is a bad diagnostic.

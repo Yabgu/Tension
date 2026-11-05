@@ -11,16 +11,18 @@
 //!
 //! What that buys depends on the guest. TensionScript 0.14 and later embed
 //! DWARF at compile time (`--debug --sourceMap`), and such a guest is passed
-//! through untouched. A guest from an earlier compiler carries only a `name`
-//! custom section and, with `--sourceMap`, a `sourceMappingURL`; for those the
-//! host **synthesizes DWARF from the source map** before handing the module to
-//! wasmtime (see `dwarf.rs`). That fallback is deprecated — it announces itself
-//! when it fires — but keeps such a guest source-debuggable, so under
-//! `--debug` an ordinary source breakpoint resolves:
+//! through untouched, so under `--debug` an ordinary source breakpoint resolves:
 //!
 //! ```text
 //! frame #0: 0x… JIT(0x…)`game/_start_game at game.ts:11:8
 //! ```
+//!
+//! A guest from an earlier compiler carries only a `name` custom section and,
+//! with `--sourceMap`, a `sourceMappingURL`. The host does not build DWARF for
+//! it: the guest still runs, functions are still named through the `name`
+//! section, but a source breakpoint has no line table to bind to. That is
+//! reported at startup, with the fix (rebuild on 0.14.0 or later), rather than
+//! left to be discovered at the first breakpoint that never hits.
 //!
 //! A guest that already ships DWARF (a C or Rust guest) is passed through
 //! untouched and is source-debuggable the same way.
@@ -45,12 +47,10 @@ pub struct GuestDebugInfo {
     /// the JIT image as `wasm[0]::function[N]::<module>/<name>`, which is
     /// enough for a function breakpoint (not for a source line).
     pub names: bool,
-    /// The `sourceMappingURL` value, if present. It is the input to the
-    /// deprecated `--debug` fallback, which synthesizes DWARF for a guest that
-    /// carries none (a build from TensionScript 0.13.2 or earlier). A guest
-    /// built by a compiler that embeds `.debug_*` needs no source map to be
-    /// source-debuggable; the field is still reported because its presence is
-    /// what tells the fallback it has anything to synthesize from.
+    /// The `sourceMappingURL` value, if present. Reported because its absence
+    /// is itself a diagnostic: a guest with no `.debug_*` and no source map was
+    /// not built with `--debug --sourceMap` at all, and the user needs to know
+    /// which of the two they are looking at.
     pub source_map: Option<String>,
 }
 
@@ -71,6 +71,10 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
     if bytes.len() < 8 || &bytes[..4] != b"\0asm" {
         return info;
     }
+    // The same question `main` asks before the load, answered in one place:
+    // a guest is a DWARF guest when it carries both `.debug_info` and
+    // `.debug_line`. Anything else is what a debugger will also fail to use.
+    info.dwarf = crate::dwarf::has_debug_sections(&bytes);
 
     // Sections run from byte 8: `id: u8`, `size: LEB128`, `payload`.
     let mut p = 8usize;
@@ -89,9 +93,7 @@ pub fn probe(path: &Path) -> GuestDebugInfo {
             if let Some(name_len) = read_uleb(&bytes, &mut q) {
                 if let Some(name_end) = q.checked_add(name_len).filter(|e| *e <= end) {
                     let name = &bytes[q..name_end];
-                    if name.starts_with(b".debug_") {
-                        info.dwarf = true;
-                    } else if name == b"name" {
+                    if name == b"name" {
                         info.names = true;
                     } else if name == b"sourceMappingURL" {
                         // The payload after the name is a wasm string: LEB
@@ -125,13 +127,11 @@ pub fn report(guest: &Path, info: &GuestDebugInfo, symbol_paths: &[PathBuf]) {
     if info.dwarf {
         eprintln!("[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is");
     } else {
-        // The guest was built by a compiler that emitted no DWARF, so the host
-        // falls back to synthesizing it from the source map. That fallback is
-        // deprecated; the deprecation itself is printed where the synthesis
-        // actually happens (see `dwarf::augment`), so this line promises
-        // nothing when there is no source map to synthesize from.
-        eprintln!("[tension-core] debug:   DWARF: absent — no `.debug_*` sections in the module (legacy guest)");
-        eprintln!("[tension-core] debug:   the host can synthesize it from the source map (deprecated fallback)");
+        // The guest was built by a compiler that emitted no DWARF, and the host
+        // will not invent any. Say what that costs and what fixes it; the
+        // `name` section line below says what still works.
+        eprintln!("[tension-core] debug:   DWARF: absent — no .debug_* sections in the module");
+        eprintln!("[tension-core] debug:   rebuild with TensionScript 0.14.0 or later to embed DWARF at compile time");
         if !info.names {
             eprintln!("[tension-core] debug:   (no `name` section either, so guest functions are anonymous)");
         }
@@ -232,10 +232,22 @@ mod tests {
 
     #[test]
     fn detects_debug_sections() {
-        let info = probe_bytes(&guest(&[custom(".debug_info", &[0, 0, 0, 0])]));
+        // The pass-through condition is the pair: `.debug_info` names the
+        // compilation unit and `.debug_line` gives it source addresses. This is
+        // the same predicate `main` uses before the load, so the report and the
+        // load can never disagree about the same file.
+        let info = probe_bytes(&guest(&[
+            custom(".debug_info", &[0, 0, 0, 0]),
+            custom(".debug_line", &[0, 0, 0, 0]),
+        ]));
         assert!(info.dwarf);
         assert!(!info.names);
         assert_eq!(info.source_map, None);
+
+        // One section alone is not enough for a debugger, so it is not enough
+        // here either.
+        let only_info = probe_bytes(&guest(&[custom(".debug_info", &[0, 0, 0, 0])]));
+        assert!(!only_info.dwarf, "`.debug_info` alone has no line table");
     }
 
     #[test]
