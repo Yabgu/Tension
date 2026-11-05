@@ -81,8 +81,16 @@ if (compiled.status !== 0) {
 const guest = join(out, 'guest-input.wasm');
 
 /// Run the guest and assert a stdout prefix.
+///
+/// `timeout` is not optional: the capability opens a window through SDL, and on a
+/// machine with no display and no compositor SDL can block instead of failing —
+/// measured on WSL2, where the first `npm test` sat for 34 minutes with no
+/// output. A test that hangs is worse than one that fails.
 function caseRun(name, wantPrefix, env = {}) {
-  const result = spawn(core, ['--capability', dso, guest], { env });
+  const result = spawn(core, ['--capability', dso, guest], { env, timeout: 120_000 });
+  if (result.signal || result.error?.code === 'ETIMEDOUT') {
+    fail(RUNNER, `${name}: timed out after 120 s (SDL could not reach a display)`);
+  }
   if (result.status !== 0) {
     fail(RUNNER, `${name}: the interpreter exited ${result.status} ` +
                  `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
@@ -93,10 +101,14 @@ function caseRun(name, wantPrefix, env = {}) {
   return result;
 }
 
-// ── case 1: with a display ────────────────────────────────────────────────
-// Windows has no SDL video-driver refusal to exercise and no DISPLAY to unset;
-// the two refusal cases below are POSIX-shaped. The first case runs everywhere.
-{
+// ── case 1: with a display ────────────────────────────────────────────────────
+// The capability needs a display to open its probe window. On a headless machine
+// there is nothing to attach to, and SDL blocks rather than answering, so the
+// case is skipped with the reason instead of timing out.
+const headless = !WIN && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+if (headless) {
+  console.log('== with-display: skipped — no DISPLAY or WAYLAND_DISPLAY (SDL would block)');
+} else {
   const result = caseRun('with-display', 'OK ');
   console.log(`== with-display: ok — ${result.stdout.trim()}`);
 }
