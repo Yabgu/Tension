@@ -21,7 +21,6 @@
 //   npm test -- --core       run one suite (see SUITES below)
 //   npm test -- --list       print the suite names
 
-import { join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { REPO, WIN } from './lib/toolchain.mjs';
