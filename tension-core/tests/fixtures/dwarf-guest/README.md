@@ -6,7 +6,9 @@ bytes. The host must **pass this guest through untouched**.
 ## Provenance
 
 - Compiler: `@yabgu_gm/tensionscript@0.14.0`, the published npm package —
-  installed from the registry, not built from the dev tree.
+  installed from the registry, not built from the dev tree. Recompiled under
+  `0.14.1` on 2026-11-05 and byte-identical, so the recorded bytes below stand
+  for both: 0.14.1 is a docs/tests patch that does not touch codegen.
 - Source: `game.ts` in this directory, copied verbatim from
   `TensionScript/tests/debug/examples/add-locals/game.ts` — a named-local
   `add(a, b)` plus `_start_game`; the same shape as the Prompt A/B harness
@@ -18,13 +20,14 @@ bytes. The host must **pass this guest through untouched**.
     game.ts -o game.wasm --debug --sourceMap --optimizeLevel 0
   ```
 
-  0.14.0 emits the `.debug_*` sections only when `--debug` **and**
+  0.14.x emits the `.debug_*` sections only when `--debug` **and**
   `--sourceMap` are both set.
 
 ## Bytes
 
 - Size: 1241
 - SHA-256: `cbac8dcb8ab9a15a44c268f2ced4ea8c6776668ff412059c4bfea90d2708d0df`
+  (identical under 0.14.0 and 0.14.1)
 - Sections: `type`, `function`, `table`, `memory`, `global`, `export`, `elem`,
   `code`, `name`, `sourceMappingURL`, `.debug_abbrev`, `.debug_info`,
   `.debug_line`, `.debug_ranges`

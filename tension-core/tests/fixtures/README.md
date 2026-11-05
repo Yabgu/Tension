@@ -8,7 +8,7 @@ Two guests, chosen because they exercise the two states `--debug` can see:
 
 | fixture | built by | carries DWARF | what it pins |
 | --- | --- | --- | --- |
-| `dwarf-guest/` | `@yabgu_gm/tensionscript@0.14.0` | yes | pass-through |
+| `dwarf-guest/` | `@yabgu_gm/tensionscript@0.14.0`, byte-identical under `0.14.1` | yes | pass-through |
 | `legacy-guest/` | `@yabgu_gm/tensionscript@0.13.2` | no | the no-DWARF report |
 
 The distinction is the whole point: the host leaves a compiler-emitted guest
@@ -16,6 +16,12 @@ alone, and for an older one it reports what is missing and names the fix without
 inventing anything. `legacy-guest` still runs — the host does not refuse it — so
 the fixture also pins that a pre-0.14.0 guest is not broken by the removal of the
 fallback.
+
+`dwarf-guest`'s bytes are version-locked to the 0.14 line rather than to one
+patch: recompiling `game.ts` under `0.14.1` with the same flags reproduces the
+committed `game.wasm` byte for byte (same size, same SHA-256). 0.14.1 is a
+docs/tests patch — a bench, a roadmap entry, an eslint exclusion — and changes
+no codegen, so the fixture did not need regenerating.
 
 ## Contract
 
