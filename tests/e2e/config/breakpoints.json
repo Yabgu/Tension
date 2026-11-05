@@ -1,0 +1,80 @@
+[
+  {
+    "example": "ai",
+    "file": "examples/ai/story.ts",
+    "line": 190,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "async-io",
+    "file": "examples/async-io/game.ts",
+    "line": 92,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "audio",
+    "file": "examples/audio/demo.ts",
+    "line": 54,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "io",
+    "file": "examples/io/game.ts",
+    "line": 9,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "log",
+    "file": "examples/log/game.ts",
+    "line": 29,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "ogre/animated-character",
+    "file": "examples/ogre/animated-character/game.ts",
+    "line": 679,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "ogre/bouncing-bodies",
+    "file": "examples/ogre/bouncing-bodies/game.ts",
+    "line": 558,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "ogre/hello-mesh",
+    "file": "examples/ogre/hello-mesh/game.ts",
+    "line": 200,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "ogre/hello-triangle",
+    "file": "examples/ogre/hello-triangle/game.ts",
+    "line": 203,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "ogre/input-camera",
+    "file": "examples/ogre/input-camera/game.ts",
+    "line": 293,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "solver/collision",
+    "file": "examples/solver/collision/game.ts",
+    "line": 201,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "solver/wasm",
+    "file": "examples/solver/wasm/game.ts",
+    "line": 30,
+    "note": "first line of export function _start_game"
+  },
+  {
+    "example": "solver/world",
+    "file": "examples/solver/world/game.ts",
+    "line": 45,
+    "note": "first line of export function _start_game"
+  }
+]
