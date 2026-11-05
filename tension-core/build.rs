@@ -102,10 +102,13 @@ fn main() {
     let solver_archive = solver_lib.join("libtension_solver.a");
     // Always rebuild: the recipe is cheap, and an "archive exists" short-cut
     // would let a changed Fortran source link stale objects (cargo reruns this
-    // script on a source change, but the archive would already be sitting
-    if cfg!(windows) {
-        // Windows has no `sh` guarantee, so the recipe's steps run here; the
-        // flags are the pinned set from DESIGN.md §2.
+    // script on a source change, but the archive would already be sitting there).
+    //
+    // The recipe runs here, on every platform. It used to live in
+    // `tension-solver/build.sh` on Unix and be restated inline on Windows, which
+    // meant two copies of the pinned flags (DESIGN.md §2) and a shell the build
+    // otherwise does not need. One copy, no shell.
+    {
         let out = &solver_lib;
         let _ = std::fs::create_dir_all(out);
         let fflags = [
