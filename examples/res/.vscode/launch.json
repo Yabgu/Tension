@@ -19,7 +19,7 @@
   //
   // preLaunchTask names the compound "debug" task in tasks.json, which chains
   // the build (and pack, where the example packs a volume). This one
-  // packs build/assets.tns before the guest mounts it.
+  // packs game.tns at the example root, which is the --res path below.
   "version": "0.2.0",
   "configurations": [
     {
