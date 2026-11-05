@@ -45,10 +45,11 @@ offer to synthesise or any "deprecated" wording. See `e2e_debug.rs`.
 cargo test --manifest-path tension-core/Cargo.toml --test e2e_debug
 ```
 
-That is the only command needed. There is no profile-dependent test any more:
-the three report assertions and the optional lldb smoke all run under plain
-`cargo test`. The lldb smoke skips on a machine with no lldb or no standalone
-Wasmtime, and says which one is missing.
+That is the only command needed, and there is no optional test any more: the
+three report assertions run under plain `cargo test`. These fixtures are checked
+for the report strings they produce, not for breakpoint resolution — breakpoint
+coverage lives in the Node E2E's `debug` mode (`node tests/e2e/runner.js --only
+debug`), which drives lldb over `tension-core` for every built example.
 
 CI still needs **Zig (>= 0.16)** and **gfortran (>= 14)** on the runner.
 `--no-default-features` does not remove that requirement: the features gate
