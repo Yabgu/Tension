@@ -67,11 +67,25 @@ if (!stub || !existsSync(stub)) {
 }
 
 // ── the generated constants and the asc flags ───────────────────────────────
-const hash = spawn(core, ['layout-hash']).stdout.trim();
-if (!hash) fail(RUNNER, 'tension-core layout-hash printed nothing');
-console.log(`==> generating the runtime's constants (layout hash ${hash})`);
-const gen = inherit(process.execPath, [join(here, 'gen-session.mjs'), '--hash', hash]);
-if (gen.status !== 0) fail(RUNNER, `the framework's generator refused the layout hash (${hash})`);
+//
+// `TENSION_SESSION_READY=1` means the runner (`scripts/test.mjs`) already built
+// the debug host and generated the constants, once, before starting any suite. It
+// is set because three suites write the same three files and a concurrent write
+// is a truncated file — identical content is still not atomic. Run this script
+// on its own and the generation happens here, as it always did.
+if (process.env.TENSION_SESSION_READY === '1') {
+  if (!existsSync(join(framework, 'assembly', 'runtime', 'layout.ts'))) {
+    fail(RUNNER, 'TENSION_SESSION_READY is set but layout.ts is missing — ' +
+                 'the runner did not generate it');
+  }
+  console.log('==> using the session constants the runner generated');
+} else {
+  const hash = spawn(core, ['layout-hash']).stdout.trim();
+  if (!hash) fail(RUNNER, 'tension-core layout-hash printed nothing');
+  console.log(`==> generating the runtime's constants (layout hash ${hash})`);
+  const gen = inherit(process.execPath, [join(here, 'gen-session.mjs'), '--hash', hash]);
+  if (gen.status !== 0) fail(RUNNER, `the framework's generator refused the layout hash (${hash})`);
+}
 
 mkdirSync(build, { recursive: true });
 
