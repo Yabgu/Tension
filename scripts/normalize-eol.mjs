@@ -46,18 +46,15 @@ const SKIP_DIRS = new Set([
   'build-cmake', 'dist', '.tmp', '__pycache__', '.codewhale',
 ]);
 
-/// Subtrees owned by submodules or by the build: read-only for this purpose.
+/// Subtrees that are not this repository's to normalise.
+///
+/// `third_party` covers the pinned submodules *and* their build trees: OGRE's own
+/// sources and the files `cmake --install` writes carry CRLF, and AGENTS.md makes
+/// that whole tree read-only. The `packages/*-<platform>-<arch>` payloads are
+/// build products of that install, so they inherit its line endings.
 const SKIP_PATHS = [
-  join('third_party', 'ogre-next'),
-  join('third_party', 'freeimage'),
-  join('packages', 'ogre-next-win32-x64'),
-  join('packages', 'ogre-next-linux-x64'),
-  join('packages', 'freeimage-win32-x64'),
-  join('packages', 'freeimage-linux-x64'),
-  join('packages', 'ogre-win32-x64'),
-  join('packages', 'ogre-linux-x64'),
-  join('packages', 'core-win32-x64'),
-  join('packages', 'core-linux-x64'),
+  'third_party',
+  join('packages', 'dist'),
 ];
 
 function isText(name) {
