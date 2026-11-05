@@ -22,11 +22,34 @@
 //   npm test -- --list       print the suite names
 
 import { join } from 'node:path';
-import { REPO } from './lib/toolchain.mjs';
+import { existsSync } from 'node:fs';
+import { delimiter, join } from 'node:path';
+import { REPO, WIN } from './lib/toolchain.mjs';
 import { inherit } from './lib/proc.mjs';
 
 const repo = REPO;
 const node = process.execPath;
+
+// The in-tree Ogre-Next lives outside the loader's default path, and both the
+// adapter and the `ogre_*` integration tests need it: the tests spawn the
+// interpreter directly rather than through a recipe that sets the environment.
+// `test.sh` exported this at the top for the same reason. On Windows the loader
+// uses PATH and the adapter is loaded with an altered search path, so the
+// directory is added there instead.
+const ogreLibs = [
+  join(repo, 'third_party', 'ogre-next-install', 'lib'),
+  join(repo, 'third_party', 'freeimage-install', 'lib'),
+].filter(existsSync);
+if (ogreLibs.length) {
+  if (WIN) {
+    process.env.PATH = `${ogreLibs.join(delimiter)}${delimiter}${process.env.PATH ?? ''}`;
+  } else {
+    const existing = process.env.LD_LIBRARY_PATH;
+    process.env.LD_LIBRARY_PATH = existing
+      ? `${ogreLibs.join(delimiter)}${delimiter}${existing}`
+      : ogreLibs.join(delimiter);
+  }
+}
 
 /// Each suite: how to run it, and what it needs first.
 const SUITES = {
