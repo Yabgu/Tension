@@ -45,12 +45,36 @@ if (WIN) {
   process.exit(0);
 }
 
-// And it needs a display: the probe window is the thing under test. On a headless
-// host SDL does not fail — it waits — so the suite would hang instead of
-// reporting. Measured on WSL2: 34 minutes of silence before a timeout.
+// And it needs a *working* display: the probe window is the thing under test.
+//
+// `DISPLAY` being set is not the same as the display working. Measured on WSL2
+// with WSLg: `DISPLAY=:0` and `WAYLAND_DISPLAY=wayland-0` were both set, but
+// `xdpyinfo` could not connect, SDL's thread never reported startup, and — the
+// part that cost the most time — the host did not exit after logging
+// "input: init: the SDL thread did not start". It hung until killed. A suite that
+// waits on a broken display is worse than one that says so.
 if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
   console.log(`${RUNNER}: SKIPPED — no DISPLAY or WAYLAND_DISPLAY\n` +
               '  the capability opens a probe window, and SDL blocks rather than failing' );
+  process.exit(0);
+}
+
+// A display that is set but unreachable behaves the same way, so it is probed
+// rather than assumed. `xdpyinfo` is the X11 check; on a Wayland-only session
+// there is no equivalent that is always installed, so its absence is not a
+// failure — only a failed probe is.
+function displayWorks() {
+  if (process.env.WAYLAND_DISPLAY && !process.env.DISPLAY) return true;
+  const probe = spawn('xdpyinfo', [], { timeout: 10_000 });
+  // ENOENT (no xdpyinfo installed) is not evidence either way; a non-zero exit
+  // from an installed xdpyinfo is.
+  if (probe.error?.code === 'ENOENT') return true;
+  return probe.status === 0;
+}
+
+if (!displayWorks()) {
+  console.log(`${RUNNER}: SKIPPED — DISPLAY=${process.env.DISPLAY} is set but not reachable\n` +
+              '  (xdpyinfo could not connect; SDL would block instead of failing)' );
   process.exit(0);
 }
 
