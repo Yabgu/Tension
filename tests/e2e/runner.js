@@ -35,7 +35,7 @@ import { resolveLldb, resolveTensionCore } from "./lib/resolve.js";
 import { reportsMissingGuest, runTensionCore, unknownFlagIn } from "./lib/run-tension-core.js";
 import { runUnderLldb } from "./lib/run-lldb.js";
 
-const MODES = ["launch"];
+const MODES = ["launch", "smoke"];
 
 const LAUNCH_TIMEOUT_MS = 15_000;
 const SMOKE_TIMEOUT_MS = 2_000;
@@ -198,6 +198,71 @@ async function runLaunchMode({ examples, knownSkips, report, binary }) {
   }
 }
 
+// -------------------------------------------------------------- smoke ---
+
+async function runSmokeMode({ examples, knownSkips, report, binary }) {
+  for (const example of examples) {
+    const known = knownSkips.get(example.name);
+    if (known) {
+      report.skip("smoke", example.name, known);
+      continue;
+    }
+    if (example.artifacts.length === 0) {
+      report.skip("smoke", example.name, "no build/*.wasm artifact");
+      continue;
+    }
+
+    for (const artifact of example.artifacts) {
+      const label = `${example.name}/${path.basename(artifact)}`;
+      const args = runArguments(example, artifact, missingGuestPath());
+      const commandLine = relativePath(artifact);
+
+      const missingInput = missingDeclaredInput(args);
+      if (missingInput) {
+        report.skip(
+          "smoke",
+          label,
+          `declared input missing (${missingInput}) — path as written in launch.json`
+        );
+        continue;
+      }
+
+      const run = await runTensionCore({
+        binary,
+        args,
+        cwd: example.dir,
+        timeoutMs: SMOKE_TIMEOUT_MS,
+      });
+
+      if (run.stderr.includes("error while loading shared libraries")) {
+        report.skip("smoke", label, "shared library missing at runtime (LD_LIBRARY_PATH)");
+        continue;
+      }
+      if (run.stderr.includes("panicked at")) {
+        report.fail("smoke", label, `engine panicked: ${firstLineOf(run.stderr)}`);
+        continue;
+      }
+      if (run.signal === "SIGSEGV" || run.signal === "SIGABRT" || run.code === 139 || run.code === 134) {
+        report.fail("smoke", label, `crashed (${run.signal ?? `exit ${run.code}`})`);
+        continue;
+      }
+      if (run.timedOut) {
+        report.pass("smoke", label);
+        continue;
+      }
+      if (run.code === 0) {
+        report.pass("smoke", label);
+        continue;
+      }
+      report.fail(
+        "smoke",
+        label,
+        `exited ${run.code} without a signal or a panic — not a clean run and not a crash: ${firstLineOf(run.stderr)}`
+      );
+    }
+  }
+}
+
 // --------------------------------------------------------------- main ---
 
 async function main() {
@@ -234,6 +299,8 @@ async function main() {
   for (const mode of modes) {
     const started = Date.now();
     if (mode === "launch") await runLaunchMode({ examples, knownSkips, report, binary });
+    else if (mode === "smoke") await runSmokeMode({ examples, knownSkips, report, binary });
+
     console.log(`\n-- ${mode} (${Date.now() - started}ms) --`);
   }
 
