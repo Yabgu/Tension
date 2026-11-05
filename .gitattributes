@@ -1,0 +1,47 @@
+# Line endings: LF everywhere.
+#
+# This repository is developed on Windows and built on Linux, and CRLF in a
+# committed file leaks into both: `sh` refuses a script whose shebang line ends
+# in CR ("bad interpreter: /bin/bash^M"), generated artifacts differ by bytes
+# between the platforms, and every diff of an unchanged file shows as rewritten.
+#
+# `eol=lf` normalises on commit *and* on checkout, so a Windows checkout is LF
+# too and the two platforms always agree.
+* text=auto eol=lf
+
+# Config files are text: OGRE's .cfg and .material.json are read as text.
+*.cfg            text eol=lf
+*.json           text eol=lf
+*.wat            text eol=lf
+*.f90            text eol=lf
+*.zig            text eol=lf
+
+# Binary payloads: never converted, never diffed, never merged.
+*.png            binary
+*.jpg            binary
+*.jpeg           binary
+*.bmp            binary
+*.tga            binary
+*.dds            binary
+*.ico            binary
+*.psd            binary
+*.ozz            binary
+*.mesh           binary
+*.skeleton       binary
+*.tns            binary
+*.wasm           binary
+*.gguf           binary
+*.zip            binary
+*.pk3            binary
+*.zst            binary
+*.jar            binary
+*.dll            binary
+*.exe            binary
+*.lib            binary
+*.a              binary
+*.so             binary
+*.pdb            binary
+*.ilk            binary
+*.obj            binary
+*.o              binary
+*.mod            binary

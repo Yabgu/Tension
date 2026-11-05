@@ -52,6 +52,12 @@ if (ogreLibs.length) {
 
 /// Each suite: how to run it, and what it needs first.
 const SUITES = {
+  // Cheap, and first: a CRLF file breaks the shell scripts and generated
+  // artifacts before any suite gets to run.
+  eol: {
+    title: 'line endings',
+    run: () => inherit(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
+  },
   codegen: {
     title: 'codegen',
     run: () => inherit(node, [
