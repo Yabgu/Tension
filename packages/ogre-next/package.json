@@ -2,8 +2,13 @@
   "name": "@yabgu_gm/tension-ogre-next",
   "version": "0.1.0",
   "private": true,
-  "description": "Ogre-Next 3.0 runtime (pinned submodule build): shared libraries, headers and the Hlms shader media.",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "files": ["lib/", "include/", "Media/"]
+  "description": "Ogre-Next 3.0 runtime: shared libraries, headers and the Hlms shader media. Resolves the platform build.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ]
 }
