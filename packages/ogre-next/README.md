@@ -31,5 +31,6 @@ templates the Hlms compiles from), `Compute/`, `VCT/`, `particle/`, and
 
 `lib/`, `include/` and `Media/` are gitignored. `npm run build:native` at the
 repository root copies them out of `third_party/ogre-next-install`, pruning the
-sample content on the way. Run `third_party/bootstrap.sh` once first if that
-install does not exist.
+sample content on the way. `npm run build` bootstraps that install first when it
+does not exist (scripts/ensure-ogre.mjs); `third_party/bootstrap.sh` remains the
+manual way to run or force that step.
