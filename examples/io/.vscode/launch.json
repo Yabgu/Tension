@@ -4,11 +4,12 @@
   // being debugged is io's source, exactly as a Python script is debugged
   // without debugging the python binary.
   //
-  // How it works: `asc` emits no DWARF (only `name` + `sourceMappingURL`), so
-  // `tension-core --debug` synthesizes DWARF for the guest from its source map
-  // before the module reaches wasmtime, and wasmtime registers the compiled
-  // guest with the debugger through the GDB JIT interface. That is what makes
-  // an ordinary source breakpoint resolve.
+  // How it works: TensionScript 0.14.0+ emits DWARF itself when the guest is
+  // built with `--debug --sourceMap`, and `tension-core --debug` passes it
+  // through untouched. Wasmtime registers the compiled guest with the debugger
+  // through the GDB JIT interface, which is what makes an ordinary source
+  // breakpoint resolve. A guest from an earlier compiler has no `.debug_*`
+  // sections; the host prints a rebuild hint rather than inventing them.
   //
   // `initCommands` turns the GDB JIT loader on: without that hook lldb never
   // sees the JIT image, and every guest breakpoint stays unresolved.

@@ -2,7 +2,7 @@
   // Debugging the logging example under tension-core. `tension-core` *is* the
   // runtime, so the thing being debugged is game.ts, exactly as a Python script
   // is debugged without debugging the python binary; see examples/io/.vscode
-  // for how `--debug` synthesizes DWARF from the guest's source map.
+  // for how `--debug` passes the compiler-emitted DWARF through untouched.
   //
   // The args ask for `--log-level=trace` and `--log-format=json`, so the debug
   // console shows every record the guest emits, one JSON object per line — a
