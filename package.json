@@ -14,7 +14,12 @@
     "pack:all": "node scripts/pack-all.mjs",
     "test": "node scripts/test.mjs",
     "check:eol": "node scripts/normalize-eol.mjs --check",
-    "fix:eol": "node scripts/normalize-eol.mjs"
+    "fix:eol": "node scripts/normalize-eol.mjs",
+    "demo": "node scripts/demo.mjs",
+    "verify:res": "node scripts/verify-res.mjs",
+    "build:hlms-skin": "node scripts/build-hlms-skin.mjs",
+    "test:ozz": "node scripts/test-ozz.mjs",
+    "ci": "node ci/docker.mjs"
   },
   "engines": {
     "node": ">=20"

@@ -32,7 +32,7 @@ const node = process.execPath;
 // The in-tree Ogre-Next lives outside the loader's default path, and both the
 // adapter and the `ogre_*` integration tests need it: the tests spawn the
 // interpreter directly rather than through a recipe that sets the environment.
-// `test.sh` exported this at the top for the same reason. On Windows the loader
+// The shell runner exported this at the top for the same reason. On Windows the loader
 // uses PATH and the adapter is loaded with an altered search path, so the
 // directory is added there instead.
 const ogreLibs = [

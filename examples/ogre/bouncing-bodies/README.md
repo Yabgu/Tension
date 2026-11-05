@@ -31,18 +31,18 @@ What the physics honestly is:
 
 ```sh
 cd examples/ogre/bouncing-bodies
-./run.sh                          # opens a 640x480 window, and the box fills it
-TENSION_OGRE_HEADLESS=1 ./run.sh  # structural only: no display needed
-./run.sh --bodies=256             # a bigger box (the cap is 1365)
+npm start                          # opens a 640x480 window, and the box fills it
+TENSION_OGRE_HEADLESS=1 npm start  # structural only: no display needed
+npm start --bodies=256             # a bigger box (the cap is 1365)
 ```
 
 A window is the default. With no `DISPLAY` and no `WAYLAND_DISPLAY` there is
-nothing to open one on, so `./run.sh` prints
+nothing to open one on, so `npm start` prints
 `no display available; falling back to renderer=null` and runs the structural
-path instead — exit 0 either way. (`tension-ogre/tests/run.sh` keeps the
+path instead — exit 0 either way. (`scripts/test-ogre.mjs` keeps the
 opposite default: CI has no display.)
 
-`./run.sh` builds what it can (the OGRE adapter, the guest, its dependencies)
+`npm start` builds what it can (the OGRE adapter, the guest, its dependencies)
 and needs `tension-core` already built — it says so if it is missing.
 
 Both modes print a status line every sixty frames, and a summary at the end.
@@ -91,8 +91,8 @@ sub-step timing.
 ## `--angular`: the bodies tumble
 
 ```
-./run.sh --angular              # opens a window
-TENSION_OGRE_HEADLESS=1 ./run.sh --angular
+npm start --angular              # opens a window
+TENSION_OGRE_HEADLESS=1 npm start --angular
 ```
 
 With the flag the world runs the **angular model** (chunk 8): orientation is part
@@ -148,8 +148,8 @@ runs).
 ## Assets
 
 What this example loads is packed, not read from an OGRE install: `resources/`
-holds the source tree (committed), `pack.sh` turns it into `build/assets.tns`
-with the Zig packer, and `run.sh` hands the guest the volume's path. The guest
+holds the source tree (committed), `npm run pack` turns it into `build/assets.tns`
+with the Zig packer, and `npm start` hands the guest the volume's path. The guest
 mounts it under `resources/` and every load path starts with that prefix — the
 loader reads meshes (and skeletons) out of the volume, and a path no mount
 carries fails with `-ENOENT` rather than falling back to the disk.

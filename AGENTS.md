@@ -103,7 +103,7 @@ Node runner that works in cmd/PowerShell: it resolves the host binary for the
 platform (`.exe` on Windows), builds the guest, packs what needs packing, and
 composes the host's arguments. Per-example specifics live in a `tension` block
 in that example's `package.json`. Steps that are the repo's own shell scripts
-(the framework session-config generator, `pack.sh`) run through
+(the framework session-config generator, `npm run pack`) run through
 `msys2_shell.cmd -ucrt64` on Windows or bash elsewhere (override with
 `TENSION_BASH`). `TENSION_OGRE_HEADLESS=1` runs the OGRE examples headless.
 External prerequisites are unchanged: SDL3 for `input-camera`, gnuplot for
@@ -114,4 +114,4 @@ config drives CodeLLDB over `tension-core --debug --symbol-path <example>` with
 the example's own arguments, and a `windows` override selects
 `tension-core.exe` (a relative program path without it will not launch on
 Windows). Its pre-launch task builds the debug guest (source map required) and,
-where the example packs a volume, runs `pack.sh` first.
+where the example packs a volume, runs `npm run pack` first.
