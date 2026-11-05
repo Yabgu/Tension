@@ -2,11 +2,17 @@
   "name": "@yabgu_gm/tension-core",
   "version": "0.1.0",
   "private": true,
-  "description": "The Tension interpreter: loads a tension-core `--capability` DSO and runs a guest wasm.",
-  "os": ["linux"],
-  "cpu": ["x64"],
-  "bin": {
-    "tension-core": "./bin/tension-core"
+  "description": "The Tension interpreter: runs a guest wasm and loads capability adapters. Resolves the platform build.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
   },
-  "files": ["bin/"]
+  "bin": {
+    "tension-core": "./bin/tension-core.js"
+  },
+  "files": [
+    "bin/",
+    "index.js"
+  ]
 }

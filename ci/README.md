@@ -9,7 +9,7 @@ test suites work without a display or GPU.
 ## Layout
 
 - `Dockerfile` — the image (build context is this directory)
-- `docker.sh` — one entry point for everything container-related
+- `ci/docker.mjs` — one entry point for everything container-related
 - `ogre-next-pkg/` — built `.pkg.tar.zst` packages consumed by the image
   (gitignored, large, machine-local)
 - `README.md` — this file
@@ -19,7 +19,7 @@ test suites work without a display or GPU.
 - `podman` (rootless) or `docker` (set `TENSION_CONTAINER_RUNTIME=docker`)
 - OGRE-Next and freeimage Arch packages, produced once with `makepkg`
   (e.g. `paru -B` / `pikaur -B` in AUR clones of `ogre-next-git` and
-  `freeimage`). `docker.sh build` picks the latest non-debug package from
+  `freeimage`). `ci/docker.mjs build` picks the latest non-debug package from
   `$HOME/src/ogre-next-git` and `$HOME/src/freeimage` and caches a copy in
   `ci/ogre-next-pkg/`. Override with `TENSION_OGRE_PKG_DIR` /
   `TENSION_FREEIMAGE_PKG_DIR`, or drop `.pkg.tar.zst` files into
@@ -28,17 +28,17 @@ test suites work without a display or GPU.
 ## Commands
 
 ```sh
-ci/docker.sh build          # build the tension-dev image
-ci/docker.sh test           # run the full test suite (./test.sh) in the container
-ci/docker.sh test --core    # run one suite; args are forwarded to ./test.sh
-ci/docker.sh dev            # interactive shell: repo mounted at /app, X available
-ci/docker.sh dev ./build.sh # run one development command
-ci/docker.sh clean          # remove the image
+node ci/docker.mjs build          # build the tension-dev image
+node ci/docker.mjs test           # run the full test suite (npm test) in the container
+node ci/docker.mjs test --core    # run one suite; args are forwarded to npm test
+node ci/docker.mjs dev            # interactive shell: repo mounted at /app, X available
+node ci/docker.mjs dev npm run build  # run one development command
+node ci/docker.mjs clean          # remove the image
 ```
 
 ## Continuous integration
 
-`ci/docker.sh test` mounts the repository at `/app` and runs `./test.sh`,
+`node ci/docker.mjs test` mounts the repository at `/app` and runs `npm test`,
 which builds and runs all six suites (tension-framework, the tension-ogre
 guest suite, tension-input, tension-core, the tension-ogre unit tests,
 tension-res) under Xvfb. The run is strict — a missing fixture fails the test
@@ -49,12 +49,12 @@ the checkout (`target/`, `zig-out/`, etc.) stay host-owned.
 
 ## Development
 
-`ci/docker.sh dev` runs as the image's non-root `dev` user with
+`node ci/docker.mjs dev` runs as the image's non-root `dev` user with
 `--userns=keep-id` (podman), so every file created inside the bind-mounted
 checkout is owned by your host user — a plain `cargo build`, `zig build`,
-`./build.sh` or demo loop works and leaves no root-owned files behind.
+`npm run build` or the demo loop works and leaves no root-owned files behind.
 `bash` is the default command; the entrypoint already provides Xvfb, so
-`examples/ogre/hello-triangle/run.sh`-style demos run headless.
+`examples/ogre/hello-triangle/npm start`-style demos run headless.
 
 GPU machines: the image pins software rendering
 (`LIBGL_ALWAYS_SOFTWARE=1`, lavapipe). For hardware rendering pass your own
@@ -64,7 +64,7 @@ values, e.g.
 ## Image quirks
 
 - `ENTRYPOINT ["xvfb-run", "-a", "--"]` wraps every command in a fresh X
-  server; non-GUI commands (e.g. `ci/docker.sh dev cargo test`) are
+  server; non-GUI commands (e.g. `node ci/docker.mjs dev cargo test`) are
   unaffected.
 - Rust is installed under `/opt/rustup` + `/opt/cargo` (shared by root and
   `dev`) via `RUSTUP_HOME` / `CARGO_HOME`.

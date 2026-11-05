@@ -7,12 +7,30 @@
   "scripts": {
     "build": "node ./node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js assembly/index.ts -o build/game.wasm --runtime incremental --target release --optimizeLevel 3",
     "build:debug": "node ./node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js assembly/index.ts -o build/game.wasm --runtime incremental --target release --optimizeLevel 3 --debug --sourceMap",
-    "pack": "node ../../scripts/run-example.mjs --pack-only",
+    "pack": "node ../../scripts/pack-example.mjs .",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
   },
   "tension": {
-    "kind": "res"
+    "kind": "res",
+    "pack": {
+      "input": "assets",
+      "output": "game.tns",
+      "generates": [
+        {
+          "file": "data/large.bin",
+          "size": 20971520,
+          "pattern": "keystream",
+          "keep": "build/large.bin"
+        },
+        {
+          "file": "data/compressed.bin",
+          "size": 2097152,
+          "pattern": "zeros",
+          "keep": "build/compressed.bin"
+        }
+      ]
+    }
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework",

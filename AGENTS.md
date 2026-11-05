@@ -9,7 +9,7 @@ come first; the rest is the Windows build cheat-sheet.
    or delete anything there — including its build trees (`ogre-next-build*`,
    `ogre-next-install`) and the `ogre-next` submodule. `.gitignore` may cover
    paths there, but the tree itself is off limits. Build OGRE only through
-   `third_party/bootstrap.sh`.
+   `npm run bootstrap` (`scripts/bootstrap.mjs`).
 2. **TensionScript is a sibling repo, not a submodule.** The language lives at
    `~/work/TensionScript` (the canonical checkout). Tension consumes the
    compiler as the published `@yabgu_gm/tensionscript` npm package, which each
@@ -56,27 +56,48 @@ c:\msys64\msys2_shell.cmd -ucrt64 -defterm -no-start -where C:\Work\Tension -c "
 
 ## Windows build and test
 
-`build.bat` at the repo root is the entry point: it finds vcvars (VS 18),
-Zig, and MSYS2 UCRT64 itself, then builds `tension-res` → `tension-ogre` →
-`tension-core` (release, audio-only by default; `set AI=1` to include `ai`).
+**`npm run build` is the build, on every platform.** It runs the same steps on
+Windows that it runs on Linux: the toolchain differences (MSVC through vcvars,
+MSYS2 UCRT64 for the GNU compilers, WinGet's Zig) are resolved inside
+`scripts/lib/toolchain.mjs`, not by a different entry point.
 
-Manual equivalents:
+It builds `tension-res` → `tension-ogre` → `tension-core` for the native side
+(release, audio-only by default; `TENSION_AI=1` includes `ai`), generates the
+session constants, compiles the framework guest, and builds every example.
+
+Manual equivalents, when one target needs rebuilding on its own:
 
 ```
-tension-res     zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc
-tension-ogre    cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
+res             zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-windows-msvc
+adapter         cmake -S tension-ogre -B tension-ogre\build-cmake -G Ninja -DCMAKE_BUILD_TYPE=Release
                 cmake --build tension-ogre\build-cmake
-tension-core    cargo build --release --no-default-features --features audio
-tests           cargo test  --no-default-features --features audio
+core            cargo build --release --no-default-features --features audio
+core tests      cargo test  --no-default-features --features audio
 ```
+
+`npm test` runs every suite (`eol`, `codegen`, `framework`, `ogre-guest`,
+`ogre-unit`, `input`, `res`, `core`) and prints a per-suite verdict. It runs the
+suites **concurrently on a workstation and serially on CI**: a failing CI job is
+diagnosed from a log tail by someone who was not there, and interleaved output
+from four suites hides which one broke. `--serial` and `--jobs N` override either
+default, and a failure in a suite another depends on skips the dependent rather
+than reporting the same cause twice.
+
+`npm test -- <name>` runs one suite (`--list` prints the names).
 
 - The Zig archive **must** use `-Dtarget=x86_64-windows-msvc` when the Rust
   host is MSVC; a default-ABI build yields a MinGW archive that `link.exe`
-  rejects with `LNK1143`.
+  rejects with `LNK1143`. `scripts/build-native.mjs` reads the host triple and
+  passes it.
+- The adapter is built with the **MinGW** compilers when the Ogre install is a
+  MinGW build (it ships `libOgreNextMain.dll.a`), because MSVC cannot link those
+  import libraries. That mix — MinGW adapter, MSVC host — is deliberate.
 - The default `ai` feature pulls a vendored llama.cpp C++ build and needs
   `LIBCLANG_PATH=C:\msys64\ucrt64\bin`; it is not required for the host or the
   test suite.
-- OGRE-Next must already be installed at `third_party\ogre-next-install`.
+- OGRE-Next is bootstrapped automatically when `third_party\ogre-next-install`
+  is missing or incomplete; `npm run bootstrap` runs that step on its own, and
+  `node scripts/bootstrap.mjs --force` rebuilds it.
 
 ### PATH-shadowing gotcha
 
@@ -92,7 +113,7 @@ Node runner that works in cmd/PowerShell: it resolves the host binary for the
 platform (`.exe` on Windows), builds the guest, packs what needs packing, and
 composes the host's arguments. Per-example specifics live in a `tension` block
 in that example's `package.json`. Steps that are the repo's own shell scripts
-(the framework session-config generator, `pack.sh`) run through
+(the framework session-config generator, `npm run pack`) run through
 `msys2_shell.cmd -ucrt64` on Windows or bash elsewhere (override with
 `TENSION_BASH`). `TENSION_OGRE_HEADLESS=1` runs the OGRE examples headless.
 External prerequisites are unchanged: SDL3 for `input-camera`, gnuplot for
@@ -103,4 +124,4 @@ config drives CodeLLDB over `tension-core --debug --symbol-path <example>` with
 the example's own arguments, and a `windows` override selects
 `tension-core.exe` (a relative program path without it will not launch on
 Windows). Its pre-launch task builds the debug guest (source map required) and,
-where the example packs a volume, runs `pack.sh` first.
+where the example packs a volume, runs `npm run pack` first.

@@ -3,10 +3,10 @@
 # Scope: exactly one integration target, tests/e2e_debug.rs — the four tests
 # that pin the host's `--debug` behaviours (pass-through, the legacy fallback
 # and its deprecation, and `--symbol-path` not moving `DW_AT_comp_dir`). The
-# full suite (`./test.sh`) is not run here: it needs the OGRE fixtures and a
+# full suite (`npm test`) is not run here: it needs the OGRE fixtures and a
 # display, which is what ci/Dockerfile is for.
 #
-# Why not the container (`ci/docker.sh test`): the image is built from
+# Why not the container (`node ci/docker.mjs test`): the image is built from
 # ci/Dockerfile, whose line 30 copies locally built OGRE-Next and freeimage
 # packages out of ci/ogre-next-pkg/. That directory is not in the tree and the
 # packages are not published anywhere, so the image cannot be built on a

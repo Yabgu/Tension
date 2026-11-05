@@ -1,6 +1,6 @@
 # @yabgu_gm/tension-ogre-next
 
-Ogre-Next, built from the pinned submodule by `third_party/bootstrap.sh`, laid
+Ogre-Next, built from the pinned submodule by `npm run bootstrap`, laid
 out as an npm package: `lib/`, `include/`, `Media/`.
 
 ## Why a package
@@ -31,5 +31,6 @@ templates the Hlms compiles from), `Compute/`, `VCT/`, `particle/`, and
 
 `lib/`, `include/` and `Media/` are gitignored. `npm run build:native` at the
 repository root copies them out of `third_party/ogre-next-install`, pruning the
-sample content on the way. Run `third_party/bootstrap.sh` once first if that
-install does not exist.
+sample content on the way. `npm run build` bootstraps that install first when it
+does not exist (scripts/ensure-ogre.mjs); `npm run bootstrap` remains the
+manual way to run or force that step.

@@ -21,7 +21,7 @@
 //                     the example's own flags, so a reader can see them
 //
 // Steps that belong to the repository's own build scripts — the framework's
-// session-config generator and `pack.sh` — are run through bash, because
+// session-config generator and packing — used to run through bash, because
 // single-sourcing that logic matters more than avoiding the shell, and this
 // repository already needs MSYS2 or Git Bash on Windows. Everything else is
 // native. Set TENSION_BASH to point at a specific bash.
@@ -31,7 +31,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleness } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -80,18 +80,30 @@ function pkgDir(name) {
   return join(exampleDir, 'node_modules', ...name.split('/'));
 }
 
-function pkgFile(name, ...rest) {
-  return join(pkgDir(name), ...rest);
-}
-
 function hostBinary() {
   if (process.env.TENSION_CORE) return process.env.TENSION_CORE;
-  const installed = pkgFile('@yabgu_gm/tension-core', 'bin', `tension-core${EXE}`);
-  if (existsSync(installed)) return installed;
   // Fall back to the cargo tree: an example can still be run straight out of a
-  // checkout that has not had `npm run build:native` yet.
+  // checkout that has not had `npm run build` yet.
   const profile = cfg.release ? 'release' : 'debug';
   return join(repo, 'tension-core', 'target', profile, `tension-core${EXE}`);
+}
+
+/// Import a native package's resolver: `@yabgu_gm/tension-ogre` and friends
+/// export the paths of the platform build they resolved, so nothing here has
+/// to know a `.dll` from a `.so`. The installed copy comes first; the
+/// repository's `packages/` directory is the fallback for a checkout whose
+/// example has not been installed yet.
+function nativePackage(name) {
+  const short = name.split('/').pop().replace(/^tension-/, '');
+  const candidates = [
+    join(exampleDir, 'node_modules', ...name.split('/'), 'index.js'),
+    join(repo, 'packages', short, 'index.js'),
+  ];
+  const file = candidates.find(existsSync);
+  if (!file) {
+    die(`cannot resolve ${name}\n  looked for: ${candidates.join(', ')}`);
+  }
+  return import(pathToFileURL(file).href);
 }
 
 function findBash() {
@@ -185,8 +197,18 @@ if (process.argv.includes('--fetch-model')) {
   process.exit(0);
 }
 if (process.argv.includes('--pack-only')) {
-  bash(join(exampleDir, 'pack.sh'));
+  packVolume();
   process.exit(0);
+}
+
+/// Pack this example's volume, if its `tension` block declares one.
+///
+/// The declaration is data — `tension.pack` names the input tree, the output and
+/// any generated files — so an example adds a volume by describing it rather than
+/// by shipping a shell script.
+function packVolume() {
+  if (!cfg.pack) return;
+  run(process.execPath, [join(repo, 'scripts', 'pack-example.mjs'), exampleDir]);
 }
 
 // ── are the packaged binaries current? ───────────────────────────────────────
@@ -214,11 +236,16 @@ if (process.argv.includes('--pack-only')) {
   }
 }
 
-const host = hostBinary();
+// The packaged host comes first: `npm run build` puts the release binary in a
+// platform payload package, and that is the one the adapter was built to match.
+const hostPackage = await nativePackage('@yabgu_gm/tension-core');
+const host = process.env.TENSION_CORE ?? (hostPackage.available
+  ? hostPackage.hostPath
+  : hostBinary());
 if (!existsSync(host)) {
   die(`no interpreter at ${host}\n` +
-      `  build it:  cargo build --manifest-path tension-core/Cargo.toml --no-default-features\n` +
-      `  Windows:   build.bat`);
+      `  build it:  npm run build   (at the repository root)\n` +
+      `  or for a debug host: cargo build --manifest-path tension-core/Cargo.toml --no-default-features`);
 }
 
 // ── the guest's build dependencies and its wasm ──────────────────────────────
@@ -234,54 +261,63 @@ let extraCapability = null;
 
 if (kind === 'ogre') {
   // The asc build reads the generated session config; without it the build
-  // cannot run. Regenerate only when it is missing (the generator is a repo
-  // script, so it goes through bash).
+  // cannot run. Regenerate only when it is missing; the generator is a Node
+  // script, so this needs no shell.
   const asconfig = join(repo, 'tension-framework', 'build', 'session.asconfig.json');
   if (!existsSync(asconfig)) {
     console.log('generating the framework session config...');
-    bash(join(repo, 'tension-framework', 'build.sh'), ['--hash', capture(host, ['layout-hash']).trim()]);
+    run(process.execPath, [join(repo, 'scripts', 'gen-session.mjs'),
+                           '--hash', capture(host, ['layout-hash']).trim()]);
   }
-  adapter = process.env.TENSION_OGRE_DSO ?? pkgFile('@yabgu_gm/tension-ogre', 'lib', 'libtension_ogre.so');
+  const ogre = await nativePackage('@yabgu_gm/tension-ogre');
+  adapter = process.env.TENSION_OGRE_DSO ?? ogre.dsoPath;
   if (!existsSync(adapter)) {
     // No fallback to tension-ogre/build: that adapter has no rpath into the
     // packages and no siblings that satisfy it, so using it trades a clear "not
     // installed" for a confusing loader error three lines later.
-    die(`no OGRE adapter at ${adapter}\n` +
-        `  run:  npm run build:native   (at the repository root)\n` +
-        `  it builds the adapter against packages/ogre-next and installs it here`);
+    die(`no OGRE adapter for ${ogre.suffix} at ${adapter}\n` +
+        `  run:  npm run build   (at the repository root)\n` +
+        `  it builds the adapter against the packaged Ogre-Next`);
   }
-  // The adapter resolves its libraries through its own DT_RPATH, but it still
+  // The adapter resolves its libraries through its own RPATH, but it still
   // needs to be told where the render-system plugins and the Hlms media are:
-  // build.sh bakes an absolute path, which is wrong once the package moves.
-  // Set both from the installed packages so `npm start` needs no environment.
-  const ogreNext = pkgDir('@yabgu_gm/tension-ogre-next');
-  if (existsSync(ogreNext)) {
-    process.env.TENSION_OGRE_PLUGIN_DIR ??= join(ogreNext, 'lib', 'OGRE-Next');
-    process.env.TENSION_OGRE_MEDIA_DIR ??= join(ogreNext, 'Media');
-  }
-  // The adapter's own DT_RPATH covers its direct dependencies, but not theirs:
-  // the packaged Ogre libraries carry a DT_RUNPATH baked at build time that
-  // points into this repository's third_party/, and glibc stops honouring an
-  // inherited DT_RPATH once it meets a DT_RUNPATH. Without patchelf there is no
-  // way to rewrite that here, so the loader path is set explicitly — computed
-  // from the installed packages, not from the repository layout.
+  // the build bakes an absolute path, which is wrong once the package moves.
+  // Set both from the resolved payload so `npm start` needs no environment.
+  const ogreNext = await nativePackage('@yabgu_gm/tension-ogre-next');
+  process.env.TENSION_OGRE_PLUGIN_DIR ??= ogreNext.pluginDir;
+  process.env.TENSION_OGRE_MEDIA_DIR ??= ogreNext.mediaDir;
+
+  // The loader path is per platform. On Unix, the adapter's DT_RPATH covers
+  // its direct dependencies but not theirs: the packaged Ogre libraries carry
+  // a DT_RUNPATH baked at build time that points into this repository's
+  // third_party/, and glibc stops honouring an inherited DT_RPATH once it
+  // meets a DT_RUNPATH. On Windows there is no RPATH at all — the loader uses
+  // PATH — and the adapter is loaded with an altered search path, so the
+  // directory holding the DLLs has to be on it.
+  const freeimage = await nativePackage('@yabgu_gm/tension-freeimage');
   const libDirs = [
-    pkgFile('@yabgu_gm/tension-ogre', 'lib'),
-    pkgFile('@yabgu_gm/tension-ogre-next', 'lib'),
-    pkgFile('@yabgu_gm/tension-freeimage', 'lib'),
+    join(ogre.payloadDir, 'lib'),
+    ogreNext.libDir,
+    ogreNext.pluginDir,
+    freeimage.libDir,
+    freeimage.binDir,
   ].filter(existsSync);
   if (libDirs.length) {
-    const existing = process.env.LD_LIBRARY_PATH;
-    process.env.LD_LIBRARY_PATH =
-      existing ? `${libDirs.join(delimiter)}${delimiter}${existing}` : libDirs.join(delimiter);
+    if (WIN) {
+      process.env.PATH = `${libDirs.join(delimiter)}${delimiter}${process.env.PATH ?? ''}`;
+    } else {
+      const existing = process.env.LD_LIBRARY_PATH;
+      process.env.LD_LIBRARY_PATH =
+        existing ? `${libDirs.join(delimiter)}${delimiter}${existing}` : libDirs.join(delimiter);
+    }
   }
   if (cfg.extraCapability) {
     extraCapability = resolve(exampleDir, cfg.extraCapability);
     if (!existsSync(extraCapability)) {
-      // run.sh builds a missing second capability on demand; do the same. The
-      // repo's convention is <cap>/build.sh beside <cap>/build/lib*.so.
+      // The repo's convention is <cap>/build beside <cap>/src; the capability's
+      // own npm script builds it, so nothing here needs a shell.
       console.log('building the extra capability...');
-      bash(resolve(dirname(extraCapability), '..', 'build.sh'));
+      run(process.execPath, [join(repo, 'scripts', 'build-input.mjs')]);
       if (!existsSync(extraCapability)) {
         die(`still no capability at ${extraCapability} after its build`);
       }
@@ -299,10 +335,7 @@ if (!skipBuild) {
 }
 
 // ── pack a volume, if this example has one ───────────────────────────────────
-const packScript = join(exampleDir, 'pack.sh');
-if (existsSync(packScript)) {
-  bash(packScript);
-}
+packVolume();
 
 // ── compose the host command line ────────────────────────────────────────────
 const wasm = cfg.wasm ?? 'build/game.wasm';
@@ -314,7 +347,7 @@ if (kind === 'res') {
 } else if (kind === 'ogre') {
   if (existsSync(assets)) {
     // The same volume, once for the adapter's loader (--tns) and once for
-    // `tension::res` (--res); they are separate tables (see examples/ogre/run.sh).
+    // `tension::res` (--res); they are separate tables (see scripts/run-example.mjs).
     args.push('--res', assets);
   }
   args.push('--capability', adapter);

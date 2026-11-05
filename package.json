@@ -7,16 +7,20 @@
   "scripts": {
     "build": "npm run build:codegen && npm run build:native && npm run build:framework && npm run build:examples",
     "build:codegen": "node tools/codegen/generate.mjs --schema schema/ogre.json --out-ts tension-framework/assembly/ogre/generated --out-h tension-ogre/src/generated",
-    "build:framework": "bash tension-framework/build.sh && npm --prefix tension-framework run build",
+    "build:framework": "node scripts/build-framework.mjs",
     "build:examples": "node scripts/build-examples.mjs",
     "build:native": "node scripts/build-native.mjs",
-    "build:core": "cargo build --manifest-path tension-core/Cargo.toml",
+    "bootstrap": "node scripts/bootstrap.mjs",
     "pack:all": "node scripts/pack-all.mjs",
-    "test": "bash test.sh"
+    "test": "node scripts/test.mjs",
+    "check:eol": "node scripts/normalize-eol.mjs --check",
+    "fix:eol": "node scripts/normalize-eol.mjs",
+    "demo": "node scripts/demo.mjs",
+    "verify:res": "node scripts/verify-res.mjs",
+    "build:hlms-skin": "node scripts/build-hlms-skin.mjs",
+    "test:ozz": "node scripts/test-ozz.mjs",
+    "ci": "node ci/docker.mjs"
   },
-  "os": [
-    "linux"
-  ],
   "engines": {
     "node": ">=20"
   }

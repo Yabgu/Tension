@@ -108,6 +108,13 @@ fn test_ogre_null_window_headless() {
 }
 
 #[test]
+// The scenario this pins is X11-only. The test clears DISPLAY so the GL3+ plugin
+// throws on the X connection and the backend has to catch it; on Windows there is
+// no DISPLAY to clear and GL3+ opens a WGL window instead, so the guest reaches
+// the frame loop and reports success. That is the correct behaviour there, not a
+// regression, so the test is skipped on Windows with the reason attached rather
+// than deleted or made to accept both outcomes.
+#[cfg_attr(windows, ignore = "no DISPLAY on Windows; GL3+ uses WGL and opens a window")]
 fn test_ogre_gl3plus_no_display_refused() {
     let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
     let run = run(
@@ -135,6 +142,21 @@ fn test_ogre_gl3plus_no_display_refused() {
 #[test]
 fn test_ogre_vulkan_refused() {
     let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
+
+    // Opt-in, because the outcome is decided by the machine's Vulkan stack rather
+    // than by this tree. Measured on WSL2 (2026-11-05, software `dzn` driver):
+    // the plugin produces the expected refusal and then the process segfaults
+    // inside Ogre's VulkanXcbSupport. On a machine with a conformant Vulkan ICD
+    // this runs as written. `TENSION_OGRE_VULKAN_TEST=1` asks for it explicitly,
+    // the same switch `scripts/test-ogre.mjs` uses.
+    if std::env::var("TENSION_OGRE_VULKAN_TEST").as_deref() != Ok("1") {
+        eprintln!(
+            "test_ogre_vulkan_refused: skipped — set TENSION_OGRE_VULKAN_TEST=1 to \
+             exercise the no-display Vulkan refusal (needs a conformant Vulkan ICD)"
+        );
+        return;
+    }
+
     // No display, and that is what makes the case deterministic: *with* one,
     // Vulkan comes up through the software ICD (lavapipe) and there is no
     // refusal to assert at all. This mirrors `tension-ogre/tests/run.sh`'s
