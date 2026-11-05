@@ -45,6 +45,15 @@ if (WIN) {
   process.exit(0);
 }
 
+// And it needs a display: the probe window is the thing under test. On a headless
+// host SDL does not fail — it waits — so the suite would hang instead of
+// reporting. Measured on WSL2: 34 minutes of silence before a timeout.
+if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+  console.log(`${RUNNER}: SKIPPED — no DISPLAY or WAYLAND_DISPLAY\n` +
+              '  the capability opens a probe window, and SDL blocks rather than failing' );
+  process.exit(0);
+}
+
 const core = process.env.TENSION_CORE ??
   join(repo, 'tension-core', 'target', 'debug', `tension-core${WIN ? '.exe' : ''}`);
 const dso = join(out, WIN ? 'libtension_input.dll' : 'libtension_input.so');
