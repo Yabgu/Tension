@@ -326,8 +326,7 @@ Or use the demo runner:
 
 ```sh
 ./demo.sh          # builds and runs io, audio, ai
-./build.sh         # builds the interpreter, the guest API and every example
-                   # that needs no adapter (the OGRE five build through run.sh)
+npm run build      # the build: interpreter, guest API, framework, every example
 ```
 
 The OGRE examples need the adapter built and the framework's generated

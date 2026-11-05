@@ -1,6 +1,6 @@
 # @yabgu_gm/tension-freeimage
 
-FreeImage 3.19, built by `third_party/bootstrap.sh` and laid out as `lib/` and
+FreeImage 3.19, built by `npm run bootstrap` and laid out as `lib/` and
 `include/`.
 
 ## Why a package

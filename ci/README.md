@@ -32,7 +32,7 @@ ci/docker.sh build          # build the tension-dev image
 ci/docker.sh test           # run the full test suite (./test.sh) in the container
 ci/docker.sh test --core    # run one suite; args are forwarded to ./test.sh
 ci/docker.sh dev            # interactive shell: repo mounted at /app, X available
-ci/docker.sh dev ./build.sh # run one development command
+ci/docker.sh dev npm run build  # run one development command
 ci/docker.sh clean          # remove the image
 ```
 
@@ -52,7 +52,7 @@ the checkout (`target/`, `zig-out/`, etc.) stay host-owned.
 `ci/docker.sh dev` runs as the image's non-root `dev` user with
 `--userns=keep-id` (podman), so every file created inside the bind-mounted
 checkout is owned by your host user — a plain `cargo build`, `zig build`,
-`./build.sh` or demo loop works and leaves no root-owned files behind.
+`npm run build` or the demo loop works and leaves no root-owned files behind.
 `bash` is the default command; the entrypoint already provides Xvfb, so
 `examples/ogre/hello-triangle/run.sh`-style demos run headless.
 

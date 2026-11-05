@@ -1,14 +1,12 @@
 // Bootstrap the pinned Ogre-Next when the in-tree install is missing.
 //
 // `build:native` consumes `third_party/ogre-next-install`: it copies the
-// libraries, headers and media into `packages/ogre-next`, and links the adapter
-// against them. That install is a build product of the pinned submodules, not
-// something a checkout carries, so a fresh clone does not have it. It used to
-// be a manual first step — the build stopped and told the operator to run
-// `third_party/bootstrap.sh`. The build now runs that itself, once, and
-// continues.
+// libraries, headers and media into a platform payload package, and links the
+// adapter against them. That install is a build product of the pinned
+// submodules, not something a checkout carries, so a fresh clone does not have
+// it. `npm run build` runs the bootstrap itself, once, and continues.
 //
-// The pre-check mirrors `bootstrap.sh`'s own "is installed" test: main library,
+// The pre-check mirrors the bootstrap's own "is installed" test: main library,
 // Media tree, Vulkan render system, plus the FreeImage install the OGRE build
 // links. A false negative costs one no-op bootstrap run (the script is
 // idempotent); a false positive would let a half-built install through to fail
@@ -27,8 +25,7 @@ const repo = resolve(here, '..');
 
 const OGRE_INSTALL = join(repo, 'third_party', 'ogre-next-install');
 const FREEIMAGE_INSTALL = join(repo, 'third_party', 'freeimage-install');
-const BOOTSTRAP = join(repo, 'third_party', 'bootstrap.sh');
-const MSYS2_SHELL = 'C:\\msys64\\msys2_shell.cmd';
+const BOOTSTRAP = join(repo, 'scripts', 'bootstrap.mjs');
 const WIN = process.platform === 'win32';
 
 function isDirectory(path) {
@@ -42,7 +39,7 @@ function isDirectory(path) {
 /// First entry under `root` whose basename satisfies `match`, or null.
 /// The install's plugin directory is not worth hard-coding: OGRE puts the
 /// render systems under `lib/OGRE-Next` on Linux and `bin/` on Windows, and a
-/// relocated package can differ again. `bootstrap.sh` itself searches the whole
+/// relocated package can differ again. the bootstrap itself searches the whole
 /// prefix for `RenderSystem_Vulkan.*`, so this does too.
 ///
 /// `match` receives the name lowercased. Windows artifacts are not spelled
@@ -96,7 +93,7 @@ function hasVulkanPlugin(prefix) {
   for (const dir of [join('lib', 'OGRE-Next'), join('bin', 'OGRE-Next'), 'lib', 'bin']) {
     if (findMatching(join(prefix, dir), match)) return true;
   }
-  // A relocated install can put them elsewhere; bootstrap.sh searches the whole
+  // A relocated install can put them elsewhere; the bootstrap searches the whole
   // prefix, so fall back to that rather than mistaking a usable install for a
   // missing one.
   return findMatching(prefix, match) !== null;
@@ -124,65 +121,15 @@ export function bootstrapProblems(ogre = OGRE_INSTALL, freeimage = FREEIMAGE_INS
   return problems;
 }
 
-function toPosix(path) {
-  if (!WIN) return path;
-  let s = path.replace(/\\/g, '/');
-  const drive = /^([A-Za-z]):/.exec(s);
-  if (drive) s = `/${drive[1].toLowerCase()}${s.slice(2)}`;
-  return s;
-}
-
-function shellQuote(s) {
-  return /^[\w\-./=:+@]+$/.test(s) ? s : `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
-/// A real MSYS2 or Git Bash, not `C:\Windows\System32\bash.exe` (the WSL
-/// launcher, which cannot see `/c/Work/...`). The same preference order as
-/// `scripts/run-example.mjs`, and `TENSION_BASH` wins in both.
-function findBash() {
-  if (process.env.TENSION_BASH) return process.env.TENSION_BASH;
-  for (const candidate of [
-    'C:/msys64/usr/bin/bash.exe',
-    'C:/Program Files/Git/bin/bash.exe',
-  ]) {
-    if (existsSync(candidate)) return candidate;
-  }
-  for (const dir of (process.env.PATH ?? '').split(delimiter)) {
-    // Skip the WSL launcher and its WindowsApps stub: neither can see
-    // `/c/Work/...`, and both are ahead of a real bash for many users.
-    if (WIN && /[\\/](system32|windowsapps)$/i.test(dir)) continue;
-    const candidate = join(dir, `bash${WIN ? '.exe' : ''}`);
-    if (existsSync(candidate)) return candidate;
-  }
-  return null;
-}
-
 function runBootstrap({ bootstrap, repoRoot }) {
-  const env = { ...process.env };
-  if (WIN) {
-    env.MSYSTEM ??= 'UCRT64';
-    env.DONT_SHOW_UI_ERRORS ??= '1';
-  }
-
-  // On Windows the MSYS2 wrapper is what puts `/usr/bin` and `/ucrt64/bin` on
-  // PATH; a bare `bash.exe` launched from cmd cannot find cmake, ninja or gcc.
-  // Same reasoning and quoting as `scripts/run-example.mjs`.
-  if (WIN && !process.env.TENSION_BASH && existsSync(MSYS2_SHELL)) {
-    const command = shellQuote(toPosix(bootstrap));
-    const line = `"${MSYS2_SHELL}" -ucrt64 -defterm -no-start -where "${repoRoot}" -c "${command}"`;
-    // shell:true lets Node quote the line for cmd.exe; passing it as a spawn
-    // argument escapes the inner quotes the way cmd does not understand.
-    return spawnSync(line, [], { cwd: repoRoot, stdio: 'inherit', shell: true, env });
-  }
-
-  const bash = findBash();
-  if (!bash) {
-    return {
-      error: new Error('no bash found; set TENSION_BASH to a bash executable'),
-      status: null,
-    };
-  }
-  return spawnSync(bash, [toPosix(bootstrap)], { cwd: repoRoot, stdio: 'inherit', env });
+  // Node on every platform: the bootstrap is a Node script now, so it needs no
+  // shell, no MSYS2 wrapper and no TENSION_BASH override. It assembles its own
+  // toolchain environment (scripts/lib/toolchain.mjs).
+  return spawnSync(process.execPath, [bootstrap], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    env: { ...process.env, DONT_SHOW_UI_ERRORS: process.env.DONT_SHOW_UI_ERRORS ?? '1' },
+  });
 }
 
 /// Make sure the install exists, bootstrapping it when it does not. `note` and
@@ -203,14 +150,14 @@ export function ensureOgre({
   if (missing.length === 0) return;
 
   note(`OGRE-Next is not built yet (${missing.join(', ')})`);
-  note('running third_party/bootstrap.sh (one-time build, a few minutes)');
+  note('running scripts/bootstrap.mjs (one-time build, a few minutes)');
   const result = runBootstrap({ bootstrap, repoRoot });
   if (result.error) {
-    fail(`could not start third_party/bootstrap.sh: ${result.error.message}`);
+    fail(`could not start scripts/bootstrap.mjs: ${result.error.message}`);
   }
   if (result.status !== 0) {
     const why = result.signal ? `signal ${result.signal}` : `exit ${result.status}`;
-    fail(`third_party/bootstrap.sh failed (${why}); see its output above`);
+    fail(`scripts/bootstrap.mjs failed (${why}); see its output above`);
   }
 
   const still = bootstrapProblems(ogre, freeimage);
