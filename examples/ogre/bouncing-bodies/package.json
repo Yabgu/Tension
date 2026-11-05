@@ -8,10 +8,15 @@
     "build": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
     "build:debug": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
     "run": "node ../../../scripts/run-example.mjs --no-build",
-    "start": "node ../../../scripts/run-example.mjs"
+    "start": "node ../../../scripts/run-example.mjs",
+    "pack": "node ../../../scripts/pack-example.mjs ."
   },
   "tension": {
-    "kind": "ogre"
+    "kind": "ogre",
+    "pack": {
+      "input": "resources",
+      "output": "build/assets.tns"
+    }
   },
   "dependencies": {
     "tension-framework": "file:../../../tension-framework",
