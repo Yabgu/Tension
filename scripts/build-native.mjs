@@ -11,6 +11,8 @@
 // the same step. The Ogre-Next install it packages is bootstrapped on demand
 // (scripts/ensure-ogre.mjs), so a fresh clone needs no manual first step.
 //
+// Linux only: the packages this fills are Linux-shaped (see the guard below).
+//
 //   @yabgu_gm/tension-ogre-next   third_party/ogre-next-install, sample assets pruned
 //   @yabgu_gm/tension-freeimage   third_party/freeimage-install
 //   @yabgu_gm/tension-ogre        tension-ogre/build.sh, linked against the package
@@ -83,16 +85,24 @@ function mb(bytes) {
 }
 
 // ── ogre-next ────────────────────────────────────────────────────────────────
+// This step packages **Linux** artifacts, end to end: `packages/*/package.json`
+// declare `os: ["linux"]`, the adapter is `libtension_ogre.so`, the host is
+// `packages/core/bin/tension-core`, and the Media tree comes from
+// `share/OGRE-Next/Media`. None of that holds on Windows, where the entry point
+// is `build.bat`. Say so before bootstrapping anything — the guard used to sit
+// after the bootstrap and claim the install was missing, which was false on a
+// tree that had just built it.
+if (process.platform === 'win32') {
+  fail('this npm build packages Linux artifacts (.so and ELF binaries); on Windows use build.bat\n' +
+       '  build.bat builds the same three native targets: tension-res, tension-ogre, tension-core');
+}
 // The install is a build product, not a prerequisite to remember: bootstrap it
 // here if this checkout has never built it. On every later build this is a
 // few stat calls and a short walk of the install.
 ensureOgre({ note, fail });
 if (!existsSync(join(OGRE_SRC, 'lib', 'libOgreNextMain.so'))) {
-  const hint = process.platform === 'win32'
-    ? '\n  this npm build packages Linux ELF binaries; run build.bat on Windows'
-    : '';
   fail(`no Ogre-Next install at ${OGRE_SRC}\n` +
-       `  expected lib/libOgreNextMain.so${hint}`);
+       `  the automatic bootstrap did not produce lib/libOgreNextMain.so`);
 }
 note('ogre-next: copying lib/, include/, Media/ (sample assets pruned)');
 copyTree(join(OGRE_SRC, 'lib'), join(packages, 'ogre-next', 'lib'));
