@@ -28,12 +28,12 @@ come first; the rest is the Windows build cheat-sheet.
 
    ```ts
    export struct SpriteRecord { x: i32; … }      // declaration: plain
-   function writeRecord(records: @unmanaged [SpriteRecord *], …)   // use: explicit
+   out[i].set(x, y, frame, sortKey, group, z)    // the record fills itself
    const out = changetype<@unmanaged [SpriteRecord *]>(records);   // use: explicit
    ```
 
    The declaration says *what the bytes are*; the use says *how they cross*
-   (by value, by pointer, as a GC reference). Two rules follow from that and
+   (by value, by pointer, as a GC reference). Three rules follow from that and
    they are not negotiable in review:
 
    - **Never a manual `load<T>`/`store<T>` where a field name will do.** A
@@ -43,6 +43,9 @@ come first; the rest is the Windows build cheat-sheet.
      cannot be a struct (the IWI header, `TS6408`).
    - **No `addr + i * RECORD_SIZE` in guest code.** Records are
      `@unmanaged [T *]` — the compiler supplies the stride.
+   - **No free writer function, no named padding.** A record fills itself
+     (`out[i].set(…)`); the fields are the fields the wire has, and C's
+     implicit padding is not one of them.
 
    `@managed` and `@unmanaged` are never omitted "because it compiles": an
    omission is a value where a pointer was meant, or the reverse. The ways this
@@ -236,6 +239,22 @@ are not written again.
     arguments, or a second declaration of something the type already states, ask
     what caller it serves. When the answer is "it works around a compiler
     limit", say so in a comment or delete the function.
+12. **A free writer function for a record.** `writeRecord(records, i, x, y, …)`
+    and `writeSubmitHeader(hdr, records, count)` put the layout's own writes in
+    somebody else's procedure: the call site names a buffer instead of a record,
+    and the field list is restated at every call. The record fills itself —
+    `out[i].set(…)`, `hdr[0].set(out, count)` — because the element of a `[T *]`
+    view is an address, which is exactly the `this` a setter takes. Keep the
+    derivation that cannot vary with it: `SubmitHeader.set` computes
+    `stride = sizeof<SpriteRecord>()` and takes no stride argument, so no caller
+    can submit a stride the adapter cannot decode.
+13. **A pad field shadowing C's implicit padding.** `_pad: u16` between `tex` and
+    `sortKey` is not a field the wire has — `tension_2d.h` marks those bytes `—`,
+    and nothing reads them (a `u16` is masked out of its 32-bit word). Natural
+    alignment already puts `sortKey` at 20 and `sizeof` at 28; the field was a
+    second statement of the layout that could disagree with it. If an offset is
+    genuinely wanted, `@abi.align` is the feature — it *raises* alignment
+    (TS6406–6408), and a record that needs no change needs no annotation.
 
 ### Compiler limits, measured
 

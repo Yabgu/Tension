@@ -25,7 +25,7 @@
 import {
   ConfigBuilder,
   Frame,
-  Info,
+  HEADER_SIZE,
   Info,
   print,
   RECORD_SIZE,
@@ -33,8 +33,6 @@ import {
   SpriteRecord,
   SubmitHeader,
   RuntimeSession,
-  writeRecord,
-  writeSubmitHeader,
 } from "tension-framework";
 import * as gfx from "./bindings";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
@@ -166,7 +164,7 @@ function writeSprites(out: @unmanaged [SpriteRecord *]): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    writeRecord(out, i, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    out[i].set(i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -253,9 +251,12 @@ export function _start_game(): void {
 
   // 5. the records and the header
   const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
-  writeSprites(changetype<@unmanaged [SpriteRecord *]>(records));
-  const header: usize = memory.data(<usize>12, 4);
-  writeSubmitHeader(changetype<@unmanaged [SubmitHeader *]>(header), changetype<@unmanaged [SpriteRecord *]>(records), <u32>SPRITES);
+  let out = changetype<@unmanaged [SpriteRecord *]>(records);
+  writeSprites(out);
+
+  const header: usize = memory.data(<usize>HEADER_SIZE, 4);
+  let hdr = changetype<@unmanaged [SubmitHeader *]>(header);
+  hdr[0].set(out, <u32>SPRITES);
 
   const accepted = gfx.submit(handle, pipe, header, 0);
   if (accepted != SPRITES) {
