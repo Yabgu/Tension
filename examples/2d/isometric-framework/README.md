@@ -58,12 +58,14 @@ npm start            # builds both guests, packs, renders, compares
 ```
 
 No external assets: the pages are generated flat colour cells from
-[`../synthetic/pages.mjs`](../synthetic/pages.mjs). The real-art version —
-the one with the painted conifer and the character generator's layers — is
-[`../isometric`](../isometric), and it needs the asset packs placed by hand
-under `tension-2d/test-assets/`.
+[`../synthetic/pages.mjs`](../synthetic/pages.mjs). The version drawn from a
+real tileset is [`../isometric`](../isometric), which renders
+[`../assets/tileset.png`](../assets/tileset.png) — committed, so it also needs
+nothing fetched.
 
-Screenshots land in `tension-2d/test-assets/screenshots/framework-{back,front}.png`.
+Screenshots land in `screenshots/framework-back.png` and
+`framework-front.png`; the downscaled `framework-preview.png` beside them is
+committed.
 
 ## The API, and where it came from
 

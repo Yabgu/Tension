@@ -37,9 +37,11 @@ import * as scene from "./scene.generated";
 
 const FRAME_BYTES: u32 = scene.CANVAS_WIDTH * scene.CANVAS_HEIGHT * 4;
 
-/// One frame's records: 6x6 ground tiles, 2 tree slices, 3 character layers,
-/// 1 lantern. Enough that the sort order changes what is visible.
-const MAX_RECORDS: i32 = 36 + 2 + 3 + 1;
+/// One frame's records, emitted by `build.mjs`. Counted there rather than here:
+/// a prop added to the scene must not be able to overflow this buffer, and the
+/// only way to guarantee that is for the number to come from the same place the
+/// records do.
+const MAX_RECORDS: i32 = scene.RECORD_COUNT;
 
 let failures: i32 = 0;
 
@@ -119,10 +121,11 @@ function writeScene(at: usize, facingBack: bool, lanternSort: u32, invert: bool)
   // order does not matter — they do not overlap each other.
   for (let row: i32 = 0; row < scene.GROUND_ROWS; row++) {
     for (let col: i32 = 0; col < scene.GROUND_COLS; col++) {
+      const cell: i32 = row * scene.GROUND_COLS + col;
       gfx.writeSprite(
         at, n++,
         scene.GROUND_ORIGIN_X + col * 16, scene.GROUND_ORIGIN_Y + row * 16,
-        <u16>scene.GROUND_SRC_X, <u16>scene.GROUND_SRC_Y,
+        <u16>scene.GROUND_SRC_XS[cell], <u16>scene.GROUND_SRC_YS[cell],
         16, 16,
         <u16>scene.GROUND_SLOT,
         0,
@@ -193,6 +196,20 @@ function writeScene(at: usize, facingBack: bool, lanternSort: u32, invert: bool)
     <u16>scene.LANTERN_SLOT,
     lanternSort,
   );
+
+  // Props: a bush, a rock, a fence, mushrooms. Each sorts by its own base, which
+  // is the same rule the tree's slices use — the frame is a test, but there is
+  // no reason a test cannot look like a place.
+  for (let i: i32 = 0; i < scene.PROP_COUNT; i++) {
+    gfx.writeSprite(
+      at, n++,
+      scene.PROP_X[i], scene.PROP_Y[i],
+      <u16>scene.PROP_SRC_X[i], <u16>scene.PROP_SRC_Y[i],
+      <u16>scene.PROP_W[i], <u16>scene.PROP_H[i],
+      <u16>scene.PROP_SLOT[i],
+      <u32>scene.PROP_SORT[i],
+    );
+  }
 
   return n;
 }

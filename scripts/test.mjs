@@ -190,11 +190,11 @@ const SUITES = {
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
   },
 
-  // The real isometric example needs third-party art, which is not in the
-  // repository and cannot be fetched on CI. This is the same scene from
-  // generated flat-colour pages: same canvas, same positions, same sort keys,
-  // same probes. It exits 77 when the adapter cannot be built (no SDL3), so a
-  // machine without the graphics stack skips rather than fails.
+  // The same scene from generated flat-colour pages: same canvas, same
+  // positions, same sort keys, same probes. Its assertions are cheap and its
+  // expectations are palette constants, so it catches a renderer bug without
+  // needing the art. `isometric-art` is the same scene drawn from the real
+  // tileset and catches art-pipeline bugs this one cannot.
   isometric: {
     title: 'isometric (synthetic)',
     needs: [],
@@ -203,6 +203,19 @@ const SUITES = {
     holds: ['tension-2d-build'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The worked example on the committed tileset. It used to be excluded from
+  // this list because the art was third-party and the example exited 77 on any
+  // machine without it; the tileset is drawn and committed now, so it runs
+  // everywhere the adapter does.
+  'isometric-art': {
+    title: 'isometric (art)',
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test.mjs'),
     ], { env: suiteEnv() }),
   },
 
