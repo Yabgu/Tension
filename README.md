@@ -1,7 +1,7 @@
 # Tension (alpha)
 
 A **WASM game engine**. A Rust host (`tension-core`) embeds a Wasmtime VM
-and exposes native capabilities to AssemblyScript guests through import
+and exposes native capabilities to TensionScript guests through import
 namespaces. Guests import verbs; capabilities provide them.
 
 The host is **capability-agnostic**. A capability is either built into the
@@ -17,7 +17,7 @@ world.**
 ## Architecture
 
 ```
-[ BUILD ]  game.ts (AssemblyScript)  --asc-->  build/game.wasm
+[ BUILD ]  game.ts (TensionScript)  --tensionscript-->  build/game.wasm
 [ RUN   ]  tension-core game.wasm [args...]
                  │
                  ▼
@@ -110,7 +110,7 @@ call, *even when the probe answered `0`* (an empty line): the probe does not
 consume, so returning early there would leave that line parked and every
 later read would see the same `0` — the stream would never advance again.
 
-The AssemblyScript `stub` runtime also imports `env.abort` to signal a trap
+The TensionScript `stub` runtime also imports `env.abort` to signal a trap
 (panic); the host decodes and prints the AS message, then exits non-zero.
 
 ## The `tension::ai` ABI
@@ -294,7 +294,7 @@ tension-core/        Rust host — Wasmtime, session, adapter loader, wire
   include/           tension_adapter.h — the ABI (v1, frozen)
   src/session/       arena, epoch, posting, subring, apply, config
   src/adapter/       loader, ffi, signatures
-tension-framework/   AssemblyScript guest SDK
+tension-framework/   TensionScript guest SDK
   assembly/runtime/  session verbs, arena view, config, callbacks
   assembly/ogre/     OGRE wire records, verbs, batches, factories
 tension-ogre/        the OGRE capability (C++ DSO)
@@ -312,7 +312,7 @@ ci/                  container image + scripts for CI and development
 #    (needs cmake + a C++ compiler; a one-time ~2 min build).
 cargo build --manifest-path tension-core/Cargo.toml
 
-# 2. compile a game (AssemblyScript -> wasm), from the example's own folder.
+# 2. compile a game (TensionScript -> wasm), from the example's own folder.
 #    Each example is a standalone npm project: its package.json links the
 #    framework into its own node_modules (a `file:` dependency).
 cd examples/io
@@ -444,7 +444,7 @@ functions appear as `wasm[0]::function[N]::<module>/<name>` — for this example
   Three properties are worth knowing:
 
   - **Types are the four wasm scalars.** Locals show as `i32`/`i64`/`f32`/
-    `f64`; an AssemblyScript object is a heap pointer, so it appears as an
+    `f64`; a TensionScript object is a heap pointer, so it appears as an
     `i32`. Structure types are not emitted, so only the scalar shape is shown.
   - **A local is available exactly where its value is live.** Before the
     statement that assigns it (and after its last use is optimized away), lldb
@@ -487,7 +487,7 @@ Console:
 image list                        # the guest is the JIT(0x...) entry
 breakpoint set -f game.ts -l 11   # a source line (or use a gutter breakpoint)
 breakpoint set -r 'game/'         # or a wasm function name
-source list                       # the AssemblyScript around the stop
+source list                       # the TensionScript source around the stop
 ```
 
 Use `-r` for function names, not `-n`: the real symbol is the long
@@ -535,7 +535,7 @@ diagnosis prints on stderr before any guest output.
   brings the loader dump back when a model misbehaves.
 - The OGRE capability renders, animates and simulates: five examples green
   in both windowed and headless modes.
-- **Source-level AssemblyScript debugging works with no Node in the path.**
+- **Source-level TensionScript debugging works with no Node in the path.**
   Against lldb 22.1.3, with a `--sourceMap` build and the GDB JIT loader on,
   `breakpoint set -f game.ts -l 11` resolves at launch and stops in the guest.
 

@@ -1,4 +1,4 @@
-# Async/await in the Tension AssemblyScript fork — PLAN
+# Async/await in the TensionScript fork — PLAN
 
 Status: **proposal, not yet reviewed.** No code has been written. No submodule has
 been added. This document is the deliverable of the plan phase.
@@ -522,7 +522,7 @@ review rather than being taken silently.
 **`AGENTS.md` rule 1: "`third_party/` is read-only. Never edit, generate into,
 format, or delete anything under it — including its build trees."**
 
-Adding the submodule is what the task asks for, but *building* AssemblyScript
+Adding the submodule is what the task asks for, but *building* the compiler
 requires `npm ci`, which writes `node_modules/` **inside** the checkout — i.e.
 generates into `third_party/`. That is a direct conflict with rule 1.
 

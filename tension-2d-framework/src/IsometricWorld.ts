@@ -84,7 +84,7 @@ export class IsometricWorld {
    * `ceil(h / sliceHeight)` (1 when unsliced, 0 for an empty frame).
    */
   addStatic(atlas: Tileset, frame: Frame, x: i32, y: i32, sliceHeight: u32): u32 {
-    if (!frame.ok) return 0;            // a lookup that found nothing
+    if (!frame.isValid()) return 0;     // a lookup that found nothing
     if (!atlas.owns(frame)) return 0;   // a frame from another tileset
     const height = <u32>frame.h;
     if (height == 0) return 0;
@@ -130,7 +130,7 @@ export class IsometricWorld {
    * Returns 1, or 0 for an invalid frame.
    */
   addGround(atlas: Tileset, frame: Frame, x: i32, y: i32): u32 {
-    if (!frame.ok) return 0;
+    if (!frame.isValid()) return 0;
     if (!atlas.owns(frame)) return 0;
     this.statics.push(new Pending(frame, x, y, 0, 0, 0));
     return 1;

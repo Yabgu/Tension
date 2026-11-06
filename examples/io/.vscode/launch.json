@@ -1,5 +1,5 @@
 {
-  // Debugging the AssemblyScript guest under tension-core — no Node, no
+  // Debugging the TensionScript guest under tension-core — no Node, no
   // re-implementation of the ABI. `tension-core` *is* the runtime; the thing
   // being debugged is io's source, exactly as a Python script is debugged
   // without debugging the python binary.

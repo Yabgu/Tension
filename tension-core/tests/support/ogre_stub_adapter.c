@@ -1,7 +1,7 @@
 /*
  * The OGRE capability's stub adapter.
  *
- * It exists to prove the *shape* of the capability ABI end to end: an AssemblyScript
+ * It exists to prove the *shape* of the capability ABI end to end: a TensionScript
  * guest calls `ogre::queue_mesh_load`, gets a job id, waits, and receives a
  * `JOB_DONE` event whose payload resolves to a resource. Everything about OGRE
  * the renderer — the version pin, the HLMS materials, the scene, the render

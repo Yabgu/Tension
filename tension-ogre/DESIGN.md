@@ -301,19 +301,19 @@ Four constraints are checked at `session_open`, in this order:
 
 ### 4.2 F1 — the import module name
 
-AssemblyScript 0.28.8 hardcodes the memory import module to `env`: the pinned
+TensionScript hardcodes the memory import module to `env`: the pinned
 toolchain's own option table describes `--importMemory` as *"Imports the memory
 from 'env.memory'."*, and the compiler emits
 `addMemoryImport(DefaultMemory, DefaultNamespace, Memory, …)` with
 `DefaultNamespace = "env"`. So `(import "session" "memory")` is not expressible
-in AssemblyScript without rewriting the emitted module.
+in a guest without rewriting the emitted module.
 
 The session therefore defines **one** `Memory` under both `("env","memory")`
-(for AssemblyScript guests, unmodified) and `("session","memory")` (for
-hand-written WAT guests, non-AssemblyScript guests, and Tension's documented ABI
+(for TensionScript guests, unmodified) and `("session","memory")` (for
+hand-written WAT guests, guests from other languages, and Tension's documented ABI
 name). A build-time rewrite of the import module name was rejected: the repo has
 the machinery (`src/dwarf/wasm.rs`, `src/leb.rs`) but it buys nothing semantic.
-The residue is documented rather than hidden — for an AssemblyScript guest the
+The residue is documented rather than hidden — for a TensionScript guest the
 `session` spelling is aspirational, `env` is what actually appears in the
 binary, and both names resolve to the same object.
 
@@ -1835,7 +1835,7 @@ the common bump-pointer march loud and fast; they do not make overlap
 impossible. The hard guarantee is the build pipeline (§10), and the real fix —
 a second wasm memory for the arena, so isolation is structural — is blocked by
 the guest toolchain rather than by the runtime: wasmtime 24.0.13 enables the
-multi-memory proposal by default (probe-confirmed, §13), while AssemblyScript
+multi-memory proposal by default (probe-confirmed, §13), while TensionScript
 0.28.8 emits and addresses one linear memory.
 
 ## 6. `session_open`
@@ -1930,7 +1930,7 @@ triple, the region band's zeros, the gap's lattice); call the module's exported
 `__start` is the toolchain's runtime initializer and the position is the point:
 it runs guest code, so it must run *after* the arena has been verified and
 *before* anything the game wrote. It is part of the host–guest contract, not an
-AssemblyScript detail: a hand-written `.wat` that exports no `__start` is
+TensionScript detail: a hand-written `.wat` that exports no `__start` is
 unaffected, and a toolchain that would otherwise emit a `start` section should
 offer the same door rather than a section the host refuses.
 
@@ -2138,14 +2138,14 @@ violates the relation.
 Flag rules: `--importMemory`, `--memoryBase = max_arena_size`, page counts for
 `--initialMemory` / `--maximumMemory`, `--exportTable`, `--runtime incremental`,
 and
-**`--exportStart __start`** — the last one learned by building. AssemblyScript
+**`--exportStart __start`** — the last one learned by building. TensionScript
 0.28 emits a `start` *section* by default, and the load-time check refuses one —
 **in a session guest, which is what this pipeline builds**: a start section runs
 guest code at instantiation, before the session has verified the arena, and the
 session is the only thing there is to run ahead of. `--exportStart` makes the
 runtime's initializer an export instead, and the host calls it at the safe
 point: see §6.3, where that is now part of the instantiation contract rather
-than an AssemblyScript workaround.
+than a TensionScript workaround.
 
 **The scope of that check is its rationale.** A guest that imports nothing from
 `session` has no arena and no verification, so a start section is its own
@@ -2246,7 +2246,7 @@ The canary sequencing, which corrects an earlier round's claim: the moment
 ## 12. What chunk 1 does not deliver
 
 No OGRE-Next code of any kind: no C++ wrapper, no shader compilation, no HLMS
-integration, no render thread. No AssemblyScript beyond the SDK skeleton. No
+integration, no render thread. No guest code beyond the SDK skeleton. No
 dynamic region allocation. No `RING` delivery mode (reserved, stubbed). No
 second wasm memory. No multi-guest support: the session, like the rest of
 `tension-core`, assumes one guest per process. And no OGRE version pin — the
@@ -2573,7 +2573,7 @@ chunk 1 work, and each is additive:
 ## 13. Verified and unverified
 
 The two probe-first questions were answered against `wasmtime = 24.0.13` and
-the pinned AssemblyScript toolchain, as unit tests in
+the pinned TensionScript toolchain, as unit tests in
 `tension-core/src/session/mod.rs` (a stub that A1 replaces; the two tests stay
 as regression tests):
 
@@ -2694,7 +2694,7 @@ The **visual** tier runs under GL3+ with a real window, or with llvmpipe
 against that display; `RenderSystem_NULL` validates the object graph and the
 frame loop but can never produce the pixels a visual assertion needs.
 
-**The acid test.** One AssemblyScript guest that exercises the whole stack in a
+**The acid test.** One TensionScript guest that exercises the whole stack in a
 single session and asserts its own results, printing a pass/fail summary line —
 `ACID 8/8 passed`. It grows with the chunks:
 
@@ -3235,6 +3235,6 @@ end-to-end assertions. Thirteen steps over the eleven files.
 
 **A1 is complete when** `cargo test` for `tension-core` is green including step
 13, the probes are permanent regression tests rather than scratch, no
-AssemblyScript has been compiled, no line of OGRE exists in the tree, and the
+a guest has been compiled, no line of OGRE exists in the tree, and the
 memory relation has been exercised in both the matching and mismatching
 directions at least once.

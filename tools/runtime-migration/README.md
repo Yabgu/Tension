@@ -1,11 +1,11 @@
 # Runtime-migration measurement harness
 
 Tooling for the `--runtime stub` → `--runtime incremental` decision
-(`docs/runtime-migration-plan.md`). It compiles a set of AssemblyScript
+(`docs/runtime-migration-plan.md`). It compiles a set of TensionScript
 workloads under each runtime and measures what the allocator and collector
 actually do.
 
-Nothing here is Tension-specific. The workloads are ordinary AS modules; the
+Nothing here is Tension-specific. The workloads are ordinary guest modules; the
 runner supplies only a clock (`env.now`). That is deliberate: it means the same
 harness produces comparable numbers on Linux, on Windows, and under any host
 engine.

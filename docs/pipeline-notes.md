@@ -1,6 +1,6 @@
 # Running the fork's compiler so the rebuild is live
 
-Notes for anyone changing the AssemblyScript fork at
+Notes for anyone changing the TensionScript compiler at
 `third_party/assemblyscript`. Written after a prior attempt wasted a cycle
 testing stale code.
 
@@ -191,7 +191,7 @@ own phase** — not a thing to slip into a layout bump.
 
 ## `npm run build` does not run `build.sh`
 
-`tension-framework`'s `npm run build` compiles the AssemblyScript against the
+`tension-framework`'s `npm run build` compiles the guest against the
 **already generated** `assembly/runtime/layout.ts`. It does not invoke
 `build.sh`, which is what reads `session.json` and rewrites `layout.ts` and
 `build/session.asconfig.json`.

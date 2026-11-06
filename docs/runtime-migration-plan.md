@@ -460,7 +460,7 @@ optimising something that is not a problem.
 
 ## 5. Scope of the change
 
-**`incremental` is already AssemblyScript's own default.** `cli/options.json`,
+**`incremental` is already TensionScript's own default.** `cli/options.json`,
 `runtime.default = "incremental"`, and `compiler.ts:239`:
 `runtime: Runtime = Runtime.Incremental;`. **Tension's `stub` is the deviation,
 not the norm.** That reframes the change from "adopt a heavier runtime" to

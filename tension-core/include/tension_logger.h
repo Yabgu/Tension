@@ -46,7 +46,7 @@ extern "C" {
 /*
  * Severity, least severe first. The discriminants are frozen: a seventh level is
  * they are the level the host's `Level` enum uses and the level the guest's
- * AssemblyScript `Level` uses.
+ * TensionScript `Level` uses.
  */
 typedef enum tension_log_level {
     TENSION_LOG_TRACE = 0,

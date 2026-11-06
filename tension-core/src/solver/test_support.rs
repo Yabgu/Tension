@@ -2,7 +2,7 @@
 //!
 //! The framework is the format's writer (`tension-framework/assembly/solver.ts`);
 //! the WAT fixtures the P5 and P8e tests instantiate cannot call
-//! AssemblyScript, so this mirrors the encoder in Rust: the same layout, the
+//! TensionScript, so this mirrors the encoder in Rust: the same layout, the
 //! same rules — an 8-byte-aligned start, one 8-byte slot per set bit in bit
 //! order, a length-prefixed UTF-8 string table in header-field order, and no
 //! trailing byte. The fixtures embed the bytes it produces in a data segment

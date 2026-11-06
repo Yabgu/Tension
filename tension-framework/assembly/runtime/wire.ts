@@ -1,4 +1,4 @@
-// The arena's wire types, as AssemblyScript sees them.
+// The arena's wire types, as TensionScript sees them.
 //
 // Every type here is `@unmanaged` with scalar fields in declared order, so a
 // `changetype<T>(offset)` is a *view* of guest memory: no allocation, no

@@ -16,7 +16,7 @@
 // would actually write, so the guard is exercised against the compiler's own
 // output rather than against a value built by hand. (An earlier revision of
 // this fixture hand-built the environment word, because a capturing arrow was a
-// compile error in the published AssemblyScript the engine used to build with.
+// compile error in the compiler the engine used to build with.
 // The `this` fix landed, so the real shape is testable — and is what is tested.)
 //
 // The fixture calls the arrow itself first, which is deliberate twice over: a

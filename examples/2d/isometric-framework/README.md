@@ -80,7 +80,7 @@ tests would have found later:
   character standing at `y=88` and covers its feet. The floor's key is 0.
 - **`frameForPixel` takes optional `w`/`h`.** A single-cell default cannot name a
   32×64 tree. `frameForPixel(112, 96, 32, 64)`.
-- **Invalid lookups return an invalid `Frame`, not null.** In AssemblyScript a
+- **Invalid lookups return an invalid `Frame`, not null.** In TensionScript a
   `Frame | null` return forces a null check at every use, and one missed check is
   a null dereference inside a frame loop. An invalid frame is inert: `addStatic`
   writes nothing for it.

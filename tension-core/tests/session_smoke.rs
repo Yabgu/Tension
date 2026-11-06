@@ -9,7 +9,7 @@
 //! capability registers.
 //!
 //! The adapter libraries come from `build.rs` (`cargo:rustc-env`): the reference
-//! adapter and its bad-ABI twin. Nothing here is AssemblyScript — the guests are
+//! adapter and its bad-ABI twin. Nothing here is TensionScript — the guests are
 //! WAT files under `tests/fixtures/`, readable in one screen each.
 //!
 //! **`--session-open` is A1's convenience, not the design.** A1 has no guest SDK,

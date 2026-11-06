@@ -1,8 +1,8 @@
 /**
- * TensionCore guest SDK — TypeScript declarations for AssemblyScript game
+ * TensionCore guest SDK — TypeScript declarations for TensionScript game
  * sources.
  *
- * The implementation is AssemblyScript: `assembly/index.ts` re-exports the
+ * The implementation is TensionScript: `assembly/index.ts` re-exports the
  * `tension::io`, `tension::audio` and `tension::ai` bindings from
  * `assembly/*.ts`, compiled into the game's wasm by `asc`. This file only
  * describes the surface so editors and other tooling can type game sources;
