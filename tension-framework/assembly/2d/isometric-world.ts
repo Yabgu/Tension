@@ -1,4 +1,5 @@
-// tension-2d-framework/src/IsometricWorld.ts — tall sprites, sliced, in depth.
+// tension-framework/assembly/2d/isometric-world.ts — tall sprites, sliced,
+// in depth.
 //
 // The depth model is one number per record: `sort_key`. A record with a larger
 // sort key draws later, so it appears in front. For a top-down or isometric
@@ -28,8 +29,8 @@
 // which of two equal keys goes first.
 
 import { Frame, writeRecord } from "./types";
-import { Composite } from "./Composite";
-import { Tileset } from "./Tileset";
+import { Composite } from "./composite";
+import { Tileset } from "./tileset";
 
 class Pending {
   frame: Frame;

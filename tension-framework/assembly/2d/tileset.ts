@@ -1,4 +1,4 @@
-// tension-2d-framework/src/Tileset.ts — tileset pixels to record fields.
+// tension-framework/assembly/2d/tileset.ts — tileset pixels to record fields.
 //
 // A tileset is a *sheet* that arrived as several pages. The adapter binds a
 // pipeline's pages to a texture array; a record says which page to sample

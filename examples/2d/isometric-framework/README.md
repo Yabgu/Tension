@@ -1,8 +1,8 @@
 # isometric-framework — the same scene, built by a library
 
 The isometric scene from [`../isometric`](../isometric), with one difference: the
-forty-two records are not written by the guest. They come from three types in
-[`tension-2d-framework`](../../../tension-2d-framework):
+forty-two records are not written by the guest. They come from three types in the
+guest SDK, [`tension-framework/assembly/2d`](../../../tension-framework/assembly/2d):
 
 ```
 Tileset         the sheet arrived as pages; ask it for a frame by pixel coordinate
@@ -53,7 +53,7 @@ the test asserts that colour rather than "something differed".
 ## Running it
 
 ```sh
-npm install          # links tension-framework and tension-2d-framework
+npm install          # links the tension-framework SDK
 npm start            # builds both guests, packs, renders, compares
 ```
 

@@ -1,4 +1,5 @@
-// tension-2d-framework/src/index.ts — the barrel a game imports.
+// tension-framework/assembly/2d/index.ts — the 2D scene layer, re-exported
+// from the SDK barrel.
 //
 // Three types, in the order a scene is built:
 //
@@ -13,6 +14,6 @@
 // write that loop again would be the same bug in every example.
 
 export * from "./types";
-export * from "./Tileset";
-export * from "./Composite";
-export * from "./IsometricWorld";
+export * from "./tileset";
+export * from "./composite";
+export * from "./isometric-world";

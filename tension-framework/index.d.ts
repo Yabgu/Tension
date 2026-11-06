@@ -3,10 +3,11 @@
  * sources.
  *
  * The implementation is TensionScript: `assembly/index.ts` re-exports the
- * `tension::io`, `tension::audio` and `tension::ai` bindings from
- * `assembly/*.ts`, compiled into the game's wasm by `asc`. This file only
- * describes the surface so editors and other tooling can type game sources;
- * there is no second, runnable surface.
+ * capability bindings and the abstractions built on them — `assembly/*.ts` for
+ * the single-file modules and `assembly/<capability>/` for the ones with
+ * several, `assembly/2d/` included — compiled into the game's wasm by
+ * `tensionscript`. This file only describes part of the surface, so editors and
+ * other tooling can type game sources; there is no second, runnable surface.
  */
 
 export declare function write(text: string): void;

@@ -29,7 +29,7 @@ import {
   Tileset,
   layoutSelfTest,
   writeSubmitHeader,
-} from "tension-2d-framework";
+} from "tension-framework";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
 
