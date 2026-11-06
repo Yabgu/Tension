@@ -70,7 +70,7 @@ function hexRgba(px: Rgba): string {
   return hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
 }
 
-function emitFrame(name: string, frame: Rgba, bytes: u32): void {
+function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
@@ -81,7 +81,7 @@ function emitFrame(name: string, frame: Rgba, bytes: u32): void {
     for (let i: u32 = base; i < end; i += 4) {
       // A value argument must be a local — `hexRgba(readRgba(ptr))` is refused,
       // because a value has no address to hand over. So it lands first.
-      const px = readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>i));
+      const px = readRgba(changetype<@unmanaged [Rgba *]>(<usize>frame + <usize>i));
       line += hexRgba(px);
     }
     print(line);
@@ -90,7 +90,7 @@ function emitFrame(name: string, frame: Rgba, bytes: u32): void {
 }
 
 /// A pixel's colour, by channel name rather than by byte offset into it.
-function colourAt(frame: Rgba, x: i32, y: i32): u8[] {
+function colourAt(frame: @unmanaged [Rgba *], x: i32, y: i32): u8[] {
   const px = pixelAt(frame, x, y, <i32>scene.CANVAS_WIDTH);
   return [px.r, px.g, px.b];
 }
@@ -260,7 +260,9 @@ export function _start_game(): void {
   const header: usize = memory.data(<usize>HEADER_SIZE, 4);
   const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
   // The same block, named twice: bytes for the verb, pixels for the probes.
-  const frame = changetype<Rgba>(frameBuf);
+  // `let`, not `const` — a const view in a scope that also has an integer const
+  // crashes the compiler (types.ts has the repro).
+  let frame = changetype<@unmanaged [Rgba *]>(frameBuf);
 
   print(
     "sort keys: crown " + scene.TREE_CROWN_SORT.toString() +
@@ -299,7 +301,7 @@ export function _start_game(): void {
     }
     // The framework writes the submit header too: the record contract is one
     // thing, and splitting its two halves across two modules is how they drift.
-    writeSubmitHeader(changetype<SubmitHeader>(header), out, written);
+    writeSubmitHeader(changetype<@unmanaged [SubmitHeader *]>(header), out, written);
 
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != <i32>written) {
