@@ -19,22 +19,24 @@
 // states the layout as fields, and the compiler computes the offsets from the
 // widths — the same way it computes them for the C header's twin.
 //
-// ## Storage is written at the declaration
+// ## Declared plain, viewed where it is used
 //
 // A bare `struct` is a **value**: the bytes live in the variable, assigned by
-// copy, with no address (TensionScript's 0.10 default flip). Neither record here
-// is that. Both are bytes in a caller's buffer, reached through a pointer, which
-// is exactly the case `@unmanaged struct` exists for — so the storage model is
-// on the declaration and the use sites are a plain `changetype<T>(ptr)`.
+// copy, with no address (TensionScript's 0.10 default flip). The declarations
+// below are exactly that, and they carry no storage decorator — same as
+// `assembly/ogre/generated`'s records, which are also plain.
 //
-// That is not cosmetic: a value has no address, so a use cannot lend it one
-// (`TS6395`), and `changetype` to the bare value form is refused outright
-// (`AS100`). Declaring `@unmanaged` is what makes the pointer view legal, and it
-// says the thing that matters to a reader — these bytes are the host's.
+// Storage is chosen at the *use*, because a use is where it is known. A record
+// in a caller's buffer is written through a pointer, so that one call site says
+// `changetype<@unmanaged SpriteRecord>(ptr)`: an `@unmanaged` view is a pointer
+// over bytes with no header, and the operand supplies the address. The modifier
+// has been a use-site one since 0.11.1, which is why the declaration needs no
+// twin.
 //
-// `@unmanaged struct` is C-layout and headerless: fields at their natural
-// alignment, `sizeof` including trailing padding, `offsetof` the field's byte
-// offset. That is what makes `sizeof<SpriteRecord>()` a meaningful stride.
+// The value form is what the field list describes — C layout, fields at their
+// natural alignment, `sizeof` including trailing padding, `offsetof` the field's
+// byte offset — and it does not change with the view. That is what makes
+// `sizeof<SpriteRecord>()` a meaningful stride.
 //
 // ## Where the layout is checked
 //
@@ -50,7 +52,7 @@
 // that is right while the write goes somewhere else.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
-@unmanaged export struct SpriteRecord {
+export struct SpriteRecord {
   x: i32;        // 0
   y: i32;        // 4
   srcX: u16;     // 8
@@ -66,7 +68,7 @@
 }
 
 /** The submit header: records pointer, count, stride, reserved. */
-@unmanaged export struct SubmitHeader {
+export struct SubmitHeader {
   records: u32;    // 0
   count: u32;      // 4
   stride: u16;     // 8
@@ -97,9 +99,9 @@ export const FACING_FRONT: u8 = 1;
  * samples is already fixed by `tex`, and the shader has no idea the sheet was
  * ever larger than one page.
  *
- * **`@managed struct`, not a value, and that is a compiler boundary rather than
- * a preference.** A bare `struct` value is refused in all three places this type
- * has to live:
+ * **A class, not a struct.** This type is never on the wire and never viewed
+ * through a pointer, so the value model buys nothing here — and it cannot be
+ * used in the three places the type has to live:
  *
  * ```
  * AS100: an @inline struct as a class field (a class field is a pointer slot;
@@ -112,9 +114,10 @@ export const FACING_FRONT: u8 = 1;
  *
  * `Composite.Layer.frame` is a class field, `Tileset.named` is a
  * `Map<string, Frame>`, and callers pass `frameForPixel(...)` results straight
- * into functions. A value can do none of the three. `@managed struct` is the
- * record form that can: the same C layout, GC-owned, and its reference is the
- * fields pointer — so a field read is a load, not a header indirection.
+ * into functions. A value can do none of the three, and `@managed` at a use
+ * cannot rescue it — `TS6395: Type 'Frame' is a value with no address, so a use
+ * cannot view it as '@managed'`. So it is an ordinary reference with ordinary
+ * reference behaviour, which is what a lookup result wants anyway.
  *
  * `ok` is 1 for a usable frame and 0 for an inert one: a coordinate outside the
  * sheet, a name that was never defined, a degenerate tileset. A flag rather than
@@ -123,14 +126,14 @@ export const FACING_FRONT: u8 = 1;
  * writes no record: `IsometricWorld.addStatic` skips it and `Composite.addLayer`
  * refuses it.
  */
-@managed export struct Frame {
+export class Frame {
   /** Texture-array slot, 0..15. */
   tex: u16;
   srcX: u16;
   srcY: u16;
   w: u16;
   h: u16;
-  /** 1 usable, 0 inert. `u8` rather than `bool` to keep the record 12 bytes. */
+  /** 1 usable, 0 inert. */
   ok: u8;
 
   constructor(tex: u16, srcX: u16, srcY: u16, w: u16, h: u16) {
@@ -156,11 +159,11 @@ export const FACING_FRONT: u8 = 1;
 /**
  * Write one record into `out` at `index`, through the struct.
  *
- * `changetype<SpriteRecord>` is the pointer view: no header is read or written,
- * because an `@unmanaged` record has none. The field writes below are the wire's
- * bytes in the wire's order, and every field is written — including the pad and
- * the flags — because a record that inherits a byte from the previous frame is a
- * record whose meaning depends on history.
+ * `changetype<@unmanaged SpriteRecord>` is the pointer view: no header is read or
+ * written, because an `@unmanaged` view has none. The field writes below are the
+ * wire's bytes in the wire's order, and every field is written — including the
+ * pad and the flags — because a record that inherits a byte from the previous
+ * frame is a record whose meaning depends on history.
  */
 export function writeRecord(
   out: usize,
@@ -172,7 +175,7 @@ export function writeRecord(
   groupId: u16,
   z: u8,
 ): void {
-  const rec = changetype<SpriteRecord>(out + <usize>(index * <i32>sizeof<SpriteRecord>()));
+  const rec = changetype<@unmanaged SpriteRecord>(out + <usize>(index * <i32>sizeof<SpriteRecord>()));
   rec.x = x;
   rec.y = y;
   rec.srcX = frame.srcX;
@@ -195,7 +198,7 @@ export function writeRecord(
  * `u16` at offset 8.
  */
 export function writeSubmitHeader(header: usize, records: usize, count: u32): void {
-  const hdr = changetype<SubmitHeader>(header);
+  const hdr = changetype<@unmanaged SubmitHeader>(header);
   hdr.records = u32(records);
   hdr.count = count;
   hdr.stride = <u16>RECORD_SIZE;
