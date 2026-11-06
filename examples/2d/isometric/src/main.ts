@@ -27,10 +27,8 @@ import {
   arg,
   argCount,
   ConfigBuilder,
-  pixelAt,
   print,
   Rgba,
-  readRgba,
   ResFile,
   RuntimeSession,
 } from "tension-framework";
@@ -80,8 +78,8 @@ function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
     for (let i: u32 = base; i < end; i += 4) {
-      const px = readRgba(changetype<@unmanaged [Rgba *]>(<usize>frame + <usize>i));
-      line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
+      const px = i >> 2;
+      line += hex2(frame[px].r) + hex2(frame[px].g) + hex2(frame[px].b) + hex2(frame[px].a);
     }
     print(line);
   }
@@ -89,8 +87,8 @@ function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
 }
 
 function colourAt(frame: @unmanaged [Rgba *], x: i32, y: i32): u8[] {
-  const px = pixelAt(frame, x, y, <i32>scene.CANVAS_WIDTH);
-  return [px.r, px.g, px.b];
+  const i = y * <i32>scene.CANVAS_WIDTH + x;
+  return [frame[i].r, frame[i].g, frame[i].b];
 }
 
 function same(a: u8[], b: u8[], tolerance: i32 = 2): bool {

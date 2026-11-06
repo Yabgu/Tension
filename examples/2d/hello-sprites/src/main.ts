@@ -28,7 +28,6 @@ import {
   Info,
   Info,
   print,
-  readRgba,
   RECORD_SIZE,
   Rgba,
   SpriteRecord,
@@ -286,10 +285,12 @@ export function _start_game(): void {
   // locals of one struct type in two loops crash the compiler (0.13.2 and
   // 0.14.1 both: `duplicate local name`, from `fillSroaFieldLocals`). A view is
   // a pointer local, so it is unaffected — and the fields are still named.
+  // `let`, not `const`: a const view beside an integer const crashes the
+  // compiler (types.ts has the repro).
+  let pixels = changetype<@unmanaged [Rgba *]>(frame);
   let nonBlack: u32 = 0;
   for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    const px = readRgba(changetype<@unmanaged [Rgba *]>(frame + <usize>(i * 4)));
-    if (px.r != 0 || px.g != 0 || px.b != 0) nonBlack++;
+    if (pixels[i].r != 0 || pixels[i].g != 0 || pixels[i].b != 0) nonBlack++;
   }
 
   // 8. per-sprite checks: each centre must be its own cell's colour. The count
@@ -298,15 +299,11 @@ export function _start_game(): void {
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    // A view, not a returned value: this function already holds one `Rgba`
-    // value in the loop above, and two value locals of one struct type in two
-    // loops crash the compiler (types.ts has the repro). The fields read the
-    // same either way.
-    const px = changetype<@unmanaged Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4));
+    const at = cy * CANVAS_WIDTH + cx;
     const c = CELL_COLOURS[<i32>i];
-    const r = px.r;
-    const g = px.g;
-    const b = px.b;
+    const r = pixels[at].r;
+    const g = pixels[at].g;
+    const b = pixels[at].b;
     const close = (abs(<i32>r - <i32>c[0]) <= 3) && (abs(<i32>g - <i32>c[1]) <= 3) &&
       (abs(<i32>b - <i32>c[2]) <= 3);
     if (!close) {
