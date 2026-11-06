@@ -23,6 +23,38 @@ come first; the rest is the Windows build cheat-sheet.
    Leave changes in the working tree for the user to review and commit.
 4. **Honor runtime tool/approval gates.** If a command is refused, surface it;
    do not route around it.
+5. **Declare records plain; name the storage model at every use.** A struct
+   declaration carries **no** `@managed`, `@unmanaged` or `@inline`:
+
+   ```ts
+   export struct SpriteRecord { x: i32; … }      // declaration: plain
+   function writeRecord(records: @unmanaged [SpriteRecord *], …)   // use: explicit
+   const out = changetype<@unmanaged [SpriteRecord *]>(records);   // use: explicit
+   ```
+
+   The declaration says *what the bytes are*; the use says *how they cross*
+   (by value, by pointer, as a GC reference). Two rules follow from that and
+   they are not negotiable in review:
+
+   - **Never a manual `load<T>`/`store<T>` where a field name will do.** A
+     record is reached as `records[i].x`, a pixel as `px.r`; hand-written
+     offsets belong only in a byte-level control (see
+     `examples/2d/isometric/src/bindings.ts`) or where the layout is packed and
+     cannot be a struct (the IWI header, `TS6408`).
+   - **No `addr + i * RECORD_SIZE` in guest code.** Records are
+     `@unmanaged [T *]` — the compiler supplies the stride.
+
+   `@managed` and `@unmanaged` are never omitted "because it compiles": an
+   omission is a value where a pointer was meant, or the reverse.
+
+   Three compiler limits push against this rule and are the reason a use site
+   sometimes looks heavier than expected. All are measured, all are in
+   `tension-framework/assembly/2d/types.ts` with their refusals quoted:
+   a plain-struct **scalar** param cannot be written through (`AS100`) or be
+   host-visible (`TS6411`), so parameters are array views; a view `const` in a
+   scope with an integer `const` crashes the compiler, so it is a `let`; and two
+   value locals of one struct type in two loops of a function crash it too, so
+   one of the two reads through a view instead.
 
 ## Capabilities
 

@@ -197,7 +197,7 @@ export function _start_game(): void {
 
   const infoBuf: usize = memory.data(<usize>gfx.INFO_SIZE, 8);
   const infoLen = gfx.info(handle, infoBuf, <i32>gfx.INFO_SIZE);
-  const info = changetype<Info>(infoBuf);
+  const info = changetype<@unmanaged Info>(infoBuf);
   if (infoLen != <i32>gfx.INFO_SIZE) {
     fail("info -> " + infoLen.toString());
     gfx.close(handle);
@@ -256,7 +256,7 @@ export function _start_game(): void {
   const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
   writeSprites(changetype<@unmanaged [SpriteRecord *]>(records));
   const header: usize = memory.data(<usize>12, 4);
-  writeSubmitHeader(changetype<SubmitHeader>(header), changetype<@unmanaged [SpriteRecord *]>(records), <u32>SPRITES);
+  writeSubmitHeader(changetype<@unmanaged [SubmitHeader *]>(header), changetype<@unmanaged [SpriteRecord *]>(records), <u32>SPRITES);
 
   const accepted = gfx.submit(handle, pipe, header, 0);
   if (accepted != SPRITES) {
@@ -288,7 +288,7 @@ export function _start_game(): void {
   // a pointer local, so it is unaffected — and the fields are still named.
   let nonBlack: u32 = 0;
   for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    const px = readRgba(changetype<Rgba>(frame + <usize>(i * 4)));
+    const px = readRgba(changetype<@unmanaged [Rgba *]>(frame + <usize>(i * 4)));
     if (px.r != 0 || px.g != 0 || px.b != 0) nonBlack++;
   }
 
@@ -298,7 +298,11 @@ export function _start_game(): void {
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    const px = readRgba(changetype<Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4)));
+    // A view, not a returned value: this function already holds one `Rgba`
+    // value in the loop above, and two value locals of one struct type in two
+    // loops crash the compiler (types.ts has the repro). The fields read the
+    // same either way.
+    const px = changetype<@unmanaged Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4));
     const c = CELL_COLOURS[<i32>i];
     const r = px.r;
     const g = px.g;

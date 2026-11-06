@@ -33,7 +33,6 @@ import {
   readRgba,
   ResFile,
   RuntimeSession,
-  SpriteRecord,
 } from "tension-framework";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
@@ -72,7 +71,7 @@ function hex2(v: u8): string {
   return (v < 16 ? "0" : "") + v.toString(16);
 }
 
-function emitFrame(name: string, frame: Rgba, bytes: u32): void {
+function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
@@ -81,7 +80,7 @@ function emitFrame(name: string, frame: Rgba, bytes: u32): void {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
     for (let i: u32 = base; i < end; i += 4) {
-      const px = readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>i));
+      const px = readRgba(changetype<@unmanaged [Rgba *]>(<usize>frame + <usize>i));
       line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
     }
     print(line);
@@ -89,7 +88,7 @@ function emitFrame(name: string, frame: Rgba, bytes: u32): void {
   print("FRAME-END " + name);
 }
 
-function colourAt(frame: Rgba, x: i32, y: i32): u8[] {
+function colourAt(frame: @unmanaged [Rgba *], x: i32, y: i32): u8[] {
   const px = pixelAt(frame, x, y, <i32>scene.CANVAS_WIDTH);
   return [px.r, px.g, px.b];
 }
@@ -112,11 +111,10 @@ function describe(c: u8[]): string {
 /// `facingBack` picks the composite order and nothing else: the art, the
 /// positions and the sort keys are identical in both renders, so a difference
 /// between the two frames is the z assignment and only that.
-function writeScene(base: SpriteRecord, facingBack: bool, lanternSort: u32, invert: bool): i32 {
-  // The record writer below is this example's own (it is the control the
-  // framework is measured against), so it takes an address. The scene names the
-  // base by type; the offset arithmetic stays in the writer that owns it.
-  const at = changetype<usize>(base);
+function writeScene(at: usize, facingBack: bool, lanternSort: u32, invert: bool): i32 {
+  // An address, not a record type: this guest's writer is the byte-level control
+  // the framework's frames are compared against, so it must stay independent of
+  // the SDK's record declaration. See the header of src/bindings.ts.
   let n: i32 = 0;
 
   // Ground: 6x6 tiles, all sort 0 so they are behind everything. Their own
@@ -269,7 +267,9 @@ export function _start_game(): void {
   const header: usize = memory.data(<usize>gfx.HDR_SIZE, 4);
   const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
   // The same block, named twice: bytes for the verb, pixels for the probes.
-  const frame = changetype<Rgba>(frameBuf);
+  // `let`, not `const` — a const view in a scope that also has an integer const
+  // crashes the compiler (types.ts has the repro).
+  let frame = changetype<@unmanaged [Rgba *]>(frameBuf);
 
   const lanternSort: u32 = behind ? scene.LANTERN_SORT_WRONG : scene.LANTERN_SORT;
   print(
@@ -283,7 +283,7 @@ export function _start_game(): void {
     const facingBack: bool = pass == 0;
     const name: string = facingBack ? "back" : "front";
 
-    const count = writeScene(changetype<SpriteRecord>(records), facingBack, lanternSort, invertComposite);
+    const count = writeScene(records, facingBack, lanternSort, invertComposite);
     gfx.writeSubmitHeader(header, records, <u32>count);
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != count) {

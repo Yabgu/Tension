@@ -19,34 +19,42 @@
 // states the layout as fields, and the compiler computes the offsets from the
 // widths — the same way it computes them for the C header's twin.
 //
-// ## Why the wire records say `@unmanaged`
+// ## Declared plain, storage named at every use
 //
-// A bare `struct` is a **value**: the bytes live in the variable, no address.
-// A wire record is the opposite — its bytes live in the caller's buffer and the
-// adapter reads them there. `@unmanaged` is that: C layout, no header, reached
-// through a pointer, and `sizeof` including trailing padding so the stride means
-// something.
+// A struct declaration here carries no `@managed`, `@unmanaged` or `@inline`.
+// The declaration says *what the bytes are* — a record with these fields, C
+// layout, `sizeof` including trailing padding — and each use says *how they
+// cross*: by value, or through a pointer.
 //
-// `SpriteRecord`, `SubmitHeader`, `Rgba` and `Info` are all four that shape, and
-// all four are parameters or return values of a function that names them by type
-// rather than by address: `writeRecord(records, i, …)`, `readRgba(px)`,
-// `pixelAt(frame, …)`. `Frame` is not — it is a lookup result, never a view over
-// bytes — so it stays a plain reference.
+//   export struct SpriteRecord { … }                            declaration
+//   function writeRecord(records: @unmanaged [SpriteRecord *])  a run of them, by pointer
+//   const px = changetype<@unmanaged Rgba>(addr)                one of them, by pointer
+//   function readRgba(px: @unmanaged [Rgba *]): Rgba            pointer in, value out
 //
-// **The declaration says it because the parameter says it.** With a plain
-// declaration the compiler refuses every route to writing through a record
-// argument:
+// A use is never left implicit "because it compiles". Omitting `@unmanaged` at
+// a use is a claim that the thing is a value, and a record in a caller's buffer
+// is not one.
 //
-//   `writeRec(rec: @unmanaged SpriteRecord, …)`  field writes through the param
-//       -> AS100 "reading an @inline struct value as a whole"
-//   the same signature on an exported function
-//       -> TS6411 "a view parameter … cannot appear in a host-visible signature"
-//   `changetype<usize>(rec)` and `copyInto(changetype<usize>(rec), v)` to dodge
-//       -> AS100 again, both
+// **Why array views rather than a scalar pointer.** The natural spelling,
+// `writeRec(rec: @unmanaged SpriteRecord, …)`, over a plain declaration is
+// refused — as is every route around it:
 //
-// Declared `@unmanaged`, all three work. Reading through a view param over a
-// *value* does work, which is why the restriction reads as an asymmetry in the
-// compiler rather than a rule of the language.
+//   field write through `@unmanaged` scalar param   AS100 "reading an @inline
+//                                                  struct value as a whole"
+//   the same parameter on an exported function      TS6411 "a view parameter …
+//                                                  cannot appear in a
+//                                                  host-visible signature"
+//   changetype<usize>(param) + store<…>             AS100
+//   copyInto(changetype<usize>(param), v)           AS100
+//
+// `@unmanaged [T *]` has none of those restrictions — it is host-visible, it
+// indexes, and `[0]` is a record. So the parameters are array views: honest for
+// a frame (a run of records), and for the header, which is one of them.
+//
+// **`Frame` is a class.** It is a lookup result, never bytes in a buffer, so
+// the value model has nothing to offer — and a plain struct cannot be a class
+// field, a `Map` value, or a non-local argument, which are the three places it
+// lives. A class is already explicitly a GC reference; no annotation needed.
 //
 // ## Records are an array, not an address
 //
@@ -78,7 +86,7 @@
 // assertions. That is where a wire defect belongs.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
-@unmanaged export struct SpriteRecord {
+export struct SpriteRecord {
   x: i32;        // 0
   y: i32;        // 4
   srcX: u16;     // 8
@@ -94,7 +102,7 @@
 }
 
 /** The submit header: records pointer, count, stride, reserved. */
-@unmanaged export struct SubmitHeader {
+export struct SubmitHeader {
   records: u32;    // 0
   count: u32;      // 4
   stride: u16;     // 8
@@ -119,7 +127,7 @@ export const HEADER_SIZE: u32 = sizeof<SubmitHeader>();
  * the four channels are a record with names, and a caller that gets `r` and `b`
  * the wrong way round has no way to notice from a hex address.
  */
-@unmanaged export struct Rgba {
+export struct Rgba {
   r: u8;
   g: u8;
   b: u8;
@@ -150,16 +158,20 @@ export const HEADER_SIZE: u32 = sizeof<SubmitHeader>();
  * `width * height` of these and there is nothing else in the block, so the
  * pointer arithmetic belongs here once rather than in every guest's probe.
  */
-export function pixelAt(frame: Rgba, x: i32, y: i32, width: i32): Rgba {
-  return readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>((y * width + x) * 4)));
+export function pixelAt(frame: @unmanaged [Rgba *], x: i32, y: i32, width: i32): Rgba {
+  // A value has no address, so a returned value has to be a local: `return
+  // readRgba(…)` is refused, `const px = readRgba(…); return px;` is the sret
+  // path. Same rule as the showcase's `add()`.
+  const px = readRgba(changetype<@unmanaged [Rgba *]>(<usize>frame + <usize>((y * width + x) * 4)));
+  return px;
 }
 
-export function readRgba(px: Rgba): Rgba {
+export function readRgba(px: @unmanaged [Rgba *]): Rgba {
   const out = new Rgba();
-  out.r = px.r;
-  out.g = px.g;
-  out.b = px.b;
-  out.a = px.a;
+  out.r = px[0].r;
+  out.g = px[0].g;
+  out.b = px[0].b;
+  out.a = px[0].a;
   return out;
 }
 
@@ -170,7 +182,7 @@ export function readRgba(px: Rgba): Rgba {
  * `load<u16>(buf + 2)`. The layout is the C declaration's; a guest that reads
  * `info.canvasWidth` cannot visit the wrong offset.
  */
-@unmanaged export struct Info {
+export struct Info {
   version: u16;       // 0
   maxRecords: u16;    // 2
   maxTextures: u32;   // 4
@@ -271,19 +283,18 @@ export function writeRecord(
   groupId: u16,
   z: u8,
 ): void {
-  const rec = records[index];
-  rec.x = x;
-  rec.y = y;
-  rec.srcX = frame.srcX;
-  rec.srcY = frame.srcY;
-  rec.w = frame.w;
-  rec.h = frame.h;
-  rec.tex = frame.tex;
-  rec._pad = 0;
-  rec.sortKey = sortKey;
-  rec.groupId = groupId;
-  rec.z = z;
-  rec.flags = 0;
+  records[index].x = x;
+  records[index].y = y;
+  records[index].srcX = frame.srcX;
+  records[index].srcY = frame.srcY;
+  records[index].w = frame.w;
+  records[index].h = frame.h;
+  records[index].tex = frame.tex;
+  records[index]._pad = 0;
+  records[index].sortKey = sortKey;
+  records[index].groupId = groupId;
+  records[index].z = z;
+  records[index].flags = 0;
 }
 
 /**
@@ -294,14 +305,14 @@ export function writeRecord(
  * `u16` at offset 8.
  */
 export function writeSubmitHeader(
-  hdr: SubmitHeader,
+  hdr: @unmanaged [SubmitHeader *],
   records: @unmanaged [SpriteRecord *],
   count: u32,
 ): void {
   // `<usize>` rather than `changetype<usize>`: a view is already a pointer,
   // and `changetype` between the two is refused (AS202).
-  hdr.records = u32(<usize>records);
-  hdr.count = count;
-  hdr.stride = <u16>RECORD_SIZE;
-  hdr._reserved = 0;
+  hdr[0].records = u32(<usize>records);
+  hdr[0].count = count;
+  hdr[0].stride = <u16>RECORD_SIZE;
+  hdr[0]._reserved = 0;
 }
