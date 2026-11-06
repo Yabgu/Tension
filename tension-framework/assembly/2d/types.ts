@@ -100,6 +100,33 @@ export struct Rgba {
   a: u8;
 }
 
+/**
+ * The pixel at `ptr`, as a value.
+ *
+ * The view is `@unmanaged` — a pointer over four bytes — and it is read into a
+ * local before returning, because a value has no address: `return
+ * changetype<@unmanaged Rgba>(ptr)` is refused (`AS100: only a local value can
+ * be returned`), while building the local and returning *that* is the ordinary
+ * sret path the language documents. Four field reads, and the caller gets
+ * `px.r` instead of `load<u8>(at)`.
+ *
+ * **Not from inside two loops.** The returned local is an SROA value, and two
+ * SROA locals of one struct type in two loops of the same function crash the
+ * compiler — 0.13.2 and 0.14.1 both, `duplicate local name` out of
+ * `fillSroaFieldLocals`. One loop is fine, and so are two outside loops. Where a
+ * function has two pixel loops, take the `@unmanaged` view instead: it is a
+ * pointer local and the fields are named the same way.
+ */
+export function readRgba(ptr: usize): Rgba {
+  const view = changetype<@unmanaged Rgba>(ptr);
+  const out = new Rgba();
+  out.r = view.r;
+  out.g = view.g;
+  out.b = view.b;
+  out.a = view.a;
+  return out;
+}
+
 /** Facings a composite's z table is indexed by. */
 export const FACINGS: i32 = 8;
 /** Facing 0 is the back view: the sibling layers draw over the body. */

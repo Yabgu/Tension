@@ -24,6 +24,74 @@ come first; the rest is the Windows build cheat-sheet.
 4. **Honor runtime tool/approval gates.** If a command is refused, surface it;
    do not route around it.
 
+## Capabilities
+
+A guest reaches the engine only through a capability: a named websocket of
+imports, resolved by the session at load time. Two kinds exist — the ones the
+host implements itself, and the ones an adapter DSO implements behind the shared
+adapter ABI (`TENSION_ADAPTER_ABI_VERSION`, `tension_adapter.h`).
+
+**Implemented by the host** (`tension-core`, registered by the session):
+
+- **`tension::io`** — 6 verbs: `print`, `read_line`, `arg`, `arg_count`, `log`,
+  `log_structured` (`write` is a framework convenience over `print`). The
+  always-present one; every guest may import it.
+- **`tension::audio`** — 6 verbs: `audio_init`, `audio_play`, `audio_stop`,
+  `audio_set_gain`, `audio_voice_state`, `audio_shutdown`. Backed by the audio
+  feature of the host build.
+- **`tension::ai`** — 8 verbs: session create/add/generate/read/state/cancel/
+  reset/close over the vendored llama.cpp. Feature-gated (`ai`), excluded from
+  the test suite.
+- **`tension::res`** — 8 verbs: `res_open`, `res_close`, `res_read`, `res_seek`,
+  `res_tell`, `res_stat`, `res_stat_fd`, `res_readdir` — the read-only resource
+  VFS over `.tns` volumes. The reader is `tension-res` (Zig); the host links it
+  and the adapter links the same archive.
+- **`tension::solver`** — 5 verbs: create, step, state, set_state, destroy over
+  the Fortran numerical core. `GUEST_ABI.md` is its contract.
+- **`tension::session`** — the session ABI itself: arena control, manifest,
+  callbacks, task park/wake. Not a capability a game calls directly; the guest
+  SDK wraps it as `RuntimeSession`.
+
+**Implemented by an adapter DSO** (each registers `publish`/`apply`/`layout_hash`
+through the adapter ABI; a session must be given the DSO with `--capability`):
+
+- **`ogre`** — 11 verbs — `tension-ogre/build/libtension_ogre.so`. The 3D
+  renderer: scene nodes, cameras, lights, materials, meshes, jobs, bones,
+  animation. Design: `tension-ogre/DESIGN.md`.
+- **`tension::input`** — 6 verbs — `tension-input/build/libtension_input.so`.
+  Keyboard/pointer state and edge events. Design: `tension-input/DESIGN.md`.
+- **`tension::2d`** — 10 verbs — `tension-2d/build/libtension_2d.so`. Sprite
+  batching over SDL_GPU: `open`, `close`, `set_pipeline`, `shader_compile_raw`,
+  `submit`, `present`, `texture_load`, `info`, `screenshot`, `set_texture`.
+  Design: `tension-2d/DESIGN.md`.
+
+### Guest SDK
+
+`tension-framework/` is the guest side of every capability above:
+
+- `assembly/*.ts` — one file per single-module capability (`io`, `audio`, `ai`,
+  `res`, `solver`, `input`).
+- `assembly/<capability>/` — the ones with several modules: `ogre/` (wire
+  records, mesh, motion, bones, animation, async load), `runtime/` (arena,
+  session, manifest, callbacks), `2d/` (the scene layer below).
+- `assembly/index.ts` re-exports all of it; a guest imports `"tension-framework"`.
+
+**The 2D scene layer** (`assembly/2d/`, on top of `tension::2d`'s verbs):
+`Tileset` (page + src rect from a sheet coordinate), `Composite` (layered
+character sharing one sort key and group), `IsometricWorld` (tall sprites sliced
+into depth-sorted bands). Records are `struct`s written through
+`changetype<@unmanaged …>`; the declaration is the layout. Worked examples:
+`examples/2d/isometric` (real art, hand-written records — the control) and
+`examples/2d/isometric-framework` (the same scene via the library, frames
+byte-identical).
+
+**The 2D verbs are declared per example** (`examples/2d/*/src/bindings.ts`), not
+in the SDK: `tension-2d/include/tension_2d.h` has no `schema/` entry, so
+`tools/codegen` cannot generate them, and the hand-written module documents the
+overloads a generator would not. Only `set_texture` is declared inside the SDK,
+by `Tileset.bind`. Moving the rest there is a pending cleanup, not a design
+choice.
+
 ## Running MSYS2 commands on Windows
 
 The repo's build tooling is bash + MSYS2. On Windows, run everything that needs
