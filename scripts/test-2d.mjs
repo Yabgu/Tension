@@ -34,6 +34,18 @@ function run(cmd, args, opts = {}) {
   return result;
 }
 
+// ── 0. dependency pins ──────────────────────────────────────────────────────
+// Two naga copies would mean two `Options` types and a graph that compiles
+// with one and is compared against the other. Fail here rather than deep in a
+// `cargo tree` error someone has to decode.
+{
+  const pin = run('node', [join(here, 'scripts', 'check-naga-pin.mjs')]);
+  if (!pin || pin.status !== 0) {
+    console.error(pin?.stdout ?? '', pin?.stderr ?? '');
+    die('the naga pin check failed');
+  }
+}
+
 // ── 1. the capability ────────────────────────────────────────────────────────
 const build = run('node', [join(here, 'scripts', 'build-2d.mjs')], { stdio: 'inherit' });
 if (!build || build.status !== 0) die('building the DSO failed');

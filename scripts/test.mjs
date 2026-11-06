@@ -9,6 +9,7 @@
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
 //   8. line endings       no CRLF in a text file
+//   9. dependency pins    one naga version, not two
 //
 // ## What "parallel" may and may not do here
 //
@@ -119,6 +120,17 @@ const SUITES = {
     needs: [],
     holds: [],
     run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
+  },
+
+  // A dependency-hygiene check rather than a test: cargo links two naga copies
+  // silently when `tension-core` and `tension-shadergen` disagree, and the
+  // symptom is a confusing "ambiguous" from `cargo tree`, not a compile error.
+  // Cheap enough to be a suite, and it belongs where every other gate runs.
+  deps: {
+    title: 'dependency pins',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-naga-pin.mjs')]),
   },
 
   codegen: {

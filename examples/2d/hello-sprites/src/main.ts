@@ -1,0 +1,263 @@
+// examples/2d/hello-sprites/src/main.ts
+//
+// Ten sprites, drawn by tension-2d from a TensionScript guest.
+//
+// This is the same frame `tension-2d/tests/smoke_core.cpp` renders, produced
+// through the real guest path instead of a C++ stub: a session, the
+// `tension::2d` capability loaded from its DSO, and the nine verbs called
+// through the session's imports. The 10240-pixel total is the assertion both
+// paths share, so a difference means the guest is not doing what the stub does.
+//
+// What the guest is responsible for, and what it is not:
+//
+//   atlas        built here, byte by byte, as an IWI container. The adapter
+//                decodes it; nothing outside IWI is served at v1.
+//   records      written here, at the offsets `tension_2d.h` fixes.
+//   ordering     the adapter's. The guest sets `sort_key`; the comparator runs
+//                on the host, driven by the graph's `make_tuple`.
+//   pixels       read back here with `screenshot` and counted here.
+//
+// The canvas is 640x360 because the adapter renders to one fixed offscreen
+// target (`render.h`). The brief for this example said 320x240; `open` takes
+// only `flags`, so there is no way to ask for a size, and inventing one would
+// have been a lie about the ABI.
+
+import { ConfigBuilder, print, RuntimeSession } from "tension-framework";
+import * as gfx from "./bindings";
+import { DEFAULT_2D_BLOB } from "./graph.generated";
+
+// --- the frame's numbers ---------------------------------------------------
+
+const SPRITES: i32 = 10;
+/// The atlas is 4x4 cells of 64 px, and a 32 px sprite samples the top-left
+/// quarter of one. Same as the C++ smoke test, which is what makes the pixel
+/// count comparable.
+const ATLAS_SIZE: u32 = 256;
+const CELL: u32 = 64;
+const SPRITE_SIZE: u16 = 32;
+/// Sprites sit 64 px apart, so 32 px quads never touch: the non-black count is
+/// exactly `SPRITES * SPRITE_SIZE^2` with no overlap to reason about.
+const SPRITE_PITCH: i32 = 64;
+
+const EXPECTED_PIXELS: u32 = <u32>SPRITES * <u32>SPRITE_SIZE * <u32>SPRITE_SIZE;
+
+/// The ten cell colours, RGB. Distinct on purpose: a solid atlas would let a
+/// wrong source rectangle still produce the right pixel count.
+const CELL_COLOURS: u8[][] = [
+  [255, 0, 0],   [0, 255, 0],   [0, 0, 255],   [255, 255, 0], [0, 255, 255],
+  [255, 0, 255], [128, 0, 0],   [0, 128, 0],   [0, 0, 128],   [128, 128, 0],
+];
+
+// --- the atlas -------------------------------------------------------------
+
+/// Build the IWI container `IWImageIO.ixx` writes: magic, a 74-byte header, then
+/// interleaved pixels.
+///
+/// Written here rather than shipped as a file because a guest has no file
+/// reader (`tension::io` is text only), and because building it exercises the
+/// path that matters: the guest writes bytes, the adapter reads them back
+/// through `guest_read`.
+function buildAtlas(): usize {
+  const pixels = ATLAS_SIZE * ATLAS_SIZE * 3;
+  const total = 74 + pixels;
+  const at: usize = memory.data(<usize>total, 8);
+
+  memory.fill(at, 0, <usize>total);
+
+  // magic "IWI1"
+  store<u8>(at + 0, 0x49); // I
+  store<u8>(at + 1, 0x57); // W
+  store<u8>(at + 2, 0x49); // I
+  store<u8>(at + 3, 0x31); // 1
+  store<u32>(at + 4, ATLAS_SIZE); // width
+  store<u32>(at + 8, ATLAS_SIZE); // height
+  store<u8>(at + 12, 0); // colorSpace: sRGB
+  store<u16>(at + 13, 3); // componentCount
+  store<u16>(at + 15, 24); // bitsPerPixel
+  store<u8>(at + 17, 0); // storageLayout: interleaved
+
+  // Eight 6-byte component descriptors; the first three are R, G, B (UNORM,
+  // 8 bits each, at 0/8/16), the rest are the reserved slots and stay zero.
+  for (let i = 0; i < 8; i++) {
+    const at2 = at + 18 + <usize>(i * 6);
+    if (i < 3) {
+      store<u8>(at2 + 0, <u8>(i + 1)); // semantic R=1, G=2, B=3
+      store<u8>(at2 + 1, 2); // class UNORM
+      store<u16>(at2 + 2, <u16>(i * 8)); // bitOffset
+      store<u16>(at2 + 4, 8); // bitWidth
+    }
+  }
+  store<u64>(at + 66, <u64>pixels);
+
+  // Paint the cells. Cell k covers (k%4, k/4) * 64, and cells 10..15 keep the
+  // zero they were filled with -- black, which no sprite samples.
+  const cellsPerRow: u32 = ATLAS_SIZE / CELL;
+  for (let y: u32 = 0; y < ATLAS_SIZE; y++) {
+    for (let x: u32 = 0; x < ATLAS_SIZE; x++) {
+      const cell = (y / CELL) * cellsPerRow + (x / CELL);
+      const o = at + 74 + <usize>((y * ATLAS_SIZE + x) * 3);
+      if (cell < <u32>CELL_COLOURS.length) {
+        const c = CELL_COLOURS[cell];
+        store<u8>(o + 0, c[0]);
+        store<u8>(o + 1, c[1]);
+        store<u8>(o + 2, c[2]);
+      }
+    }
+  }
+  return at;
+}
+
+// --- the records -----------------------------------------------------------
+
+/// The same ten records `smoke_core.cpp` submits: one per cell, 64 px apart,
+/// 32 px square, `sort_key = i` so draw order is submission-independent.
+function writeSprites(base: usize): void {
+  for (let i = 0; i < SPRITES; i++) {
+    const cell = <u32>i;
+    gfx.writeSprite(
+      base,
+      i,
+      i * SPRITE_PITCH, // x
+      0, // y
+      <u16>((cell % 4) * CELL), // src_x
+      <u16>((cell / 4) * CELL), // src_y
+      SPRITE_SIZE, // w
+      SPRITE_SIZE, // h
+      0, // tex: the one atlas
+      <u32>i, // sort_key
+    );
+  }
+}
+
+// --- the run ---------------------------------------------------------------
+
+function fail(what: string): void {
+  print("hello-sprites: " + what);
+}
+
+export function _start_game(): void {
+  print("=== TensionCore 2D demo: ten sprites through tension::2d ===");
+
+  // 1. the session. Every verb that touches guest memory needs it READY;
+  //    without this, `open` still succeeds and `info` answers -EBADF.
+  if (RuntimeSession.open(ConfigBuilder.forThisBuild()) != 0) {
+    fail("the session did not open");
+    return;
+  }
+
+  // 2. the capability
+  const handle = gfx.open(0);
+  if (handle <= 0) {
+    fail("open -> " + handle.toString());
+    return;
+  }
+  print("open -> handle " + handle.toString());
+
+  const infoBuf: usize = memory.data(<usize>gfx.INFO_SIZE, 8);
+  const infoLen = gfx.info(handle, infoBuf, <i32>gfx.INFO_SIZE);
+  if (infoLen != <i32>gfx.INFO_SIZE) {
+    fail("info -> " + infoLen.toString());
+    gfx.close(handle);
+    return;
+  }
+  print(
+    "info -> v" + gfx.infoVersion(infoBuf).toString() +
+      ", max_records " + gfx.infoMaxRecords(infoBuf).toString() +
+      ", max_buckets " + gfx.infoMaxBuckets(infoBuf).toString(),
+  );
+
+  // 3. the pipeline, from the graph blob the adapter was built against. A
+  //    blob whose hash the DSO does not carry is -ENOSYS here, so this failure
+  //    has exactly one cause: the .t2dg is not the one build-2d.mjs compiled.
+  const BLOB_SIZE: u32 = 584; // DEFAULT_2D_BLOB.length, fixed at generation
+const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
+  for (let i: i32 = 0; i < <i32>BLOB_SIZE; i++) {
+    store<u8>(blobPtr + <usize>i, DEFAULT_2D_BLOB[i]);
+  }
+  const pipe = gfx.setPipeline(handle, blobPtr, BLOB_SIZE);
+  if (pipe < gfx.PIPE_PRESET_MIN) {
+    fail("set_pipeline -> " + pipe.toString() + " (blob " + BLOB_SIZE.toString() + " bytes)");
+    gfx.close(handle);
+    return;
+  }
+  print("set_pipeline -> pipe " + pipe.toString());
+
+  // 4. the texture
+  const atlas = buildAtlas();
+  const atlasBytes = 74 + ATLAS_SIZE * ATLAS_SIZE * 3;
+  const tex = gfx.textureLoad(handle, atlas, atlasBytes);
+  if (tex <= 0) {
+    fail("texture_load -> " + tex.toString());
+    gfx.close(handle);
+    return;
+  }
+  print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)");
+
+  // 5. the records and the header
+  const records: usize = memory.data(<usize>(SPRITES * <i32>gfx.RECORD_SIZE), 8);
+  writeSprites(records);
+  const header: usize = memory.data(<usize>gfx.HDR_SIZE, 4);
+  gfx.writeSubmitHeader(header, records, <u32>SPRITES);
+
+  const accepted = gfx.submit(handle, pipe, header, 0);
+  if (accepted != SPRITES) {
+    fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
+    gfx.close(handle);
+    return;
+  }
+  print("submit -> " + accepted.toString() + " records");
+
+  // 6. draw
+  if (gfx.present(handle) != 0) {
+    fail("present failed");
+    gfx.close(handle);
+    return;
+  }
+
+  // 7. read the frame back and count what is not black
+  const frame: usize = memory.data(<usize>gfx.FRAME_BYTES, 8);
+  const written = gfx.screenshot(handle, frame, <i32>gfx.FRAME_BYTES);
+  if (written != <i32>gfx.FRAME_BYTES) {
+    fail("screenshot -> " + written.toString() + ", expected " + gfx.FRAME_BYTES.toString());
+    gfx.close(handle);
+    return;
+  }
+
+  let nonBlack: u32 = 0;
+  for (let i: u32 = 0; i < gfx.CANVAS_WIDTH * gfx.CANVAS_HEIGHT; i++) {
+    const at = frame + <usize>(i * 4);
+    if (load<u8>(at) != 0 || load<u8>(at + 1) != 0 || load<u8>(at + 2) != 0) nonBlack++;
+  }
+
+  // 8. per-sprite checks: each centre must be its own cell's colour. The count
+  //    alone would pass if every sprite sampled the same cell.
+  let wrong = 0;
+  for (let i = 0; i < SPRITES; i++) {
+    const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
+    const cy: u32 = <u32>SPRITE_SIZE / 2;
+    const at = frame + <usize>((cy * gfx.CANVAS_WIDTH + cx) * 4);
+    const c = CELL_COLOURS[<i32>i];
+    const r = load<u8>(at);
+    const g = load<u8>(at + 1);
+    const b = load<u8>(at + 2);
+    const close = (abs(<i32>r - <i32>c[0]) <= 3) && (abs(<i32>g - <i32>c[1]) <= 3) &&
+      (abs(<i32>b - <i32>c[2]) <= 3);
+    if (!close) {
+      wrong++;
+      print(
+        "  sprite " + i.toString() + " at (" + cx.toString() + "," + cy.toString() +
+          ") is (" + r.toString() + "," + g.toString() + "," + b.toString() +
+          "), expected (" + c[0].toString() + "," + c[1].toString() + "," + c[2].toString() + ")",
+      );
+    }
+  }
+
+  print("screenshot -> " + written.toString() + " bytes, " + nonBlack.toString() + " non-black pixels");
+  print("expected " + EXPECTED_PIXELS.toString() + " (" + SPRITES.toString() + " x 32x32)");
+
+  const ok = nonBlack == EXPECTED_PIXELS && wrong == 0;
+  print(ok ? "OK: ten sprites at their recorded positions" : "FAILED: see above");
+
+  gfx.close(handle);
+  RuntimeSession.close();
+}
