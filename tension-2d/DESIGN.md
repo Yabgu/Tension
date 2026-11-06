@@ -1099,7 +1099,7 @@ scaffold time is the point of this subsection.
 | SDL_shadercross | Zlib | **absent** — no pkg-config, no `libSDL3_shadercross*` | **vendor** into `third_party/shadercross/` |
 | Cranelift | Apache-2.0 + LLVM exception | transitive via Wasmtime 24.0.13 | already linked; the question is the API, not the dependency |
 | ImageViewer | Apache-2.0 | **absent** — nothing in the tree references it | vendor a pinned copy after `iw_decode_to_format` lands |
-| Naga | MIT OR Apache-2.0 | **linked** — 29.0.4, build and run time | the shader compiler; replaced glslangValidator |
+| Naga | MIT OR Apache-2.0 | **linked** — 29.0.4, build and run time | the shader compiler; replaced glslangValidator. Pinned to 29.0.4 because 30.0.1's `glsl-in` feature does not compile (its `apply_default_interpolation` sits behind a `spv-in`/`wgsl-in` cfg gate) — retested 2026-11-06, see `tension-core/Cargo.toml` |
 | glslang | BSD-3-Clause | present | used by the **bench** only; no longer in the adapter's build |
 
 **SDL_shadercross — vendored, not system.** It is not installed here, and the
