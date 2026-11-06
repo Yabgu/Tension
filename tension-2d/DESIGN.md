@@ -143,7 +143,7 @@ where the deviation is recorded, and the amendment text should name all three.
 
 ---
 
-## 3. The nine verbs
+## 3. The ten verbs
 
 The module is `tension::2d`. Ids are 1-based and stable — a reused id is a silent
 misroute, not a compile error. Every signature is `i32` at the wasm boundary
@@ -153,7 +153,7 @@ misroute, not a compile error. Every signature is `i32` at the wasm boundary
 
 | # | verb | signature | returns | flags |
 | --- | --- | --- | --- | --- |
-| 1 | `open` | `(i32 flags) -> i32` | handle | 0 |
+| 1 | `open` | `(i32 width, i32 height, i32 flags) -> i32` | handle | 0 |
 | 2 | `close` | `(i32 handle) -> i32` | 0 | 0 |
 | 3 | `set_pipeline` | `(i32 handle, i32 blob_ptr, i32 blob_len) -> i32` | `pipe_id` | 0 |
 | 4 | `shader_compile_raw` | `(i32 handle, i32 vs_ptr, i32 vs_len, i32 fs_ptr, i32 fs_len) -> i32` | `pipe_id` | 0 |
@@ -162,14 +162,23 @@ misroute, not a compile error. Every signature is `i32` at the wasm boundary
 | 7 | `texture_load` | `(i32 handle, i32 src_ptr, i32 src_len, i32 target_format) -> i32` | texture id | 0 |
 | 8 | `info` | `(i32 handle, i32 ptr, i32 cap) -> i32` | bytes written | `REENTRANT_READONLY` |
 | 9 | `screenshot` | `(i32 handle, i32 ptr, i32 cap) -> i32` | bytes written | 0 |
+| 10 | `set_texture` | `(i32 handle, i32 pipe_id, i32 slot, i32 texture_id) -> i32` | 0 | 0 |
 
-**`open(i32 flags) -> i32`** — verb 1. Creates the GPU thread, `SDL_CreateGPUDevice`,
-and the one session. Returns the handle, 1-based. Errors: `-EINVAL` (`flags != 0`;
-none are defined), `-EBUSY` (a session is already open; capacity 1, declared),
-`-ENODEV` (no GPU device on this machine), `-ENOSYS` (this SDL build has no GPU
-backend), `-EIO` (device creation failed for a reason SDL can name). Like
+**`open(i32 width, i32 height, i32 flags) -> i32`** — verb 1. Creates the GPU
+thread, `SDL_CreateGPUDevice`, the offscreen target at `width` x `height`, and the
+one session. Returns the handle, 1-based. Errors: `-EINVAL` (`width`/`height`
+outside 1..16384, or `flags != 0`; no flags are defined), `-EBUSY` (a session is
+already open; capacity 1, declared), `-ENODEV` (no GPU device on this machine),
+`-ENOSYS` (this SDL build has no GPU backend), `-EIO` (device creation failed for a
+reason SDL can name), `-ENOMEM` (the target could not be allocated). Like
 `input_open`, this is where the refusal lives, not `init`
 (`tension-input/DESIGN.md` §3: load returns 0 either way; the retry is here).
+
+The canvas is the caller's decision, fixed for the handle's life; a resize is
+`close` + `open`, because v1 has no swapchain to renegotiate with. The 16384
+ceiling is Vulkan's guaranteed `maxImageDimension2D`, so a size this verb accepts
+is one every conformant device can allocate. `info` echoes the size back, so a
+guest sizes its readback without trusting its own memory of the call.
 
 **`close(i32 handle) -> i32`** — verb 2. Releases textures, pipelines, buffers,
 the swapchain, the device, and joins the thread. Returns 0, `-EINVAL` for an
@@ -255,11 +264,26 @@ empty source), `-ENOSYS` (a container this build's decoder does not serve),
 `-EIO` (decode failed), `-ENODEV` (no device), `-ENOMEM` (allocation). §8 is the
 whole of this verb's design.
 
-**`info(i32 handle, i32 ptr, i32 cap) -> i32`** — verb 8. A fixed record:
+**`set_texture(i32 handle, i32 pipe_id, i32 slot, i32 texture_id) -> i32`** —
+verb 10. Binds a loaded texture to one **page** of a pipeline's texture array.
+A record's `tex` is the page it samples, so this is what gives the field meaning.
+Errors: `-EINVAL` (bad handle, `slot` outside 0..15, or a texture whose dimensions
+disagree with the pipeline's array), `-ENOENT` (unknown `pipe_id` or
+`texture_id`), `-ENOMEM` (array allocation), `-EIO` (the GPU copy failed).
+
+The array is one `SDL_GPUTexture` of `TENSION_2D_MAX_ATLAS_PAGES` (16) layers, so
+every page of one pipeline is the same size — an array texture has one size. A
+page that disagrees is refused rather than resampled: the record's src rect is in
+pixels, and resampling would move pixels inside a cell. A pipeline with **no**
+bound pages samples the most recently loaded texture at page 0, which is the
+single-atlas behaviour v1 shipped with, so a caller that never calls this verb is
+unaffected.
+
+**`info(i32 handle, i32 ptr, i32 cap) -> i32`** — verb 8. A fixed 24-byte record:
 `{u16 version, u16 max_records, u32 max_textures, u32 max_pipelines, u16 max_buckets,
-u16 flags}`. Read-only, re-entrant (`TENSION_IMPORT_REENTRANT_READONLY`,
-`tension_adapter.h:191`), so a callback may ask how much room it has. Errors:
-`-EINVAL`, `-ENOSPC` (short buffer).
+u16 flags, u32 canvas_width, u32 canvas_height}`. Read-only, re-entrant
+(`TENSION_IMPORT_REENTRANT_READONLY`, `tension_adapter.h:191`), so a callback may
+ask how much room it has. Errors: `-EINVAL`, `-ENOSPC` (short buffer).
 
 **`screenshot(i32 handle, i32 ptr, i32 cap) -> i32`** — verb 9. Reads back the
 last presented frame as RGBA8 into guest memory (§9). Not re-entrant: it waits for
@@ -347,9 +371,13 @@ frame index and the atlas's frame table (`atlas_frame`, §6) rather than the gue
 rewriting them per frame. A guest that animates on the CPU may write them
 directly; both are the same record.
 
-**`tex`** — the atlas page index, `u16`, so 65 536 pages. Multi-atlas is not a
-feature the adapter implements: it is a field the graph reads to pick a binding
-(`tex_sample` takes the page), and oversized tilesets are the case that needs it.
+**`tex`** — the atlas page index, `u16`. The adapter implements multi-atlas as a
+16-layer texture array per pipeline (`set_texture`, §3): the shader reads `tex`
+and samples `texture2DArray` at that layer, so one instanced draw covers several
+atlas pages without splitting the bucket — which is what keeps multi-atlas from
+overruling the sort. All pages of one pipeline share the array's dimensions.
+Oversized tilesets are the case that needs it; the framework layer computes `tex`
+per tile, the adapter never invents one.
 
 **`sort_key`** — depth, `u32`, written by the graph. Larger sorts later. The field
 is `u32` rather than `f32` because a sort key that compares equal should compare
@@ -870,6 +898,18 @@ per-instance data is the sprite, and the shader synthesizes the quad. The patter
 is what makes §6.4's "record in, vertices out" graph shape cheaper than expansion:
 there is nothing to expand.
 
+**Multi-atlas.** A pipeline samples a 16-layer `SDL_GPUTexture` array
+(`SDL_GPU_TEXTURETYPE_2D_ARRAY`) rather than a single 2D texture: one layer per
+atlas page, each page copied in by `set_texture` with
+`SDL_CopyGPUTextureToTexture` (a GPU-side copy — the pixels never come back to the
+CPU). The vertex stage writes the record's `tex` as a `flat` varying and the
+fragment stage samples `vec3(uv, page)`. The alternative — one texture bound per
+draw and the bucket split by page — was rejected because splitting a bucket
+reorders its draws, and draw order inside a bucket *is* the graph's sort.
+
+The uniform block and the sampler binding therefore move with the span, not once
+per frame: two pipelines in one frame may have atlases of different sizes.
+
 **The measured figure.** The first draft of this section quoted **~0.06 ms at
 1k–10k sprites** from a planning probe that left nothing in the tree. That number
 is now replaced by a probe that does: `tension-2d/bench/sprite_batch.c`, built and
@@ -920,6 +960,23 @@ down anywhere else.
 pixel assertions. SDL_gpu.h's own opening says the API "can render offscreen
 entirely, perhaps for image processing, and not use a window at all"
 (`SDL_gpu.h:35`). §9 has the driver detail.
+
+**Alpha blending, and the test that found it missing.** The pipeline's colour
+target is created with source-over blending on straight (non-premultiplied)
+alpha — `SRC_ALPHA` / `ONE_MINUS_SRC_ALPHA` for colour, `ONE` /
+`ONE_MINUS_SRC_ALPHA` for alpha. Until the isometric example existed this was
+`enable_blend = false`, i.e. SDL_GPU's default, and every test passed: a sprite
+batcher whose sprites are opaque rectangles cannot tell the difference. A
+cut-out sprite cannot. The first isometric frame drew the conifer's transparent
+margins as opaque black rectangles the size of each src rect, and the character's
+top layer erased the two beneath it — a transparent texel writes its colour when
+nothing blends. That is a one-line defect with a whole class of symptom, and it
+is the argument for having a worked example at all: the suites were green while
+the renderer could not draw a tree.
+
+The blend is on the *pipeline*, so every preset and every compiled graph gets
+it. The hexdump assertions of the earlier suites are unchanged, because
+blending an opaque texel is the identity.
 
 **The tradeoff, stated rather than hidden.** SDL_GPU uploads through a transfer
 buffer: map, write, unmap, then `SDL_UploadToGPUBuffer` — a copy pass
@@ -1374,11 +1431,17 @@ library; the FreeImage removal's completeness aside from the six lockfiles.
 - **A swapchain.** v1 renders to an offscreen target and reads it back with
   `screenshot`. There is no window path, so `present` is not a present in the
   SDL sense yet.
-- **Multi-atlas.** The record carries `tex`, but the adapter binds one texture
-  per frame (the most recently loaded). Drawing a second page needs a texture
-  array or a per-bucket binding pass. See §14.2.
+- **Multi-atlas — settled after the first draft.** The adapter now binds a
+  16-layer texture array per pipeline (`set_texture`), and the shader samples it
+  at the record's `tex`. The remaining limit is size: every page of one pipeline
+  shares the array's dimensions, so two page sizes mean two pipelines. See §14.1.
 - **`shader_compile_raw`.** The wire has the door; the build has no GLSL →
   SPIR-V translator linked into the DSO, so the verb answers `-ENOSYS`.
+- **The tileset the isometric example uses is not in the tree.** It is LimeZu's
+  *Modern exteriors*, fetched by `tension-2d/test-assets/fetch.sh` from the asset
+  host; `tension-2d/test-assets/` is gitignored and only the fetcher travels.
+  Every claim about it is reproducible by running that script, and unreproducible
+  from a clone alone. That is the price of not vendoring third-party art.
 - **Anything on a real GPU.** Every measurement and every pixel above was
   produced on this host's `dzn` ICD — a software Vulkan path. The pipeline runs;
   no performance claim here is a hardware claim.
@@ -1408,7 +1471,8 @@ compiles both stages with `glslangValidator`.
 
 ## 14. Proven, and not proven
 
-The honest state of the tree, as of commit `d856bea`. Every line under **proven**
+The honest state of the tree, after the dynamic-canvas/animation/multi-atlas
+slice. Every line under **proven**
 names the test that proves it; every line under **not proven** names what is
 missing and why. A reader deciding whether to trust this design should read this
 section before any other.
@@ -1422,6 +1486,11 @@ section before any other.
 | **The compiler reproduces the preset.** `default_2d` parsed from a 584-byte blob renders byte-identically to the hand-written preset — and the build refuses if their SPIR-V differs. | `graph vs preset, scenario A/B: byte-identical`; `build-2d.mjs` SPIR-V comparison |
 | **The compiler is general.** `default_2d_scaled` (653 bytes) renders at 2× via the graph's `const_f32` + `mul`, which `tension-shadergen` cannot express; coverage is exactly 4× and the sort still holds on top of it. | `smoke_core.cpp` scaled A / scaled B reversed; `default_2d_scaled SPIR-V differs from the preset, as it must` |
 | **Composite grouping works.** Two characters on one tile, three layers each: pixel (20,20) is **cyan** (C2's last layer), not blue (C1's `z=2` backpack). The interleaved and grouped submissions are byte-identical. | `smoke_core.cpp` composite section. Revert-tested: swapping `group_id` and `z` in the graph turns the pixel blue, exactly the z-first prediction. |
+| **The canvas size is the caller's.** A second handle opened at 320×180 reports that size from `info`, reads back `320 × 180 × 4` bytes, and puts its sprites where a 320×180 projection says. Opening at 0, at 16385, or with a non-zero flag is `-EINVAL`. | `smoke_core.cpp` 320×180 section. Revert-tested: hard-coding 640×360 in `open` makes `info` report the wrong canvas and the readback `-ENOSPC`. |
+| **Animation.** One record, four submits, only `src_x` changing: pixel (16,16) is red, green, blue, yellow in turn, and (0,0) stays black. | `smoke_core.cpp` animation section. Revert-tested with `TENSION_2D_FREEZE_FRAME=1`: the frame index frozen at 0 leaves red at every step and the run exits 1. |
+| **Multi-atlas.** Two atlases, same geometry, disjoint palettes; page 0 renders red and page 1 orange in the same draw. A page of another size, page 16 and an unknown pipe are each refused. | `smoke_core.cpp` multi-atlas section. Revert-tested: emitting `out_tex = 0u` in the vertex stage makes both sprites sample page 0 and both checks fail. |
+| **Composite ordering across pages.** Two characters on one tile, one on each atlas page: pixel (20,20) is the page-1 character's colour (group 2), and reversed submission is byte-identical. | `smoke_core.cpp` multi-atlas composite section |
+| **The three original problems compose on real art.** A 2816x5072 tileset (15 pages of 1024x1024) is paged into the adapter's 16-slot array; a conifer is sliced into crown (sort 86) and trunk (118) with the character (88) between them; a three-layer character composites by `group_id` 200 and `z`; a lantern sorts in front of the character. Six pixel probes, three pages in one draw. | `examples/2d/isometric/test.mjs`. Revert-tested twice: flipping the body/backpack `z` moves the probe from the backpack's colour to the body's, and dropping the lantern's sort key below the character's moves the lantern's probe to the character's own colour. Both mistakes are caught by the specific colour they produce, not by "something differs". |
 | **The Cranelift comparator is correct.** A 45-record sample matches a plain-Rust reference over every ordered pair. | `pipeline::cranelift_backend::compiled_matches_reference` |
 | **The generated shaders compile.** Both stages of both graphs parse, validate and emit SPIR-V through Naga. | `tension-shadergen/tests/naga_compile.rs` (5 tests); `classic2d.rs` (glslang, kept as a second opinion) |
 | **The blob parser refuses malformed input.** Bad magic, short reads, a future version, over-long TLVs and truncation are each a refusal, not a panic. | `pipeline::parser::tests` |
@@ -1436,11 +1505,12 @@ the keys turns cyan to blue).
 
 | gap | what is actually true |
 | --- | --- |
-| **Multi-atlas.** | `tex` is in the record and the graph, but the adapter binds **one** texture per frame (the most recently loaded). A guest with two atlas pages draws one. Needs a texture array or a per-bucket binding pass. |
 | **Runtime compiler — built, narrowly.** | `set_pipeline` compiles an unknown blob through the host's ABI v5 `compile_graph` slot. Proven for one shape: a stage ending in `emit_quad`. The blob is compiled once and cached by hash (36 ms cold, 0.004 ms cached). Not proven: any graph shape the GLSL backend does not already know. |
 | **`shader_compile_raw`.** | `-ENOSYS`. The DSO has no GLSL → SPIR-V translator of its own; the compiler lives in the host behind `compile_graph`, which takes a *graph*, not two shader sources. |
 | **Isometric depth.** | `sort_key`-based ordering works, but no test populates `sort_key` from atlas anchor metadata — nothing computes an anchor yet. That is the framework layer's job, not the adapter's. |
-| **Oversized tilesets.** | Need multi-atlas first. The framework layer would compute `tex` per tile; the adapter has no tile logic and should not grow any. |
+| **Oversized tilesets.** | Multi-atlas exists (16 pages per pipeline), but nothing computes `tex` per tile yet. That is the framework layer's job; the adapter has no tile logic and should not grow any. |
+| **Alpha blending on a hardware driver.** | Blending is enabled and proved correct on the `dzn` software ICD by the isometric example's cut-outs. It has not been exercised on a hardware Vulkan driver, nor are premultiplied pages supported (a page with premultiplied colours would double-darken its edges; the decoders here produce straight alpha). |
+| **Mixed atlas sizes.** | Every page of one pipeline shares the array's dimensions, because an array texture has one size. A game with a 256×256 page and a 512×512 page needs two pipelines. Untested beyond the refusal. |
 | **Complex sort keys.** | `mul` inside a sort key is unit-tested (`a_scaled_key_multiplies_before_comparing`) but no shipped pipeline uses one. The CPU path's `scale` column is exercised by tests only. |
 | **Swapchain.** | Offscreen render target + `SDL_DownloadFromGPUTexture` only. On-screen presentation is untested; `present` is not a present in the SDL sense. A headless-CI concern, but "renders" here means "renders to a texture". |
 | **Hardware performance.** | Every measurement is from the `dzn` software ICD (§7). The pipeline runs; no timing figure is a GPU figure. |
@@ -1451,9 +1521,9 @@ the keys turns cyan to blue).
 
 | file | what it is |
 | --- | --- |
-| `include/tension_2d.h` | the wire: nine verbs, the 28-byte `sprite` record, the submit header, the info record, the pipe_id ranges. No SDL include. |
-| `src/adapter.cpp` | the edge: vtable, nine shims, registration. No SDL. |
-| `src/render.h` / `src/render.cpp` | the device: SDL_GPU, storage buffer, pipeline table, texture table, graph-driven comparator, draw, readback. |
+| `include/tension_2d.h` | the wire: ten verbs, the 28-byte `sprite` record, the submit header, the info record, the pipe_id ranges. No SDL include. |
+| `src/adapter.cpp` | the edge: vtable, ten shims, registration. No SDL. |
+| `src/render.h` / `src/render.cpp` | the device: SDL_GPU, storage buffer, pipeline table, texture table, per-pipeline texture arrays, graph-driven comparator, draw, readback. |
 | `src/texture.h` / `src/texture.cpp` | the IWI reader (SDL-free), pending `iw_decode_to_format`. |
 | `tests/smoke_core.cpp` | a stub `tension-core`: guest memory, `register_import`, then the verbs through the registered table. |
 | `tests/*.t2dg` | the two graph blobs, written by `graph emit-default` on every build so they cannot go stale. |

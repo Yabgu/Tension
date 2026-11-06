@@ -126,3 +126,16 @@ packages/build-stamp.json
 !tension-core/tests/fixtures/dwarf-guest/game.wasm
 !tension-core/tests/fixtures/legacy-guest/game.wasm
 !tension-core/tests/fixtures/legacy-guest/game.wasm.map
+
+# Third-party game art, fetched from the asset host by
+# tension-2d/test-assets/fetch.sh. Never committed: it is somebody else's
+# licensed work, and the repository's job is to carry the fetcher, not the
+# bytes. `sliced/`, `screenshots/` and the example's `assets/` are derived from
+# it and equally local.
+#
+# Two files under this directory *are* tracked — the fetcher itself and the
+# README's preview image. They are added with `git add -f`, because git cannot
+# re-include a path whose parent directory is excluded and excluding the
+# directory is what makes `git check-ignore tension-2d/test-assets/` answer.
+tension-2d/test-assets/
+examples/2d/isometric/assets/

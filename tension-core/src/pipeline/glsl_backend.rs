@@ -58,6 +58,10 @@ fn sg_semantic(semantic: Semantic) -> Option<SgSemantic> {
         Semantic::SrcH => SgSemantic::SrcH,
         Semantic::W => SgSemantic::W,
         Semantic::H => SgSemantic::H,
+        // The atlas page. The shader reads it because `tex` selects the layer
+        // of the pipeline's texture array — the CPU cannot fold that into a
+        // draw without reordering draws, which would overrule the sort.
+        Semantic::Tex => SgSemantic::Tex,
         Semantic::Tint => SgSemantic::Tint,
         Semantic::SortKey => SgSemantic::SortKey,
         Semantic::Pad => SgSemantic::Pad,
@@ -67,8 +71,7 @@ fn sg_semantic(semantic: Semantic) -> Option<SgSemantic> {
         | Semantic::UvY
         | Semantic::GroupId
         | Semantic::Z
-        | Semantic::Flags
-        | Semantic::Tex => return None,
+        | Semantic::Flags => return None,
     })
 }
 
@@ -77,6 +80,7 @@ fn slot_for(semantic: Semantic) -> Option<Slot> {
         Semantic::PosX | Semantic::PosY | Semantic::PosZ | Semantic::W | Semantic::H => Slot::Position,
         Semantic::SrcX | Semantic::SrcY | Semantic::SrcW | Semantic::SrcH => Slot::TexCoord(0),
         Semantic::UvX | Semantic::UvY => Slot::TexCoord(1),
+        Semantic::Tex => Slot::TexPage,
         Semantic::Tint => Slot::Color,
         _ => return None,
     })

@@ -64,6 +64,10 @@ pub enum Semantic {
     W,
     /// The sprite's on-screen height in pixels.
     H,
+    /// The atlas page index (the record's `tex`), which selects the layer of
+    /// the pipeline's texture array. A layout without one samples layer 0,
+    /// which is what a single-atlas pipeline binds.
+    Tex,
     Tint,
     SortKey,
     /// Padding in the record. Occupies bytes, generates no load.
@@ -122,6 +126,9 @@ pub enum Slot {
     /// The texture-coordinate set index, not a component: `TexCoord(0)` and
     /// `TexCoord(1)` are two separate groups.
     TexCoord(u8),
+    /// The atlas page index (DESIGN.md §5, `tex`). A naming group like every
+    /// other slot: the value is the texture array's layer, not a coordinate.
+    TexPage,
     Color,
     Normal,
     Tangent,
@@ -281,6 +288,7 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
     let src_w = field(layout, Semantic::SrcW).unwrap_or(size_w);
     let src_h = field(layout, Semantic::SrcH).unwrap_or(size_h);
     let tint = field(layout, Semantic::Tint);
+    let page = field(layout, Semantic::Tex);
 
     let geom = vocab.attribute(pos_x.slot);
     let uv = vocab.attribute(src_x.slot);
@@ -318,6 +326,10 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
     if tint.is_some() {
         let _ = writeln!(out, "layout(location = 1) out vec4 out_color;");
     }
+    // The atlas page is per-instance and constant across a quad, so it is a
+    // `flat` varying: interpolating an integer index is undefined, and a quad
+    // that straddled two layers would sample neither of them reliably.
+    let _ = writeln!(out, "layout(location = 2) flat out uint out_tex;");
     let _ = writeln!(out);
     let _ = writeln!(out, "void main() {{");
     let _ = writeln!(out, "    const uint kStride = {stride}u;");
@@ -342,6 +354,9 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
     }
     for (suffix, f) in [("x", src_x), ("y", src_y), ("w", src_w), ("h", src_h)] {
         let _ = writeln!(out, "    float {} = {};", name(uv, suffix), load(f));
+    }
+    if let Some(p) = page {
+        let _ = writeln!(out, "    float {} = {};", vocab.attribute(p.slot), load(p));
     }
     if let Some(t) = tint {
         let _ = writeln!(
@@ -384,6 +399,11 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
         uy = name(uv, "y"),
         uh = name(uv, "h")
     );
+    if let Some(p) = page {
+        let _ = writeln!(out, "    out_tex = uint({});", vocab.attribute(p.slot));
+    } else {
+        let _ = writeln!(out, "    out_tex = 0u;");
+    }
     if let Some(t) = tint {
         let _ = writeln!(out, "    out_color = {};", vocab.attribute(t.slot));
     }
@@ -410,6 +430,9 @@ pub fn generate_fragment(layout: &LayoutDesc, opts: &FragmentOptions) -> Result<
     if has_tint {
         let _ = writeln!(out, "layout(location = 1) in vec4 out_color;");
     }
+    // Matches the vertex stage's `flat` qualifier: interpolation qualifiers
+    // must agree across the stage boundary or the pair does not link.
+    let _ = writeln!(out, "layout(location = 2) flat in uint out_tex;");
     // Separate texture and sampler, not a combined `uniform sampler2D`.
     //
     // That is not a style preference. Naga's GLSL frontend refuses a combined
@@ -422,24 +445,40 @@ pub fn generate_fragment(layout: &LayoutDesc, opts: &FragmentOptions) -> Result<
     // either way. The explicit form just says what SPIR-V was going to do, and
     // it matches SDL_GPU's `SDL_GPUTextureSamplerBinding`, which binds the pair
     // as one slot.
-    let _ = writeln!(out, "layout(set = 2, binding = 0) uniform texture2D u_tex;");
+    // An **array** texture, not a 2D one: multi-atlas is `tex` selecting a
+    // layer. The adapter binds one 16-layer array per pipeline and copies each
+    // `texture_load`ed page into the layer `set_texture` names, so a single
+    // instanced draw can sample any page without splitting the bucket — which
+    // is what keeps multi-atlas from disturbing the sort.
+    //
+    // A `sampler2D` here cannot express the page index at all, and binding one
+    // texture per draw would mean reordering draws by atlas page, which would
+    // overrule the graph's sort. The array is the only shape that keeps
+    // "the record carries the page" true.
+    let _ = writeln!(out, "layout(set = 2, binding = 0) uniform texture2DArray u_tex;");
     let _ = writeln!(out, "layout(set = 2, binding = 1) uniform sampler u_sampler;");
     let _ = writeln!(out, "layout(location = 0) out vec4 fragColor;");
     let _ = writeln!(out);
     let _ = writeln!(out, "void main() {{");
+    if layout.preset_id != 6 && layout.preset_id != 7 && layout.preset_id != 9 {
+        let _ = writeln!(
+            out,
+            "    vec4 texel = texture(sampler2DArray(u_tex, u_sampler), vec3(out_uv, float(out_tex)));"
+        );
+    }
 
     // The nine presets differ only in what they do with the sampler and the
     // tint they were given. Keeping them here — and small — is the point: v1 is
     // a working baseline, not an effect library.
     let body = match layout.preset_id {
-        1 => "fragColor = texture(sampler2D(u_tex, u_sampler), out_uv);".to_string(),
-        2 => format!("fragColor = texture(sampler2D(u_tex, u_sampler), out_uv) * {tint};"),
-        3 => format!("fragColor = vec4({tint}.rgb, texture(sampler2D(u_tex, u_sampler), out_uv).a * {tint}.a);"),
-        4 => format!("fragColor = texture(sampler2D(u_tex, u_sampler), out_uv) + {tint};"),
-        5 => format!("fragColor = vec4(texture(sampler2D(u_tex, u_sampler), out_uv).rgb * {tint}.rgb, 1.0);"),
+        1 => "fragColor = texel;".to_string(),
+        2 => format!("fragColor = texel * {tint};"),
+        3 => format!("fragColor = vec4({tint}.rgb, texel.a * {tint}.a);"),
+        4 => format!("fragColor = texel + {tint};"),
+        5 => format!("fragColor = vec4(texel.rgb * {tint}.rgb, 1.0);"),
         6 => "fragColor = vec4(out_uv, 0.0, 1.0);".to_string(),
         7 => "fragColor = vec4(1.0);".to_string(),
-        8 => format!("fragColor = vec4(texture(sampler2D(u_tex, u_sampler), out_uv).rgb, {tint}.a);"),
+        8 => format!("fragColor = vec4(texel.rgb, {tint}.a);"),
         _ => format!("fragColor = {tint};"),
     };
     let _ = writeln!(out, "    {body}");
@@ -491,6 +530,8 @@ pub fn sprite_layout() -> LayoutDesc {
             FieldDesc { semantic: Semantic::SrcY, dtype: DType::U16, offset: 10, slot: Slot::TexCoord(0), step_rate: 0 },
             FieldDesc { semantic: Semantic::W, dtype: DType::U16, offset: 12, slot: Slot::Position, step_rate: 0 },
             FieldDesc { semantic: Semantic::H, dtype: DType::U16, offset: 14, slot: Slot::Position, step_rate: 0 },
+            // The atlas page: the texture array layer the record samples.
+            FieldDesc { semantic: Semantic::Tex, dtype: DType::U16, offset: 16, slot: Slot::TexPage, step_rate: 0 },
         ],
     }
 }
@@ -652,8 +693,34 @@ mod tests {
         // (`SDL_gpu.h:2705–2715`); anything else binds nothing. The texture and
         // its sampler are adjacent bindings because SPIR-V has no combined type.
         assert!(
-            source.contains("layout(set = 2, binding = 0) uniform texture2D u_tex;"),
+            source.contains("layout(set = 2, binding = 0) uniform texture2DArray u_tex;"),
             "{source}"
         );
+        // The page index is the array coordinate's z, so the sample has to name
+        // the varying the vertex stage wrote.
+        assert!(
+            source.contains("vec3(out_uv, float(out_tex))"),
+            "the atlas page does not reach the sampler:\n{source}"
+        );
+    }
+
+    #[test]
+    fn the_atlas_page_is_a_flat_varying_that_the_layout_supplies() {
+        let source = generate_vertex(&sprite_layout(), &NeutralVocabulary).unwrap();
+        // `sprite_layout()` carries `tex`, so the page is loaded, not assumed.
+        assert!(
+            source.contains("float a_texpage = float((r_words[base + 4u] >> 0u) & 0xFFFFu);"),
+            "{source}"
+        );
+        assert!(source.contains("layout(location = 2) flat out uint out_tex;"), "{source}");
+        assert!(source.contains("out_tex = uint(a_texpage);"), "{source}");
+
+        // A layout without the field still declares the varying, so the two
+        // stages link; it samples layer 0, which is what a single-atlas pipe
+        // binds.
+        let mut layout = sprite();
+        layout.fields.retain(|f| f.semantic != Semantic::Tex);
+        let bare = generate_vertex(&layout, &NeutralVocabulary).unwrap();
+        assert!(bare.contains("out_tex = 0u;"), "{bare}");
     }
 }
