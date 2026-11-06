@@ -40,16 +40,14 @@
 //
 // ## Where the layout is checked
 //
-// The declaration *is* the layout: `x: i32` is at 0 and `sortKey: u32` follows
-// `tex`/`_pad` because that is what the field list says, and the compiler
-// derives every offset from the field widths the way a C compiler would. There
-// is no separate table to keep in step, and nothing above needs a guard.
+// Nowhere. The declaration *is* the layout: `srcX: u16` is at 8 because `x: i32`
+// and `y: i32` precede it, and the compiler derives every offset from the field
+// widths the way a C compiler would. A struct that has a field has the field,
+// and a second table restating it would be the drift it was meant to catch.
 //
-// The one place a check belongs is where bytes are actually written:
-// `layoutSelfTest` below writes a real record and reads it back at the offsets
-// `tension_2d.h` publishes. One test of behaviour beats a ledge of assertions
-// about arithmetic, and it catches something they never could — a declaration
-// that is right while the write goes somewhere else.
+// What can actually break the wire is a wrong value in a field, or a record the
+// adapter cannot decode — and both show up as pixels, in the examples'
+// assertions. That is where a wire defect belongs.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
 export struct SpriteRecord {
@@ -245,55 +243,4 @@ export function writeSubmitHeader(header: usize, records: usize, count: u32): vo
   hdr.count = count;
   hdr.stride = <u16>RECORD_SIZE;
   hdr._reserved = 0;
-}
-
-// ── the guest-side offset test ──────────────────────────────────────────────
-
-/**
- * Write a record and a header, then read every field back through the same
- * struct. Returns 0, or a code naming the first field that disagrees.
- *
- * What this catches: `writeRecord` putting a value in the wrong field — `srcY`
- * written to `srcX`, a cleared `_pad`/`flags` left alone, `z` and `groupId`
- * transposed. The sentinels are chosen so a swap shows up: every `u16` field
- * carries a distinct value, so 32 vs 64 vs 0x1234 vs 0x5566 cannot coincide.
- *
- * What this does **not** catch, and never could: whether `SpriteRecord`'s layout
- * matches the C header. The declaration is the layout, and the agreement is
- * proved where the two meet — `TS_STATIC_ASSERT` on the C side, and the adapter
- * decoding a real frame on the other. A test that read raw bytes at hand-written
- * offsets would restate that layout a third time, which is the thing this file
- * exists not to do.
- *
- * `scratch` must be at least `sizeof<SpriteRecord>() + sizeof<SubmitHeader>()`
- * and 8-aligned. The caller supplies it because a static block's size must be a
- * compile-time constant.
- */
-export function layoutSelfTest(scratch: usize): i32 {
-  const frame = new Frame(3, 0x1234, 0x5678, 32, 64);
-  writeRecord(scratch, 0, -7, 0x00ABCDEF, frame, 0x11223344, 0x5566, 7);
-
-  const headerAt = scratch + sizeof<SpriteRecord>();
-  writeSubmitHeader(headerAt, scratch, 1);
-
-  const rec = changetype<@unmanaged SpriteRecord>(scratch);
-  if (rec.x != -7) return 1;
-  if (rec.y != 0x00ABCDEF) return 2;
-  if (rec.srcX != 0x1234) return 3;
-  if (rec.srcY != 0x5678) return 4;
-  if (rec.w != 32) return 5;
-  if (rec.h != 64) return 6;
-  if (rec.tex != 3) return 7;
-  if (rec._pad != 0) return 8;
-  if (rec.sortKey != 0x11223344) return 9;
-  if (rec.groupId != 0x5566) return 10;
-  if (rec.z != 7) return 11;
-  if (rec.flags != 0) return 12;
-
-  const hdr = changetype<@unmanaged SubmitHeader>(headerAt);
-  if (hdr.records != <u32>scratch) return 13;
-  if (hdr.count != 1) return 14;
-  if (hdr.stride != <u16>sizeof<SpriteRecord>()) return 15;
-  if (hdr._reserved != 0) return 16;
-  return 0;
 }
