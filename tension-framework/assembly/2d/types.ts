@@ -19,24 +19,32 @@
 // states the layout as fields, and the compiler computes the offsets from the
 // widths — the same way it computes them for the C header's twin.
 //
-// ## Declared plain, viewed where it is used
+// ## Why these two say `@unmanaged`
 //
-// A bare `struct` is a **value**: the bytes live in the variable, assigned by
-// copy, with no address (TensionScript's 0.10 default flip). The declarations
-// below are exactly that, and they carry no storage decorator — same as
-// `assembly/ogre/generated`'s records, which are also plain.
+// A bare `struct` is a **value**: the bytes live in the variable, no address.
+// A wire record is the opposite — its bytes live in the caller's buffer and the
+// adapter reads them there. `@unmanaged` is that: C layout, no header, reached
+// through a pointer, and `sizeof` including trailing padding so the stride means
+// something.
 //
-// Storage is chosen at the *use*, because a use is where it is known. A record
-// in a caller's buffer is written through a pointer, so that one call site says
-// `changetype<@unmanaged SpriteRecord>(ptr)`: an `@unmanaged` view is a pointer
-// over bytes with no header, and the operand supplies the address. The modifier
-// has been a use-site one since 0.11.1, which is why the declaration needs no
-// twin.
+// **The declaration says it because the writer's parameter says it.** With a
+// plain declaration the compiler refuses all three things a record writer needs:
 //
-// The value form is what the field list describes — C layout, fields at their
-// natural alignment, `sizeof` including trailing padding, `offsetof` the field's
-// byte offset — and it does not change with the view. That is what makes
-// `sizeof<SpriteRecord>()` a meaningful stride.
+//   `writeRec(rec: @unmanaged SpriteRecord, …)`  field writes through the param
+//       -> AS100 "reading an @inline struct value as a whole"
+//   the same signature on an exported function
+//       -> TS6411 "a view parameter … cannot appear in a host-visible signature"
+//   `changetype<usize>(rec)` and `copyInto(changetype<usize>(rec), v)` to dodge
+//       -> AS100 again, both
+//
+// Declared `@unmanaged`, all three work: the parameter is a pointer, the writes
+// land at the field offsets, and `export` is ordinary. Reading through a view
+// param over a *value* does work, which is why the restriction reads as an
+// asymmetry in the compiler rather than a rule of the language.
+//
+// The payoff is the caller's side: `writeRecord(rec, …)` takes the record, not a
+// buffer plus an index, so there is no `index * sizeof` at any call site that
+// does not own the buffer arithmetic.
 //
 // ## Where the layout is checked
 //
@@ -50,7 +58,7 @@
 // assertions. That is where a wire defect belongs.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
-export struct SpriteRecord {
+@unmanaged export struct SpriteRecord {
   x: i32;        // 0
   y: i32;        // 4
   srcX: u16;     // 8
@@ -66,7 +74,7 @@ export struct SpriteRecord {
 }
 
 /** The submit header: records pointer, count, stride, reserved. */
-export struct SubmitHeader {
+@unmanaged export struct SubmitHeader {
   records: u32;    // 0
   count: u32;      // 4
   stride: u16;     // 8
@@ -199,15 +207,14 @@ export class Frame {
 /**
  * Write one record into `out` at `index`, through the struct.
  *
- * `changetype<@unmanaged SpriteRecord>` is the pointer view: no header is read or
- * written, because an `@unmanaged` view has none. The field writes below are the
- * wire's bytes in the wire's order, and every field is written — including the
- * pad and the flags — because a record that inherits a byte from the previous
- * frame is a record whose meaning depends on history.
+ * `rec` is a pointer — the caller hands over the address of the record it wants
+ * written. The field writes below are the wire's bytes in the wire's order, and
+ * every field is written, including the pad and the flags: a record that
+ * inherits a byte from the previous frame is a record whose meaning depends on
+ * history.
  */
 export function writeRecord(
-  out: usize,
-  index: i32,
+  rec: SpriteRecord,
   x: i32,
   y: i32,
   frame: Frame,
@@ -215,7 +222,6 @@ export function writeRecord(
   groupId: u16,
   z: u8,
 ): void {
-  const rec = changetype<@unmanaged SpriteRecord>(out + <usize>(index * <i32>sizeof<SpriteRecord>()));
   rec.x = x;
   rec.y = y;
   rec.srcX = frame.srcX;
@@ -237,8 +243,7 @@ export function writeRecord(
  * writes the same 12 bytes and nobody has to remember that the stride is a
  * `u16` at offset 8.
  */
-export function writeSubmitHeader(header: usize, records: usize, count: u32): void {
-  const hdr = changetype<@unmanaged SubmitHeader>(header);
+export function writeSubmitHeader(hdr: SubmitHeader, records: usize, count: u32): void {
   hdr.records = u32(records);
   hdr.count = count;
   hdr.stride = <u16>RECORD_SIZE;
