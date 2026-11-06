@@ -38,6 +38,13 @@ libc = "0.2"
 # the crate is versioned with it.
 tension-shadergen = { path = "../tension-shadergen" }
 
+# Cranelift is already in the tree as Wasmtime's compiler (same 0.111.13), so
+# naming it adds no download and no new licence — the argument the `libc` entry
+# above makes. The graph compiler's CPU lowering uses it directly.
+cranelift-codegen = "=0.111.13"
+cranelift-frontend = "=0.111.13"
+cranelift-native = "=0.111.13"
+
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`
 # parses the examples' package.json and (JSONC) launch.json as data rather than

@@ -133,6 +133,11 @@ extern "C" {
 #define TENSION_DTYPE_U16 2u
 #define TENSION_DTYPE_I16 3u
 #define TENSION_DTYPE_U8  4u
+/* Appended at 5 under the same append-only rule as the semantics above. The
+ * sprite record carries signed pixel positions (DESIGN.md §5), and none of 1..4
+ * can express one: F32 would reinterpret the bits, and I16 caps a position at
+ * 32767 px with a 1 px quantum. */
+#define TENSION_DTYPE_I32 5u
 
 /* The low byte of a field's `slot`; the high byte is the set index, which only
  * TexCoord uses today. */

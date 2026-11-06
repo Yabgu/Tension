@@ -1,0 +1,89 @@
+/*
+ * render.h — the 2D renderer's internal interface.
+ *
+ * Deliberately SDL-free: adapter.cpp includes this and nothing else, so no SDL
+ * type can leak into the ABI edge. Every SDL include lives in render.cpp.
+ *
+ * The split follows tension-ogre/src/adapter.cpp's: the adapter owns the wire,
+ * validation and guest memory; the renderer owns the device and knows nothing
+ * about guests.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+#ifndef TENSION_2D_RENDER_H
+#define TENSION_2D_RENDER_H
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <string>
+
+namespace tension_2d {
+
+/// v1's fixed canvas. The graph's stage carries `canvas_w`/`canvas_h`
+/// (DESIGN.md §6.2); until the compiler lands there is one preset and one
+/// canvas, and a resize is a v1.1 concern alongside the swapchain.
+constexpr uint32_t kCanvasWidth = 640;
+constexpr uint32_t kCanvasHeight = 360;
+
+/// The renderer: one SDL_GPU device, one offscreen target, one pipeline table
+/// and one texture table.
+class Renderer {
+public:
+    Renderer();
+    ~Renderer();
+
+    Renderer(const Renderer &) = delete;
+    Renderer &operator=(const Renderer &) = delete;
+
+    /// Create the device, the target, the sampler and the 1x1 default texture.
+    /// Returns 0 or a negative errno; `err` carries SDL's message.
+    int32_t open(std::string &err);
+    void close();
+    bool is_open() const;
+
+    /// Build (or find) the pipeline for a built-in preset.
+    int32_t set_pipeline(uint16_t preset_id, uint32_t &pipe_id, std::string &err);
+
+    /// Resolve a graph blob to a pipeline. At v1 the compiled artifacts are
+    /// embedded by `scripts/build-2d.mjs` and identified by the blob's hash; a
+    /// blob this build was not built with is `-ENOSYS`.
+    int32_t set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &pipe_id,
+                              std::string &err);
+
+    /// Append records to a bucket. `records` is the adapter's copy — the
+    /// renderer never sees a guest pointer.
+    int32_t submit(uint32_t pipe_id, const uint8_t *records, uint32_t count,
+                   uint32_t stride, uint32_t bucket, uint32_t &accepted,
+                   std::string &err);
+
+    /// Draw every bucket recorded since the last call, then clear the staging
+    /// state.
+    int32_t present(std::string &err);
+
+    /// Decode and upload one texture.
+    int32_t texture_load(const uint8_t *src, size_t len, int32_t target_format,
+                         uint32_t &texture_id, std::string &err);
+
+    /// Copy the last presented frame out as RGBA8.
+    int32_t screenshot(uint8_t *dst, size_t cap, size_t &written, std::string &err);
+
+    uint32_t width() const;
+    uint32_t height() const;
+    uint32_t pipeline_count() const;
+    uint32_t texture_count() const;
+    static uint32_t max_records();
+    static uint32_t max_buckets();
+
+private:
+    struct Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+/// Read the `sort_key` out of one record so the adapter can share the layout.
+/// Kept here beside the record definition rather than duplicated in the header.
+uint32_t record_sort_key(const uint8_t *record);
+
+} // namespace tension_2d
+
+#endif // TENSION_2D_RENDER_H
