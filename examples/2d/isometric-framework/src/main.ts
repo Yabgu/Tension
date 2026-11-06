@@ -190,10 +190,10 @@ export function _start_game(): void {
     return;
   }
 
-  // The wire layout, checked before a single record is drawn: the struct writes
-  // a record and reads it back at the offsets `tension_2d.h` publishes. The
-  // compile-time assertions in `types.ts` already proved the declaration's
-  // layout, so this is the other half — that the writes land there.
+  // The wire layout, checked before a single record is drawn: write one record
+  // through the struct, read it back at the offsets `tension_2d.h` publishes.
+  // The declaration is the layout; this is the evidence that the writes land in
+  // it.
   const layout = layoutSelfTest(LAYOUT_SCRATCH);
   if (layout != 0) {
     print("FAIL: layout self-test -> code " + layout.toString());
