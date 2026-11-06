@@ -513,6 +513,10 @@ fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
 }
 
 fn main() -> anyhow::Result<()> {
+    // Install the process-wide services the C ABI exposes. Registered before
+    // any adapter can load, so `shader_generate` answers with the default
+    // generator rather than `-ENOSYS` for a preset it should serve.
+    tension_core::init();
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "pack").unwrap_or(false) {
         argv.remove(0);

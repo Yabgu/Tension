@@ -4,9 +4,9 @@
 // adapter is compiled by MSYS2's g++ against an Ogre built by the same toolchain,
 // and the resulting imports reach well past the obvious ones — `zlib1.dll` and
 // `libzzip.dll` come from OgreNextMain, the MinGW runtime from every object
-// compiled by g++, FreeImage from Ogre's texture codec. Missing one surfaces as
-// `LoadLibrary failed with error code 126`, which names no file at all, so the
-// closure is computed from the binaries rather than guessed at.
+// compiled by g++. Missing one surfaces as `LoadLibrary failed with error code
+// 126`, which names no file at all, so the closure is computed from the binaries
+// rather than guessed at.
 //
 // `objdump -p` lists the imports (binutils ships with the compiler the build
 // already requires). Anything not found in the payload or MSYS2's UCRT64 bin is a
@@ -19,7 +19,7 @@ import { WIN, capture, ucrt64Bin, which } from './toolchain.mjs';
 /// Copy every non-system DLL the DLLs in `libDir` depend on, transitively.
 ///
 /// `extraSearch` is where to look besides `libDir` and UCRT64 — typically the
-/// FreeImage payload's `bin/` and the MinGW compiler's own directory.
+/// MinGW compiler's own directory.
 ///
 /// Returns the names that could not be satisfied anywhere on the search list.
 /// A caller should surface those: they are the difference between a package that

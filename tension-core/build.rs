@@ -241,8 +241,8 @@ fn main() {
 
     // ---- the adapter ABI's reference fixture ------------------------------
     // One C file, built twice: the reference adapter and a twin whose vtable
-    // claims ABI version 2, so the loader's version refusal is proven without a
-    // second source file. Neither needs a host symbol — every service arrives
+    // claims one version past the current one, so the loader's version refusal
+    // is proven without a second source file. Neither needs a host symbol — every service arrives
     // through the core API table — which is the property that makes dlopen safe
     // with no -rdynamic.
     let adapter_src = manifest.join("tests").join("support").join("echo_adapter.c");

@@ -1687,9 +1687,14 @@ dependencies = [
  "libc",
  "llama-cpp-2",
  "serde_json",
+ "tension-shadergen",
  "wasmtime",
  "yaml-rust2",
 ]
+
+[[package]]
+name = "tension-shadergen"
+version = "0.1.0"
 
 [[package]]
 name = "termcolor"

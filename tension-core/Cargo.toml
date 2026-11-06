@@ -33,6 +33,10 @@ yaml-rust2 = "=0.13.0"
 # loading crate. libc is already in the tree through wasmtime; naming it makes
 # the dependency honest rather than implicit.
 libc = "0.2"
+# Shader source generation. A path dependency rather than a workspace:
+# `tension-core` is standalone (no `[workspace]` anywhere in this tree), and
+# the crate is versioned with it.
+tension-shadergen = { path = "../tension-shadergen" }
 
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`

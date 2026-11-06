@@ -294,13 +294,10 @@ if (kind === 'ogre') {
   // meets a DT_RUNPATH. On Windows there is no RPATH at all — the loader uses
   // PATH — and the adapter is loaded with an altered search path, so the
   // directory holding the DLLs has to be on it.
-  const freeimage = await nativePackage('@yabgu_gm/tension-freeimage');
   const libDirs = [
     join(ogre.payloadDir, 'lib'),
     ogreNext.libDir,
     ogreNext.pluginDir,
-    freeimage.libDir,
-    freeimage.binDir,
   ].filter(existsSync);
   if (libDirs.length) {
     if (WIN) {

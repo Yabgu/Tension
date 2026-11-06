@@ -24,7 +24,7 @@ const dist = join(packages, 'dist');
 
 mkdirSync(dist, { recursive: true });
 
-const order = ['ogre-next', 'freeimage', 'ogre', 'core'];
+const order = ['ogre-next', 'ogre', 'core'];
 for (const name of order) {
   const dir = join(packages, name);
   if (!existsSync(join(dir, 'package.json'))) continue;

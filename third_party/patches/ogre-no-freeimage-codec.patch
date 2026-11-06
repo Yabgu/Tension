@@ -1,0 +1,80 @@
+Tension: guard OgreFreeImageCodec2.cpp on OGRE_NO_FREEIMAGE
+============================================================
+
+Why this patch exists
+---------------------
+OGRE-Next's OgreMain/CMakeLists.txt:403 unconditionally seeds
+
+    set( BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )
+
+and CMake/Utils/OgreAddTargets.cmake:55 then does
+
+    set(_SOURCES ${_PRIMARY} ${_EXCLUDES})
+
+i.e. the SEPARATE list is *appended* to the target's sources, not subtracted
+from them. The `if (OGRE_CONFIG_ENABLE_FREEIMAGE)` block at
+OgreMain/CMakeLists.txt:354 only adds the header, source and FreeImage_LIBRARIES
+when the option is ON; it never removes anything when it is OFF.
+
+So `-DOGRE_CONFIG_ENABLE_FREEIMAGE=OFF` clears only the codec *registration*.
+The translation unit is still compiled, and it does
+
+    #include <FreeImage.h>          // OgreFreeImageCodec2.cpp:48
+
+with no `#if OGRE_NO_FREEIMAGE` guard anywhere in its 705 lines. Disabling the
+codec therefore fails the build:
+
+    OgreMain/src/OgreFreeImageCodec2.cpp:48:10: fatal error:
+      FreeImage.h: No such file or directory
+
+(on a machine that still has the header it fails at link instead).
+
+This patch adds the guard the file should have had: the whole translation unit
+compiles to an empty object when OGRE_NO_FREEIMAGE is set, so OGRE can be
+configured without FreeImage and without patching CMake.
+
+Placement is load-bearing
+-------------------------
+`#if !OGRE_NO_FREEIMAGE` must sit *after* `#include "OgreStableHeaders.h"`.
+The macro is defined by OgreConfig.h (OgreMain/include/OgreConfig.h:169-170,
+reached through OgreStableHeaders.h), so a guard at line 1 sees it undefined —
+the preprocessor reads that as 0, `!0` is true, and the file compiles anyway.
+Measured: a line-1 guard moved the same error from :48 to :49.
+
+Upstream state
+--------------
+Unfixed as of ogre-next master (pinned here at 475f783d76). If upstream adds
+the guard, this patch becomes a no-op (patch -N --forward reports "previously
+applied" and skips); if upstream changes the surrounding lines, bootstrap.mjs
+fails loudly with the rejected hunk rather than silently skipping.
+
+Source
+------
+Measured in this repo's FreeImage-removal experiment (2026-11-06) against the
+pinned submodule: OgreNextMain and the full tree build, and
+`ldd lib/libOgreNextMain.so` lists no libfreeimage.
+
+Applied by scripts/bootstrap.mjs after the submodule checkout. It is never
+edited in place by hand: AGENTS.md rule 1 keeps third_party/ogre-next read-only,
+and the build is supposed to reproduce through `npm run bootstrap`.
+
+--- a/OgreMain/src/OgreFreeImageCodec2.cpp
++++ b/OgreMain/src/OgreFreeImageCodec2.cpp
+@@ -28,6 +28,11 @@
+ 
+ #include "OgreStableHeaders.h"
+ 
++// Tension: honour OGRE_NO_FREEIMAGE so this TU compiles to nothing when the
++// codec is disabled. OgreConfig.h, via OgreStableHeaders.h above, defines it;
++// the guard must therefore follow that include and not precede it.
++#if !OGRE_NO_FREEIMAGE
++
+ #include "OgreFreeImageCodec2.h"
+ 
+ #include "OgreDataStream.h"
+@@ -703,3 +708,5 @@
+         }
+     }
+ }  // namespace Ogre
++
++#endif  // !OGRE_NO_FREEIMAGE

@@ -163,15 +163,12 @@ if (mode === '--test') {
 const artifact = WIN ? 'libtension_ogre.dll' : 'libtension_ogre.so';
 
 // The post-build step stages Ogre's own DLLs beside the adapter, but not the rest
-// of the closure (zlib1, libzzip, FreeImage, the MinGW runtime). Complete it here
-// so this directory is self-contained — the guest suite loads the adapter
-// straight out of it, and a missing dependency is a LoadLibrary error 126 that
-// names no file.
+// of the closure (zlib1, libzzip, the MinGW runtime). Complete it here so this
+// directory is self-contained — the guest suite loads the adapter straight out
+// of it, and a missing dependency is a LoadLibrary error 126 that names no file.
 if (WIN && backend === 'ogre') {
-  const freeImageBin = join(repo, 'packages', `freeimage-${process.platform}-${process.arch}`, 'bin');
   const gxx = which('g++');
   const search = [
-    ...(existsSync(freeImageBin) ? [freeImageBin] : []),
     ...(gxx ? [join(gxx, '..')] : []),
   ];
   const unresolved = missingSystemFilter(stageWindowsDependencies(outDir, search.map(String)));

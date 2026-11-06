@@ -1180,13 +1180,14 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 4, "the fixture declares a version this build does not load");
+                assert_eq!(found, 5, "the fixture declares a version this build does not load");
+                // Against the constant, not a literal: a literal here goes stale on
+                // every ABI bump and turns a passing refusal into a failing one.
                 assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
-                assert_eq!(expected, 3);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 4"), "the message names the fixture's version");
+        assert!(error.to_string().contains("ABI 5"), "the message names the fixture's version");
     }
 
     #[test]
@@ -1208,7 +1209,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(found, 1, "the fixture is a version-1 adapter");
-                assert_eq!(expected, 3);
+                assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
             }
             AdapterError::LayoutHash { .. } => panic!(
                 "a v1 adapter was refused for its layout hash — that means the host read \

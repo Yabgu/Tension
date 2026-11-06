@@ -59,7 +59,6 @@ mkdirSync(out, { recursive: true });
 const libDirs = [
   out,
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
 ].filter(existsSync);
 
 if (WIN) {
