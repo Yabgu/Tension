@@ -45,7 +45,9 @@ come first; the rest is the Windows build cheat-sheet.
      `@unmanaged [T *]` — the compiler supplies the stride.
 
    `@managed` and `@unmanaged` are never omitted "because it compiles": an
-   omission is a value where a pointer was meant, or the reverse.
+   omission is a value where a pointer was meant, or the reverse. The ways this
+   rule gets broken, each of which has already been written and removed here,
+   are catalogued under **Antipatterns** in `## Capabilities`.
 
    Three compiler limits push against this rule and are the reason a use site
    sometimes looks heavier than expected. All are measured, all are in
@@ -123,6 +125,170 @@ in the SDK: `tension-2d/include/tension_2d.h` has no `schema/` entry, so
 overloads a generator would not. Only `set_texture` is declared inside the SDK,
 by `Tileset.bind`. Moving the rest there is a pending cleanup, not a design
 choice.
+
+### How a capability is loaded
+
+`tension-core --capability <name|path>`, repeatable. A value naming an existing
+file is that file; anything else is a capability *name*, resolved as
+`<dir>/libtension_<name>.so` across `TENSION_CAPABILITY_PATH` (colon-separated).
+The explicit path is checked first, so an operator pointing at a file is never
+overridden by the environment. `--capability 2d` is therefore
+`libtension_2d.so` somewhere on that path.
+
+An adapter DSO exports the shared ABI in `tension_adapter.h`: an import table,
+`publish`, `apply`, `layout_hash`. At load the host compares `layout_hash`
+against the arena layout it was built with; a mismatch is refused, not repaired.
+`publish` is the only place an adapter writes guest memory, it runs inside a byte
+budget, and only one runs at a time. An import declared `DEFERRABLE` on an
+adapter with no `apply` hook is refused at registration, because nothing could
+ever apply the deferred work.
+
+**Order matters in the guest.** `RuntimeSession.open(ConfigBuilder.forThisBuild())`
+must succeed before any verb whose arguments live in guest memory. Observed
+here: with no ready session, `open` still returns a handle and the first verb
+that needs the arena (`info`, `submit`) answers `-EBADF`. Every example checks
+the session's return value first, before it checks `open`'s.
+
+**Verb shape.** Every capability verb takes and returns `i32` (no `size_t` at
+this boundary). A pointer crosses as a guest address, a failure is a negative
+errno, a handle is positive. No verb takes a struct by value or a string: a
+string is ptr + len, a record run is ptr + count + stride. The named wrappers in
+each example's `bindings.ts` exist to give the positional `i32`s names and to
+convert a pointer once; they do no byte work, and a wrapper that starts doing
+byte work has stopped being a wrapper.
+
+## Writing a guest in TensionScript
+
+Long form, with the compile-and-run evidence for each claim:
+`~/work/TensionScript/docs/showcase.md` §1–§4 (the language is the published
+`@yabgu_gm/tensionscript`; versions named there may lag the pin here, so a
+limitation quoted below was re-measured against the version in this tree).
+
+Five facts cover almost everything:
+
+- **A bare `struct` is a value.** Bytes in a local, copied on assignment, passed
+  and returned by value. SROA gives one wasm local per field, not one local and
+  an address. `@inline struct` is its synonym. This is why a declaration carries
+  no annotation.
+- **`@managed struct` is a GC record.** `new` allocates; the reference *is* the
+  fields pointer; the host may read it during the call and must not retain it.
+- **`@unmanaged struct` is a record the host reaches through a pointer.** No GC
+  header, so no tracing (TS6394 if a use asks for one).
+- **A use names the model.** `v: @unmanaged T`, `changetype<@unmanaged T>(ptr)`,
+  `@unmanaged [T *]`. A use may lend an address the operand supplied; it may not
+  invent one (TS6395).
+- **`@unmanaged [T *]` is the pointer to a run of records.** Host-visible,
+  indexable, stride computed by the compiler. It replaces every untyped `usize`
+  buffer parameter and every `addr + i * RECORD_SIZE`.
+
+### Antipatterns this tree has already paid for
+
+Each of these was written here, reviewed, and deleted. They are listed so they
+are not written again.
+
+1. **Offset constants as a second layout.** `const OFF_SORT_KEY = 20;` then
+   `store<u32>(at + OFF_SORT_KEY, k)`. The struct declaration already says 20;
+   the constant says it again, checked by nothing, and drifts the day a field is
+   inserted. Write `records[i].sortKey = k`.
+2. **Hand-rolled stride.** `changetype<SpriteRecord>(addr + i * RECORD_SIZE)`.
+   One dropped multiply lands a record in the middle of another, and the failure
+   is a pixel, hours later. Write `@unmanaged [SpriteRecord *]` and `records[i]`:
+   the emitted code is `i32.mul (index) (i32.const 28)`.
+3. **`usize` where a run of records was meant.** `function writeScene(out: usize)`
+   forces every use site to re-derive the layout by hand and checks no call
+   site. Write the view type; the signature then says what the bytes are.
+4. **An accessor per field over one record.** Seven `infoVersion()`,
+   `infoCanvasWidth()`, … functions, seven hand-written offsets. One `Info`
+   struct, read once, and the caller asks for `info.canvasWidth`. Same reasoning
+   turns four `load<u8>(ptr + n)` pixel reads into one `Rgba` view.
+5. **A helper that copies a record field by field.** `readRgba(px): Rgba` did
+   `new Rgba()`, four assignments, `return`. `px[0]` *is* the pixel; the caller
+   already had it. That is a copy constructor wearing a helper's name, and it
+   existed only because returning a `changetype` was refused. Index, name the
+   fields, return what the caller needs — or return nothing and let it index.
+6. **Layout self-tests.** `if (sizeof<T>() != 28) ERROR(…);` plus fourteen
+   `offsetof` comparisons, `layoutSelfTest()`. A struct that has a field has the
+   field; the declaration is the layout, and re-asserting it installs a second
+   source of truth that can itself drift. A wire defect belongs in a pixel
+   assertion, where it is caught by running the example.
+7. **Storage annotations on a declaration.** `@unmanaged struct SpriteRecord`
+   puts a crossing into the type, so a use that says nothing inherits it — and
+   "says nothing" is the omission rule 5 forbids, now defaulted instead of
+   visible. Declare plain (a value); say `@unmanaged`/`@managed` at the use,
+   where the crossing actually happens.
+8. **A scalar pointer parameter for a record that is written.**
+   `writeRec(rec: @unmanaged SpriteRecord)` is refused on the first field write
+   (AS100, "reading an @inline struct value as a whole") and on an exported
+   signature (TS6411, view parameter in a host-visible signature). A run of one
+   is still a run: pass `@unmanaged [T *]` and write `records[0]`.
+9. **`changetype` where a cast would do.** `changetype<usize>(view)` is refused
+   (AS202); a view is already a pointer, so `<usize>view`. `changetype` earns
+   its place only where the operand supplies an address for a view
+   (`changetype<@unmanaged T>(ptr)`).
+10. **A struct for a packed format.** TensionScript lays records out at natural
+    alignment, and `@abi.align` can only raise it (TS6408: asking for less "is a
+    lie, so it is refused"). The IWI header is the standing exception — `u16` at
+    13 and 15, component descriptors at 6-byte stride — and its byte stores carry
+    a comment naming the format and the diagnostic. A struct there would be
+    silently wrong, not rejected.
+11. **A helper whose body mirrors its parameter list.** The general smell behind
+    items 4 and 5. If a function's body is assignments that restate its own
+    arguments, or a second declaration of something the type already states, ask
+    what caller it serves. When the answer is "it works around a compiler
+    limit", say so in a comment or delete the function.
+
+### Compiler limits, measured
+
+These are real refusals or crashes in the pinned compiler, not style. Each one
+is the reason a use site sometimes looks heavier than the rule above suggests.
+
+- **A scalar view parameter reads fields, but cannot write them.**
+  `function f(r: @unmanaged SpriteRecord)` compiles and `r.x` loads at the
+  field's offset; `r.x = 1` is refused (AS100). Exporting the function refuses
+  the parameter outright (TS6411). Hence array views everywhere a record is
+  written.
+- **A plain-struct return works in-module, not across the module boundary.**
+  In-module it is sret through a hidden destination ("only a local value can be
+  passed" if the argument is an expression). Across the entry module boundary it
+  is `AS100: an @inline struct return across the module boundary`, because the
+  host would have to pass the destination.
+- **A single-field record is refused at every boundary** (ratified BasicCABI
+  divergence: the C convention passes the scalar, this compiler passes a
+  pointer, and both are `(param i32)`, so the disagreement would be silent).
+- **A `const` view beside an integer `const` in one scope crashes the
+  compiler**: `AssertionError` in `setConstantIntegerValue` (0.13.2 and 0.14.1).
+  Use `let`; nothing reassigns a view and the code is identical.
+- **Two value locals of one struct type in two loops of one function** produce a
+  duplicate local name out of `fillSroaFieldLocals`. Keep one local, or read one
+  of the two through a view.
+- **A value type cannot be a class field, an `Array`/`Map` element, or a
+  non-local argument** (AS100, three messages), and `@managed` cannot rescue it
+  (TS6395). A looked-up, handed-around thing is a class — `Frame` is, and says
+  why in its doc comment.
+- **`T[N]` of a record does not inline yet**; of a scalar it does. A record
+  array in a record is not expressible; a pointer view is.
+- **`@abi.align` takes an integer literal (TS6405) and only raises alignment
+  (TS6406/TS6407/TS6408).** A decorator must precede the type it applies to
+  (TS6392).
+
+### Before you commit guest code
+
+```
+cd ~/work/Tension
+grep -rn 'load<\|store<' tension-framework/assembly examples/2d/*/src   # oracle or packed format only
+grep -rn 'OFF_'                 examples/2d/*/src                        # the isometric oracle only
+grep -rn 'changetype<@unmanaged' tension-framework/assembly examples/2d/*/src  # views, not copies
+grep -rnE '^\s*@(managed|unmanaged) struct' tension-framework/assembly examples/2d/*/src  # expect none
+```
+
+The first two may hit only where a comment names the reason: a byte-level
+control (`examples/2d/isometric/src/bindings.ts`, the independent oracle) or a
+packed format that cannot be a struct (the IWI header). The fourth should be
+empty — a declaration carries no storage annotation. A `usize` in a signature
+is a raw byte span (a blob, a pixel buffer), never a run of records.
+
+Then run the example: the pixel assertions are where a wire mistake is caught,
+and they are the reason the layout needs no test of its own.
 
 ## Running MSYS2 commands on Windows
 
