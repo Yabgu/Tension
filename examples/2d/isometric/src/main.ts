@@ -24,6 +24,7 @@
 // believe it: the draw count, the sort keys, and a sampled pixel per claim.
 
 import { arg, argCount, ConfigBuilder, print, ResFile, RuntimeSession } from "tension-framework";
+import { Rgba } from "tension-framework";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
 
@@ -57,29 +58,30 @@ function fail(what: string): void {
 // 230 400 bytes = 460 800 characters, which is why it is chunked: one line per
 // 128 bytes, reassembled by the runner by offset.
 
+function hex2(v: u8): string {
+  return (v < 16 ? "0" : "") + v.toString(16);
+}
+
 function emitFrame(name: string, frame: usize, bytes: u32): void {
+  // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
+  // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
   print("FRAME-BEGIN " + name + " " + bytes.toString());
   for (let base: u32 = 0; base < bytes; base += chunk) {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
-    for (let i: u32 = base; i < end; i++) {
-      const v = load<u8>(frame + <usize>i);
-      line += v < 16 ? "0" : "";
-      line += v.toString(16);
+    for (let i: u32 = base; i < end; i += 4) {
+      const px = changetype<@unmanaged Rgba>(frame + <usize>i);
+      line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
     }
     print(line);
   }
   print("FRAME-END " + name);
 }
 
-function pixelAt(frame: usize, x: i32, y: i32): usize {
-  return frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4);
-}
-
 function colourAt(frame: usize, x: i32, y: i32): u8[] {
-  const at = pixelAt(frame, x, y);
-  return [load<u8>(at), load<u8>(at + 1), load<u8>(at + 2)];
+  const px = changetype<@unmanaged Rgba>(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
+  return [px.r, px.g, px.b];
 }
 
 function same(a: u8[], b: u8[], tolerance: i32 = 2): bool {

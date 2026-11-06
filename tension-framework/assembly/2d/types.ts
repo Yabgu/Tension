@@ -85,6 +85,21 @@ export struct SubmitHeader {
 export const RECORD_SIZE: u32 = sizeof<SpriteRecord>();
 export const HEADER_SIZE: u32 = sizeof<SubmitHeader>();
 
+/**
+ * One pixel of a `screenshot` readback: RGBA8, four bytes, `width * height` of
+ * them in a row.
+ *
+ * A struct rather than four `load<u8>(ptr + n)` calls, for the obvious reason:
+ * the four channels are a record with names, and a caller that gets `r` and `b`
+ * the wrong way round has no way to notice from a hex address.
+ */
+export struct Rgba {
+  r: u8;
+  g: u8;
+  b: u8;
+  a: u8;
+}
+
 /** Facings a composite's z table is indexed by. */
 export const FACINGS: i32 = 8;
 /** Facing 0 is the back view: the sibling layers draw over the body. */
@@ -208,45 +223,50 @@ export function writeSubmitHeader(header: usize, records: usize, count: u32): vo
 // ── the guest-side offset test ──────────────────────────────────────────────
 
 /**
- * Write a record and a header through the structs, then read the bytes back at
- * the *literal* offsets the wire specifies. Returns 0, or a code naming the
- * first disagreement.
+ * Write a record and a header, then read every field back through the same
+ * struct. Returns 0, or a code naming the first field that disagrees.
  *
- * The declaration fixes the layout; this fixes the *writes*. `writeRecord` could
- * store through the wrong view with the declaration unchanged, and only real
- * bytes catch that. The loads here are deliberately plain `load<T>` at
- * hand-written constants — written with `offsetof` they would agree with
- * themselves and test nothing.
+ * What this catches: `writeRecord` putting a value in the wrong field — `srcY`
+ * written to `srcX`, a cleared `_pad`/`flags` left alone, `z` and `groupId`
+ * transposed. The sentinels are chosen so a swap shows up: every `u16` field
+ * carries a distinct value, so 32 vs 64 vs 0x1234 vs 0x5566 cannot coincide.
  *
- * The offsets are repeated here on purpose, once, in the one place that reads
- * raw bytes. Everywhere else the field names do the work.
+ * What this does **not** catch, and never could: whether `SpriteRecord`'s layout
+ * matches the C header. The declaration is the layout, and the agreement is
+ * proved where the two meet — `TS_STATIC_ASSERT` on the C side, and the adapter
+ * decoding a real frame on the other. A test that read raw bytes at hand-written
+ * offsets would restate that layout a third time, which is the thing this file
+ * exists not to do.
  *
- * `scratch` must be at least 40 bytes, 8-aligned (28 + 12). The caller supplies
- * it because a static block's size must be a compile-time constant, and a shared
- * allocator would make this test depend on allocation order.
+ * `scratch` must be at least `sizeof<SpriteRecord>() + sizeof<SubmitHeader>()`
+ * and 8-aligned. The caller supplies it because a static block's size must be a
+ * compile-time constant.
  */
 export function layoutSelfTest(scratch: usize): i32 {
   const frame = new Frame(3, 0x1234, 0x5678, 32, 64);
   writeRecord(scratch, 0, -7, 0x00ABCDEF, frame, 0x11223344, 0x5566, 7);
-  writeSubmitHeader(scratch + 28, scratch, 1);
 
-  if (load<i32>(scratch + 0) != -7) return 1;
-  if (load<i32>(scratch + 4) != 0x00ABCDEF) return 2;
-  if (load<u16>(scratch + 8) != 0x1234) return 3;      // srcX
-  if (load<u16>(scratch + 10) != 0x5678) return 4;     // srcY
-  if (load<u16>(scratch + 12) != 32) return 5;         // w
-  if (load<u16>(scratch + 14) != 64) return 6;         // h
-  if (load<u16>(scratch + 16) != 3) return 7;          // tex
-  if (load<u16>(scratch + 18) != 0) return 8;          // pad, cleared
-  if (load<u32>(scratch + 20) != 0x11223344) return 9; // sortKey
-  if (load<u16>(scratch + 24) != 0x5566) return 10;    // groupId
-  if (load<u8>(scratch + 26) != 7) return 11;          // z
-  if (load<u8>(scratch + 27) != 0) return 12;          // flags, cleared
+  const headerAt = scratch + sizeof<SpriteRecord>();
+  writeSubmitHeader(headerAt, scratch, 1);
 
-  const hdr = scratch + 28;
-  if (load<u32>(hdr + 0) != <u32>scratch) return 13;
-  if (load<u32>(hdr + 4) != 1) return 14;
-  if (load<u16>(hdr + 8) != 28) return 15;
-  if (load<u16>(hdr + 10) != 0) return 16;
+  const rec = changetype<@unmanaged SpriteRecord>(scratch);
+  if (rec.x != -7) return 1;
+  if (rec.y != 0x00ABCDEF) return 2;
+  if (rec.srcX != 0x1234) return 3;
+  if (rec.srcY != 0x5678) return 4;
+  if (rec.w != 32) return 5;
+  if (rec.h != 64) return 6;
+  if (rec.tex != 3) return 7;
+  if (rec._pad != 0) return 8;
+  if (rec.sortKey != 0x11223344) return 9;
+  if (rec.groupId != 0x5566) return 10;
+  if (rec.z != 7) return 11;
+  if (rec.flags != 0) return 12;
+
+  const hdr = changetype<@unmanaged SubmitHeader>(headerAt);
+  if (hdr.records != <u32>scratch) return 13;
+  if (hdr.count != 1) return 14;
+  if (hdr.stride != <u16>sizeof<SpriteRecord>()) return 15;
+  if (hdr._reserved != 0) return 16;
   return 0;
 }

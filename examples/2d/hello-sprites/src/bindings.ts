@@ -1,5 +1,8 @@
-// The tension-2d guest SDK: the ten verbs, the `sprite` record, and the
-// submit header.
+// The tension-2d guest SDK: the ten verbs, and nothing about records.
+//
+// The record layout lives in the SDK's `assembly/2d/types.ts` — a `struct` the
+// compiler lays out from the field list. A second copy of the offsets here would
+// be a second declaration of the wire.
 //
 // The adapter is `libtension_2d.so` (tension-2d/), the design is
 // tension-2d/DESIGN.md, and the wire is tension-2d/include/tension_2d.h. This
@@ -99,81 +102,6 @@ export function info(handle: i32, ptr: usize, cap: i32): i32 {
 
 export function screenshot(handle: i32, ptr: usize, cap: i32): i32 {
   return screenshotRaw(handle, u32(ptr), cap);
-}
-
-// --- the `sprite` record (tension_2d.h, DESIGN.md §5) -----------------------
-//
-// 28 bytes, naturally aligned, no packed fields. Offsets are byte offsets; the
-// `sort_key` at 20 is why the record is 28 and not 26.
-
-export const RECORD_SIZE: u32 = 28;
-
-export const OFF_X: u32 = 0;
-export const OFF_Y: u32 = 4;
-export const OFF_SRC_X: u32 = 8;
-export const OFF_SRC_Y: u32 = 10;
-export const OFF_W: u32 = 12;
-export const OFF_H: u32 = 14;
-export const OFF_TEX: u32 = 16;
-export const OFF_SORT_KEY: u32 = 20;
-export const OFF_GROUP_ID: u32 = 24;
-export const OFF_Z: u32 = 26;
-export const OFF_FLAGS: u32 = 27;
-
-/** Write one record into `base`, at `index`. The caller owns the memory. */
-export function writeSprite(
-  base: usize,
-  index: i32,
-  x: i32,
-  y: i32,
-  srcX: u16,
-  srcY: u16,
-  w: u16,
-  h: u16,
-  tex: u16,
-  sortKey: u32,
-  groupId: u16 = 0,
-  z: u8 = 0,
-  flags: u8 = 0,
-): usize {
-  const at = base + <usize>(index * <i32>RECORD_SIZE);
-  // Zero first: the record has two padding bytes at 18-19 and a `flags` byte,
-  // and a record that leaves them holding a previous frame's data is a record
-  // whose shader reads garbage nothing else notices.
-  memory.fill(at, 0, RECORD_SIZE);
-
-  store<i32>(at + OFF_X, x);
-  store<i32>(at + OFF_Y, y);
-  store<u16>(at + OFF_SRC_X, srcX);
-  store<u16>(at + OFF_SRC_Y, srcY);
-  store<u16>(at + OFF_W, w);
-  store<u16>(at + OFF_H, h);
-  store<u16>(at + OFF_TEX, tex);
-  store<u32>(at + OFF_SORT_KEY, sortKey);
-  store<u16>(at + OFF_GROUP_ID, groupId);
-  store<u8>(at + OFF_Z, z);
-  store<u8>(at + OFF_FLAGS, flags);
-  return at;
-}
-
-// --- the submit header (tension_2d.h) --------------------------------------
-//
-// 12 bytes: the record array's guest address, its count, its stride, and a
-// flags word that must be zero. The records themselves follow in their own
-// allocation, so a caller writes one header and one array.
-
-export const HDR_SIZE: u32 = 12;
-export const OFF_HDR_RECORDS: u32 = 0;
-export const OFF_HDR_COUNT: u32 = 4;
-export const OFF_HDR_STRIDE: u32 = 8;
-export const OFF_HDR_FLAGS: u32 = 10;
-
-export function writeSubmitHeader(base: usize, recordsPtr: usize, count: u32, stride: u16 = 28): void {
-  memory.fill(base, 0, HDR_SIZE);
-  store<u32>(base + OFF_HDR_RECORDS, u32(recordsPtr));
-  store<u32>(base + OFF_HDR_COUNT, count);
-  store<u16>(base + OFF_HDR_STRIDE, stride);
-  store<u16>(base + OFF_HDR_FLAGS, 0);
 }
 
 // --- wire constants --------------------------------------------------------
