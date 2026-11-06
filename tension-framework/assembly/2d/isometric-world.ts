@@ -28,7 +28,7 @@
 // implementation of the same rule, and the two would eventually disagree about
 // which of two equal keys goes first.
 
-import { Frame, RECORD_SIZE, SpriteRecord, writeRecord } from "./types";
+import { Frame, SpriteRecord, writeRecord } from "./types";
 import { Composite } from "./composite";
 import { Tileset } from "./tileset";
 
@@ -156,13 +156,11 @@ export class IsometricWorld {
    * order is stable across frames, which is what makes two submissions that
    * differ only in source order comparable.
    */
-  emit(out: SpriteRecord): u32 {
-    const base = changetype<usize>(out);
+  emit(out: @unmanaged [SpriteRecord *]): u32 {
     let n: i32 = 0;
     for (let i: i32 = 0; i < this.statics.length; i++) {
       const p = this.statics[i];
-      const rec = changetype<SpriteRecord>(base + <usize>(n * <i32>RECORD_SIZE));
-      writeRecord(rec, p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
+      writeRecord(out, n, p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
       n++;
     }
     for (let i: i32 = 0; i < this.actors.length; i++) {

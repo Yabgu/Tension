@@ -17,7 +17,7 @@
 // enum, not because eight views are drawn today: entries beyond the ones you use
 // are zero and cost nothing.
 
-import { Frame, FACINGS, RECORD_SIZE, SpriteRecord, writeRecord } from "./types";
+import { Frame, FACINGS, SpriteRecord, writeRecord } from "./types";
 import { Tileset } from "./tileset";
 
 class Layer {
@@ -95,17 +95,15 @@ export class Composite {
    * Write this composite's records at `out`, starting at `index`, positioned at
    * (`x`,`y`). Returns how many were written.
    */
-  emitTo(out: SpriteRecord, index: i32, x: i32, y: i32): u32 {
-    const base = changetype<usize>(out);
+  emitTo(out: @unmanaged [SpriteRecord *], index: i32, x: i32, y: i32): u32 {
     for (let i: i32 = 0; i < this.layers.length; i++) {
-      const rec = changetype<SpriteRecord>(base + <usize>((index + i) * <i32>RECORD_SIZE));
-      writeRecord(rec, x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
+      writeRecord(out, index + i, x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
     }
     return <u32>this.layers.length;
   }
 
   /** `emitTo` at index 0 — the standalone use, when no world owns the buffer. */
-  emit(out: SpriteRecord, x: i32, y: i32): u32 {
+  emit(out: @unmanaged [SpriteRecord *], x: i32, y: i32): u32 {
     return this.emitTo(out, 0, x, y);
   }
 }
