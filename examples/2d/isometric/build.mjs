@@ -97,7 +97,10 @@ const TREE_TRUNK_SORT = TREE_BASE_Y;                // 104
 
 // Beside the trunk, not behind it: the trunk's art is 6px wide at the tree's
 // centre, so a character centred on the tree would be a head above a brown bar.
-const CHAR_AT = { x: 140, y: 62 };       // 16x32, under the crown's left half
+// Overlapping the crown's left half but not the trunk (which starts 13px in),
+// so 'character in front of the crown' and 'trunk in front of the character'
+// are two different pixels.
+const CHAR_AT = { x: 136, y: 62 };       // 16x32
 const CHAR_FEET_Y = CHAR_AT.y + 32;      // 94
 const CHAR_SORT = CHAR_FEET_Y - 2;       // 92: feet_offset 2
 const CHAR_GROUP = 200;
@@ -106,7 +109,7 @@ const CHAR_GROUP = 200;
 // front of the character" is a claim about two records that both cover the
 // pixel. A lantern in empty space would prove nothing and its revert test would
 // have no colour to name.
-const LANTERN_AT = { x: 138, y: 78 };    // 16x16
+const LANTERN_AT = { x: 134, y: 78 };    // 16x16
 const LANTERN_SORT = LANTERN_AT.y + 16;  // 96
 const LANTERN_SORT_WRONG = CHAR_SORT - 10; // 82, what the revert test asks for
 
@@ -119,9 +122,20 @@ const PROPS = [
   { name: 'mushroom', at: { x: 184, y: 116 } },
 ];
 
-const SLOT_TILESET_A = 0; // page 0: terrain + tree
-const SLOT_TILESET_B = 1; // page 1: props + lantern
-const SLOT_CHARACTER = 2; // page 2: the three character layers
+// The texture-array slot a piece lives on is its page index, and it is read
+// from the layout rather than written here: the tree used to be on page 0 and
+// moved to page 1 when the sheet was repacked, and a hardcoded slot turned that
+// into a frame of the wrong art instead of a build error.
+const SLOT_TILESET_A = 0; // terrain
+const SLOT_TILESET_B = 1; // trees, props, lantern
+const SLOT_CHARACTER = 2; // the character layers
+
+/// The slot a named piece must be sampled from.
+function slotFor(name) {
+  const p = LAYOUT[name];
+  if (!p) die(`LAYOUT has no piece named ${name}`);
+  return p.page;
+}
 
 const GRASS = ['grass0', 'grass1', 'grass2', 'grass3'].map(piece);
 const TREE = piece('tree');
@@ -152,14 +166,14 @@ function sceneRecords(facing, options = {}) {
   for (let j = 0; j < GROUND_ROWS; j++) {
     for (let i = 0; i < GROUND_COLS; i++) {
       const grass = GRASS[(i * 3 + j * 5) % GRASS.length];
-      out.push(record('ground', SLOT_TILESET_A, grass,
+      out.push(record('ground', slotFor('grass0'), grass,
         GROUND_ORIGIN.x + i * 16, GROUND_ORIGIN.y + j * 16, 0));
     }
   }
 
-  out.push(record('crown', SLOT_TILESET_A,
+  out.push(record('crown', slotFor('tree'),
     { ...TREE, h: TREE_SLICE_H }, TREE_AT.x, TREE_AT.y, TREE_CROWN_SORT));
-  out.push(record('trunk', SLOT_TILESET_A,
+  out.push(record('trunk', slotFor('tree'),
     { ...TREE, y: TREE.y + TREE_SLICE_H, h: TREE_SLICE_H },
     TREE_AT.x, TREE_AT.y + TREE_SLICE_H,
     options.noSlice ? TREE_CROWN_SORT : TREE_TRUNK_SORT));
@@ -167,17 +181,16 @@ function sceneRecords(facing, options = {}) {
   const zBody = options.swapComposite ? Z_TABLE.backpack[facing] : Z_TABLE.body[facing];
   const zPack = options.swapComposite ? Z_TABLE.body[facing] : Z_TABLE.backpack[facing];
   const group = options.breakGroup ? CHAR_GROUP + 1 : CHAR_GROUP;
-  out.push(record('body', SLOT_CHARACTER, BODY, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, zBody));
-  out.push(record('hair', SLOT_CHARACTER, HAIR, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, Z_TABLE.hair[facing]));
-  out.push(record('backpack', SLOT_CHARACTER, BACKPACK, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, group, zPack));
+  out.push(record('body', slotFor('body'), BODY, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, zBody));
+  out.push(record('hair', slotFor('hair'), HAIR, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, Z_TABLE.hair[facing]));
+  out.push(record('backpack', slotFor('backpack'), BACKPACK, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, group, zPack));
 
-  out.push(record('lantern', SLOT_TILESET_B, LANTERN, LANTERN_AT.x, LANTERN_AT.y,
+  out.push(record('lantern', slotFor('lantern'), LANTERN, LANTERN_AT.x, LANTERN_AT.y,
     options.lanternBehind ? LANTERN_SORT_WRONG : LANTERN_SORT));
 
   for (const prop of PROPS) {
     const art = piece(prop.name);
-    const slot = art.page === 1 ? SLOT_TILESET_B : SLOT_TILESET_A;
-    out.push(record(prop.name, slot, art, prop.at.x, prop.at.y, prop.at.y + art.h));
+    out.push(record(prop.name, slotFor(prop.name), art, prop.at.x, prop.at.y, prop.at.y + art.h));
   }
 
   return out;
@@ -225,6 +238,19 @@ function topmost(records, x, y) {
 
 const back = sceneRecords(0);
 const front = sceneRecords(1);
+
+// The multi-atlas claim, checked before a GPU sees it: the frame must sample
+// every page of the array. A scene that quietly collapsed onto two pages would
+// still render, and would still pass the per-page pixel probes — one of them
+// would simply be reading a page nothing else uses.
+{
+  const used = new Set(back.map((r) => r.slot));
+  const missing = [...Array(PAGE_COUNT).keys()].filter((page) => !used.has(page));
+  if (missing.length) {
+    die(`the scene samples ${used.size} of ${PAGE_COUNT} pages; page(s) ${missing.join(', ')} ` +
+        `would go unbound, so the multi-atlas proof is gone. Move a piece onto those pages.`);
+  }
+}
 
 /// Find a pixel where `predicate` holds **and** the record that ends up on top
 /// is the one the probe is about.
@@ -355,10 +381,13 @@ function iwi(rgba, width, height) {
 const OUT_TEXTURES = join(here, 'assets', 'textures');
 mkdirSync(OUT_TEXTURES, { recursive: true });
 
+// Page `i` is uploaded to array slot `i`; a record's `tex` is the page it
+// samples, so slot and page are the same number and there is nothing to keep
+// in sync. Names are what a human reads in the log.
 const pageFiles = [
-  { slot: SLOT_TILESET_A, name: 'tileset_p0.iwi', bytes: pages[0] },
-  { slot: SLOT_TILESET_B, name: 'tileset_p1.iwi', bytes: pages[1] },
-  { slot: SLOT_CHARACTER, name: 'character.iwi', bytes: pages[2] },
+  { slot: 0, name: 'tileset_p0.iwi', bytes: pages[0] },
+  { slot: 1, name: 'tileset_p1.iwi', bytes: pages[1] },
+  { slot: 2, name: 'character.iwi', bytes: pages[2] },
 ];
 for (const page of pageFiles) {
   const blob = iwi(page.bytes, PAGE, PAGE);
@@ -393,9 +422,12 @@ export const CANVAS_WIDTH: u32 = ${CANVAS.w};
 export const CANVAS_HEIGHT: u32 = ${CANVAS.h};
 
 /** Texture-array slots. One pipeline, three pages — the multi-atlas case. */
-export const SLOT_TILESET_A: i32 = ${SLOT_TILESET_A};
-export const SLOT_TILESET_B: i32 = ${SLOT_TILESET_B};
-export const SLOT_CHARACTER: i32 = ${SLOT_CHARACTER};
+// Every slot is the page its piece was packed onto. Written from the layout
+// rather than as literals, because the tree moved pages once already and a
+// stale constant samples the right rectangle from the wrong texture.
+export const SLOT_TILESET_A: i32 = ${slotFor('tree')};
+export const SLOT_TILESET_B: i32 = ${slotFor('lantern')};
+export const SLOT_CHARACTER: i32 = ${slotFor('body')};
 
 export const PAGE_FILES: string[] = ${JSON.stringify(pageFiles.map((p) => `textures/${p.name}`))};
 export const PAGE_SLOTS: i32[] = ${JSON.stringify(pageFiles.map((p) => p.slot))};
@@ -427,7 +459,7 @@ export const PROP_Y: i32[] = ${JSON.stringify(propRecords.map((r) => r.y))};
 export const PROP_SORT: i32[] = ${JSON.stringify(propRecords.map((r) => r.sortKey))};
 
 // ground
-export const GROUND_SLOT: i32 = ${SLOT_TILESET_A};
+export const GROUND_SLOT: i32 = ${slotFor('grass0')};
 export const GROUND_SRC_X: i32 = ${GRASS[0].x};
 export const GROUND_SRC_Y: i32 = ${GRASS[0].y};
 
@@ -438,12 +470,12 @@ export const TREE_CROWN_SRC_Y: i32 = ${TREE.y};
 export const TREE_TRUNK_SRC_Y: i32 = ${TREE.y + TREE_SLICE_H};
 
 // the lantern
-export const LANTERN_SLOT: i32 = ${SLOT_TILESET_B};
+export const LANTERN_SLOT: i32 = ${slotFor('lantern')};
 export const LANTERN_SRC_X: i32 = ${LANTERN.x};
 export const LANTERN_SRC_Y: i32 = ${LANTERN.y};
 
 // the character: three layers side by side on one page
-export const CHAR_SLOT: i32 = ${SLOT_CHARACTER};
+export const CHAR_SLOT: i32 = ${slotFor('body')};
 export const CHAR_BODY_SRC_X: i32 = ${BODY.x};
 export const CHAR_HAIR_SRC_X: i32 = ${HAIR.x};
 export const CHAR_BACKPACK_SRC_X: i32 = ${BACKPACK.x};
