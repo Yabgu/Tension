@@ -1,10 +1,10 @@
 // The tension-2d guest SDK: the verbs, and nothing about records.
 //
 // The record layout lives in the SDK's `assembly/2d/types.ts`, where it is a
-// `struct` the compiler lays out and a compile-time assertion pins. This module
-// carries the imports only — a second copy of the offsets here would be a second
-// declaration of the wire, and the first time the two disagreed the pixels would
-// be the only evidence.
+// `struct` the compiler lays out from the field list. This module carries the
+// imports only — a second copy of the offsets here would be a second declaration
+// of the wire, and the first time the two disagreed the pixels would be the only
+// evidence.
 //
 // The verbs are the same set as `examples/2d/hello-sprites/src/bindings.ts`, one
 // module per example rather than a shared package, because the shared package

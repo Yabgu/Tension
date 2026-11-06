@@ -36,17 +36,18 @@
 // alignment, `sizeof` including trailing padding, `offsetof` the field's byte
 // offset. That is what makes `sizeof<SpriteRecord>()` a meaningful stride.
 //
-// ## The layout is asserted at build time
+// ## Where the layout is checked
 //
-// The `if (...) { ERROR(...) }` blocks below are compile-time assertions, not
-// runtime ones: `ERROR` is the compiler's user-diagnostic builtin, and a
-// constant `if` is folded, so the body is compiled — and the diagnostic emitted
-// — only when the condition holds. A wrong size or a moved field fails
-// `tensionscript` with `AS102`, and the guest does not build.
+// The declaration *is* the layout: `x: i32` is at 0 and `sortKey: u32` follows
+// `tex`/`_pad` because that is what the field list says, and the compiler
+// derives every offset from the field widths the way a C compiler would. There
+// is no separate table to keep in step, and nothing above needs a guard.
 //
-// The C side has the same guard from the other direction: `TS_STATIC_ASSERT` in
-// the header check. Neither alone is proof — both could be wrong the same way —
-// but one failing alone is drift somebody sees.
+// The one place a check belongs is where bytes are actually written:
+// `layoutSelfTest` below writes a real record and reads it back at the offsets
+// `tension_2d.h` publishes. One test of behaviour beats a ledge of assertions
+// about arithmetic, and it catches something they never could — a declaration
+// that is right while the write goes somewhere else.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
 @unmanaged export struct SpriteRecord {
@@ -70,51 +71,6 @@
   count: u32;      // 4
   stride: u16;     // 8
   _reserved: u16;  // 10
-}
-
-// ── compile-time layout assertions ──────────────────────────────────────────
-
-if (sizeof<SpriteRecord>() != 28) {
-  ERROR("SpriteRecord must be 28 bytes — tension_2d.h's `sprite` record");
-}
-if (offsetof<SpriteRecord>("x") != 0) {
-  ERROR("SpriteRecord.x must be at offset 0");
-}
-if (offsetof<SpriteRecord>("y") != 4) {
-  ERROR("SpriteRecord.y must be at offset 4");
-}
-if (offsetof<SpriteRecord>("srcX") != 8) {
-  ERROR("SpriteRecord.srcX must be at offset 8");
-}
-if (offsetof<SpriteRecord>("srcY") != 10) {
-  ERROR("SpriteRecord.srcY must be at offset 10");
-}
-if (offsetof<SpriteRecord>("w") != 12) {
-  ERROR("SpriteRecord.w must be at offset 12");
-}
-if (offsetof<SpriteRecord>("h") != 14) {
-  ERROR("SpriteRecord.h must be at offset 14");
-}
-if (offsetof<SpriteRecord>("tex") != 16) {
-  ERROR("SpriteRecord.tex must be at offset 16");
-}
-if (offsetof<SpriteRecord>("sortKey") != 20) {
-  ERROR("SpriteRecord.sortKey must be at offset 20");
-}
-if (offsetof<SpriteRecord>("groupId") != 24) {
-  ERROR("SpriteRecord.groupId must be at offset 24");
-}
-if (offsetof<SpriteRecord>("z") != 26) {
-  ERROR("SpriteRecord.z must be at offset 26");
-}
-if (offsetof<SpriteRecord>("flags") != 27) {
-  ERROR("SpriteRecord.flags must be at offset 27");
-}
-if (sizeof<SubmitHeader>() != 12) {
-  ERROR("SubmitHeader must be 12 bytes");
-}
-if (offsetof<SubmitHeader>("stride") != 8) {
-  ERROR("SubmitHeader.stride must be at offset 8");
 }
 
 /**
@@ -253,11 +209,14 @@ export function writeSubmitHeader(header: usize, records: usize, count: u32): vo
  * the *literal* offsets the wire specifies. Returns 0, or a code naming the
  * first disagreement.
  *
- * The compile-time assertions above prove the declaration's layout. This proves
- * the writes reach it: `writeRecord` could store through the wrong view and the
- * offsets would still be right. The loads here are deliberately plain
- * `load<T>` at hand-written constants — if this used `offsetof`, it would agree
- * with itself and test nothing.
+ * The declaration fixes the layout; this fixes the *writes*. `writeRecord` could
+ * store through the wrong view with the declaration unchanged, and only real
+ * bytes catch that. The loads here are deliberately plain `load<T>` at
+ * hand-written constants — written with `offsetof` they would agree with
+ * themselves and test nothing.
+ *
+ * The offsets are repeated here on purpose, once, in the one place that reads
+ * raw bytes. Everywhere else the field names do the work.
  *
  * `scratch` must be at least 40 bytes, 8-aligned (28 + 12). The caller supplies
  * it because a static block's size must be a compile-time constant, and a shared
