@@ -28,8 +28,8 @@
 //
 //   export struct SpriteRecord { … }                            declaration
 //   function writeRecord(records: @unmanaged [SpriteRecord *])  a run of them, by pointer
-//   const px = changetype<@unmanaged Rgba>(addr)                one of them, by pointer
-//   function readRgba(px: @unmanaged [Rgba *]): Rgba            pointer in, value out
+//   const frame = changetype<@unmanaged [Rgba *]>(addr)         a run of pixels, by pointer
+//   frame[i].r                                                  a field of one of them
 //
 // A use is never left implicit "because it compiles". Omitting `@unmanaged` at
 // a use is a claim that the thing is a value, and a record in a caller's buffer
@@ -132,47 +132,6 @@ export struct Rgba {
   g: u8;
   b: u8;
   a: u8;
-}
-
-/**
- * The pixel at `ptr`, as a value.
- *
- * The view is `@unmanaged` — a pointer over four bytes — and it is read into a
- * local before returning, because a value has no address: `return
- * changetype<@unmanaged Rgba>(ptr)` is refused (`AS100: only a local value can
- * be returned`), while building the local and returning *that* is the ordinary
- * sret path the language documents. Four field reads, and the caller gets
- * `px.r` instead of `load<u8>(at)`.
- *
- * **Not from inside two loops.** The returned local is an SROA value, and two
- * SROA locals of one struct type in two loops of the same function crash the
- * compiler — 0.13.2 and 0.14.1 both, `duplicate local name` out of
- * `fillSroaFieldLocals`. One loop is fine, and so are two outside loops. Where a
- * function has two pixel loops, take the `@unmanaged` view instead: it is a
- * pointer local and the fields are named the same way.
- */
-/**
- * The pixel at (`x`,`y`) in an RGBA8 screenshot buffer `width` pixels wide.
- *
- * `frame` is the buffer's first pixel, not an address: a `screenshot` fills
- * `width * height` of these and there is nothing else in the block, so the
- * pointer arithmetic belongs here once rather than in every guest's probe.
- */
-export function pixelAt(frame: @unmanaged [Rgba *], x: i32, y: i32, width: i32): Rgba {
-  // A value has no address, so a returned value has to be a local: `return
-  // readRgba(…)` is refused, `const px = readRgba(…); return px;` is the sret
-  // path. Same rule as the showcase's `add()`.
-  const px = readRgba(changetype<@unmanaged [Rgba *]>(<usize>frame + <usize>((y * width + x) * 4)));
-  return px;
-}
-
-export function readRgba(px: @unmanaged [Rgba *]): Rgba {
-  const out = new Rgba();
-  out.r = px[0].r;
-  out.g = px[0].g;
-  out.b = px[0].b;
-  out.a = px[0].a;
-  return out;
 }
 
 /**
