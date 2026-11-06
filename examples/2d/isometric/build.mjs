@@ -1,53 +1,42 @@
 #!/usr/bin/env node
-// build.mjs — turn the LimeZu tileset into the pages the isometric scene binds.
+// examples/2d/isometric/build.mjs — tileset in, textures and a scene table out.
 //
-// Four steps, each the next one's input:
+// # What changed and why
 //
-//   1. **Slice.** `Modern_Exteriors_Complete_Tileset.png` is 2816x5072 at a
-//      16x16 tile grid (176 columns x 317 rows, 55 792 tiles — the numbers come
-//      from the pack's own `Modern_Exteriors_Complete_Tileset.tsx`, not from
-//      counting). Sliced into 1024x1024 pages that is 3 x 5 = **15** pages,
-//      which is the number the adapter's 16-page texture array has to hold.
-//      Edge pages are padded to a full 1024 so every layer of one pipeline has
-//      one size, because an array texture has exactly one.
+// This used to slice LimeZu's *Modern exteriors* pack: parse a `.tsx` for the
+// geometry, locate a lantern by byte-searching the sheet, and refuse to run if
+// the art was not on the machine. The art was third-party, so it could not be
+// committed, so the example exited 77 for everyone without it — including CI.
 //
-//   2. **Pick.** The three tiles the scene draws are located by *tile index*,
-//      read off the sliced pages by inspection (DESIGN.md §6.3's fallback when
-//      the pack ships no tile properties — the .tsx carries geometry only).
-//      The lantern is additionally verified by byte-exact search: it is
-//      located again from `ME_Singles_..._Lantern_2.png`, and the build fails
-//      if the two answers disagree. A wrong tile is a silent wrong picture, so
-//      the one that can be checked mechanically is.
+// The tileset is now `examples/2d/assets/tileset.png`, drawn by
+// `examples/2d/assets/build-tileset.mjs` and committed. Same three pages, same
+// multi-atlas proof, same composite and depth assertions, no host to reach.
 //
-//   3. **Compose the character page.** LimeZu's character generator ships its
-//      sprites as *layers* — `Bodies/`, `Hairstyles/`, `Accessories/` — drawn
-//      at identical coordinates and composited at run time. That is the
-//      modular-character case the composite sort exists for, so the page holds
-//      the three layers side by side and the guest submits three records at one
-//      world position.
+// # Probes are computed, not typed
 //
-//   4. **Write IWI.** The adapter decodes one container at v1 (`IWI1`), so each
-//      page is written as an IWI blob under `assets/textures/`, which the guest
-//      reads out of the resource pak. Nothing here downsamples or rescales: a
-//      page's pixels are the tileset's pixels, which is what keeps a record's
-//      `src_x`/`src_y` meaningful.
+// The old build read each expected colour off the source image at a coordinate
+// chosen by hand. That is still what happens, but the *coordinate* is now found
+// by simulating the frame: every probe is a pixel where the record that should
+// win really is on top, verified with the same `(sort_key, group_id, z)` order
+// the adapter sorts with. A probe that no longer means what it says fails the
+// build, not the GPU test three steps later.
 //
-// It also emits `src/scene.generated.ts`: the page table, the sprite table and
-// the expected colours the test asserts against. Those colours are *read from
-// the source images here*, so an assertion cannot drift from the art it
-// describes — the test compares the rendered frame to what the layers say,
-// not to a number someone typed twice.
+// Outputs (all gitignored except where noted):
+//   assets/textures/{tileset_p0,tileset_p1,character}.iwi
+//   src/scene.generated.ts   the guest's constants
+//   scene.json               the runner's expectations
 //
 // SPDX-License-Identifier: MIT
 
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execFileSync } from 'node:child_process';
+
+import { decodePng } from '../assets/png.mjs';
+import { LAYOUT, PAGE, PAGE_COUNT } from '../assets/build-tileset.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..', '..');
-const assets = join(repo, 'tension-2d', 'test-assets');
 const RUNNER = 'build-isometric';
 
 function die(message) {
@@ -55,326 +44,321 @@ function die(message) {
   process.exit(1);
 }
 
-// ── the inputs ──────────────────────────────────────────────────────────────
+// ── 1. the sheet ────────────────────────────────────────────────────────────
 
-const TILESET = join(assets, 'modernexteriors', 'Modern_Exteriors_Complete_Tileset.png');
-const TSX = join(assets, 'modernexteriors', 'Modern_Exteriors_Complete_Tileset.tsx');
-const SINGLES = join(assets, 'modernexteriors', 'Modern_Exteriors_Complete_Singles_16x16');
-const CHARACTERS = join(assets, 'characters');
-const SLICED = join(assets, 'sliced');
-const OUT_TEXTURES = join(here, 'assets', 'textures');
-
-for (const [path, hint] of [
-  [TILESET, 'place the LimeZu exteriors pack under tension-2d/test-assets/'],
-  [TSX, 'place the LimeZu exteriors pack under tension-2d/test-assets/'],
-  [join(CHARACTERS, 'Bodies', 'Body_01.png'), 'place the LimeZu character layers under tension-2d/test-assets/characters/'],
-]) {
-  if (!existsSync(path)) die(`missing ${path}\n  ${hint}`);
+const TILESET = join(here, '..', 'assets', 'tileset.png');
+let sheet;
+try {
+  sheet = decodePng(readFileSync(TILESET));
+} catch (error) {
+  die(`cannot read ${TILESET}: ${error.message}\n  regenerate it: node examples/2d/assets/build-tileset.mjs`);
+}
+if (sheet.width !== PAGE * PAGE_COUNT || sheet.height !== PAGE) {
+  die(`${TILESET} is ${sheet.width}x${sheet.height}, expected ${PAGE * PAGE_COUNT}x${PAGE}`);
 }
 
-// The .tsx is the authority on geometry; the constants below are checked
-// against it rather than trusted.
-const tsx = readFileSync(TSX, 'utf8');
-const tsxNumber = (name) => {
-  const m = tsx.match(new RegExp(`\\b${name}="(\\d+)"`));
-  if (!m) die(`${TSX} has no ${name}`);
-  return Number(m[1]);
-};
-const TILE = tsxNumber('tilewidth');
-const TILE_H = tsxNumber('tileheight');
-const IMG_W = tsxNumber('width');
-const IMG_H = tsxNumber('height');
-const COLUMNS = tsxNumber('columns');
-if (TILE !== 16 || TILE_H !== 16) die(`tileset is ${TILE}x${TILE_H}, this scene assumes 16x16`);
-
-const PAGE = 1024;
-const PAGES_X = Math.ceil(IMG_W / PAGE);
-const PAGES_Y = Math.ceil(IMG_H / PAGE);
-const PAGE_COUNT = PAGES_X * PAGES_Y;
-const TILES_PER_ROW = IMG_W / TILE;
-
-// ── image helpers (ImageMagick is the one image dependency; the tileset is a
-//    PNG and Node has no decoder) ────────────────────────────────────────────
-
-function magick(args, input) {
-  // ImageMagick 7 is `magick`, 6 is `convert`. Both take raw RGBA on stdin,
-  // which is how this script hands over a sliced page.
-  const exe = process.env.MAGICK ?? 'magick';
-  const argv = exe.endsWith('magick') || exe === 'convert' ? args : args;
-  const input_ = input ?? 'pipe:0';
-  try {
-    return execFileSync(exe, argv, { maxBuffer: 1 << 28, input });
-  } catch (error) {
-    if (error.status === undefined) throw error; // spawn failure, not a refusal
-    return execFileSync('convert', argv, { maxBuffer: 1 << 28, input });
-  }
-}
-
-/// Crop a rectangle out of a PNG and return tightly packed 8-bit RGBA bytes.
-///
-/// `-depth 8` is load-bearing: ImageMagick's default raw depth is 16 bits per
-/// channel, so without it every buffer here would be twice the size the rest
-/// of the script assumes and every index would land on half a pixel.
-function rgba(path, x, y, w, h) {
-  return magick([path, '-crop', `${w}x${h}+${x}+${y}`, '+repage', '-depth', '8', 'rgba:-']);
-}
-
-/// Page `index` of the sliced tileset: a 1024x1024 RGBA raster, padded with
-/// transparency where the sheet ends.
-function slicePage(index) {
-  const col = index % PAGES_X;
-  const row = Math.floor(index / PAGES_X);
-  const x = col * PAGE;
-  const y = row * PAGE;
-  const w = Math.min(PAGE, IMG_W - x);
-  const h = Math.min(PAGE, IMG_H - y);
-  const inner = rgba(TILESET, x, y, w, h);
-  if (w === PAGE && h === PAGE) return Buffer.from(inner);
-
-  // Pad on the right and bottom. Padding is transparent, so a src rect that
-  // lands in it samples nothing rather than a wrong tile.
-  const page = Buffer.alloc(PAGE * PAGE * 4);
-  for (let line = 0; line < h; line++) {
-    inner.copy(page, (line * PAGE) * 4, line * w * 4, (line + 1) * w * 4);
-  }
-  return page;
-}
-
-// ── 1. slice ────────────────────────────────────────────────────────────────
-
-mkdirSync(SLICED, { recursive: true });
+// Three 1024px pages across, which is the slicing the multi-atlas case exists
+// for: the sheet is wider than the largest texture the pipeline can hold.
 const pages = [];
 for (let i = 0; i < PAGE_COUNT; i++) {
-  const raw = slicePage(i);
-  pages.push(raw);
-  // Written beside the tileset so a reader can look at the pages this scene
-  // binds without running the example. Regenerated on every build; ignored by
-  // git with the rest of test-assets.
-  const png = join(SLICED, `page${String(i).padStart(2, '0')}.png`);
-  magick(['-size', `${PAGE}x${PAGE}`, '-depth', '8', 'rgba:-', `png:${png}`], raw);
-}
-console.log(
-  `${RUNNER}: ${IMG_W}x${IMG_H} @ ${TILE}px, ${COLUMNS} columns, ` +
-  `${(IMG_W / TILE) * (IMG_H / TILE)} tiles -> ${PAGES_X}x${PAGES_Y} = ${PAGE_COUNT} pages of ${PAGE}px`,
-);
-
-// ── 2. pick the tiles ───────────────────────────────────────────────────────
-//
-// Atlas coordinates, in *tileset* pixels. The first two were read off page 0
-// (DESIGN.md §6.3's "print a map and pick by inspection"); the lantern was read
-// off page 1 and then checked by byte-exact search below.
-
-const PICKS = {
-  ground: { x: 112, y: 16, w: 16, h: 16 },   // grass, page 0
-  tree: { x: 112, y: 96, w: 32, h: 64 },     // conifer, page 0
-  lantern: { x: 1872, y: 144, w: 16, h: 16 }, // camping lantern (lit), page 1
-};
-
-/// Locate a single PNG's opaque content inside the full tileset, byte-exactly.
-///
-/// The pack ships both a 55 792-tile sheet and one PNG per tile, but the
-/// singles are *trimmed*, so their origin inside the sheet is not known and
-/// tile-grid search alone would miss one sitting three pixels into a cell.
-/// Instead the single's first opaque row is searched for as a byte pattern —
-/// one C-speed scan of the sheet's raw RGBA — and each hit is verified against
-/// the whole block. A hit means the art at that spot *is* the art in the
-/// single, which is what makes the pick verifiable rather than eyeballed.
-function locateSingle(name) {
-  const path = join(SINGLES, name);
-  if (!existsSync(path)) die(`missing ${path}`);
-  const box = magick([path, '-trim', '-format', '%w %h', 'info:-']).toString().trim().split(' ').map(Number);
-  const [w, h] = box;
-  const trimmed = magick([path, '-trim', '+repage', '-depth', '8', 'rgba:-']);
-  const sheet = Buffer.from(magick([TILESET, '-depth', '8', 'rgba:-']));
-
-  // The first fully opaque row, as a contiguous byte pattern.
-  let row = -1;
-  for (let y = 0; y < h && row < 0; y++) {
-    let allOpaque = true;
-    for (let x = 0; x < w; x++) {
-      if (trimmed[(y * w + x) * 4 + 3] === 0) { allOpaque = false; break; }
-    }
-    if (allOpaque) row = y;
+  const page = Buffer.alloc(PAGE * PAGE * 4);
+  for (let y = 0; y < PAGE; y++) {
+    const from = (y * sheet.width + i * PAGE) * 4;
+    sheet.rgba.copy(page, y * PAGE * 4, from, from + PAGE * 4);
   }
-  if (row < 0) die(`${name} has no fully opaque row to search for`);
-
-  const needle = trimmed.subarray(row * w * 4, (row + 1) * w * 4);
-  let from = 0;
-  for (;;) {
-    const at = sheet.indexOf(needle, from);
-    if (at < 0) break;
-    from = at + 1;
-    if (at % 4 !== 0) continue;
-    const pix = at / 4;
-    // The needle is *row `row`* of the block, so the block starts `row` above
-    // where the hit landed. Getting this wrong once cost a build: the search
-    // found the row and then verified the wrong rectangle, so a lantern that
-    // was there read as "not in the tileset".
-    const x = pix % IMG_W;
-    const y = Math.floor(pix / IMG_W) - row;
-    if (x + w > IMG_W || y + h > IMG_H || y < 0) continue;
-
-    let ok = true;
-    for (let dy = 0; dy < h && ok; dy++) {
-      for (let dx = 0; dx < w; dx++) {
-        const src = (dy * w + dx) * 4;
-        const dst = ((y + dy) * IMG_W + x + dx) * 4;
-        if (sheet[dst + 3] !== trimmed[src + 3]) { ok = false; break; }
-        if (trimmed[src + 3] === 0) continue;
-        if (sheet[dst] !== trimmed[src] || sheet[dst + 1] !== trimmed[src + 1] ||
-            sheet[dst + 2] !== trimmed[src + 2]) { ok = false; break; }
-      }
-    }
-    if (!ok) continue;
-    // Report the tile-aligned cell that contains it.
-    return { x: Math.floor(x / TILE) * TILE, y: Math.floor(y / TILE) * TILE, w, h };
-  }
-  return null;
+  pages.push(page);
 }
 
-const lanternSingle = locateSingle('ME_Singles_Camping_16x16_Lantern_2.png');
-if (lanternSingle === null) {
-  die('the lantern single is not byte-identical anywhere in the tileset; refusing to pick by eye');
+/// The page-local rect for a named piece. The LAYOUT table stores sheet
+/// coordinates; a record wants page-local ones, because `tex` already names the
+/// page and the shader has no idea the sheet was ever wider.
+function piece(name) {
+  const p = LAYOUT[name];
+  if (!p) die(`LAYOUT has no piece named ${name}`);
+  return { ...p, x: p.x - p.page * PAGE };
 }
-if (lanternSingle.x !== PICKS.lantern.x || lanternSingle.y !== PICKS.lantern.y) {
-  die(`lantern: picked (${PICKS.lantern.x},${PICKS.lantern.y}), byte search says ` +
-      `(${lanternSingle.x},${lanternSingle.y}) — one of the two is wrong`);
-}
-console.log(`${RUNNER}: lantern at (${PICKS.lantern.x},${PICKS.lantern.y}) confirmed by byte search`);
 
-const pageOf = (p) => Math.floor(p.y / PAGE) * PAGES_X + Math.floor(p.x / PAGE);
-const local = (p) => ({ x: p.x - Math.floor(p.x / PAGE) * PAGE, y: p.y - Math.floor(p.y / PAGE) * PAGE });
-
-const GROUND = local(PICKS.ground);
-const TREE = local(PICKS.tree);
-const LANTERN = local(PICKS.lantern);
-const PAGE_TILESET_A = pageOf(PICKS.ground); // ground + tree
-const PAGE_TILESET_B = pageOf(PICKS.lantern);
-if (pageOf(PICKS.tree) !== PAGE_TILESET_A) die('the tree and the ground are not on one page');
-if (PAGE_TILESET_B === PAGE_TILESET_A) die('the lantern shares a page with the tree; multi-atlas would not be exercised');
-
-// The pages the scene binds, in texture-array slot order.
-const SLOT_TILESET_A = 0;
-const SLOT_TILESET_B = 1;
-const SLOT_CHARACTER = 2;
-
-// ── 3. the character page ───────────────────────────────────────────────────
-
-const CHAR_CELL = { col: 7, row: 1 }; // a back view: the backpack is on the back
-const CHAR_W = 16;
-const CHAR_H = 32;
-const CHARACTER_LAYERS = [
-  { name: 'body', file: join(CHARACTERS, 'Bodies', 'Body_01.png') },
-  { name: 'hair', file: join(CHARACTERS, 'Hairstyles', 'Hairstyle_09_01.png') },
-  { name: 'backpack', file: join(CHARACTERS, 'Accessories', 'Accessory_03_Backpack_01.png') },
-];
-
-const characterPage = Buffer.alloc(PAGE * PAGE * 4);
-const layerBytes = CHARACTER_LAYERS.map((layer, index) => {
-  const bytes = rgba(layer.file, CHAR_CELL.col * CHAR_W, CHAR_CELL.row * CHAR_H, CHAR_W, CHAR_H);
-  // Side by side along the top row of the page; the guest samples each at
-  // (index*16, 0).
-  for (let y = 0; y < CHAR_H; y++) {
-    bytes.copy(characterPage, (y * PAGE + index * CHAR_W) * 4, y * CHAR_W * 4, (y + 1) * CHAR_W * 4);
-  }
-  layer.src = { x: index * CHAR_W, y: 0, w: CHAR_W, h: CHAR_H };
-  return bytes;
-});
-
-const alphaAt = (bytes, w, x, y) => bytes[(y * w + x) * 4 + 3];
-const pixelAt = (bytes, w, x, y) => {
-  const at = (y * w + x) * 4;
-  return [bytes[at], bytes[at + 1], bytes[at + 2]];
-};
-
-// The composite probe: a pixel where all three layers are opaque with three
-// different colours, nearest the sprite's geometric centre. The backpack sits
-// low on the back, so this is a little below centre — the *centre* pixel has
-// hair over body and no backpack at all, which cannot tell the three z values
-// apart. Picking it by rule rather than by eye is what keeps the test honest.
-const centre = { x: 8, y: 16 };
-let probe = null;
-for (let y = 0; y < CHAR_H; y++) {
-  for (let x = 0; x < CHAR_W; x++) {
-    const [b, h, p] = layerBytes.map((bytes) => alphaAt(bytes, CHAR_W, x, y));
-    if (!b || !h || !p) continue;
-    const colours = new Set(layerBytes.map((bytes) => pixelAt(bytes, CHAR_W, x, y).join(',')));
-    if (colours.size !== 3) continue;
-    const d = Math.abs(x - centre.x) + Math.abs(y - centre.y);
-    if (probe === null || d < probe.d) probe = { x, y, d };
-  }
-}
-if (probe === null) die('no pixel has all three character layers opaque with distinct colours');
-console.log(`${RUNNER}: composite probe at sprite (${probe.x},${probe.y})`);
-
-// The pixel the lantern sits on: the character must be drawn there, or "the
-// lantern is in front of the character" would be untestable — the lantern would
-// be in front of nothing. Any of the three layers counts; which one wins is the
-// z assignment's business, and the revert test asserts the character's colour
-// that appears when the sort is asked to put the lantern behind.
-//
-// The lantern is 16 wide and the character 16 wide, offset by 8, so the
-// lantern's centre lands on the character's left column and its right edge
-// stops one pixel short of the composite probe at x=8.
-const lanternProbeChar = { x: 0, y: 24 };
-const stackAtLantern = layerBytes.map((bytes) =>
-  alphaAt(bytes, CHAR_W, lanternProbeChar.x, lanternProbeChar.y)
-    ? pixelAt(bytes, CHAR_W, lanternProbeChar.x, lanternProbeChar.y) : null);
-if (stackAtLantern.every((c) => c === null)) {
-  die(`no character layer is opaque at the lantern's probe pixel ` +
-      `(${lanternProbeChar.x},${lanternProbeChar.y})`);
-}
-// Topmost opaque layer for the back-facing z order (body 0, hair 1, backpack 2).
-const lanternBehindColour = [stackAtLantern[2], stackAtLantern[1], stackAtLantern[0]]
-  .find((c) => c !== null);
-
-// ── the scene, in world pixels ──────────────────────────────────────────────
+// ── 2. the scene, as records ────────────────────────────────────────────────
 
 const CANVAS = { w: 320, h: 180 };
-const GROUND_ORIGIN = { x: 64, y: 72 };
+// The ground is centred: 6x6 of 16px is 96, so 112 either side in a 320 canvas.
+const GROUND_ORIGIN = { x: 112, y: 44 };
 const GROUND_COLS = 6;
 const GROUND_ROWS = 6;
 
-const TREE_AT = { x: 96, y: 54 };       // 32x64
-const TREE_SLICE_H = 32;                // two slices: crown, trunk
-const TREE_BASE_Y = TREE_AT.y + PICKS.tree.h; // 118
+// The trunk slice must begin *below* the composite probe, or the probe
+// pixel is covered by the tree and the composite assertion tests the wrong
+// record. TREE_AT.y + 32 > CHAR_AT.y + 16 is that constraint, written down.
+const TREE_AT = { x: 144, y: 48 };       // 32x64, sliced at 32
+const TREE_SLICE_H = 32;
+const TREE_BASE_Y = TREE_AT.y + 64;      // 104
+const TREE_CROWN_SORT = TREE_BASE_Y - TREE_SLICE_H; // 72
+const TREE_TRUNK_SORT = TREE_BASE_Y;                // 104
 
-const CHAR_AT = { x: 100, y: 58 };      // 16x32
-const CHAR_FEET_Y = CHAR_AT.y + CHAR_H; // 90
-const CHAR_SORT = CHAR_FEET_Y - 2;      // feet_offset = 2: the sprite has two
-                                        // rows of ground contact below the feet
+// Beside the trunk, not behind it: the trunk's art is 6px wide at the tree's
+// centre, so a character centred on the tree would be a head above a brown bar.
+const CHAR_AT = { x: 140, y: 62 };       // 16x32, under the crown's left half
+const CHAR_FEET_Y = CHAR_AT.y + 32;      // 94
+const CHAR_SORT = CHAR_FEET_Y - 2;       // 92: feet_offset 2
 const CHAR_GROUP = 200;
 
-const LANTERN_AT = { x: CHAR_AT.x - 8, y: CHAR_AT.y + 16 }; // left of the character
-const LANTERN_SORT = LANTERN_AT.y + 16;                     // its base, 90
+// The lantern's centre lands on the character's legs, so "the lantern draws in
+// front of the character" is a claim about two records that both cover the
+// pixel. A lantern in empty space would prove nothing and its revert test would
+// have no colour to name.
+const LANTERN_AT = { x: 138, y: 78 };    // 16x16
+const LANTERN_SORT = LANTERN_AT.y + 16;  // 96
+const LANTERN_SORT_WRONG = CHAR_SORT - 10; // 82, what the revert test asks for
 
-// ── 4. write IWI + the generated scene table ────────────────────────────────
+/// Props, so the frame is a scene rather than a tree on a mat. Each sorts by
+/// its own base, which is the same rule the tree's slices use.
+const PROPS = [
+  { name: 'bush', at: { x: 120, y: 60 } },
+  { name: 'rock', at: { x: 192, y: 84 } },
+  { name: 'fence', at: { x: 120, y: 104 } },
+  { name: 'mushroom', at: { x: 184, y: 116 } },
+];
 
-function iwi(rgbaBytes, width, height) {
+const SLOT_TILESET_A = 0; // page 0: terrain + tree
+const SLOT_TILESET_B = 1; // page 1: props + lantern
+const SLOT_CHARACTER = 2; // page 2: the three character layers
+
+const GRASS = ['grass0', 'grass1', 'grass2', 'grass3'].map(piece);
+const TREE = piece('tree');
+const LANTERN = piece('lantern');
+const BODY = piece('body');
+const HAIR = piece('hair');
+const BACKPACK = piece('backpack');
+
+/// One `sprite` record, as the guest will write it.
+/// `slot` is the texture-array page; `srcX`/`srcY` are page-local.
+function record(label, slot, src, x, y, sortKey, groupId = 0, z = 0) {
+  return { label, slot, srcX: src.x, srcY: src.y, w: src.w, h: src.h, x, y, sortKey, groupId, z };
+}
+
+/// The z column each layer uses, indexed by facing. Back (0): the pack is on
+/// the back, so it draws last. Front (1): the body is nearest.
+const Z_TABLE = {
+  body: [0, 2, 0, 0, 0, 0, 0, 0],
+  hair: [1, 1, 0, 0, 0, 0, 0, 0],
+  backpack: [2, 0, 0, 0, 0, 0, 0, 0],
+};
+
+/// Every record the guest submits, in submission order. `facing` picks the
+/// composite's z column; nothing else changes between the two frames.
+function sceneRecords(facing, options = {}) {
+  const out = [];
+
+  for (let j = 0; j < GROUND_ROWS; j++) {
+    for (let i = 0; i < GROUND_COLS; i++) {
+      const grass = GRASS[(i * 3 + j * 5) % GRASS.length];
+      out.push(record('ground', SLOT_TILESET_A, grass,
+        GROUND_ORIGIN.x + i * 16, GROUND_ORIGIN.y + j * 16, 0));
+    }
+  }
+
+  out.push(record('crown', SLOT_TILESET_A,
+    { ...TREE, h: TREE_SLICE_H }, TREE_AT.x, TREE_AT.y, TREE_CROWN_SORT));
+  out.push(record('trunk', SLOT_TILESET_A,
+    { ...TREE, y: TREE.y + TREE_SLICE_H, h: TREE_SLICE_H },
+    TREE_AT.x, TREE_AT.y + TREE_SLICE_H,
+    options.noSlice ? TREE_CROWN_SORT : TREE_TRUNK_SORT));
+
+  const zBody = options.swapComposite ? Z_TABLE.backpack[facing] : Z_TABLE.body[facing];
+  const zPack = options.swapComposite ? Z_TABLE.body[facing] : Z_TABLE.backpack[facing];
+  const group = options.breakGroup ? CHAR_GROUP + 1 : CHAR_GROUP;
+  out.push(record('body', SLOT_CHARACTER, BODY, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, zBody));
+  out.push(record('hair', SLOT_CHARACTER, HAIR, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, CHAR_GROUP, Z_TABLE.hair[facing]));
+  out.push(record('backpack', SLOT_CHARACTER, BACKPACK, CHAR_AT.x, CHAR_AT.y, CHAR_SORT, group, zPack));
+
+  out.push(record('lantern', SLOT_TILESET_B, LANTERN, LANTERN_AT.x, LANTERN_AT.y,
+    options.lanternBehind ? LANTERN_SORT_WRONG : LANTERN_SORT));
+
+  for (const prop of PROPS) {
+    const art = piece(prop.name);
+    const slot = art.page === 1 ? SLOT_TILESET_B : SLOT_TILESET_A;
+    out.push(record(prop.name, slot, art, prop.at.x, prop.at.y, prop.at.y + art.h));
+  }
+
+  return out;
+}
+
+// ── 3. the frame, simulated ─────────────────────────────────────────────────
+
+/// The page pixels a record samples, or `null` where it is transparent.
+function sample(rec, screenX, screenY) {
+  const lx = screenX - rec.x;
+  const ly = screenY - rec.y;
+  if (lx < 0 || ly < 0 || lx >= rec.w || ly >= rec.h) return null;
+  const page = pages[rec.slot];
+  const at = ((rec.srcY + ly) * PAGE + rec.srcX + lx) * 4;
+  if (page[at + 3] === 0) return null;
+  return [page[at], page[at + 1], page[at + 2]];
+}
+
+/// The records that cover a screen pixel, back to front.
+///
+/// This is the adapter's order — `(sort_key, group_id, z)` ascending, ties kept
+/// in submission order — written out so the build can ask "what will actually
+/// be visible here?" without a GPU. If this and the renderer disagree, the
+/// pixel assertions fail, which is the point of computing the probes rather
+/// than typing them.
+function stackAt(records, screenX, screenY) {
+  const covered = [];
+  records.forEach((rec, index) => {
+    const colour = sample(rec, screenX, screenY);
+    if (colour) covered.push({ rec, colour, index });
+  });
+  covered.sort((a, b) => {
+    if (a.rec.sortKey !== b.rec.sortKey) return a.rec.sortKey - b.rec.sortKey;
+    if (a.rec.groupId !== b.rec.groupId) return a.rec.groupId - b.rec.groupId;
+    if (a.rec.z !== b.rec.z) return a.rec.z - b.rec.z;
+    return a.index - b.index;
+  });
+  return covered;
+}
+
+function topmost(records, x, y) {
+  const stack = stackAt(records, x, y);
+  return stack.length ? stack[stack.length - 1] : null;
+}
+
+const back = sceneRecords(0);
+const front = sceneRecords(1);
+
+/// Find a pixel where `predicate` holds **and** the record that ends up on top
+/// is the one the probe is about.
+///
+/// The second half is what makes a probe an assertion rather than a coordinate.
+/// "The composite probe is at the character's centre" is only meaningful if the
+/// backpack really is drawn there; if the tree's trunk happens to cover that
+/// pixel, the probe would be testing the trunk and the assertion would pass for
+/// the wrong reason. Failing to find such a pixel is a build error, which is
+/// the honest outcome: the scene no longer demonstrates what it claims.
+function findProbe(label, rect, near, predicate) {
+  let best = null;
+  for (let y = rect.y; y < rect.y + rect.h; y++) {
+    for (let x = rect.x; x < rect.x + rect.w; x++) {
+      if (!predicate(x, y)) continue;
+      const top = topmost(back, x, y);
+      if (!top || top.rec.label !== label) continue;
+      const d = Math.abs(x - near.x) + Math.abs(y - near.y);
+      if (best === null || d < best.d) best = { x, y, d, top };
+    }
+  }
+  return best;
+}
+
+// The composite probe: a pixel where all three character layers are opaque with
+// three distinct colours, and the backpack wins the sort. Distinct because a
+// pixel where two layers share a colour cannot tell their z values apart, which
+// is exactly what the composite assertion is for.
+const composite = findProbe(
+  'backpack',
+  { x: CHAR_AT.x, y: CHAR_AT.y, w: 16, h: 32 },
+  { x: CHAR_AT.x + 8, y: CHAR_AT.y + 16 },
+  (x, y) => {
+    const colours = ['body', 'hair', 'backpack']
+      .map((name) => sample(back.find((r) => r.label === name), x, y))
+      .filter((c) => c !== null);
+    if (colours.length !== 3) return false;
+    return new Set(colours.map((c) => c.join(','))).size === 3;
+  },
+);
+if (!composite) {
+  die('no pixel shows all three character layers, distinct, with the backpack on top');
+}
+
+// The crown probe: crown and character both opaque, character on top. That is
+// where "the character draws over the crown" is a statement about two records.
+const crown = findProbe(
+  'body',
+  { x: TREE_AT.x, y: TREE_AT.y, w: TREE.w, h: TREE_SLICE_H },
+  { x: TREE_AT.x + TREE.w / 2, y: TREE_AT.y + TREE_SLICE_H / 2 },
+  (x, y) => {
+    const crownRec = back.find((r) => r.label === 'crown');
+    const bodyRec = back.find((r) => r.label === 'body');
+    return sample(crownRec, x, y) !== null && sample(bodyRec, x, y) !== null;
+  },
+);
+if (!crown) die('no pixel shows the character over the crown');
+
+// The lantern probe: lantern and character both opaque, lantern on top. A
+// lantern over empty ground would prove nothing, and its revert test would have
+// no colour to name.
+const lanternProbe = findProbe(
+  'lantern',
+  { x: LANTERN_AT.x, y: LANTERN_AT.y, w: 16, h: 16 },
+  { x: LANTERN_AT.x + 8, y: LANTERN_AT.y + 8 },
+  (x, y) => {
+    const lanternRec = back.find((r) => r.label === 'lantern');
+    if (sample(lanternRec, x, y) === null) return false;
+    return ['body', 'hair', 'backpack']
+      .some((name) => sample(back.find((r) => r.label === name), x, y) !== null);
+  },
+);
+if (!lanternProbe) die('the lantern covers no character pixel, so it is in front of nothing');
+
+// ── 4. the expected colours, read off the pixels ────────────────────────────
+
+const PAGE_A_PROBE = { x: GROUND_ORIGIN.x + 8, y: GROUND_ORIGIN.y + 8 };
+
+function must(records, x, y, what) {
+  const top = topmost(records, x, y);
+  if (!top) die(`probe ${what} (${x},${y}) is covered by nothing`);
+  return top;
+}
+
+const compositeBack = composite.top;
+const compositeFront = must(front, composite.x, composite.y, 'composite/front');
+const crownBack = crown.top;
+const crownFront = must(front, crown.x, crown.y, 'crown/front');
+const lanternTop = lanternProbe.top;
+const pageATop = must(back, PAGE_A_PROBE.x, PAGE_A_PROBE.y, 'pageA');
+
+// What the composite looks like facing front: the body must win, or the z table
+// is not doing what the facing switch claims.
+if (compositeFront.rec.label !== 'body') {
+  die(`composite probe: facing front shows \`${compositeFront.rec.label}\`, expected the body`);
+}
+// What the character shows at the lantern's pixel — the colour the revert test
+// expects once the lantern is asked to sort behind.
+const lanternBehind = (() => {
+  const behind = sceneRecords(0, { lanternBehind: true });
+  const top = topmost(behind, lanternProbe.x, lanternProbe.y);
+  if (!top || top.rec.label === 'lantern') die('the lantern-behind revert test changes nothing');
+  return top.colour;
+})();
+
+// ── 5. write the textures ───────────────────────────────────────────────────
+
+function iwi(rgba, width, height) {
   const header = Buffer.alloc(74);
   header.write('IWI1', 0, 'latin1');
   header.writeUInt32LE(width, 4);
   header.writeUInt32LE(height, 8);
-  header.writeUInt8(0, 12);      // colorSpace: sRGB
-  header.writeUInt16LE(4, 13);   // componentCount
-  header.writeUInt16LE(32, 15);  // bitsPerPixel
-  header.writeUInt8(0, 17);      // storageLayout: interleaved
+  header.writeUInt8(0, 12);     // colorSpace: sRGB
+  header.writeUInt16LE(4, 13);  // componentCount
+  header.writeUInt16LE(32, 15); // bitsPerPixel
+  header.writeUInt8(0, 17);     // storageLayout: interleaved
   for (let i = 0; i < 4; i++) {
     const at = 18 + i * 6;
-    header.writeUInt8(i + 1, at);     // semantics R,G,B,A
-    header.writeUInt8(2, at + 1);     // componentClass UNORM
+    header.writeUInt8(i + 1, at);    // semantics R,G,B,A
+    header.writeUInt8(2, at + 1);    // componentClass UNORM
     header.writeUInt16LE(i * 8, at + 2);
     header.writeUInt16LE(8, at + 4);
   }
   header.writeBigUInt64LE(BigInt(width) * BigInt(height) * 4n, 66);
-  return Buffer.concat([header, rgbaBytes]);
+  return Buffer.concat([header, rgba]);
 }
 
+const OUT_TEXTURES = join(here, 'assets', 'textures');
 mkdirSync(OUT_TEXTURES, { recursive: true });
+
 const pageFiles = [
-  { slot: SLOT_TILESET_A, name: 'tileset_p0.iwi', bytes: pages[PAGE_TILESET_A] },
-  { slot: SLOT_TILESET_B, name: 'tileset_p1.iwi', bytes: pages[PAGE_TILESET_B] },
-  { slot: SLOT_CHARACTER, name: 'character.iwi', bytes: characterPage },
+  { slot: SLOT_TILESET_A, name: 'tileset_p0.iwi', bytes: pages[0] },
+  { slot: SLOT_TILESET_B, name: 'tileset_p1.iwi', bytes: pages[1] },
+  { slot: SLOT_CHARACTER, name: 'character.iwi', bytes: pages[2] },
 ];
 for (const page of pageFiles) {
   const blob = iwi(page.bytes, PAGE, PAGE);
@@ -382,30 +366,23 @@ for (const page of pageFiles) {
   page.size = blob.length;
 }
 console.log(
-  `${RUNNER}: ${pageFiles.map((p) => `${p.name} ${(p.size / 1048576).toFixed(2)} MB`).join(', ')}`,
+  `${RUNNER}: ${sheet.width}x${sheet.height} -> ${PAGE_COUNT} pages of ${PAGE}px, ` +
+  `${pageFiles.map((p) => `${p.name} ${(p.size / 1048576).toFixed(2)} MB`).join(', ')}`,
 );
 
-// The expected colours, read from the layers rather than typed twice.
-const composite = layerBytes.map((bytes) => pixelAt(bytes, CHAR_W, probe.x, probe.y));
-// The crown's centre, in screen pixels, is the tree's top-left plus half a
-// slice; the character's layer colours at that screen point are what the frame
-// must show (topmost opaque layer first).
-const crownScreen = { x: TREE_AT.x + PICKS.tree.w / 2, y: TREE_AT.y + TREE_SLICE_H / 2 };
-const crownAt = { x: crownScreen.x - CHAR_AT.x, y: crownScreen.y - CHAR_AT.y };
-const crownStack = layerBytes
-  .map((bytes, i) => ({ i, rgba: alphaAt(bytes, CHAR_W, crownAt.x, crownAt.y) ? pixelAt(bytes, CHAR_W, crownAt.x, crownAt.y) : null }))
-  .filter((e) => e.rgba !== null);
+// ── 6. write the scene table ────────────────────────────────────────────────
 
-// The lantern's own centre pixel, read from the page it was sliced into — so
-// the colour the test expects is the colour the GPU will sample.
-const lanternPage = pages[PAGE_TILESET_B];
-const lanternColour = pixelAt(lanternPage, PAGE, LANTERN.x + 8, LANTERN.y + 8);
+function rgb(colour) {
+  return `[${colour.join(', ')}]`;
+}
+
+const propRecords = back.filter((r) => PROPS.some((p) => p.name === r.label));
 
 const scene = `// Generated by examples/2d/isometric/build.mjs — do not edit.
 //
-// The page table, the sprite table and the colours the test asserts against.
-// The colours are read from the source images at build time, so they cannot
-// drift from the art.
+// The page table, the sprite table, and the colours the test asserts against.
+// Every colour here was read off examples/2d/assets/tileset.png at build time,
+// so it cannot drift from the art: change the art and this file changes.
 //
 // Flat scalars rather than objects: TensionScript infers an object literal's
 // type narrowly and property access on it does not survive, so a scene table
@@ -426,13 +403,36 @@ export const PAGE_SLOTS: i32[] = ${JSON.stringify(pageFiles.map((p) => p.slot))}
 /** The \`sprite\` record layout this scene writes. */
 export const RECORD_SIZE: u32 = 28;
 
+/** How many records one frame submits. Emitted rather than counted in the
+ *  guest, so adding a prop here cannot overflow the guest's buffer. */
+export const RECORD_COUNT: i32 = ${back.length};
+
+/** The ground's source rectangles, one per cell, in row-major order. Four grass
+ *  variants across a 6x6 field, so the tiling does not read as one tile
+ *  repeated 36 times. */
+export const GROUND_SRC_XS: i32[] = ${JSON.stringify(back.filter((r) => r.label === 'ground').map((r) => r.srcX))};
+export const GROUND_SRC_YS: i32[] = ${JSON.stringify(back.filter((r) => r.label === 'ground').map((r) => r.srcY))};
+
+/** Props, as parallel arrays: bpos, slot, rect, position, sort. Parallel rather
+ *  than an array of records because TensionScript has no record array yet
+ *  (AS100, a value type in a type argument). */
+export const PROP_COUNT: i32 = ${PROPS.length};
+export const PROP_SLOT: i32[] = ${JSON.stringify(propRecords.map((r) => r.slot))};
+export const PROP_SRC_X: i32[] = ${JSON.stringify(propRecords.map((r) => r.srcX))};
+export const PROP_SRC_Y: i32[] = ${JSON.stringify(propRecords.map((r) => r.srcY))};
+export const PROP_W: i32[] = ${JSON.stringify(propRecords.map((r) => r.w))};
+export const PROP_H: i32[] = ${JSON.stringify(propRecords.map((r) => r.h))};
+export const PROP_X: i32[] = ${JSON.stringify(propRecords.map((r) => r.x))};
+export const PROP_Y: i32[] = ${JSON.stringify(propRecords.map((r) => r.y))};
+export const PROP_SORT: i32[] = ${JSON.stringify(propRecords.map((r) => r.sortKey))};
+
 // ground
 export const GROUND_SLOT: i32 = ${SLOT_TILESET_A};
-export const GROUND_SRC_X: i32 = ${GROUND.x};
-export const GROUND_SRC_Y: i32 = ${GROUND.y};
+export const GROUND_SRC_X: i32 = ${GRASS[0].x};
+export const GROUND_SRC_Y: i32 = ${GRASS[0].y};
 
 // the tree, in two slices
-export const TREE_SLICE_W: i32 = ${PICKS.tree.w};
+export const TREE_SLICE_W: i32 = ${TREE.w};
 export const TREE_CROWN_SRC_X: i32 = ${TREE.x};
 export const TREE_CROWN_SRC_Y: i32 = ${TREE.y};
 export const TREE_TRUNK_SRC_Y: i32 = ${TREE.y + TREE_SLICE_H};
@@ -444,12 +444,12 @@ export const LANTERN_SRC_Y: i32 = ${LANTERN.y};
 
 // the character: three layers side by side on one page
 export const CHAR_SLOT: i32 = ${SLOT_CHARACTER};
-export const CHAR_BODY_SRC_X: i32 = 0;
-export const CHAR_HAIR_SRC_X: i32 = 16;
-export const CHAR_BACKPACK_SRC_X: i32 = 32;
+export const CHAR_BODY_SRC_X: i32 = ${BODY.x};
+export const CHAR_HAIR_SRC_X: i32 = ${HAIR.x};
+export const CHAR_BACKPACK_SRC_X: i32 = ${BACKPACK.x};
 export const CHAR_SRC_Y: i32 = 0;
-export const CHAR_W: i32 = ${CHAR_W};
-export const CHAR_H: i32 = ${CHAR_H};
+export const CHAR_W: i32 = ${BODY.w};
+export const CHAR_H: i32 = ${BODY.h};
 
 // world placement
 export const GROUND_ORIGIN_X: i32 = ${GROUND_ORIGIN.x};
@@ -459,10 +459,10 @@ export const GROUND_ROWS: i32 = ${GROUND_ROWS};
 
 export const TREE_X: i32 = ${TREE_AT.x};
 export const TREE_Y: i32 = ${TREE_AT.y};
-export const TREE_HEIGHT: i32 = ${PICKS.tree.h};
+export const TREE_HEIGHT: i32 = ${TREE.h};
 export const TREE_SLICE_H: i32 = ${TREE_SLICE_H};
-export const TREE_CROWN_SORT: u32 = ${TREE_BASE_Y - TREE_SLICE_H};
-export const TREE_TRUNK_SORT: u32 = ${TREE_BASE_Y};
+export const TREE_CROWN_SORT: u32 = ${TREE_CROWN_SORT};
+export const TREE_TRUNK_SORT: u32 = ${TREE_TRUNK_SORT};
 
 export const CHAR_X: i32 = ${CHAR_AT.x};
 export const CHAR_Y: i32 = ${CHAR_AT.y};
@@ -474,7 +474,7 @@ export const LANTERN_Y: i32 = ${LANTERN_AT.y};
 export const LANTERN_SORT: u32 = ${LANTERN_SORT};
 /** What the sort is supposed to be; the revert test asks the guest for the
  *  wrong one on purpose (\`--lantern-behind\`) and the assertion must fail. */
-export const LANTERN_SORT_WRONG: u32 = ${CHAR_SORT - 10};
+export const LANTERN_SORT_WRONG: u32 = ${LANTERN_SORT_WRONG};
 
 // ── the probes, and the colours each must show ──────────────────────────────
 //
@@ -482,59 +482,59 @@ export const LANTERN_SORT_WRONG: u32 = ${CHAR_SORT - 10};
 // the same, only the composite order changes, which is what the composite test
 // is about.
 
-export const PROBE_COMPOSITE_X: i32 = ${CHAR_AT.x + probe.x};
-export const PROBE_COMPOSITE_Y: i32 = ${CHAR_AT.y + probe.y};
-export const COMPOSITE_BACK: u8[] = [${composite[2].join(', ')}];   // backpack z=2 wins
-export const COMPOSITE_FRONT: u8[] = [${composite[0].join(', ')}];  // body z=2 wins
+export const PROBE_COMPOSITE_X: i32 = ${composite.x};
+export const PROBE_COMPOSITE_Y: i32 = ${composite.y};
+export const COMPOSITE_BACK: u8[] = ${rgb(compositeBack.colour)};   // backpack z=2 wins
+export const COMPOSITE_FRONT: u8[] = ${rgb(compositeFront.colour)}; // body z=2 wins
 
-export const PROBE_CROWN_X: i32 = ${crownScreen.x};
-export const PROBE_CROWN_Y: i32 = ${crownScreen.y};
-export const CROWN_BACK: u8[] = [${crownStack[crownStack.length - 1].rgba.join(', ')}];
-export const CROWN_FRONT: u8[] = [${crownStack[0].rgba.join(', ')}];
+export const PROBE_CROWN_X: i32 = ${crown.x};
+export const PROBE_CROWN_Y: i32 = ${crown.y};
+export const CROWN_BACK: u8[] = ${rgb(crownBack.colour)};
+export const CROWN_FRONT: u8[] = ${rgb(crownFront.colour)};
 
-export const PROBE_LANTERN_X: i32 = ${LANTERN_AT.x + 8};
-export const PROBE_LANTERN_Y: i32 = ${LANTERN_AT.y + 8};
-export const LANTERN_COLOUR: u8[] = [${lanternColour.join(', ')}];
+export const PROBE_LANTERN_X: i32 = ${lanternProbe.x};
+export const PROBE_LANTERN_Y: i32 = ${lanternProbe.y};
+export const LANTERN_COLOUR: u8[] = ${rgb(lanternTop.colour)};
 
 /** One pixel per page, all in one frame: the multi-atlas proof. */
-export const PROBE_PAGE_A_X: i32 = ${GROUND_ORIGIN.x + 8};
-export const PROBE_PAGE_A_Y: i32 = ${GROUND_ORIGIN.y + 8};
+export const PROBE_PAGE_A_X: i32 = ${PAGE_A_PROBE.x};
+export const PROBE_PAGE_A_Y: i32 = ${PAGE_A_PROBE.y};
 `;
-
 writeFileSync(join(here, 'src', 'scene.generated.ts'), scene);
 
-// The same numbers for the runner, which is JavaScript and cannot import a
-// TypeScript module of `as const` objects. Emitting both from one place is what
-// keeps the guest's scene and the test's expectations from diverging.
 writeFileSync(join(here, 'scene.json'), JSON.stringify({
   canvas: CANVAS,
   pageFiles: pageFiles.map((p) => `textures/${p.name}`),
   pageSlots: pageFiles.map((p) => p.slot),
   pages: PAGE_COUNT,
   pageSize: PAGE,
-  tileset: { width: IMG_W, height: IMG_H, tile: TILE, columns: COLUMNS, tiles: (IMG_W / TILE) * (IMG_H / TILE) },
-  picks: PICKS,
-  pagesOf: { tree: PAGE_TILESET_A, character: SLOT_CHARACTER, lantern: PAGE_TILESET_B },
+  tileset: { width: sheet.width, height: sheet.height, page: PAGE, pages: PAGE_COUNT },
+  source: 'examples/2d/assets/tileset.png',
   probes: {
-    composite: { x: CHAR_AT.x + probe.x, y: CHAR_AT.y + probe.y },
-    crown: crownScreen,
-    lantern: { x: LANTERN_AT.x + 8, y: LANTERN_AT.y + 8 },
-    pageA: { x: GROUND_ORIGIN.x + 8, y: GROUND_ORIGIN.y + 8 },
+    composite,
+    crown,
+    lantern: lanternProbe,
+    pageA: PAGE_A_PROBE,
   },
   expect: {
-    compositeBack: composite[2],
-    compositeFront: composite[0],
-    crownBack: crownStack[crownStack.length - 1].rgba,
-    crownFront: crownStack[0].rgba,
-    lantern: lanternColour,
-    lanternBehind: lanternBehindColour,
-    pageA: pixelAt(pages[PAGE_TILESET_A], PAGE, GROUND.x + 8, GROUND.y + 8),
-    pageB: lanternColour,
-    pageC: composite[2],
+    compositeBack: compositeBack.colour,
+    compositeFront: compositeFront.colour,
+    crownBack: crownBack.colour,
+    crownFront: crownFront.colour,
+    lantern: lanternTop.colour,
+    lanternBehind,
+    pageA: pageATop.colour,
+    pageB: lanternTop.colour,
+    pageC: compositeBack.colour,
   },
 }, null, 2));
+
 console.log(`${RUNNER}: wrote src/scene.generated.ts`);
 console.log(
-  `${RUNNER}: tree slices sort ${TREE_BASE_Y - TREE_SLICE_H} / ${TREE_BASE_Y}, ` +
+  `${RUNNER}: tree slices sort ${TREE_CROWN_SORT} / ${TREE_TRUNK_SORT}, ` +
   `character ${CHAR_SORT}, lantern ${LANTERN_SORT}`,
+);
+console.log(
+  `${RUNNER}: probes composite (${composite.x},${composite.y}) crown ` +
+  `(${crown.x},${crown.y}) lantern (${lanternProbe.x},${lanternProbe.y})`,
 );

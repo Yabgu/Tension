@@ -20,7 +20,7 @@
 // guest's own "expected" line — a guest that computes its expectation from the
 // same table that drew the frame would pass while drawing anything.
 //
-// Exit codes: 0 pass, 1 fail, 77 skip (assets not present).
+// Exit codes: 0 pass, 1 fail. No skip: the tileset is committed.
 
 import { spawnSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
@@ -31,8 +31,9 @@ import { fileURLToPath } from 'node:url';
 const RUNNER = 'isometric';
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..', '..');
-const assets = join(repo, 'tension-2d', 'test-assets');
-const shotsDir = join(assets, 'screenshots');
+// Screenshots land beside the example, not under a gitignored asset tree:
+// the art they show is committed, so the image that documents it can be too.
+const shotsDir = join(here, 'screenshots');
 
 function die(message) {
   console.error(`${RUNNER}: ${message}`);
@@ -44,20 +45,16 @@ function run(cmd, args, opts = {}) {
   return result;
 }
 
-// ── 0. the assets ───────────────────────────────────────────────────────────
-const NEEDED = [
-  join(assets, 'modernexteriors', 'Modern_Exteriors_Complete_Tileset.png'),
-  join(assets, 'characters', 'Bodies', 'Body_01.png'),
-];
-for (const path of NEEDED) {
-  if (existsSync(path)) continue;
-  console.error(
-    `${RUNNER}: SKIP — the test assets are not here.\n` +
-    `  They are LimeZu's art and are not committed. Place them under\n` +
-    `  tension-2d/test-assets/modernexteriors/ and .../characters/ by hand.\n` +
-    `  For a run with no external assets, use \`npm run test:ci\`.`,
+// ── 0. the tileset ──────────────────────────────────────────────────────────
+//
+// Committed, and drawn by `examples/2d/assets/build-tileset.mjs`. There is no
+// fetch step and no skip: this example runs on a fresh clone.
+const TILESET = join(repo, 'examples', '2d', 'assets', 'tileset.png');
+if (!existsSync(TILESET)) {
+  die(
+    `${TILESET} is missing.\n` +
+    `  It is generated, not fetched: node examples/2d/assets/build-tileset.mjs`,
   );
-  process.exit(77);
 }
 
 // ── 1. build ────────────────────────────────────────────────────────────────

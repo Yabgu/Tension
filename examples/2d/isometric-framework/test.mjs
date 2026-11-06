@@ -30,7 +30,7 @@ import { png, downscale } from '../synthetic/png.mjs';
 const RUNNER = 'isometric-framework';
 const here = dirname(fileURLToPath(import.meta.url));
 const handDir = resolve(here, '..', 'isometric');
-const shots = join(REPO, 'tension-2d', 'test-assets', 'screenshots');
+const shots = join(here, 'screenshots');
 
 function die(message) {
   console.error(`${RUNNER}: ${message}`);

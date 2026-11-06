@@ -88,10 +88,31 @@ export const TILE_SIZE: u32 = ${s.tile};
 /** The \`sprite\` record layout this scene writes. */
 export const RECORD_SIZE: u32 = 28;
 
+/** One frame's records. A compile-time constant because the guest sizes a
+ *  static buffer with it; the hand-coded scene emits the same number. */
+export const RECORD_COUNT: i32 = ${u.ground.cols * u.ground.rows + 2 + 3 + 1};
+
 // ground
 export const GROUND_SLOT: i32 = 0;
 export const GROUND_SRC_X: i32 = ${p.ground.x};
 export const GROUND_SRC_Y: i32 = ${p.ground.y};
+
+/** The synthetic scene paints one grass cell, so every cell samples it. The
+ *  real scene draws four variants; the guest reads a per-cell table either way. */
+export const GROUND_SRC_XS: i32[] = ${arr(Array(u.ground.cols * u.ground.rows).fill(p.ground.x))};
+export const GROUND_SRC_YS: i32[] = ${arr(Array(u.ground.cols * u.ground.rows).fill(p.ground.y))};
+
+/** No props: the synthetic scene is the minimum that exercises the primitives,
+ *  and the guest's loop is written against a count rather than against four. */
+export const PROP_COUNT: i32 = 0;
+export const PROP_SLOT: i32[] = [];
+export const PROP_SRC_X: i32[] = [];
+export const PROP_SRC_Y: i32[] = [];
+export const PROP_W: i32[] = [];
+export const PROP_H: i32[] = [];
+export const PROP_X: i32[] = [];
+export const PROP_Y: i32[] = [];
+export const PROP_SORT: i32[] = [];
 
 // the tree, in two slices
 export const TREE_SLICE_W: i32 = ${p.crown.w};

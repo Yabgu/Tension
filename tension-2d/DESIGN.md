@@ -1437,12 +1437,12 @@ library; the FreeImage removal's completeness aside from the six lockfiles.
   shares the array's dimensions, so two page sizes mean two pipelines. See §14.1.
 - **`shader_compile_raw`.** The wire has the door; the build has no GLSL →
   SPIR-V translator linked into the DSO, so the verb answers `-ENOSYS`.
-- **The tileset the isometric example uses is not in the tree.** It is LimeZu's
-  *Modern exteriors*, placed by hand under `tension-2d/test-assets/`, which is
-  gitignored. Every claim about it is reproducible by someone who has the packs,
-  and unreproducible from a clone alone. That is the price of not vendoring
-  third-party art — and the reason `examples/2d/isometric` skips (77) instead of
-  failing when the art is absent.
+- **The tileset the isometric example uses is generated, not painted.** It is
+  `examples/2d/assets/tileset.png`, drawn by `build-tileset.mjs`, committed and
+  CC0. That closes a gap this section used to record: with third-party art the
+  example could not run from a clone, so it skipped (77) and CI never saw it.
+  The trade is that the art is procedurally drawn rather than hand-painted —
+  adequate for a worked example, not a substitute for real game art.
 - **Anything on a real GPU.** Every measurement and every pixel above was
   produced on this host's `dzn` ICD — a software Vulkan path. The pipeline runs;
   no performance claim here is a hardware claim.
