@@ -58,7 +58,6 @@ const node = process.execPath;
 // parent's environment.
 const ogreLibs = [
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
 ].filter(existsSync);
 
 function suiteEnv(extra = {}) {

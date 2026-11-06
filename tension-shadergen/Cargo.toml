@@ -1,0 +1,8 @@
+[package]
+name = "tension-shadergen"
+version = "0.1.0"
+edition = "2021"
+description = "Shader source generation for Tension: a layout description in, GLSL out"
+license = "MIT"
+
+[dependencies]

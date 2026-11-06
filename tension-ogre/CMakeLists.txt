@@ -156,7 +156,7 @@ if(UNIX)
         #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
         # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
         # without LD_LIBRARY_PATH, which is how the test suite runs it.
-        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib:$ORIGIN/../../third_party/ogre-next-install/lib:$ORIGIN/../../third_party/freeimage-install/lib"
+        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../../third_party/ogre-next-install/lib"
         BUILD_WITH_INSTALL_RPATH TRUE
         LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
     )

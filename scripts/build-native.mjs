@@ -9,12 +9,10 @@
 //   packages/core             bin/tension-core.js  (spawns the payload binary)
 //   packages/ogre             index.js             (exports the adapter's path)
 //   packages/ogre-next        index.js             (exports lib/, include/, Media/)
-//   packages/freeimage        index.js             (exports lib/, include/, bin/)
 //
 //   packages/core-<platform>-<arch>/bin/tension-core[.exe]
 //   packages/ogre-<platform>-<arch>/lib/libtension_ogre.{so,dll}
 //   packages/ogre-next-<platform>-<arch>/{lib,include,Media}
-//   packages/freeimage-<platform>-<arch>/{lib,include,bin}
 //
 // The payload packages carry `os`/`cpu` and are what `npm pack` would publish;
 // the meta packages are what an example depends on, so a guest never names a
@@ -46,7 +44,6 @@ const packages = join(repo, 'packages');
 export const SUFFIX = `${process.platform}-${process.arch}`;
 
 const OGRE_SRC = join(repo, 'third_party', 'ogre-next-install');
-const FREEIMAGE_SRC = join(repo, 'third_party', 'freeimage-install');
 
 /// Ogre's sample content. Removed from the package; see the README for the
 /// measurement that says nothing reads them.
@@ -78,7 +75,6 @@ function payload(name) {
 /// platform is ever built per checkout.
 const COMPONENT_DESCRIPTIONS = {
   'ogre-next': 'Ogre-Next 3.0 runtime: shared libraries, headers and the Hlms shader media.',
-  freeimage: 'FreeImage 3.19: the image codecs Ogre decodes textures with.',
   ogre: 'The OGRE capability adapter that tension-core dlopens for --capability.',
   core: 'The Tension interpreter: runs a guest wasm and loads capability adapters.',
 };
@@ -103,9 +99,9 @@ function writePayloadManifest(destination, component, files, extra = {}) {
 /// `dereference: true` is the trap here: a shared library ships as
 /// `libFoo.so -> libFoo.so.4.0 -> libFoo.so.4.0.0` and dereferencing turns one
 /// 9 MB file into three 9 MB files. First run of this script produced a 26 MB
-/// freeimage package from an 8.7 MB install, and a 29 MB ogre-next lib/ from
-/// 15 MB, for exactly that reason. The links are relative, so they stay valid
-/// inside the package.
+/// package from an 8.7 MB install, and a 29 MB ogre-next lib/ from 15 MB, for
+/// exactly that reason. The links are relative, so they stay valid inside the
+/// package.
 function copyTree(from, to) {
   rmSync(to, { recursive: true, force: true });
   mkdirSync(dirname(to), { recursive: true });
@@ -116,8 +112,7 @@ function copyTree(from, to) {
 ///
 /// `lstatSync`, not `statSync`: a shared library ships as a chain of relative
 /// symlinks, and following them counts the same megabytes once per link. The
-/// first version of this function reported freeimage as 25.8 MB when its
-/// contents are 8.7 MB.
+/// first version of this function reported one 8.7 MB install as 25.8 MB.
 function du(target) {
   if (!existsSync(target)) return 0;
   const st = lstatSync(target);
@@ -206,28 +201,6 @@ function packageOgreNext() {
   return destination;
 }
 
-// ── freeimage ────────────────────────────────────────────────────────────────
-
-function packageFreeImage() {
-  const destination = payload('freeimage');
-  if (!existsSync(FREEIMAGE_SRC)) {
-    note('freeimage: no third_party/freeimage-install — skipped');
-    return null;
-  }
-  note('freeimage: copying lib/, include/, bin/');
-  copyTree(join(FREEIMAGE_SRC, 'lib'), join(destination, 'lib'));
-  if (existsSync(join(FREEIMAGE_SRC, 'include'))) {
-    copyTree(join(FREEIMAGE_SRC, 'include'), join(destination, 'include'));
-  }
-  // Windows puts the DLL in bin/; the adapter and the host need it on the
-  // loader's search path, and `bin/` is where the npm payload keeps it.
-  if (existsSync(join(FREEIMAGE_SRC, 'bin'))) {
-    copyTree(join(FREEIMAGE_SRC, 'bin'), join(destination, 'bin'));
-  }
-  writePayloadManifest(destination, 'freeimage', ['lib/', 'include/', 'bin/']);
-  return destination;
-}
-
 // ── tension-res ──────────────────────────────────────────────────────────────
 
 /// The Zig static archive both native artifacts link.
@@ -271,9 +244,9 @@ function buildRes() {
 /// adapter is built by MSYS2's g++ against an Ogre built by the same toolchain,
 /// and the resulting imports reach well past the obvious ones — `zlib1.dll`
 /// and `libzzip.dll` come from OgreNextMain, the MinGW runtime from every
-/// object compiled by g++, FreeImage from Ogre's texture codec. Missing one
-/// surfaces as `LoadLibrary failed with error code 126`, which names no file at
-/// all, so the closure is computed here rather than guessed at.
+/// object compiled by g++. Missing one surfaces as `LoadLibrary failed with
+/// error code 126`, which names no file at all, so the closure is computed here
+/// rather than guessed at.
 ///
 /// `objdump` lists the imports (binutils ships with the compiler this build
 /// already requires). Anything not found in the payload or MSYS2's UCRT64 bin
@@ -380,12 +353,10 @@ function buildAdapter(ogreNextPayload) {
       }
     }
 
-    // FreeImage is a dependency of Ogre, not of the adapter; the closure walk
-    // below finds it if its DLL is reachable on the search path.
-    const freeImageBin = join(packages, `freeimage-${SUFFIX}`, 'bin');
+    // The adapter's own DLLs plus Ogre's, which the closure walk resolves from
+    // the Ogre payload and the payload's own lib/.
     const gxx = which('g++');
     stageWindowsDependencies(join(destination, 'lib'), [
-      ...(existsSync(freeImageBin) ? [freeImageBin] : []),
       ...(gxx ? [dirname(gxx)] : []),
     ]);
   }
@@ -426,7 +397,6 @@ function buildCore() {
 console.log(`build-native: ${process.platform}/${process.arch} (${toolchainReport()})`);
 
 const ogreNext = packageOgreNext();
-packageFreeImage();
 buildRes();
 buildAdapter(ogreNext);
 buildCore();
@@ -449,7 +419,6 @@ note(`stamp: wrote ${relative(repo, stamped.path).split('\\').join('/')}`);
 const BUDGET = {
   [`packages/core-${SUFFIX}/bin/tension-core${EXE}`]: 50,
   [`packages/ogre-next-${SUFFIX}`]: 40,
-  [`packages/freeimage-${SUFFIX}`]: 15,
   [`packages/ogre-${SUFFIX}`]: 25,
 };
 console.log('');
