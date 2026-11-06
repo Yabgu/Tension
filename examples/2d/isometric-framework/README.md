@@ -57,10 +57,11 @@ npm install          # links the tension-framework SDK
 npm start            # builds both guests, packs, renders, compares
 ```
 
-No SSH and no assets: the pages are generated flat colour cells from
+No external assets: the pages are generated flat colour cells from
 [`../synthetic/pages.mjs`](../synthetic/pages.mjs). The real-art version —
 the one with the painted conifer and the character generator's layers — is
-[`../isometric`](../isometric), and it needs `tension-2d/test-assets/fetch.sh`.
+[`../isometric`](../isometric), and it needs the LimeZu packs placed by hand
+under `tension-2d/test-assets/`.
 
 Screenshots land in `tension-2d/test-assets/screenshots/framework-{back,front}.png`.
 

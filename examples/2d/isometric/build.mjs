@@ -65,9 +65,9 @@ const SLICED = join(assets, 'sliced');
 const OUT_TEXTURES = join(here, 'assets', 'textures');
 
 for (const [path, hint] of [
-  [TILESET, 'run tension-2d/test-assets/fetch.sh'],
-  [TSX, 'run tension-2d/test-assets/fetch.sh'],
-  [join(CHARACTERS, 'Bodies', 'Body_01.png'), 'run tension-2d/test-assets/fetch.sh'],
+  [TILESET, 'place the LimeZu exteriors pack under tension-2d/test-assets/'],
+  [TSX, 'place the LimeZu exteriors pack under tension-2d/test-assets/'],
+  [join(CHARACTERS, 'Bodies', 'Body_01.png'), 'place the LimeZu character layers under tension-2d/test-assets/characters/'],
 ]) {
   if (!existsSync(path)) die(`missing ${path}\n  ${hint}`);
 }

@@ -20,7 +20,7 @@
 // guest's own "expected" line — a guest that computes its expectation from the
 // same table that drew the frame would pass while drawing anything.
 //
-// Exit codes: 0 pass, 1 fail, 77 skip (assets not fetched).
+// Exit codes: 0 pass, 1 fail, 77 skip (assets not present).
 
 import { spawnSync } from 'node:child_process';
 import { deflateSync } from 'node:zlib';
@@ -53,9 +53,9 @@ for (const path of NEEDED) {
   if (existsSync(path)) continue;
   console.error(
     `${RUNNER}: SKIP — the test assets are not here.\n` +
-    `  They are LimeZu's art and are not committed. Fetch them with:\n` +
-    `    tension-2d/test-assets/fetch.sh\n` +
-    `  (needs SSH access to the asset host; see that script's header).`,
+    `  They are LimeZu's art and are not committed. Place them under\n` +
+    `  tension-2d/test-assets/modernexteriors/ and .../characters/ by hand.\n` +
+    `  For a run with no external assets, use \`npm run test:ci\`.`,
   );
   process.exit(77);
 }

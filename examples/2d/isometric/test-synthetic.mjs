@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// test-synthetic.mjs — the isometric scene, without the SSH host.
+// test-synthetic.mjs — the isometric scene, without the external art.
 //
 // `test.mjs` is the showcase: it renders LimeZu's art and exits 77 when that art
 // is not on the machine. This is the same scene from flat colour pages, so it

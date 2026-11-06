@@ -1,9 +1,9 @@
 // examples/2d/synthetic/pages.mjs — the synthetic isometric scene, in one place.
 //
 // Why this exists: `examples/2d/isometric/` proves the three 2D problems on
-// LimeZu's art, but that art lives on an SSH host, so CI cannot run it. This is
-// the same scene with the same geometry, drawn from flat colour cells instead of
-// painted tiles. Every number below is the real example's number (canvas, sprite
+// LimeZu's art, but that art is third-party and not in the tree, so CI cannot run
+// it. This is the same scene with the same geometry, drawn from flat colour cells
+// instead of painted tiles. Every number below is the real example's number (canvas, sprite
 // positions, sort keys, slice height, group id); only the pixels differ.
 //
 // One definition, three consumers:

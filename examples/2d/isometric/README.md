@@ -55,15 +55,17 @@ backpack to the body, and the test asserts exactly that colour change.
 ## Run it
 
 ```sh
-tension-2d/test-assets/fetch.sh   # once: needs SSH to the asset host
-npm install                       # once
+npm install   # once
 npm start
 ```
 
-`fetch.sh` copies the LimeZu packs into `tension-2d/test-assets/`, which is
-gitignored — the art is third-party and does not enter the repository. Only the
-fetcher and `preview.png` are tracked. Without SSH access the example cannot
-run, and `npm start` says so and exits 77 rather than pretending.
+The LimeZu packs are third-party and do not enter the repository. Place them
+under `tension-2d/test-assets/` — `modernexteriors/` holding the exteriors
+tileset and its `.tsx`, `characters/` holding the character-generator layers —
+and the example builds from them. That directory is gitignored; `preview.png`
+under `screenshots/` is the only asset-derived file that is tracked. Without the
+art the example cannot run, and `npm start` says so and exits 77 rather than
+pretending.
 
 `npm start` then:
 
@@ -151,18 +153,18 @@ hand-written on purpose: it is the control the framework is measured against.
 ## Running it without the art
 
 The art is LimeZu's and is not committed, so this example exits 77 on a machine
-that cannot reach the asset host — which means CI never sees it.
+that does not have it placed locally — which means CI never sees it.
 
 `npm run test:ci` is the same scene from generated flat-colour pages: same
-canvas, same positions, same sort keys, same probes, no SSH. It runs the guest
+canvas, same positions, same sort keys, same probes, no external art. It runs the guest
 below unchanged, because the guest reads its scene table
 (`src/scene.generated.ts`) and nothing else. The pages and the table come from
 [`../synthetic`](../synthetic), and the assertion list is identical: composite at
 two probes, depth at three, three pages, two revert runs.
 
 What it does not reproduce is the art: cut-outs, the character generator's
-layers, and the tileset's real page count. Those need the fetch, and this example
-is where they are exercised.
+layers, and the tileset's real page count. Those need the real packs, and this
+example is where they are exercised.
 
 The framework version of the same scene is
 [`../isometric-framework`](../isometric-framework): it builds these records from
