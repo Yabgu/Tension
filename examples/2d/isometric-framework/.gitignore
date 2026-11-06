@@ -1,0 +1,9 @@
+build/
+node_modules/
+# The IWI pages are derived from LimeZu's art by build.mjs; they are regenerated
+# on every build and never committed (the repository's .gitignore covers this
+# directory too, as a second line of defence).
+assets/
+scene.json
+src/scene.generated.ts
+src/graph.generated.ts

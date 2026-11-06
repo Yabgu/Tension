@@ -55,6 +55,11 @@ const SKIP_DIRS = new Set([
 const SKIP_PATHS = [
   'third_party',
   join('packages', 'dist'),
+  // The example asset workspace: fetched from the asset host, gitignored, and
+  // somebody else's files. LimeZu's packs ship CRLF in their READMEs and
+  // `.tsx`, which is theirs to have; normalising a gitignored tree would also
+  // rewrite 70 MB on every check.
+  join('tension-2d', 'test-assets'),
 ];
 
 function isText(name) {

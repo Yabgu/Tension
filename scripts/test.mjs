@@ -10,6 +10,8 @@
 //   7. tension-res        zig build test
 //   8. line endings       no CRLF in a text file
 //   9. dependency pins    one naga version, not two
+//  10. isometric (CI)    the three 2D problems, from synthetic pages
+//  11. isometric frame   the framework library reproduces the scene byte for byte
 //
 // ## What "parallel" may and may not do here
 //
@@ -188,6 +190,38 @@ const SUITES = {
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
   },
 
+  // The real isometric example needs LimeZu's art, which is not in the
+  // repository and cannot be fetched on CI. This is the same scene from
+  // generated flat-colour pages: same canvas, same positions, same sort keys,
+  // same probes. It exits 77 when the adapter cannot be built (no SDL3), so a
+  // machine without the graphics stack skips rather than fails.
+  isometric: {
+    title: 'isometric (synthetic)',
+    needs: [],
+    // Builds the adapter and the guest; both live in directories another 2D
+    // suite would also write.
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The framework layer: `Tileset` + `Composite` + `IsometricWorld` rebuild the
+  // same scene and their frames must equal the hand-written guest's, byte for
+  // byte. That assertion is the whole test — it fails if the framework's
+  // emission differs anywhere, including in fields no probe reads.
+  'isometric-framework': {
+    title: 'isometric (framework)',
+    // No `needs`: this suite builds and runs the hand-written guest itself as
+    // its comparison, so depending on the `isometric` suite would run it twice
+    // and would make the framework suite un-runnable on its own.
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
   core: {
     title: 'tension-core',
     // The `ogre_*` integration tests read the fixtures the two suites above
@@ -288,7 +322,7 @@ if (requested.length) {
 // `zig` on cargo's PATH (cargo's build script runs it by name).
 
 const needsPreparation = order.some((name) =>
-  ['framework', 'ogre-guest', 'input', 'core'].includes(name));
+  ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
 
 function banner(text) {
   console.log('\n======================================================================');
