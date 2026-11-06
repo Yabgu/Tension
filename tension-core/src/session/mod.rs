@@ -392,7 +392,7 @@ impl Session {
             _ => return Err(SessionError::MultipleMemoryImports),
         };
 
-        // The session defines the memory under both names (F1: the AssemblyScript
+        // The session defines the memory under both names (F1: the TensionScript
         // toolchain emits `env::memory`, Tension documents `session::memory`), so
         // those are the two a guest may use. Any other pair would be an unknown
         // import at instantiation; refusing it here names the fix.
@@ -475,7 +475,7 @@ impl Session {
 
     /// Define the arena memory in the linker under both import names. Both names
     /// resolve to the same object — probe-pinned, and the reason an
-    /// AssemblyScript guest and a hand-written guest see one arena.
+    /// TensionScript guest and a hand-written guest see one arena.
     pub fn install(
         &self,
         store: &mut Store<HostState>,
@@ -1544,7 +1544,7 @@ mod probes {
     use super::*;
 
     /// A guest that imports the session's arena memory under `env` — the spelling
-    /// the pinned AssemblyScript toolchain emits for `--importMemory`.
+    /// the pinned TensionScript toolchain emits for `--importMemory`.
     const GUEST_ENV_MEMORY: &str = r#"
 (module
   (import "env" "memory" (memory 4 256))
@@ -1629,7 +1629,7 @@ mod probes {
             .define(&mut store, "session", "memory", memory.clone())
             .expect("define session::memory");
 
-        // The AssemblyScript spelling.
+        // The TensionScript spelling.
         let env_guest = link_guest(&linker, &mut store, GUEST_ENV_MEMORY);
         let poke_env = env_guest
             .get_typed_func::<(i32, i32), ()>(&mut store, "poke")

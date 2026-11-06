@@ -273,7 +273,7 @@ unsafe extern "C" fn world_trampoline(
 /// module's exported `table` — with the signatures the convention declares.
 /// Any entry that is missing, out of range, null, or mis-shaped is `None`:
 /// create refuses it. The module must export its function table as `table`
-/// (AssemblyScript produces that with `asc --exportTable`); without the
+/// (TensionScript produces that with `--exportTable`); without the
 /// export there is no way to reach an indirect function, and create refuses
 /// as it does for any other bad index.
 fn resolve_callbacks(

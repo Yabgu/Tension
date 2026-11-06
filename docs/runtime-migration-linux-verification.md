@@ -48,7 +48,7 @@ glob, which does not see one level deeper. The complete set, from
 | `tension-framework/assembly/anim/reader.ts` | 1 (prose) | **no** |
 | `tension-ogre/DESIGN.md` | 1 (prose) | **no** |
 
-The plan's *intent* was unambiguous — "stop overriding AssemblyScript's default",
+The plan's *intent* was unambiguous — "stop overriding TensionScript's default",
 and §5.1 explicitly expected the framework's own fixtures to move with it. This
 lands the intent and corrects the count. **No site that builds a Tension guest is
 left on `stub`**, which is what a half-migrated tree would have left behind.

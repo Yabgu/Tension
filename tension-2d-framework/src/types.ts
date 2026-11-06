@@ -2,15 +2,15 @@
 //
 // The wire authority is `tension-2d/include/tension_2d.h`; this file is the
 // guest-side mirror of its `sprite` record and submit header. It allocates
-// nothing and knows nothing about a scene: it is the vocabulary the other three
-// modules share.
+// nothing on the hot path and knows nothing about a scene: it is the vocabulary
+// the other three modules share.
 //
 // The framework writes records; it never reads them back and never sorts them.
 // Sorting is the adapter's job — the graph's comparator runs on the CPU side
 // before the draw — so a world that emitted sorted records would be doing the
 // work twice and would disagree with the backend about tie-breaking.
 //
-// ## Why these are `struct` and not offsets
+// ## Why these are structs and not offsets
 //
 // The design's claim is "the guest's struct decides the layout at build time".
 // A hand-rolled writer with `OFF_SORT_KEY = 20` and `store<u32>` states the same
@@ -19,32 +19,37 @@
 // states the layout as fields, and the compiler computes the offsets from the
 // widths — the same way it computes them for the C header's twin.
 //
-// Since TensionScript 0.10 a bare `struct` is a **value**: no GC header, no
-// reference identity, fields laid out inline with C alignment, and
-// `sizeof<T>()` is the C `sizeof`. That is the shape a wire record wants, and it
-// is what makes `sizeof<SpriteRecord>()` a meaningful stride.
+// ## Storage is written at the declaration
 //
-// A value has no address, so the *byte view* is named where bytes are needed:
-// `changetype<@unmanaged SpriteRecord>(ptr)`. That is the tree's existing idiom
-// (`tension-framework/assembly/ogre/bones.ts`, `motion.ts`). `changetype` to the
-// bare value form is refused by the compiler — correctly, since a value has no
-// pointer to give.
+// A bare `struct` is a **value**: the bytes live in the variable, assigned by
+// copy, with no address (TensionScript's 0.10 default flip). Neither record here
+// is that. Both are bytes in a caller's buffer, reached through a pointer, which
+// is exactly the case `@unmanaged struct` exists for — so the storage model is
+// on the declaration and the use sites are a plain `changetype<T>(ptr)`.
+//
+// That is not cosmetic: a value has no address, so a use cannot lend it one
+// (`TS6395`), and `changetype` to the bare value form is refused outright
+// (`AS100`). Declaring `@unmanaged` is what makes the pointer view legal, and it
+// says the thing that matters to a reader — these bytes are the host's.
+//
+// `@unmanaged struct` is C-layout and headerless: fields at their natural
+// alignment, `sizeof` including trailing padding, `offsetof` the field's byte
+// offset. That is what makes `sizeof<SpriteRecord>()` a meaningful stride.
 //
 // ## The layout is asserted at build time
 //
 // The `if (...) { ERROR(...) }` blocks below are compile-time assertions, not
-// runtime ones: `ERROR()` emits a diagnostic while the module is compiled, and
-// the compiler folds a constant `if`, so the body is compiled — and the error
-// emitted — only when the condition holds. A wrong size or a moved field fails
+// runtime ones: `ERROR` is the compiler's user-diagnostic builtin, and a
+// constant `if` is folded, so the body is compiled — and the diagnostic emitted
+// — only when the condition holds. A wrong size or a moved field fails
 // `tensionscript` with `AS102`, and the guest does not build.
 //
-// The `_pad` field is deliberate: it is the padding the C struct has, named so
-// that a reader of the declaration counts 28 bytes instead of having to know the
-// alignment rule. `writeRecord` clears it, so a record never carries a byte of
-// whatever was in the buffer before.
+// The C side has the same guard from the other direction: `TS_STATIC_ASSERT` in
+// the header check. Neither alone is proof — both could be wrong the same way —
+// but one failing alone is drift somebody sees.
 
 /** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
-export struct SpriteRecord {
+@unmanaged export struct SpriteRecord {
   x: i32;        // 0
   y: i32;        // 4
   srcX: u16;     // 8
@@ -52,7 +57,7 @@ export struct SpriteRecord {
   w: u16;        // 12
   h: u16;        // 14
   tex: u16;      // 16, the texture-array page
-  _pad: u16;     // 18, natural alignment
+  _pad: u16;     // 18, the C struct's padding, named
   sortKey: u32;  // 20
   groupId: u16;  // 24
   z: u8;         // 26
@@ -60,7 +65,7 @@ export struct SpriteRecord {
 }
 
 /** The submit header: records pointer, count, stride, reserved. */
-export struct SubmitHeader {
+@unmanaged export struct SubmitHeader {
   records: u32;    // 0
   count: u32;      // 4
   stride: u16;     // 8
@@ -68,11 +73,6 @@ export struct SubmitHeader {
 }
 
 // ── compile-time layout assertions ──────────────────────────────────────────
-//
-// These are the guard the C header cannot give the guest: `TS_STATIC_ASSERT`
-// checks `tension_2d.h` against itself, and these check the guest's declaration
-// against the same numbers. If both are wrong in the same way the wire is
-// broken, but one of them failing alone is a drift somebody can see.
 
 if (sizeof<SpriteRecord>() != 28) {
   ERROR("SpriteRecord must be 28 bytes — tension_2d.h's `sprite` record");
@@ -141,10 +141,9 @@ export const FACING_FRONT: u8 = 1;
  * samples is already fixed by `tex`, and the shader has no idea the sheet was
  * ever larger than one page.
  *
- * **Still a managed class, and that is a compiler constraint rather than a
- * preference.** The value form — `struct Frame` — is refused in all three places
- * this type has to live (TensionScript 0.13.2; still true on 0.14.1, where the
- * deletions are listed as deferred):
+ * **`@managed struct`, not a value, and that is a compiler boundary rather than
+ * a preference.** A bare `struct` value is refused in all three places this type
+ * has to live:
  *
  * ```
  * AS100: an @inline struct as a class field (a class field is a pointer slot;
@@ -156,27 +155,27 @@ export const FACING_FRONT: u8 = 1;
  * ```
  *
  * `Composite.Layer.frame` is a class field, `Tileset.named` is a
- * `Map<string, Frame>`, and callers pass `frameForPixel(...)` results to
- * functions. A value struct can do none of the three, so this type stays a
- * reference and carries `ok` as a bool. The wire records above — the ones whose
- * layout the design actually claims — are structs.
+ * `Map<string, Frame>`, and callers pass `frameForPixel(...)` results straight
+ * into functions. A value can do none of the three. `@managed struct` is the
+ * record form that can: the same C layout, GC-owned, and its reference is the
+ * fields pointer — so a field read is a load, not a header indirection.
  *
- * `ok` is false for a frame a lookup could not produce: a coordinate outside the
+ * `ok` is 1 for a usable frame and 0 for an inert one: a coordinate outside the
  * sheet, a name that was never defined, a degenerate tileset. A flag rather than
- * a nullable return because every consumer is AssemblyScript, where `Frame |
- * null` forces a null check at each use and one missed check is a null
- * dereference inside a frame loop. An invalid frame is inert:
- * `IsometricWorld.addStatic` writes no record for it, and `Composite.addLayer`
+ * a nullable return because `Frame | null` forces a null check at every use, and
+ * one missed check is a null dereference inside a frame loop. An invalid frame
+ * writes no record: `IsometricWorld.addStatic` skips it and `Composite.addLayer`
  * refuses it.
  */
-export class Frame {
+@managed export struct Frame {
   /** Texture-array slot, 0..15. */
   tex: u16;
   srcX: u16;
   srcY: u16;
   w: u16;
   h: u16;
-  ok: bool;
+  /** 1 usable, 0 inert. `u8` rather than `bool` to keep the record 12 bytes. */
+  ok: u8;
 
   constructor(tex: u16, srcX: u16, srcY: u16, w: u16, h: u16) {
     this.tex = tex;
@@ -184,12 +183,16 @@ export class Frame {
     this.srcY = srcY;
     this.w = w;
     this.h = h;
-    this.ok = true;
+    this.ok = 1;
+  }
+
+  isValid(): bool {
+    return this.ok != 0;
   }
 
   static invalid(): Frame {
     const f = new Frame(0, 0, 0, 0, 0);
-    f.ok = false;
+    f.ok = 0;
     return f;
   }
 }
@@ -197,11 +200,11 @@ export class Frame {
 /**
  * Write one record into `out` at `index`, through the struct.
  *
- * The view is `@unmanaged` — a pointer over bytes with no header — so the field
- * writes below land at exactly the offsets the compile-time assertions pin.
- * Every field is written, including the pad and the flags: a record that
- * inherits a byte from the previous frame is a record whose meaning depends on
- * history.
+ * `changetype<SpriteRecord>` is the pointer view: no header is read or written,
+ * because an `@unmanaged` record has none. The field writes below are the wire's
+ * bytes in the wire's order, and every field is written — including the pad and
+ * the flags — because a record that inherits a byte from the previous frame is a
+ * record whose meaning depends on history.
  */
 export function writeRecord(
   out: usize,
@@ -213,7 +216,7 @@ export function writeRecord(
   groupId: u16,
   z: u8,
 ): void {
-  const rec = changetype<@unmanaged SpriteRecord>(out + <usize>(index * <i32>sizeof<SpriteRecord>()));
+  const rec = changetype<SpriteRecord>(out + <usize>(index * <i32>sizeof<SpriteRecord>()));
   rec.x = x;
   rec.y = y;
   rec.srcX = frame.srcX;
@@ -236,7 +239,7 @@ export function writeRecord(
  * `u16` at offset 8.
  */
 export function writeSubmitHeader(header: usize, records: usize, count: u32): void {
-  const hdr = changetype<@unmanaged SubmitHeader>(header);
+  const hdr = changetype<SubmitHeader>(header);
   hdr.records = u32(records);
   hdr.count = count;
   hdr.stride = <u16>RECORD_SIZE;

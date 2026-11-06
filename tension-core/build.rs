@@ -295,7 +295,7 @@ fn main() {
 
     // ── tension-ogre's stub adapter ───────────────────────────────────────
     //
-    // The capability ABI's end-to-end fixture (A3b): an AssemblyScript guest
+    // The capability ABI's end-to-end fixture (A3b): a TensionScript guest
     // calls the `ogre` namespace, a stub adapter behind it answers, and the
     // session delivers the completion. It links no OGRE-Next — this is the
     // shape of the capability, not a renderer.

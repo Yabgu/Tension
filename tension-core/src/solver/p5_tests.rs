@@ -4,7 +4,7 @@
 //! These live in the binary crate because that is where the host imports
 //! live: `link_solver` registers over `Linker<HostState>`, and integration
 //! tests under `tests/` link only the library crate. The fixtures are
-//! hand-written WAT — the AssemblyScript end-to-end guest, which also
+//! hand-written WAT — the TensionScript end-to-end guest, which also
 //! exercises this same path, is `examples/solver/wasm/`.
 //!
 //! Fixture convention: each guest writes its observations into fixed guest

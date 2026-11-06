@@ -21,7 +21,7 @@ This is the contract between the engine and a guest that wants
 numerical integration. It declares the wasm import module and its host
 function names, every signature, the `Solver` class shape, and the
 error conventions — the things a game author and the engine runtime
-must agree on for the solver to be reachable from AssemblyScript.
+must agree on for the solver to be reachable from TensionScript.
 
 It does not declare how the solver computes: the Butcher tables, the
 adaptive controller, the workspace discipline, and where determinism
@@ -107,7 +107,7 @@ refused with `-EINVAL` (the host logs why; §5).
 For `source: "wasm"`, the last three arguments are the callbacks the
 solver will use, in order: the derivative, `buf_in`, and `buf_out`.
 Each is an index into the module's function table, and the module must
-export that table as `table` — AssemblyScript produces the export with
+export that table as `table` — TensionScript produces the export with
 `asc --exportTable`. The host resolves the three indices at create and
 stores them per solver id; every one must name a function of the
 declared signature (§3.6), or create refuses with `-EINVAL`. Two
@@ -199,7 +199,7 @@ calls `create` — the convention phase 4 proved (DESIGN.md §8):
   buffer.
 
 The three functions' table indices are what `create` takes (§3.1). The
-module must export its function table as `table` — AssemblyScript
+module must export its function table as `table` — TensionScript
 produces that export with `asc --exportTable` — because the host
 resolves the indices through it; a module without the export cannot
 create a `source: "wasm"` solver. Exporting the three functions by
@@ -207,9 +207,9 @@ name is not required (the example still does it; nothing reads the
 names).
 
 A note for guests that call the import directly instead of through the
-framework: AssemblyScript function references are not table indices. A
+framework: TensionScript function references are not table indices. A
 function value points at the function's table-index word — that is the
-word AssemblyScript's own `call_indirect` sites load through — so the
+word TensionScript's own `call_indirect` sites load through — so the
 index is the i32 that pointer addresses, and the framework's
 `Solver.create` converts with exactly that dereference. A hand-rolled
 guest must convert the same way, or hand `create` something that does
@@ -270,14 +270,14 @@ for (let i = 0; i < len; i++) {
 ```
 
 **2. `Float64Array.wrap(ptr, len)` — reads as data, no allocation — but
-not in this toolchain.** AssemblyScript 0.28.8's `wrap` takes an
+not in this toolchain.** TensionScript's `wrap` takes an
 `ArrayBuffer`, not a pointer: `Float64Array.wrap(yPtr, len)` fails to
 compile (`TS2322: Type 'usize' is not assignable to type
 '~lib/arraybuffer/ArrayBuffer'`), and reinterpreting the data pointer as
 an `ArrayBuffer` with `changetype` compiles but is a lie — the emitted
 code then reads object-header fields out of the data (an `ArrayBuffer`'s
 length lives at negative offsets of its object). Verify in your own
-build before reaching for this shape; if a future AssemblyScript adds an
+build before reaching for this shape; if a future TensionScript adds an
 external-pointer overload, it would be the readable no-allocation form:
 
 ```ts
@@ -348,7 +348,7 @@ export class SolverCallbacks {
  *
  * A parameter left at its "absent" value is not written to the wire at
  * all and the schema's default applies. The absent values are sentinels,
- * not nulls, because AssemblyScript 0.28.8 has no nullable value types
+ * not nulls, because the compiler has no nullable value types
  * (`f64 | null` is `AS204`): NaN for the eight f64 parameters, -1 for
  * `iterations`, and null for the two string fields (`description`,
  * `world` — references, where null is legal).
@@ -516,7 +516,7 @@ beyond that is implied.
 
 ## 8. Example: what a game writes
 
-Pseudo-AssemblyScript for the guest-side loop — a sketch of the
+Pseudo-TensionScript for the guest-side loop — a sketch of the
 sequence, not compilable as shown:
 
 ```

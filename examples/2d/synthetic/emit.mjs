@@ -68,7 +68,7 @@ function sceneTable(s) {
 // colour below is a constant in \`pages.mjs\`, read back here, so the guest and
 // the runner cannot disagree about what a probe should show.
 //
-// Flat scalars rather than objects: AssemblyScript infers an object literal's
+// Flat scalars rather than objects: TensionScript infers an object literal's
 // type narrowly and property access on it does not survive.
 
 export const CANVAS_WIDTH: u32 = ${s.canvas.w};

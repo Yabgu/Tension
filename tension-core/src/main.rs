@@ -60,7 +60,7 @@
 //! `--debug` turns on guest debug info (`Config::debug_info`) and reports what
 //! a debugger can see of the loaded guest; `--symbol-path <PATH>` (repeatable)
 //! says where the debugger should look for the guest's symbols and sources.
-//! See the `debug` module for why an AssemblyScript guest carries no source
+//! See the `debug` module for why a TensionScript guest carries no source
 //! lines even with both.
 
 use std::io::{self, BufRead, Write};
@@ -198,7 +198,7 @@ const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
 const EINVAL: i32 = -22;
 
-/// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
+/// Read a TensionScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
 /// out of the guest memory and decode it to a Rust `String`.
 fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
     if ptr == 0 {
@@ -1228,7 +1228,7 @@ fn main() -> anyhow::Result<()> {
     solver::link_solver(&mut linker)?;
 
     // tension::session ABI -------------------------------------------------
-    // The memory is defined under both import names (the AssemblyScript
+    // The memory is defined under both import names (the TensionScript
     // toolchain emits `env::memory`; Tension documents `session::memory`), the
     // two verbs are registered, and the session is installed into the store —
     // the verbs reach it through `caller.data()`, so it must be there before the
@@ -1371,7 +1371,7 @@ fn main() -> anyhow::Result<()> {
         session.verify_post_instantiate(&store)?;
     }
 
-    // AssemblyScript's runtime initializer, when the guest exports one.
+    // TensionScript's runtime initializer, when the guest exports one.
     //
     // The SDK builds with `--exportStart __start` so this is an export rather
     // than a `start` section: a start section would run guest code at

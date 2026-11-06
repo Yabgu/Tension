@@ -1,6 +1,6 @@
 // examples/game.ts — first TensionCore demo.
 //
-// Compiled by `asc` (AssemblyScript) to a wasm module that imports the
+// Compiled by `tensionscript` to a wasm module that imports the
 // tension::io ABI from the host. The game never touches the terminal; it
 // *requests* I/O from tension-core. That is the interpreter contract.
 

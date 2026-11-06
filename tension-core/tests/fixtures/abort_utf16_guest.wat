@@ -1,7 +1,7 @@
 ;; The host's `env.abort` diagnostic, exercised through its UTF-16 decode.
 ;;
-;; AssemblyScript's `stub` runtime traps through `env.abort(msg, file, line,
-;; col)`, and both strings are AssemblyScript `String`s in guest memory: a
+;; TensionScript's `stub` runtime traps through `env.abort(msg, file, line,
+;; col)`, and both strings are TensionScript `String`s in guest memory: a
 ;; 4-byte little-endian byte length at `ptr - 4`, then UTF-16LE code units.
 ;; This module is shaped exactly that way without the toolchain — the data
 ;; segments below *are* the strings — and `_start_game` aborts with them.

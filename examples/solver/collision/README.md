@@ -2,7 +2,7 @@
 
 Two soft spheres fall under gravity inside a square wall, collide, bounce off
 the walls, and settle on the floor. The physics is integrated by **rk45** with
-`source: "wasm"`: the guest writes f(t, y) in AssemblyScript, the host's
+`source: "wasm"`: the guest writes f(t, y) in TensionScript, the host's
 solver drives it, and `run.sh` turns the recorded trajectory into an animated
 GIF.
 

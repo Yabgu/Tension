@@ -5,7 +5,7 @@
 //! 1. `test_ogre_adapter_loads_and_registers` — the stub adapter loads through
 //!    the registry and registers the seven `ogre::*` verbs under the module
 //!    name the SDK imports from. No guest, no session: just the ABI surface.
-//! 2. `test_ogre_stub_end_to_end` — the AssemblyScript fixture, built by
+//! 2. `test_ogre_stub_end_to_end` — the TensionScript fixture, built by
 //!    `tension-framework/tests/run.sh`, runs against this interpreter with the
 //!    stub loaded. That is the whole chain: session_open, `queueMeshLoad`, an
 //!    epoch whose publish completes the job, a `JOB_DONE` delivery, and a

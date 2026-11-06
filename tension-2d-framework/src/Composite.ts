@@ -63,14 +63,14 @@ export class Composite {
    */
   addLayer(atlas: Tileset, frameName: string, zTable: u8[]): bool {
     const frame = atlas.frameNamed(frameName);
-    if (!frame.ok) return false;
+    if (!frame.isValid()) return false;
     this.layers.push(new Layer(frameName, frame, zTable));
     return true;
   }
 
   /** Same, from a frame that was never named. Silently ignores an invalid frame. */
   addFrame(frame: Frame, zTable: u8[]): bool {
-    if (!frame.ok) return false;
+    if (!frame.isValid()) return false;
     this.layers.push(new Layer("", frame, zTable));
     return true;
   }

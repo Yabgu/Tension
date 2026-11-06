@@ -1,6 +1,6 @@
 # examples/res — a resource pak, end to end
 
-From this directory (after `npm install`, which fetches the AssemblyScript
+From this directory (after `npm install`, which fetches the TensionScript
 compiler):
 
     npm run build          # asc: assembly/index.ts -> build/game.wasm

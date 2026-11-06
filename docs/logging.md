@@ -4,11 +4,11 @@ Tension has one logger, and the host owns it. The Rust side (`tension-core`)
 decides the level, the filter, the layout, and the sink; every other language
 hands it a *record* — a level, a logger name, and a message — through a thin
 adapter. The layout is applied **once**, in the host, so the same record
-produces the same bytes whether it came from an AssemblyScript guest, a C++
+produces the same bytes whether it came from a TensionScript guest, a C++
 adapter, or Rust.
 
 ```
-  guest (AssemblyScript)      tension::io::log       ─┐
+  guest (TensionScript)      tension::io::log       ─┐
   native adapters (C/C++)     tension_core_api        ─┼─▶  Record ─▶ Layout ─▶ Sink
   the host (Rust)             logging::log            ─┘                (text|json)  (stderr|file)
 ```
@@ -197,7 +197,7 @@ fn main() -> anyhow::Result<()> {
 payload. Before `init`, or if a process never calls it, a record at `info` or
 above still reaches stderr through a text-layout fallback.
 
-## Emitting from AssemblyScript (the guest)
+## Emitting from TensionScript (the guest)
 
 The guest imports `tension::io::log(level, name_ptr, name_len, msg_ptr,
 msg_len)` and `tension::io::log_structured(...)`; `tension-framework` binds them
