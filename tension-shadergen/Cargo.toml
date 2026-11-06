@@ -10,6 +10,9 @@ license = "MIT"
 # makes a C++ capability depend on a system binary at build time and cannot
 # compile at run time at all. Naga is MIT OR Apache-2.0 and is pure Rust.
 #
-# Pinned to 29 because 30.0.1's own `glsl-in` feature does not compile (it calls
-# `Binding::apply_default_interpolation`, which that version does not define).
+# Pinned to 29: 30.0.1's `glsl-in` feature does not compile. It calls
+# `Binding::apply_default_interpolation`, which 30.0.1 defines in a module gated
+# behind `spv-in`/`wgsl-in` and not behind `glsl-in` itself — a cfg-gate bug
+# upstream, retested 2026-11-06. See `tension-core/Cargo.toml` for the full note
+# and the reproduction.
 naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
