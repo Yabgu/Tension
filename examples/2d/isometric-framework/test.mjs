@@ -69,9 +69,17 @@ if (fwRun.status !== 0) {
 }
 for (const line of fwRun.output.split('\n')) {
   if (line.startsWith('  ') || line.startsWith('===') || line.startsWith('sort keys') ||
-      line.startsWith('set_pipeline') || line.startsWith('pages bound')) {
+      line.startsWith('set_pipeline') || line.startsWith('pages bound') ||
+      line.startsWith('layout:')) {
     console.log(line);
   }
+}
+
+// The guest's own layout self-test: it writes a record through the struct and
+// reads the bytes back at the wire's literal offsets. The compile-time
+// assertions in `types.ts` pin the declaration; this pins the writes.
+if (!/^layout: ok \(28-byte record, 12-byte header\)$/m.test(fwRun.output)) {
+  fail('the guest did not report a passing layout self-test');
 }
 
 const W = s.canvas.w;

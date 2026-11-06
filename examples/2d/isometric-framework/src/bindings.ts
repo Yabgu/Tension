@@ -1,10 +1,16 @@
-// The tension-2d guest SDK, second reader: the ten verbs, the `sprite` record,
-// the submit header.
+// The tension-2d guest SDK: the verbs, and nothing about records.
 //
-// Identical in shape to `examples/2d/hello-sprites/src/bindings.ts` — one
+// The record layout lives in `tension-2d-framework`'s `types.ts`, where it is a
+// `struct` the compiler lays out and a compile-time assertion pins. This module
+// carries the imports only — a second copy of the offsets here would be a second
+// declaration of the wire, and the first time the two disagreed the pixels would
+// be the only evidence.
+//
+// The verbs are the same set as `examples/2d/hello-sprites/src/bindings.ts`, one
 // module per example rather than a shared package, because the shared package
 // would have to be published and the header it maps is still moving. The
-// authority is `tension-2d/include/tension_2d.h`.
+// authority is `tension-2d/include/tension_2d.h`. Unlike that file this one has
+// no `writeSprite`: records come from the framework.
 //
 // **Hand-written.** `tension-2d/include/tension_2d.h` has no entry in
 // `schema/`, so `tools/codegen/generate.mjs` cannot emit this; codegen covers
@@ -73,68 +79,6 @@ export function info(handle: i32, ptr: usize, cap: i32): i32 {
 
 export function screenshot(handle: i32, ptr: usize, cap: i32): i32 {
   return screenshotRaw(handle, u32(ptr), cap);
-}
-
-// --- the `sprite` record (tension_2d.h, DESIGN.md §5) ----------------------
-//
-// 28 bytes, naturally aligned. `tex` is the texture-array page.
-
-export const RECORD_SIZE: u32 = 28;
-
-export const OFF_X: u32 = 0;
-export const OFF_Y: u32 = 4;
-export const OFF_SRC_X: u32 = 8;
-export const OFF_SRC_Y: u32 = 10;
-export const OFF_W: u32 = 12;
-export const OFF_H: u32 = 14;
-export const OFF_TEX: u32 = 16;
-export const OFF_SORT_KEY: u32 = 20;
-export const OFF_GROUP_ID: u32 = 24;
-export const OFF_Z: u32 = 26;
-export const OFF_FLAGS: u32 = 27;
-
-/** Write one record into `base`, at `index`. */
-export function writeSprite(
-  base: usize,
-  index: i32,
-  x: i32,
-  y: i32,
-  srcX: u16,
-  srcY: u16,
-  w: u16,
-  h: u16,
-  tex: u16,
-  sortKey: u32,
-  groupId: u16 = 0,
-  z: u8 = 0,
-): void {
-  const at = base + <usize>(index * <i32>RECORD_SIZE);
-  // Zero first: a stale padding byte at 18-19 or a `flags` byte from a previous
-  // frame is a record whose meaning depends on history.
-  memory.fill(at, 0, RECORD_SIZE);
-
-  store<i32>(at + OFF_X, x);
-  store<i32>(at + OFF_Y, y);
-  store<u16>(at + OFF_SRC_X, srcX);
-  store<u16>(at + OFF_SRC_Y, srcY);
-  store<u16>(at + OFF_W, w);
-  store<u16>(at + OFF_H, h);
-  store<u16>(at + OFF_TEX, tex);
-  store<u32>(at + OFF_SORT_KEY, sortKey);
-  store<u16>(at + OFF_GROUP_ID, groupId);
-  store<u8>(at + OFF_Z, z);
-}
-
-// --- the submit header -----------------------------------------------------
-
-export const HDR_SIZE: u32 = 12;
-
-export function writeSubmitHeader(base: usize, recordsPtr: usize, count: u32): void {
-  memory.fill(base, 0, HDR_SIZE);
-  store<u32>(base + 0, u32(recordsPtr));
-  store<u32>(base + 4, count);
-  store<u16>(base + 8, <u16>RECORD_SIZE);
-  store<u16>(base + 10, 0);
 }
 
 // --- wire constants --------------------------------------------------------
