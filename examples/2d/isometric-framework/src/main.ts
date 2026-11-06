@@ -26,6 +26,7 @@ import {
   HEADER_SIZE,
   IsometricWorld,
   RECORD_SIZE,
+  Rgba,
   Tileset,
   layoutSelfTest,
   writeSubmitHeader,
@@ -61,25 +62,36 @@ function fail(what: string): void {
 
 // --- frame emission (the guest has no file writer; see the isometric guest) --
 
+function hex2(v: u8): string {
+  return (v < 16 ? "0" : "") + v.toString(16);
+}
+
 function emitFrame(name: string, frame: usize, bytes: u32): void {
+  // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
+  // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
   print("FRAME-BEGIN " + name + " " + bytes.toString());
   for (let base: u32 = 0; base < bytes; base += chunk) {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
-    for (let i: u32 = base; i < end; i++) {
-      const v = load<u8>(frame + <usize>i);
-      line += v < 16 ? "0" : "";
-      line += v.toString(16);
+    for (let i: u32 = base; i < end; i += 4) {
+      const px = changetype<@unmanaged Rgba>(frame + <usize>i);
+      line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
     }
     print(line);
   }
   print("FRAME-END " + name);
 }
 
+/// A pixel's colour, by channel name rather than by byte offset into it.
+///
+/// The view is a local: a value has no address, so a function cannot return an
+/// `Rgba` (only a local can be returned, and the caller's read needs somewhere
+/// to read from). Naming the view here is one line and keeps the offsets out of
+/// every caller.
 function colourAt(frame: usize, x: i32, y: i32): u8[] {
-  const at = frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4);
-  return [load<u8>(at), load<u8>(at + 1), load<u8>(at + 2)];
+  const px = changetype<@unmanaged Rgba>(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
+  return [px.r, px.g, px.b];
 }
 
 function same(a: u8[], b: u8[], tolerance: i32 = 2): bool {

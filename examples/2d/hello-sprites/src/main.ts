@@ -22,7 +22,16 @@
 // Nothing in the adapter bakes it in — the 320x180 case is exercised in
 // tension-2d/tests/smoke_core.cpp.
 
-import { ConfigBuilder, print, RuntimeSession } from "tension-framework";
+import {
+  ConfigBuilder,
+  Frame,
+  print,
+  RECORD_SIZE,
+  Rgba,
+  RuntimeSession,
+  writeRecord,
+  writeSubmitHeader,
+} from "tension-framework";
 import * as gfx from "./bindings";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
@@ -58,6 +67,15 @@ const CELL_COLOURS: u8[][] = [
 
 // --- the atlas -------------------------------------------------------------
 
+/// Three packed channels: the atlas is IWI at 24 bpp, so a pixel there is three
+/// bytes with no fourth. Named rather than three `store<u8>` at `+0/+1/+2`,
+/// because a channel written to the wrong offset is a colour nobody can read.
+struct Rgb24 {
+  r: u8;
+  g: u8;
+  b: u8;
+}
+
 /// Build the IWI container `IWImageIO.ixx` writes: magic, a 74-byte header, then
 /// interleaved pixels.
 ///
@@ -72,7 +90,21 @@ function buildAtlas(): usize {
 
   memory.fill(at, 0, <usize>total);
 
-  // magic "IWI1"
+  // The 74-byte IWI1 header, byte by byte — the one record in this tree that
+  // cannot be a struct, and worth saying why so nobody tries.
+  //
+  // It is a *packed* C layout: `componentCount` is a `u16` at offset 13 and
+  // `bitsPerPixel` a `u16` at 15, neither on a 2-byte boundary, and each of the
+  // four component records at 18+ is `u8, u8, u16, u16` with the same problem.
+  // TensionScript lays a record out at natural alignment and `@abi.align` can
+  // only *raise* it — asking for less is refused:
+  //
+  //   TS6408: '@abi.align(1)' is less than the field type's natural alignment
+  //           (2); asking for less is a lie, so it is refused
+  //
+  // So a struct here would silently move every field after `colorSpace` by a
+  // byte, and the adapter's decoder would read a 1024-tall atlas as garbage.
+  // The format is ImageViewer's, not ours; the stores stay.
   store<u8>(at + 0, 0x49); // I
   store<u8>(at + 1, 0x57); // W
   store<u8>(at + 2, 0x49); // I
@@ -106,9 +138,10 @@ function buildAtlas(): usize {
       const o = at + 74 + <usize>((y * ATLAS_SIZE + x) * 3);
       if (cell < <u32>CELL_COLOURS.length) {
         const c = CELL_COLOURS[cell];
-        store<u8>(o + 0, c[0]);
-        store<u8>(o + 1, c[1]);
-        store<u8>(o + 2, c[2]);
+        const px = changetype<@unmanaged Rgb24>(o);
+        px.r = c[0];
+        px.g = c[1];
+        px.b = c[2];
       }
     }
   }
@@ -122,18 +155,14 @@ function buildAtlas(): usize {
 function writeSprites(base: usize): void {
   for (let i = 0; i < SPRITES; i++) {
     const cell = <u32>i;
-    gfx.writeSprite(
-      base,
-      i,
-      i * SPRITE_PITCH, // x
-      0, // y
+    const frame = new Frame(
+      0, // tex: the one atlas
       <u16>((cell % 4) * CELL), // src_x
       <u16>((cell / 4) * CELL), // src_y
-      SPRITE_SIZE, // w
-      SPRITE_SIZE, // h
-      0, // tex: the one atlas
-      <u32>i, // sort_key
+      SPRITE_SIZE,
+      SPRITE_SIZE,
     );
+    writeRecord(base, i, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -186,10 +215,8 @@ export function _start_game(): void {
   //    blob whose hash the DSO does not carry is -ENOSYS here, so this failure
   //    has exactly one cause: the .t2dg is not the one build-2d.mjs compiled.
   const BLOB_SIZE: u32 = 584; // DEFAULT_2D_BLOB.length, fixed at generation
-const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
-  for (let i: i32 = 0; i < <i32>BLOB_SIZE; i++) {
-    store<u8>(blobPtr + <usize>i, DEFAULT_2D_BLOB[i]);
-  }
+  const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
+  memory.copy(blobPtr, changetype<usize>(DEFAULT_2D_BLOB.dataStart), BLOB_SIZE);
   const pipe = gfx.setPipeline(handle, blobPtr, BLOB_SIZE);
   if (pipe < gfx.PIPE_PRESET_MIN) {
     fail("set_pipeline -> " + pipe.toString() + " (blob " + BLOB_SIZE.toString() + " bytes)");
@@ -221,10 +248,10 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
     ", bound to page 0");
 
   // 5. the records and the header
-  const records: usize = memory.data(<usize>(SPRITES * <i32>gfx.RECORD_SIZE), 8);
+  const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
   writeSprites(records);
-  const header: usize = memory.data(<usize>gfx.HDR_SIZE, 4);
-  gfx.writeSubmitHeader(header, records, <u32>SPRITES);
+  const header: usize = memory.data(<usize>12, 4);
+  writeSubmitHeader(header, records, <u32>SPRITES);
 
   const accepted = gfx.submit(handle, pipe, header, 0);
   if (accepted != SPRITES) {
@@ -252,8 +279,8 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
 
   let nonBlack: u32 = 0;
   for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    const at = frame + <usize>(i * 4);
-    if (load<u8>(at) != 0 || load<u8>(at + 1) != 0 || load<u8>(at + 2) != 0) nonBlack++;
+    const px = changetype<@unmanaged Rgba>(frame + <usize>(i * 4));
+    if (px.r != 0 || px.g != 0 || px.b != 0) nonBlack++;
   }
 
   // 8. per-sprite checks: each centre must be its own cell's colour. The count
@@ -262,11 +289,11 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    const at = frame + <usize>((cy * CANVAS_WIDTH + cx) * 4);
+    const px = changetype<@unmanaged Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4));
     const c = CELL_COLOURS[<i32>i];
-    const r = load<u8>(at);
-    const g = load<u8>(at + 1);
-    const b = load<u8>(at + 2);
+    const r = px.r;
+    const g = px.g;
+    const b = px.b;
     const close = (abs(<i32>r - <i32>c[0]) <= 3) && (abs(<i32>g - <i32>c[1]) <= 3) &&
       (abs(<i32>b - <i32>c[2]) <= 3);
     if (!close) {
