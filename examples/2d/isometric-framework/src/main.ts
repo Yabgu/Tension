@@ -27,6 +27,7 @@ import {
   IsometricWorld,
   RECORD_SIZE,
   Tileset,
+  layoutSelfTest,
   writeSubmitHeader,
 } from "tension-2d-framework";
 import * as gfx from "./bindings";
@@ -40,6 +41,9 @@ const FRAME_BYTES: u32 = scene.CANVAS_WIDTH * scene.CANVAS_HEIGHT * 4;
 /// for a scene that grows, and `emit` is checked against `recordCount` below.
 const MAX_RECORDS: i32 = 64;
 const RECORD_BYTES: u32 = <u32>MAX_RECORDS * RECORD_SIZE;
+
+/// Where `layoutSelfTest` writes its probe: one record plus one header, 8-aligned.
+const LAYOUT_SCRATCH: usize = memory.data(<usize>40, 8);
 
 let failures: i32 = 0;
 
@@ -185,6 +189,19 @@ export function _start_game(): void {
     RuntimeSession.close();
     return;
   }
+
+  // The wire layout, checked before a single record is drawn: the struct writes
+  // a record and reads it back at the offsets `tension_2d.h` publishes. The
+  // compile-time assertions in `types.ts` already proved the declaration's
+  // layout, so this is the other half — that the writes land there.
+  const layout = layoutSelfTest(LAYOUT_SCRATCH);
+  if (layout != 0) {
+    print("FAIL: layout self-test -> code " + layout.toString());
+    gfx.close(handle);
+    RuntimeSession.close();
+    return;
+  }
+  print("layout: ok (" + RECORD_SIZE.toString() + "-byte record, " + HEADER_SIZE.toString() + "-byte header)");
 
   const pipe = gfx.setPipelinePreset(handle, 1);
   if (pipe < 1) {
