@@ -189,7 +189,7 @@ fn test_bad_abi_adapter_refused() {
     assert!(!output.status.success(), "the run must fail");
     let err = stderr(&output);
     assert!(
-        err.contains("was built against adapter ABI 5") && err.contains("this build is 4"),
+        err.contains("was built against adapter ABI 6") && err.contains("this build is 5"),
         "the diagnostic must name both versions\nstderr: {err}"
     );
     assert!(

@@ -164,6 +164,7 @@ struct Renderer::Impl {
         std::vector<Record> records;
     };
     std::map<uint32_t, Bucket> buckets;
+    uint32_t next_runtime_pipe = TENSION_2D_PIPE_RAW_MIN;
     bool presented_once = false;
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -271,7 +272,7 @@ struct Renderer::Impl {
         fsi.entrypoint = "main";
         fsi.format = SDL_GPU_SHADERFORMAT_SPIRV;
         fsi.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-        fsi.num_samplers = 1;  // set 2, binding 0
+        fsi.num_samplers = 2;  // set 2: the sampled texture AND its sampler
         SDL_GPUShader *fs = SDL_CreateGPUShader(device, &fsi);
         if (fs == nullptr) {
             SDL_ReleaseGPUShader(device, vs);
@@ -504,11 +505,7 @@ int32_t Renderer::submit(uint32_t pipe_id, const uint8_t *records, uint32_t coun
     return 0;
 }
 
-namespace {
-/// FNV-1a 64, matching `pipeline::Graph::hash` in Rust and the build script's
-/// `fnv1a`. Three implementations of one hash is two too many; the build fails
-/// if they disagree, because `build-2d.mjs` prints the value both write.
-uint64_t fnv1a64(const uint8_t *bytes, size_t len) {
+uint64_t graph_hash(const uint8_t *bytes, size_t len) {
     uint64_t hash = 0xcbf29ce484222325ull;
     for (size_t i = 0; i < len; ++i) {
         hash ^= static_cast<uint64_t>(bytes[i]);
@@ -516,7 +513,6 @@ uint64_t fnv1a64(const uint8_t *bytes, size_t len) {
     }
     return hash;
 }
-} // namespace
 
 int32_t Renderer::set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &pipe_id,
                                     std::string &err) {
@@ -532,7 +528,7 @@ int32_t Renderer::set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &p
     // The blob is identified by its hash, and this DSO carries the artifacts
     // for exactly the graphs it was built with. A blob this build was not built
     // with is -ENOSYS: there is no runtime compiler (DESIGN.md §14).
-    const uint64_t hash = fnv1a64(blob, len);
+    const uint64_t hash = graph_hash(blob, len);
     const struct Tension2dGraphPipe *entry = nullptr;
     for (const auto &candidate : kGraphPipes) {
         if (candidate.hash == hash) {
@@ -556,6 +552,34 @@ int32_t Renderer::set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &p
         }
     }
     pipe_id = entry->pipe_id;
+    return 0;
+}
+
+bool Renderer::has_builtin_graph(uint64_t hash) const {
+    for (const auto &candidate : kGraphPipes) {
+        if (candidate.hash == hash) return true;
+    }
+    return false;
+}
+
+int32_t Renderer::set_pipeline_spirv(const uint8_t *vs, size_t vs_len, const uint8_t *fs,
+                                     size_t fs_len, uint32_t &pipe_id, std::string &err) {
+    if (!is_open()) return -ENODEV;
+    if (vs == nullptr || fs == nullptr || vs_len < 4 || fs_len < 4) {
+        err = "set_pipeline: empty module from the compiler";
+        return -EINVAL;
+    }
+    if (impl_->pipelines.size() >= kMaxPipelines) {
+        err = "set_pipeline: pipeline table full";
+        return -ENOSPC;
+    }
+    // 1000 upward: the range tension_2d.h reserves for runtime-compiled graphs,
+    // so a pipe_id tells a log reader where the modules came from.
+    const uint32_t id = impl_->next_runtime_pipe++;
+    if (const int32_t rc = impl_->build_pipeline(vs, vs_len, fs, fs_len, id, err); rc != 0) {
+        return rc;
+    }
+    pipe_id = id;
     return 0;
 }
 

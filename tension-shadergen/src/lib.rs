@@ -410,7 +410,20 @@ pub fn generate_fragment(layout: &LayoutDesc, opts: &FragmentOptions) -> Result<
     if has_tint {
         let _ = writeln!(out, "layout(location = 1) in vec4 out_color;");
     }
-    let _ = writeln!(out, "layout(set = 2, binding = 0) uniform sampler2D u_tex;");
+    // Separate texture and sampler, not a combined `uniform sampler2D`.
+    //
+    // That is not a style preference. Naga's GLSL frontend refuses a combined
+    // opaque uniform outright — `NotImplemented("variable qualifier")` on the
+    // `sampler2D` token, in every layout form — so a combined declaration
+    // cannot reach Naga at all, and Naga is what turns this into SPIR-V.
+    //
+    // The two spellings describe the same resource: SPIR-V has no combined
+    // sampler type, so `sampler2D` lowers to a sampled image plus a sampler
+    // either way. The explicit form just says what SPIR-V was going to do, and
+    // it matches SDL_GPU's `SDL_GPUTextureSamplerBinding`, which binds the pair
+    // as one slot.
+    let _ = writeln!(out, "layout(set = 2, binding = 0) uniform texture2D u_tex;");
+    let _ = writeln!(out, "layout(set = 2, binding = 1) uniform sampler u_sampler;");
     let _ = writeln!(out, "layout(location = 0) out vec4 fragColor;");
     let _ = writeln!(out);
     let _ = writeln!(out, "void main() {{");
@@ -419,14 +432,14 @@ pub fn generate_fragment(layout: &LayoutDesc, opts: &FragmentOptions) -> Result<
     // tint they were given. Keeping them here — and small — is the point: v1 is
     // a working baseline, not an effect library.
     let body = match layout.preset_id {
-        1 => "fragColor = texture(u_tex, out_uv);".to_string(),
-        2 => format!("fragColor = texture(u_tex, out_uv) * {tint};"),
-        3 => format!("fragColor = vec4({tint}.rgb, texture(u_tex, out_uv).a * {tint}.a);"),
-        4 => format!("fragColor = texture(u_tex, out_uv) + {tint};"),
-        5 => format!("fragColor = vec4(texture(u_tex, out_uv).rgb * {tint}.rgb, 1.0);"),
+        1 => "fragColor = texture(sampler2D(u_tex, u_sampler), out_uv);".to_string(),
+        2 => format!("fragColor = texture(sampler2D(u_tex, u_sampler), out_uv) * {tint};"),
+        3 => format!("fragColor = vec4({tint}.rgb, texture(sampler2D(u_tex, u_sampler), out_uv).a * {tint}.a);"),
+        4 => format!("fragColor = texture(sampler2D(u_tex, u_sampler), out_uv) + {tint};"),
+        5 => format!("fragColor = vec4(texture(sampler2D(u_tex, u_sampler), out_uv).rgb * {tint}.rgb, 1.0);"),
         6 => "fragColor = vec4(out_uv, 0.0, 1.0);".to_string(),
         7 => "fragColor = vec4(1.0);".to_string(),
-        8 => format!("fragColor = vec4(texture(u_tex, out_uv).rgb, {tint}.a);"),
+        8 => format!("fragColor = vec4(texture(sampler2D(u_tex, u_sampler), out_uv).rgb, {tint}.a);"),
         _ => format!("fragColor = {tint};"),
     };
     let _ = writeln!(out, "    {body}");
@@ -636,9 +649,10 @@ mod tests {
     fn the_fragment_samples_at_set_two() {
         let source = generate_fragment(&sprite(), &FragmentOptions::default()).unwrap();
         // SDL_GPU's Vulkan backend binds fragment samplers at set 2
-        // (`SDL_gpu.h:2705–2715`); anything else binds nothing.
+        // (`SDL_gpu.h:2705–2715`); anything else binds nothing. The texture and
+        // its sampler are adjacent bindings because SPIR-V has no combined type.
         assert!(
-            source.contains("layout(set = 2, binding = 0) uniform sampler2D u_tex;"),
+            source.contains("layout(set = 2, binding = 0) uniform texture2D u_tex;"),
             "{source}"
         );
     }

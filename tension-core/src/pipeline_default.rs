@@ -186,11 +186,17 @@ pub fn serialize_default_2d() -> Vec<u8> {
 /// 16. The sort key, the record, the canvas and every other node are byte for
 /// byte `default_2d`'s.
 pub fn scaled_graph() -> Graph {
+    scaled_graph_with(2.0)
+}
+
+/// The scaled graph with an arbitrary factor, so a test can ask for 1.5 without
+/// a second hand-written graph.
+pub fn scaled_graph_with(factor: f32) -> Graph {
     let mut graph = default_graph();
     let stage = &mut graph.stages[0];
 
     // node 14: the constant. 2.0f32 == 0x4000_0000, little-endian halves.
-    let two = 2.0f32.to_bits();
+    let two = factor.to_bits();
     stage.nodes.push(Node {
         id: 14,
         op: "const_f32".to_string(),

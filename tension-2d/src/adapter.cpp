@@ -22,6 +22,7 @@
 
 #include <cerrno>
 #include <cstring>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -46,6 +47,10 @@ struct AdapterState {
     /// anyway: retrofitting a handle is the change an aspect table exists to
     /// avoid (the same reasoning as tension-input's `input_open`).
     int32_t handle = 0;
+    /// Runtime-compiled pipelines, keyed by blob hash. Without this a guest
+    /// that re-sets the same graph would compile it again — 30 ms each, and a
+    /// new pipeline object every time.
+    std::map<uint64_t, uint32_t> runtime_pipes;
 };
 
 AdapterState &adapter_state() {
@@ -159,7 +164,52 @@ int32_t shim_set_pipeline(void *, const tension_value *args, uint32_t nargs, ten
         }
         uint32_t graph_pipe = 0;
         std::string err;
-        const int32_t rc = state.renderer.set_pipeline_blob(blob.data(), blob.size(), graph_pipe, err);
+        int32_t rc = state.renderer.set_pipeline_blob(blob.data(), blob.size(), graph_pipe, err);
+
+        const uint64_t hash = graph_hash(blob.data(), blob.size());
+        auto cached = state.runtime_pipes.find(hash);
+        if (cached != state.runtime_pipes.end()) {
+            return answer(ret, static_cast<int32_t>(cached->second));
+        }
+
+        if (rc == -ENOSYS && state.api != nullptr && state.api->compile_graph != nullptr) {
+            // Not a graph this build shipped. Ask the host to compile it: the
+            // core owns the compiler, this DSO owns the device, and neither
+            // carries the other's dependency (rule 8).
+            //
+            // Two calls: the first learns the sizes, the second transfers. The
+            // slot reports `-ENOSPC` with the sizes filled in, so a retry needs
+            // no probing heuristic.
+            uint32_t vs_len = 0;
+            uint32_t fs_len = 0;
+            const int32_t sized = state.api->compile_graph(state.api->user, blob.data(),
+                                                           static_cast<uint32_t>(blob.size()),
+                                                           nullptr, 0, nullptr, 0, &vs_len, &fs_len);
+            if (sized != -ENOSPC) {
+                const std::string line =
+                    "2d: set_pipeline: host compile failed (" + std::to_string(sized) + ")";
+                log_line(3, line.c_str());
+                return refuse(ret, sized == 0 ? -EIO : sized);
+            }
+
+            std::vector<uint8_t> vs(vs_len);
+            std::vector<uint8_t> fs(fs_len);
+            uint32_t vs_got = 0;
+            uint32_t fs_got = 0;
+            const int32_t compiled = state.api->compile_graph(
+                state.api->user, blob.data(), static_cast<uint32_t>(blob.size()), vs.data(), vs_len,
+                fs.data(), fs_len, &vs_got, &fs_got);
+            if (compiled != 0) {
+                const std::string line =
+                    "2d: set_pipeline: host compile refused (" + std::to_string(compiled) + ")";
+                log_line(3, line.c_str());
+                return refuse(ret, compiled);
+            }
+            rc = state.renderer.set_pipeline_spirv(vs.data(), vs_got, fs.data(), fs_got,
+                                                   graph_pipe, err);
+            if (rc == 0) state.runtime_pipes[hash] = graph_pipe;
+        }
+
         if (rc != 0) {
             const std::string line = "2d: set_pipeline refused (" + err + ")";
             log_line(3, line.c_str());

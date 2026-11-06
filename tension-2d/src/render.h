@@ -51,6 +51,15 @@ public:
     int32_t set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &pipe_id,
                               std::string &err);
 
+    /// Build a pipeline from modules compiled elsewhere (the host's
+    /// `compile_graph` slot). `pipe_id` is allocated from 1000 upward, which is
+    /// the range `tension_2d.h` reserves for runtime-compiled graphs.
+    int32_t set_pipeline_spirv(const uint8_t *vs, size_t vs_len, const uint8_t *fs, size_t fs_len,
+                               uint32_t &pipe_id, std::string &err);
+
+    /// Whether a blob's hash is one this build shipped artifacts for.
+    bool has_builtin_graph(uint64_t hash) const;
+
     /// Append records to a bucket. `records` is the adapter's copy — the
     /// renderer never sees a guest pointer.
     int32_t submit(uint32_t pipe_id, const uint8_t *records, uint32_t count,
@@ -83,6 +92,11 @@ private:
 /// Read the `sort_key` out of one record so the adapter can share the layout.
 /// Kept here beside the record definition rather than duplicated in the header.
 uint32_t record_sort_key(const uint8_t *record);
+
+/// FNV-1a 64 over a blob: the key a compiled pipeline is cached under. Matches
+/// `pipeline::Graph::hash` in Rust and the build script's `fnv1a`, so all three
+/// agree on a blob's identity.
+uint64_t graph_hash(const uint8_t *bytes, size_t len);
 
 } // namespace tension_2d
 
