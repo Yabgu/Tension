@@ -26,6 +26,7 @@ import {
   ConfigBuilder,
   Frame,
   Info,
+  Info,
   print,
   readRgba,
   RECORD_SIZE,
@@ -156,8 +157,7 @@ function buildAtlas(): usize {
 
 /// The same ten records `smoke_core.cpp` submits: one per cell, 64 px apart,
 /// 32 px square, `sort_key = i` so draw order is submission-independent.
-function writeSprites(base: SpriteRecord): void {
-  const addr = changetype<usize>(base);
+function writeSprites(out: @unmanaged [SpriteRecord *]): void {
   for (let i = 0; i < SPRITES; i++) {
     const cell = <u32>i;
     const frame = new Frame(
@@ -167,8 +167,7 @@ function writeSprites(base: SpriteRecord): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    const rec = changetype<SpriteRecord>(addr + <usize>(i * <i32>RECORD_SIZE));
-    writeRecord(rec, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    writeRecord(out, i, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -255,9 +254,9 @@ export function _start_game(): void {
 
   // 5. the records and the header
   const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
-  writeSprites(changetype<SpriteRecord>(records));
+  writeSprites(changetype<@unmanaged [SpriteRecord *]>(records));
   const header: usize = memory.data(<usize>12, 4);
-  writeSubmitHeader(changetype<SubmitHeader>(header), records, <u32>SPRITES);
+  writeSubmitHeader(changetype<SubmitHeader>(header), changetype<@unmanaged [SpriteRecord *]>(records), <u32>SPRITES);
 
   const accepted = gfx.submit(handle, pipe, header, 0);
   if (accepted != SPRITES) {
@@ -289,7 +288,7 @@ export function _start_game(): void {
   // a pointer local, so it is unaffected — and the fields are still named.
   let nonBlack: u32 = 0;
   for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    const px = changetype<@unmanaged Rgba>(frame + <usize>(i * 4));
+    const px = readRgba(changetype<Rgba>(frame + <usize>(i * 4)));
     if (px.r != 0 || px.g != 0 || px.b != 0) nonBlack++;
   }
 
@@ -299,7 +298,7 @@ export function _start_game(): void {
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    const px = changetype<@unmanaged Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4));
+    const px = readRgba(changetype<Rgba>(frame + <usize>((cy * CANVAS_WIDTH + cx) * 4)));
     const c = CELL_COLOURS[<i32>i];
     const r = px.r;
     const g = px.g;

@@ -29,12 +29,13 @@
 //
 // `SpriteRecord`, `SubmitHeader`, `Rgba` and `Info` are all four that shape, and
 // all four are parameters or return values of a function that names them by type
-// rather than by address: `writeRecord(rec, …)`, `readRgba(px)`,
+// rather than by address: `writeRecord(records, i, …)`, `readRgba(px)`,
 // `pixelAt(frame, …)`. `Frame` is not — it is a lookup result, never a view over
 // bytes — so it stays a plain reference.
 //
-// **The declaration says it because the writer's parameter says it.** With a
-// plain declaration the compiler refuses all three things a record writer needs:
+// **The declaration says it because the parameter says it.** With a plain
+// declaration the compiler refuses every route to writing through a record
+// argument:
 //
 //   `writeRec(rec: @unmanaged SpriteRecord, …)`  field writes through the param
 //       -> AS100 "reading an @inline struct value as a whole"
@@ -43,14 +44,27 @@
 //   `changetype<usize>(rec)` and `copyInto(changetype<usize>(rec), v)` to dodge
 //       -> AS100 again, both
 //
-// Declared `@unmanaged`, all three work: the parameter is a pointer, the writes
-// land at the field offsets, and `export` is ordinary. Reading through a view
-// param over a *value* does work, which is why the restriction reads as an
-// asymmetry in the compiler rather than a rule of the language.
+// Declared `@unmanaged`, all three work. Reading through a view param over a
+// *value* does work, which is why the restriction reads as an asymmetry in the
+// compiler rather than a rule of the language.
 //
-// The payoff is the caller's side: `writeRecord(rec, …)` takes the record, not a
-// buffer plus an index, so there is no `index * sizeof` at any call site that
-// does not own the buffer arithmetic.
+// ## Records are an array, not an address
+//
+// A frame is `[SpriteRecord *]` all the way down — a pointer to a run of
+// records, which is a type the language has and a stride the compiler computes:
+//
+//   writeRecord(out, i, …)      ->  out[i].x = …      (index × sizeof)
+//   world.emit(out)             ->  one view, no arithmetic at the call site
+//
+// Nothing here indexes `addr + i * RECORD_SIZE`. The one place a stride is
+// written by hand is `RECORD_SIZE` itself, and only so a caller can size a
+// buffer.
+//
+// **A view local must be a `let`, not a `const`.** A `const` whose type is a
+// pointer view, in a scope that also declares an integer `const`, crashes
+// `tensionscript` — 0.13.2 and 0.14.1 both, `AssertionError` in
+// `setConstantIntegerValue`. It is a compiler bug, not a rule; `let` compiles to
+// the same code and nothing reassigns a view.
 //
 // ## Where the layout is checked
 //
@@ -241,14 +255,15 @@ export class Frame {
 /**
  * Write one record into `out` at `index`, through the struct.
  *
- * `rec` is a pointer — the caller hands over the address of the record it wants
- * written. The field writes below are the wire's bytes in the wire's order, and
- * every field is written, including the pad and the flags: a record that
- * inherits a byte from the previous frame is a record whose meaning depends on
- * history.
+ * `records[index]` is the record — the compiler supplies the stride from
+ * `sizeof<SpriteRecord>()`, so no caller does that arithmetic. The field writes
+ * below are the wire's bytes in the wire's order, and every field is written,
+ * including the pad and the flags: a record that inherits a byte from the
+ * previous frame is a record whose meaning depends on history.
  */
 export function writeRecord(
-  rec: SpriteRecord,
+  records: @unmanaged [SpriteRecord *],
+  index: i32,
   x: i32,
   y: i32,
   frame: Frame,
@@ -256,6 +271,7 @@ export function writeRecord(
   groupId: u16,
   z: u8,
 ): void {
+  const rec = records[index];
   rec.x = x;
   rec.y = y;
   rec.srcX = frame.srcX;
@@ -277,8 +293,14 @@ export function writeRecord(
  * writes the same 12 bytes and nobody has to remember that the stride is a
  * `u16` at offset 8.
  */
-export function writeSubmitHeader(hdr: SubmitHeader, records: usize, count: u32): void {
-  hdr.records = u32(records);
+export function writeSubmitHeader(
+  hdr: SubmitHeader,
+  records: @unmanaged [SpriteRecord *],
+  count: u32,
+): void {
+  // `<usize>` rather than `changetype<usize>`: a view is already a pointer,
+  // and `changetype` between the two is refused (AS202).
+  hdr.records = u32(<usize>records);
   hdr.count = count;
   hdr.stride = <u16>RECORD_SIZE;
   hdr._reserved = 0;

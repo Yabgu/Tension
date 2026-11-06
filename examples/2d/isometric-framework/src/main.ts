@@ -282,7 +282,16 @@ export function _start_game(): void {
     }
     const records: usize = memory.data(<usize>RECORD_BYTES, 8);
 
-    const written = world.emit(changetype<SpriteRecord>(records));
+    // The buffer as `[SpriteRecord *]`: a pointer to a run of records, which is
+    // what the frame is. Nothing here multiplies by a stride.
+    //
+    // `let`, not `const`, and that is a compiler constraint rather than a
+    // preference: a `const` whose type is a pointer view, in a scope that also
+    // declares an integer `const`, crashes `tensionscript` (0.13.2 and 0.14.1:
+    // `AssertionError` in `setConstantIntegerValue`). A view is a `let` away
+    // from working, and nothing here reassigns it.
+    let out = changetype<@unmanaged [SpriteRecord *]>(records);
+    const written = world.emit(out);
     if (written != count) {
       print("FAIL: emit(" + name + ") wrote " + written.toString() + ", counted " + count.toString());
       failures++;
@@ -290,7 +299,7 @@ export function _start_game(): void {
     }
     // The framework writes the submit header too: the record contract is one
     // thing, and splitting its two halves across two modules is how they drift.
-    writeSubmitHeader(changetype<SubmitHeader>(header), records, written);
+    writeSubmitHeader(changetype<SubmitHeader>(header), out, written);
 
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != <i32>written) {
