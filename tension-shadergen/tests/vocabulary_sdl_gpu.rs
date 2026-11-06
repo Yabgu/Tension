@@ -46,6 +46,7 @@ impl Vocabulary for SdlGpuVocabulary {
             // Unreachable for the layouts below; a name rather than a panic,
             // because a layout the host cannot serve should be refused upstream.
             Slot::TexCoord(_) => "a_uv",
+            Slot::TexPage => "a_tex",
         }
     }
 }

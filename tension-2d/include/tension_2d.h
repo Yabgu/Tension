@@ -2,7 +2,7 @@
  * tension_2d — the 2D capability's boundary header.
  *
  * The counterpart of tension_adapter.h for one capability: it fixes the wasm
- * import surface (`tension::2d`) the adapter implements, the nine verbs, the
+ * import surface (`tension::2d`) the adapter implements, the ten verbs, the
  * `sprite` record the guest submits, and the refusal vocabulary. The guest SDK
  * and the adapter's C++ sources both answer to it, and neither invents a field
  * the other does not know.
@@ -43,20 +43,27 @@ extern "C" {
  */
 
 /*
- * `open(i32 flags) -> i32`  — verb_id 1, flags 0.
+ * `open(i32 width, i32 height, i32 flags) -> i32`  — verb_id 1, flags 0.
  *
- * Creates the GPU device and the capability's one session (capacity 1), and
- * returns its handle, or:
- *   -EINVAL  `flags` is not 0 (none are defined yet)
+ * Creates the GPU device, the offscreen target at `width` x `height`, and the
+ * capability's one session (capacity 1), and returns its handle, or:
+ *   -EINVAL  `width`/`height` outside 1..16384, or `flags` is not 0
  *   -EBUSY   a handle is already open
  *   -ENODEV  no GPU device on this machine (no driver, no Vulkan ICD)
  *   -ENOSYS  this SDL build has no GPU backend
  *   -EIO     device creation failed for a reason SDL names
+ *   -ENOMEM  the target could not be allocated
+ *
+ * The canvas is the caller's decision, chosen at `open` and fixed for the
+ * handle's life: a resize is `close` + `open`, because v1 has no swapchain to
+ * renegotiate with. The 16384 ceiling is the Vulkan guaranteed minimum
+ * `maxImageDimension2D`, so a size this verb accepts is one every conformant
+ * device can allocate.
  *
  * v1 renders to an offscreen target and reads it back with `screenshot`; there
  * is no swapchain yet, so `open` takes no window token.
  */
-int32_t tension_2d_open(int32_t flags);
+int32_t tension_2d_open(int32_t width, int32_t height, int32_t flags);
 
 /*
  * `close(i32 handle) -> i32`  — verb_id 2, flags 0.
@@ -163,11 +170,42 @@ int32_t tension_2d_texture_load(int32_t handle, int32_t src_ptr, int32_t src_len
                                 int32_t target_format);
 
 /*
+ * `set_texture(i32 handle, i32 pipe_id, i32 slot, i32 texture_id) -> i32`  —
+ * verb_id 10, flags 0.
+ *
+ * Binds a loaded texture to one **page** of a pipeline's texture array, or 0:
+ *   -EINVAL  bad handle, `slot` outside 0..15, or a texture whose dimensions
+ *            disagree with the pipeline's array (every page shares one size)
+ *   -ENOENT  unknown `pipe_id` or `texture_id`
+ *   -ENOMEM  the pipeline's array could not be allocated
+ *   -EIO     the GPU copy failed
+ *
+ * A record's `tex` is the page it samples, so this is what gives `tex` its
+ * meaning. A pipeline with no bound pages samples the most recently loaded
+ * texture at page 0, which is the single-atlas behaviour v1 shipped with; a
+ * pipeline with pages samples only what it was given, and a page it was not
+ * given is undefined contents (the array is allocated, not cleared).
+ *
+ * The array is one `SDL_GPUTexture` of `TENSION_2D_MAX_ATLAS_PAGES` layers, so
+ * all pages of one pipeline are the same dimensions. An atlas page is a
+ * fixed-size grid by construction; a caller with two sizes has two pipelines,
+ * or packs at one size. Resampling is refused rather than done, because the
+ * record's src rect is in pixels and resampling would move pixels inside a
+ * cell.
+ */
+int32_t tension_2d_set_texture(int32_t handle, int32_t pipe_id, int32_t slot, int32_t texture_id);
+
+/*
  * `info(i32 handle, i32 ptr, i32 cap) -> i32`  — verb_id 8,
  * flags TENSION_IMPORT_REENTRANT_READONLY.
  *
- * Writes a `tension_2d_info` (16 bytes) into guest memory and returns the bytes
+ * Writes a `tension_2d_info` (24 bytes) into guest memory and returns the bytes
  * written, or -EINVAL / -ENOSPC / -ENODEV.
+ *
+ * `canvas_width`/`canvas_height` echo the dimensions the handle was opened
+ * with. A guest needs them to size its `screenshot` buffer without having to
+ * remember what it asked for, and a log reader needs them to make sense of a
+ * frame's coordinates.
  *
  * Read-only and re-entrant: it takes a snapshot of counters and never blocks,
  * so a callback may ask how much room it has.
@@ -212,6 +250,14 @@ int32_t tension_2d_screenshot(int32_t handle, int32_t ptr, int32_t cap);
  */
 #define TENSION_2D_RECORD_SIZE 28u
 
+/*
+ * The pages one pipeline can bind: the layer count of its texture array, and
+ * therefore the largest `tex` value that has defined contents. It is a wire
+ * constant rather than an `info` field because a guest needs it to size a page
+ * table, and a page table sized at runtime is a page table that can be wrong.
+ */
+#define TENSION_2D_MAX_ATLAS_PAGES 16u
+
 #define TENSION_2D_OFF_X         0u
 #define TENSION_2D_OFF_Y         4u
 #define TENSION_2D_OFF_SRC_X     8u
@@ -240,12 +286,14 @@ typedef struct tension_2d_submit_hdr {
 /* ── info record ─────────────────────────────────────────────────────── */
 
 typedef struct tension_2d_info_record {
-    uint16_t version;       /* 1 */
+    uint16_t version;       /* 2: canvas dimensions appended */
     uint16_t max_records;   /* per bucket */
     uint32_t max_textures;
     uint32_t max_pipelines;
     uint16_t max_buckets;
     uint16_t flags;
+    uint32_t canvas_width;  /* the size this handle was opened with */
+    uint32_t canvas_height;
 } tension_2d_info_record;
 
 /* ── pipe_id ranges ──────────────────────────────────────────────────── */
@@ -275,7 +323,7 @@ typedef struct tension_2d_info_record {
  *
  *   -EINVAL  a bad handle, a non-zero `flags`, a malformed header, a stride
  *            that disagrees with the layout
- *   -ENOENT  an unknown pipe_id, or a preset id outside 1..9
+ *   -ENOENT  an unknown pipe_id or texture id, or a preset id outside 1..9
  *   -ENODEV  no device, or nothing presented yet
  *   -ENOSYS  a guest graph, a raw shader, or a container this build does not
  *            serve

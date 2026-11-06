@@ -56,6 +56,7 @@ impl Vocabulary for SdlGpuVocabulary {
             Slot::Tangent => "a_tangent",
             Slot::Binormal => "a_binormal",
             Slot::TexCoord(_) => "a_uv",
+            Slot::TexPage => "a_tex",
         }
     }
 }

@@ -17,16 +17,24 @@
 //                on the host, driven by the graph's `make_tuple`.
 //   pixels       read back here with `screenshot` and counted here.
 //
-// The canvas is 640x360 because the adapter renders to one fixed offscreen
-// target (`render.h`). The brief for this example said 320x240; `open` takes
-// only `flags`, so there is no way to ask for a size, and inventing one would
-// have been a lie about the ABI.
+// The canvas is 640x360 because this example asks for 640x360:
+// `open(width, height, flags)` fixes the target's size for the handle's life.
+// Nothing in the adapter bakes it in — the 320x180 case is exercised in
+// tension-2d/tests/smoke_core.cpp.
 
 import { ConfigBuilder, print, RuntimeSession } from "tension-framework";
 import * as gfx from "./bindings";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 // --- the frame's numbers ---------------------------------------------------
+
+/// The example's canvas. The adapter takes it from `open`, so this is a
+/// decision here rather than a constant there.
+const CANVAS_WIDTH: u32 = 640;
+const CANVAS_HEIGHT: u32 = 360;
+/// `memory.data` takes a compile-time size, so the readback is sized from the
+/// same two constants rather than from `gfx.frameBytes(...)`.
+const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
 
 const SPRITES: i32 = 10;
 /// The atlas is 4x4 cells of 64 px, and a 32 px sprite samples the top-left
@@ -146,7 +154,7 @@ export function _start_game(): void {
   }
 
   // 2. the capability
-  const handle = gfx.open(0);
+  const handle = gfx.open(CANVAS_WIDTH, CANVAS_HEIGHT, 0);
   if (handle <= 0) {
     fail("open -> " + handle.toString());
     return;
@@ -163,8 +171,16 @@ export function _start_game(): void {
   print(
     "info -> v" + gfx.infoVersion(infoBuf).toString() +
       ", max_records " + gfx.infoMaxRecords(infoBuf).toString() +
-      ", max_buckets " + gfx.infoMaxBuckets(infoBuf).toString(),
+      ", max_buckets " + gfx.infoMaxBuckets(infoBuf).toString() +
+      ", canvas " + gfx.infoCanvasWidth(infoBuf).toString() + "x" +
+      gfx.infoCanvasHeight(infoBuf).toString(),
   );
+  if (gfx.infoCanvasWidth(infoBuf) != CANVAS_WIDTH ||
+    gfx.infoCanvasHeight(infoBuf) != CANVAS_HEIGHT) {
+    fail("info reports a different canvas than open was given");
+    gfx.close(handle);
+    return;
+  }
 
   // 3. the pipeline, from the graph blob the adapter was built against. A
   //    blob whose hash the DSO does not carry is -ENOSYS here, so this failure
@@ -191,7 +207,18 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
     gfx.close(handle);
     return;
   }
-  print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)");
+  // 4b. bind the atlas to page 0. The records below carry `tex = 0`, and this
+  //     is the call that makes that field mean something: without it a pipeline
+  //     samples the last-loaded texture implicitly, which works but leaves the
+  //     tenth verb unexercised.
+  const bound = gfx.setTexture(handle, pipe, 0, tex);
+  if (bound != 0) {
+    fail("set_texture -> " + bound.toString());
+    gfx.close(handle);
+    return;
+  }
+  print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)" +
+    ", bound to page 0");
 
   // 5. the records and the header
   const records: usize = memory.data(<usize>(SPRITES * <i32>gfx.RECORD_SIZE), 8);
@@ -215,16 +242,16 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
   }
 
   // 7. read the frame back and count what is not black
-  const frame: usize = memory.data(<usize>gfx.FRAME_BYTES, 8);
-  const written = gfx.screenshot(handle, frame, <i32>gfx.FRAME_BYTES);
-  if (written != <i32>gfx.FRAME_BYTES) {
-    fail("screenshot -> " + written.toString() + ", expected " + gfx.FRAME_BYTES.toString());
+  const frame: usize = memory.data(<usize>FRAME_BYTES, 8);
+  const written = gfx.screenshot(handle, frame, <i32>FRAME_BYTES);
+  if (written != <i32>FRAME_BYTES) {
+    fail("screenshot -> " + written.toString() + ", expected " + FRAME_BYTES.toString());
     gfx.close(handle);
     return;
   }
 
   let nonBlack: u32 = 0;
-  for (let i: u32 = 0; i < gfx.CANVAS_WIDTH * gfx.CANVAS_HEIGHT; i++) {
+  for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
     const at = frame + <usize>(i * 4);
     if (load<u8>(at) != 0 || load<u8>(at + 1) != 0 || load<u8>(at + 2) != 0) nonBlack++;
   }
@@ -235,7 +262,7 @@ const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    const at = frame + <usize>((cy * gfx.CANVAS_WIDTH + cx) * 4);
+    const at = frame + <usize>((cy * CANVAS_WIDTH + cx) * 4);
     const c = CELL_COLOURS[<i32>i];
     const r = load<u8>(at);
     const g = load<u8>(at + 1);

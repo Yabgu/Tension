@@ -63,6 +63,27 @@ struct TextureEntry {
     uint32_t height = 0;
 };
 
+/// One pipeline's texture array.
+///
+/// `tex` in the record is a page index, and the fragment stage samples
+/// `texture2DArray` at that layer. One array per pipeline, not one texture per
+/// draw: splitting a bucket by page would reorder the draws and overrule the
+/// graph's sort, which is the one thing multi-atlas must not do.
+///
+/// All pages share the array's dimensions, because an array texture has one
+/// size. A page of a different size is refused at `set_texture` rather than
+/// resampled — resampling would move pixels inside a cell, and the record's src
+/// rect is in pixels.
+struct Atlas {
+    SDL_GPUTexture *array = nullptr;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    /// Pages bound so far. `0` means the pipeline has no explicit atlas and the
+    /// implicit one is used.
+    uint32_t pages = 0;
+    uint32_t bound[TENSION_2D_MAX_ATLAS_PAGES] = {};
+};
+
 std::string sdl_error(const char *what) {
     return std::string(what) + ": " + SDL_GetError();
 }
@@ -146,10 +167,22 @@ int compare_by_keys(const void *lhs, const void *rhs) {
 struct Renderer::Impl {
     SDL_GPUDevice *device = nullptr;
     SDL_GPUTexture *target = nullptr;
+    /// The canvas this handle was opened with. Everything that used to read a
+    /// compile-time constant reads these instead: the target allocation, the
+    /// clip-space projection pushed per draw, and the screenshot readback.
+    uint32_t canvas_width = 0;
+    uint32_t canvas_height = 0;
     SDL_GPUSampler *sampler = nullptr;
-    SDL_GPUTexture *default_texture = nullptr;
-    uint32_t default_texture_width = 1;
-    uint32_t default_texture_height = 1;
+    /// The array a pipeline samples when it has bound nothing: sixteen 1x1
+    /// white pages, so a record that names no atlas still draws its rect.
+    SDL_GPUTexture *default_array = nullptr;
+    /// The array built from the most recently loaded texture, for the pipelines
+    /// that never call `set_texture` (every v1 caller). Rebuilt when a new
+    /// texture is loaded, so `tex = 0` means "the atlas I just loaded".
+    SDL_GPUTexture *implicit_array = nullptr;
+    uint32_t implicit_source = 0;
+    uint32_t implicit_width = 1;
+    uint32_t implicit_height = 1;
     SDL_GPUBuffer *storage = nullptr;
     SDL_GPUTransferBuffer *upload = nullptr;
     SDL_GPUTransferBuffer *download = nullptr;
@@ -157,6 +190,7 @@ struct Renderer::Impl {
 
     std::map<uint32_t, SDL_GPUGraphicsPipeline *> pipelines;
     std::map<uint32_t, TextureEntry> textures;
+    std::map<uint32_t, Atlas> atlases;
     uint32_t bound_texture = 0;
 
     struct Bucket {
@@ -181,6 +215,47 @@ struct Renderer::Impl {
         info.num_levels = 1;
         info.sample_count = SDL_GPU_SAMPLECOUNT_1;
         return SDL_CreateGPUTexture(device, &info);
+    }
+
+    /// A texture array of `TENSION_2D_MAX_ATLAS_PAGES` layers at one size.
+    /// Every page is the same dimensions because an array texture has one size;
+    /// `set_texture` refuses a page that disagrees instead of resampling it.
+    SDL_GPUTexture *create_array(uint32_t width, uint32_t height) {
+        SDL_GPUTextureCreateInfo info = {};
+        info.type = SDL_GPU_TEXTURETYPE_2D_ARRAY;
+        info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+        info.width = width;
+        info.height = height;
+        info.layer_count_or_depth = TENSION_2D_MAX_ATLAS_PAGES;
+        info.num_levels = 1;
+        info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+        return SDL_CreateGPUTexture(device, &info);
+    }
+
+    /// Copy one 2D texture into one layer of an array. A GPU-side copy: the
+    /// pixels are never read back to the CPU, which is why `TextureEntry` does
+    /// not retain them.
+    int32_t copy_into_layer(SDL_GPUTexture *src, SDL_GPUTexture *dst, uint32_t layer,
+                            uint32_t width, uint32_t height, std::string &err) {
+        SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(device);
+        if (cmd == nullptr) {
+            err = sdl_error("AcquireGPUCommandBuffer(copy)");
+            return -EIO;
+        }
+        SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
+        SDL_GPUTextureLocation source = {};
+        source.texture = src;
+        SDL_GPUTextureLocation dest = {};
+        dest.texture = dst;
+        dest.layer = layer;
+        SDL_CopyGPUTextureToTexture(copy, &source, &dest, width, height, 1, false);
+        SDL_EndGPUCopyPass(copy);
+        if (!SDL_SubmitGPUCommandBuffer(cmd)) {
+            err = sdl_error("SubmitGPUCommandBuffer(copy)");
+            return -EIO;
+        }
+        return 0;
     }
 
     /// Upload a tightly packed RGBA8 raster. The transfer buffer is created per
@@ -282,6 +357,24 @@ struct Renderer::Impl {
 
         SDL_GPUColorTargetDescription ctd = {};
         ctd.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        // Straight alpha, source-over. Without this every transparent texel
+        // writes something — the default is `enable_blend = false`, so a sprite
+        // cut-out draws as an opaque black rectangle the size of its src rect.
+        // The first version of this renderer did exactly that, and every test
+        // passed because every test drew opaque rectangles: a sprite batcher
+        // that cannot do cut-outs is not a sprite batcher.
+        //
+        // The alpha channel blends the same way, so a page with premultiplied
+        // colours would come out wrong — `tension_2d.h` says non-premultiplied
+        // (the `screenshot` contract), and the decoders here produce
+        // non-premultiplied.
+        ctd.blend_state.enable_blend = true;
+        ctd.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+        ctd.blend_state.dst_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ctd.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+        ctd.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+        ctd.blend_state.dst_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        ctd.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
 
         SDL_GPUGraphicsPipelineCreateInfo pci = {};
         pci.vertex_shader = vs;
@@ -312,8 +405,15 @@ struct Renderer::Impl {
         pipelines.clear();
         for (auto &entry : textures) SDL_ReleaseGPUTexture(device, entry.second.texture);
         textures.clear();
-        if (default_texture != nullptr) SDL_ReleaseGPUTexture(device, default_texture);
-        default_texture = nullptr;
+        for (auto &entry : atlases) {
+            if (entry.second.array != nullptr) SDL_ReleaseGPUTexture(device, entry.second.array);
+        }
+        atlases.clear();
+        if (implicit_array != nullptr) SDL_ReleaseGPUTexture(device, implicit_array);
+        implicit_array = nullptr;
+        implicit_source = 0;
+        if (default_array != nullptr) SDL_ReleaseGPUTexture(device, default_array);
+        default_array = nullptr;
         if (sampler != nullptr) SDL_ReleaseGPUSampler(device, sampler);
         sampler = nullptr;
         if (storage != nullptr) SDL_ReleaseGPUBuffer(device, storage);
@@ -341,10 +441,11 @@ Renderer::~Renderer() { close(); }
 
 bool Renderer::is_open() const { return impl_ != nullptr && impl_->device != nullptr; }
 
-uint32_t Renderer::width() const { return kCanvasWidth; }
-uint32_t Renderer::height() const { return kCanvasHeight; }
+uint32_t Renderer::width() const { return impl_ ? impl_->canvas_width : 0u; }
+uint32_t Renderer::height() const { return impl_ ? impl_->canvas_height : 0u; }
 uint32_t Renderer::max_records() { return kMaxRecords; }
 uint32_t Renderer::max_buckets() { return kMaxBuckets; }
+uint32_t Renderer::max_atlas_pages() { return TENSION_2D_MAX_ATLAS_PAGES; }
 uint32_t Renderer::pipeline_count() const {
     return impl_ ? static_cast<uint32_t>(impl_->pipelines.size()) : 0u;
 }
@@ -352,8 +453,15 @@ uint32_t Renderer::texture_count() const {
     return impl_ ? static_cast<uint32_t>(impl_->textures.size()) : 0u;
 }
 
-int32_t Renderer::open(std::string &err) {
+int32_t Renderer::open(uint32_t width, uint32_t height, std::string &err) {
     if (is_open()) return -EBUSY;
+    if (width == 0 || height == 0 || width > kMaxCanvasDimension ||
+        height > kMaxCanvasDimension) {
+        err = "open: canvas outside 1.." + std::to_string(kMaxCanvasDimension);
+        return -EINVAL;
+    }
+    impl_->canvas_width = width;
+    impl_->canvas_height = height;
 
     // SDL's video subsystem is refcounted process-wide; tension-input does the
     // same from its own thread. Both quit what they started.
@@ -372,8 +480,7 @@ int32_t Renderer::open(std::string &err) {
         return -ENODEV;
     }
 
-    impl_->target = impl_->create_texture(kCanvasWidth, kCanvasHeight,
-                                          SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+    impl_->target = impl_->create_texture(width, height, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
     if (impl_->target == nullptr) {
         err = sdl_error("CreateGPUTexture(target)");
         impl_->release_all();
@@ -394,12 +501,34 @@ int32_t Renderer::open(std::string &err) {
         return -EIO;
     }
 
-    // The texture a bucket binds when it has none: 1x1 opaque white, so a
-    // record that names no atlas still draws its rect.
-    const uint8_t white[4] = {255, 255, 255, 255};
-    if (const int32_t rc = impl_->upload_rgba(white, 1, 1, &impl_->default_texture, err); rc != 0) {
-        impl_->release_all();
-        return rc;
+    // The array a bucket binds when it has none: sixteen 1x1 opaque white pages,
+    // so a record that names no atlas still draws its rect — and a record that
+    // names page 7 gets a defined texel rather than whatever the driver left in
+    // an unwritten layer.
+    {
+        const uint8_t white[4] = {255, 255, 255, 255};
+        SDL_GPUTexture *white_tex = nullptr;
+        if (const int32_t rc = impl_->upload_rgba(white, 1, 1, &white_tex, err); rc != 0) {
+            impl_->release_all();
+            return rc;
+        }
+        impl_->default_array = impl_->create_array(1, 1);
+        if (impl_->default_array == nullptr) {
+            SDL_ReleaseGPUTexture(impl_->device, white_tex);
+            err = sdl_error("CreateGPUTexture(default array)");
+            impl_->release_all();
+            return -ENOMEM;
+        }
+        for (uint32_t layer = 0; layer < TENSION_2D_MAX_ATLAS_PAGES; ++layer) {
+            if (const int32_t rc = impl_->copy_into_layer(white_tex, impl_->default_array, layer, 1,
+                                                          1, err);
+                rc != 0) {
+                SDL_ReleaseGPUTexture(impl_->device, white_tex);
+                impl_->release_all();
+                return rc;
+            }
+        }
+        SDL_ReleaseGPUTexture(impl_->device, white_tex);
     }
 
     SDL_GPUBufferCreateInfo bci = {};
@@ -610,6 +739,39 @@ int32_t Renderer::present(std::string &err) {
         frame.insert(frame.end(), entry.second.records.begin(), entry.second.records.end());
     }
 
+    // Resolve every span's atlas before recording: creating one submits a copy
+    // of its own, and a command buffer is cleaner to acquire outside the frame's.
+    for (const auto &span : spans) {
+        if (impl_->atlases.find(span.pipe_id) != impl_->atlases.end()) continue;
+        // No explicit pages: the pipeline samples the most recently loaded
+        // texture at page 0. That is the v1 behaviour every caller had before
+        // `set_texture` existed, kept so `tex = 0` still means "my atlas".
+        if (impl_->bound_texture == 0) continue;
+        if (impl_->implicit_array != nullptr && impl_->implicit_source == impl_->bound_texture) {
+            continue;
+        }
+        auto source = impl_->textures.find(impl_->bound_texture);
+        if (source == impl_->textures.end()) continue;
+        if (impl_->implicit_array != nullptr) {
+            SDL_ReleaseGPUTexture(impl_->device, impl_->implicit_array);
+            impl_->implicit_array = nullptr;
+        }
+        impl_->implicit_array = impl_->create_array(source->second.width, source->second.height);
+        if (impl_->implicit_array == nullptr) {
+            err = sdl_error("CreateGPUTexture(atlas)");
+            return -ENOMEM;
+        }
+        impl_->implicit_width = source->second.width;
+        impl_->implicit_height = source->second.height;
+        if (const int32_t rc = impl_->copy_into_layer(source->second.texture, impl_->implicit_array,
+                                                      0, source->second.width,
+                                                      source->second.height, err);
+            rc != 0) {
+            return rc;
+        }
+        impl_->implicit_source = impl_->bound_texture;
+    }
+
     SDL_GPUCommandBuffer *cmd = SDL_AcquireGPUCommandBuffer(impl_->device);
     if (cmd == nullptr) {
         err = sdl_error("AcquireGPUCommandBuffer");
@@ -655,34 +817,43 @@ int32_t Renderer::present(std::string &err) {
         SDL_GPUBuffer *bound[1] = {impl_->storage};
         SDL_BindGPUVertexStorageBuffers(pass, 0, bound, 1);
 
-        // The uniform block is `{ vec2 u_canvas_half; vec2 u_tex_size; }`, so the
-        // texture's own dimensions go with it: the shader normalizes the
-        // record's pixel src rect by them before sampling.
-        SDL_GPUTexture *texture = impl_->default_texture;
-        float tex_w = static_cast<float>(impl_->default_texture_width);
-        float tex_h = static_cast<float>(impl_->default_texture_height);
-        auto found = impl_->textures.find(impl_->bound_texture);
-        if (found != impl_->textures.end()) {
-            texture = found->second.texture;
-            tex_w = static_cast<float>(found->second.width);
-            tex_h = static_cast<float>(found->second.height);
-        }
-        const float uniforms[4] = {kCanvasWidth * 0.5f, kCanvasHeight * 0.5f, tex_w, tex_h};
-        SDL_PushGPUVertexUniformData(cmd, 0, uniforms, sizeof uniforms);
-
-        SDL_GPUTextureSamplerBinding tex = {};
-        tex.texture = texture;
-        tex.sampler = impl_->sampler;
-        SDL_BindGPUFragmentSamplers(pass, 0, &tex, 1);
-
         for (const auto &span : spans) {
             if (span.count == 0) continue;
+            auto pipeline = impl_->pipelines.find(span.pipe_id);
+            if (pipeline == impl_->pipelines.end()) continue;
             if (span.pipe_id != bound_pipe) {
-                auto pipeline = impl_->pipelines.find(span.pipe_id);
-                if (pipeline == impl_->pipelines.end()) continue;
                 SDL_BindGPUGraphicsPipeline(pass, pipeline->second);
                 bound_pipe = span.pipe_id;
             }
+
+            // The atlas is per pipeline, so the uniform and the sampler binding
+            // move with the span rather than being set once per frame. The
+            // block is `{ vec2 u_canvas_half; vec2 u_tex_size; }`: the canvas
+            // projects pixels to clip, the page size normalizes the record's
+            // pixel src rect before sampling.
+            SDL_GPUTexture *atlas = impl_->default_array;
+            float tex_w = 1.0f;
+            float tex_h = 1.0f;
+            auto explicit_atlas = impl_->atlases.find(span.pipe_id);
+            if (explicit_atlas != impl_->atlases.end() && explicit_atlas->second.pages > 0) {
+                atlas = explicit_atlas->second.array;
+                tex_w = static_cast<float>(explicit_atlas->second.width);
+                tex_h = static_cast<float>(explicit_atlas->second.height);
+            } else if (impl_->implicit_array != nullptr) {
+                atlas = impl_->implicit_array;
+                tex_w = static_cast<float>(impl_->implicit_width);
+                tex_h = static_cast<float>(impl_->implicit_height);
+            }
+            const float uniforms[4] = {static_cast<float>(impl_->canvas_width) * 0.5f,
+                                       static_cast<float>(impl_->canvas_height) * 0.5f, tex_w,
+                                       tex_h};
+            SDL_PushGPUVertexUniformData(cmd, 0, uniforms, sizeof uniforms);
+
+            SDL_GPUTextureSamplerBinding tex = {};
+            tex.texture = atlas;
+            tex.sampler = impl_->sampler;
+            SDL_BindGPUFragmentSamplers(pass, 0, &tex, 1);
+
             SDL_DrawGPUPrimitives(pass, 6, span.count, 0, span.first);
         }
     }
@@ -729,11 +900,64 @@ int32_t Renderer::texture_load(const uint8_t *src, size_t len, int32_t target_fo
 
     const uint32_t id = static_cast<uint32_t>(impl_->textures.size()) + 1u;
     impl_->textures[id] = TextureEntry{texture, image.width, image.height};
-    // v1 binds one atlas per frame: multi-atlas needs a texture array or a
-    // per-bucket binding pass, and DESIGN.md §5 puts `tex` in the record for
-    // exactly that future. The most recently loaded texture is the bound one.
+    // The most recently loaded texture is the one a pipeline with no explicit
+    // `set_texture` pages samples at page 0 — the single-atlas behaviour every
+    // v1 caller relies on. Explicit page binding is `set_texture`.
     impl_->bound_texture = id;
     texture_id = id;
+    return 0;
+}
+
+int32_t Renderer::set_texture(uint32_t pipe_id, uint32_t slot, uint32_t texture_id,
+                              std::string &err) {
+    if (!is_open()) return -ENODEV;
+    if (impl_->pipelines.find(pipe_id) == impl_->pipelines.end()) {
+        err = "set_texture: unknown pipe_id " + std::to_string(pipe_id);
+        return -ENOENT;
+    }
+    if (slot >= TENSION_2D_MAX_ATLAS_PAGES) {
+        err = "set_texture: page " + std::to_string(slot) + " outside 0.." +
+              std::to_string(TENSION_2D_MAX_ATLAS_PAGES - 1);
+        return -EINVAL;
+    }
+    auto texture = impl_->textures.find(texture_id);
+    if (texture == impl_->textures.end()) {
+        err = "set_texture: unknown texture id " + std::to_string(texture_id);
+        return -ENOENT;
+    }
+
+    Atlas &atlas = impl_->atlases[pipe_id];
+    if (atlas.array == nullptr) {
+        // An array texture has one size for every page. The first page bound to
+        // a pipeline fixes it; a page of another size is refused rather than
+        // resampled, because resampling moves pixels inside a cell and the
+        // record's src rect is in pixels.
+        atlas.array = impl_->create_array(texture->second.width, texture->second.height);
+        if (atlas.array == nullptr) {
+            impl_->atlases.erase(pipe_id);
+            err = sdl_error("CreateGPUTexture(atlas)");
+            return -ENOMEM;
+        }
+        atlas.width = texture->second.width;
+        atlas.height = texture->second.height;
+    } else if (atlas.width != texture->second.width || atlas.height != texture->second.height) {
+        err = "set_texture: texture " + std::to_string(texture_id) + " is " +
+              std::to_string(texture->second.width) + "x" + std::to_string(texture->second.height) +
+              ", the pipeline's atlas is " + std::to_string(atlas.width) + "x" +
+              std::to_string(atlas.height) +
+              " — every page of one pipeline shares the array's size";
+        return -EINVAL;
+    }
+
+    if (atlas.bound[slot] != texture_id) {
+        if (const int32_t rc = impl_->copy_into_layer(texture->second.texture, atlas.array, slot,
+                                                      atlas.width, atlas.height, err);
+            rc != 0) {
+            return rc;
+        }
+        atlas.bound[slot] = texture_id;
+    }
+    if (atlas.pages == 0) atlas.pages = 1;
     return 0;
 }
 
@@ -744,7 +968,7 @@ int32_t Renderer::screenshot(uint8_t *dst, size_t cap, size_t &written, std::str
         return -ENODEV;
     }
 
-    const size_t bytes = static_cast<size_t>(kCanvasWidth) * kCanvasHeight * 4u;
+    const size_t bytes = static_cast<size_t>(impl_->canvas_width) * impl_->canvas_height * 4u;
     if (cap < bytes) {
         err = "screenshot: buffer shorter than " + std::to_string(bytes) + " bytes";
         return -ENOSPC;
@@ -769,13 +993,13 @@ int32_t Renderer::screenshot(uint8_t *dst, size_t cap, size_t &written, std::str
     SDL_GPUCopyPass *copy = SDL_BeginGPUCopyPass(cmd);
     SDL_GPUTextureRegion region = {};
     region.texture = impl_->target;
-    region.w = kCanvasWidth;
-    region.h = kCanvasHeight;
+    region.w = impl_->canvas_width;
+    region.h = impl_->canvas_height;
     region.d = 1;
     SDL_GPUTextureTransferInfo info = {};
     info.transfer_buffer = impl_->download;
-    info.pixels_per_row = kCanvasWidth;
-    info.rows_per_layer = kCanvasHeight;
+    info.pixels_per_row = impl_->canvas_width;
+    info.rows_per_layer = impl_->canvas_height;
     SDL_DownloadFromGPUTexture(copy, &region, &info);
     SDL_EndGPUCopyPass(copy);
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {

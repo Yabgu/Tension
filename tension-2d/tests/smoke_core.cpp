@@ -200,18 +200,23 @@ constexpr uint8_t kCellColour[10][3] = {
     {255, 0, 255}, {128, 0, 0},   {0, 128, 0},   {0, 0, 128},   {128, 128, 0},
 };
 
-/// A 256x256 RGBA8 atlas of 4x4 cells, 64x64 each, cell k painted
-/// `kCellColour[k]`. Cell k sits at `((k%4)*64, (k/4)*64)`.
+/// A square RGBA8 atlas of `cells_per_row` x `cells_per_row` cells, cell k
+/// painted `colours[k]`. Cell k sits at `((k%n)*cell, (k/n)*cell)`.
 ///
-/// 64 px cells, because the `sprite` record has **one** `w`/`h` pair and the
-/// generator uses it for both the quad and the source rect (there is no
+/// 64 px cells by default, because the `sprite` record has **one** `w`/`h` pair
+/// and the generator uses it for both the quad and the source rect (there is no
 /// separate `src_w`/`src_h` in a 28-byte record). A 64 px record therefore
 /// samples exactly one cell and is a flat colour; a 32 px record samples the
 /// top-left quarter of one, also flat. Anything smaller would let one sprite
 /// sample four cells at once and make every colour assertion ambiguous.
-std::vector<uint8_t> make_atlas() {
-    constexpr uint32_t kWidth = 256, kHeight = 256;
-    constexpr uint32_t kCell = 64;
+///
+/// The size is a parameter because `set_texture` refuses a page whose
+/// dimensions disagree with the pipeline's array, and that refusal needs an
+/// atlas of a second size to exercise.
+std::vector<uint8_t> make_atlas(const uint8_t (&colours)[10][3] = kCellColour,
+                                uint32_t width = 256, uint32_t cells_per_row = 4) {
+    const uint32_t kWidth = width, kHeight = width;
+    const uint32_t kCell = width / cells_per_row;
 
     std::vector<uint8_t> out;
     auto u8 = [&](uint8_t v) { out.push_back(v); };
@@ -236,8 +241,8 @@ std::vector<uint8_t> make_atlas() {
     u64(uint64_t(kWidth) * kHeight * 3);
     for (uint32_t y = 0; y < kHeight; ++y) {
         for (uint32_t x = 0; x < kWidth; ++x) {
-            const int cell = static_cast<int>((y / kCell) * 4 + (x / kCell));
-            const uint8_t *c = kCellColour[cell < 10 ? cell : 9];
+            const int cell = static_cast<int>((y / kCell) * cells_per_row + (x / kCell));
+            const uint8_t *c = colours[cell < 10 ? cell : 9];
             u8(c[0]); u8(c[1]); u8(c[2]);
         }
     }
@@ -289,7 +294,8 @@ struct SpriteSpec {
 /// Submit `order` (in the given submission order), present, and capture the
 /// frame. The submission order is the caller's: that is the variable under test.
 bool render_frame(int32_t handle, int32_t pipe_id, const std::vector<SpriteSpec> &order,
-                  std::vector<uint8_t> &frame, const char *what) {
+                  std::vector<uint8_t> &frame, const char *what, uint32_t canvas_w = 640,
+                  uint32_t canvas_h = 360) {
     const uint32_t records_ptr = 0x20000;
     for (size_t i = 0; i < order.size(); ++i) {
         const SpriteSpec &s = order[i];
@@ -313,7 +319,7 @@ bool render_frame(int32_t handle, int32_t pipe_id, const std::vector<SpriteSpec>
     }
 
     const uint32_t frame_ptr = 0x40000;
-    const uint32_t cap = 640u * 360u * 4u;
+    const uint32_t cap = canvas_w * canvas_h * 4u;
     const int32_t written =
         call("screenshot", {handle, static_cast<int32_t>(frame_ptr), static_cast<int32_t>(cap)});
     if (written != static_cast<int32_t>(cap)) {
@@ -384,13 +390,17 @@ int main(int argc, char **argv) {
         return kFail;
     }
     std::printf("registered: %zu imports\n", core.imports.size());
-    if (core.imports.size() != 9) {
-        std::fprintf(stderr, "FAIL: expected nine verbs, got %zu\n", core.imports.size());
+    if (core.imports.size() != 10) {
+        std::fprintf(stderr, "FAIL: expected ten verbs, got %zu\n", core.imports.size());
         return kFail;
     }
 
     // ── open ────────────────────────────────────────────────────────────
-    const int32_t handle_id = call("open", {0});
+    //
+    // The canvas is the caller's decision. 640x360 here so every pixel
+    // coordinate in this file keeps its meaning; the second half of the test
+    // opens a second handle at 320x180 to prove the size is not baked in.
+    const int32_t handle_id = call("open", {640, 360, 0});
     if (handle_id <= 0) {
         std::fprintf(stderr, "open -> %d\n", handle_id);
         if (handle_id == -ENODEV || handle_id == -ENOSYS) {
@@ -410,8 +420,13 @@ int main(int argc, char **argv) {
     }
     tension_2d_info_record info;
     std::memcpy(&info, core.guest.data() + info_ptr, sizeof info);
-    std::printf("info: version=%u max_records=%u max_buckets=%u\n", info.version, info.max_records,
-                info.max_buckets);
+    std::printf("info: version=%u max_records=%u max_buckets=%u canvas=%ux%u\n", info.version,
+                info.max_records, info.max_buckets, info.canvas_width, info.canvas_height);
+    if (info.canvas_width != 640 || info.canvas_height != 360) {
+        std::fprintf(stderr, "FAIL: info reports canvas %ux%u, opened 640x360\n",
+                     info.canvas_width, info.canvas_height);
+        return kFail;
+    }
 
     // ── set_pipeline: the built-in default_2d graph ──────────────────────
     const int32_t pipe = call("set_pipeline", {handle_id, 0, 1});
@@ -852,6 +867,61 @@ int main(int argc, char **argv) {
         }
     }
 
+    // ── animation: the record's src rect is the frame selector ──────────
+    //
+    // `src_x`/`src_y` have been in the record since the first draft and nothing
+    // above ever changed them between frames, so "the record supports
+    // animation" was an untested claim. Here one record is submitted four
+    // times, with only `src_x` moving across the atlas's first four cells —
+    // red, green, blue, yellow. One sprite, four frames, four screenshots.
+    //
+    // Position (8,8) with a 32 px quad means (16,16) is inside the sprite and
+    // (0,0) is outside it, so the test can check both "the frame changed" and
+    // "the quad did not move".
+    {
+        // Set by the revert-test: freeze the frame index and the assertion
+        // below must fail at step 1 with red still on screen.
+        const bool freeze = std::getenv("TENSION_2D_FREEZE_FRAME") != nullptr;
+        const uint16_t frame_x[4] = {0, 64, 128, 192};
+        int animation_failures = 0;
+
+        for (int step = 0; step < 4; ++step) {
+            SpriteSpec s;
+            s.x = 8;
+            s.y = 8;
+            s.src_x = freeze ? frame_x[0] : frame_x[step];
+            s.src_y = 0;
+            s.w = 32;
+            s.h = 32;
+            s.sort_key = 0;
+
+            std::vector<uint8_t> frame;
+            if (!render_frame(handle_id, pipe, {s}, frame, "animation")) return kFail;
+
+            const uint8_t *inside = pixel_of(frame, 16, 16);
+            const uint8_t *outside = pixel_of(frame, 0, 0);
+            if (!near_colour(inside, kCellColour[step])) {
+                std::fprintf(stderr,
+                             "FAIL: animation step %d: (16,16) is (%u,%u,%u), expected frame %d's "
+                             "(%u,%u,%u) — src_x is not selecting the frame\n",
+                             step, inside[0], inside[1], inside[2], step, kCellColour[step][0],
+                             kCellColour[step][1], kCellColour[step][2]);
+                animation_failures++;
+            }
+            if (outside[0] != 0 || outside[1] != 0 || outside[2] != 0) {
+                std::fprintf(stderr,
+                             "FAIL: animation step %d: (0,0) is (%u,%u,%u), expected black — the "
+                             "quad moved with the frame\n",
+                             step, outside[0], outside[1], outside[2]);
+                animation_failures++;
+            }
+        }
+        if (animation_failures == 0) {
+            std::printf("animation: src_x cycled red, green, blue, yellow; (0,0) black each frame\n");
+        }
+        failures += animation_failures;
+    }
+
     // ── runtime compilation: a graph the build never saw ────────────────
     //
     // `default_2d_scaled_1_5.t2dg` is generated by `scripts/test-2d.mjs` from
@@ -947,6 +1017,128 @@ int main(int argc, char **argv) {
         std::printf("runtime 1.5x: reversed submission byte-identical (sort + runtime compile)\n");
     }
 
+    // ── multi-atlas: `tex` selects the page ─────────────────────────────
+    //
+    // Every scenario so far loaded one atlas and left `tex` at 0, so the field
+    // travelled through the record, was skipped by the shader, and proved
+    // nothing. Two atlases with the *same* geometry and different palettes make
+    // it observable: page 0 is the ten colours above, page 1 is a palette with
+    // no colour in common with it.
+    constexpr uint8_t kCellColourB[10][3] = {
+        {255, 128, 0},   {128, 0, 128},   {0, 96, 128},    {192, 192, 192}, {96, 0, 0},
+        {0, 0, 96},      {96, 96, 0},     {0, 96, 0},      {64, 64, 64},    {160, 160, 255},
+    };
+    {
+        const std::vector<uint8_t> atlas_b = make_atlas(kCellColourB);
+        const uint32_t atlas_b_ptr = 0x90000;
+        put_bytes(atlas_b_ptr, atlas_b.data(), atlas_b.size());
+        const int32_t tex_b = call("texture_load",
+                                   {handle_id, static_cast<int32_t>(atlas_b_ptr),
+                                    static_cast<int32_t>(atlas_b.size()), TENSION_2D_TEX_RGBA8});
+        if (tex_b <= 0) {
+            std::fprintf(stderr, "FAIL: second texture_load -> %d\n", tex_b);
+            return kFail;
+        }
+
+        // `texture` is the atlas loaded at the start of this run; `tex_b` is the
+        // second. Page order is the caller's choice and the record names it.
+        const int32_t bind_a = call("set_texture", {handle_id, pipe, 0, texture});
+        const int32_t bind_b = call("set_texture", {handle_id, pipe, 1, tex_b});
+        if (bind_a != 0 || bind_b != 0) {
+            std::fprintf(stderr, "FAIL: set_texture -> %d, %d\n", bind_a, bind_b);
+            failures++;
+        }
+
+        SpriteSpec page0;
+        page0.x = 0;
+        page0.y = 0;
+        page0.w = 64;
+        page0.h = 64;
+        page0.tex = 0;
+        page0.sort_key = 0;
+
+        SpriteSpec page1 = page0;
+        page1.x = 100;
+        page1.tex = 1;
+        page1.sort_key = 1;
+
+        std::vector<uint8_t> frame;
+        if (!render_frame(handle_id, pipe, {page0, page1}, frame, "multi-atlas")) return kFail;
+        const uint8_t *left = pixel_of(frame, 32, 32);
+        const uint8_t *right = pixel_of(frame, 132, 32);
+        const bool left_ok = near_colour(left, kCellColour[0]);
+        const bool right_ok = near_colour(right, kCellColourB[0]);
+        std::printf("multi-atlas: page 0 -> (%u,%u,%u), page 1 -> (%u,%u,%u)\n", left[0], left[1],
+                    left[2], right[0], right[1], right[2]);
+        if (!left_ok || !right_ok) {
+            std::fprintf(stderr,
+                         "FAIL: multi-atlas: expected page 0 red (%u,%u,%u) at (32,32) and page 1 "
+                         "orange (%u,%u,%u) at (132,32) — `tex` is not selecting the layer\n",
+                         kCellColour[0][0], kCellColour[0][1], kCellColour[0][2],
+                         kCellColourB[0][0], kCellColourB[0][1], kCellColourB[0][2]);
+            failures++;
+        }
+
+        // Composite ordering across pages: the same tile, two characters, one
+        // on each atlas. The sort is `(sort_key, group_id, z)` and knows nothing
+        // about pages, so group 2 must still win — whatever page it samples.
+        SpriteSpec c1 = page0;
+        c1.sort_key = 100;
+        c1.group_id = 1;
+        c1.z = 0;
+        SpriteSpec c2 = page1;
+        c2.x = 16;
+        c2.y = 16;
+        c2.sort_key = 100;
+        c2.group_id = 2;
+        c2.z = 0;
+
+        std::vector<uint8_t> composite, composite_reversed;
+        if (!render_frame(handle_id, pipe, {c1, c2}, composite, "multi-atlas composite"))
+            return kFail;
+        if (!render_frame(handle_id, pipe, {c2, c1}, composite_reversed,
+                          "multi-atlas composite reversed"))
+            return kFail;
+
+        const uint8_t *p = pixel_of(composite, 20, 20);
+        if (!near_colour(p, kCellColourB[0])) {
+            std::fprintf(stderr,
+                         "FAIL: multi-atlas composite (20,20) is (%u,%u,%u), expected page 1's "
+                         "orange — the sort does not order across pages\n",
+                         p[0], p[1], p[2]);
+            failures++;
+        } else {
+            std::printf("multi-atlas composite: (20,20) is page 1's colour, group 2 over group 1; "
+                        "reversed submission %s\n",
+                        composite_reversed == composite ? "byte-identical"
+                                                       : "DIFFERS (sort broken)");
+        }
+        if (composite_reversed != composite) {
+            failures++;
+        }
+
+        // A page of another size cannot join the array: an array texture has one
+        // size, and resampling would move pixels inside a cell.
+        const std::vector<uint8_t> tiny = make_atlas(kCellColourB, 32, 1);
+        const uint32_t tiny_ptr = 0x98000;
+        put_bytes(tiny_ptr, tiny.data(), tiny.size());
+        const int32_t tex_tiny =
+            call("texture_load", {handle_id, static_cast<int32_t>(tiny_ptr),
+                                  static_cast<int32_t>(tiny.size()), TENSION_2D_TEX_RGBA8});
+        const int32_t mismatch = call("set_texture", {handle_id, pipe, 2, tex_tiny});
+        const int32_t bad_slot = call("set_texture", {handle_id, pipe, 16, texture});
+        const int32_t bad_pipe = call("set_texture", {handle_id, 999, 0, texture});
+        if (mismatch != -EINVAL || bad_slot != -EINVAL || bad_pipe != -ENOENT) {
+            std::fprintf(stderr,
+                         "FAIL: set_texture refusals -> size mismatch %d (want -EINVAL), page 16 "
+                         "%d (want -EINVAL), unknown pipe %d (want -ENOENT)\n",
+                         mismatch, bad_slot, bad_pipe);
+            failures++;
+        } else {
+            std::printf("multi-atlas: the size mismatch, page 16 and unknown pipe are refused\n");
+        }
+    }
+
     // ── refusals ────────────────────────────────────────────────────────
     struct Expect {
         const char *what;
@@ -983,6 +1175,114 @@ int main(int argc, char **argv) {
         return kFail;
     }
     std::printf("close -> 0\n");
+
+    // ── the canvas is a runtime decision ────────────────────────────────
+    //
+    // Everything above opened 640x360, which is also what the old
+    // compile-time constant was — so none of it can tell a dynamic canvas from
+    // a baked one. These three refusals and the 320x180 handle below can.
+    {
+        struct BadOpen {
+            const char *what;
+            int32_t width;
+            int32_t height;
+            int32_t flags;
+            int32_t want;
+        };
+        const BadOpen bad[] = {
+            {"open(0, 360, 0)", 0, 360, 0, -EINVAL},
+            {"open(640, 16385, 0)", 640, 16385, 0, -EINVAL},
+            {"open(640, 360, 1)", 640, 360, 1, -EINVAL},
+        };
+        for (const BadOpen &b : bad) {
+            const int32_t rc = call("open", {b.width, b.height, b.flags});
+            if (rc != b.want) {
+                std::fprintf(stderr, "FAIL: %s -> %d, expected %d\n", b.what, rc, b.want);
+                failures++;
+            }
+        }
+    }
+
+    const int32_t small = call("open", {320, 180, 0});
+    if (small <= 0) {
+        std::fprintf(stderr, "FAIL: open(320, 180, 0) -> %d\n", small);
+        return kFail;
+    }
+    {
+        const int32_t len = call("info", {small, static_cast<int32_t>(info_ptr), 64});
+        tension_2d_info_record small_info;
+        std::memcpy(&small_info, core.guest.data() + info_ptr, sizeof small_info);
+        if (len != static_cast<int32_t>(sizeof small_info) || small_info.canvas_width != 320 ||
+            small_info.canvas_height != 180) {
+            std::fprintf(stderr, "FAIL: info on the 320x180 handle -> len %d, canvas %ux%u\n", len,
+                         small_info.canvas_width, small_info.canvas_height);
+            failures++;
+        }
+        std::printf("open(320,180) -> handle %d, info canvas %ux%u\n", small, small_info.canvas_width,
+                    small_info.canvas_height);
+    }
+
+    const int32_t small_pipe = call("set_pipeline", {small, 0, 1});
+    put_bytes(iwi_ptr, iwi.data(), iwi.size());
+    const int32_t small_tex =
+        call("texture_load", {small, static_cast<int32_t>(iwi_ptr), static_cast<int32_t>(iwi.size()),
+                              TENSION_2D_TEX_RGBA8});
+    if (small_pipe != 1 || small_tex <= 0) {
+        std::fprintf(stderr, "FAIL: small handle set_pipeline -> %d, texture_load -> %d\n",
+                     small_pipe, small_tex);
+        failures++;
+    } else {
+        // Two 32 px sprites at the top-left, 64 px apart: at 320x180 they fit,
+        // and their centres are at (16,16) and (80,16) in a 320-wide frame.
+        std::vector<SpriteSpec> pair(2);
+        pair[0].x = 0;
+        pair[0].y = 0;
+        pair[0].src_x = 0;
+        pair[0].w = 32;
+        pair[0].h = 32;
+        pair[0].sort_key = 0;
+        pair[1] = pair[0];
+        pair[1].x = 64;
+        pair[1].src_x = 64;
+        pair[1].sort_key = 1;
+
+        std::vector<uint8_t> frame;
+        if (!render_frame(small, small_pipe, pair, frame, "320x180", 320, 180)) return kFail;
+
+        auto at = [&frame](uint32_t x, uint32_t y) {
+            return frame.data() + (static_cast<size_t>(y) * 320u + x) * 4u;
+        };
+        size_t nonblack = 0;
+        for (size_t i = 0; i < frame.size(); i += 4) {
+            if (frame[i] || frame[i + 1] || frame[i + 2]) nonblack++;
+        }
+        const bool colour_ok = near_colour(at(16, 16), kCellColour[0]) &&
+                               near_colour(at(80, 16), kCellColour[1]);
+        // A pixel that only exists in the 640x360 frame must not be readable
+        // content: (300,170) is inside 320x180, and (400,300) is outside it.
+        const size_t expected = 2u * 32u * 32u;
+        std::printf("320x180: %zu non-black pixels (expected %zu), %d bytes read back\n", nonblack,
+                    expected, static_cast<int>(frame.size()));
+        if (frame.size() != 320u * 180u * 4u) {
+            std::fprintf(stderr, "FAIL: screenshot on the 320x180 handle returned %zu bytes\n",
+                         frame.size());
+            failures++;
+        }
+        if (nonblack != expected) {
+            std::fprintf(stderr, "FAIL: 320x180 coverage %zu != %zu\n", nonblack, expected);
+            failures++;
+        }
+        if (!colour_ok) {
+            std::fprintf(stderr,
+                         "FAIL: 320x180 sprite centres are not their cells' colours — the "
+                         "projection still uses the 640x360 half-extents\n");
+            failures++;
+        }
+    }
+    if (call("close", {small}) != 0) {
+        std::fprintf(stderr, "FAIL: close on the 320x180 handle\n");
+        failures++;
+    }
 
     if (failures != 0) return kFail;
     std::printf("OK: positions, per-sprite colours and sort order all verified\n");

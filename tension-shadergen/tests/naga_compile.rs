@@ -143,6 +143,8 @@ fn a_custom_vocabulary_still_compiles() {
                 Slot::Tangent => "a_tangent",
                 Slot::Binormal => "a_binormal",
                 Slot::TexCoord(_) => "a_uv",
+                Slot::TexPage => "a_tex",
+            Slot::TexPage => "a_tex",
             }
         }
     }

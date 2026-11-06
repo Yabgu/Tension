@@ -20,11 +20,15 @@
 
 namespace tension_2d {
 
-/// v1's fixed canvas. The graph's stage carries `canvas_w`/`canvas_h`
-/// (DESIGN.md §6.2); until the compiler lands there is one preset and one
-/// canvas, and a resize is a v1.1 concern alongside the swapchain.
-constexpr uint32_t kCanvasWidth = 640;
-constexpr uint32_t kCanvasHeight = 360;
+/// The canvas ceiling, matching `tension_2d.h`'s `open` contract. It is the
+/// Vulkan guaranteed minimum `maxImageDimension2D`, so a size accepted here is
+/// one every conformant device can allocate.
+constexpr uint32_t kMaxCanvasDimension = 16384;
+
+/// The canvas is a runtime decision (`open(width, height, flags)`), not a
+/// build-time one: a 2D game knows its resolution and the adapter does not.
+/// The target, the clip-space projection and the screenshot readback all take
+/// their size from the handle rather than from a constant.
 
 /// The renderer: one SDL_GPU device, one offscreen target, one pipeline table
 /// and one texture table.
@@ -36,9 +40,10 @@ public:
     Renderer(const Renderer &) = delete;
     Renderer &operator=(const Renderer &) = delete;
 
-    /// Create the device, the target, the sampler and the 1x1 default texture.
-    /// Returns 0 or a negative errno; `err` carries SDL's message.
-    int32_t open(std::string &err);
+    /// Create the device, a `width` x `height` offscreen target, the sampler and
+    /// the 1x1 default texture. Returns 0 or a negative errno; `err` carries
+    /// SDL's message.
+    int32_t open(uint32_t width, uint32_t height, std::string &err);
     void close();
     bool is_open() const;
 
@@ -74,6 +79,12 @@ public:
     int32_t texture_load(const uint8_t *src, size_t len, int32_t target_format,
                          uint32_t &texture_id, std::string &err);
 
+    /// Bind a loaded texture to one page of a pipeline's texture array.
+    ///
+    /// The record's `tex` is the page index, so this is what makes the field
+    /// mean something: the shader samples `texture2DArray` at layer `slot`.
+    int32_t set_texture(uint32_t pipe_id, uint32_t slot, uint32_t texture_id, std::string &err);
+
     /// Copy the last presented frame out as RGBA8.
     int32_t screenshot(uint8_t *dst, size_t cap, size_t &written, std::string &err);
 
@@ -83,6 +94,7 @@ public:
     uint32_t texture_count() const;
     static uint32_t max_records();
     static uint32_t max_buckets();
+    static uint32_t max_atlas_pages();
 
 private:
     struct Impl;

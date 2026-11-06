@@ -1,5 +1,5 @@
 /*
- * tension-2d's adapter: the vtable, the nine verb shims, and the one
+ * tension-2d's adapter: the vtable, the ten verb shims, and the one
  * registration pass.
  *
  * The shape is tension-input/src/adapter.cpp's, field for field: a
@@ -39,6 +39,7 @@ constexpr uint32_t kVerbPresent = 6;
 constexpr uint32_t kVerbTextureLoad = 7;
 constexpr uint32_t kVerbInfo = 8;
 constexpr uint32_t kVerbScreenshot = 9;
+constexpr uint32_t kVerbSetTexture = 10;
 
 struct AdapterState {
     const tension_core_api *api = nullptr;
@@ -111,24 +112,30 @@ int32_t write_guest(uint32_t ptr, uint32_t cap, const void *src, uint32_t len) {
     return api->guest_write(api->user, ptr, src, len);
 }
 
-// ── the nine shims ───────────────────────────────────────────────────────
+// ── the ten shims ────────────────────────────────────────────────────────
 
 int32_t shim_open(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
-    if (nargs != 1) return refuse(ret, -EINVAL);
-    if (args[0].i32 != 0) return refuse(ret, -EINVAL);
+    if (nargs != 3) return refuse(ret, -EINVAL);
+    const int32_t width = args[0].i32;
+    const int32_t height = args[1].i32;
+    if (args[2].i32 != 0) return refuse(ret, -EINVAL);
+    if (width <= 0 || height <= 0) return refuse(ret, -EINVAL);
 
     AdapterState &state = adapter_state();
     if (state.handle != 0) return refuse(ret, -EBUSY);
 
     std::string err;
-    const int32_t rc = state.renderer.open(err);
+    const int32_t rc = state.renderer.open(static_cast<uint32_t>(width),
+                                           static_cast<uint32_t>(height), err);
     if (rc != 0) {
         const std::string line = "2d: open refused (" + err + ")";
         log_line(3, line.c_str());
         return refuse(ret, rc);
     }
     state.handle = 1;
-    log_line(1, "2d: open: GPU device up, offscreen 640x360 target");
+    const std::string line = "2d: open: GPU device up, offscreen " + std::to_string(width) +
+                             "x" + std::to_string(height) + " target";
+    log_line(1, line.c_str());
     return answer(ret, state.handle);
 }
 
@@ -326,18 +333,38 @@ int32_t shim_texture_load(void *, const tension_value *args, uint32_t nargs, ten
     return answer(ret, static_cast<int32_t>(texture_id));
 }
 
+int32_t shim_set_texture(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    if (nargs != 4) return refuse(ret, -EINVAL);
+    AdapterState &state = adapter_state();
+    if (args[0].i32 != state.handle || state.handle == 0) return refuse(ret, -EINVAL);
+    if (args[1].i32 <= 0 || args[2].i32 < 0 || args[3].i32 <= 0) return refuse(ret, -EINVAL);
+
+    std::string err;
+    const int32_t rc = state.renderer.set_texture(static_cast<uint32_t>(args[1].i32),
+                                                  static_cast<uint32_t>(args[2].i32),
+                                                  static_cast<uint32_t>(args[3].i32), err);
+    if (rc != 0) {
+        const std::string line = "2d: set_texture refused (" + err + ")";
+        log_line(3, line.c_str());
+        return refuse(ret, rc);
+    }
+    return answer(ret, 0);
+}
+
 int32_t shim_info(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     if (nargs != 3) return refuse(ret, -EINVAL);
     AdapterState &state = adapter_state();
     if (args[0].i32 != state.handle || state.handle == 0) return refuse(ret, -ENODEV);
 
     tension_2d_info_record info = {};
-    info.version = 1;
+    info.version = 2;
     info.max_records = static_cast<uint16_t>(Renderer::max_records());
     info.max_textures = 64;
     info.max_pipelines = 16;
     info.max_buckets = static_cast<uint16_t>(Renderer::max_buckets());
     info.flags = 0;
+    info.canvas_width = state.renderer.width();
+    info.canvas_height = state.renderer.height();
 
     const uint32_t cap = static_cast<uint32_t>(args[2].i32);
     if (cap < sizeof info) return refuse(ret, -ENOSPC);
@@ -406,7 +433,12 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         uint32_t flags;
     };
     const Registration registrations[] = {
-        {"open", one, 1, shim_open, kVerbOpen, 0},
+        // Three params: `open(width, height, flags)`. The signature the guest
+        // sees is this table, not the shim's own reading of `nargs` — a shim
+        // that accepts three from a one-param registration is a shim the real
+        // session never calls (the C++ stub harness does not type-check the
+        // registration, which is how the mismatch survived until the guest ran).
+        {"open", three, 3, shim_open, kVerbOpen, 0},
         {"close", one, 1, shim_close, kVerbClose, 0},
         {"set_pipeline", three, 3, shim_set_pipeline, kVerbSetPipeline, 0},
         {"shader_compile_raw", five, 5, shim_shader_compile_raw, kVerbShaderCompileRaw, 0},
@@ -416,6 +448,9 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         // Read-only snapshot: safe inside a callback, never pumps, never blocks.
         {"info", three, 3, shim_info, kVerbInfo, TENSION_IMPORT_REENTRANT_READONLY},
         {"screenshot", three, 3, shim_screenshot, kVerbScreenshot, 0},
+        // Declared last so no existing verb id moves: ids are stable, and a
+        // reused id is a silent misroute.
+        {"set_texture", four, 4, shim_set_texture, kVerbSetTexture, 0},
     };
 
     for (const Registration &registration : registrations) {
@@ -430,7 +465,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
             return rc;
         }
     }
-    log_line(1, "2d: link: nine verbs registered");
+    log_line(1, "2d: link: ten verbs registered");
     return 0;
 }
 

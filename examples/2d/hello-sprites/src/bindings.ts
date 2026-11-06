@@ -1,4 +1,4 @@
-// The tension-2d guest SDK: the nine verbs, the `sprite` record, and the
+// The tension-2d guest SDK: the ten verbs, the `sprite` record, and the
 // submit header.
 //
 // The adapter is `libtension_2d.so` (tension-2d/), the design is
@@ -13,16 +13,16 @@
 // disappear into it. Until then, every constant here is transcribed from
 // tension_2d.h and must be checked against it by hand.
 //
-// **The canvas is 640x360, not the caller's choice.** `open` takes only
-// `flags` — the size is `kCanvasWidth`/`kCanvasHeight` in the adapter's
-// render.h, because v1 renders to one offscreen target and has no swapchain to
-// resize. A guest that wants another size is asking for the v1.1 window path.
+// **The canvas is the caller's choice.** `open(width, height, flags)` fixes the
+// target's size for the handle's life; a resize is close + open, because v1 has
+// no swapchain to renegotiate with. This example asks for 640x360 (main.ts),
+// which is a choice the example makes, not a constant the adapter bakes.
 
 // --- the imports (module "tension::2d") ------------------------------------
 
-/** Open the capability's session: a handle (> 0), or an errno. */
+/** Open the capability's session at `width` x `height`: a handle (> 0), or an errno. */
 @external("tension::2d", "open")
-declare function openRaw(flags: i32): i32;
+declare function openRaw(width: i32, height: i32, flags: i32): i32;
 /** Release every texture, pipeline and buffer. */
 @external("tension::2d", "close")
 declare function closeRaw(handle: i32): i32;
@@ -41,7 +41,10 @@ declare function presentRaw(handle: i32): i32;
 /** Decode and upload one texture; returns its id. */
 @external("tension::2d", "texture_load")
 declare function textureLoadRaw(handle: i32, src_ptr: i32, src_len: i32, fmt: i32): i32;
-/** Write the 16-byte info record. */
+/** Bind a loaded texture to one page of a pipeline's texture array. */
+@external("tension::2d", "set_texture")
+declare function setTextureRaw(handle: i32, pipe_id: i32, slot: i32, texture_id: i32): i32;
+/** Write the 24-byte info record. */
 @external("tension::2d", "info")
 declare function infoRaw(handle: i32, ptr: u32, cap: i32): i32;
 /** Copy the last presented frame out as RGBA8. */
@@ -55,7 +58,9 @@ declare function screenshotRaw(handle: i32, ptr: u32, cap: i32): i32;
 // `usize` already is on wasm32 — the casts below are documentation, not
 // conversion.
 
-export function open(flags: i32 = 0): i32 { return openRaw(flags); }
+export function open(width: i32, height: i32, flags: i32 = 0): i32 {
+  return openRaw(width, height, flags);
+}
 export function close(handle: i32): i32 { return closeRaw(handle); }
 
 /** A built-in preset, addressed by id: `blob_ptr == 0`, `blob_len` = preset. */
@@ -80,6 +85,12 @@ export function present(handle: i32): i32 { return presentRaw(handle); }
 
 export function textureLoad(handle: i32, srcPtr: usize, srcLen: u32, format: i32 = TEX_RGBA8): i32 {
   return textureLoadRaw(handle, i32(srcPtr), i32(srcLen), format);
+}
+
+/** Bind `textureId` to array page `slot` (0..15) for `pipeId`. A record's
+ * `tex` is the page it samples. */
+export function setTexture(handle: i32, pipeId: i32, slot: i32, textureId: i32): i32 {
+  return setTextureRaw(handle, pipeId, slot, textureId);
 }
 
 export function info(handle: i32, ptr: usize, cap: i32): i32 {
@@ -179,17 +190,22 @@ export const PIPE_PRESET_MAX: i32 = 99;
 /** `TENSION_2D_PIPE_RAW_MIN`: runtime-compiled and raw-shader pipelines. */
 export const PIPE_RAW_MIN: i32 = 1000;
 
-/** The adapter's fixed offscreen size (`render.h`'s kCanvasWidth/Height). */
-export const CANVAS_WIDTH: u32 = 640;
-export const CANVAS_HEIGHT: u32 = 360;
-export const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
+/** RGBA8 frame size for a canvas. The size is the caller's, so this is a
+ * function of it rather than a constant. */
+export function frameBytes(width: u32, height: u32): u32 { return width * height * 4; }
+
+/** `TENSION_2D_MAX_ATLAS_PAGES`: the pages one pipeline can bind. */
+export const MAX_ATLAS_PAGES: u32 = 16;
 
 // --- the info record thin view ---------------------------------------------
 
-export const INFO_SIZE: u32 = 16;
+export const INFO_SIZE: u32 = 24;
 
 export function infoVersion(buf: usize): u16 { return load<u16>(buf); }
 export function infoMaxRecords(buf: usize): u16 { return load<u16>(buf + 2); }
 export function infoMaxTextures(buf: usize): u32 { return load<u32>(buf + 4); }
 export function infoMaxPipelines(buf: usize): u32 { return load<u32>(buf + 8); }
 export function infoMaxBuckets(buf: usize): u16 { return load<u16>(buf + 12); }
+/** The canvas the handle was opened with, echoed back by the adapter. */
+export function infoCanvasWidth(buf: usize): u32 { return load<u32>(buf + 16); }
+export function infoCanvasHeight(buf: usize): u32 { return load<u32>(buf + 20); }

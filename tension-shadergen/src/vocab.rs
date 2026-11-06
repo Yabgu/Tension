@@ -35,6 +35,7 @@ impl Vocabulary for NeutralVocabulary {
             // than a panic, because a layout the host cannot serve should
             // return `-ENOSYS` upstream, not abort the process here.
             Slot::TexCoord(_) => "a_texcoord",
+            Slot::TexPage => "a_texpage",
             Slot::Color => "a_color",
             Slot::Normal => "a_normal",
             Slot::Tangent => "a_tangent",
