@@ -25,6 +25,7 @@
 import {
   ConfigBuilder,
   Frame,
+  Info,
   print,
   readRgba,
   RECORD_SIZE,
@@ -155,7 +156,8 @@ function buildAtlas(): usize {
 
 /// The same ten records `smoke_core.cpp` submits: one per cell, 64 px apart,
 /// 32 px square, `sort_key = i` so draw order is submission-independent.
-function writeSprites(base: usize): void {
+function writeSprites(base: SpriteRecord): void {
+  const addr = changetype<usize>(base);
   for (let i = 0; i < SPRITES; i++) {
     const cell = <u32>i;
     const frame = new Frame(
@@ -165,8 +167,8 @@ function writeSprites(base: usize): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    const at = base + <usize>(i * <i32>RECORD_SIZE);
-    writeRecord(changetype<SpriteRecord>(at), i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    const rec = changetype<SpriteRecord>(addr + <usize>(i * <i32>RECORD_SIZE));
+    writeRecord(rec, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -196,20 +198,20 @@ export function _start_game(): void {
 
   const infoBuf: usize = memory.data(<usize>gfx.INFO_SIZE, 8);
   const infoLen = gfx.info(handle, infoBuf, <i32>gfx.INFO_SIZE);
+  const info = changetype<Info>(infoBuf);
   if (infoLen != <i32>gfx.INFO_SIZE) {
     fail("info -> " + infoLen.toString());
     gfx.close(handle);
     return;
   }
   print(
-    "info -> v" + gfx.infoVersion(infoBuf).toString() +
-      ", max_records " + gfx.infoMaxRecords(infoBuf).toString() +
-      ", max_buckets " + gfx.infoMaxBuckets(infoBuf).toString() +
-      ", canvas " + gfx.infoCanvasWidth(infoBuf).toString() + "x" +
-      gfx.infoCanvasHeight(infoBuf).toString(),
+    "info -> v" + info.version.toString() +
+      ", max_records " + info.maxRecords.toString() +
+      ", max_buckets " + info.maxBuckets.toString() +
+      ", canvas " + info.canvasWidth.toString() + "x" +
+      info.canvasHeight.toString(),
   );
-  if (gfx.infoCanvasWidth(infoBuf) != CANVAS_WIDTH ||
-    gfx.infoCanvasHeight(infoBuf) != CANVAS_HEIGHT) {
+  if (info.canvasWidth != CANVAS_WIDTH || info.canvasHeight != CANVAS_HEIGHT) {
     fail("info reports a different canvas than open was given");
     gfx.close(handle);
     return;
@@ -253,7 +255,7 @@ export function _start_game(): void {
 
   // 5. the records and the header
   const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
-  writeSprites(records);
+  writeSprites(changetype<SpriteRecord>(records));
   const header: usize = memory.data(<usize>12, 4);
   writeSubmitHeader(changetype<SubmitHeader>(header), records, <u32>SPRITES);
 

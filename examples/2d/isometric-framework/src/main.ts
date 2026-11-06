@@ -25,6 +25,7 @@ import {
   Composite,
   HEADER_SIZE,
   IsometricWorld,
+  pixelAt,
   RECORD_SIZE,
   Rgba,
   readRgba,
@@ -69,7 +70,7 @@ function hexRgba(px: Rgba): string {
   return hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
 }
 
-function emitFrame(name: string, frame: usize, bytes: u32): void {
+function emitFrame(name: string, frame: Rgba, bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
@@ -80,7 +81,7 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
     for (let i: u32 = base; i < end; i += 4) {
       // A value argument must be a local — `hexRgba(readRgba(ptr))` is refused,
       // because a value has no address to hand over. So it lands first.
-      const px = readRgba(frame + <usize>i);
+      const px = readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>i));
       line += hexRgba(px);
     }
     print(line);
@@ -89,8 +90,8 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
 }
 
 /// A pixel's colour, by channel name rather than by byte offset into it.
-function colourAt(frame: usize, x: i32, y: i32): u8[] {
-  const px = readRgba(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
+function colourAt(frame: Rgba, x: i32, y: i32): u8[] {
+  const px = pixelAt(frame, x, y, <i32>scene.CANVAS_WIDTH);
   return [px.r, px.g, px.b];
 }
 
@@ -257,7 +258,9 @@ export function _start_game(): void {
   tileset.define("backpack", tileset.frameForPixel(scene.SHEET_BACKPACK_X, scene.SHEET_CHAR_Y, <u32>scene.CHAR_W, <u32>scene.CHAR_H));
 
   const header: usize = memory.data(<usize>HEADER_SIZE, 4);
-  const frame: usize = memory.data(<usize>FRAME_BYTES, 8);
+  const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
+  // The same block, named twice: bytes for the verb, pixels for the probes.
+  const frame = changetype<Rgba>(frameBuf);
 
   print(
     "sort keys: crown " + scene.TREE_CROWN_SORT.toString() +
@@ -279,7 +282,7 @@ export function _start_game(): void {
     }
     const records: usize = memory.data(<usize>RECORD_BYTES, 8);
 
-    const written = world.emit(records);
+    const written = world.emit(changetype<SpriteRecord>(records));
     if (written != count) {
       print("FAIL: emit(" + name + ") wrote " + written.toString() + ", counted " + count.toString());
       failures++;
@@ -300,7 +303,7 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    const got = gfx.screenshot(handle, frame, <i32>FRAME_BYTES);
+    const got = gfx.screenshot(handle, frameBuf, <i32>FRAME_BYTES);
     if (got != <i32>FRAME_BYTES) {
       print("FAIL: screenshot(" + name + ") -> " + got.toString());
       failures++;
