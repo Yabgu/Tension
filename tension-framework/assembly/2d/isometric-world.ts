@@ -156,11 +156,12 @@ export class IsometricWorld {
    * order is stable across frames, which is what makes two submissions that
    * differ only in source order comparable.
    */
-  emit(out: usize): u32 {
+  emit(out: SpriteRecord): u32 {
+    const base = changetype<usize>(out);
     let n: i32 = 0;
     for (let i: i32 = 0; i < this.statics.length; i++) {
       const p = this.statics[i];
-      const rec = changetype<SpriteRecord>(out + <usize>(n * <i32>RECORD_SIZE));
+      const rec = changetype<SpriteRecord>(base + <usize>(n * <i32>RECORD_SIZE));
       writeRecord(rec, p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
       n++;
     }

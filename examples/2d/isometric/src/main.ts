@@ -23,8 +23,18 @@
 // The guest's own job is to make the frame and say enough for a reader to
 // believe it: the draw count, the sort keys, and a sampled pixel per claim.
 
-import { arg, argCount, ConfigBuilder, print, ResFile, RuntimeSession } from "tension-framework";
-import { Rgba, readRgba } from "tension-framework";
+import {
+  arg,
+  argCount,
+  ConfigBuilder,
+  pixelAt,
+  print,
+  Rgba,
+  readRgba,
+  ResFile,
+  RuntimeSession,
+  SpriteRecord,
+} from "tension-framework";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
 
@@ -62,7 +72,7 @@ function hex2(v: u8): string {
   return (v < 16 ? "0" : "") + v.toString(16);
 }
 
-function emitFrame(name: string, frame: usize, bytes: u32): void {
+function emitFrame(name: string, frame: Rgba, bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
@@ -71,7 +81,7 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
     for (let i: u32 = base; i < end; i += 4) {
-      const px = readRgba(frame + <usize>i);
+      const px = readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>i));
       line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
     }
     print(line);
@@ -79,8 +89,8 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
   print("FRAME-END " + name);
 }
 
-function colourAt(frame: usize, x: i32, y: i32): u8[] {
-  const px = readRgba(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
+function colourAt(frame: Rgba, x: i32, y: i32): u8[] {
+  const px = pixelAt(frame, x, y, <i32>scene.CANVAS_WIDTH);
   return [px.r, px.g, px.b];
 }
 
@@ -102,7 +112,11 @@ function describe(c: u8[]): string {
 /// `facingBack` picks the composite order and nothing else: the art, the
 /// positions and the sort keys are identical in both renders, so a difference
 /// between the two frames is the z assignment and only that.
-function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: bool): i32 {
+function writeScene(base: SpriteRecord, facingBack: bool, lanternSort: u32, invert: bool): i32 {
+  // The record writer below is this example's own (it is the control the
+  // framework is measured against), so it takes an address. The scene names the
+  // base by type; the offset arithmetic stays in the writer that owns it.
+  const at = changetype<usize>(base);
   let n: i32 = 0;
 
   // Ground: 6x6 tiles, all sort 0 so they are behind everything. Their own
@@ -110,7 +124,7 @@ function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: boo
   for (let row: i32 = 0; row < scene.GROUND_ROWS; row++) {
     for (let col: i32 = 0; col < scene.GROUND_COLS; col++) {
       gfx.writeSprite(
-        base, n++,
+        at, n++,
         scene.GROUND_ORIGIN_X + col * 16, scene.GROUND_ORIGIN_Y + row * 16,
         <u16>scene.GROUND_SRC_X, <u16>scene.GROUND_SRC_Y,
         16, 16,
@@ -124,7 +138,7 @@ function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: boo
   // height it sits above the base — so the crown's key is the smallest and it
   // draws first, and the trunk's is the base and it draws last of the two.
   gfx.writeSprite(
-    base, n++,
+    at, n++,
     scene.TREE_X, scene.TREE_Y,
     <u16>scene.TREE_CROWN_SRC_X, <u16>scene.TREE_CROWN_SRC_Y,
     <u16>scene.TREE_SLICE_W, <u16>scene.TREE_SLICE_H,
@@ -132,7 +146,7 @@ function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: boo
     scene.TREE_CROWN_SORT,
   );
   gfx.writeSprite(
-    base, n++,
+    at, n++,
     scene.TREE_X, scene.TREE_Y + scene.TREE_SLICE_H,
     <u16>scene.TREE_CROWN_SRC_X, <u16>scene.TREE_TRUNK_SRC_Y,
     <u16>scene.TREE_SLICE_W, <u16>scene.TREE_SLICE_H,
@@ -151,21 +165,21 @@ function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: boo
   const bodyZ: u8 = wantBodyOnTop ? 2 : 0;
   const packZ: u8 = wantBodyOnTop ? 0 : 2;
   gfx.writeSprite(
-    base, n++, scene.CHAR_X, scene.CHAR_Y,
+    at, n++, scene.CHAR_X, scene.CHAR_Y,
     <u16>scene.CHAR_BODY_SRC_X, <u16>scene.CHAR_SRC_Y,
     <u16>scene.CHAR_W, <u16>scene.CHAR_H,
     <u16>scene.CHAR_SLOT,
     scene.CHAR_SORT, scene.CHAR_GROUP, bodyZ,
   );
   gfx.writeSprite(
-    base, n++, scene.CHAR_X, scene.CHAR_Y,
+    at, n++, scene.CHAR_X, scene.CHAR_Y,
     <u16>scene.CHAR_HAIR_SRC_X, <u16>scene.CHAR_SRC_Y,
     <u16>scene.CHAR_W, <u16>scene.CHAR_H,
     <u16>scene.CHAR_SLOT,
     scene.CHAR_SORT, scene.CHAR_GROUP, 1,
   );
   gfx.writeSprite(
-    base, n++, scene.CHAR_X, scene.CHAR_Y,
+    at, n++, scene.CHAR_X, scene.CHAR_Y,
     <u16>scene.CHAR_BACKPACK_SRC_X, <u16>scene.CHAR_SRC_Y,
     <u16>scene.CHAR_W, <u16>scene.CHAR_H,
     <u16>scene.CHAR_SLOT,
@@ -176,7 +190,7 @@ function writeScene(base: usize, facingBack: bool, lanternSort: u32, invert: boo
   // higher and it draws over the legs. Its right edge stops one pixel short of
   // the composite probe, which is why `build.mjs` offsets it by half a sprite.
   gfx.writeSprite(
-    base, n++,
+    at, n++,
     scene.LANTERN_X, scene.LANTERN_Y,
     <u16>scene.LANTERN_SRC_X, <u16>scene.LANTERN_SRC_Y,
     16, 16,
@@ -253,7 +267,9 @@ export function _start_game(): void {
 
   const records: usize = memory.data(<usize>(MAX_RECORDS * <i32>gfx.RECORD_SIZE), 8);
   const header: usize = memory.data(<usize>gfx.HDR_SIZE, 4);
-  const frame: usize = memory.data(<usize>FRAME_BYTES, 8);
+  const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
+  // The same block, named twice: bytes for the verb, pixels for the probes.
+  const frame = changetype<Rgba>(frameBuf);
 
   const lanternSort: u32 = behind ? scene.LANTERN_SORT_WRONG : scene.LANTERN_SORT;
   print(
@@ -267,7 +283,7 @@ export function _start_game(): void {
     const facingBack: bool = pass == 0;
     const name: string = facingBack ? "back" : "front";
 
-    const count = writeScene(records, facingBack, lanternSort, invertComposite);
+    const count = writeScene(changetype<SpriteRecord>(records), facingBack, lanternSort, invertComposite);
     gfx.writeSubmitHeader(header, records, <u32>count);
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != count) {
@@ -280,7 +296,7 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    const written = gfx.screenshot(handle, frame, <i32>FRAME_BYTES);
+    const written = gfx.screenshot(handle, frameBuf, <i32>FRAME_BYTES);
     if (written != <i32>FRAME_BYTES) {
       print("FAIL: screenshot(" + name + ") -> " + written.toString());
       failures++;

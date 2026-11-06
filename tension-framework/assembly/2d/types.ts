@@ -19,13 +19,19 @@
 // states the layout as fields, and the compiler computes the offsets from the
 // widths — the same way it computes them for the C header's twin.
 //
-// ## Why these two say `@unmanaged`
+// ## Why the wire records say `@unmanaged`
 //
 // A bare `struct` is a **value**: the bytes live in the variable, no address.
 // A wire record is the opposite — its bytes live in the caller's buffer and the
 // adapter reads them there. `@unmanaged` is that: C layout, no header, reached
 // through a pointer, and `sizeof` including trailing padding so the stride means
 // something.
+//
+// `SpriteRecord`, `SubmitHeader`, `Rgba` and `Info` are all four that shape, and
+// all four are parameters or return values of a function that names them by type
+// rather than by address: `writeRecord(rec, …)`, `readRgba(px)`,
+// `pixelAt(frame, …)`. `Frame` is not — it is a lookup result, never a view over
+// bytes — so it stays a plain reference.
 //
 // **The declaration says it because the writer's parameter says it.** With a
 // plain declaration the compiler refuses all three things a record writer needs:
@@ -99,7 +105,7 @@ export const HEADER_SIZE: u32 = sizeof<SubmitHeader>();
  * the four channels are a record with names, and a caller that gets `r` and `b`
  * the wrong way round has no way to notice from a hex address.
  */
-export struct Rgba {
+@unmanaged export struct Rgba {
   r: u8;
   g: u8;
   b: u8;
@@ -123,14 +129,42 @@ export struct Rgba {
  * function has two pixel loops, take the `@unmanaged` view instead: it is a
  * pointer local and the fields are named the same way.
  */
-export function readRgba(ptr: usize): Rgba {
-  const view = changetype<@unmanaged Rgba>(ptr);
+/**
+ * The pixel at (`x`,`y`) in an RGBA8 screenshot buffer `width` pixels wide.
+ *
+ * `frame` is the buffer's first pixel, not an address: a `screenshot` fills
+ * `width * height` of these and there is nothing else in the block, so the
+ * pointer arithmetic belongs here once rather than in every guest's probe.
+ */
+export function pixelAt(frame: Rgba, x: i32, y: i32, width: i32): Rgba {
+  return readRgba(changetype<Rgba>(changetype<usize>(frame) + <usize>((y * width + x) * 4)));
+}
+
+export function readRgba(px: Rgba): Rgba {
   const out = new Rgba();
-  out.r = view.r;
-  out.g = view.g;
-  out.b = view.b;
-  out.a = view.a;
+  out.r = px.r;
+  out.g = px.g;
+  out.b = px.b;
+  out.a = px.a;
   return out;
+}
+
+/**
+ * The `info` verb's record: 24 bytes, `tension_2d_info_record`.
+ *
+ * Read as a struct rather than through seven accessors doing
+ * `load<u16>(buf + 2)`. The layout is the C declaration's; a guest that reads
+ * `info.canvasWidth` cannot visit the wrong offset.
+ */
+@unmanaged export struct Info {
+  version: u16;       // 0
+  maxRecords: u16;    // 2
+  maxTextures: u32;   // 4
+  maxPipelines: u32;  // 8
+  maxBuckets: u16;    // 12
+  flags: u16;         // 14
+  canvasWidth: u32;   // 16
+  canvasHeight: u32;  // 20
 }
 
 /** Facings a composite's z table is indexed by. */

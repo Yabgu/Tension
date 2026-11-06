@@ -9,6 +9,8 @@
 // module is the third reader of that header and invents no field the others do
 // not have.
 //
+import { Info } from "tension-framework";
+
 // **Hand-written, and it should not stay that way.** `tension-2d`'s header has
 // no entry in `schema/`, so `tools/codegen/generate.mjs` cannot emit this —
 // codegen covers `ogre` only today. When the schema tool grows a `2d` entry,
@@ -125,15 +127,9 @@ export function frameBytes(width: u32, height: u32): u32 { return width * height
 /** `TENSION_2D_MAX_ATLAS_PAGES`: the pages one pipeline can bind. */
 export const MAX_ATLAS_PAGES: u32 = 16;
 
-// --- the info record thin view ---------------------------------------------
+// --- the info record -------------------------------------------------------
+//
+// `Info` is the SDK's struct for `tension_2d_info_record`; the guest reads
+// `info.canvasWidth`, not `load<u32>(buf + 16)`.
 
-export const INFO_SIZE: u32 = 24;
-
-export function infoVersion(buf: usize): u16 { return load<u16>(buf); }
-export function infoMaxRecords(buf: usize): u16 { return load<u16>(buf + 2); }
-export function infoMaxTextures(buf: usize): u32 { return load<u32>(buf + 4); }
-export function infoMaxPipelines(buf: usize): u32 { return load<u32>(buf + 8); }
-export function infoMaxBuckets(buf: usize): u16 { return load<u16>(buf + 12); }
-/** The canvas the handle was opened with, echoed back by the adapter. */
-export function infoCanvasWidth(buf: usize): u32 { return load<u32>(buf + 16); }
-export function infoCanvasHeight(buf: usize): u32 { return load<u32>(buf + 20); }
+export const INFO_SIZE: u32 = sizeof<Info>();
