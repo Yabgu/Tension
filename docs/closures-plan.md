@@ -8,7 +8,7 @@ revision answers `docs/closures-plan-review.md` finding by finding; that
 disposition table is §0.2. The **C5 amendment** answers
 `docs/closures-plan-c5-review.md`; its disposition table is §0.4. No finding is
 dropped.
-**Evidence basis:** the fork at `~/work/as-inspect/assemblyscript`, branch
+**Evidence basis:** the fork at `~/work/as-inspect/tensionscript`, branch
 `feat/async-phase3`, HEAD `ccf888c6`; the Tension tree at `main`. Every
 `file:line` citation below is against `ccf888c6` unless it is marked otherwise.
 The C5 amendment's citations and measurements are against `3490f6f8` (v0.3.3,
@@ -408,8 +408,8 @@ await and leaves everything else alone. §8 works the composition through.
 pushed on the line before it:
 
 ```js
-transforms.push(assemblyscript.ClosureLowerTransform);   // new
-transforms.push(assemblyscript.AsyncLowerTransform);     // existing, :451
+transforms.push(tensionscript.ClosureLowerTransform);   // new
+transforms.push(tensionscript.AsyncLowerTransform);     // existing, :451
 ```
 
 and exported the same way as the async one (`src/index-js.ts:18` does

@@ -3,7 +3,7 @@
 **Status:** scoping only. No source changed, no plan, no code.
 **Base:** Tension `phase/interop-struct-impl` @ `62b4da1` (the struct phase's
 branch); TensionScript published `0.7.1`, and the canonical checkout at
-`/home/yabgu_gm/work/as-inspect/assemblyscript` (branch
+`/home/yabgu_gm/work/as-inspect/tensionscript` (branch
 `phase/interop-struct-std`, which now carries `COPY_STRUCT`).
 **Method:** C# claims are cited to the .NET documentation, fetched and read —
 not inherited from the dispatch. TensionScript claims are measured: compiled
@@ -856,8 +856,8 @@ declaration-order placement.
 | where | hits | detail |
 |---|---|---|
 | the tree (`--include=*.ts --include=*.md`, excluding `node_modules` and `third_party`) | **0** real uses | the only matches are this document's own prose (§1.1, §2.5, §4.1, appendix G) |
-| `third_party/assemblyscript/std` and `/src` | **0** | no decorator, no diagnostic, no parser branch |
-| the canonical checkout (`~/work/as-inspect/assemblyscript/std`, `/src`) | **0** | same |
+| `third_party/tensionscript/std` and `/src` | **0** | no decorator, no diagnostic, no parser branch |
+| the canonical checkout (`~/work/as-inspect/tensionscript/std`, `/src`) | **0** | same |
 | `examples/` | **0** | — |
 
 So nothing in the tree depends on it, and nothing tests it. The hazard is

@@ -50,7 +50,7 @@ tension-audio.wav
 # Guests are compiled by asc; the fixtures that are text (.wat) are committed
 *.wasm
 
-# AssemblyScript-emitted declarations (tension-framework/index.d.ts is tracked
+# TensionScript-emitted declarations (tension-framework/index.d.ts is tracked
 # and hand-written; ignore rules do not apply to already-tracked files)
 *.d.ts
 
