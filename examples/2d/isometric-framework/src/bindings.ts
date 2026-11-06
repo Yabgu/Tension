@@ -1,6 +1,6 @@
 // The tension-2d guest SDK: the verbs, and nothing about records.
 //
-// The record layout lives in `tension-2d-framework`'s `types.ts`, where it is a
+// The record layout lives in the SDK's `assembly/2d/types.ts`, where it is a
 // `struct` the compiler lays out and a compile-time assertion pins. This module
 // carries the imports only — a second copy of the offsets here would be a second
 // declaration of the wire, and the first time the two disagreed the pixels would

@@ -68,7 +68,16 @@ function isText(name) {
   return dot >= 0 && TEXT_EXTENSIONS.has(name.slice(dot).toLowerCase());
 }
 
+/// `packages/<name>-<platform>-<arch>/` is a native payload package: the
+/// platform-specific half of a `file:` dependency, filled by `build:native`
+/// from the OGRE install. Its contents are gitignored build products and carry
+/// that install's CRLF, which is why the comment above says they are not ours to
+/// normalise. Matched by shape rather than listed by name, because the set
+/// depends on which platforms were built.
+const PAYLOAD_PACKAGE = /^packages[\\/][a-z0-9-]+-(linux|windows|macos|darwin|win32)-[a-z0-9_]+([\\/]|$)/;
+
 function skipped(relPath) {
+  if (PAYLOAD_PACKAGE.test(relPath)) return true;
   return SKIP_PATHS.some((p) => relPath === p || relPath.startsWith(p + '/') ||
                                    relPath.startsWith(p + '\\'));
 }

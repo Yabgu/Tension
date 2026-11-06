@@ -1,4 +1,4 @@
-// tension-2d-framework/src/types.ts — the wire records, as records.
+// tension-framework/assembly/2d/types.ts — the 2D wire records, as records.
 //
 // The wire authority is `tension-2d/include/tension_2d.h`; this file is the
 // guest-side mirror of its `sprite` record and submit header. It allocates

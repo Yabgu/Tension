@@ -9,3 +9,4 @@ export * from "./ogre";
 export * from "./input";
 export * from "./anim";
 export * from "./physics";
+export * from "./2d";

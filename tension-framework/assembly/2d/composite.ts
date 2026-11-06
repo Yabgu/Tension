@@ -1,4 +1,5 @@
-// tension-2d-framework/src/Composite.ts — a character that is several records.
+// tension-framework/assembly/2d/composite.ts — a character that is several
+// records.
 //
 // A modular character is N sprites drawn at one world position, sharing a sort
 // key and a group id, ordered among themselves by `z`. The adapter's comparator
@@ -17,7 +18,7 @@
 // are zero and cost nothing.
 
 import { Frame, FACINGS, writeRecord } from "./types";
-import { Tileset } from "./Tileset";
+import { Tileset } from "./tileset";
 
 class Layer {
   name: string;

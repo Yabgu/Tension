@@ -1551,8 +1551,8 @@ constant (never a literal), `publish` and `apply` both NULL, `layout_hash` from
    appended to `tension_adapter.h` under the same append-only rule the semantics
    follow.
 
-The framework layer now sits on top of that: `tension-2d-framework/` holds
-`Tileset`, `Composite` and `IsometricWorld`, and
+The framework layer now sits on top of that: the guest SDK's `assembly/2d/`
+holds `Tileset`, `Composite` and `IsometricWorld`, and
 `examples/2d/isometric-framework/` rebuilds the worked scene with them and
 asserts its frames are byte-identical to the hand-written guest's. The adapter
 grew no tile logic for it, which was the point.

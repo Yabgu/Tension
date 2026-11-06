@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TensionCore example: the isometric scene built with the tension-2d-framework library instead of hand-written records",
+  "description": "TensionCore example: the isometric scene built with the tension-framework SDK instead of hand-written records",
   "scripts": {
     "build": "node ../../../scripts/build-2d-guest.mjs",
     "start": "node test.mjs",
@@ -18,10 +18,9 @@
     }
   },
   "dependencies": {
-    "tension-framework": "file:../../../tension-framework",
-    "tension-2d-framework": "file:../../../tension-2d-framework"
+    "tension-framework": "file:../../../tension-framework"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.13.2"
+    "@yabgu_gm/tensionscript": "^0.14.1"
   }
 }

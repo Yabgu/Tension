@@ -6,9 +6,9 @@ camping lantern in front of it. Every pixel comes from LimeZu's *Modern
 exteriors* and *Modern interiors* packs — 4 MB pages sliced out of a 2816×5072
 tileset, uploaded through the capability's texture arrays.
 
-This is the worked example the framework layer is specified against. It is not
-a framework; it is the five primitives the framework will be written on top of,
-proven to compose.
+This is the worked example the framework layer was specified against. It is not
+a framework; it is the five primitives the framework is written on top of, proven
+to compose.
 
 ![the scene](../../../tension-2d/test-assets/screenshots/preview.png)
 
@@ -137,12 +137,16 @@ It proves the primitives compose: multi-atlas across three pages in one draw,
 a Y-sorted depth model with a sliced tall sprite, a grouped composite with a
 reversible layer order, and a dynamic canvas.
 
-It does **not** prove a framework. The scene is hard-coded in `main.ts`: the
-tile picks are constants, the sort keys are literals, the character's z
-assignment is an `if`. The framework layer — `Composite`, `IsometricWorld`,
-`Tileset` — will be a TensionScript library built on these primitives,
-replacing this example's hardcoded scene with reusable types. **This example is
-the specification that library implements, not the other way round.**
+It does **not** prove a framework on its own. The scene is hard-coded in
+`main.ts`: the tile picks are constants, the sort keys are literals, the
+character's z assignment is an `if`. That was deliberate — this example is the
+*specification* the framework was written against.
+
+The framework now exists in the guest SDK (`tension-framework/assembly/2d`: the
+`Tileset`, `Composite` and `IsometricWorld` types), and
+[`../isometric-framework`](../isometric-framework) rebuilds this scene with it
+and asserts the frames are byte-identical to this one. This file stays
+hand-written on purpose: it is the control the framework is measured against.
 
 ## Running it without the art
 
