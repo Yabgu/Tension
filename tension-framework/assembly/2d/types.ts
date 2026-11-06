@@ -27,7 +27,7 @@
 // cross*: by value, or through a pointer.
 //
 //   export struct SpriteRecord { … }                            declaration
-//   function writeRecord(records: @unmanaged [SpriteRecord *])  a run of them, by pointer
+//   function emit(out: @unmanaged [SpriteRecord *])             a run of them, by pointer
 //   const frame = changetype<@unmanaged [Rgba *]>(addr)         a run of pixels, by pointer
 //   frame[i].r                                                  a field of one of them
 //
@@ -36,8 +36,8 @@
 // is not one.
 //
 // **Why array views rather than a scalar pointer.** The natural spelling,
-// `writeRec(rec: @unmanaged SpriteRecord, …)`, over a plain declaration is
-// refused — as is every route around it:
+// `f(rec: @unmanaged SpriteRecord, …)`, over a plain declaration is refused —
+// as is every route around it:
 //
 //   field write through `@unmanaged` scalar param   AS100 "reading an @inline
 //                                                  struct value as a whole"
@@ -48,8 +48,17 @@
 //   copyInto(changetype<usize>(param), v)           AS100
 //
 // `@unmanaged [T *]` has none of those restrictions — it is host-visible, it
-// indexes, and `[0]` is a record. So the parameters are array views: honest for
-// a frame (a run of records), and for the header, which is one of them.
+// indexes, and `[0]` is a record. So a buffer crosses as an array view: honest
+// for a frame (a run of records), and for the header, which is one of them.
+//
+// **The record fills itself, and the method takes an address.** `out[i]` is an
+// address — the same `this` a setter takes — so `out[i].set(…)` writes through
+// it with the compiler's stride and offsets. A value local is not: a method
+// called on one is refused (AS100, "a value has no address"), and no caller here
+// has one, because a record is only filled where it will be submitted from.
+// Keeping the writes inside the type is what stops a `writeRecord(records, i, …)`
+// free function from reappearing: there is one layout, so there is one writer, and
+// it belongs to the layout.
 //
 // **`Frame` is a class.** It is a lookup result, never bytes in a buffer, so
 // the value model has nothing to offer — and a plain struct cannot be a class
@@ -61,7 +70,7 @@
 // A frame is `[SpriteRecord *]` all the way down — a pointer to a run of
 // records, which is a type the language has and a stride the compiler computes:
 //
-//   writeRecord(out, i, …)      ->  out[i].x = …      (index × sizeof)
+//   out[i].set(…)               ->  field stores at index × sizeof
 //   world.emit(out)             ->  one view, no arithmetic at the call site
 //
 // Nothing here indexes `addr + i * RECORD_SIZE`. The one place a stride is
@@ -94,19 +103,81 @@ export struct SpriteRecord {
   w: u16;        // 12
   h: u16;        // 14
   tex: u16;      // 16, the texture-array page
-  _pad: u16;     // 18, the C struct's padding, named
-  sortKey: u32;  // 20
+  sortKey: u32;  // 20. Bytes 18–19 are C's implicit padding, not a field.
   groupId: u16;  // 24
   z: u8;         // 26
   flags: u8;     // 27
+
+  /**
+   * Fill this record. The receiver is the record already in the buffer:
+   *
+   *   out[i].set(x, y, frame, sortKey, groupId, z)
+   *
+   * The compiler supplies the stride and every field offset, so no caller does
+   * that arithmetic. Every field of the type is written — a record that
+   * inherits a field from the previous frame is a record whose meaning depends
+   * on history.
+   *
+   * The two bytes between `tex` and `sortKey` are not among them. They are
+   * padding the C layout inserts to align a `u32` after a `u16`, `tension_2d.h`
+   * marks them `—` rather than naming them, and nothing reads them: a `u16`
+   * field is masked out of its 32-bit word (`(r_words[base + n] >> shift) &
+   * 0xFFFF`). Declaring `_pad: u16` to shadow them was a field the wire does not
+   * have, which is the same mistake as an `OFF_*` constant in a smaller size —
+   * a second statement of the layout that can disagree with it. Natural
+   * alignment puts `sortKey` at 20 and `sizeof` at 28 on its own; no `@abi.align`
+   * is needed, because nothing here asks the layout to differ from C's.
+   *
+   * **A method, not a free function taking `(records, i, …)`.** A writer
+   * function makes the record a parameter of somebody else's procedure; the
+   * method makes it a receiver, and the call site says *which record* is being
+   * filled rather than *which buffer*. There is exactly one record layout, so
+   * there is no second implementation to keep in step.
+   *
+   * **The receiver must have an address.** `records[i]` is one (the element of
+   * a `[T *]` view is an address, the same `this` a setter takes). A value local
+   * is not: `let r = new SpriteRecord(); r.set(…)` is refused with AS100
+   * ("reading an @inline struct value as a whole"), because a value has no
+   * address to write through. Nothing here needs to; a record is only ever
+   * filled where it will be submitted from.
+   */
+  set(x: i32, y: i32, frame: Frame, sortKey: u32, groupId: u16, z: u8): void {
+    this.x = x;
+    this.y = y;
+    this.srcX = frame.srcX;
+    this.srcY = frame.srcY;
+    this.w = frame.w;
+    this.h = frame.h;
+    this.tex = frame.tex;
+    this.sortKey = sortKey;
+    this.groupId = groupId;
+    this.z = z;
+    this.flags = 0;
+  }
 }
 
-/** The submit header: records pointer, count, stride, reserved. */
+/**
+ * The submit header: records pointer, count, stride, reserved.
+ *
+ * Also a method, for the same reason as `SpriteRecord.set` — the header is one
+ * value with one wire layout, and `header[0].set(records, count)` reads as the
+ * statement it is. `stride` and `flags` are not parameters: a caller that could
+ * pass a different stride could submit records the adapter cannot decode.
+ */
 export struct SubmitHeader {
-  records: u32;    // 0
-  count: u32;      // 4
-  stride: u16;     // 8
-  _reserved: u16;  // 10
+  records: u32;  // 0
+  count: u32;    // 4
+  stride: u16;   // 8
+  flags: u16;    // 10, `tension_2d_submit_hdr.flags` — must be 0
+
+  set(records: @unmanaged [SpriteRecord *], count: u32): void {
+    // `<usize>` rather than `changetype<usize>`: a view is already a pointer,
+    // and `changetype` between the two is refused (AS202).
+    this.records = u32(<usize>records);
+    this.count = count;
+    this.stride = <u16>sizeof<SpriteRecord>();
+    this.flags = 0;
+  }
 }
 
 /**
@@ -221,57 +292,4 @@ export class Frame {
     f.ok = 0;
     return f;
   }
-}
-
-/**
- * Write one record into `out` at `index`, through the struct.
- *
- * `records[index]` is the record — the compiler supplies the stride from
- * `sizeof<SpriteRecord>()`, so no caller does that arithmetic. The field writes
- * below are the wire's bytes in the wire's order, and every field is written,
- * including the pad and the flags: a record that inherits a byte from the
- * previous frame is a record whose meaning depends on history.
- */
-export function writeRecord(
-  records: @unmanaged [SpriteRecord *],
-  index: i32,
-  x: i32,
-  y: i32,
-  frame: Frame,
-  sortKey: u32,
-  groupId: u16,
-  z: u8,
-): void {
-  records[index].x = x;
-  records[index].y = y;
-  records[index].srcX = frame.srcX;
-  records[index].srcY = frame.srcY;
-  records[index].w = frame.w;
-  records[index].h = frame.h;
-  records[index].tex = frame.tex;
-  records[index]._pad = 0;
-  records[index].sortKey = sortKey;
-  records[index].groupId = groupId;
-  records[index].z = z;
-  records[index].flags = 0;
-}
-
-/**
- * Write the submit header for `count` records starting at `records`.
- *
- * The guest builds this immediately before `submit`; it is here so every caller
- * writes the same 12 bytes and nobody has to remember that the stride is a
- * `u16` at offset 8.
- */
-export function writeSubmitHeader(
-  hdr: @unmanaged [SubmitHeader *],
-  records: @unmanaged [SpriteRecord *],
-  count: u32,
-): void {
-  // `<usize>` rather than `changetype<usize>`: a view is already a pointer,
-  // and `changetype` between the two is refused (AS202).
-  hdr[0].records = u32(<usize>records);
-  hdr[0].count = count;
-  hdr[0].stride = <u16>RECORD_SIZE;
-  hdr[0]._reserved = 0;
 }

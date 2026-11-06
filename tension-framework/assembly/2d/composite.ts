@@ -17,7 +17,7 @@
 // enum, not because eight views are drawn today: entries beyond the ones you use
 // are zero and cost nothing.
 
-import { Frame, FACINGS, SpriteRecord, writeRecord } from "./types";
+import { Frame, FACINGS, SpriteRecord } from "./types";
 import { Tileset } from "./tileset";
 
 class Layer {
@@ -97,7 +97,7 @@ export class Composite {
    */
   emitTo(out: @unmanaged [SpriteRecord *], index: i32, x: i32, y: i32): u32 {
     for (let i: i32 = 0; i < this.layers.length; i++) {
-      writeRecord(out, index + i, x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
+      out[index + i].set(x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
     }
     return <u32>this.layers.length;
   }

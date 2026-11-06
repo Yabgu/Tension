@@ -28,7 +28,7 @@
 // implementation of the same rule, and the two would eventually disagree about
 // which of two equal keys goes first.
 
-import { Frame, SpriteRecord, writeRecord } from "./types";
+import { Frame, SpriteRecord } from "./types";
 import { Composite } from "./composite";
 import { Tileset } from "./tileset";
 
@@ -160,7 +160,7 @@ export class IsometricWorld {
     let n: i32 = 0;
     for (let i: i32 = 0; i < this.statics.length; i++) {
       const p = this.statics[i];
-      writeRecord(out, n, p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
+      out[n].set(p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
       n++;
     }
     for (let i: i32 = 0; i < this.actors.length; i++) {

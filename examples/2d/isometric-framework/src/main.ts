@@ -30,7 +30,6 @@ import {
   SpriteRecord,
   SubmitHeader,
   Tileset,
-  writeSubmitHeader,
 } from "tension-framework";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
@@ -291,9 +290,11 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    // The framework writes the submit header too: the record contract is one
-    // thing, and splitting its two halves across two modules is how they drift.
-    writeSubmitHeader(changetype<@unmanaged [SubmitHeader *]>(header), out, written);
+    // The header fills itself from the same view the records went into: the
+    // record contract is one thing, and splitting its two halves across two
+    // modules is how they drift.
+    let hdr = changetype<@unmanaged [SubmitHeader *]>(header);
+    hdr[0].set(out, written);
 
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != <i32>written) {
