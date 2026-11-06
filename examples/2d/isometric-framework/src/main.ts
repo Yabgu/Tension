@@ -28,6 +28,8 @@ import {
   RECORD_SIZE,
   Rgba,
   readRgba,
+  SpriteRecord,
+  SubmitHeader,
   Tileset,
   writeSubmitHeader,
 } from "tension-framework";
@@ -285,7 +287,7 @@ export function _start_game(): void {
     }
     // The framework writes the submit header too: the record contract is one
     // thing, and splitting its two halves across two modules is how they drift.
-    writeSubmitHeader(header, records, written);
+    writeSubmitHeader(changetype<SubmitHeader>(header), records, written);
 
     const accepted = gfx.submit(handle, pipe, header, 0);
     if (accepted != <i32>written) {

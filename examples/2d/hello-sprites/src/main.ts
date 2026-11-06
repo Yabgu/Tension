@@ -29,6 +29,8 @@ import {
   readRgba,
   RECORD_SIZE,
   Rgba,
+  SpriteRecord,
+  SubmitHeader,
   RuntimeSession,
   writeRecord,
   writeSubmitHeader,
@@ -163,7 +165,8 @@ function writeSprites(base: usize): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    writeRecord(base, i, i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    const at = base + <usize>(i * <i32>RECORD_SIZE);
+    writeRecord(changetype<SpriteRecord>(at), i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -252,7 +255,7 @@ export function _start_game(): void {
   const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
   writeSprites(records);
   const header: usize = memory.data(<usize>12, 4);
-  writeSubmitHeader(header, records, <u32>SPRITES);
+  writeSubmitHeader(changetype<SubmitHeader>(header), records, <u32>SPRITES);
 
   const accepted = gfx.submit(handle, pipe, header, 0);
   if (accepted != SPRITES) {
