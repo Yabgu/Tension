@@ -1490,6 +1490,8 @@ section before any other.
 | **Multi-atlas.** Two atlases, same geometry, disjoint palettes; page 0 renders red and page 1 orange in the same draw. A page of another size, page 16 and an unknown pipe are each refused. | `smoke_core.cpp` multi-atlas section. Revert-tested: emitting `out_tex = 0u` in the vertex stage makes both sprites sample page 0 and both checks fail. |
 | **Composite ordering across pages.** Two characters on one tile, one on each atlas page: pixel (20,20) is the page-1 character's colour (group 2), and reversed submission is byte-identical. | `smoke_core.cpp` multi-atlas composite section |
 | **The three original problems compose on real art.** A 2816x5072 tileset (15 pages of 1024x1024) is paged into the adapter's 16-slot array; a conifer is sliced into crown (sort 86) and trunk (118) with the character (88) between them; a three-layer character composites by `group_id` 200 and `z`; a lantern sorts in front of the character. Six pixel probes, three pages in one draw. | `examples/2d/isometric/test.mjs`. Revert-tested twice: flipping the body/backpack `z` moves the probe from the backpack's colour to the body's, and dropping the lantern's sort key below the character's moves the lantern's probe to the character's own colour. Both mistakes are caught by the specific colour they produce, not by "something differs". |
+| **The framework is a library, not a re-implementation.** The same scene built by `Tileset` + `Composite` + `IsometricWorld` renders **byte-identically** to the hand-written guest — both facings, 230 400 bytes each. Byte equality rather than "looks right", because a record can be wrong in a field no probe reads. | `examples/2d/isometric-framework/test.mjs`. Revert-tested three ways: a facing selected without its z table, a tall sprite added unsliced, and one layer in its own group each move a specific probe to the specific wrong colour. |
+| **The 2D problems are reproducible in CI.** The isometric scene runs from generated flat-colour pages with no network and no assets, and asserts the same probes: composite, sliced depth, three pages. | `examples/2d/isometric/test-synthetic.mjs`, wired into `scripts/test.mjs` as the `isometric` suite |
 | **The Cranelift comparator is correct.** A 45-record sample matches a plain-Rust reference over every ordered pair. | `pipeline::cranelift_backend::compiled_matches_reference` |
 | **The generated shaders compile.** Both stages of both graphs parse, validate and emit SPIR-V through Naga. | `tension-shadergen/tests/naga_compile.rs` (5 tests); `classic2d.rs` (glslang, kept as a second opinion) |
 | **The blob parser refuses malformed input.** Bad magic, short reads, a future version, over-long TLVs and truncation are each a refusal, not a panic. | `pipeline::parser::tests` |
@@ -1506,8 +1508,8 @@ the keys turns cyan to blue).
 | --- | --- |
 | **Runtime compiler — built, narrowly.** | `set_pipeline` compiles an unknown blob through the host's ABI v5 `compile_graph` slot. Proven for one shape: a stage ending in `emit_quad`. The blob is compiled once and cached by hash (36 ms cold, 0.004 ms cached). Not proven: any graph shape the GLSL backend does not already know. |
 | **`shader_compile_raw`.** | `-ENOSYS`. The DSO has no GLSL → SPIR-V translator of its own; the compiler lives in the host behind `compile_graph`, which takes a *graph*, not two shader sources. |
-| **Isometric depth.** | `sort_key`-based ordering works, but no test populates `sort_key` from atlas anchor metadata — nothing computes an anchor yet. That is the framework layer's job, not the adapter's. |
-| **Oversized tilesets.** | Multi-atlas exists (16 pages per pipeline), but nothing computes `tex` per tile yet. That is the framework layer's job; the adapter has no tile logic and should not grow any. |
+| **Isometric depth, from data.** | `sort_key`-based ordering works and `IsometricWorld.addStatic` now computes the keys: a tall sprite is sliced, and each band sorts by its own bottom edge. What is still missing is deriving that anchor from *tile metadata* — nothing reads an anchor out of a tileset yet, and the tileset's `.tsx` carries geometry only, so the worked example states `y` by hand. |
+| **Oversized tilesets, end to end.** | Multi-atlas exists (16 pages per pipeline) and `Tileset` now computes `tex` from a sheet coordinate, so page selection is library code rather than example code. Still outside the library: *slicing* a source sheet into pages is `examples/2d/isometric/build.mjs`, a build script — a game with a 55 792-tile sheet writes that step itself, and no test exercises a 15-page binding (the fixtures bind three). |
 | **Alpha blending on a hardware driver.** | Blending is enabled and proved correct on the `dzn` software ICD by the isometric example's cut-outs. It has not been exercised on a hardware Vulkan driver, nor are premultiplied pages supported (a page with premultiplied colours would double-darken its edges; the decoders here produce straight alpha). |
 | **Mixed atlas sizes.** | Every page of one pipeline shares the array's dimensions, because an array texture has one size. A game with a 256×256 page and a 512×512 page needs two pipelines. Untested beyond the refusal. |
 | **Complex sort keys.** | `mul` inside a sort key is unit-tested (`a_scaled_key_multiplies_before_comparing`) but no shipped pipeline uses one. The CPU path's `scale` column is exercised by tests only. |
@@ -1548,6 +1550,52 @@ constant (never a literal), `publish` and `apply` both NULL, `layout_hash` from
    appended to `tension_adapter.h` under the same append-only rule the semantics
    follow.
 
-*The next step is the framework layer in TensionScript — anchor metadata into
-`sort_key`, tiles into `tex` — and the multi-atlas work that `tex` was put in the
-record for.*
+The framework layer now sits on top of that: `tension-2d-framework/` holds
+`Tileset`, `Composite` and `IsometricWorld`, and
+`examples/2d/isometric-framework/` rebuilds the worked scene with them and
+asserts its frames are byte-identical to the hand-written guest's. The adapter
+grew no tile logic for it, which was the point.
+
+*What is left is smaller and additive: an anchor computed from tile metadata
+rather than stated by the caller, `shader_compile_raw`, and an AI-authored
+graph blob.*
+
+## 15. Future optimizations
+
+Four ideas that are real, that fit the architecture, and that are **not** in v1.
+They are here so a later optimization pass starts from a recorded rationale
+instead of rediscovering the problem. Each entry says what it buys and what would
+have to be true to need it.
+
+**Parallel stage rendering.** Background, midground and foreground on separate
+render targets, composited at the end — either as compute passes or as separate
+command buffers submitted together. The primitive fits: each stage already has
+its own canvas and its own bucket scope, and SDL_GPU supports multiple render
+targets per pass. *Not now because the current one-pass render is inside budget
+by roughly 20×* (the probe in §7 puts 10 000 sprites at 0.10–0.25 ms per frame).
+Revisit when a game's sprite count makes the single-pass draw the frame's
+largest cost, not when the architecture makes it possible.
+
+**Split tables.** A pipeline that skips the sort node entirely when its records
+arrive pre-sorted, at the cost of the caller maintaining the order. *Not now
+because the sort is not the cost*: at 10 000 sprites the measured time is
+dominated by fixed draw overhead, not by comparison. Revisit only for a specific
+game profile where sort cost climbs with sprite count — a profiler trace, not an
+intuition.
+
+**AsmJit for the comparator.** The Cranelift path already compiles a comparator in
+microseconds and caches it by graph hash; a JIT with a smaller footprint would buy
+nothing measurable. *Revisit only if* a pipeline needs a comparator Cranelift
+optimizes poorly — which would show up as a slow comparator in a profile, not as
+a slow compile.
+
+**Multi-page-size pipelines.** v1 gives every page of one pipeline the array's
+single size, so a game with a 256×256 page and a 512×512 page needs two
+pipelines. *That is a workflow, not a primitive change*: the fix is a build step
+that groups pages by size into pipelines, and the adapter's per-pipeline texture
+array already supports it. Revisit when a real tileset forces the split.
+
+Why they are listed rather than implemented: each is an optimization whose
+premise is a measurement that has not been made. §7's probe is a start, and the
+number it produced (0.06 ms claimed, 0.10–0.25 ms measured) is exactly the kind
+of gap that turns "obviously we need this" into "we need this for a reason".

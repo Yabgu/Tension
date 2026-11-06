@@ -1,0 +1,21 @@
+{
+  "name": "tension-2d-framework",
+  "version": "0.1.0",
+  "private": true,
+  "description": "TensionScript scene library over the tension-2d primitives: Tileset, Composite, IsometricWorld",
+  "type": "module",
+  "ascMain": "index.ts",
+  "types": "src/index.ts",
+  "files": [
+    "src",
+    "index.ts"
+  ],
+  "keywords": [
+    "tension",
+    "wasm",
+    "assemblyscript",
+    "2d",
+    "sprites"
+  ],
+  "license": "MIT"
+}

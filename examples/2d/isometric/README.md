@@ -142,3 +142,24 @@ assignment is an `if`. The framework layer — `Composite`, `IsometricWorld`,
 `Tileset` — will be a TensionScript library built on these primitives,
 replacing this example's hardcoded scene with reusable types. **This example is
 the specification that library implements, not the other way round.**
+
+## Running it without the art
+
+The art is third-party and is not committed, so this example exits 77 on a machine
+that cannot reach the asset host — which means CI never sees it.
+
+`npm run test:ci` is the same scene from generated flat-colour pages: same
+canvas, same positions, same sort keys, same probes, no SSH. It runs the guest
+below unchanged, because the guest reads its scene table
+(`src/scene.generated.ts`) and nothing else. The pages and the table come from
+[`../synthetic`](../synthetic), and the assertion list is identical: composite at
+two probes, depth at three, three pages, two revert runs.
+
+What it does not reproduce is the art: cut-outs, the character generator's
+layers, and the tileset's real page count. Those need the fetch, and this example
+is where they are exercised.
+
+The framework version of the same scene is
+[`../isometric-framework`](../isometric-framework): it builds these records from
+`Tileset` + `Composite` + `IsometricWorld` and its frames must be byte-identical
+to this guest's.
