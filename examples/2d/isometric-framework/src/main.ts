@@ -27,6 +27,7 @@ import {
   IsometricWorld,
   RECORD_SIZE,
   Rgba,
+  readRgba,
   Tileset,
   layoutSelfTest,
   writeSubmitHeader,
@@ -66,6 +67,10 @@ function hex2(v: u8): string {
   return (v < 16 ? "0" : "") + v.toString(16);
 }
 
+function hexRgba(px: Rgba): string {
+  return hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
+}
+
 function emitFrame(name: string, frame: usize, bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
@@ -75,8 +80,10 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
     for (let i: u32 = base; i < end; i += 4) {
-      const px = changetype<@unmanaged Rgba>(frame + <usize>i);
-      line += hex2(px.r) + hex2(px.g) + hex2(px.b) + hex2(px.a);
+      // A value argument must be a local — `hexRgba(readRgba(ptr))` is refused,
+      // because a value has no address to hand over. So it lands first.
+      const px = readRgba(frame + <usize>i);
+      line += hexRgba(px);
     }
     print(line);
   }
@@ -84,13 +91,8 @@ function emitFrame(name: string, frame: usize, bytes: u32): void {
 }
 
 /// A pixel's colour, by channel name rather than by byte offset into it.
-///
-/// The view is a local: a value has no address, so a function cannot return an
-/// `Rgba` (only a local can be returned, and the caller's read needs somewhere
-/// to read from). Naming the view here is one line and keeps the offsets out of
-/// every caller.
 function colourAt(frame: usize, x: i32, y: i32): u8[] {
-  const px = changetype<@unmanaged Rgba>(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
+  const px = readRgba(frame + <usize>((y * <i32>scene.CANVAS_WIDTH + x) * 4));
   return [px.r, px.g, px.b];
 }
 

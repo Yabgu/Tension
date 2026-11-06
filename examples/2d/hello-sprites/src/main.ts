@@ -26,6 +26,7 @@ import {
   ConfigBuilder,
   Frame,
   print,
+  readRgba,
   RECORD_SIZE,
   Rgba,
   RuntimeSession,
@@ -277,6 +278,10 @@ export function _start_game(): void {
     return;
   }
 
+  // A view, not a value: this function holds two pixel loops, and two value
+  // locals of one struct type in two loops crash the compiler (0.13.2 and
+  // 0.14.1 both: `duplicate local name`, from `fillSroaFieldLocals`). A view is
+  // a pointer local, so it is unaffected — and the fields are still named.
   let nonBlack: u32 = 0;
   for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
     const px = changetype<@unmanaged Rgba>(frame + <usize>(i * 4));
