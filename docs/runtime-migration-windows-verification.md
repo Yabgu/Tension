@@ -48,7 +48,7 @@ but it is not byte-identical to the one the plan measured. See §6.
 | **wasmtime** | **24.0.13** — the exact version `tension-core` pins (`tension-core/Cargo.toml:20`), built from the local crates.io cache with `cargo build --release --offline` |
 | **node** | `v26.4.0` (native Windows `node.exe`, `C:\Program Files\nodejs`) |
 | **npm** | 11.17.0 |
-| **AssemblyScript** | `0.28.20` (`examples/io/node_modules/assemblyscript/bin/asc.js`) |
+| **compiler** | `0.28.20` — the upstream release the examples built with when these measurements were taken (before the fork's own versioning began) |
 | **python3** | 3.14.4 (MSYS2 UCRT64) |
 | **rustc** | 1.99.0, host `x86_64-pc-windows-msvc` |
 | **tension-core** | prebuilt `target/release/tension-core.exe`, 10,493,440 bytes |

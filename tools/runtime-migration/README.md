@@ -17,7 +17,7 @@ engine.
 bash run-measurements.sh
 
 # Linux:
-ASC=/path/to/assemblyscript/bin/asc.js \
+ASC=/path/to/tensionscript/bin/tensionscript.js \
 WTRUNNER=/path/to/wtrunner \
 bash run-measurements.sh
 ```
@@ -26,7 +26,7 @@ Useful environment variables:
 
 | Variable | Meaning |
 |---|---|
-| `ASC` | path to the AssemblyScript compiler's `asc.js`. Auto-detected from `examples/*/node_modules` if unset. |
+| `ASC` | path to the compiler's `tensionscript.js`. Auto-detected from `examples/*/node_modules` if unset. |
 | `WTRUNNER` | path to the wasmtime runner. That engine's section is skipped if unset. |
 | `OUT_DIR` | where the report and per-run JSON land (default `./out`) |
 | `REPS` | repetitions of the frame-loop measurement (default 1). Use ≥5 to characterise the tail — the worst *single* stall is not a distribution. |

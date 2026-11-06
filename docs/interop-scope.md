@@ -2,7 +2,7 @@
 
 **Status:** scoping only. No source changed, no plan, no code.
 **Base:** TensionScript `next` @ `50cceb36` (package version `0.7.1`) in
-`third_party/assemblyscript`; Tension `main` @ working tree with the 0.7.1
+`third_party/tensionscript`; Tension `main` @ working tree with the 0.7.1
 consumers.
 **Method:** every claim below was measured, not read. Two compilers were used:
 the published `@yabgu_gm/tensionscript@0.7.1` (`/tmp/interop-probe/probe*.ts`,

@@ -10,7 +10,7 @@
 # `<label>` names the capture set (e.g. `stub`, `incremental`) and becomes part
 # of each output filename.  With no examples named, the default set runs.
 #
-# Set RUNTIME=<rt> to pin the AssemblyScript runtime for the build.  It works by
+# Set RUNTIME=<rt> to pin the guest runtime for the build.  It works by
 # taking the example's own `build` script, swapping whichever `--runtime` it
 # names for the requested one, running that, and then running the example with
 # `--no-build` so the host-side argument composition still comes from

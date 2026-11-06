@@ -49,7 +49,7 @@ traced record.
 - Byte-identity against `ccf888c6`: 10/10 probes (plain and optimized).
 - Probes: this-only arrow 7, indirect `this` 8.
 - `Not implemented: Async functions`: 0 occurrences in the built
-  `dist/assemblyscript.js`, and one historical comment in
+  `dist/tensionscript.js`, and one historical comment in
   `src/async/validate.ts` recording what the deleted guard used to say.
 
 ## What is refused, after Phase 3
