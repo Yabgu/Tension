@@ -45,6 +45,10 @@ cranelift-codegen = "=0.111.13"
 cranelift-frontend = "=0.111.13"
 cranelift-native = "=0.111.13"
 
+# GLSL -> SPIR-V for runtime pipeline compilation (pipeline/naga_backend.rs).
+# Same crate and version as `tension-shadergen` uses, so one copy is linked.
+naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
+
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`
 # parses the examples' package.json and (JSONC) launch.json as data rather than

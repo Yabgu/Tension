@@ -1180,14 +1180,14 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 5, "the fixture declares a version this build does not load");
+                assert_eq!(found, 6, "the fixture declares a version this build does not load");
                 // Against the constant, not a literal: a literal here goes stale on
                 // every ABI bump and turns a passing refusal into a failing one.
                 assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 5"), "the message names the fixture's version");
+        assert!(error.to_string().contains("ABI 6"), "the message names the fixture's version");
     }
 
     #[test]

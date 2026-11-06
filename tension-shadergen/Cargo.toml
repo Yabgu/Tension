@@ -6,3 +6,10 @@ description = "Shader source generation for Tension: a layout description in, GL
 license = "MIT"
 
 [dependencies]
+# GLSL -> SPIR-V. The alternative was shelling out to glslangValidator, which
+# makes a C++ capability depend on a system binary at build time and cannot
+# compile at run time at all. Naga is MIT OR Apache-2.0 and is pure Rust.
+#
+# Pinned to 29 because 30.0.1's own `glsl-in` feature does not compile (it calls
+# `Binding::apply_default_interpolation`, which that version does not define).
+naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }

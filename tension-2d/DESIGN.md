@@ -1099,7 +1099,8 @@ scaffold time is the point of this subsection.
 | SDL_shadercross | Zlib | **absent** — no pkg-config, no `libSDL3_shadercross*` | **vendor** into `third_party/shadercross/` |
 | Cranelift | Apache-2.0 + LLVM exception | transitive via Wasmtime 24.0.13 | already linked; the question is the API, not the dependency |
 | ImageViewer | Apache-2.0 | **absent** — nothing in the tree references it | vendor a pinned copy after `iw_decode_to_format` lands |
-| glslang | BSD-3-Clause | **present** — `/usr/sbin/glslangValidator` 16.6.0 | build-time only; already used by the bench |
+| Naga | MIT OR Apache-2.0 | **linked** — 29.0.4, build and run time | the shader compiler; replaced glslangValidator |
+| glslang | BSD-3-Clause | present | used by the **bench** only; no longer in the adapter's build |
 
 **SDL_shadercross — vendored, not system.** It is not installed here, and the
 tree has a working precedent for the alternative: OGRE-Next is a submodule under
@@ -1359,22 +1360,23 @@ library; the FreeImage removal's completeness aside from the six lockfiles.
 - **ImageViewer as a dependency.** No file in the tree references ImageViewer, IW,
   or `iw_*` (§8, §10). The 2D adapter would be its first consumer, and "it is in
   the tree" is currently false.
-- **Cranelift as a *code generator*.** It is in the tree as Wasmtime's compiler,
-  which is a strong argument for using it and not evidence that its API is exposed
-  to `tension-core`. Whether the transitive copy is usable directly (version,
-  feature flags, `cranelift-jit` vs `cranelift-codegen`) is unmeasured.
+- **Cranelift as a *code generator* — now measured.** It was in the tree only as
+  Wasmtime's compiler; §14's comparator compilation proves `cranelift-codegen`,
+  `-frontend` and `-native` at 0.111.13 are directly usable, so no `libc`-free JIT
+  crate was needed.
 - **The Moonside sprite-batcher write-up.** The pattern is described from the
   design discussion; the source is external and not fetched here.
-- **The graph compiler (§6).** None of it is built. The opcode set, the blob
-  format, the Cranelift lowering and the cache are a proposal; `set_pipeline`
-  answers `-ENOSYS` for every guest blob and the only pipeline that exists is
-  preset 1's, compiled from generated GLSL at build time.
+- **The graph compiler (§6) is built for one shape.** Parse, validate, a
+  Cranelift comparator and a GLSL lowering all exist and are tested (§14.1), but
+  only for a stage that ends in `emit_quad` over a flat record. The opcode set is
+  five primitives, not the ~30 §6.3 proposes; there is no cache keyed by graph
+  hash at run time, and no `list`/permutation lowering beyond the sort.
 - **A swapchain.** v1 renders to an offscreen target and reads it back with
   `screenshot`. There is no window path, so `present` is not a present in the
   SDL sense yet.
 - **Multi-atlas.** The record carries `tex`, but the adapter binds one texture
   per frame (the most recently loaded). Drawing a second page needs a texture
-  array or a per-bucket binding pass.
+  array or a per-bucket binding pass. See §14.2.
 - **`shader_compile_raw`.** The wire has the door; the build has no GLSL →
   SPIR-V translator linked into the DSO, so the verb answers `-ENOSYS`.
 - **Anything on a real GPU.** Every measurement and every pixel above was
@@ -1404,37 +1406,66 @@ compiles both stages with `glslangValidator`.
 
 ---
 
-## 14. The scaffold, as built
+## 14. Proven, and not proven
 
-What exists, and what each file is for:
+The honest state of the tree, as of commit `d856bea`. Every line under **proven**
+names the test that proves it; every line under **not proven** names what is
+missing and why. A reader deciding whether to trust this design should read this
+section before any other.
+
+### 14.1 Proven
+
+| claim | the test that proves it |
+| --- | --- |
+| **The renderer draws.** Ten sprites at recorded positions, 10240 non-black pixels = 10 × 32 × 32, each centre its own atlas colour. | `smoke_core.cpp` scenario A |
+| **The sort works.** Reverse-`sort_key` submission is byte-identical to forward submission, over overlapping sprites so draw order is observable. | `smoke_core.cpp` scenario B and its reversed twin |
+| **The compiler reproduces the preset.** `default_2d` parsed from a 584-byte blob renders byte-identically to the hand-written preset — and the build refuses if their SPIR-V differs. | `graph vs preset, scenario A/B: byte-identical`; `build-2d.mjs` SPIR-V comparison |
+| **The compiler is general.** `default_2d_scaled` (653 bytes) renders at 2× via the graph's `const_f32` + `mul`, which `tension-shadergen` cannot express; coverage is exactly 4× and the sort still holds on top of it. | `smoke_core.cpp` scaled A / scaled B reversed; `default_2d_scaled SPIR-V differs from the preset, as it must` |
+| **Composite grouping works.** Two characters on one tile, three layers each: pixel (20,20) is **cyan** (C2's last layer), not blue (C1's `z=2` backpack). The interleaved and grouped submissions are byte-identical. | `smoke_core.cpp` composite section. Revert-tested: swapping `group_id` and `z` in the graph turns the pixel blue, exactly the z-first prediction. |
+| **The Cranelift comparator is correct.** A 45-record sample matches a plain-Rust reference over every ordered pair. | `pipeline::cranelift_backend::compiled_matches_reference` |
+| **The generated shaders compile.** Both stages of both graphs parse, validate and emit SPIR-V through Naga. | `tension-shadergen/tests/naga_compile.rs` (5 tests); `classic2d.rs` (glslang, kept as a second opinion) |
+| **The blob parser refuses malformed input.** Bad magic, short reads, a future version, over-long TLVs and truncation are each a refusal, not a panic. | `pipeline::parser::tests` |
+| **The validator refuses bad graphs.** Dangling inputs, out-of-range field indices, cycles, unknown primitives, a missing emitter. | `pipeline::validate::tests` |
+
+Three of those assertions were revert-tested rather than taken on faith: the
+quad arithmetic (doubling it in the generator changes the pixel count), the sort
+(disabling it fails at the first overlap), and the composite ordering (swapping
+the keys turns cyan to blue).
+
+### 14.2 Not proven
+
+| gap | what is actually true |
+| --- | --- |
+| **Multi-atlas.** | `tex` is in the record and the graph, but the adapter binds **one** texture per frame (the most recently loaded). A guest with two atlas pages draws one. Needs a texture array or a per-bucket binding pass. |
+| **Runtime compiler — built, narrowly.** | `set_pipeline` compiles an unknown blob through the host's ABI v5 `compile_graph` slot. Proven for one shape: a stage ending in `emit_quad`. The blob is compiled once and cached by hash (36 ms cold, 0.004 ms cached). Not proven: any graph shape the GLSL backend does not already know. |
+| **`shader_compile_raw`.** | `-ENOSYS`. The DSO has no GLSL → SPIR-V translator of its own; the compiler lives in the host behind `compile_graph`, which takes a *graph*, not two shader sources. |
+| **Isometric depth.** | `sort_key`-based ordering works, but no test populates `sort_key` from atlas anchor metadata — nothing computes an anchor yet. That is the framework layer's job, not the adapter's. |
+| **Oversized tilesets.** | Need multi-atlas first. The framework layer would compute `tex` per tile; the adapter has no tile logic and should not grow any. |
+| **Complex sort keys.** | `mul` inside a sort key is unit-tested (`a_scaled_key_multiplies_before_comparing`) but no shipped pipeline uses one. The CPU path's `scale` column is exercised by tests only. |
+| **Swapchain.** | Offscreen render target + `SDL_DownloadFromGPUTexture` only. On-screen presentation is untested; `present` is not a present in the SDL sense. A headless-CI concern, but "renders" here means "renders to a texture". |
+| **Hardware performance.** | Every measurement is from the `dzn` software ICD (§7). The pipeline runs; no timing figure is a GPU figure. |
+| **Windows / macOS.** | Untested throughout. `-G` vs `-V` (§8.1) suggests the shader path needs revisiting there. |
+| **Texture decoding beyond IWI.** | PNG and JPEG are `-ENOSYS` until ImageViewer gains `iw_decode_to_format` (§8). |
+
+### 14.3 What is in the tree
 
 | file | what it is |
 | --- | --- |
 | `include/tension_2d.h` | the wire: nine verbs, the 28-byte `sprite` record, the submit header, the info record, the pipe_id ranges. No SDL include. |
-| `src/adapter.cpp` | the edge: vtable, nine shims, registration. Includes no SDL. |
-| `src/render.h` / `src/render.cpp` | the device: SDL_GPU, storage buffer, pipeline table, texture table, draw, readback. |
-| `src/texture.h` / `src/texture.cpp` | the IWI reader (SDLV-free), pending `iw_decode_to_format`. |
+| `src/adapter.cpp` | the edge: vtable, nine shims, registration. No SDL. |
+| `src/render.h` / `src/render.cpp` | the device: SDL_GPU, storage buffer, pipeline table, texture table, graph-driven comparator, draw, readback. |
+| `src/texture.h` / `src/texture.cpp` | the IWI reader (SDL-free), pending `iw_decode_to_format`. |
 | `tests/smoke_core.cpp` | a stub `tension-core`: guest memory, `register_import`, then the verbs through the registered table. |
-| `scripts/build-2d.mjs` | generate GLSL → `glslangValidator -V` → embed → link the DSO. |
+| `tests/*.t2dg` | the two graph blobs, written by `graph emit-default` on every build so they cannot go stale. |
+| `scripts/build-2d.mjs` | generate GLSL → Naga → embed → link the DSO. |
 | `scripts/test-2d.mjs` | build, then run the stub core headless and read the pixels. |
 | `bench/` | the cost probe from §7, separate from the adapter. |
+| `tension-core/src/pipeline/` | the compiler: parser, validator, Cranelift backend, GLSL backend. |
+| `tension-core/src/pipeline_default.rs` | `default_2d` and `default_2d_scaled` as graphs, and the writer. |
 
 **The vtable** is `tension-input`'s field for field: `abi_version` from the
 constant (never a literal), `publish` and `apply` both NULL, `layout_hash` from
 `TENSION_ADAPTER_LAYOUT_HASH`, nine imports registered in `link`.
-
-**Shaders are compiled at build time, not run time.** `scripts/build-2d.mjs`
-runs `tension-shadergen`'s `emit` binary, pipes the GLSL through
-`glslangValidator -V`, and embeds the SPIR-V. That keeps the design's promise
-(the pipeline comes from the generator, not from a checked-in shader) while
-leaving runtime compilation — which needs a translator linked into the DSO — to
-v1.1.
-
-**The smoke test asserts pixels, not statuses.** Ten sprites at 32×32, 64 px
-apart: each centre must be white and each 32 px gap black. It reports
-**10240 non-black pixels**, exactly 10 × 32 × 32. Revert-tested by doubling the
-quad width in the generator: the count became 20480 and the gaps filled, and the
-test failed — so the assertion is load-bearing rather than decorative.
 
 **Two things the build found that the design had assumed otherwise:**
 
@@ -1448,5 +1479,6 @@ test failed — so the assertion is load-bearing rather than decorative.
    appended to `tension_adapter.h` under the same append-only rule the semantics
    follow.
 
-*The next step is a review of §6's opcode set. The generator work §6.7.1 forced
-is done; the compiler it feeds is not written.*
+*The next step is the framework layer in TensionScript — anchor metadata into
+`sort_key`, tiles into `tex` — and the multi-atlas work that `tex` was put in the
+record for.*

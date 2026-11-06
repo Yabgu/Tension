@@ -35,6 +35,7 @@
 
 pub mod cranelift_backend;
 pub mod glsl_backend;
+pub mod naga_backend;
 pub mod parser;
 pub mod validate;
 

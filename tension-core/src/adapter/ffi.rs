@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 4;
+pub const ADAPTER_ABI_VERSION: u32 = 5;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -185,6 +185,8 @@ pub struct TensionCoreApi {
     /// layout. `-ENOSYS` when the installed generator does not serve the layout,
     /// which is the expected answer for a guest-defined one at v1.
     pub shader_generate: Option<ShaderGenerateFn>,
+    /// ABI v5: T2DG blob in, SPIR-V out. See `tension_adapter.h`.
+    pub compile_graph: Option<CompileGraphFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -202,6 +204,24 @@ pub type GuestReadCheckedFn =
 /// Shader generation appended under rule 11 at ABI version 4: a packed layout
 /// descriptor in, NUL-terminated source out, the length back.
 pub type ShaderGenerateFn = unsafe extern "C" fn(*const u8, *mut c_char, u32) -> i32;
+
+/// Graph compilation appended under rule 11 at ABI version 5: a T2DG blob in,
+/// the two stages' SPIR-V out.
+///
+/// Unsafe because every pointer is a C caller's: the blob must be readable for
+/// `blob_len`, each output buffer writable for its capacity, and the two length
+/// out-parameters writable.
+pub type CompileGraphFn = unsafe extern "C" fn(
+    *mut c_void,   // user
+    *const u8,     // blob
+    u32,           // blob_len
+    *mut u8,       // vs_out
+    u32,           // vs_cap
+    *mut u8,       // fs_out
+    u32,           // fs_cap
+    *mut u32,      // out_vs_len
+    *mut u32,      // out_fs_len
+) -> i32;
 
 /// Mirrors `tension_adapter`. `publish` and `apply` may be NULL, which is why
 /// every function-pointer field here is an `Option`.
@@ -229,7 +249,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 152);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 160);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -252,6 +272,7 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, log_structured) == 120);
     assert!(std::mem::offset_of!(TensionCoreApi, guest_read_checked) == 128);
     assert!(std::mem::offset_of!(TensionCoreApi, shader_generate) == 144);
+    assert!(std::mem::offset_of!(TensionCoreApi, compile_graph) == 152);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -940,6 +961,54 @@ pub(crate) unsafe extern "C" fn shader_generate(
     }
 }
 
+/// `tension_core_api.compile_graph` — ABI v5.
+///
+/// Parse, validate, lower and compile, all through `pipeline::naga_backend`, so
+/// a graph compiled here is byte-for-byte the graph the build would have
+/// compiled. On `-ENOSPC` the required sizes are still written, so a caller can
+/// retry with bigger buffers rather than probing blindly.
+///
+/// # Safety
+///
+/// `blob` must be readable for `blob_len`; `vs_out`/`fs_out` writable for their
+/// capacities; `out_vs_len`/`out_fs_len` writable.
+pub(crate) unsafe extern "C" fn compile_graph(
+    _user: *mut c_void,
+    blob: *const u8,
+    blob_len: u32,
+    vs_out: *mut u8,
+    vs_cap: u32,
+    fs_out: *mut u8,
+    fs_cap: u32,
+    out_vs_len: *mut u32,
+    out_fs_len: *mut u32,
+) -> i32 {
+    if blob.is_null() || out_vs_len.is_null() || out_fs_len.is_null() {
+        return -libc::EINVAL;
+    }
+    let bytes = std::slice::from_raw_parts(blob, blob_len as usize);
+
+    let compiled = match ::tension_core::pipeline::naga_backend::compile(bytes) {
+        Ok(compiled) => compiled,
+        Err(error) => return error.errno(),
+    };
+
+    let vs = compiled.vertex_bytes();
+    let fs = compiled.fragment_bytes();
+    *out_vs_len = vs.len() as u32;
+    *out_fs_len = fs.len() as u32;
+
+    if vs.len() > vs_cap as usize || fs.len() > fs_cap as usize {
+        return -libc::ENOSPC;
+    }
+    if vs_out.is_null() || fs_out.is_null() {
+        return -libc::EINVAL;
+    }
+    std::ptr::copy_nonoverlapping(vs.as_ptr(), vs_out, vs.len());
+    std::ptr::copy_nonoverlapping(fs.as_ptr(), fs_out, fs.len());
+    0
+}
+
 /// The most fields a descriptor may name. Bounded so a corrupt `field_count`
 /// cannot walk the caller's memory looking for a reason to stop.
 const MAX_SHADER_FIELDS: usize = 64;
@@ -1358,6 +1427,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         guest_read_checked: Some(guest_read_checked),
         signal_frame: Some(signal_frame),
         shader_generate: Some(shader_generate),
+        compile_graph: Some(compile_graph),
     }
 }
 
@@ -1556,12 +1626,13 @@ mod tests {
         // the compile-time half of this check. `log_named`/`log_structured`
         // were appended under rule 11, moving the size 112 -> 128;
         // `guest_read_checked` (C4.1a) moved it 128 -> 136, `signal_frame`
-        // (v3, 0.7.0a) moved it 136 -> 144, and `shader_generate` (v4) moved it
-        // 144 -> 152. The adapter's `layout_hash` (C4.1c)
+        // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
+        // 144 -> 152, and `compile_graph` (v5) moved it 152 -> 160. The
+        // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 152);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 160);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
@@ -1569,6 +1640,7 @@ mod tests {
             assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, shader_generate), 144);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, compile_graph), 152);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

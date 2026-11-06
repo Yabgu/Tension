@@ -525,6 +525,7 @@ fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
 const GRAPH_USAGE: &str = "\
 usage: tension-core graph emit-default --out <dir>
 
+  compile <blob> --out <dir>  compiles one blob to vs.spv/fs.spv
   Writes default_2d.t2dg (the wire blob), default_2d.graph.vert and
   default_2d.graph.frag (the GLSL both lowerings produce), and
   default_2d.keys.txt (the comparator's key table).";
@@ -579,6 +580,90 @@ fn run_graph(argv: Vec<String>) -> anyhow::Result<()> {
 
             println!("{name}: {} bytes, hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
         }
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "emit-scaled").unwrap_or(false) {
+        // `graph emit-scaled --factor F --out FILE`: the scaled graph at any
+        // factor. The runtime-compilation test needs 1.5, which is not a
+        // shipped pipeline and therefore has to be compiled at run time.
+        let mut factor = 2.0f32;
+        let mut out = std::path::PathBuf::from("default_2d_scaled_custom.t2dg");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--factor" => {
+                    i += 1;
+                    factor = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(2.0);
+                }
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let blob = tension_core::pipeline_default::serialize(
+            &tension_core::pipeline_default::scaled_graph_with(factor),
+        );
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&out, &blob)?;
+        println!("{} bytes  hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "compile").unwrap_or(false) {
+        // `graph compile <blob> --out <dir>`: the runtime compiler as a tool.
+        // The 2D stub core calls this to stand in for the host's
+        // `compile_graph` slot, and a human uses it to see what a blob turns
+        // into without a GPU.
+        let mut blob_path = None;
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                other => blob_path = Some(std::path::PathBuf::from(other)),
+            }
+            i += 1;
+        }
+        let Some(blob_path) = blob_path else {
+            anyhow::bail!("graph compile needs a blob path\n\n{GRAPH_USAGE}");
+        };
+        let blob = std::fs::read(&blob_path)?;
+        let started = std::time::Instant::now();
+        // Distinct exit codes, because the 2D stub core maps them back to
+        // errnos and a flattened "something failed" would make the adapter's
+        // -EINVAL/-ENOSYS distinction untestable.
+        //   2 -> the blob is malformed or invalid  (-EINVAL)
+        //   3 -> the graph is valid but unsupported (-ENOSYS)
+        let compiled = match tension_core::pipeline::naga_backend::compile(&blob) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                eprintln!("graph compile: {error}");
+                let code = match error {
+                    tension_core::pipeline::GraphError::Malformed(_)
+                    | tension_core::pipeline::GraphError::Invalid(_) => 2,
+                    tension_core::pipeline::GraphError::Unsupported(_) => 3,
+                };
+                std::process::exit(code);
+            }
+        };
+        let elapsed = started.elapsed();
+        std::fs::create_dir_all(&out)?;
+        std::fs::write(out.join("vs.spv"), compiled.vertex_bytes())?;
+        std::fs::write(out.join("fs.spv"), compiled.fragment_bytes())?;
+        eprintln!(
+            "compiled {} in {:.3} ms (vs {} B, fs {} B)",
+            blob_path.display(),
+            elapsed.as_secs_f64() * 1e3,
+            compiled.vertex.len() * 4,
+            compiled.fragment.len() * 4
+        );
         return Ok(());
     }
     anyhow::bail!("{GRAPH_USAGE}")

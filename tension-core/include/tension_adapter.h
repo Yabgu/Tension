@@ -14,12 +14,13 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 4 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
+ * Frozen at ABI version 5 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
  * struct and the `tension_adapter` vtable are append-only within a version;
  * changing the meaning of an existing field requires a new entry-point symbol.
  * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
  * the vtable; version 3 appended `signal_frame`; version 4 appended
- * `shader_generate` after it. A version-1 adapter is refused at load by the
+ * `shader_generate` after it; version 5 appended `compile_graph`, which is the
+ * first slot to take a graph blob rather than a layout. A version-1 adapter is refused at load by the
  * version check, so the host never reads the vtable past where a version-1
  * struct ends.
  *
@@ -77,7 +78,7 @@ extern "C" {
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 4u
+#define TENSION_ADAPTER_ABI_VERSION 5u
 
 /*
  * The arena layout this build's `tension_core_api` is shaped against, as a
@@ -389,8 +390,9 @@ typedef struct tension_core_api {
      *
      * An adapter that presents no frames simply never calls it.
      *
-     * No longer the last slot: `shader_generate` was appended after it at
-     * ABI version 4, under the same rule.
+     * No longer the last slot: `shader_generate` was appended after it at ABI
+     * version 4, and `compile_graph` after that at version 5, under the same
+     * rule.
      */
     void (*signal_frame)(void *user);
 
@@ -437,6 +439,37 @@ typedef struct tension_core_api {
      *     u16 reserved     must be 0
      */
     int32_t (*shader_generate)(const void *layout_ptr, char *out, uint32_t cap);
+
+    /*
+     * Compile a pipeline graph to SPIR-V, appended under rule 11 at ABI
+     * version 5.
+     *
+     * `blob` is a T2DG graph. The host parses it, validates it, lowers it to
+     * GLSL through its shader generator, and compiles both stages to SPIR-V.
+     * The result lands in the caller's two buffers.
+     *
+     * This is how a capability draws a pipeline its build never saw: the
+     * capability owns the device, the host owns the compiler, and neither
+     * carries a copy of the other's dependency. It is the same division as
+     * `shader_generate` — the engine transports and returns, the language
+     * decides — one step further along.
+     *
+     * Returns 0 on success with `*out_vs_len`/`*out_fs_len` set to the byte
+     * counts written, or:
+     *   -EINVAL   a malformed blob, or a graph that fails validation
+     *   -ENOSYS   a well-formed graph this build cannot lower (unknown
+     *             primitive, unsupported stage shape)
+     *   -ENOSPC   either buffer is too small; nothing is written, and the
+     *             required sizes are still reported in `*out_vs_len` and
+     *             `*out_fs_len` so the caller can retry
+     *
+     * Any-thread slot (rule 7): it reads the blob, writes the caller's buffers,
+     * and never touches guest memory.
+     */
+    int32_t (*compile_graph)(void *user, const uint8_t *blob, uint32_t blob_len,
+                             uint8_t *vs_out, uint32_t vs_cap, uint8_t *fs_out,
+                             uint32_t fs_cap, uint32_t *out_vs_len,
+                             uint32_t *out_fs_len);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -650,25 +683,25 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, shader_generate)
-                      + sizeof(((tension_core_api *)0)->shader_generate)
+static_assert(offsetof(tension_core_api, compile_graph)
+                      + sizeof(((tension_core_api *)0)->compile_graph)
                   == sizeof(tension_core_api),
-              "tension_core_api: shader_generate must stay the last slot; an "
+              "tension_core_api: compile_graph must stay the last slot; an "
               "append updates this assertion and the Rust table together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 18 * sizeof(void *),
-              "tension_core_api: expected 18 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 19 * sizeof(void *),
+              "tension_core_api: expected 19 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, shader_generate)
-                       + sizeof(((tension_core_api *)0)->shader_generate)
+_Static_assert(offsetof(tension_core_api, compile_graph)
+                       + sizeof(((tension_core_api *)0)->compile_graph)
                    == sizeof(tension_core_api),
-               "tension_core_api: shader_generate must stay the last slot; an "
+               "tension_core_api: compile_graph must stay the last slot; an "
                "append updates this assertion and the Rust table together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 18 * sizeof(void *),
-               "tension_core_api: expected 18 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 19 * sizeof(void *),
+               "tension_core_api: expected 19 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif

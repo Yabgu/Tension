@@ -27,6 +27,9 @@
 #include <dlfcn.h>
 
 #include <cerrno>
+#include <chrono>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <cstdlib>
 #include <cstdint>
 #include <cstdio>
@@ -64,6 +67,78 @@ int32_t guest_write(void *, uint32_t ptr, const void *src, uint32_t len) {
 }
 
 uint32_t guest_size(void *) { return static_cast<uint32_t>(g_core->guest.size()); }
+
+/// `tension_core_api.compile_graph` (ABI v5), as a **test double**.
+///
+/// The real host compiles in-process — `ffi::compile_graph` calls
+/// `pipeline::naga_backend`. This harness is C++ and cannot link that, so it
+/// stands in by running `tension-core graph compile`, which is the same code
+/// behind a command line. That makes the double honest in the part that
+/// matters: the bytes it returns come from the real compiler, not from a
+/// fixture.
+int32_t compile_graph(void *, const uint8_t *blob, uint32_t blob_len, uint8_t *vs_out,
+                      uint32_t vs_cap, uint8_t *fs_out, uint32_t fs_cap, uint32_t *out_vs_len,
+                      uint32_t *out_fs_len) {
+    if (blob == nullptr || out_vs_len == nullptr || out_fs_len == nullptr) return -EINVAL;
+
+    char tmpl[] = "/tmp/tension2d-graph-XXXXXX";
+    const char *dir = mkdtemp(tmpl);
+    if (dir == nullptr) return -EIO;
+
+    const std::string dir_str = dir;
+    const std::string blob_path = dir_str + "/g.t2dg";
+    {
+        FILE *f = std::fopen(blob_path.c_str(), "wb");
+        if (f == nullptr) return -EIO;
+        if (std::fwrite(blob, 1, blob_len, f) != blob_len) {
+            std::fclose(f);
+            return -EIO;
+        }
+        std::fclose(f);
+    }
+
+    const char *bin = std::getenv("TENSION_CORE_BIN");
+    const std::string core = bin != nullptr ? bin : "tension-core/target/debug/tension-core";
+    const std::string command = "'" + core + "' graph compile '" + blob_path + "' --out '" +
+                                dir_str + "' >/dev/null 2>&1";
+    {
+        const int status = std::system(command.c_str());
+        if (status != 0) {
+            // Mirror the exit codes `graph compile` documents, so this double
+            // reports the same errno the real `ffi::compile_graph` would.
+            const int code = WIFEXITED(status) ? WEXITSTATUS(status) : 1;
+            return code == 2 ? -EINVAL : -ENOSYS;
+        }
+    }
+
+    auto slurp = [&](const std::string &path, std::vector<uint8_t> &into) -> bool {
+        FILE *f = std::fopen(path.c_str(), "rb");
+        if (f == nullptr) return false;
+        std::fseek(f, 0, SEEK_END);
+        const long size = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        into.resize(static_cast<size_t>(size));
+        const bool ok = std::fread(into.data(), 1, into.size(), f) == into.size();
+        std::fclose(f);
+        return ok;
+    };
+
+    std::vector<uint8_t> vs, fs;
+    const bool read_ok = slurp(dir_str + "/vs.spv", vs) && slurp(dir_str + "/fs.spv", fs);
+    std::remove(blob_path.c_str());
+    std::remove((dir_str + "/vs.spv").c_str());
+    std::remove((dir_str + "/fs.spv").c_str());
+    std::remove(dir_str.c_str());
+    if (!read_ok) return -ENOSYS;
+
+    *out_vs_len = static_cast<uint32_t>(vs.size());
+    *out_fs_len = static_cast<uint32_t>(fs.size());
+    if (vs.size() > vs_cap || fs.size() > fs_cap) return -ENOSPC;
+    if (vs_out == nullptr || fs_out == nullptr) return -EINVAL;
+    std::memcpy(vs_out, vs.data(), vs.size());
+    std::memcpy(fs_out, fs.data(), fs.size());
+    return 0;
+}
 
 int32_t register_import(void *, const char *module, const char *name, uint32_t, const uint32_t *,
                         uint32_t, tension_import_fn fn, void *, uint32_t verb_id, uint32_t flags) {
@@ -125,17 +200,18 @@ constexpr uint8_t kCellColour[10][3] = {
     {255, 0, 255}, {128, 0, 0},   {0, 128, 0},   {0, 0, 128},   {128, 128, 0},
 };
 
-/// A 128x128 RGBA8 atlas of 4x4 cells, 32x32 each, cell k painted
-/// `kCellColour[k]`. Cell k sits at `((k%4)*32, (k/4)*32)`.
+/// A 256x256 RGBA8 atlas of 4x4 cells, 64x64 each, cell k painted
+/// `kCellColour[k]`. Cell k sits at `((k%4)*64, (k/4)*64)`.
 ///
-/// The cell is 32 px because the `sprite` record has **one** `w`/`h` pair and
-/// the generator uses it for both the quad and the source rect (there is no
-/// separate `src_w`/`src_h` in a 28-byte record). A 16 px cell under a 32 px
-/// quad is not expressible, so the atlas is built at the size the record can
-/// actually address.
+/// 64 px cells, because the `sprite` record has **one** `w`/`h` pair and the
+/// generator uses it for both the quad and the source rect (there is no
+/// separate `src_w`/`src_h` in a 28-byte record). A 64 px record therefore
+/// samples exactly one cell and is a flat colour; a 32 px record samples the
+/// top-left quarter of one, also flat. Anything smaller would let one sprite
+/// sample four cells at once and make every colour assertion ambiguous.
 std::vector<uint8_t> make_atlas() {
-    constexpr uint32_t kWidth = 128, kHeight = 128;
-    constexpr uint32_t kCell = 32;
+    constexpr uint32_t kWidth = 256, kHeight = 256;
+    constexpr uint32_t kCell = 64;
 
     std::vector<uint8_t> out;
     auto u8 = [&](uint8_t v) { out.push_back(v); };
@@ -169,7 +245,7 @@ std::vector<uint8_t> make_atlas() {
 }
 
 void write_record(uint32_t ptr, int32_t x, int32_t y, uint16_t src_x, uint16_t src_y, uint16_t w,
-                  uint16_t h, uint16_t tex, uint32_t sort_key) {
+                  uint16_t h, uint16_t tex, uint32_t sort_key, uint16_t group_id, uint8_t z) {
     uint8_t *r = g_core->guest.data() + ptr;
     std::memset(r, 0, TENSION_2D_RECORD_SIZE);
     std::memcpy(r + TENSION_2D_OFF_X, &x, 4);
@@ -180,6 +256,8 @@ void write_record(uint32_t ptr, int32_t x, int32_t y, uint16_t src_x, uint16_t s
     std::memcpy(r + TENSION_2D_OFF_H, &h, 2);
     std::memcpy(r + TENSION_2D_OFF_TEX, &tex, 2);
     std::memcpy(r + TENSION_2D_OFF_SORT_KEY, &sort_key, 4);
+    std::memcpy(r + TENSION_2D_OFF_GROUP_ID, &group_id, 2);
+    r[TENSION_2D_OFF_Z] = z;
 }
 
 void write_submit_hdr(uint32_t ptr, uint32_t records_ptr, uint32_t count) {
@@ -200,7 +278,12 @@ struct SpriteSpec {
     uint16_t src_y = 0;
     uint16_t w = 0;
     uint16_t h = 0;
+    uint16_t tex = 0;
     uint32_t sort_key = 0;
+    /// Composite grouping. Records sharing a group sort together, ahead of `z`.
+    uint16_t group_id = 0;
+    /// Within-group order.
+    uint8_t z = 0;
 };
 
 /// Submit `order` (in the given submission order), present, and capture the
@@ -211,7 +294,7 @@ bool render_frame(int32_t handle, int32_t pipe_id, const std::vector<SpriteSpec>
     for (size_t i = 0; i < order.size(); ++i) {
         const SpriteSpec &s = order[i];
         write_record(records_ptr + static_cast<uint32_t>(i) * TENSION_2D_RECORD_SIZE, s.x, s.y,
-                     s.src_x, s.src_y, s.w, s.h, 0, s.sort_key);
+                     s.src_x, s.src_y, s.w, s.h, s.tex, s.sort_key, s.group_id, s.z);
     }
 
     const uint32_t hdr_ptr = 0x30000;
@@ -290,6 +373,7 @@ int main(int argc, char **argv) {
     api.register_import = register_import;
     api.log = log_slot;
     api.log_named = log_named;
+    api.compile_graph = compile_graph;
 
     if (const int32_t rc = adapter->init(nullptr, &api); rc != 0) {
         std::fprintf(stderr, "FAIL: init -> %d\n", rc);
@@ -367,8 +451,8 @@ int main(int argc, char **argv) {
     std::vector<SpriteSpec> cascade;
     for (int i = 0; i < kSprites; ++i) {
         SpriteSpec base;
-        base.src_x = static_cast<uint16_t>((i % 4) * 32);
-        base.src_y = static_cast<uint16_t>((i / 4) * 32);
+        base.src_x = static_cast<uint16_t>((i % 4) * 64);
+        base.src_y = static_cast<uint16_t>((i / 4) * 64);
         base.w = 32;
         base.h = 32;
         base.sort_key = static_cast<uint32_t>(i);
@@ -518,15 +602,17 @@ int main(int argc, char **argv) {
     }
     std::printf("set_pipeline(blob, %zu bytes) -> pipe_id %d\n", blob.size(), graph_pipe);
 
-    // A blob this build was not built with must be refused, not guessed at.
-    std::vector<uint8_t> foreign = blob;
-    foreign[foreign.size() - 1] ^= 0xFF;
-    put_bytes(blob_ptr + blob.size(), foreign.data(), foreign.size());
-    const int32_t foreign_pipe =
+    // A malformed blob is still refused. Runtime compilation widened what
+    // `set_pipeline` accepts (an unknown but *valid* graph now compiles, below);
+    // it did not make corrupt bytes acceptable.
+    std::vector<uint8_t> corrupt = blob;
+    corrupt.resize(corrupt.size() - 5);
+    put_bytes(blob_ptr + blob.size(), corrupt.data(), corrupt.size());
+    const int32_t corrupt_pipe =
         call("set_pipeline", {handle_id, static_cast<int32_t>(blob_ptr + blob.size()),
-                              static_cast<int32_t>(foreign.size())});
-    if (foreign_pipe != -ENOSYS) {
-        std::fprintf(stderr, "FAIL: an unbuilt blob -> %d, expected -ENOSYS\n", foreign_pipe);
+                              static_cast<int32_t>(corrupt.size())});
+    if (corrupt_pipe != -EINVAL) {
+        std::fprintf(stderr, "FAIL: a truncated blob -> %d, expected -EINVAL\n", corrupt_pipe);
         failures++;
     }
 
@@ -671,12 +757,205 @@ int main(int argc, char **argv) {
                     nonblack(scaled_b));
     }
 
+    // ── composite characters: group_id and z under the sort ─────────────
+    //
+    // Every test above leaves group_id and z at zero, so the sort's second and
+    // third keys have never been populated. This one puts two characters on the
+    // same tile (sort_key 100) with three layers each and probes a pixel where
+    // both are present.
+    //
+    //   correct  (sort_key, group_id, z): C1 red/green/blue, then C2 yellow/cyan
+    //                                     -> pixel (20,20) is cyan
+    //   z-first  (sort_key, z, group_id): red+yellow, green+cyan, then blue
+    //                                     -> pixel (20,20) is blue
+    //
+    // The two predictions differ, which is the whole point: this pixel can tell
+    // the two orderings apart, where the flat scenarios above cannot.
+    constexpr uint32_t kTile = 100;
+    auto layer = [](int32_t x, int32_t y, int cell, uint16_t group, uint8_t z) {
+        SpriteSpec s;
+        s.x = x;
+        s.y = y;
+        s.src_x = static_cast<uint16_t>((cell % 4) * 64);
+        s.src_y = static_cast<uint16_t>((cell / 4) * 64);
+        s.w = 64;
+        s.h = 64;
+        s.sort_key = kTile;
+        s.group_id = group;
+        s.z = z;
+        return s;
+    };
+
+    const SpriteSpec c1_body = layer(0, 0, 0, 1, 0);      // red
+    const SpriteSpec c1_hair = layer(0, 0, 1, 1, 1);      // green
+    const SpriteSpec c1_back = layer(0, 0, 2, 1, 2);      // blue
+    const SpriteSpec c2_body = layer(16, 16, 3, 2, 0);    // yellow
+    const SpriteSpec c2_hair = layer(16, 16, 4, 2, 1);    // cyan
+
+    // Interleaved: the submission order deliberately fights the sort.
+    const std::vector<SpriteSpec> interleaved = {c1_body, c2_body, c1_hair, c2_hair, c1_back};
+    // Forward: grouped by character, which is what a naive guest would do.
+    const std::vector<SpriteSpec> grouped = {c1_body, c1_hair, c1_back, c2_body, c2_hair};
+
+    std::vector<uint8_t> composite_interleaved, composite_grouped;
+    if (!render_frame(handle_id, pipe, interleaved, composite_interleaved, "composite interleaved"))
+        return kFail;
+    if (!render_frame(handle_id, pipe, grouped, composite_grouped, "composite grouped"))
+        return kFail;
+
+    {
+        // (20,20) is inside C1 (0..64) and inside C2 (16..80).
+        const uint8_t *p = pixel_of(composite_interleaved, 20, 20);
+        const bool is_cyan = near_colour(p, kCellColour[4]);
+        const bool is_blue = near_colour(p, kCellColour[2]);
+        p = pixel_of(composite_interleaved, 20, 20);
+        std::printf("composite (20,20) -> (%u,%u,%u)%s%s\n", p[0], p[1], p[2],
+                    is_cyan ? "  cyan: grouped by character" : "",
+                    is_blue ? "  blue: z outranks group_id" : "");
+        if (!is_cyan) {
+            std::fprintf(stderr,
+                         "FAIL: composite pixel (20,20) is (%u,%u,%u); expected cyan (0,255,255) — "
+                         "the sort is not ordering by (sort_key, group_id, z)%s\n",
+                         p[0], p[1], p[2],
+                         is_blue ? " (blue is the z-first prediction: group_id is not consulted "
+                                   "before z)"
+                                 : "");
+            failures++;
+        }
+    }
+
+    if (composite_interleaved != composite_grouped) {
+        size_t first = 0;
+        while (first < composite_grouped.size() &&
+               composite_interleaved[first] == composite_grouped[first])
+            first++;
+        std::fprintf(stderr,
+                     "FAIL: interleaved and grouped submissions differ at byte %zu — the sort does "
+                     "not neutralise submission order\n",
+                     first);
+        failures++;
+    } else {
+        std::printf("composite: interleaved and grouped submissions are byte-identical\n");
+    }
+
+    // The layer that loses must be the one the grouping says it is. If `z`
+    // dominated, C1's backpack (z=2) would still be visible somewhere C2 is not
+    // — at (70,70), inside C2 only.
+    {
+        const uint8_t *p = pixel_of(composite_interleaved, 70, 70);
+        if (!near_colour(p, kCellColour[4])) {
+            std::fprintf(stderr,
+                         "FAIL: (70,70) is (%u,%u,%u), expected C2's cyan — outside C1's quad the "
+                         "top of C2's stack must still be C2's last layer\n",
+                         p[0], p[1], p[2]);
+            failures++;
+        }
+    }
+
+    // ── runtime compilation: a graph the build never saw ────────────────
+    //
+    // `default_2d_scaled_1_5.t2dg` is generated by `scripts/test-2d.mjs` from
+    // `graph emit-scaled --factor 1.5`. Its hash is not in kGraphPipes, so
+    // `set_pipeline` must fall through to the host's `compile_graph` slot and
+    // come back with a pipe_id in the 1000+ range.
+    std::vector<uint8_t> runtime_blob;
+    {
+        const char *path = std::getenv("TENSION_2D_RUNTIME_GRAPH");
+        const std::string resolved =
+            path ? path : "tension-2d/tests/default_2d_scaled_1_5.t2dg";
+        FILE *f = std::fopen(resolved.c_str(), "rb");
+        if (f == nullptr) {
+            std::fprintf(stderr, "FAIL: cannot open runtime graph %s\n", resolved.c_str());
+            return kFail;
+        }
+        std::fseek(f, 0, SEEK_END);
+        const long size = std::ftell(f);
+        std::fseek(f, 0, SEEK_SET);
+        runtime_blob.resize(static_cast<size_t>(size));
+        if (std::fread(runtime_blob.data(), 1, runtime_blob.size(), f) != runtime_blob.size()) {
+            std::fprintf(stderr, "FAIL: short read on %s\n", resolved.c_str());
+            std::fclose(f);
+            return kFail;
+        }
+        std::fclose(f);
+    }
+
+    const uint32_t runtime_ptr = 0x80000;
+    put_bytes(runtime_ptr, runtime_blob.data(), runtime_blob.size());
+
+    const auto compile_start = std::chrono::steady_clock::now();
+    const int32_t runtime_pipe =
+        call("set_pipeline", {handle_id, static_cast<int32_t>(runtime_ptr),
+                              static_cast<int32_t>(runtime_blob.size())});
+    const auto compile_end = std::chrono::steady_clock::now();
+    const double compile_ms =
+        std::chrono::duration<double, std::milli>(compile_end - compile_start).count();
+
+    if (runtime_pipe < TENSION_2D_PIPE_RAW_MIN) {
+        std::fprintf(stderr,
+                     "FAIL: set_pipeline(1.5x graph) -> %d, expected >= %d — the graph was not "
+                     "compiled at runtime\n",
+                     runtime_pipe, TENSION_2D_PIPE_RAW_MIN);
+        return kFail;
+    }
+    std::printf("set_pipeline(1.5x, %zu bytes, compiled at runtime) -> pipe_id %d in %.2f ms\n",
+                runtime_blob.size(), runtime_pipe, compile_ms);
+
+    // A second call must reuse the pipeline, not compile again: the cache is
+    // keyed by blob hash on the adapter side.
+    const auto reuse_start = std::chrono::steady_clock::now();
+    const int32_t reused = call("set_pipeline", {handle_id, static_cast<int32_t>(runtime_ptr),
+                                                 static_cast<int32_t>(runtime_blob.size())});
+    const auto reuse_end = std::chrono::steady_clock::now();
+    const double reuse_ms =
+        std::chrono::duration<double, std::milli>(reuse_end - reuse_start).count();
+    if (reused != runtime_pipe) {
+        std::fprintf(stderr, "FAIL: second set_pipeline -> %d, expected the cached %d\n", reused,
+                     runtime_pipe);
+        failures++;
+    } else {
+        std::printf("  re-set_pipeline -> %d in %.3f ms (cached)\n", reused, reuse_ms);
+    }
+
+    std::vector<uint8_t> runtime_a, runtime_b_rev;
+    if (!render_frame(handle_id, runtime_pipe, spread, runtime_a, "runtime 1.5x"))
+        return kFail;
+    if (!render_frame(handle_id, runtime_pipe, spread_reversed, runtime_b_rev, "runtime 1.5x rev"))
+        return kFail;
+
+    // 1.5x of 32 is 48, and the ten sprites sit 64 px apart, so nothing
+    // overlaps and the count is exact.
+    const size_t runtime_count = nonblack(runtime_a);
+    const size_t expected_runtime = static_cast<size_t>(kSprites) * 48u * 48u;
+    std::printf("runtime 1.5x: %zu non-black pixels (expected %zu)\n", runtime_count,
+                expected_runtime);
+    if (runtime_count != expected_runtime) {
+        std::fprintf(stderr, "FAIL: 1.5x coverage %zu != %zu\n", runtime_count, expected_runtime);
+        failures++;
+    }
+    // 23040 is 2.25x the 10240 of the unscaled pipeline, which is what "1.5x
+    // each axis" means for area.
+    if (runtime_count != static_cast<size_t>(2.25 * static_cast<double>(count_a))) {
+        std::fprintf(stderr, "FAIL: 1.5x coverage is not 2.25x the unscaled (%zu vs %.0f)\n",
+                     runtime_count, 2.25 * static_cast<double>(count_a));
+        failures++;
+    }
+    if (runtime_b_rev != runtime_a) {
+        std::fprintf(stderr, "FAIL: the runtime-compiled pipeline does not sort\n");
+        failures++;
+    } else {
+        std::printf("runtime 1.5x: reversed submission byte-identical (sort + runtime compile)\n");
+    }
+
     // ── refusals ────────────────────────────────────────────────────────
     struct Expect {
         const char *what;
         int32_t got;
         int32_t want;
     };
+    // A blob that is not a graph at all. Runtime compilation widened what
+    // `set_pipeline` accepts, so this is now a *compile* refusal: malformed
+    // (-EINVAL), not "no compiler" (-ENOSYS).
     const int32_t guest_graph = call("set_pipeline", {handle_id, 0x1234, 8});
     const int32_t raw_shader = call("shader_compile_raw", {handle_id, 0, 0, 0, 0});
     // A stride that disagrees with the layout must be refused, not guessed at.
@@ -686,7 +965,7 @@ int main(int argc, char **argv) {
     const int32_t bad_stride =
         call("submit", {handle_id, pipe, static_cast<int32_t>(bad_hdr_ptr), 0});
     const Expect expects[] = {
-        {"set_pipeline(guest graph)", guest_graph, -ENOSYS},
+        {"set_pipeline(not a graph)", guest_graph, -EINVAL},
         {"shader_compile_raw", raw_shader, -ENOSYS},
         {"submit(bad stride)", bad_stride, -EINVAL},
     };

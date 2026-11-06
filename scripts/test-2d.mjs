@@ -59,11 +59,30 @@ if (!compile || compile.status !== 0) {
 }
 console.log(`${RUNNER}: built ${harness}`);
 
+// ── 2b. the runtime-compiled graph ──────────────────────────────────────────
+//
+// A graph the build never saw: `default_2d` with the quad at 1.5x. Written
+// here with the same `graph emit-scaled` the build uses, so the blob a guest
+// would send and the blob this test sends come from one implementation.
+const runtimeBlob = join(src, 'tests', 'default_2d_scaled_1_5.t2dg');
+const coreBin = join(here, 'tension-core', 'target', 'debug', 'tension-core');
+const emitScaled = run(coreBin, ['graph', 'emit-scaled', '--factor', '1.5', '--out', runtimeBlob]);
+if (!emitScaled || emitScaled.status !== 0) {
+  console.error(emitScaled?.stdout ?? '', emitScaled?.stderr ?? '');
+  die('graph emit-scaled failed');
+}
+console.log(`${RUNNER}: ${emitScaled.stdout.trim()} -> ${runtimeBlob}`);
+
 // ── 3. run it headless ──────────────────────────────────────────────────────
 // `offscreen`, not `dummy`: dummy has no GPU backend (DESIGN.md §9).
 const result = run(harness, [dso], {
   stdio: 'inherit',
-  env: { ...process.env, SDL_VIDEODRIVER: 'offscreen' },
+  env: {
+    ...process.env,
+    SDL_VIDEODRIVER: 'offscreen',
+    // The stub core's `compile_graph` double shells out to the real compiler.
+    TENSION_CORE_BIN: coreBin,
+  },
 });
 
 if (result?.status === 77) {
