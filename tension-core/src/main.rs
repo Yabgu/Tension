@@ -512,6 +512,78 @@ fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
     Ok(config)
 }
 
+/// The `graph` subcommand.
+///
+/// One action today: `emit-default --out <dir>` writes the `default_2d` blob,
+/// the GLSL both lowerings produce for it, and the comparator's key table. The
+/// build script (`scripts/build-2d.mjs`) runs this, compiles the GLSL, and
+/// embeds the result — so the adapter carries a compiled graph rather than a
+/// second hand-written copy of one.
+///
+/// It is also the inspection tool: `tension-core graph emit-default --out /tmp`
+/// is how a reviewer reads what the graph actually says.
+const GRAPH_USAGE: &str = "\
+usage: tension-core graph emit-default --out <dir>
+
+  Writes default_2d.t2dg (the wire blob), default_2d.graph.vert and
+  default_2d.graph.frag (the GLSL both lowerings produce), and
+  default_2d.keys.txt (the comparator's key table).";
+
+fn run_graph(argv: Vec<String>) -> anyhow::Result<()> {
+    if argv.first().map(|a| a == "emit-default").unwrap_or(false) {
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    let Some(value) = argv.get(i) else {
+                        anyhow::bail!("--out needs a directory\n\n{GRAPH_USAGE}");
+                    };
+                    out = std::path::PathBuf::from(value);
+                }
+                other => anyhow::bail!("unknown argument `{other}`\n\n{GRAPH_USAGE}"),
+            }
+            i += 1;
+        }
+        std::fs::create_dir_all(&out)?;
+
+        // Both graphs, through the same path: parse, validate, lower. Emitting
+        // them from one loop is what makes the built-in preset and the second
+        // pipeline the same kind of thing to the build.
+        for (name, blob) in [
+            ("default_2d", tension_core::pipeline_default::serialize_default_2d()),
+            ("default_2d_scaled", tension_core::pipeline_default::serialize_default_2d_scaled()),
+        ] {
+            let graph = tension_core::pipeline::parser::parse(&blob)
+                .map_err(|e| anyhow::anyhow!("{name}: the serializer's own output failed to parse: {e}"))?;
+            tension_core::pipeline::validate::validate(&graph).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            let stage = &graph.stages[0];
+            let lowered = tension_core::pipeline::glsl_backend::lower(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+            let keys = tension_core::pipeline::glsl_backend::sort_keys(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            std::fs::write(out.join(format!("{name}.t2dg")), &blob)?;
+            std::fs::write(out.join(format!("{name}.graph.vert")), &lowered.vertex)?;
+            std::fs::write(out.join(format!("{name}.graph.frag")), &lowered.fragment)?;
+
+            let mut table = String::new();
+            for key in &keys {
+                // `offset dtype scale`: the scale is what a `mul` key adds, and
+                // 1.0 for every key a plain `load_field` produces.
+                table.push_str(&format!("{} {} {}\n", key.offset, key.dtype.to_wire(), key.scale.unwrap_or(1.0)));
+            }
+            std::fs::write(out.join(format!("{name}.keys.txt")), table)?;
+
+            println!("{name}: {} bytes, hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        }
+        return Ok(());
+    }
+    anyhow::bail!("{GRAPH_USAGE}")
+}
+
 fn main() -> anyhow::Result<()> {
     // Install the process-wide services the C ABI exposes. Registered before
     // any adapter can load, so `shader_generate` answers with the default
@@ -528,6 +600,10 @@ fn main() -> anyhow::Result<()> {
             }
         };
         return run_pack(cli);
+    }
+    if argv.first().map(|a| a == "graph").unwrap_or(false) {
+        argv.remove(0);
+        return run_graph(argv);
     }
     if argv.first().map(|a| a == "layout-hash").unwrap_or(false) {
         // The arena's shape hash, for the AS build pipeline: `session.json` and

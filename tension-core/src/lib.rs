@@ -14,6 +14,8 @@
 //! only by the interpreter's `main`.
 
 pub mod logging;
+pub mod pipeline;
+pub mod pipeline_default;
 pub mod res;
 pub mod shadergen_registry;
 pub mod world;
