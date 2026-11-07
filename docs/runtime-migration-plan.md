@@ -460,7 +460,7 @@ optimising something that is not a problem.
 
 ## 5. Scope of the change
 
-**`incremental` is already AssemblyScript's own default.** `cli/options.json`,
+**`incremental` is already TensionScript's own default.** `cli/options.json`,
 `runtime.default = "incremental"`, and `compiler.ts:239`:
 `runtime: Runtime = Runtime.Incremental;`. **Tension's `stub` is the deviation,
 not the norm.** That reframes the change from "adopt a heavier runtime" to
@@ -498,7 +498,7 @@ These do **not** read the generated config, so each needs its own edit:
 | `examples/audio/package.json` | 8 | `asc demo.ts -o build/demo.wasm --runtime stub --target release` |
 | `examples/io/package.json` | 8 | `asc game.ts -o build/game.wasm --runtime stub --target release` |
 | `examples/log/package.json` | 8 | `asc game.ts -o build/game.wasm --runtime stub --target release` |
-| `examples/res/package.json` | 8 | `node ./node_modules/assemblyscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime stub --target release` |
+| `examples/res/package.json` | 8 | `node ./node_modules/tensionscript/bin/asc.js assembly/index.ts -o build/game.wasm --runtime stub --target release` |
 
 Four of the five also carry a `build:debug` on line 9 with the same flag
 (`examples/log` and `examples/io` use `--sourceMap`; `examples/audio` uses
@@ -802,7 +802,7 @@ found are listed as such.
 - `__collect` forces a full cycle and resets the threshold: `itcms.ts:367-379`.
 - **Correction (emphasis): "incremental needs no shadow stack" is true of
   *ITCMS*, but the CLI turns the shadow stack on anyway.** `cli/index.js:335-336`:
-  `if (!opts.stackSize && runtime === 2 /* incremental */) { opts.stackSize = assemblyscript.DEFAULT_STACK_SIZE; }`.
+  `if (!opts.stackSize && runtime === 2 /* incremental */) { opts.stackSize = tensionscript.DEFAULT_STACK_SIZE; }`.
   So in practice `incremental` means **shadow stack + conservative visitStack
   both present**. The implication in `compiler.ts:540` (`hasShadowStack = options.stackSize > 0; // implies runtime=incremental`) is the converse and also
   correct. **The practical consequence is favourable**: a game gets *both* an

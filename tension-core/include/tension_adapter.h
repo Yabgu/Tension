@@ -14,12 +14,15 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 2 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
+ * Frozen at ABI version 5 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
  * struct and the `tension_adapter` vtable are append-only within a version;
  * changing the meaning of an existing field requires a new entry-point symbol.
  * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
- * the vtable; a version-1 adapter is refused at load by the version check, so
- * the host never reads the vtable past where a version-1 struct ends.
+ * the vtable; version 3 appended `signal_frame`; version 4 appended
+ * `shader_generate` after it; version 5 appended `compile_graph`, which is the
+ * first slot to take a graph blob rather than a layout. A version-1 adapter is refused at load by the
+ * version check, so the host never reads the vtable past where a version-1
+ * struct ends.
  *
  * Design note: tension-ogre/DESIGN.md, Appendix A.
  *
@@ -75,7 +78,7 @@ extern "C" {
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 3u
+#define TENSION_ADAPTER_ABI_VERSION 5u
 
 /*
  * The arena layout this build's `tension_core_api` is shaped against, as a
@@ -105,6 +108,46 @@ extern "C" {
 
 /** The most event sources one adapter may register. */
 #define TENSION_ADAPTER_MAX_SOURCES 8u
+
+/*
+ * The shader descriptor's codes (`shader_generate`, ABI version 4). Fixed
+ * numbers, appended to only: they cross the boundary packed, so a renumbering
+ * would silently reinterpret an old caller's layout. `PAD` exists so a
+ * struct's tail padding can be named rather than guessed at.
+ */
+#define TENSION_SEM_POS_X    1u
+#define TENSION_SEM_POS_Y    2u
+#define TENSION_SEM_POS_Z    3u
+#define TENSION_SEM_SRC_X    4u
+#define TENSION_SEM_SRC_Y    5u
+#define TENSION_SEM_SRC_W    6u
+#define TENSION_SEM_SRC_H    7u
+#define TENSION_SEM_UV_X     8u
+#define TENSION_SEM_UV_Y     9u
+#define TENSION_SEM_W       10u
+#define TENSION_SEM_H       11u
+#define TENSION_SEM_TINT    12u
+#define TENSION_SEM_SORT_KEY 13u
+#define TENSION_SEM_PAD     14u
+
+#define TENSION_DTYPE_F32 1u
+#define TENSION_DTYPE_U16 2u
+#define TENSION_DTYPE_I16 3u
+#define TENSION_DTYPE_U8  4u
+/* Appended at 5 under the same append-only rule as the semantics above. The
+ * sprite record carries signed pixel positions (DESIGN.md §5), and none of 1..4
+ * can express one: F32 would reinterpret the bits, and I16 caps a position at
+ * 32767 px with a 1 px quantum. */
+#define TENSION_DTYPE_I32 5u
+
+/* The low byte of a field's `slot`; the high byte is the set index, which only
+ * TexCoord uses today. */
+#define TENSION_SLOT_POSITION 1u
+#define TENSION_SLOT_TEXCOORD 2u
+#define TENSION_SLOT_COLOR    3u
+#define TENSION_SLOT_NORMAL   4u
+#define TENSION_SLOT_TANGENT  5u
+#define TENSION_SLOT_BINORMAL 6u
 
 /* ── values ──────────────────────────────────────────────────────────── */
 
@@ -346,8 +389,87 @@ typedef struct tension_core_api {
      * the any-thread slots (rule 7).
      *
      * An adapter that presents no frames simply never calls it.
+     *
+     * No longer the last slot: `shader_generate` was appended after it at ABI
+     * version 4, and `compile_graph` after that at version 5, under the same
+     * rule.
      */
     void (*signal_frame)(void *user);
+
+    /*
+     * Generate shader source for one vertex/instance layout, appended under
+     * rule 11 at ABI version 4.
+     *
+     * The division of labour is the DWARF arc's, applied to shader text: the
+     * language emits the description, the engine transports the request and
+     * returns a string, and the engine never invents a layout it was not
+     * given.
+     *
+     * `layout_ptr` points at the packed descriptor below naming the vertex
+     * stream. `out` is the caller's buffer and `cap` its capacity in
+     * bytes; the result is one NUL-terminated UTF-8 string. Returns that
+     * string's length excluding the NUL on success, `-ENOSPC` when `cap` is
+     * too small (nothing is written), `-ENOSYS` when the host has no
+     * generator for that layout, and `-EINVAL` on a bad argument.
+     *
+     * A host may answer `-ENOSYS` for any layout it does not recognise: at
+     * v1 the registered generator serves the nine built-in presets only, so a
+     * guest-defined layout arrives here as `-ENOSYS` rather than as a guess.
+     * Callers must treat that as "no shader from the host" and fall back,
+     * not as a fatal error.
+     *
+     * Any-thread slot (rule 7): it reads the descriptor, writes the caller's
+     * buffer, and never touches guest memory.
+     *
+     * The descriptor is packed, little-endian, and fixed-width — no C struct
+     * and no pointers inside it, so it crosses the boundary the same way on
+     * every ABI this project builds for:
+     *
+     *   u16 preset_id      one of the nine built-in presets; 0 = none
+     *   u16 record_size    bytes per vertex/instance record
+     *   u16 alignment      the record's alignment
+     *   u16 field_count    entries in the array that follows
+     *   u16 reserved[2]    must be 0
+     *   field[field_count], 8 bytes each:
+     *     u16 semantic     TENSION_SEM_* below
+     *     u16 dtype        TENSION_DTYPE_*
+     *     u16 offset       bytes from the record start
+     *     u16 slot         low byte TENSION_SLOT_*, high byte the set index
+     *     u16 step_rate    0 = per-vertex, n = per-instance every n steps
+     *     u16 reserved     must be 0
+     */
+    int32_t (*shader_generate)(const void *layout_ptr, char *out, uint32_t cap);
+
+    /*
+     * Compile a pipeline graph to SPIR-V, appended under rule 11 at ABI
+     * version 5.
+     *
+     * `blob` is a T2DG graph. The host parses it, validates it, lowers it to
+     * GLSL through its shader generator, and compiles both stages to SPIR-V.
+     * The result lands in the caller's two buffers.
+     *
+     * This is how a capability draws a pipeline its build never saw: the
+     * capability owns the device, the host owns the compiler, and neither
+     * carries a copy of the other's dependency. It is the same division as
+     * `shader_generate` — the engine transports and returns, the language
+     * decides — one step further along.
+     *
+     * Returns 0 on success with `*out_vs_len`/`*out_fs_len` set to the byte
+     * counts written, or:
+     *   -EINVAL   a malformed blob, or a graph that fails validation
+     *   -ENOSYS   a well-formed graph this build cannot lower (unknown
+     *             primitive, unsupported stage shape)
+     *   -ENOSPC   either buffer is too small; nothing is written, and the
+     *             required sizes are still reported in `*out_vs_len` and
+     *             `*out_fs_len` so the caller can retry
+     *
+     * Any-thread slot (rule 7): it reads the blob, writes the caller's buffers,
+     * and never touches guest memory.
+     */
+    int32_t (*compile_graph)(void *user, const uint8_t *blob, uint32_t blob_len,
+                             uint8_t *vs_out, uint32_t vs_cap, uint8_t *fs_out,
+                             uint32_t fs_cap, uint32_t *out_vs_len,
+                             uint32_t *out_fs_len);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -561,25 +683,25 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, signal_frame)
-                      + sizeof(((tension_core_api *)0)->signal_frame)
+static_assert(offsetof(tension_core_api, compile_graph)
+                      + sizeof(((tension_core_api *)0)->compile_graph)
                   == sizeof(tension_core_api),
-              "tension_core_api: signal_frame must stay the last slot; an "
+              "tension_core_api: compile_graph must stay the last slot; an "
               "append updates this assertion and the Rust table together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 17 * sizeof(void *),
-              "tension_core_api: expected 17 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 19 * sizeof(void *),
+              "tension_core_api: expected 19 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, signal_frame)
-                       + sizeof(((tension_core_api *)0)->signal_frame)
+_Static_assert(offsetof(tension_core_api, compile_graph)
+                       + sizeof(((tension_core_api *)0)->compile_graph)
                    == sizeof(tension_core_api),
-               "tension_core_api: signal_frame must stay the last slot; an "
+               "tension_core_api: compile_graph must stay the last slot; an "
                "append updates this assertion and the Rust table together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 17 * sizeof(void *),
-               "tension_core_api: expected 17 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 19 * sizeof(void *),
+               "tension_core_api: expected 19 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif
@@ -612,7 +734,7 @@ _Static_assert(sizeof(tension_adapter) == 10 * sizeof(void *),
 #endif
 
 /*
- * Frozen at ABI version 2. Additive fields are appended; the version check in
+ * Frozen at ABI version 4. Additive fields are appended; the version check in
  * `init` is mandatory rather than advisory, and it is what refuses a
  * version-1 adapter before its shorter vtable is read as if it were longer.
  */

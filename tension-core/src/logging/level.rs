@@ -2,7 +2,7 @@
 //!
 //! The six levels and their discriminants are the ABI's: the C enum
 //! `tension_log_level_t` (`tension_logger.h`), the adapter table's `log_named`
-//! level, and the guest's AssemblyScript `Level` all carry these numbers. They
+//! level, and the guest's TensionScript `Level` all carry these numbers. They
 //! are frozen; a seventh level is a new header, not a new discriminant.
 //!
 //! A [`Threshold`] is a *filter* concept, not a level: it is the smallest level

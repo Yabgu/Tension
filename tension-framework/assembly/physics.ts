@@ -146,7 +146,7 @@ export function physics_derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, 
   if (dyCap < len) return -22; // -EINVAL
   if (derivative_mode == MODEL_ANGULAR) return physics_derivative_angular(yPtr, len, dyPtr);
   const half = len / 2;
-  // The mask as a local, because AssemblyScript's narrowing does not reach into
+  // The mask as a local, because TensionScript's narrowing does not reach into
   // an index expression: `sleep_mask != null && sleep_mask[i]` does not compile.
   const mask = sleep_mask;
   for (let i = 0; i < half; i++) {
@@ -1069,7 +1069,7 @@ export class World {
   private constructor(solver: Solver, config: WorldConfig) {
     this.solver = solver;
     this.config = config;
-    // Locals first: AssemblyScript refuses to read `this` before every field has
+    // Locals first: TensionScript refuses to read `this` before every field has
     // been assigned, and the fields below are sized from these.
     const angular = config.angular;
     const half = angular ? 7 : 3;

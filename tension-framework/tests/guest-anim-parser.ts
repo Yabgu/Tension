@@ -43,7 +43,7 @@
 //     track < slots`. The range asserted here is `[0, slots)`, with the padding
 //     split out and asserted separately as identity.
 //   * the fixtures arrive as hex rather than as embedded bytes, because
-//     AssemblyScript 0.28 has no `includeBytes`. See `anim-fixtures.ts`.
+//     The compiler has no `includeBytes`. See `anim-fixtures.ts`.
 
 import { print } from "../assembly/io";
 import {

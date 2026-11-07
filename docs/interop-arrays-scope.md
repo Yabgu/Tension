@@ -85,7 +85,7 @@ means `Array<T>`** — and it refuses anything between the brackets: after the
 
 ### What kind of error
 
-`DiagnosticCode._0_expected` is **1005** (`dist/assemblyscript.generated.d.ts:449`),
+`DiagnosticCode._0_expected` is **1005** (`dist/tensionscript.generated.d.ts:449`),
 so this is **TS1005, a genuine syntax error** — not an AS100-style
 `Not_implemented_0` refusal. The distinction matters for §6: the fix is
 **adding grammar**, not turning on a declared-but-unbuilt feature.

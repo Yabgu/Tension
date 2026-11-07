@@ -1,0 +1,23 @@
+[package]
+name = "tension-shadergen"
+version = "0.1.0"
+edition = "2021"
+description = "Shader source generation for Tension: a layout description in, GLSL out"
+license = "MIT"
+
+[dependencies]
+# GLSL -> SPIR-V. The alternative was shelling out to glslangValidator, which
+# makes a C++ capability depend on a system binary at build time and cannot
+# compile at run time at all. Naga is MIT OR Apache-2.0 and is pure Rust.
+#
+# Pinned to 29: 30.0.1's `glsl-in` feature does not compile. It calls
+# `Binding::apply_default_interpolation`, which 30.0.1 defines in a module gated
+# behind `spv-in`/`wgsl-in` and not behind `glsl-in` itself — a cfg-gate bug
+# upstream, retested 2026-11-06. See `tension-core/Cargo.toml` for the full note
+# and the reproduction.
+#
+# This pin must match `tension-core`'s. Cargo links both copies silently when
+# they diverge, and `cargo tree -p naga` starts answering "ambiguous" instead
+# of a version. `scripts/check-naga-pin.mjs` fails the build on a mismatch, and
+# runs in `scripts/test-2d.mjs` and `scripts/test.mjs`.
+naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }

@@ -1,4 +1,4 @@
-# Async/await in the Tension AssemblyScript fork — PLAN
+# Async/await in the TensionScript fork — PLAN
 
 Status: **proposal, not yet reviewed.** No code has been written. No submodule has
 been added. This document is the deliverable of the plan phase.
@@ -50,8 +50,8 @@ therefore prove suspend/resume against host-*posted* events (which do work
 today), and job submission becomes its own milestone rather than an assumption.
 
 **F3. The fork is currently byte-identical to upstream — it has zero commits.**
-`git clone https://github.com/Yabgu/assemblyscript.git` followed by
-`git fetch https://github.com/AssemblyScript/assemblyscript.git main` gives
+`git clone https://github.com/Yabgu/TensionScript.git` followed by
+`git fetch <the upstream project this fork derives from> main` gives
 `git rev-list --left-right --count FETCH_HEAD...HEAD` → **`0  0`**, both resolving
 to `b6bda05c29c9eb7d07d7f6cb2703508483b30493` ("chore: Update Binaryen and other
 dependencies (#3035)", 2026-07-21). There are no fork branches, no fork tags, no
@@ -92,7 +92,7 @@ is a hard design rule rather than a preference.
 
 ## 1. Fork architecture — what is where
 
-Inspected at `/tmp/as-inspect/assemblyscript` (clone of the fork, built
+Inspected at `/tmp/as-inspect/tensionscript` (clone of the fork, built
 successfully: `npm ci` then `npm run build`, which emits `dist/asc.js` in ~7 s).
 
 | Concern | Location | Size |
@@ -160,7 +160,7 @@ produce parse errors. (For contrast, `yield` is similarly reserved
 `parser.ts:4535` reserves a `Precedence.Yield` slot. So the two of the three
 ES2017 keywords that matter here were reserved and then never wired up.)
 
-Empirically (`node bin/asc.js <file> --noEmit`, upstream `main`, built locally):
+Empirically (`node bin/tensionscript.js <file> --noEmit`, upstream `main`, built locally):
 
 ```
 async function job(): i32 { return 1; }   → ERROR TS1109: Expression expected.
@@ -199,9 +199,9 @@ and there is no `--enable exceptions` flag to unlock it (the features list is
 `threads, simd, reference-types, gc, …`). This matters because a rejected
 `await` has no exception to throw. See §2.3.
 
-### `@btc-vision/assemblyscript` — assessed, not adopted
+### A third-party fork in the `@btc-vision` scope — assessed, not adopted
 
-- npm: `@btc-vision/assemblyscript`, latest `0.29.3`, 6 versions, modified
+- npm: the package, latest `0.29.3`, 6 versions, modified
   2026-03-08. It is a rebase of upstream onto a `v0.29` line — its commit list
   is upstream's own commits plus a handful of "Bump version" / "Add std assembly
   utilities" commits.
@@ -522,31 +522,31 @@ review rather than being taken silently.
 **`AGENTS.md` rule 1: "`third_party/` is read-only. Never edit, generate into,
 format, or delete anything under it — including its build trees."**
 
-Adding the submodule is what the task asks for, but *building* AssemblyScript
+Adding the submodule is what the task asks for, but *building* the compiler
 requires `npm ci`, which writes `node_modules/` **inside** the checkout — i.e.
 generates into `third_party/`. That is a direct conflict with rule 1.
 
 **Recommended resolution (needs your approval, since it touches a hard rule):**
 
-- The submodule at `third_party/assemblyscript` holds **source only**, never
+- The submodule at `third_party/tensionscript` holds **source only**, never
   built in place, never hand-edited.
-- The build happens out-of-tree in `build/assemblyscript/` (`build/` is already
+- The build happens out-of-tree in `build/tensionscript/` (`build/` is already
   `.gitignore`d) — a scratch copy or `git worktree` of the submodule, where
   `npm ci && npm run build` is free to write. Measured: ~7 s to build.
-- Tension's examples consume the built `asc` from `build/assemblyscript/dist/`.
+- Tension's examples consume the built `asc` from `build/tensionscript/dist/`.
 
 This keeps the rule's spirit (vendored source is never mutated) while making the
 fork buildable. The alternative — carving out an explicit exception for
-`third_party/assemblyscript/` — is simpler to explain but weakens the rule for
+`third_party/tensionscript/` — is simpler to explain but weakens the rule for
 every future reader.
 
 **Exact commands, held pending review (not executed):**
 
 ```
-git submodule add https://github.com/Yabgu/assemblyscript.git third_party/assemblyscript
-git submodule update --init --recursive third_party/assemblyscript
+git submodule add https://github.com/Yabgu/TensionScript.git third_party/tensionscript
+git submodule update --init --recursive third_party/tensionscript
 # upstream stays addressable as a remote for rebasing:
-cd third_party/assemblyscript && git remote add upstream https://github.com/AssemblyScript/assemblyscript.git
+cd third_party/tensionscript && git remote add upstream <the upstream project's repository>
 ```
 
 ---
@@ -555,7 +555,7 @@ cd third_party/assemblyscript && git remote add upstream https://github.com/Asse
 
 ```
                         ┌───────────────────────────────────────────┐
-   M0  fork submodule ──▶│ third_party/assemblyscript on a branch   │
+   M0  fork submodule ──▶│ third_party/tensionscript on a branch   │
        (§6, needs your   │ "tension/async" with upstream as remote  │
         ruling on rule 1)└────────────────┬──────────────────────────┘
                                           │
@@ -563,7 +563,7 @@ cd third_party/assemblyscript && git remote add upstream https://github.com/Asse
                      ▼                                         ▼
         ┌────────────────────────┐              ┌────────────────────────────┐
    M1a  │ out-of-tree AS build   │              │ async runtime package      │
-        │ build/assemblyscript/  │              │ tension-framework/         │
+        │ build/tensionscript/  │              │ tension-framework/         │
         │ asc + npm run build    │              │ assembly/runtime/async.ts  │
         └───────────┬────────────┘              └──────────────┬─────────────┘
                     │                                          │
@@ -721,13 +721,13 @@ in M3, flagged, and only for sugar.**
   rewritten once in two years (+56/−1) — rare, but bulk when it happens.
 
 ### D7 — Fork as submodule, upstream as remote
-**Decision: `third_party/assemblyscript` = fork; `upstream` remote inside it;
+**Decision: `third_party/tensionscript` = fork; `upstream` remote inside it;
 work on a `tension/async` branch.** Matches the brief and the repo's existing
 `third_party/ogre-next` convention (`.gitmodules`).
 **Blocked on:** the rule-1 conflict in §6.
 
 ### D8 — Where the build happens
-**Decision: out-of-tree in `build/assemblyscript/`** (already gitignored). Keeps
+**Decision: out-of-tree in `build/tensionscript/`** (already gitignored). Keeps
 `third_party/` pristine per AGENTS.md. **Needs your ruling** (§6).
 
 ---
@@ -818,7 +818,7 @@ stub. **Stated here so the green M1c is not mistaken for a working feature.**
 |---|---|---|
 | `moonbitlang/async` does not run on Wasmtime (vs. just experimental on Wasm1) | **Partly wrong.** It is not Wasmtime-incompatible — it is not a Wasmtime-*shaped* library at all. Its README states "only supports native/LLVM backends on Linux/MacOS", but it *does* have a wasm1 backend and a nightly wasm test CI job, plus a JavaScript backend integrating with JS Promises. What it has **no concept of** is an embedder-owned host event loop driving task resumption: it ships its own event loop (`src/internal/event_loop/…`) with epoll/kqueue/IOCP/JS-fetch backends. There is no `await`-on-host-job integration point for a Wasmtime embedder. So it *can* run on Wasm1; it simply cannot solve Tension's problem. **Relevant as prior art for the runtime design, not as a dependency.** | `curl raw.githubusercontent.com/moonbitlang/async/main/README.md` (lines 63-78); `.github/workflows/nightly-wasm-test.yml` |
 | Wasmtime stack-switching is off by default, with an unwinding bug, as of today | **Off-by-default: confirmed.** `Config::wasm_stack_switching` — "This feature is `false` by default"; stability table ❌/🚧/🚧/❌/❌/❌, "only for x86\_64 Linux"; tracking issue #10248 open, listing Windows support and continuation deallocation as *not* implemented. **Unwinding bug: not substantiated as open.** Issue #13584 (host-ward unwind double-free) is **closed**. Open today: #14644 and #14509 (fuel accounting across stack-switching ops). The accurate characterization is "incomplete, x64-Linux-only, actively churning" — which is *enough* to defer WasmFX, without asserting a specific bug that is not there. | `raw.githubusercontent.com/bytecodealliance/wasmtime/main/crates/wasmtime/src/config.rs:1269-1280`; `docs/stability-wasm-proposals.md`; GitHub API issues #10248, #13584, #14644, #14509 |
-| AS issue #376 is still open with no implementation | **Confirmed, with nuance.** `state: open`, `state_reason: null`, created 2018-12-14, last updated **2026-02-03**, 23 comments, labels `enhancement`/`question`, no milestone, no assignee. No PR implements it: repo-wide issue search for `async` in title returns 5 results, only #376 is open, and PR #419 ("Async main and compileString") is a *host-side async `main`* change, closed unmerged. The comments are a design discussion, not an implementation — and they are the source of several ideas the brief echoes (Bysyncify/Asyncify suggested by kripken, state-machine/generator lowering suggested by MaxGraey). | GitHub API `issues/376`, `issues/376/comments`, search `repo:AssemblyScript/assemblyscript async in:title` |
+| AS issue #376 is still open with no implementation | **Confirmed, with nuance.** `state: open`, `state_reason: null`, created 2018-12-14, last updated **2026-02-03**, 23 comments, labels `enhancement`/`question`, no milestone, no assignee. No PR implements it: repo-wide issue search for `async` in title returns 5 results, only #376 is open, and PR #419 ("Async main and compileString") is a *host-side async `main`* change, closed unmerged. The comments are a design discussion, not an implementation — and they are the source of several ideas the brief echoes (Bysyncify/Asyncify suggested by kripken, state-machine/generator lowering suggested by MaxGraey). | GitHub API `issues/376`, `issues/376/comments`, issue search for `async` in the title on the upstream project |
 | WasmFX instruction set is `cont.new`, `suspend`, `resume`, `switch`; scheduler host or guest | **Instruction set confirmed and extended:** `cont.new`, `suspend`, `resume`, `switch`, `resume_throw`, plus `cont.bind` (partial application). **No `cont.drop`** — the Explainer has zero occurrences; deallocation is deferred by the engine, and wasmtime #10248 lists "Support for deallocating continuations" as out of the initial implementation. **Scheduler: outside the instruction set, and the proposal's reference schedulers are written *in wasm*.** Bag-of-stacks design notes describe per-arena schedulers in a *tree*, each yielding to its parent, with the root yielding to the embedder's event loop. A host-owned continuation queue is therefore permitted but not mandated. The proposed type math (`cont.new $ct : [(ref null $ft)] -> [(ref $ct)]`, line 546) confirms one-shot continuations. | `raw.githubusercontent.com/WebAssembly/stack-switching/main/proposals/stack-switching/Explainer.md`; `.../design-notes/bag-o-stacks/Explainer.md:693` |
 
 ---
@@ -840,7 +840,7 @@ stub. **Stated here so the green M1c is not mistaken for a working feature.**
 ## 12. Open questions for the reviewer
 
 1. **Rule 1 vs the build (§6):** approve out-of-tree build in
-   `build/assemblyscript/`, or carve out `third_party/assemblyscript/` as
+   `build/tensionscript/`, or carve out `third_party/tensionscript/` as
    buildable?
 2. **M3 syntax:** do you want real `async`/`await` keywords (accepting flagged
    `parser.ts`/`ast.ts` drift), or is the `__await(x)` marker acceptable for the
@@ -863,7 +863,7 @@ stub. **Stated here so the green M1c is not mistaken for a working feature.**
 
 1. M0 — add the submodule, set the `upstream` remote, branch `tension/async`.
 2. M1a — script the out-of-tree AS build (`npm ci && npm run build` in
-   `build/assemblyscript/`).
+   `build/tensionscript/`).
 3. M1b — the lowering pass, with the harness from §9 written **first** so the
    spike has a pass/fail gate.
 4. M1c — host test in `tension-core/tests/`, asserting the four criteria.

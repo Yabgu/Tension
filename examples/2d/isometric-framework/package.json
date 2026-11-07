@@ -1,0 +1,26 @@
+{
+  "name": "tension-example-isometric-framework",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: the isometric scene built with the tension-framework SDK instead of hand-written records",
+  "scripts": {
+    "build": "node ../synthetic/emit.mjs . && node ../../../scripts/build-2d-guest.mjs",
+    "start": "node test.mjs",
+    "test:ci": "node test.mjs"
+  },
+  "tension": {
+    "kind": "res",
+    "capability": "../../../tension-2d/build/libtension_2d.so",
+    "pack": {
+      "input": "assets",
+      "output": "build/isometric-framework.tns"
+    }
+  },
+  "dependencies": {
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}

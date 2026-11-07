@@ -24,7 +24,7 @@
 // Run: node tests/rt-dispatch.mjs
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,13 +52,19 @@ function findCompiler() {
   const candidates = [
     process.env.TENSIONSCRIPT_BIN,
     join(framework, "node_modules", "@yabgu_gm", "tensionscript", "bin", "tensionscript.js"),
-    join(here, "..", "..", "..", "as-inspect", "assemblyscript", "bin", "tensionscript.js")
   ].filter(Boolean);
   for (const candidate of candidates) {
     if (!existsSync(candidate)) continue;
-    const bundle = join(dirname(candidate), "..", "dist", "assemblyscript.js");
-    if (!existsSync(bundle)) continue;
-    if (!readFileSync(bundle, "utf8").includes("__taskComplete")) continue;
+    // The bundle is found by *content*, not by filename: the published package
+    // still ships its standard-library bundle under a historical name, and a
+    // test that hard-coded that name would fail the day the artifact is
+    // renamed — for a reason that has nothing to do with what it measures.
+    const dist = join(dirname(candidate), "..", "dist");
+    if (!existsSync(dist)) continue;
+    const carries = readdirSync(dist)
+      .filter((entry) => entry.endsWith(".js"))
+      .some((entry) => readFileSync(join(dist, entry), "utf8").includes("__taskComplete"));
+    if (!carries) continue;
     return candidate;
   }
   return null;

@@ -1,6 +1,6 @@
 // The fixtures, as bytes the guest can hold.
 //
-// AssemblyScript 0.28 has no `includeBytes` and no way to embed a file, so the
+// The compiler has no `includeBytes` and no way to embed a file, so the
 // archives under `fixtures/ozz/` are carried as hex in the generated
 // `anim-fixture-data.ts` and decoded here. The .ozz files remain the canonical
 // artifact — `gen-anim-fixtures.py` derives the module from them, and this file

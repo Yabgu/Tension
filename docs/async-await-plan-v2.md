@@ -8,7 +8,7 @@ text). This file *is* that document, revised in place.
 arrow-`this` landing). §0.0 maps every finding to its disposition.
 
 **Cited revision.** Fork `Yabgu/TensionScript` at submodule
-`third_party/assemblyscript` = `92809069` ("test: rebaseline fixtures after ~env
+`third_party/tensionscript` = `92809069` ("test: rebaseline fixtures after ~env
 delivery"), which contains the arrow-`this` work (`c4a16531` resolver,
 `6aece91a`+`1dc6e395` codegen, `92809069` fixtures). Host tree at `c66f07f`
 (main). Every citation below was re-resolved against these revisions — the
@@ -71,11 +71,11 @@ inspection and is now better cited.
 
 Record, not proposal, except §0.4 which is new.
 
-**Fork identity.** Detached fork of `AssemblyScript/assemblyscript`; `origin` =
+**Fork identity.** Detached fork of the upstream project; `origin` =
 `git@github.com:Yabgu/TensionScript.git`; upstream fetch-only with its push URL
 disabled — mechanical, not a comment.
 
-**Consumed by Tension** as a submodule at `third_party/assemblyscript`
+**Consumed by Tension** as a submodule at `third_party/tensionscript`
 (`.gitmodules` entry verified). **Current submodule HEAD is `92809069`** — three
 commits past the base `b6bda05c` the reviewed draft named in its header:
 
@@ -95,11 +95,12 @@ it is why §0.5 exists.
 ### 0.1 The AGENTS.md rule 1 conflict — restated, with the resolution
 
 `AGENTS.md` rule 1 says `third_party/` is read-only, including "never generate
-into". Building AssemblyScript requires `npm ci`, which writes `node_modules/`
+into". Building the compiler requires `npm ci`, which writes `node_modules/`
+
 **inside** the checkout. Resolution (unchanged from the reviewed draft):
 
 > **The submodule holds source only and is never built in place.** The build runs
-> in an out-of-tree scratch copy under `build/assemblyscript/`, already covered by
+> in an out-of-tree scratch copy under `build/tensionscript/`, already covered by
 > `.gitignore`.
 
 ### 0.2 What commits are additions, and what commits touch core — REVISED
@@ -177,9 +178,9 @@ dedicated field, not a flag (§2.1). Verified; unchanged from the reviewed draft
 We do not track upstream; we do not carry mergeability patches. The relevant
 measured facts stand (upstream commits: 2022: 178, 2023: 77, 2024: 23, 2025: 32,
 2026 to 2026-07-21: 22 — verified against the GitHub API). Naming (D11 in the
-reviewed draft) is now partly settled in *practice*: the published package is
-`@yabgu_gm/tensionscript`, while the fork's own `package.json` still says
-`"name": "assemblyscript"`, `"version": "0.0.0"` — see §0.4.
+reviewed draft) is now settled in *practice*: the published package is
+`@yabgu_gm/tensionscript`; at the time of this plan the fork's own
+`package.json` still carried the upstream name at `0.0.0` — see §0.4.
 
 ### 0.4 NEW — Compiler provenance and the publish-and-re-pin critical path
 
@@ -196,16 +197,16 @@ harness uses is not the submodule.** It is a published npm artifact.
   resolving `https://registry.npmjs.org/@yabgu_gm/tensionscript/-/tensionscript-0.1.0.tgz`.
 - The framework's own harness compiles with
   `./node_modules/.bin/asc` (`tension-framework/tests/run.sh:85-86`), which is
-  that package's `bin/asc.js`.
+  that package's `bin/tensionscript.js`.
 - The **published tarball already carries the arrow-`this` mechanism**:
   `@yabgu_gm/tensionscript@0.1.0` was published **2026-10-16T16:54:58Z** (a
-  `0.0.0-stage` tag at 16:52:18Z), and its `dist/assemblyscript.js` has
+  `0.0.0-stage` tag at 16:52:18Z), and its published `dist/` bundle has
   sha256 `fc79e90f…`, **byte-identical** to the copy in
-  `tension-framework/node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js`.
-- The fork's own `package.json` still says `assemblyscript` / `0.0.0`; the publish
-  renames and versions the artifact (`publishConfig: { access: public }`,
-  description "TensionScript: a TypeScript-shaped language for WebAssembly, forked
-  from AssemblyScript for the Tension engine"). The fork has
+  `tension-framework/node_modules/@yabgu_gm/tensionscript/dist/`.
+- The fork's own `package.json` still carries the upstream name at `0.0.0`; the
+  publish renames and versions the artifact (`publishConfig: { access: public }`,
+  its description naming the project as a TypeScript-shaped language for
+  WebAssembly, forked for the Tension engine). The fork has
   `scripts/prepublish.js`, which strips `scripts`/`devDependencies` from the
   published manifest.
 - The published `files` list includes `bin/`, `dist/`, `std/`, `util/` — so a new
@@ -216,8 +217,8 @@ harness uses is not the submodule.** It is a published npm artifact.
 
 | # | Step | Where | By whom |
 |---|---|---|---|
-| 0 | Land the change in the fork; submodule HEAD moves | `third_party/assemblyscript`, `Yabgu/TensionScript` | implementation agent (no commit — AGENTS.md rule 2) |
-| 1 | Build the fork out-of-tree, publish a new version | `build/assemblyscript/` scratch; `npm publish` under `@yabgu_gm/tensionscript` | **architect only** — publishing is an external action |
+| 0 | Land the change in the fork; submodule HEAD moves | `third_party/tensionscript`, `Yabgu/TensionScript` | implementation agent (no commit — AGENTS.md rule 2) |
+| 1 | Build the fork out-of-tree, publish a new version | `build/tensionscript/` scratch; `npm publish` under `@yabgu_gm/tensionscript` | **architect only** — publishing is an external action |
 | 2 | Bump the dependency in the 15 consumers; refresh the 15 lockfiles | `examples/**`, `tension-framework` | implementation agent (working tree) |
 | 3 | Fresh installs so `node_modules` matches | each consumer | implementation agent |
 | 4 | Only now can the harness run — against the *published* artifact | §8 | implementation agent |
@@ -1884,7 +1885,7 @@ Corrected against the review's finding 10.2:
 the guest builds with the fork's `asc` (published, §0.4); the host test is a
 normal `cargo test --no-default-features --features audio` (`AGENTS.md`); the
 fixture prints and the host asserts on captured output; the AS build runs
-out-of-tree (`build/assemblyscript/`); no WasmFX, no wasm threads, no
+out-of-tree (`build/tensionscript/`); no WasmFX, no wasm threads, no
 platform-specific syscalls. The **stub-adapter** harness (8.1, first row) is the
 one that runs anywhere with no volume; the **DSO + volume** harness is the
 Windows/Linux shared one and needs `tension-ogre/build.sh` and `pack.sh` to have
@@ -2020,14 +2021,14 @@ transform infrastructure (§2.2). Retained.
 
 **D11 — Package renaming.** **Revised, and mostly already answered in practice**:
 the published artifact is `@yabgu_gm/tensionscript@0.1.0` while the fork's own
-`package.json` says `name: assemblyscript`, `version: 0.0.0` — so the rename is
+`package.json` still carries the upstream name at `version: 0.0.0` — so the rename is
 done by the publish step, and the `asc` binary keeps its name. What remains open
 is only whether to rename in-tree (§0.4). **Recommend deferring**; it buys nothing
 the publish does not already provide. (Whether anything in `lib/asc.js`'s
 self-references needs attention at publish time is an implementation check for the
 first publish of a lowering change, not a design decision: the published 0.1.0
 tarball's `dist/asc.js` imports `../dist/asc.js` relatively and carries no bare
-`assemblyscript` specifier, so that check is a confirmation, not an expected
+self-reference specifier, so that check is a confirmation, not an expected
 repair.)
 
 **D12 — `async` on ambient/`declare`d declarations and constructors.**

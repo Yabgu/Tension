@@ -33,6 +33,43 @@ yaml-rust2 = "=0.13.0"
 # loading crate. libc is already in the tree through wasmtime; naming it makes
 # the dependency honest rather than implicit.
 libc = "0.2"
+# Shader source generation. A path dependency rather than a workspace:
+# `tension-core` is standalone (no `[workspace]` anywhere in this tree), and
+# the crate is versioned with it.
+tension-shadergen = { path = "../tension-shadergen" }
+
+# Cranelift is already in the tree as Wasmtime's compiler (same 0.111.13), so
+# naming it adds no download and no new licence — the argument the `libc` entry
+# above makes. The graph compiler's CPU lowering uses it directly.
+cranelift-codegen = "=0.111.13"
+cranelift-frontend = "=0.111.13"
+cranelift-native = "=0.111.13"
+
+# GLSL -> SPIR-V for runtime pipeline compilation (pipeline/naga_backend.rs).
+# Same crate and version as `tension-shadergen` uses, so one copy is linked.
+#
+# naga is developed in the wgpu repo (gfx-rs/naga is archived).
+# Pinned to 29.0.4: 30.0.1's glsl-in feature fails to compile. Retested
+# 2026-11-06 against a fresh crates.io artifact and it still fails:
+#
+#   error[E0599]: no method named `apply_default_interpolation` found for
+#   enum `ir::Binding` in the current scope
+#     --> naga-30.0.1/src/front/glsl/variables.rs:467:25
+#
+# The cause is a cfg gate, not a missing API. The method lives in
+# `src/front/interpolator.rs`, which 29.0.4 declares unconditionally and
+# 30.0.1 declares only under
+# `#[cfg(any(feature = "spv-in", feature = "wgsl-in"))]` (front/mod.rs:5-6) —
+# omitting `glsl-in`, which is the feature that uses it. Adding `wgsl-in` does make 30.0.1 compile;
+# that is not adopted, because it means shipping on a feature combination
+# upstream does not test, to satisfy a gate that clearly should have said
+# `any(spv-in, wgsl-in, glsl-in)`.
+#
+# Reproduction: `cargo check --manifest-path tension-core/Cargo.toml
+# --all-features` with this line set to 30.0.1. 29.0.4 builds and its output
+# renders correctly (scripts/test-2d.mjs, pixel assertions).
+# Do not bump without testing glsl-in first.
+naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
 
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`

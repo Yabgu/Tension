@@ -1,11 +1,11 @@
 # Runtime-migration measurement harness
 
 Tooling for the `--runtime stub` → `--runtime incremental` decision
-(`docs/runtime-migration-plan.md`). It compiles a set of AssemblyScript
+(`docs/runtime-migration-plan.md`). It compiles a set of TensionScript
 workloads under each runtime and measures what the allocator and collector
 actually do.
 
-Nothing here is Tension-specific. The workloads are ordinary AS modules; the
+Nothing here is Tension-specific. The workloads are ordinary guest modules; the
 runner supplies only a clock (`env.now`). That is deliberate: it means the same
 harness produces comparable numbers on Linux, on Windows, and under any host
 engine.
@@ -17,7 +17,7 @@ engine.
 bash run-measurements.sh
 
 # Linux:
-ASC=/path/to/assemblyscript/bin/asc.js \
+ASC=/path/to/tensionscript/bin/tensionscript.js \
 WTRUNNER=/path/to/wtrunner \
 bash run-measurements.sh
 ```
@@ -26,7 +26,7 @@ Useful environment variables:
 
 | Variable | Meaning |
 |---|---|
-| `ASC` | path to the AssemblyScript compiler's `asc.js`. Auto-detected from `examples/*/node_modules` if unset. |
+| `ASC` | path to the compiler's `tensionscript.js`. Auto-detected from `examples/*/node_modules` if unset. |
 | `WTRUNNER` | path to the wasmtime runner. That engine's section is skipped if unset. |
 | `OUT_DIR` | where the report and per-run JSON land (default `./out`) |
 | `REPS` | repetitions of the frame-loop measurement (default 1). Use ≥5 to characterise the tail — the worst *single* stall is not a distribution. |

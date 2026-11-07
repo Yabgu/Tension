@@ -568,7 +568,7 @@ right after each std parse.
 - **(c) An embedded `stdPaths` list** (the `libraryFiles` keys) plus a membership
   test on the source's path relative to `~lib/`. No runtime state and no CLI
   change, but the list must reach the *library* bundle: `index.generated.js` is
-  bundled into `cli/`, while the transforms live in `dist/assemblyscript.js`, so
+  bundled into `cli/`, while the transforms live in `dist/tensionscript.js`, so
   the build script would have to emit a second generated module into `src/`.
 - **(d) A path-prefix heuristic** — skip `LibraryEntry` plus `{rt, shared, util,
   bindings}`. Smallest diff, but it permanently reserves four names: a user

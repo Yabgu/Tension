@@ -82,7 +82,11 @@ struct Vtable {
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-const TENSION_ADAPTER_ABI_VERSION: u32 = 3;
+// A mirror of the header's constant. It is a literal here because this is an
+// integration test and the bin's `ffi` module is not exported; it has to be
+// updated with the header, which the adapter-vtable assertion below enforces
+// by comparing the loaded DSO's value against it.
+const TENSION_ADAPTER_ABI_VERSION: u32 = 5;
 const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;

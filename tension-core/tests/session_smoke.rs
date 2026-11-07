@@ -9,7 +9,7 @@
 //! capability registers.
 //!
 //! The adapter libraries come from `build.rs` (`cargo:rustc-env`): the reference
-//! adapter and its bad-ABI twin. Nothing here is AssemblyScript — the guests are
+//! adapter and its bad-ABI twin. Nothing here is TensionScript — the guests are
 //! WAT files under `tests/fixtures/`, readable in one screen each.
 //!
 //! **`--session-open` is A1's convenience, not the design.** A1 has no guest SDK,
@@ -176,7 +176,8 @@ fn test_missing_memory_export_refused() {
     );
 }
 
-/// The bad-ABI twin of the reference adapter: same source, `abi_version = 3`.
+/// The bad-ABI twin of the reference adapter: same source, `abi_version` one
+/// past the current one.
 /// The loader refuses it at load — before `init`, before `link`, before any
 /// function pointer from its vtable is called — and the diagnostic names the
 /// file and both versions.
@@ -188,7 +189,7 @@ fn test_bad_abi_adapter_refused() {
     assert!(!output.status.success(), "the run must fail");
     let err = stderr(&output);
     assert!(
-        err.contains("was built against adapter ABI 4") && err.contains("this build is 3"),
+        err.contains("was built against adapter ABI 6") && err.contains("this build is 5"),
         "the diagnostic must name both versions\nstderr: {err}"
     );
     assert!(

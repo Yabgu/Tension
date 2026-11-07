@@ -3,7 +3,7 @@
 **Status:** scoping only. No source changed, no plan, no code.
 **Base:** Tension `phase/interop-struct-impl` @ `62b4da1` (the struct phase's
 branch); TensionScript published `0.7.1`, and the canonical checkout at
-`/home/yabgu_gm/work/as-inspect/assemblyscript` (branch
+`/home/yabgu_gm/work/as-inspect/tensionscript` (branch
 `phase/interop-struct-std`, which now carries `COPY_STRUCT`).
 **Method:** C# claims are cited to the .NET documentation, fetched and read —
 not inherited from the dispatch. TensionScript claims are measured: compiled
@@ -102,7 +102,7 @@ which is consistent with the language having no runtime type objects to ask.
 
 | feature | purpose in .NET | why N/A here |
 |---|---|---|
-| `GCHandle.Alloc(obj, GCHandleType.Pinned)` / `fixed` statement | stop the GC moving an object while native code holds its address ("pin a moveable variable") | **N/A: the GC never moves.** AssemblyScript's runtime is "an incremental Tri-Color Mark & Sweep garbage collector" (`std/assembly/rt/itcms.ts:1`) — non-moving, so a guest address stays valid. The `fixed` statement's whole job is absent. |
+| `GCHandle.Alloc(obj, GCHandleType.Pinned)` / `fixed` statement | stop the GC moving an object while native code holds its address ("pin a moveable variable") | **N/A: the GC never moves.** The runtime is "an incremental Tri-Color Mark & Sweep garbage collector" (`std/assembly/rt/itcms.ts:1`) — non-moving, so a guest address stays valid. The `fixed` statement's whole job is absent. |
 | `[MarshalAs(UnmanagedType.LPStr)]`, `ByValTStr`, `BStr` | convert managed strings to native char layouts | **N/A: there is no string type at the boundary.** A string is a managed object; the guest encodes bytes itself (`String.UTF8.encode`, `tension-framework/assembly/io.ts:122-123`) and passes `(ptr,len)`. There is no marshaller to configure. |
 | `[DllImport]` | declare an unmanaged entry point and generate a marshalling stub | **replaced by `@external("module","name")`**, which declares the import with *no* stub: the signature at the wasm level is exactly the declared parameter types (measured, §2.4). |
 | non-blittable types / `Marshal.PtrToStructure` | convert between managed and native representations | **N/A: everything at the boundary is blittable.** "Blittable types … don't require conversion when they're passed between managed and unmanaged code"; the tree's 33 wire records are all scalars (`docs/interop-scope.md` §5) |
@@ -856,8 +856,8 @@ declaration-order placement.
 | where | hits | detail |
 |---|---|---|
 | the tree (`--include=*.ts --include=*.md`, excluding `node_modules` and `third_party`) | **0** real uses | the only matches are this document's own prose (§1.1, §2.5, §4.1, appendix G) |
-| `third_party/assemblyscript/std` and `/src` | **0** | no decorator, no diagnostic, no parser branch |
-| the canonical checkout (`~/work/as-inspect/assemblyscript/std`, `/src`) | **0** | same |
+| `third_party/tensionscript/std` and `/src` | **0** | no decorator, no diagnostic, no parser branch |
+| the canonical checkout (`~/work/as-inspect/tensionscript/std`, `/src`) | **0** | same |
 | `examples/` | **0** | — |
 
 So nothing in the tree depends on it, and nothing tests it. The hazard is

@@ -7,7 +7,7 @@
 //! nothing here knows what a `tension_value` is.
 //!
 //! ```text
-//!   guest (AssemblyScript)      tension::io::log  ─┐
+//!   guest (TensionScript)      tension::io::log  ─┐
 //!   native adapters (C/C++)     tension_core_api  ─┼─▶  Record ─▶ Layout ─▶ Sink (stderr/file)
 //!   the host (Rust)             logging::log      ─┘
 //! ```

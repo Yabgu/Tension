@@ -9,6 +9,9 @@
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
 //   8. line endings       no CRLF in a text file
+//   9. dependency pins    one naga version, not two
+//  10. isometric (CI)    the three 2D problems, from synthetic pages
+//  11. isometric frame   the framework library reproduces the scene byte for byte
 //
 // ## What "parallel" may and may not do here
 //
@@ -58,7 +61,6 @@ const node = process.execPath;
 // parent's environment.
 const ogreLibs = [
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
 ].filter(existsSync);
 
 function suiteEnv(extra = {}) {
@@ -68,6 +70,10 @@ function suiteEnv(extra = {}) {
   // need all three, and a suite given the bare parent environment fails with
   // messages that name none of it.
   const env = { ...baseEnv(), ...extra };
+  // The 2D examples show a window when a display is present, because `npm start`
+  // should show something. A suite must not: it asserts pixels, and a window
+  // would make the result depend on a compositor (and pop up during CI).
+  env.TENSION_2D_HEADLESS = '1';
   if (!ogreLibs.length) return env;
 
   if (WIN) {
@@ -120,6 +126,17 @@ const SUITES = {
     needs: [],
     holds: [],
     run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
+  },
+
+  // A dependency-hygiene check rather than a test: cargo links two naga copies
+  // silently when `tension-core` and `tension-shadergen` disagree, and the
+  // symptom is a confusing "ambiguous" from `cargo tree`, not a compile error.
+  // Cheap enough to be a suite, and it belongs where every other gate runs.
+  deps: {
+    title: 'dependency pins',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-naga-pin.mjs')]),
   },
 
   codegen: {
@@ -175,6 +192,51 @@ const SUITES = {
     holds: ['zig'],
     run: () => execute('zig', ['build', 'test'],
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
+  },
+
+  // The same scene from generated flat-colour pages: same canvas, same
+  // positions, same sort keys, same probes. Its assertions are cheap and its
+  // expectations are palette constants, so it catches a renderer bug without
+  // needing the art. `isometric-art` is the same scene drawn from the real
+  // tileset and catches art-pipeline bugs this one cannot.
+  isometric: {
+    title: 'isometric (synthetic)',
+    needs: [],
+    // Builds the adapter and the guest; both live in directories another 2D
+    // suite would also write.
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The worked example on the committed tileset. It used to be excluded from
+  // this list because the art was third-party and the example exited 77 on any
+  // machine without it; the tileset is drawn and committed now, so it runs
+  // everywhere the adapter does.
+  'isometric-art': {
+    title: 'isometric (art)',
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The framework layer: `Tileset` + `Composite` + `IsometricWorld` rebuild the
+  // same scene and their frames must equal the hand-written guest's, byte for
+  // byte. That assertion is the whole test — it fails if the framework's
+  // emission differs anywhere, including in fields no probe reads.
+  'isometric-framework': {
+    title: 'isometric (framework)',
+    // No `needs`: this suite builds and runs the hand-written guest itself as
+    // its comparison, so depending on the `isometric` suite would run it twice
+    // and would make the framework suite un-runnable on its own.
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
+    ], { env: suiteEnv() }),
   },
 
   core: {
@@ -277,7 +339,7 @@ if (requested.length) {
 // `zig` on cargo's PATH (cargo's build script runs it by name).
 
 const needsPreparation = order.some((name) =>
-  ['framework', 'ogre-guest', 'input', 'core'].includes(name));
+  ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
 
 function banner(text) {
   console.log('\n======================================================================');

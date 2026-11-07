@@ -710,7 +710,7 @@ someone, but that someone is not in this repo.
   exists in Tension; TensionScript's local checkout is 0.8.1 and 0.9.0 is not
   published (`npm view` → 0.8.1), so no compiler here accepts it. Stated as 0
   aliases, not as 0 possible.
-- **Whether an AssemblyScript guest can reproduce `layout_hash()` exactly.**
+- **Whether a TensionScript guest can reproduce `layout_hash()` exactly.**
   This is the C1 cost; it was not built. The obstacles are visible in tree
   (name spelling, FNV byte order, `sizeof` unusable on these records) but their
   total is not measured.

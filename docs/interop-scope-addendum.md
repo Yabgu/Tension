@@ -313,7 +313,7 @@ name.
 >   and the release is happening anyway.
 
 Annotated with what each touches, which repo, and which bump. ("TensionScript
-repo" means `third_party/assemblyscript`, published as `@yabgu_gm/tensionscript`;
+repo" means `third_party/tensionscript`, published as `@yabgu_gm/tensionscript`;
 "framework repo" means `tension-framework`, its own package at `0.1.0`.)
 
 | item | touches (file:line) | repo | bump |

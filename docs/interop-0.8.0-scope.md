@@ -3,7 +3,7 @@
 **Status:** scoping only. No source changed, no code, no plan, no PR.
 **Base:** Tension `main` @ `31a6626` (PR 26 merged 2026-10-22T00:50:11Z); the
 `-O3` figures are from PR 27's branch (`build/optimize-level` @ `1c663ed`, PR
-27 still OPEN); TensionScript `0.7.1` in `third_party/assemblyscript` for
+27 still OPEN); TensionScript `0.7.1` in `third_party/tensionscript` for
 compile-output claims.
 **Siblings:** `docs/interop-tn-scope.md` (PR 28), `docs/interop-surface-scope.md`
 (PR 27's branch), `docs/interop-scope.md`, `docs/interop-scope-addendum.md`,
@@ -13,7 +13,7 @@ compile-output claims.
 **Method.** Compile-output claims use the published
 `@yabgu_gm/tensionscript@0.7.1` with `--target release --runtime incremental`,
 emitting WAT with `-t`. Source claims cite the tree's own
-`third_party/assemblyscript`. Probes live in `/tmp/szprobe/`; none is in the
+`third_party/tensionscript`. Probes live in `/tmp/szprobe/`; none is in the
 repo. Nothing in `third_party/` was written.
 
 **What this document is not.** It does not re-measure what is already measured:
@@ -424,7 +424,7 @@ the dependency line (15 example `package.json`s and
 
 | item | requirement | citation |
 |---|---|---|
-| version bump | TensionScript `0.7.1` → `0.8.0`; the `sizeof` semantics change is breaking | `third_party/assemblyscript/package.json:11`; `docs/interop-scope.md` §6.1 ("a minor release (`0.8.0`), not a patch") |
+| version bump | TensionScript `0.7.1` → `0.8.0`; the `sizeof` semantics change is breaking | `third_party/tensionscript/package.json:11`; `docs/interop-scope.md` §6.1 ("a minor release (`0.8.0`), not a patch") |
 | std changes | the collateral in §1 (in-package: `std/assembly` ships with the compiler) | `std/assembly/array.ts`, `staticarray.ts`, `map.ts`, `set.ts` |
 | test re-baseline | `tests/compiler/class.ts:13` under (A)/(C); none under (B) | `tests/compiler/class.ts:13` |
 | framework dependency | `"@yabgu_gm/tensionscript": "^0.7.1"` → `^0.8.0` | `tension-framework/package.json:31` |

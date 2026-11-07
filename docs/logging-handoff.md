@@ -9,7 +9,7 @@ One logger, owned by the Rust host (`tension-core/src/logging/`): it owns the
 level, the per-name filter, the layout, the sinks, thread safety, and panic
 containment. Every other language is a thin binding over it — a record carries
 only a level, a logger name, and a message (or a structured payload), and the
-host applies the one layout, so C, C++, Rust, Zig, AssemblyScript and the solver
+host applies the one layout, so C, C++, Rust, Zig, TensionScript and the solver
 all produce byte-identical output for the same record. Configuration is CLI-first
 (`--log-level`, `--log-format`, `--log-file`), with `TENSION_LOG_LEVEL/_FORMAT/_FILE`
 as fallback and CLI > env > defaults (`info`/`text`/stderr). Logging is a *verb*:
@@ -29,7 +29,7 @@ Four entry points and one callback; nothing else crosses into logging.
 - **WASM imports** — `tension::io.log`, `tension::io.log_structured`
   (registered in `tension-core/src/main.rs`; guest bindings
   `tension-framework/assembly/io.ts`).
-- **AssemblyScript API** — `LogLevel`, `Logger.get(name)`
+- **TensionScript API** — `LogLevel`, `Logger.get(name)`
   (`tension-framework/assembly/log.ts`). `LogLevel`, never `Level` (see below).
 - **Callback bridge** — `tension_solver_set_log(fn)`
   (`tension-solver/include/tension_solver.h`, installed by

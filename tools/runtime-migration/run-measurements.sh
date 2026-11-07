@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runtime-migration measurement driver.
 #
-# Compiles the workloads in ../workloads under each AssemblyScript runtime and
+# Compiles the workloads in ../workloads under each TensionScript runtime and
 # runs them through the available engines. Designed to run either under MSYS2
 # on Windows or under bash on Linux, so the same script produces the numbers
 # that get compared across platforms.
@@ -9,7 +9,7 @@
 #   bash run-measurements.sh [--stub] [--incremental] [--minimal] [--engines node,wasmtime]
 #
 # Environment:
-#   ASC        path to the compiler's asc.js (or an `asc` on PATH)
+#   ASC        path to the compiler's tensionscript.js (or `tensionscript` on PATH)
 #   WTRUNNER   path to the wasmtime-based runner binary
 #   OUT_DIR    where the report and per-run JSON land (default: ./out)
 #   RUNTIMES   space-separated runtimes (default: stub incremental minimal)
@@ -47,13 +47,13 @@ fi
 
 # ── locate asc ───────────────────────────────────────────────────────────────
 if [ -n "${ASC:-}" ] && [ -f "$ASC" ]; then :;
-elif command -v asc >/dev/null 2>&1; then ASC=$(command -v asc);
+elif command -v tensionscript >/dev/null 2>&1; then ASC=$(command -v tensionscript);
 else
   for c in \
-    "$root/examples/io/node_modules/@yabgu_gm/tensionscript/bin/asc.js" \
-    "$root/examples/log/node_modules/@yabgu_gm/tensionscript/bin/asc.js" \
-    "$root/examples/ogre/bouncing-ball/node_modules/@yabgu_gm/tensionscript/bin/asc.js" \
-    "$root/tension-framework/node_modules/@yabgu_gm/tensionscript/bin/asc.js"; do
+    "$root/examples/io/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js" \
+    "$root/examples/log/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js" \
+    "$root/examples/ogre/bouncing-ball/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js" \
+    "$root/tension-framework/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js"; do
     [ -f "$c" ] && { ASC="$c"; break; }
   done
 fi
@@ -100,8 +100,8 @@ compile() {          # compile <workload-basename> <runtime>
 
 if [ -z "${ASC:-}" ] || [ ! -f "${ASC:-/nonexistent}" ]; then
   say ""
-  say "No AssemblyScript compiler found; cannot compile workloads."
-  say "Set ASC=/path/to/@yabgu_gm/tensionscript/bin/asc.js and re-run."
+  say "No TensionScript compiler found; cannot compile workloads."
+  say "Set ASC=/path/to/@yabgu_gm/tensionscript/bin/tensionscript.js and re-run."
   exit 2
 fi
 

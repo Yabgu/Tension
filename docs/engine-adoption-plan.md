@@ -385,7 +385,7 @@ keeps `@abi.align(16)` off the hash.
 Five records hand-flatten the same 12-scalar transform, with **16 pad fields**
 in `ogre/wire.ts` alone, and a comment that says flatness is forced:
 
-> **Flat fields, like every other record here.** An AssemblyScript field whose
+> **Flat fields, like every other record here.** A TensionScript field whose
 > type is a class is a *reference*: `position: Vec3f` would be a 4-byte pointer
 > and this record would not be 64 bytes. (`ogre/wire.ts:454-457`)
 

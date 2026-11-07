@@ -26,7 +26,7 @@ RUN pacman -Syu --noconfirm && \
         clang \
         cmake
 
-# OGRE-Next and its freeimage dependency, built locally (see ci/README.md).
+# OGRE-Next, built locally (see ci/README.md).
 COPY ogre-next-pkg/*.pkg.tar.zst /tmp/
 RUN pacman -U --noconfirm /tmp/*.pkg.tar.zst && rm /tmp/*.pkg.tar.zst
 

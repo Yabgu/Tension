@@ -5,7 +5,7 @@
 does not lexically bind, and correct TypeScript does not compile.
 
 Date of evidence: 2026-10-15. Compiler: `asc 0.28.20` (the version Tension builds
-with), source read at `/tmp/as-inspect/assemblyscript` (the fork's base,
+with), source read at `/tmp/as-inspect/tensionscript` (the fork's base,
 `b6bda05c`).
 
 **Supersedes nothing.** This plan is consistent with `docs/closures-plan.md`

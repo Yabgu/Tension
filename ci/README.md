@@ -3,7 +3,7 @@
 A single Arch Linux image serves both continuous integration and development. It carries the
 full toolchain (zig, rustup, node/npm, gcc-fortran, clang), a headless
 graphics stack (Xvfb, Mesa software GL, lavapipe) and locally built
-OGRE-Next + freeimage packages. Everything runs under Xvfb, so the OGRE
+OGRE-Next packages. Everything runs under Xvfb, so the OGRE
 test suites work without a display or GPU.
 
 ## Layout
@@ -17,12 +17,11 @@ test suites work without a display or GPU.
 ## Prerequisites
 
 - `podman` (rootless) or `docker` (set `TENSION_CONTAINER_RUNTIME=docker`)
-- OGRE-Next and freeimage Arch packages, produced once with `makepkg`
-  (e.g. `paru -B` / `pikaur -B` in AUR clones of `ogre-next-git` and
-  `freeimage`). `ci/docker.mjs build` picks the latest non-debug package from
-  `$HOME/src/ogre-next-git` and `$HOME/src/freeimage` and caches a copy in
-  `ci/ogre-next-pkg/`. Override with `TENSION_OGRE_PKG_DIR` /
-  `TENSION_FREEIMAGE_PKG_DIR`, or drop `.pkg.tar.zst` files into
+- OGRE-Next Arch packages, produced once with `makepkg`
+  (e.g. `paru -B` / `pikaur -B` in an AUR clone of `ogre-next-git`).
+  `ci/docker.mjs build` picks the latest non-debug package from
+  `$HOME/src/ogre-next-git` and caches a copy in `ci/ogre-next-pkg/`.
+  Override with `TENSION_OGRE_PKG_DIR`, or drop `.pkg.tar.zst` files into
   `ci/ogre-next-pkg/` yourself.
 
 ## Commands

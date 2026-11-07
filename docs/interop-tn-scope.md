@@ -293,7 +293,7 @@ the fixture shape is `fixture-refuse.ts(3,11)`, caret on `[`:
    └─ in fixture-refuse.ts(3,11)
 ```
 
-The site is `parseType` (`third_party/assemblyscript/src/parser.ts:537`). Its
+The site is `parseType` (`third_party/tensionscript/src/parser.ts:537`). Its
 identifier branch builds a `NamedType`, then the postfix loop at
 `parser.ts:739-752` consumes `[`; if the next token is not `]`, it reports
 `DiagnosticCode._0_expected` and returns `null`:
@@ -1041,7 +1041,7 @@ emptybr.ts       f32[] field                                  12 / 4
 
 **E. Source citations.**
 
-- Parser: `third_party/assemblyscript/src/parser.ts:537` (`parseType`),
+- Parser: `third_party/tensionscript/src/parser.ts:537` (`parseType`),
   `:739-772` (bracket loop and `Array<T>`), `:743-746` (`_0_expected`),
   `:681-696` (type arguments), `:699-706` (type fallback), `:1062` (field type),
   `:613` (tuple behind `MultiValue`), `:4216-4219` (integer literal).

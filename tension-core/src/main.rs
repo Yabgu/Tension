@@ -60,7 +60,7 @@
 //! `--debug` turns on guest debug info (`Config::debug_info`) and reports what
 //! a debugger can see of the loaded guest; `--symbol-path <PATH>` (repeatable)
 //! says where the debugger should look for the guest's symbols and sources.
-//! See the `debug` module for why an AssemblyScript guest carries no source
+//! See the `debug` module for why a TensionScript guest carries no source
 //! lines even with both.
 
 use std::io::{self, BufRead, Write};
@@ -198,7 +198,7 @@ const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
 const EINVAL: i32 = -22;
 
-/// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
+/// Read a TensionScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
 /// out of the guest memory and decode it to a Rust `String`.
 fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
     if ptr == 0 {
@@ -512,7 +512,168 @@ fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
     Ok(config)
 }
 
+/// The `graph` subcommand.
+///
+/// One action today: `emit-default --out <dir>` writes the `default_2d` blob,
+/// the GLSL both lowerings produce for it, and the comparator's key table. The
+/// build script (`scripts/build-2d.mjs`) runs this, compiles the GLSL, and
+/// embeds the result — so the adapter carries a compiled graph rather than a
+/// second hand-written copy of one.
+///
+/// It is also the inspection tool: `tension-core graph emit-default --out /tmp`
+/// is how a reviewer reads what the graph actually says.
+const GRAPH_USAGE: &str = "\
+usage: tension-core graph emit-default --out <dir>
+
+  compile <blob> --out <dir>  compiles one blob to vs.spv/fs.spv
+  Writes default_2d.t2dg (the wire blob), default_2d.graph.vert and
+  default_2d.graph.frag (the GLSL both lowerings produce), and
+  default_2d.keys.txt (the comparator's key table).";
+
+fn run_graph(argv: Vec<String>) -> anyhow::Result<()> {
+    if argv.first().map(|a| a == "emit-default").unwrap_or(false) {
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    let Some(value) = argv.get(i) else {
+                        anyhow::bail!("--out needs a directory\n\n{GRAPH_USAGE}");
+                    };
+                    out = std::path::PathBuf::from(value);
+                }
+                other => anyhow::bail!("unknown argument `{other}`\n\n{GRAPH_USAGE}"),
+            }
+            i += 1;
+        }
+        std::fs::create_dir_all(&out)?;
+
+        // Both graphs, through the same path: parse, validate, lower. Emitting
+        // them from one loop is what makes the built-in preset and the second
+        // pipeline the same kind of thing to the build.
+        for (name, blob) in [
+            ("default_2d", tension_core::pipeline_default::serialize_default_2d()),
+            ("default_2d_scaled", tension_core::pipeline_default::serialize_default_2d_scaled()),
+        ] {
+            let graph = tension_core::pipeline::parser::parse(&blob)
+                .map_err(|e| anyhow::anyhow!("{name}: the serializer's own output failed to parse: {e}"))?;
+            tension_core::pipeline::validate::validate(&graph).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            let stage = &graph.stages[0];
+            let lowered = tension_core::pipeline::glsl_backend::lower(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+            let keys = tension_core::pipeline::glsl_backend::sort_keys(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            std::fs::write(out.join(format!("{name}.t2dg")), &blob)?;
+            std::fs::write(out.join(format!("{name}.graph.vert")), &lowered.vertex)?;
+            std::fs::write(out.join(format!("{name}.graph.frag")), &lowered.fragment)?;
+
+            let mut table = String::new();
+            for key in &keys {
+                // `offset dtype scale`: the scale is what a `mul` key adds, and
+                // 1.0 for every key a plain `load_field` produces.
+                table.push_str(&format!("{} {} {}\n", key.offset, key.dtype.to_wire(), key.scale.unwrap_or(1.0)));
+            }
+            std::fs::write(out.join(format!("{name}.keys.txt")), table)?;
+
+            println!("{name}: {} bytes, hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        }
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "emit-scaled").unwrap_or(false) {
+        // `graph emit-scaled --factor F --out FILE`: the scaled graph at any
+        // factor. The runtime-compilation test needs 1.5, which is not a
+        // shipped pipeline and therefore has to be compiled at run time.
+        let mut factor = 2.0f32;
+        let mut out = std::path::PathBuf::from("default_2d_scaled_custom.t2dg");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--factor" => {
+                    i += 1;
+                    factor = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(2.0);
+                }
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let blob = tension_core::pipeline_default::serialize(
+            &tension_core::pipeline_default::scaled_graph_with(factor),
+        );
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&out, &blob)?;
+        println!("{} bytes  hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "compile").unwrap_or(false) {
+        // `graph compile <blob> --out <dir>`: the runtime compiler as a tool.
+        // The 2D stub core calls this to stand in for the host's
+        // `compile_graph` slot, and a human uses it to see what a blob turns
+        // into without a GPU.
+        let mut blob_path = None;
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                other => blob_path = Some(std::path::PathBuf::from(other)),
+            }
+            i += 1;
+        }
+        let Some(blob_path) = blob_path else {
+            anyhow::bail!("graph compile needs a blob path\n\n{GRAPH_USAGE}");
+        };
+        let blob = std::fs::read(&blob_path)?;
+        let started = std::time::Instant::now();
+        // Distinct exit codes, because the 2D stub core maps them back to
+        // errnos and a flattened "something failed" would make the adapter's
+        // -EINVAL/-ENOSYS distinction untestable.
+        //   2 -> the blob is malformed or invalid  (-EINVAL)
+        //   3 -> the graph is valid but unsupported (-ENOSYS)
+        let compiled = match tension_core::pipeline::naga_backend::compile(&blob) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                eprintln!("graph compile: {error}");
+                let code = match error {
+                    tension_core::pipeline::GraphError::Malformed(_)
+                    | tension_core::pipeline::GraphError::Invalid(_) => 2,
+                    tension_core::pipeline::GraphError::Unsupported(_) => 3,
+                };
+                std::process::exit(code);
+            }
+        };
+        let elapsed = started.elapsed();
+        std::fs::create_dir_all(&out)?;
+        std::fs::write(out.join("vs.spv"), compiled.vertex_bytes())?;
+        std::fs::write(out.join("fs.spv"), compiled.fragment_bytes())?;
+        eprintln!(
+            "compiled {} in {:.3} ms (vs {} B, fs {} B)",
+            blob_path.display(),
+            elapsed.as_secs_f64() * 1e3,
+            compiled.vertex.len() * 4,
+            compiled.fragment.len() * 4
+        );
+        return Ok(());
+    }
+    anyhow::bail!("{GRAPH_USAGE}")
+}
+
 fn main() -> anyhow::Result<()> {
+    // Install the process-wide services the C ABI exposes. Registered before
+    // any adapter can load, so `shader_generate` answers with the default
+    // generator rather than `-ENOSYS` for a preset it should serve.
+    tension_core::init();
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "pack").unwrap_or(false) {
         argv.remove(0);
@@ -524,6 +685,10 @@ fn main() -> anyhow::Result<()> {
             }
         };
         return run_pack(cli);
+    }
+    if argv.first().map(|a| a == "graph").unwrap_or(false) {
+        argv.remove(0);
+        return run_graph(argv);
     }
     if argv.first().map(|a| a == "layout-hash").unwrap_or(false) {
         // The arena's shape hash, for the AS build pipeline: `session.json` and
@@ -1063,7 +1228,7 @@ fn main() -> anyhow::Result<()> {
     solver::link_solver(&mut linker)?;
 
     // tension::session ABI -------------------------------------------------
-    // The memory is defined under both import names (the AssemblyScript
+    // The memory is defined under both import names (the TensionScript
     // toolchain emits `env::memory`; Tension documents `session::memory`), the
     // two verbs are registered, and the session is installed into the store —
     // the verbs reach it through `caller.data()`, so it must be there before the
@@ -1206,7 +1371,7 @@ fn main() -> anyhow::Result<()> {
         session.verify_post_instantiate(&store)?;
     }
 
-    // AssemblyScript's runtime initializer, when the guest exports one.
+    // TensionScript's runtime initializer, when the guest exports one.
     //
     // The SDK builds with `--exportStart __start` so this is an export rather
     // than a `start` section: a start section would run guest code at

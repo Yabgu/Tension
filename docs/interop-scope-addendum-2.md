@@ -134,7 +134,7 @@ returns the check block plus that one line).
 ## Item 2 — the working-tree compiler divergence check
 
 **What the role asked about, and what exists.** The dispatch names
-`~/work/as-inspect/assemblyscript` as the clone implementation will run against.
+`~/work/as-inspect/tensionscript` as the clone implementation will run against.
 That path **does not exist**: `/home/yabgu_gm/work/` contains only `Tension`
 (measured). So the re-run against it was not possible, and no claim is made
 about it.
@@ -142,10 +142,10 @@ about it.
 **What was done instead — the diff check, which is possible and stronger.**
 The published package ships a source map whose `sourcesContent` carries the
 original compiler sources: `@yabgu_gm/tensionscript@0.7.1`'s
-`dist/assemblyscript.js.map` lists 49 sources including `../src/program.ts`,
+`dist/tensionscript.js.map` lists 49 sources including `../src/program.ts`,
 `../src/types.ts`, `../src/builtins.ts` and `../src/compiler.ts`, with content.
 Those were extracted to `/tmp/interop-probe/pubsrc/` and diffed against
-`third_party/assemblyscript/src/` (version `0.7.1`, commit `50cceb36` —
+`third_party/tensionscript/src/` (version `0.7.1`, commit `50cceb36` —
 both measured from `package.json` and `git log`).
 
 | file | exercised by the fixture for | result | sha256 (first 16) |
@@ -156,7 +156,7 @@ both measured from `package.json` and `git log`).
 | `src/compiler.ts` | field-access codegen, `module.load/store` | **identical** | (diff → no output) |
 
 A recursive diff of the entire std tree (`/tmp/interop-probe/node_modules/@yabgu_gm/tensionscript/std`
-against `third_party/assemblyscript/std`) produced **no differences**
+against `third_party/tensionscript/std`) produced **no differences**
 (`diff -r -q` → empty, exit 0). That covers `std/assembly/string.ts` and the
 runtime that the fixture's `--runtime incremental` links.
 
@@ -166,11 +166,11 @@ on the exercised paths. A fixture result measured against one is a fixture
 result for the other.
 
 **What this does not establish.** It says nothing about
-`~/work/as-inspect/assemblyscript`. If implementation runs against that clone
+`~/work/as-inspect/tensionscript`. If implementation runs against that clone
 and it has diverged, this check would not detect it.
 
 **Unable to run.** The tree's own compiler cannot be executed read-only:
-`third_party/assemblyscript/dist/` contains `asc.d.ts`, `assemblyscript.d.ts`,
+`third_party/tensionscript/dist/` contains `asc.d.ts`, `tensionscript.d.ts`,
 `transform.cjs`, `transform.d.ts`, `transform.js` and no `asc.js`
 (measured), so there is no built CLI in the checkout, and building one would
 write into `third_party/` — forbidden by `AGENTS.md` rule 1. The published
@@ -313,11 +313,11 @@ does not refuse it, and the only guard is the Docs item**
 
 ## What could not be run or located
 
-- **`~/work/as-inspect/assemblyscript`** — absent. `/home/yabgu_gm/work/`
+- **`~/work/as-inspect/tensionscript`** — absent. `/home/yabgu_gm/work/`
   contains only `Tension`. The re-run against it was not attempted and no claim
   is made about it. The diff check in Item 2 covers tree ≡ published 0.7.1
   only.
-- **The tree's own compiler** — not runnable: `third_party/assemblyscript/dist/`
+- **The tree's own compiler** — not runnable: `third_party/tensionscript/dist/`
   has no `asc.js` (measured), and building one would write into `third_party/`,
   which `AGENTS.md` rule 1 forbids.
 - **Regenerating `layout.ts` in place** — deliberately not done; the generator
@@ -376,13 +376,13 @@ tension-core/tests/support/ogre_stub_adapter.c:25: (a comment; the Job mirror)
 **Item 2, the diff:**
 
 ```
-$ diff -q /tmp/interop-probe/pubsrc/src__builtins.ts   third_party/assemblyscript/src/builtins.ts
-$ diff -q /tmp/interop-probe/pubsrc/src__program.ts    third_party/assemblyscript/src/program.ts
-$ diff -q /tmp/interop-probe/pubsrc/src__types.ts      third_party/assemblyscript/src/types.ts
-$ diff -q /tmp/interop-probe/pubsrc/src__compiler.ts   third_party/assemblyscript/src/compiler.ts
+$ diff -q /tmp/interop-probe/pubsrc/src__builtins.ts   third_party/tensionscript/src/builtins.ts
+$ diff -q /tmp/interop-probe/pubsrc/src__program.ts    third_party/tensionscript/src/program.ts
+$ diff -q /tmp/interop-probe/pubsrc/src__types.ts      third_party/tensionscript/src/types.ts
+$ diff -q /tmp/interop-probe/pubsrc/src__compiler.ts   third_party/tensionscript/src/compiler.ts
 (all four: no output)
 
-$ diff -r -q node_modules/@yabgu_gm/tensionscript/std third_party/assemblyscript/std
+$ diff -r -q node_modules/@yabgu_gm/tensionscript/std third_party/tensionscript/std
 (no output, exit 0)
 
 sha256: builtins 121b9d508bcf0b33… both; program 9838641c2a7851ad… both;
@@ -405,9 +405,9 @@ change that follows them.
 **1. The compiler of record.** Every compile-output and runtime claim in this
 implementation uses the **published `@yabgu_gm/tensionscript@0.7.1`**
 (`dist/asc.js`), not the tree's checkout, because two things are absent:
-`~/work/as-inspect/assemblyscript` does not exist (`/home/yabgu_gm/work/`
-contains only `Tension`), and `third_party/assemblyscript/dist/` has no `asc.js`
-(measured: it contains `asc.d.ts`, `assemblyscript.d.ts`, `transform.cjs`,
+`~/work/as-inspect/tensionscript` does not exist (`/home/yabgu_gm/work/`
+contains only `Tension`), and `third_party/tensionscript/dist/` has no `asc.js`
+(measured: it contains `asc.d.ts`, `tensionscript.d.ts`, `transform.cjs`,
 `transform.d.ts`, `transform.js`). Building one would write into `third_party/`,
 which `AGENTS.md` rule 1 forbids. The published compiler and the tree's sources
 are byte-identical on the four exercised files and the whole std tree (Item 2),
@@ -437,8 +437,8 @@ byte-identically), so it carries no record layout to drift.
 
 **4. Item 2's check was a sourcemap proxy, not a re-run.** The compiler-divergence
 check behind sentence 1 extracted the published package's
-`dist/assemblyscript.js.map` `sourcesContent` and diffed it against
-`third_party/assemblyscript/src/`. It is strong evidence (byte-identical on
+`dist/tensionscript.js.map` `sourcesContent` and diffed it against
+`third_party/tensionscript/src/`. It is strong evidence (byte-identical on
 `builtins.ts`, `program.ts`, `types.ts`, `compiler.ts`, and the whole std tree)
 but it is **not** an execution of the tree's checkout. A re-run against the tree
 requires a writable clone and a built `dist/asc.js`; that is an architect
@@ -477,7 +477,7 @@ Emitted widths (`threeway.wat`): cell 1 is `i32.const 4; memory.copy`; cell 3 is
 ## Fifth pass — the struct phase, implemented
 
 **Compiler of record for this pass.** The canonical checkout was provisioned at
-**`/home/yabgu_gm/work/as-inspect/assemblyscript`** (clone of
+**`/home/yabgu_gm/work/as-inspect/tensionscript`** (clone of
 `git@github.com:Yabgu/TensionScript.git`, `main` @ `50cceb36`, package `0.7.1`),
 built with `npm ci` + `npm run build`; `dist/asc.js` exists there now. Its
 sources are byte-identical to the vendored snapshot on the six exercised files
@@ -638,7 +638,7 @@ wire type — the new-surface case the scoping assigned to a separate phase for
 >
 > **Follow-up D** — `tension-framework/tests/run.sh:55` sets
 > `asc="$framework/node_modules/.bin/tensionscript"`, and that path does not
-> exist: the framework's `node_modules` holds upstream `assemblyscript@0.28.20`
+> exist: the framework's `node_modules` holds upstream `tensionscript@0.28.20`
 > (its bin is `asc`, not `tensionscript`). **The framework's own test suite has
 > not run under TensionScript in this session** — the fixtures were compiled
 > directly with the canonical compiler instead. Note it; do not fix it here.

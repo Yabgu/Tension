@@ -16,7 +16,7 @@ Four commits, pushed after each:
 
 | | commit | what |
 |---|---|---|
-| 1 | `22a2901` | `third_party/assemblyscript` submodule, on its own so the runtime diff reads cleanly |
+| 1 | `22a2901` | `third_party/tensionscript` submodule, on its own so the runtime diff reads cleanly |
 | 2 | `d5b62da` | the runtime default: `stub` → `incremental` |
 | 3 | `0fd8a82` | the `windowHandle` staging-block leak |
 | 4 | this document + the verification scripts | |
@@ -48,7 +48,7 @@ glob, which does not see one level deeper. The complete set, from
 | `tension-framework/assembly/anim/reader.ts` | 1 (prose) | **no** |
 | `tension-ogre/DESIGN.md` | 1 (prose) | **no** |
 
-The plan's *intent* was unambiguous — "stop overriding AssemblyScript's default",
+The plan's *intent* was unambiguous — "stop overriding TensionScript's default",
 and §5.1 explicitly expected the framework's own fixtures to move with it. This
 lands the intent and corrects the count. **No site that builds a Tension guest is
 left on `stub`**, which is what a half-migrated tree would have left behind.
@@ -429,7 +429,7 @@ tail.** If a future workload is sensitive to *aggregate* time, ~2× on allocatio
 | | |
 |---|---|
 | Branch | `feat/runtime-migration` — `22a2901`, `d5b62da`, `0fd8a82`, and this commit |
-| Submodule commit | `22a2901` (`third_party/assemblyscript` at `b6bda05c`) |
+| Submodule commit | `22a2901` (`third_party/tensionscript` at `b6bda05c`) |
 | Verification scripts | `tools/runtime-migration/{verify-examples.sh,verify-builds.sh,compare-runs.sh}` |
 | Measurement harness | `tools/runtime-migration/` (from the earlier commits) |
 | Transcript captures | `/tmp/rm-accept3/{stub,incremental}-*.txt` — Linux, this run |

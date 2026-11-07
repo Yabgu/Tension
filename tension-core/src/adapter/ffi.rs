@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 3;
+pub const ADAPTER_ABI_VERSION: u32 = 5;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -181,6 +181,12 @@ pub struct TensionCoreApi {
     /// one frame was presented (0.7.0a). The host wakes whichever loop is
     /// driving the guest; a host with no loop ignores it.
     pub signal_frame: Option<SignalFrameFn>,
+    /// Appended under rule 11 at ABI version 4: shader source for a vertex
+    /// layout. `-ENOSYS` when the installed generator does not serve the layout,
+    /// which is the expected answer for a guest-defined one at v1.
+    pub shader_generate: Option<ShaderGenerateFn>,
+    /// ABI v5: T2DG blob in, SPIR-V out. See `tension_adapter.h`.
+    pub compile_graph: Option<CompileGraphFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -195,6 +201,27 @@ pub type SignalFrameFn = unsafe extern "C" fn(*mut c_void);
 /// The bounds-checked read appended under rule 11 (C4.1a).
 pub type GuestReadCheckedFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32;
+/// Shader generation appended under rule 11 at ABI version 4: a packed layout
+/// descriptor in, NUL-terminated source out, the length back.
+pub type ShaderGenerateFn = unsafe extern "C" fn(*const u8, *mut c_char, u32) -> i32;
+
+/// Graph compilation appended under rule 11 at ABI version 5: a T2DG blob in,
+/// the two stages' SPIR-V out.
+///
+/// Unsafe because every pointer is a C caller's: the blob must be readable for
+/// `blob_len`, each output buffer writable for its capacity, and the two length
+/// out-parameters writable.
+pub type CompileGraphFn = unsafe extern "C" fn(
+    *mut c_void,   // user
+    *const u8,     // blob
+    u32,           // blob_len
+    *mut u8,       // vs_out
+    u32,           // vs_cap
+    *mut u8,       // fs_out
+    u32,           // fs_cap
+    *mut u32,      // out_vs_len
+    *mut u32,      // out_fs_len
+) -> i32;
 
 /// Mirrors `tension_adapter`. `publish` and `apply` may be NULL, which is why
 /// every function-pointer field here is an `Option`.
@@ -222,7 +249,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 144);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 160);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -244,6 +271,8 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, log_named) == 112);
     assert!(std::mem::offset_of!(TensionCoreApi, log_structured) == 120);
     assert!(std::mem::offset_of!(TensionCoreApi, guest_read_checked) == 128);
+    assert!(std::mem::offset_of!(TensionCoreApi, shader_generate) == 144);
+    assert!(std::mem::offset_of!(TensionCoreApi, compile_graph) == 152);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -893,6 +922,170 @@ pub(crate) unsafe extern "C" fn signal_frame(user: *mut c_void) {
     host.posting.signal_wake();
 }
 
+/// Shader source for one vertex layout (v4). Any thread; reads the caller's
+/// descriptor, writes the caller's buffer, never touches guest memory.
+///
+/// The descriptor is packed and little-endian (see `tension_adapter.h`): six
+/// `u16` scalars then `field_count` eight-byte fields. Decoding here rather than
+/// in the generator keeps the generator a pure function of a `LayoutDesc` and
+/// keeps every raw pointer in the one module that already owns `unsafe`.
+///
+/// Returns the source's length (excluding the NUL) on success, `-ENOSPC` when
+/// `cap` cannot hold it, `-ENOSYS` when no generator is installed or the layout
+/// names no preset, and `-EINVAL` on a null or malformed descriptor.
+pub(crate) unsafe extern "C" fn shader_generate(
+    layout_ptr: *const u8,
+    out: *mut c_char,
+    cap: u32,
+) -> i32 {
+    if layout_ptr.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    let Some(layout) = decode_layout(layout_ptr) else {
+        return EINVAL;
+    };
+    match tension_core::shadergen_registry::generate(&layout) {
+        Ok(source) => {
+            let bytes = source.as_bytes();
+            // One byte for the terminator; a caller that passed exactly the
+            // source length gets ENOSPC rather than a truncated shader, because
+            // a truncated shader compiles and does the wrong thing.
+            if bytes.len() + 1 > cap as usize {
+                return ENOSPC;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+            *out.add(bytes.len()) = 0;
+            bytes.len() as i32
+        }
+        Err(errno) => errno.code(),
+    }
+}
+
+/// `tension_core_api.compile_graph` — ABI v5.
+///
+/// Parse, validate, lower and compile, all through `pipeline::naga_backend`, so
+/// a graph compiled here is byte-for-byte the graph the build would have
+/// compiled. On `-ENOSPC` the required sizes are still written, so a caller can
+/// retry with bigger buffers rather than probing blindly.
+///
+/// # Safety
+///
+/// `blob` must be readable for `blob_len`; `vs_out`/`fs_out` writable for their
+/// capacities; `out_vs_len`/`out_fs_len` writable.
+pub(crate) unsafe extern "C" fn compile_graph(
+    _user: *mut c_void,
+    blob: *const u8,
+    blob_len: u32,
+    vs_out: *mut u8,
+    vs_cap: u32,
+    fs_out: *mut u8,
+    fs_cap: u32,
+    out_vs_len: *mut u32,
+    out_fs_len: *mut u32,
+) -> i32 {
+    if blob.is_null() || out_vs_len.is_null() || out_fs_len.is_null() {
+        return -libc::EINVAL;
+    }
+    let bytes = std::slice::from_raw_parts(blob, blob_len as usize);
+
+    let compiled = match ::tension_core::pipeline::naga_backend::compile(bytes) {
+        Ok(compiled) => compiled,
+        Err(error) => return error.errno(),
+    };
+
+    let vs = compiled.vertex_bytes();
+    let fs = compiled.fragment_bytes();
+    *out_vs_len = vs.len() as u32;
+    *out_fs_len = fs.len() as u32;
+
+    if vs.len() > vs_cap as usize || fs.len() > fs_cap as usize {
+        return -libc::ENOSPC;
+    }
+    if vs_out.is_null() || fs_out.is_null() {
+        return -libc::EINVAL;
+    }
+    std::ptr::copy_nonoverlapping(vs.as_ptr(), vs_out, vs.len());
+    std::ptr::copy_nonoverlapping(fs.as_ptr(), fs_out, fs.len());
+    0
+}
+
+/// The most fields a descriptor may name. Bounded so a corrupt `field_count`
+/// cannot walk the caller's memory looking for a reason to stop.
+const MAX_SHADER_FIELDS: usize = 64;
+
+/// Decode the packed descriptor. `None` means malformed, never "unsupported" —
+/// an unknown preset is `Errno::Enosys`, which the generator decides.
+unsafe fn decode_layout(ptr: *const u8) -> Option<tension_shadergen::LayoutDesc> {
+    use tension_shadergen::{DType, FieldDesc, LayoutDesc, Semantic, Slot};
+
+    // SAFETY: every read is `read_unaligned` at a fixed offset from `ptr`, and
+    // the caller guarantees `ptr` is readable for the descriptor it describes.
+    let scalar = |index: usize| -> u16 {
+        let at = unsafe { ptr.add(index * 2) };
+        u16::from_le_bytes(unsafe { [*at, *at.add(1)] })
+    };
+
+    let preset_id = scalar(0);
+    let record_size = scalar(1);
+    let alignment = scalar(2);
+    let field_count = usize::from(scalar(3));
+    if field_count > MAX_SHADER_FIELDS {
+        return None;
+    }
+
+    let mut fields = Vec::with_capacity(field_count);
+    for index in 0..field_count {
+        let base = 12 + index * 8;
+        let semantic = match scalar(base / 2) {
+            1 => Semantic::PosX,
+            2 => Semantic::PosY,
+            3 => Semantic::PosZ,
+            4 => Semantic::SrcX,
+            5 => Semantic::SrcY,
+            6 => Semantic::SrcW,
+            7 => Semantic::SrcH,
+            8 => Semantic::UVX,
+            9 => Semantic::UVY,
+            10 => Semantic::W,
+            11 => Semantic::H,
+            12 => Semantic::Tint,
+            13 => Semantic::SortKey,
+            14 => Semantic::Pad,
+            _ => return None,
+        };
+        let dtype = match scalar(base / 2 + 1) {
+            1 => DType::F32,
+            2 => DType::U16,
+            3 => DType::I16,
+            4 => DType::U8,
+            _ => return None,
+        };
+        let offset = scalar(base / 2 + 2);
+        let packed_slot = scalar(base / 2 + 3);
+        let slot = match (packed_slot & 0xff) as u8 {
+            1 => Slot::Position,
+            2 => Slot::TexCoord((packed_slot >> 8) as u8),
+            3 => Slot::Color,
+            4 => Slot::Normal,
+            5 => Slot::Tangent,
+            6 => Slot::Binormal,
+            _ => return None,
+        };
+        let step_rate = scalar(base / 2 + 4) as u8;
+        fields.push(FieldDesc { semantic, dtype, offset, slot, step_rate });
+    }
+
+    Some(LayoutDesc {
+        // The wire carries no string: a pointer in a packed descriptor would be
+        // an ABI hazard for no gain, and the name is diagnostics-only.
+        name: String::new(),
+        preset_id,
+        record_size,
+        alignment,
+        fields,
+    })
+}
+
 pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
     AdapterHost::from_user(user)
         .map(|host| host.memory_size())
@@ -1233,6 +1426,8 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         log_structured: Some(log_structured),
         guest_read_checked: Some(guest_read_checked),
         signal_frame: Some(signal_frame),
+        shader_generate: Some(shader_generate),
+        compile_graph: Some(compile_graph),
     }
 }
 
@@ -1430,18 +1625,22 @@ mod tests {
         // x86-64 (quoted in this module's docs); the const assertions above are
         // the compile-time half of this check. `log_named`/`log_structured`
         // were appended under rule 11, moving the size 112 -> 128;
-        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and `signal_frame`
-        // (v3, 0.7.0a) moved it 136 -> 144. The adapter's `layout_hash` (C4.1c)
+        // `guest_read_checked` (C4.1a) moved it 128 -> 136, `signal_frame`
+        // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
+        // 144 -> 152, and `compile_graph` (v5) moved it 152 -> 160. The
+        // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 144);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 160);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, shader_generate), 144);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, compile_graph), 152);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

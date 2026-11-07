@@ -1,2 +1,2 @@
-// AssemblyScript entry barrel — the file asc resolves for package imports.
+// TensionScript entry barrel — the file `tensionscript` resolves for package imports.
 export * from "./assembly/index";

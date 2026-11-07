@@ -37,8 +37,8 @@
 /* A version this build does not load. Kept distinct from both the current
  * version and the old-v1 fixture below, so the version refusal is proven
  * against a value that is simply wrong, not one that collides with either. It
- * moves with the current version: at v3 the current value is 3, so this is 4. */
-#define ECHO_ABI_VERSION 4u
+ * moves with the current version: at v5 the current value is 5, so this is 6. */
+#define ECHO_ABI_VERSION 6u
 #else
 #define ECHO_ABI_VERSION TENSION_ADAPTER_ABI_VERSION
 #endif
