@@ -470,7 +470,9 @@ fn test_state() -> HostState {
         arena: None,
         depth: 0,
         pending: crate::session::apply::PendingQueue::new(),
-        adapters: Vec::new(),
+        host_window: None,
+                window_closed: false,
+                adapters: Vec::new(),
         session: None,
     }
 }

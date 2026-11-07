@@ -97,3 +97,9 @@ serde_json = "1.0"
 [[test]]
 name = "platform_surface"
 harness = false
+
+# The pump probe, for the same reason as `platform_surface`: a real window and
+# the `sdl3` main-thread rule.
+[[test]]
+name = "platform_window"
+harness = false

@@ -66,6 +66,7 @@
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
+use tension_core::platform;
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
@@ -141,6 +142,16 @@ struct HostState {
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
     /// and never cleared by a trap (R7) — a fault leaves the work where it is.
     pending: session::apply::PendingQueue,
+    /// The host-owned window, when `--window` asked for one.
+    ///
+    /// Lives in the store rather than beside it because `host_loop` needs to
+    /// pump it once per iteration and has no other way to reach it. Dropped
+    /// after `teardown_adapters`, so no adapter can hold a handle into a dead
+    /// instance.
+    host_window: Option<platform::HostWindow>,
+    /// Set by the pump when the user closes the window. The loop breaks on it,
+    /// the same way it breaks when the guest closes its session.
+    window_closed: bool,
     /// The loaded adapters, in registration order: what the epoch's publish
     /// phase calls, and in what order (`DESIGN.md` §3.3).
     adapters: Vec<adapter::AdapterCall>,
@@ -258,6 +269,10 @@ options:
                          object per line). Env fallback: TENSION_LOG_FORMAT
   --log-file <PATH>      append log lines to PATH instead of stderr. Env
                          fallback: TENSION_LOG_FILE
+  --window <W>x<H>       spike/dev flag: creates a host-owned window, and the
+                         Vulkan instance and surface that go with it. Only
+                         tension-ogre consumes the surface as of this pass;
+                         nothing else looks at it yet. Default off.
   --session-open         A1 test-only: open the session from the host before
                          `_start_game`, for a guest that does not call
                          `session_open` itself. Real guests open their own
@@ -361,8 +376,35 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
+    /// `--window <W>x<H>`: a host-owned window, created before any capability
+    /// loads. `None` means no window, which is the default and what every
+    /// existing test and example gets.
+    window: Option<(u32, u32)>,
     wasm_path: String,
     args: Vec<String>,
+}
+
+/// Parse `--window`'s `WxH` argument.
+///
+/// One argument rather than two: `<game.wasm>` ends option parsing, so a second
+/// bare number would be ambiguous with a game argument. `x` is the separator
+/// because `320x240` is how every window size in this tree is already written.
+fn parse_window_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or_else(|| format!("`--window` wants <W>x<H>, got `{value}`"))?;
+    let parse = |part: &str, what: &str| -> Result<u32, String> {
+        part.parse::<u32>()
+            .map_err(|_| format!("`--window`: {what} `{part}` is not a number"))
+    };
+    let width = parse(width, "width")?;
+    let height = parse(height, "height")?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "`--window`: {width}x{height} is not a size; both must be at least 1"
+        ));
+    }
+    Ok((width, height))
 }
 
 /// Parse the arguments that follow the program name.
@@ -378,6 +420,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut log_levels = Vec::new();
     let mut log_format: Option<String> = None;
     let mut log_file: Option<PathBuf> = None;
+    let mut window: Option<(u32, u32)> = None;
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
@@ -447,6 +490,10 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 let value = rest.next().ok_or("`--log-file` needs a path")?;
                 log_file = Some(PathBuf::from(value));
             }
+            "--window" => {
+                let value = rest.next().ok_or("`--window` needs <W>x<H>")?;
+                window = Some(parse_window_size(&value)?);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -476,6 +523,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
+        window,
         wasm_path,
         args: rest.collect(),
     })
@@ -828,6 +876,8 @@ fn main() -> anyhow::Result<()> {
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),
+            host_window: None,
+            window_closed: false,
             adapters: Vec::new(),
             session: None,
         },
@@ -1253,6 +1303,41 @@ fn main() -> anyhow::Result<()> {
     // this host instead of failing at instantiation with "unknown import".
     scheduler::link_scheduler(&mut linker)?;
 
+    // The host-owned window -------------------------------------------------
+    //
+    // Created before any adapter loads, because an adapter's `init` is the
+    // first thing that can ask for the surface (`host_surface`), and a surface
+    // cannot exist before the window does. Before instantiation too, so a guest
+    // that polls `tension::platform.surface_width()` on its first instruction
+    // gets the real size rather than a zero it has to special-case.
+    //
+    // Off unless asked for: every existing test, example and CI path passes no
+    // `--window`, so nothing about their behaviour changes.
+    if let Some((width, height)) = cli.window {
+        match platform::HostWindow::new("Tension", width, height) {
+            Ok(window) => {
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--window: {}x{} window open on '{}' (SDL {})",
+                        window.published_size().0,
+                        window.published_size().1,
+                        window.driver(),
+                        window.sdl_version()
+                    ),
+                );
+                store.data_mut().host_window = Some(window);
+            }
+            Err(error) => {
+                // A refused window is a startup failure, not a warning: the
+                // caller asked for one, and a run that continued headless while
+                // claiming otherwise is the failure mode this refuses.
+                anyhow::bail!("--window {width}x{height}: {error}");
+            }
+        }
+    }
+
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
     // the guest may call, and because `region_lookup` answers from the frozen
@@ -1278,6 +1363,29 @@ fn main() -> anyhow::Result<()> {
             Err(error) => anyhow::bail!("--capability {}: {error}", path.display()),
         }
     }
+    // Did anything want the surface?
+    //
+    // The surface is created lazily, on the first `host_surface` call, so at
+    // this point "no surface" is a normal state and not a failure. Saying so is
+    // the difference between a developer wondering why `--window` produced no
+    // swapchain and knowing that no adapter asked: this pass has no
+    // `host_surface` slot at all, so the answer is always this line today, and
+    // that is worth stating plainly rather than leaving to be inferred.
+    if let Some(window) = store.data().host_window.as_ref() {
+        if !window.has_surface() {
+            let (width, height) = window.published_size();
+            logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "--window: {width}x{height} window open on '{}'; no adapter requested a \
+                     surface, so no VkInstance was created",
+                    window.driver()
+                ),
+            );
+        }
+    }
+
     // The host must outlive every call the imports make, so it lives here, in
     // `main`'s frame, for as long as the linker does. It carries a clone of the
     // posting face, which is what an adapter thread reaches through
@@ -1506,6 +1614,10 @@ fn main() -> anyhow::Result<()> {
     // end of this function instead, after the host's own session close.
     if let Err(error) = guest_result {
         adapter::teardown_adapters(&mut adapters);
+        // The window goes after the last adapter, on both paths: an adapter
+        // holding a VkSurfaceKHR into an instance this drop destroys would be
+        // a use-after-free that only shows up on a trap path.
+        drop_host_window(&mut store);
         return Err(error);
     }
 
@@ -1575,7 +1687,28 @@ fn main() -> anyhow::Result<()> {
     // the session itself, or that never opened one, reaches the same place.)
     adapter::teardown_adapters(&mut adapters);
 
+    // Same ordering as the trapping path: adapters first, then the surface and
+    // instance they were handed.
+    drop_host_window(&mut store);
+
     Ok(())
+}
+
+/// Destroy the host's surface and instance, if there is one.
+///
+/// A named function rather than an assignment at two call sites, because the
+/// ordering requirement — after `teardown_adapters`, before the store drops —
+/// applies to both and is the kind of thing a third exit path would forget.
+fn drop_host_window(store: &mut Store<HostState>) {
+    if let Some(window) = store.data_mut().host_window.take() {
+        let (width, height) = window.published_size();
+        logging::log(
+            Level::Debug,
+            "core",
+            &format!("--window: closing {width}x{height} on '{}'", window.driver()),
+        );
+        drop(window);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1680,6 +1813,47 @@ fn host_loop(
         };
         let outstanding = store.data().scheduler.parked() > 0;
         if !running && !outstanding && store.data().wake_batch.is_empty() {
+            break;
+        }
+
+        // Drain SDL before blocking, then block for at most one slice.
+        //
+        // **Why a bounded timeout rather than an event watch.** SDL events only
+        // reach the queue during a pump, so a watch callback cannot fire while
+        // this thread is parked in `wait_for_events` — it would wake the loop
+        // only after something else had already pumped, which is the case that
+        // needs no waking. The 16 ms slice already exists as the loop's safety
+        // net, and pumping once per slice bounds window-event latency to one
+        // frame at 60 Hz while leaving the wait fully interruptible by a guest
+        // wake. See `HOST_LOOP_SLICE_MS`.
+        //
+        // Thread rule: this is the same thread that ran `HostWindow::new`, which
+        // is the only thread SDL allows to touch a window's events.
+        {
+            let pumped = store
+                .data_mut()
+                .host_window
+                .as_mut()
+                .map(|window| window.pump());
+            if let Some(events) = pumped {
+                if let Some((width, height)) = events.resized {
+                    logging::log(
+                        Level::Debug,
+                        "core",
+                        &format!("--window: resized to {width}x{height}"),
+                    );
+                }
+                if events.close_requested {
+                    // The same effect as the guest closing its session: stop
+                    // driving it and let `main` tear down in order. Not an
+                    // error, and not a teardown here — the adapters still need
+                    // `shutdown` on their own threads, which `main` arranges.
+                    store.data_mut().window_closed = true;
+                }
+            }
+        }
+        if store.data().window_closed {
+            logging::log(Level::Info, "core", "--window: closed; stopping the host loop");
             break;
         }
 
