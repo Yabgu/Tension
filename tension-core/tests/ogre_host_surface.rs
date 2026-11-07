@@ -30,6 +30,7 @@
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use tension_core::platform::HostWindow;
 
@@ -113,10 +114,13 @@ struct ApiTable {
     >,
     post_control: Option<unsafe extern "C" fn(*mut c_void, *const CtrlMsg) -> i32>,
     host_surface: Option<unsafe extern "C" fn(*mut c_void, *mut TensionHostSurface) -> i32>,
+    host_surface_extension:
+        Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_char, u32, *mut u32) -> i32>,
 }
 
-const _: () = assert!(std::mem::size_of::<ApiTable>() == 176);
+const _: () = assert!(std::mem::size_of::<ApiTable>() == 184);
 const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface) == 168);
+const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface_extension) == 176);
 const _: () = assert!(std::mem::size_of::<TensionHostSurface>() == 32);
 
 #[repr(C)]
@@ -150,13 +154,27 @@ struct Collected {
     /// check is that the host's size *changes* — a frozen snapshot made the test
     /// assert 320x240 after a resize to 640x480, which is a harness bug, not an
     /// adapter one.
-    live: Option<(u32, u32)>,
+    ///
+    /// Atomics because two threads touch them for real: the render thread reads
+    /// these once per frame while this thread writes them across a resize. A
+    /// plain tuple would be a data race that "works" until it doesn't.
+    live_width: AtomicU32,
+    live_height: AtomicU32,
+    /// The names the host enabled, served by `host_surface_extension`. Empty
+    /// until the window has a surface; the adapter reads them during `init`.
+    extensions: Vec<String>,
+    /// Incremented by `signal_frame`, which the adapter calls after every
+    /// frame it presents. This is the only frame counter that crosses the ABI,
+    /// so it is what "frame 1 rendered" means here.
+    frames: AtomicU32,
     surface_calls: u32,
     surface_enosys: u32,
 }
 
 const ENOSYS: i32 = -38;
 const EINVAL: i32 = -22;
+const ENOENT: i32 = -2;
+const ENODEV: i32 = -19;
 
 /// Capture the adapter's log lines instead of discarding them: the log is where
 /// the surface handoff and the per-frame resize check both announce themselves,
@@ -167,7 +185,14 @@ unsafe extern "C" fn capture_log(user: *mut c_void, _level: i32, msg: *const c_c
     }
     let state = unsafe { &mut *(user as *mut State) };
     let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, len as usize) };
-    state.logs.push(String::from_utf8_lossy(bytes).into_owned());
+    let line = String::from_utf8_lossy(bytes).into_owned();
+    // Echoed when asked for: a crash on the render thread kills the process
+    // before the captured log can be printed, and an unbuffered stderr is the
+    // only channel that survives it.
+    if std::env::var_os("TENSION_TEST_TRACE").is_some() {
+        eprintln!("  adapter: {line}");
+    }
+    state.logs.push(line);
 }
 
 /// The adapter logs through `log_named`, not the legacy `log` slot — so this is
@@ -185,7 +210,11 @@ unsafe extern "C" fn capture_log_named(
     }
     let state = unsafe { &mut *(user as *mut State) };
     let bytes = unsafe { std::slice::from_raw_parts(msg as *const u8, len as usize) };
-    state.logs.push(String::from_utf8_lossy(bytes).into_owned());
+    let line = String::from_utf8_lossy(bytes).into_owned();
+    if std::env::var_os("TENSION_TEST_TRACE").is_some() {
+        eprintln!("  adapter: {line}");
+    }
+    state.logs.push(line);
 }
 
 unsafe extern "C" fn record_import(
@@ -223,13 +252,47 @@ unsafe extern "C" fn record_region(_: *mut c_void, _: u32, off: *mut u32, size: 
     0
 }
 
+/// The extensions the host enabled, as `host_surface`. `-ENOENT` past the end
+/// is how the adapter enumerates, so the list needs no separate count.
+unsafe extern "C" fn host_surface_extension(
+    user: *mut c_void,
+    index: u32,
+    out_name: *mut c_char,
+    capacity: u32,
+    out_len: *mut u32,
+) -> i32 {
+    if user.is_null() || out_name.is_null() || out_len.is_null() || capacity < 256 {
+        return EINVAL;
+    }
+    let collected = unsafe { &mut *(user as *mut Collected) };
+    let Some(name) = collected.extensions.get(index as usize) else {
+        return ENOENT;
+    };
+    let bytes = name.as_bytes();
+    if bytes.len() + 1 > capacity as usize {
+        return EINVAL;
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, out_name, bytes.len());
+        *out_name.add(bytes.len()) = 0;
+        *out_len = bytes.len() as u32;
+    }
+    0
+}
+
 /// The slot under test: hand back what the host published, or -ENOSYS.
 unsafe extern "C" fn host_surface(user: *mut c_void, out: *mut TensionHostSurface) -> i32 {
     let collected = unsafe { &mut *(user as *mut Collected) };
     collected.surface_calls += 1;
     match collected.surface {
         Some(mut surface) => {
-            if let Some((width, height)) = collected.live {
+            // Zero means "not set yet"; the adapter treats a zero size as
+            // "nothing to compare", which is the pre-resize behaviour.
+            let (width, height) = (
+                collected.live_width.load(Ordering::Relaxed),
+                collected.live_height.load(Ordering::Relaxed),
+            );
+            if width != 0 && height != 0 {
                 surface.width = width;
                 surface.height = height;
             }
@@ -325,6 +388,33 @@ fn dso_path() -> Option<PathBuf> {
     candidate.exists().then_some(candidate)
 }
 
+/// Wait until the adapter has presented more than `after` frames, and return the
+/// count it reached (unchanged on timeout, so the caller's assertion fails).
+fn wait_for_frames(state: &State, after: u32, timeout: std::time::Duration) -> u32 {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        let frames = state.collected.frames.load(Ordering::SeqCst);
+        if frames > after || std::time::Instant::now() >= deadline {
+            return frames;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Wait until a captured log line contains `needle`.
+fn wait_for_log(state: &State, needle: &str, timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if logged(state, needle) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn check(condition: bool, what: &str) {
     if condition {
         println!("ok   {what}");
@@ -386,6 +476,13 @@ fn main() {
         instance: surface.instance,
         surface: surface.surface,
     });
+    // The adapter asks for these during `init`; Ogre's external-instance path
+    // treats them as the record of what the instance enabled. Handing over the
+    // window's real list is the whole point — an empty one would tell Ogre the
+    // instance has nothing, and the swapchain would be built without the
+    // window-system extension the surface needs.
+    state.collected.extensions = window.instance_extensions().to_vec();
+    println!("instance extensions: {:?}", state.collected.extensions);
     let state_ptr = &mut *state as *mut State as *mut c_void;
 
     let api = ApiTable {
@@ -406,11 +503,12 @@ fn main() {
         log_named: Some(capture_log_named),
         log_structured: Some(capture_log_named),
         guest_read_checked: Some(guest_read_checked_stub),
-        signal_frame: Some(signal_frame_nothing),
+        signal_frame: Some(count_frame),
         shader_generate: Some(shader_nothing),
         compile_graph: Some(compile_nothing),
         post_control: Some(refuse_control),
         host_surface: Some(host_surface),
+        host_surface_extension: Some(host_surface_extension),
     };
 
     let init = unsafe { (*vtable).init }.expect("init is present");
@@ -460,36 +558,26 @@ fn main() {
         state.collected.surface_enosys == 0,
         "c. host_surface answered 0, never -ENOSYS",
     );
-    // BLOCKED, and reported as such rather than passed.
-    //
-    // The adapter sees the host surface and logs it — that part is proven above.
-    // What is *not* proven, and cannot be from this test, is that Ogre renders
-    // into it: handing `external_instance` to `Root::loadPlugin` crashes on the
-    // render thread, because the option takes a `VulkanExternalInstance*` whose
-    // layer and extension arrays the caller must fill, not a raw `VkInstance`.
-    // See the FINDING note in `tension-ogre/src/backend_ogre.cpp`.
-    //
-    // Exit 2 rather than 0: a green run here would claim the architecture works
-    // end to end when the last hop is disabled. Exit 2 rather than a crash: the
-    // suite should say why it could not proceed.
-    let saw_surface = logged(&state, "host's surface");
-    println!("  (c) adapter saw the host surface: {saw_surface}");
-    eprintln!(
-        "BLOCKED: Ogre cannot consume the host surface yet — the \
-         `external_instance` handoff needs a filled `VulkanExternalInstance`, \
-         not a raw VkInstance handle. Host side proven; renderer side disabled."
+    check(
+        logged(&state, "host's surface"),
+        "c. the adapter logged the host surface it adopted",
     );
-    std::process::exit(2);
 
     // ── (c) frame 1 ──────────────────────────────────────────────────────
     //
     // `ogre::init` starts a render thread; the frames are driven by the
-    // adapter's own loop. What this test drives instead is the *size* handoff,
-    // which is the part that makes the surface shared rather than merely
-    // reported.
+    // adapter's own loop, and it reports each one through `signal_frame`.
+    // Without this counter "it rendered" would mean "it did not crash".
+    let frames_at_start = wait_for_frames(&state, 0, std::time::Duration::from_secs(60));
+    println!("  frames presented after init: {frames_at_start}");
+    check(frames_at_start > 0, "c. frame 1 rendered into the host surface");
     check(
-        state.collected.surface_calls > 0,
-        "b. the adapter asked the host for its surface (host_surface was called)",
+        logged(&state, "Vulkan plugin loading with the host's instance"),
+        "c. the Vulkan plugin was loaded with the host's instance, not its own",
+    );
+    check(
+        logged(&state, "host instance extension:"),
+        "c. the host's extension names reached the plugin",
     );
 
     // ── (d) resize the host ──────────────────────────────────────────────
@@ -504,8 +592,11 @@ fn main() {
     }
     let (width, height) = window.published_size();
     check((width, height) == (640, 480), "d. the host published the new size");
-    // The stub now serves the *live* size, which is what the adapter polls.
-    state.collected.live = Some((width, height));
+    // The stub now serves the *live* size, which is what the adapter polls once
+    // per frame. Stored before the wait below, so the render thread's next
+    // comparison sees 640x480 rather than the size it started at.
+    state.collected.live_width.store(width, Ordering::SeqCst);
+    state.collected.live_height.store(height, Ordering::SeqCst);
 
     // ── (e) what the renderer would see next frame ───────────────────────
     //
@@ -529,6 +620,25 @@ fn main() {
         "e. the renderer would see 640x480 and ask for a swapchain rebuild",
     );
 
+    // ── (e) frame 2, after the resize ────────────────────────────────────
+    //
+    // Two separate facts, and the difference between them is the whole point:
+    //
+    //   * the adapter *noticed* the host's new size and called
+    //     `requestResolution` (the log line), and
+    //   * a frame was presented *after* that call.
+    //
+    // A run where the rebuild is requested and the next frame fails is a
+    // resize-hunk finding, not a pass. So both are asserted, in order.
+    let rebuild = wait_for_log(&state, "requesting a swapchain rebuild", std::time::Duration::from_secs(30));
+    check(rebuild, "e. Ogre asked the swapchain to rebuild after the host resize");
+    let frames_after = wait_for_frames(&state, frames_at_start, std::time::Duration::from_secs(30));
+    println!("  frames presented after the resize: {frames_after}");
+    check(
+        frames_after > frames_at_start,
+        "e. a frame was presented after the rebuild request",
+    );
+
     // ── (f) window_handle ────────────────────────────────────────────────
     //
     // Under Q2 this must be -ENODEV: the host owns the window, so Ogre has no
@@ -537,8 +647,20 @@ fn main() {
         .collected
         .imports
         .iter()
-        .find(|registered| registered.name.to_str() == Ok("window_handle"));
-    check(window_handle.is_some(), "f. ogre::window_handle is registered (so -ENODEV is reachable)");
+        .find(|registered| registered.name.to_str() == Ok("window_handle"))
+        .cloned();
+    check(window_handle.is_some(), "f. ogre::window_handle is registered");
+    if let Some(entry) = window_handle {
+        let func = entry.func.expect("window_handle has a shim");
+        let mut ret = TensionValue { bits: 0 };
+        let args = [TensionValue { bits: 0 }, TensionValue { bits: 0 }];
+        let rc = unsafe { func(entry.ctx, args.as_ptr(), 2, &mut ret) };
+        println!("  window_handle rc = {rc}");
+        check(
+            rc == ENODEV && ret.bits == ENODEV as u64,
+            "f. ogre::window_handle answers -ENODEV while the host owns the window",
+        );
+    }
 
     // ── (g) teardown: adapter first, instance last ───────────────────────
     if let Some(shutdown) = unsafe { (*vtable).shutdown } {
@@ -582,7 +704,19 @@ unsafe extern "C" fn guest_read_checked_stub(user: *mut c_void, ptr: u32, dst: *
     unsafe { guest_read(user, ptr, dst, len) }
 }
 
-unsafe extern "C" fn signal_frame_nothing(_: *mut c_void) {}
+/// The adapter's "I presented a frame" signal, which is the only frame counter
+/// that crosses the ABI. Counted with an atomic because the render thread calls
+/// it while this thread polls the count.
+unsafe extern "C" fn count_frame(user: *mut c_void) {
+    if user.is_null() {
+        return;
+    }
+    let state = unsafe { &*(user as *const State) };
+    let n = state.collected.frames.fetch_add(1, Ordering::SeqCst) + 1;
+    if std::env::var_os("TENSION_TEST_TRACE").is_some() {
+        eprintln!("  frame {n} presented");
+    }
+}
 
 unsafe extern "C" fn shader_nothing(_: *const c_void, _: *mut c_char, _: u32) -> i32 { ENOSYS }
 

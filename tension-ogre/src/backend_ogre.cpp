@@ -41,6 +41,10 @@
 #include <OgrePixelFormatGpuUtils.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
+// The `VulkanExternalInstance` the Vulkan plugin reads when the host owns the
+// instance: its layout is Ogre's, and mirroring it here would be a second copy
+// of a struct that must match byte for byte.
+#include <OgreVulkanDevice.h>
 
 #include <Compositor/OgreCompositorManager2.h>
 #include <Animation/OgreBone.h>
@@ -210,6 +214,21 @@ class BackendOgre final : public Backend {
     int32_t start(const Config &config, StatusWriter &status) override {
         config_ = config;
         status_for_messages_ = &status;
+        {
+            // What this backend was actually handed, before any branch acts on
+            // it. The host-owned path is chosen at runtime from these three
+            // fields, and a silently zero one is the difference between "Ogre
+            // adopted the host's surface" and "Ogre quietly made its own
+            // window" — a failure that renders fine and proves nothing.
+            char line[160];
+            std::snprintf(line, sizeof(line),
+                          "ogre: backend config: renderer=%u external_instance=0x%llx "
+                          "external_surface=0x%llx",
+                          static_cast<unsigned>(config.renderer),
+                          static_cast<unsigned long long>(config.external_instance),
+                          static_cast<unsigned long long>(config.external_surface));
+            log_line(line);
+        }
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
             const bool vulkan_rs = renderer_ == TENSION_OGRE_RENDERER_VULKAN;
@@ -263,10 +282,11 @@ class BackendOgre final : public Backend {
                         ("tension-ogre-" + std::to_string(static_cast<long>(::getpid())));
             std::filesystem::create_directories(temp_dir_);
             const std::string plugins_cfg = (temp_dir_ / "plugins.cfg").string();
-            // FINDING (step 4): the host-instance route is disabled until the
-            // `VulkanExternalInstance*` handoff is built properly. See the note
-            // above `root_`.
-            const bool deferred_vulkan = false;
+            // The host-instance route is taken only when there is a host
+            // instance *and* this is the Vulkan renderer: every other plugin
+            // ignores the option, and the pre-v6 path must stay byte-identical
+            // when core published nothing.
+            const bool deferred_vulkan = vulkan_rs && config.external_instance != 0;
             {
                 // The Vulkan plugin is loaded separately below when the host
                 // owns the instance: `Root::loadPlugin` is the only route that
@@ -306,30 +326,74 @@ class BackendOgre final : public Backend {
                                                  (temp_dir_ / "Ogre.log").string(), "tension");
 
             if (deferred_vulkan) {
-                // DISABLED, and the reason is the finding this pass produced.
-                //
                 // `OgreVulkanRenderSystem.cpp:253-259` does not read a
                 // `VkInstance` from this option: it reads a
-                // `VulkanExternalInstance*` and immediately calls
-                // `enumerateExtensionsAndLayers` on it, which walks
-                // `instanceLayers` / `instanceExtensions` (FastArrays the caller
-                // must fill). Passing the raw handle makes it dereference a
-                // VkInstance as a struct pointer and segfaults on the render
-                // thread inside `VulkanPlugin::install`.
+                // `VulkanExternalInstance*` and immediately hands it to
+                // `enumerateExtensionsAndLayers`, which walks `instanceLayers`
+                // and `instanceExtensions`. So the adapter owns one, fills it
+                // from the host's record, and passes its address.
                 //
-                // Doing it correctly means the adapter enumerates the instance's
-                // layers and extensions itself and owns a
-                // `VulkanExternalInstance` for the plugin's lifetime. That is a
-                // real change, not a parameter, and it is a separate pass.
+                // The lists are what the *host* enabled, not what this adapter
+                // would have asked for: the instance already exists, and Ogre
+                // filters these claims against what the loader reports as
+                // available, logging "claims X is present but it's not" for
+                // anything that fails. A fabricated list would therefore show
+                // up as a warning per entry rather than a crash — which is
+                // exactly why it must come from the host.
+                external_instance_ = std::make_unique<Ogre::VulkanExternalInstance>();
+                external_instance_->instance = reinterpret_cast<VkInstance>(
+                    static_cast<uintptr_t>(config.external_instance));
+                // `instanceLayers` stays empty on purpose: core creates its
+                // instance without enabling a layer. If validation is ever
+                // enabled at creation, the ABI grows a layer slot beside the
+                // extension one — an empty array here would then tell Ogre that
+                // no layer is enabled, quietly losing the diagnostic.
+                if (config.host_extension == nullptr) {
+                    return refuse(status, TENSION_OGRE_STAGE_PLUGIN, -EINVAL,
+                                  "the host supplied an instance but no way to read the "
+                                  "extensions it was created with");
+                }
+                char extension_name[256];
+                for (uint32_t index = 0;; ++index) {
+                    uint32_t length = 0;
+                    extension_name[0] = '\0';
+                    const int32_t rc = config.host_extension(
+                        config.host_extension_ctx, index, extension_name, sizeof(extension_name),
+                        &length);
+                    if (rc == -ENOENT) break;
+                    if (rc != 0) {
+                        return refuse(status, TENSION_OGRE_STAGE_PLUGIN, rc,
+                                      "the host could not report the extensions its instance "
+                                      "was created with");
+                    }
+                    VkExtensionProperties properties{};
+                    std::snprintf(properties.extensionName, sizeof(properties.extensionName), "%s",
+                                  extension_name);
+                    // The spec version is not a claim the host can make; 1 is
+                    // what the loader reports for every extension in practice,
+                    // and Ogre reads the name only.
+                    properties.specVersion = 1;
+                    external_instance_->instanceExtensions.push_back(properties);
+                    log_line("ogre: host instance extension: " + std::string(extension_name));
+                }
+                {
+                    char line[96];
+                    std::snprintf(line, sizeof(line),
+                                  "ogre: Vulkan plugin loading with the host's instance "
+                                  "(%u extension(s), no layers)",
+                                  static_cast<unsigned>(external_instance_->instanceExtensions.size()));
+                    log_line(line);
+                }
                 Ogre::NameValuePairList plugin_params;
                 {
                     char value[32];
-                    std::snprintf(value, sizeof(value), "%llu",
-                                  static_cast<unsigned long long>(config.external_instance));
+                    std::snprintf(
+                        value, sizeof(value), "%llu",
+                        static_cast<unsigned long long>(
+                            reinterpret_cast<uintptr_t>(external_instance_.get())));
                     plugin_params["external_instance"] = value;
                 }
                 root_->loadPlugin(library, false, &plugin_params);
-                log_line("ogre: Vulkan plugin loaded with the host's instance");
             }
 
             // ── STAGE_RENDER_SYSTEM ──────────────────────────────────────
@@ -644,6 +708,9 @@ class BackendOgre final : public Backend {
                 root_->shutdown();
                 root_.reset();
             }
+            // After the root: the plugin read this struct on the way in and the
+            // render system may still hold the pointer while shutting down.
+            external_instance_.reset();
             screenshot_listener_.reset();
             render_system_ = nullptr;
             if (!temp_dir_.empty()) {
@@ -2187,6 +2254,11 @@ class BackendOgre final : public Backend {
     std::unique_ptr<ScreenshotListener> screenshot_listener_;
     /// The mirror the apply pass is reading from, for the duration of the call.
     const SceneMirror *applying_ = nullptr;
+    /// The `VulkanExternalInstance` handed to the Vulkan plugin, when the host
+    /// owns the instance. Declared before `root_` so it is destroyed after it:
+    /// the render system holds a pointer to this struct, and freeing it first
+    /// would leave Ogre reading freed memory during `shutdown`.
+    std::unique_ptr<Ogre::VulkanExternalInstance> external_instance_;
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;

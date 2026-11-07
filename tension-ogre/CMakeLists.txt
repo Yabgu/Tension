@@ -98,12 +98,36 @@ endif()
 target_link_libraries(tension_ogre PRIVATE ${TENSION_RES_LIB})
 
 if(TENSION_OGRE_BACKEND STREQUAL "ogre")
+    # The Vulkan plugin's own headers: `OgreVulkanDevice.h` declares the
+    # `VulkanExternalInstance` this adapter fills when the host owns the
+    # instance. Mirroring that struct here instead would be a second definition
+    # of a layout that must match byte for byte, which is the drift class
+    # `docs/guard-discipline.md` names.
+    #
+    # Found, not assumed: the install puts the header under the plugin's
+    # `include/` on a Linux build and, on the Win32 overlay, beside its
+    # prerequisites. A missing header is a configure-time error with a readable
+    # message rather than a compile error pointing at an `#include`.
+    find_path(OGRE_VULKAN_INCLUDE_DIR
+        NAMES OgreVulkanDevice.h
+        PATHS
+            "${OGRE_NEXT_PREFIX}/include/OGRE-Next/RenderSystems/Vulkan/include"
+            "${OGRE_NEXT_PREFIX}/include/OGRE-Next/RenderSystems/Vulkan"
+        NO_DEFAULT_PATH
+    )
+    if(NOT OGRE_VULKAN_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "OgreVulkanDevice.h not found under ${OGRE_NEXT_PREFIX}; the Vulkan "
+            "plugin's headers are what declare VulkanExternalInstance")
+    endif()
+
     target_include_directories(tension_ogre SYSTEM PRIVATE
         ${OGRE_NEXT_PREFIX}/include
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Common
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Unlit
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Pbs
+        ${OGRE_VULKAN_INCLUDE_DIR}
     )
 
     if(WIN32)

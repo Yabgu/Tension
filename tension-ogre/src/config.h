@@ -63,6 +63,16 @@ struct Config {
     /// check cost nothing on the pre-v6 path.
     void (*host_size)(void *ctx, uint32_t *out_w, uint32_t *out_h) = nullptr;
     void *host_size_ctx = nullptr;
+    /// One of the Vulkan instance extensions the host enabled, read by index
+    /// until `-ENOENT`. The render thread fills a `VulkanExternalInstance` from
+    /// this before loading the Vulkan plugin, because Ogre's external-instance
+    /// path treats the caller's list as the record of what is enabled and a
+    /// handle alone cannot say.
+    ///
+    /// Null when there is no host instance, alongside `host_size`.
+    int32_t (*host_extension)(void *ctx, uint32_t index, char *out_name,
+                              uint32_t capacity, uint32_t *out_len) = nullptr;
+    void *host_extension_ctx = nullptr;
 };
 
 /// Either a config or the named reason it was refused.

@@ -626,7 +626,43 @@ typedef struct tension_core_api {
      * A render thread may call it once per frame to learn the current size.
      */
     int32_t (*host_surface)(void *user, tension_host_surface *out);
+
+    /*
+     * One of the Vulkan instance extensions the host enabled, appended under
+     * rule 11 at ABI version 6 (slot 22).
+     *
+     * `host_surface` gives a renderer the host's `VkInstance`; it cannot give
+     * the extensions that instance was created with, because that list is not
+     * recoverable from the handle. Ogre-Next needs it: its external-instance
+     * path filters the caller's claims against what the loader reports as
+     * *available* and then uses the caller's list as the truth about what is
+     * enabled (`OgreVulkanDevice.cpp`, the `else  // externalInstance` branch).
+     * Enumerating from here would answer the wrong question — available is not
+     * enabled — so the host, which created the instance, reports its own
+     * record.
+     *
+     * `index` counts from 0. Returns
+     *   0        `out_name` holds the name, NUL-terminated, and `*out_len` its
+     *            length excluding the NUL
+     *   -ENOENT  `index` is past the last extension; this is how a caller
+     *            enumerates, and it is not an error
+     *   -EINVAL  a null argument, or `capacity` below
+     *            TENSION_EXTENSION_NAME_CAPACITY (the ABI's floor, 256 — every
+     *            Vulkan extension name fits, and a smaller buffer would
+     *            truncate a name that is then silently wrong)
+     *   -ENOSYS  the host owns no surface, so it has no instance to describe
+     *
+     * The list is fixed for the life of the instance: it is what was passed to
+     * `vkCreateInstance` before any adapter loaded.
+     *
+     * Any thread (rule 7): it reads the host's own state, never guest memory.
+     */
+    int32_t (*host_surface_extension)(void *user, uint32_t index, char *out_name,
+                                      uint32_t capacity, uint32_t *out_len);
 } tension_core_api;
+
+/* The smallest `capacity` `host_surface_extension` accepts; see that slot. */
+#define TENSION_EXTENSION_NAME_CAPACITY 256u
 
 /* ── the adapter: what it provides to the session ────────────────────── */
 
@@ -839,25 +875,27 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, host_surface)
-                      + sizeof(((tension_core_api *)0)->host_surface)
+static_assert(offsetof(tension_core_api, host_surface_extension)
+                      + sizeof(((tension_core_api *)0)->host_surface_extension)
                   == sizeof(tension_core_api),
-              "tension_core_api: host_surface must stay the last slot; an "
-              "append updates this assertion and the Rust table together");
+              "tension_core_api: host_surface_extension must stay the last "
+              "slot; an append updates this assertion and the Rust table "
+              "together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 21 * sizeof(void *),
-              "tension_core_api: expected 21 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 22 * sizeof(void *),
+              "tension_core_api: expected 22 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, host_surface)
-                       + sizeof(((tension_core_api *)0)->host_surface)
+_Static_assert(offsetof(tension_core_api, host_surface_extension)
+                       + sizeof(((tension_core_api *)0)->host_surface_extension)
                    == sizeof(tension_core_api),
-               "tension_core_api: host_surface must stay the last slot; an "
-               "append updates this assertion and the Rust table together");
+               "tension_core_api: host_surface_extension must stay the last "
+               "slot; an append updates this assertion and the Rust table "
+               "together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 21 * sizeof(void *),
-               "tension_core_api: expected 21 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 22 * sizeof(void *),
+               "tension_core_api: expected 22 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif
