@@ -244,11 +244,13 @@ pointer to a static vtable (`adapter/mod.rs:1029-1060`). The host checks the
 (`adapter/mod.rs:1070-1071`) — the version answers "is this the right shape",
 the hash answers "is this the right build of it".
 
-The ABI is at version 6 (`tension_adapter.h:82`) and is append-only within a
-version: `post_control` at offset 160, `host_surface` at 168,
-`host_surface_extension` at 176 (`ffi.rs:330-336`, pinned by the header's
-`_Static_assert` block). Changing the meaning of an existing field requires a
-new entry-point symbol (`tension_adapter.h:17-19`).
+The ABI is alpha and at version 6 today (`tension_adapter.h:82`): it may break
+between releases. Within a version it is append-only — `post_control` at offset
+160, `host_surface` at 168, `host_surface_extension` at 176 (`ffi.rs:330-336`,
+pinned by the header's `_Static_assert` block) — and changing the meaning of an
+existing field requires a new entry-point symbol (`tension_adapter.h:17-22`).
+Append-only is the discipline in force while alpha lasts, not a compatibility
+promise.
 
 Thread rules: `init`, `link` and the publish phase run on the interpreter
 thread; `shutdown`/`destroy` are called on the interpreter thread at teardown

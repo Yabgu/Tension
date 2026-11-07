@@ -52,7 +52,9 @@ Each **DSO adapter** implements `tension_adapter_v1()` returning a vtable:
 `init`, `link`, `publish`, `apply`, `shutdown`, `destroy`. During `link` it
 registers wasm imports; at runtime it never touches guest memory except
 through `guest_read`/`guest_write` inside a host call. The ABI lives in
-`tension-core/include/tension_adapter.h` and is frozen.
+`tension-core/include/tension_adapter.h`: it is alpha, so it may break between
+releases, and append-only within a version is the discipline we keep rather
+than a compatibility promise.
 
 ## Capabilities
 
@@ -291,7 +293,7 @@ fixtures. `tension-res/DESIGN.md` records the format.
 
 ```
 tension-core/        Rust host — Wasmtime, session, adapter loader, wire
-  include/           tension_adapter.h — the ABI (v1, frozen)
+  include/           tension_adapter.h — the adapter ABI (alpha, append-only)
   src/session/       arena, epoch, posting, subring, apply, config
   src/adapter/       loader, ffi, signatures
 tension-framework/   TensionScript guest SDK
