@@ -20,13 +20,16 @@
 #include "../src/config.h"
 #include "../include/tension_ogre.h"
 
+#include <cerrno>
 #include <cstdint>
 #include <cstdio>
 #include <string>
 #include <vector>
 
+using tension_ogre::apply_headless_policy;
 using tension_ogre::Config;
 using tension_ogre::ConfigDecodeResult;
+using tension_ogre::decode_config;
 using tension_ogre::ConfigError;
 
 namespace {
@@ -255,6 +258,82 @@ void test_key_names() {
           "the error token");
 }
 
+void test_headless_flag_and_renderer_key_are_recorded() {
+    std::printf("test_headless_flag_and_renderer_key_are_recorded\n");
+
+    Builder alone;
+    alone.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(TENSION_OGRE_KEY_HEADLESS, 1);
+    const std::vector<uint8_t> alone_bytes = alone.done();
+    const ConfigDecodeResult decoded_alone =
+        decode_config(alone_bytes.data(), alone_bytes.size());
+    check(decoded_alone.ok, "a headless-only config decodes");
+    check(decoded_alone.config.headless, "the flag is recorded");
+    check(!decoded_alone.config.renderer_set, "and no renderer key was seen");
+    check_eq(decoded_alone.config.renderer, TENSION_OGRE_RENDERER_GL3PLUS,
+             "the decoder leaves the compiled default in place");
+
+    Builder explicit_renderer;
+    explicit_renderer.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
+        .entry(TENSION_OGRE_KEY_RENDERER, TENSION_OGRE_RENDERER_VULKAN);
+    const std::vector<uint8_t> explicit_bytes = explicit_renderer.done();
+    const ConfigDecodeResult decoded_explicit =
+        decode_config(explicit_bytes.data(), explicit_bytes.size());
+    check(decoded_explicit.ok, "the renderer config decodes");
+    check(decoded_explicit.config.renderer_set, "an explicit renderer is recorded as such");
+    check_eq(decoded_explicit.config.renderer, TENSION_OGRE_RENDERER_VULKAN,
+             "with the value the guest asked for");
+}
+
+void test_headless_policy_resolves_an_absent_renderer_to_null() {
+    std::printf("test_headless_policy_resolves_an_absent_renderer_to_null\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(TENSION_OGRE_KEY_HEADLESS, 1);
+    const std::vector<uint8_t> bytes = b.done();
+    Config config = decode_config(bytes.data(), bytes.size()).config;
+    check_eq(apply_headless_policy(config), 0, "headless alone is accepted");
+    check_eq(config.renderer, TENSION_OGRE_RENDERER_NULL,
+             "and resolves to the only renderer that opens no window");
+}
+
+void test_headless_policy_accepts_the_null_renderer() {
+    std::printf("test_headless_policy_accepts_the_null_renderer\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
+        .entry(TENSION_OGRE_KEY_RENDERER, TENSION_OGRE_RENDERER_NULL)
+        .entry(TENSION_OGRE_KEY_HEADLESS, 1);
+    const std::vector<uint8_t> bytes = b.done();
+    Config config = decode_config(bytes.data(), bytes.size()).config;
+    check_eq(apply_headless_policy(config), 0, "null + headless is already satisfied");
+    check_eq(config.renderer, TENSION_OGRE_RENDERER_NULL, "and stays null");
+}
+
+void test_headless_policy_refuses_an_explicit_gpu_renderer() {
+    std::printf("test_headless_policy_refuses_an_explicit_gpu_renderer\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
+        .entry(TENSION_OGRE_KEY_RENDERER, TENSION_OGRE_RENDERER_GL3PLUS)
+        .entry(TENSION_OGRE_KEY_HEADLESS, 1);
+    const std::vector<uint8_t> bytes = b.done();
+    Config config = decode_config(bytes.data(), bytes.size()).config;
+    check(apply_headless_policy(config) == -EINVAL,
+          "a GPU renderer with no window is refused, not downgraded");
+    check_eq(config.renderer, TENSION_OGRE_RENDERER_GL3PLUS,
+             "and the guest's request is left as it was, so the message can name it");
+    check(config.headless, "the flag is still what the guest asked for");
+}
+
+void test_headless_policy_does_nothing_without_the_flag() {
+    std::printf("test_headless_policy_does_nothing_without_the_flag\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
+        .entry(TENSION_OGRE_KEY_RENDERER, TENSION_OGRE_RENDERER_VULKAN)
+        .entry(TENSION_OGRE_KEY_HEADLESS, 0);
+    const std::vector<uint8_t> bytes = b.done();
+    Config config = decode_config(bytes.data(), bytes.size()).config;
+    check_eq(apply_headless_policy(config), 0, "a windowed config is untouched");
+    check_eq(config.renderer, TENSION_OGRE_RENDERER_VULKAN, "the renderer stays vulkan");
+}
+
 } // namespace
 
 int main() {
@@ -265,6 +344,11 @@ int main() {
     test_duplicate_key_takes_last();
     test_refusals();
     test_key_names();
+    test_headless_flag_and_renderer_key_are_recorded();
+    test_headless_policy_resolves_an_absent_renderer_to_null();
+    test_headless_policy_accepts_the_null_renderer();
+    test_headless_policy_refuses_an_explicit_gpu_renderer();
+    test_headless_policy_does_nothing_without_the_flag();
 
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

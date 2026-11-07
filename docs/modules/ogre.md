@@ -130,13 +130,30 @@ host owns, and the function pointers are plain C pointers rather than
 `std::function` so that `Config` can be copied into the backend without an
 allocation on the render thread (`config.h:68-74`).
 
-**`headless` is decoded, range-checked, stored — and never read.** Nothing in
-`tension-ogre/src/` consults `Config::headless` after `config.cpp:182`; only
-`renderer = 0` (the NULL render system) avoids opening a window
-(`backend_ogre.cpp:243-253`). A guest that sets `headless: true` with
-`renderer: gl3plus` gets a window. Recorded as contradiction 20 in
-`/home/acakar/work/docs-contradictions.md`. **Not fixed in this pass** — this
-page is documentation.
+**`headless` is honoured through the NULL render system, and refused where it
+cannot be.** `apply_headless_policy` (`config.cpp:234-250`) resolves it in
+`init`, before the host's handles are merged in (`adapter.cpp:505-525`):
+
+- `headless` with `renderer = null` is already satisfied;
+- `headless` with no `renderer` key resolves to null — the guest asked for no
+  window and nothing else, and null is the only renderer here that keeps that
+  promise;
+- `headless` with an explicitly requested GPU renderer is a contradiction and
+  is refused with `-EINVAL` at `init`, synchronously, before any thread exists.
+  This build brings every GPU render system up through `createRenderWindow`
+  and has no offscreen path, so "gl3plus + no window" is not a thing it can do;
+  silently downgrading to null would answer "headless" with "and also we
+  quietly stopped rendering".
+
+A headless guest also does not adopt the host's surface (the merge is skipped,
+`adapter.cpp:531`), and `headless` outranks `TENSION_RENDERER`: the operator's
+variable is a debugging knob, and it must not open the window a guest asked not
+to have (`adapter.cpp:257-268`). The NULL path creates no window object at all
+on the platform — `NULLWindow` is bookkeeping (`third_party/ogre-next/RenderSystems/NULL/src/OgreNULLWindow.cpp:35-57`) —
+which is why a headless run completes with `DISPLAY` and `WAYLAND_DISPLAY` both
+unset. It renders nothing: `screenshot` refuses with `-ENOSYS`
+(`backend_ogre.cpp:1300-1304`), and jobs, submissions and the scene mirror all
+still run (`scripts/test-ogre.mjs`, the `headless` and `jobs` cases).
 
 ## 4. Records, regions and the schema
 

@@ -17,6 +17,12 @@
 //   --window-width=N --window-height=N
 //   --expect-fail             a DEVICE_LOST is the expected answer: print
 //                             "FAIL <stage> <errno>" and exit cleanly
+//   --headless                ask for no window whatever the renderer is; with
+//                             an explicit GPU renderer this is a contradiction
+//                             the adapter refuses synchronously
+//   --expect-init-refusal=N   assert ogre::init returns N and print
+//                             "OK init-refused N" — the synchronous refusals
+//                             (a bad config, headless over a GPU renderer)
 //   --shutdown-only           call ogre::shutdown before any init and stop
 
 import { arg, argCount, print } from "../../tension-framework/assembly/io";
@@ -101,6 +107,8 @@ export function _start_game(): void {
   const width = u32(I32.parseInt(flag("window-width", "1280")));
   const height = u32(I32.parseInt(flag("window-height", "720")));
   const expect_fail = has("expect-fail");
+  const force_headless = has("headless");
+  const expect_init_refusal = I32.parseInt(flag("expect-init-refusal", "0"));
 
   // Before anything else: shutdown with nothing running is 0, not an error.
   if (has("shutdown-only")) {
@@ -115,7 +123,9 @@ export function _start_game(): void {
   if (renderer == "gl3plus") which = ogre.Renderer.Gl3Plus;
   else if (renderer == "vulkan") which = ogre.Renderer.Vulkan;
   else if (renderer == "metal") which = ogre.Renderer.Metal;
-  const headless = which == ogre.Renderer.Null;
+  // `--headless` forces the flag even over a GPU renderer, which is the
+  // contradiction the adapter must refuse rather than silently downgrade.
+  const headless = force_headless || which == ogre.Renderer.Null;
   const ogre_config = new ogre.ConfigBuilder()
     .renderer(which)
     .headless(headless)
@@ -137,8 +147,18 @@ export function _start_game(): void {
   assert(RuntimeSession.subscribe(subscription) == 0, "subscribe DEVICE_LOST refused");
 
   // Accepted here; the window comes up on the render thread, which is what the
-  // event below is for.
-  assert(ogre.init(ogre_config) == 0, "ogre::init refused the config");
+  // event below is for. A synchronous refusal is its own case: the adapter says
+  // no before any thread exists, so there is nothing to wait for.
+  const init_rc = ogre.init(ogre_config);
+  if (expect_init_refusal != 0) {
+    assert(init_rc == expect_init_refusal,
+           "ogre::init returned " + decimalSigned(init_rc) + ", not the expected refusal");
+    print("OK init-refused " + decimalSigned(init_rc));
+    assert(ogre.shutdown() == 0, "ogre::shutdown after a refused init");
+    assert(RuntimeSession.close() == 0, "session_close");
+    return;
+  }
+  assert(init_rc == 0, "ogre::init refused the config");
 
   // Bounded, not infinite: if the render thread dies without posting, the
   // guest should say so rather than hang. Ten seconds is the whole budget.

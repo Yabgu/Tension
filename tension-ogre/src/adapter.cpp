@@ -253,6 +253,21 @@ void render_main() {
             finish_thread();
             return;
         }
+        // `headless` outranks the operator's renderer preference. The promise
+        // the guest was given is "no window", and the only renderer here that
+        // keeps it is the NULL one; TENSION_RENDERER is a debugging knob, not a
+        // reason to open the window a guest asked not to have. The config's own
+        // contradiction was already refused in `init`.
+        if (s.config.headless && plan.chain[0] != TENSION_OGRE_RENDERER_NULL) {
+            char line[224];
+            std::snprintf(line, sizeof(line),
+                          "ogre: headless=1 overrides renderer %s (source: %s): no window",
+                          renderer_name(plan.chain[0]), plan.source.c_str());
+            log_line(1, line);
+            plan.chain[0] = TENSION_OGRE_RENDERER_NULL;
+            plan.count = 1;
+            plan.source = "headless";
+        }
         {
             char line[256];
             if (plan.count == 1) {
@@ -486,14 +501,34 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         return refuse(ret, -EINVAL);
     }
 
+    // `headless` is a promise to the guest: no window. Resolve it before the
+    // host's handles are merged in, so a headless guest neither creates a
+    // window of its own nor adopts the host's surface. The policy refuses a
+    // contradiction (headless with an explicitly requested GPU renderer)
+    // rather than downgrading it — see `config.h`.
+    Config config = decoded.config;
+    {
+        const int32_t policy = apply_headless_policy(config);
+        if (policy != 0) {
+            const std::string line =
+                "ogre: init refused: headless=1 with an explicit renderer that needs a window; "
+                "this build has no offscreen path (use renderer=null, or drop headless)";
+            s.status.note_message(line);
+            log_line(3, line);
+            return refuse(ret, policy);
+        }
+        if (config.headless) {
+            log_line(1, "ogre: headless=1 — the NULL render system, no window");
+        }
+    }
+
     // The host's window surface, if it owns one. A v6 host publishes it before
     // any adapter loads, so it is there by the time a guest calls `init`.
     //
     // -ENOSYS or a zero instance means "no host surface": the backend then does
     // what it always did and creates its own window. That is not a degraded
     // path, it is the headless and pre-v6 path.
-    Config config = decoded.config;
-    if (s.api != nullptr && s.api->host_surface != nullptr) {
+    if (!config.headless && s.api != nullptr && s.api->host_surface != nullptr) {
         tension_host_surface published{};
         published.struct_size = sizeof(published);
         if (s.api->host_surface(s.api->user, &published) == 0 && published.instance != 0 &&
