@@ -272,6 +272,12 @@ unsafe impl Sync for FrozenApi {}
 
 pub struct AdapterHost {
     api: FrozenApi,
+    /// The window-control queue. Shared with the store by `Arc`, the way
+    /// `posting` is, because three sources reach it: this table's
+    /// `post_control` slot (a layer), the guest's `tension::platform.control`
+    /// import, and the host loop itself. One queue means one executor means one
+    /// thread that touches SDL.
+    control: Arc<crate::platform::ControlBus>,
     /// What `link` collected. Single-threaded in practice; `Sync` by
     /// construction.
     link: Mutex<LinkState>,
@@ -352,9 +358,22 @@ pub(crate) const CTX_STORE: u8 = 2;
 
 impl AdapterHost {
     /// A host whose API table points back at itself, carrying `posting`.
+    /// A host with a fresh, private control queue.
+    ///
+    /// What every test wants: it is driving `post_control` directly and needs a
+    /// queue it can inspect, not the process's real one.
     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
+        Self::with_control(posting, Arc::new(crate::platform::ControlBus::new()))
+    }
+
+    /// A host sharing the process's control queue, which is what `main` builds.
+    pub fn with_control(
+        posting: Arc<PostingSide>,
+        control: Arc<crate::platform::ControlBus>,
+    ) -> Box<AdapterHost> {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
+            control,
             link: Mutex::new(LinkState::default()),
             ctx: Mutex::new(0),
             ctx_kind: AtomicU8::new(CTX_EMPTY),
@@ -378,6 +397,12 @@ impl AdapterHost {
     /// session drains.
     pub fn posting(&self) -> Arc<PostingSide> {
         Arc::clone(&self.posting)
+    }
+
+    /// The window-control queue, for `post_control` and for the tests that
+    /// drive it.
+    pub fn control(&self) -> Arc<crate::platform::ControlBus> {
+        Arc::clone(&self.control)
     }
 
     /// The region kinds the adapters declared during `link`, in the order they
@@ -1155,6 +1180,7 @@ mod tests {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
                 host_window: None,
                 window_closed: false,
                 adapters: Vec::new(),

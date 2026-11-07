@@ -1,0 +1,27 @@
+{
+  "name": "tension-example-platform-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: the guest asks the host to resize the window, then polls for it",
+  "scripts": {
+    "build": "tensionscript game.ts -o build/game.wasm --config asconfig.json",
+    "build:debug": "tensionscript game.ts -o build/game.wasm --config asconfig.json --debug --sourceMap",
+    "run": "node ../../scripts/run-example.mjs --no-build --window 320x240",
+    "start": "node ../../scripts/run-example.mjs --window 320x240"
+  },
+  "tension": {
+    "kind": "plain",
+    "hostArgs": [
+      "--window",
+      "320x240"
+    ]
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework",
+    "@yabgu_gm/tension-core": "file:../../packages/core"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}
