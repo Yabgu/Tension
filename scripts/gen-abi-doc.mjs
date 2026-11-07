@@ -561,9 +561,12 @@ function renderAdapterDoc(header, core, coreSize, adapter, adapterSize, rules, e
   lines.push(`\`tension_adapter\` is **${adapterSize} bytes**, on a 64-bit target.`);
   lines.push('');
   lines.push('This page is a projection of the header, not an independent statement of');
-  lines.push('the contract: the comments, the thread rules and the append-only rule are');
-  lines.push('the header\'s, and the offsets are computed from its declaration order. If');
-  lines.push('this page and the header disagree, the header is right and this generator');
+  lines.push('the contract. What it projects: the per-slot comments, the thread labels,');
+  lines.push('the error codes, "What an adapter must not do", and the shape assertions —');
+  lines.push('and the offsets, computed from declaration order. What it does not project:');
+  lines.push('the numbered `Rules` block, including rule 11 (append-only within an ABI');
+  lines.push('version). Rule 11 and every other rule live in the header and nowhere else.');
+  lines.push('If this page and the header disagree, the header is right and this generator');
   lines.push('is wrong. `npm test` runs the drift check.');
   lines.push('');
   lines.push('## `tension_core_api` — what the host provides an adapter');
