@@ -187,7 +187,10 @@ export function _start_game(): void {
     return;
   }
 
-  const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, 0);
+  // `--windowed` shows the frame; the default is offscreen, which is what the
+  // test harness runs and what makes its pixel assertions reproducible.
+  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
+  const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
   if (handle <= 0) {
     print("FAIL: open -> " + handle.toString());
     RuntimeSession.close();
@@ -330,6 +333,19 @@ export function _start_game(): void {
     if (!same(hair, wantHair)) fail(name + ": the hair probe is wrong");
 
     emitFrame(name, frame, FRAME_BYTES);
+  }
+
+  // Windowed: hold the last frame until the window is closed. See
+  // `examples/2d/isometric/src/main.ts` for the reasoning — same loop, same
+  // `-ECANCELED` signal, same iteration cap so a headless run cannot hang.
+  if (hasArg("--windowed") && failures == 0) {
+    print("windowed: close the window to exit");
+    let keep: i32 = 0;
+    while (keep < 18000) {
+      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
+      RuntimeSession.wait(16);
+      keep++;
+    }
   }
 
   gfx.close(handle);

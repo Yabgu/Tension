@@ -290,3 +290,29 @@ if (failures !== 0) {
 console.log(
   `${RUNNER}: PASS — composite, depth, multi-atlas, and both revert tests`,
 );
+
+// ── 7. show it, unless asked not to ─────────────────────────────────────────
+//
+// Everything above asserted against offscreen frames, which is the only way to
+// make a pixel claim reproducible. This last run is for the person who typed
+// `npm start`: one windowed guest, held open until the window is closed.
+//
+// `--headless` (or no display) skips it, which is what CI and every suite in
+// `scripts/test.mjs` do — they never reach this point with a display anyway,
+// because they invoke the individual scripts rather than this one.
+const argv = process.argv.slice(2);
+const askedForHeadless = argv.includes('--headless') || process.env.TENSION_2D_HEADLESS === '1';
+const hasDisplay =
+  process.platform !== 'linux' || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+
+if (!askedForHeadless && hasDisplay &&
+    !process.env.TENSION_2D_CHILD) {
+  console.log(`${RUNNER}: showing the scene — close the window to exit`);
+  const shown = spawnSync(core, [
+    '--capability', dso,
+    '--res', pak,
+    join(here, 'build', 'game.wasm'),
+    '--windowed',
+  ], { stdio: 'inherit', env: { ...process.env, TENSION_2D_CHILD: '1' } });
+  if (shown.error) console.error(`${RUNNER}: could not show the window: ${shown.error.message}`);
+}

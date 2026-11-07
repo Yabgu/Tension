@@ -183,6 +183,16 @@ struct Renderer::Impl {
     uint32_t implicit_source = 0;
     uint32_t implicit_width = 1;
     uint32_t implicit_height = 1;
+    /// The window, when `open` was asked for one. `target` is still the render
+    /// target: the window is a *presentation* path, not a second renderer, so a
+    /// frame is identical whether it is blitted to a swapchain or read back by
+    /// `screenshot`.
+    SDL_Window *window = nullptr;
+    bool window_claimed = false;
+    /// Set when the user closed the window. `present` reports it once and then
+    /// stops drawing to a surface that no longer exists.
+    bool window_closed = false;
+    bool window_close_reported = false;
     SDL_GPUBuffer *storage = nullptr;
     SDL_GPUTransferBuffer *upload = nullptr;
     SDL_GPUTransferBuffer *download = nullptr;
@@ -424,6 +434,13 @@ struct Renderer::Impl {
         download = nullptr;
         if (target != nullptr) SDL_ReleaseGPUTexture(device, target);
         target = nullptr;
+        // The window must be released *before* the device it was claimed for.
+        if (window != nullptr) {
+            if (window_claimed) SDL_ReleaseWindowFromGPUDevice(device, window);
+            SDL_DestroyWindow(window);
+            window = nullptr;
+            window_claimed = false;
+        }
         if (device != nullptr) SDL_DestroyGPUDevice(device);
         device = nullptr;
         if (sdl_started) {
@@ -453,7 +470,7 @@ uint32_t Renderer::texture_count() const {
     return impl_ ? static_cast<uint32_t>(impl_->textures.size()) : 0u;
 }
 
-int32_t Renderer::open(uint32_t width, uint32_t height, std::string &err) {
+int32_t Renderer::open(uint32_t width, uint32_t height, bool windowed, std::string &err) {
     if (is_open()) return -EBUSY;
     if (width == 0 || height == 0 || width > kMaxCanvasDimension ||
         height > kMaxCanvasDimension) {
@@ -478,6 +495,31 @@ int32_t Renderer::open(uint32_t width, uint32_t height, std::string &err) {
         err = sdl_error("CreateGPUDevice");
         impl_->release_all();
         return -ENODEV;
+    }
+
+    if (windowed) {
+        // A window the size of the canvas, at 1:1. SDL scales the swapchain to
+        // the drawable size, so a HiDPI display shows the same 320x180 frame
+        // larger rather than a crop of it.
+        impl_->window = SDL_CreateWindow("Tension", static_cast<int>(width),
+                                         static_cast<int>(height),
+                                         SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+        if (impl_->window == nullptr) {
+            err = sdl_error("CreateWindow");
+            impl_->release_all();
+            return -ENODEV;
+        }
+        if (!SDL_ClaimWindowForGPUDevice(impl_->device, impl_->window)) {
+            // A window the device cannot present to is not fatal for rendering;
+            // it is fatal for *seeing* the frame, which is why it was asked for.
+            err = sdl_error("ClaimWindowForGPUDevice");
+            impl_->release_all();
+            return -ENODEV;
+        }
+        impl_->window_claimed = true;
+        SDL_SetGPUSwapchainParameters(impl_->device, impl_->window,
+                                      SDL_GPU_SWAPCHAINCOMPOSITION_SDR,
+                                      SDL_GPU_PRESENTMODE_VSYNC);
     }
 
     impl_->target = impl_->create_texture(width, height, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
@@ -798,16 +840,25 @@ int32_t Renderer::present(std::string &err) {
         SDL_EndGPUCopyPass(copy);
     }
 
-    SDL_GPUColorTargetInfo cti = {};
-    cti.texture = impl_->target;
-    cti.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
-    cti.load_op = SDL_GPU_LOADOP_CLEAR;
-    cti.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &cti, 1, nullptr);
-    if (pass == nullptr) {
-        err = sdl_error("BeginGPURenderPass");
-        return -EIO;
-    }
+    // A present with nothing submitted re-presents the frame already in the
+    // target. That is what makes a windowed handle usable: the guest draws once,
+    // then loops on `present` to keep the window up, and an empty present that
+    // cleared to black would flash the screen instead of holding the image.
+    // The first present on a handle always draws, so there is never a "stale
+    // frame from a previous handle" to inherit.
+    const bool repaint = frame.empty() && impl_->presented_once;
+
+    if (!repaint) {
+        SDL_GPUColorTargetInfo cti = {};
+        cti.texture = impl_->target;
+        cti.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 1.0f};
+        cti.load_op = SDL_GPU_LOADOP_CLEAR;
+        cti.store_op = SDL_GPU_STOREOP_STORE;
+        SDL_GPURenderPass *pass = SDL_BeginGPURenderPass(cmd, &cti, 1, nullptr);
+        if (pass == nullptr) {
+            err = sdl_error("BeginGPURenderPass");
+            return -EIO;
+        }
 
     if (!frame.empty()) {
         // One pipeline per span: buckets may belong to different pipes, and a
@@ -858,7 +909,51 @@ int32_t Renderer::present(std::string &err) {
         }
     }
 
-    SDL_EndGPURenderPass(pass);
+        SDL_EndGPURenderPass(pass);
+    }
+
+    // Presentation. The frame was drawn into `target`; a windowed handle copies
+    // it into the swapchain image instead of (well, as well as) waiting for a
+    // readback. A blit rather than a second render pass because the target and
+    // the swapchain may differ in format, and `SDL_BlitGPUTexture` is the one
+    // call that handles a format change without a pipeline per format.
+    if (impl_->window != nullptr) {
+        // Pump events before acquiring: a closed window has no swapchain, and
+        // asking for one would be an error every frame after the user quits.
+        SDL_PumpEvents();
+        SDL_Event event;
+        while (SDL_PollEvent(&event)) {
+            if (event.type == SDL_EVENT_QUIT ||
+                (event.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED &&
+                 event.window.windowID == SDL_GetWindowID(impl_->window))) {
+                impl_->window_closed = true;
+            }
+        }
+        if (!impl_->window_closed) {
+            SDL_GPUTexture *swapchain = nullptr;
+            uint32_t swap_w = 0;
+            uint32_t swap_h = 0;
+            if (!SDL_WaitAndAcquireGPUSwapchainTexture(cmd, impl_->window, &swapchain, &swap_w,
+                                                       &swap_h)) {
+                SDL_CancelGPUCommandBuffer(cmd);
+                err = sdl_error("AcquireGPUSwapchainTexture");
+                return -EIO;
+            }
+            if (swapchain != nullptr) {
+                SDL_GPUBlitInfo blit = {};
+                blit.source.texture = impl_->target;
+                blit.source.w = impl_->canvas_width;
+                blit.source.h = impl_->canvas_height;
+                blit.destination.texture = swapchain;
+                blit.destination.w = swap_w;
+                blit.destination.h = swap_h;
+                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                blit.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(cmd, &blit);
+            }
+        }
+    }
+
     if (!SDL_SubmitGPUCommandBuffer(cmd)) {
         err = sdl_error("SubmitGPUCommandBuffer");
         return -EIO;
@@ -870,6 +965,15 @@ int32_t Renderer::present(std::string &err) {
 
     impl_->buckets.clear();
     impl_->presented_once = true;
+
+    // One clear message when the user closes the window, rather than a failure
+    // per frame afterwards. The guest's next verb sees a normal return; the
+    // frame simply stops appearing.
+    if (impl_->window_closed && !impl_->window_close_reported) {
+        impl_->window_close_reported = true;
+        err = "present: the window was closed";
+        return -ECANCELED;
+    }
     return 0;
 }
 

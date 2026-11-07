@@ -21,6 +21,20 @@ That builds the adapter if it is missing, builds the guest, runs the adapter's
 own suite, then runs the guest under `tension-core` with `libtension_2d.so`
 loaded — and fails if the frame is not the expected one.
 
+It also **shows the frame**: the guest is asked for a window, and holds it open
+until you close it. The window is a presentation path, not a second renderer —
+the same target the assertion measured is blitted to a swapchain — so what you
+see is what the test checked.
+
+```sh
+npm start -- --headless    # assert only, no window
+TENSION_2D_HEADLESS=1 npm start
+```
+
+A machine with no `DISPLAY` or `WAYLAND_DISPLAY` is treated as headless rather
+than failing, and every suite in `scripts/test.mjs` sets `TENSION_2D_HEADLESS=1`
+so a test run never opens a window.
+
 ```
   === TensionCore 2D demo: ten sprites through tension::2d ===
   open -> handle 1

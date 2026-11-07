@@ -43,7 +43,12 @@ public:
     /// Create the device, a `width` x `height` offscreen target, the sampler and
     /// the 1x1 default texture. Returns 0 or a negative errno; `err` carries
     /// SDL's message.
-    int32_t open(uint32_t width, uint32_t height, std::string &err);
+    ///
+    /// `windowed` additionally creates a window of the canvas size and claims it
+    /// for the device, so `present` blits the target into a swapchain and the
+    /// frame is visible. Offscreen (the default) is what the test suites use:
+    /// no window, no compositor, identical pixels.
+    int32_t open(uint32_t width, uint32_t height, bool windowed, std::string &err);
     void close();
     bool is_open() const;
 

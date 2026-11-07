@@ -47,23 +47,40 @@ extern "C" {
  *
  * Creates the GPU device, the offscreen target at `width` x `height`, and the
  * capability's one session (capacity 1), and returns its handle, or:
- *   -EINVAL  `width`/`height` outside 1..16384, or `flags` is not 0
+ *   -EINVAL  `width`/`height` outside 1..16384, or `flags` has an unknown bit
  *   -EBUSY   a handle is already open
- *   -ENODEV  no GPU device on this machine (no driver, no Vulkan ICD)
+ *   -ENODEV  no GPU device on this machine (no driver, no Vulkan ICD), or a
+ *            window was asked for and could not be created or claimed
  *   -ENOSYS  this SDL build has no GPU backend
  *   -EIO     device creation failed for a reason SDL names
  *   -ENOMEM  the target could not be allocated
  *
  * The canvas is the caller's decision, chosen at `open` and fixed for the
- * handle's life: a resize is `close` + `open`, because v1 has no swapchain to
- * renegotiate with. The 16384 ceiling is the Vulkan guaranteed minimum
- * `maxImageDimension2D`, so a size this verb accepts is one every conformant
- * device can allocate.
+ * handle's life: a resize is `close` + `open`. The 16384 ceiling is the Vulkan
+ * guaranteed minimum `maxImageDimension2D`, so a size this verb accepts is one
+ * every conformant device can allocate.
  *
- * v1 renders to an offscreen target and reads it back with `screenshot`; there
- * is no swapchain yet, so `open` takes no window token.
+ * `flags` is a bit set:
+ *
+ *   0                       offscreen. No window is created, `present` draws to
+ *                           the target and waits for the GPU, and `screenshot`
+ *                           reads the frame back. This is what the test suites
+ *                           use: no compositor, no vsync, identical pixels.
+ *   TENSION_2D_OPEN_WINDOWED  also create a window of the canvas size, claim it
+ *                           for the device, and blit the target into a
+ *                           swapchain on every `present`. The frame is the same
+ *                           frame — the window is a presentation path, not a
+ *                           second renderer — so `screenshot` still reads back
+ *                           exactly what was shown.
+ *
+ * A windowed handle pumps SDL events during `present`. When the user closes the
+ * window, `present` answers `-ECANCELED` once and then draws nothing more; the
+ * guest is expected to treat that as "stop", not as an error to retry.
  */
 int32_t tension_2d_open(int32_t width, int32_t height, int32_t flags);
+
+/** `open`'s `flags` bit 0: create and present to a window. */
+#define TENSION_2D_OPEN_WINDOWED 1u
 
 /*
  * `close(i32 handle) -> i32`  — verb_id 2, flags 0.

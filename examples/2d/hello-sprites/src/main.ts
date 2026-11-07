@@ -23,6 +23,8 @@
 // tension-2d/tests/smoke_core.cpp.
 
 import {
+  arg,
+  argCount,
   ConfigBuilder,
   Frame,
   HEADER_SIZE,
@@ -36,6 +38,15 @@ import {
 } from "tension-framework";
 import * as gfx from "./bindings";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
+
+/// Whether the guest was started with `flag`. `--windowed` is the one this
+/// example reads; everything else is the harness's.
+function hasArg(flag: string): bool {
+  for (let i = 0; i < argCount(); i++) {
+    if (arg(i) == flag) return true;
+  }
+  return false;
+}
 
 // --- the frame's numbers ---------------------------------------------------
 
@@ -57,6 +68,11 @@ const SPRITE_SIZE: u16 = 32;
 /// Sprites sit 64 px apart, so 32 px quads never touch: the non-black count is
 /// exactly `SPRITES * SPRITE_SIZE^2` with no overlap to reason about.
 const SPRITE_PITCH: i32 = 64;
+
+/// How long a windowed run holds the frame: ~5 minutes at 60 fps. A bound
+/// rather than "until closed" so a headless machine asked for `--windowed` by
+/// mistake cannot hang a test job.
+const WINDOW_FRAMES: i32 = 18000;
 
 const EXPECTED_PIXELS: u32 = <u32>SPRITES * <u32>SPRITE_SIZE * <u32>SPRITE_SIZE;
 
@@ -185,7 +201,10 @@ export function _start_game(): void {
   }
 
   // 2. the capability
-  const handle = gfx.open(CANVAS_WIDTH, CANVAS_HEIGHT, 0);
+  // `--windowed` shows the frame; the default is offscreen, which is what the
+  // test harness runs and what makes its pixel assertions reproducible.
+  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
+  const handle = gfx.open(CANVAS_WIDTH, CANVAS_HEIGHT, flags);
   if (handle <= 0) {
     fail("open -> " + handle.toString());
     return;
@@ -322,6 +341,30 @@ export function _start_game(): void {
 
   const ok = nonBlack == EXPECTED_PIXELS && wrong == 0;
   print(ok ? "OK: ten sprites at their recorded positions" : "FAILED: see above");
+
+  // Windowed: hold the frame up until the user closes the window.
+  //
+  // The guest has already asserted everything it can, so this loop is not a
+  // test — it is the reason `npm start` shows something. An empty `present`
+  // re-presents the frame already in the target rather than clearing it, so each
+  // iteration is a repaint of the same image. `present` answers `-ECANCELED`
+  // once the window is gone, and that is the signal to stop drawing rather than
+  // an error to report.
+  //
+  // Capped at ~3000 iterations (a minute at vsync) so a headless machine asked
+  // for `--windowed` by mistake cannot hang a CI job.
+  if (hasArg("--windowed") && ok) {
+    print("windowed: close the window to exit");
+    // `wait` inside the loop, not after it: a tight present-loop on a software
+    // driver spins as fast as the CPU allows and finishes before anyone can
+    // look at the window. One host-owned tick per repaint paces it.
+    let keep: i32 = 0;
+    while (keep < WINDOW_FRAMES) {
+      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
+      RuntimeSession.wait(16);
+      keep++;
+    }
+  }
 
   gfx.close(handle);
   RuntimeSession.close();

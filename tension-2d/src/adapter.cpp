@@ -118,7 +118,10 @@ int32_t shim_open(void *, const tension_value *args, uint32_t nargs, tension_val
     if (nargs != 3) return refuse(ret, -EINVAL);
     const int32_t width = args[0].i32;
     const int32_t height = args[1].i32;
-    if (args[2].i32 != 0) return refuse(ret, -EINVAL);
+    const int32_t flags = args[2].i32;
+    if ((flags & ~static_cast<int32_t>(TENSION_2D_OPEN_WINDOWED)) != 0) {
+        return refuse(ret, -EINVAL);
+    }
     if (width <= 0 || height <= 0) return refuse(ret, -EINVAL);
 
     AdapterState &state = adapter_state();
@@ -126,15 +129,17 @@ int32_t shim_open(void *, const tension_value *args, uint32_t nargs, tension_val
 
     std::string err;
     const int32_t rc = state.renderer.open(static_cast<uint32_t>(width),
-                                           static_cast<uint32_t>(height), err);
+                                           static_cast<uint32_t>(height),
+                                           (flags & TENSION_2D_OPEN_WINDOWED) != 0, err);
     if (rc != 0) {
         const std::string line = "2d: open refused (" + err + ")";
         log_line(3, line.c_str());
         return refuse(ret, rc);
     }
     state.handle = 1;
-    const std::string line = "2d: open: GPU device up, offscreen " + std::to_string(width) +
-                             "x" + std::to_string(height) + " target";
+    const std::string line = "2d: open: GPU device up, " +
+                             std::string((flags & TENSION_2D_OPEN_WINDOWED) ? "window " : "offscreen ") +
+                             std::to_string(width) + "x" + std::to_string(height) + " target";
     log_line(1, line.c_str());
     return answer(ret, state.handle);
 }
