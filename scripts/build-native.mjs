@@ -29,7 +29,7 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -463,6 +463,117 @@ function auditLinkage(adapterLibDir, ogreNextPayload, builtSo) {
   note(`linkage: ${relative(repo, so).split('\\').join('/')} resolves entirely within the payload`);
 }
 
+// ── SDL generation guards ────────────────────────────────────────────────────
+//
+// This project is SDL3 and only SDL3. Two ways a second generation comes back,
+// and neither is visible in a build log:
+//
+//   * a linker resolves libSDL2 from somewhere on the search path, and the
+//     packaged adapter then holds two SDL instances — two event queues, and a
+//     window neither one sees. That is a runtime puzzle, not a build error.
+//
+//   * someone reaches for Ogre's SDL2-era window params key. It is a stale
+//     string literal from Ogre's own samples: it carries a plain
+//     `{Display*, Window}` and links no SDL at all. It is legitimate inside
+//     third_party/ogre-next, which is vendor code we do not edit. Anywhere in
+//     our source it means someone bound the renderer to an X11 window and
+//     re-pinned the app to XWayland — the opposite of "Wayland where available".
+
+// Written as a concatenation on purpose: if this file contained the literal,
+// the scan below would flag the guard itself and the build could never pass.
+const SDL2_WINDOW_KEY = 'SDL2' + 'x11';
+
+/// Source scan: the SDL2-era key must not appear in project source. Vendor code
+/// under third_party/ is excluded — it is the origin of the literal, not a use.
+function auditSdlSourceReferences() {
+  const skipDirs = new Set(['node_modules', 'third_party', 'build', 'target', '.git', '.codewhale']);
+  const sourceFile = /\.(mjs|js|ts|c|cc|cpp|cxx|h|hpp|rs|md)$/;
+  const hits = [];
+
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (skipDirs.has(entry.name)) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!sourceFile.test(entry.name)) continue;
+      let text;
+      try {
+        text = readFileSync(full, 'utf8');
+      } catch {
+        continue;  // unreadable is not a violation
+      }
+      text.split('\n').forEach((line, index) => {
+        if (line.includes(SDL2_WINDOW_KEY)) {
+          hits.push(`${relative(repo, full).split('\\').join('/')}:${index + 1}`);
+        }
+      });
+    }
+  };
+
+  walk(repo);
+
+  if (hits.length > 0) {
+    fail(`the SDL2-era Ogre window key "${SDL2_WINDOW_KEY}" appears in project source:\n` +
+         hits.map((hit) => `  ${hit}`).join('\n') + '\n' +
+         '  That key binds an X11 window and pins the renderer to XWayland.\n' +
+         '  The SDL3 path is SDL_WINDOW_VULKAN + SDL_Vulkan_CreateSurface, with the\n' +
+         '  instance created by the app and the surface handed to Ogre-Next.');
+  }
+
+  note('sdl: no SDL2-era window key in project source');
+}
+
+/// Linkage scan: no packaged native library may carry a pre-SDL3 soname. Only
+/// SDL3 (`libSDL3.so.0`) is acceptable. readelf is ELF-only; on Windows the DLL
+/// closure is staged and walked by stageWindowsDependencies instead.
+function auditSdlLinkage() {
+  if (WIN) return;
+
+  const libraries = [];
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (entry.isFile() && /\.so(\.|$)/.test(entry.name)) libraries.push(full);
+    }
+  };
+  walk(packages);
+
+  const offending = [];
+  let sdl3Seen = 0;
+
+  for (const library of libraries) {
+    let output;
+    try {
+      output = capture('readelf', ['-d', library]);
+    } catch {
+      continue;  // not a dynamic object; nothing to audit
+    }
+    for (const line of output.split('\n')) {
+      const needed = /Shared library: \[([^\]]+)\]/.exec(line);
+      if (!needed) continue;
+      const soname = needed[1];
+      if (/^libSDL3\.so/.test(soname)) sdl3Seen++;
+      if (/^libSDL2|^libSDL-1\.2|^libSDL\.so\.1/.test(soname)) {
+        offending.push(`${relative(repo, library).split('\\').join('/')} -> ${soname}`);
+      }
+    }
+  }
+
+  if (offending.length > 0) {
+    fail('a packaged library links a pre-SDL3 SDL — this project is SDL3 only\n' +
+         offending.map((hit) => `  ${hit}`).join('\n') + '\n' +
+         '  Two SDL instances mean two event queues and a window neither one sees.');
+  }
+
+  if (sdl3Seen === 0) {
+    note(`sdl: ${libraries.length} packaged librar(ies) checked, SDL3 not linked by any`);
+  } else {
+    note(`sdl: ${libraries.length} packaged librar(ies) checked, SDL3 present, no pre-SDL3 SDL`);
+  }
+}
+
 // ── core ─────────────────────────────────────────────────────────────────────
 
 function buildCore() {
@@ -499,10 +610,17 @@ console.log(`build-native: ${process.platform}/${process.arch} (${toolchainRepor
 // payload on the adapter's rpath and there is no error when it does.
 pruneStaleMetaPayloads();
 
+// Cheap and first: if an integration regressed to the X11-bound key, say so
+// before spending a build to find out.
+auditSdlSourceReferences();
+
 const ogreNext = packageOgreNext();
 buildRes();
 buildAdapter(ogreNext);
 buildCore();
+
+// The sonames only exist once the packages are staged, so this runs last.
+auditSdlLinkage();
 
 // ── build stamp ──────────────────────────────────────────────────────────────
 // Both binaries are now in place, so record what they were built from. The

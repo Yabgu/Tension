@@ -37,6 +37,36 @@ const BUILD = join(THIRD, 'ogre-next-build');
 const INSTALL = join(THIRD, 'ogre-next-install');
 const PATCH = join(THIRD, 'patches', 'ogre-no-freeimage-codec.patch');
 
+/// Every patch this project applies to the pinned Ogre-Next tree, in order.
+///
+/// Each entry names the files it touches, which is what `git checkout --`
+/// reverts after the build: reverting the whole submodule would discard any
+/// other local edit, so the list is explicit and narrow. `marker` is the proof
+/// the patch is in the tree — checked in the file itself after applying, never
+/// trusted from patch's exit status (see applyOgrePatch).
+const OGRE_PATCHES = [
+  {
+    file: PATCH,
+    label: 'OGRE_NO_FREEIMAGE',
+    marker: '#if !OGRE_NO_FREEIMAGE',
+    verifyIn: 'OgreMain/src/OgreFreeImageCodec2.cpp',
+    touches: ['OgreMain/src/OgreFreeImageCodec2.cpp'],
+  },
+  {
+    file: join(THIRD, 'patches', 'ogre-external-surface.patch'),
+    label: 'external_surface',
+    marker: 'adoptExternalSurface',
+    verifyIn: 'RenderSystems/Vulkan/src/OgreVulkanWindow.cpp',
+    touches: [
+      'RenderSystems/Vulkan/include/OgreVulkanWindow.h',
+      'RenderSystems/Vulkan/src/OgreVulkanWindow.cpp',
+      'RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp',
+      'RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp',
+      'RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp',
+    ],
+  },
+];
+
 const FORCE = process.argv.includes('--force');
 for (const arg of process.argv.slice(2)) {
   if (arg !== '--force') {
@@ -113,11 +143,11 @@ initSubmodule(SRC, 'ogre-next');
 // reports the patch as already applied, skip. Anything else is a real failure —
 // an upstream upgrade moved the lines — and it is reported with patch's own
 // rejected-hunk output, never skipped.
-function applyOgrePatch() {
-  if (!existsSync(PATCH)) die(`missing ${PATCH}`);
-  const target = join(SRC, 'OgreMain/src/OgreFreeImageCodec2.cpp');
+function applyOgrePatch(entry) {
+  if (!existsSync(entry.file)) die(`missing ${entry.file}`);
+  const target = join(SRC, entry.verifyIn);
   const patchArgs = ['-p1', '-N', '-r', '-', '--forward'];
-  const source = readFileSync(PATCH, 'utf8');
+  const source = readFileSync(entry.file, 'utf8');
 
   // `spawnSync` directly, not `run()`: `run()` sets `stdio: 'inherit'`, and with
   // an inherited stdin the `input` option is silently ignored. Measured: patch
@@ -132,11 +162,11 @@ function applyOgrePatch() {
 
   if (dry.status !== 0) {
     if (/previously applied|already applied|Reversed \(or previously applied\)/i.test(dryOut)) {
-      say('OgreFreeImageCodec2.cpp already carries the OGRE_NO_FREEIMAGE guard — skipping');
+      say(`${entry.label}: already in the tree — skipping`);
       return;
     }
-    die('the OGRE_NO_FREEIMAGE patch does not apply — the submodule moved\n' +
-        `  patch: ${PATCH}\n` +
+    die(`the ${entry.label} patch does not apply — the submodule moved\n` +
+        `  patch: ${entry.file}\n` +
         `  target: ${target}\n` +
         `  ${dryOut.trim().split('\n').join('\n  ')}`);
   }
@@ -151,12 +181,13 @@ function applyOgrePatch() {
   // changes nothing is exactly the failure the first version of this function
   // had, and it surfaced two minutes later as a FreeImage.h compile error.
   const guarded = readFileSync(target, 'utf8');
-  if (!guarded.includes('#if !OGRE_NO_FREEIMAGE')) {
-    die('the OGRE_NO_FREEIMAGE patch reported success but the guard is not in the file\n' +
+  if (!guarded.includes(entry.marker)) {
+    die(`the ${entry.label} patch reported success but its marker is not in the file\n` +
+        `  marker: ${entry.marker}\n` +
         `  target: ${target}\n` +
         `  patch:  ${appliedOut.trim().split('\n').join('\n  ')}`);
   }
-  say('patched OgreFreeImageCodec2.cpp to honour OGRE_NO_FREEIMAGE');
+  say(`${entry.label}: applied`);
 }
 
 // Applied here, not at step 2, and reverted after the install. Two reasons:
@@ -180,7 +211,8 @@ function revertOgrePatch() {
   if (!ogrePatchApplied) return;
   ogrePatchApplied = false;
   if (!existsSync(join(SRC, '.git'))) return;  // a tarball checkout has nothing to restore
-  spawnSync('git', ['checkout', '--', 'OgreMain/src/OgreFreeImageCodec2.cpp'], {
+  const touched = OGRE_PATCHES.flatMap((entry) => entry.touches);
+  spawnSync('git', ['checkout', '--', ...touched], {
     cwd: SRC, encoding: 'utf8', env: baseEnv(),
   });
 }
@@ -407,7 +439,7 @@ for (const define of ['OGRE_NO_FREEIMAGE', 'OGRE_NO_STBI_CODEC']) {
   }
 }
 
-applyOgrePatch();
+for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
 ogrePatchApplied = true;
 
 say(`building with ${nproc()} jobs`);

@@ -1,0 +1,215 @@
+Tension: let the host own the Vulkan surface (external_surface)
+==============================================================
+
+Why this patch exists
+---------------------
+"Host owns the window. Renderer owns the swapchain."
+
+Ogre-Next can already accept a host-created VkInstance (`external_instance`,
+see Samples/2.0/Tutorials/Tutorial_VulkanExternal) and a host-created
+VkDevice (`external_device`). What it cannot do is accept a host-created
+VkSurfaceKHR: VulkanWindowSwapChainBased::createSurface() is pure virtual and
+each backend builds its own surface from a native handle it also created
+itself (xcb window, HWND, ANativeWindow). So the renderer always owns the
+window, and the window is always the platform's own creation.
+
+That is the blocker for the architecture in INPUT.md: SDL3 creates the window
+and the surface (SDL_WINDOW_VULKAN + SDL_Vulkan_CreateSurface, which
+implements Wayland, X11 and Win32 WSI in SDL), and Ogre consumes them. Without
+this, Ogre binds an X11 window and the app is pinned to XWayland on a Wayland
+desktop - the fallback path as the product.
+
+What this patch adds
+--------------------
+A `miscParams` key `external_surface`: the VkSurfaceKHR as an integer.
+
+  * VulkanWindowSwapChainBased gains mExternalSurfaceKHR and
+    adoptExternalSurface(). When the key is present, createSurface() in every
+    backend adopts the handle instead of creating one, and the backend does not
+    create a native window either (Xcb: no xcb connection or window; Win32: no
+    HWND).
+  * The handle is borrowed, not owned: destroySurface() drops the reference
+    without calling vkDestroySurfaceKHR. The host destroys it, as it does the
+    window, the instance and the device.
+  * Xcb skips the vkGetPhysicalDeviceXcbPresentationSupportKHR probe when the
+    surface is external - there is no xcb connection to pass, and support was
+    already settled when the host created the surface.
+
+Absent the key, every path is byte-for-byte what it was: this is additive, and
+`createSurface()` still does platform work when no surface was supplied.
+
+Scope, stated so it is not mistaken for more than it is
+-------------------------------------------------------
+This makes the *renderer* platform-agnostic. It adds no Wayland code to Ogre
+and needs none: the WSI lives in SDL, which already implements both Wayland
+and X11 correctly. Ogre never learns which one it is running on.
+
+Not verified here: a running external-surface window. Compile-verified against
+RenderSystem_Vulkan's own flags; the Win32 translation unit cannot be compiled
+on Linux and is unverified. End-to-end proof is the Phase 0/2 spike.
+
+diff --git a/RenderSystems/Vulkan/include/OgreVulkanWindow.h b/RenderSystems/Vulkan/include/OgreVulkanWindow.h
+index cd6a764896..e1a536a47c 100644
+--- a/RenderSystems/Vulkan/include/OgreVulkanWindow.h
++++ b/RenderSystems/Vulkan/include/OgreVulkanWindow.h
+@@ -119,6 +119,11 @@ namespace Ogre
+         bool mCanDownloadData;
+ 
+         VkSurfaceKHR mSurfaceKHR;
++        /// Set when the surface was handed to us by the host (params key
++        /// "external_surface"). In that case mSurfaceKHR is a borrowed handle:
++        /// the host created it and the host destroys it, so destroySurface()
++        /// releases our reference without calling vkDestroySurfaceKHR.
++        VkSurfaceKHR mExternalSurfaceKHR;
+         VkSwapchainKHR mSwapchain;
+         FastArray<VkImage> mSwapchainImages;
+         /// Note: We need a semaphore per frame, not per swapchain.
+@@ -148,6 +153,12 @@ namespace Ogre
+ 
+         void parseSharedParams( const NameValuePairList *miscParams );
+ 
++        /// If an external surface was supplied, adopt it as mSurfaceKHR and
++        /// report true so the platform-specific createSurface() can return
++        /// early. False means "make your own", i.e. every path that existed
++        /// before this option.
++        bool adoptExternalSurface();
++
+         PixelFormatGpu chooseSurfaceFormat( bool hwGamma );
+         virtual void createSurface() = 0;
+         virtual void destroySurface();
+diff --git a/RenderSystems/Vulkan/src/OgreVulkanWindow.cpp b/RenderSystems/Vulkan/src/OgreVulkanWindow.cpp
+index e06b45daf7..b9ded633af 100644
+--- a/RenderSystems/Vulkan/src/OgreVulkanWindow.cpp
++++ b/RenderSystems/Vulkan/src/OgreVulkanWindow.cpp
+@@ -186,6 +186,7 @@ namespace Ogre
+         mClosed( false ),
+         mCanDownloadData( false ),
+         mSurfaceKHR( 0 ),
++        mExternalSurfaceKHR( 0 ),
+         mSwapchain( 0 ),
+         mSwapchainSemaphore( 0 ),
+         mSwapchainStatus( SwapchainReleased ),
+@@ -248,6 +249,20 @@ namespace Ogre
+         opt = miscParams->find( "preTransform" );
+         if( opt != end )
+             mEnablePreTransform = StringConverter::parseBool( opt->second );
++        // A surface the host already created (e.g. SDL_Vulkan_CreateSurface on
++        // the window SDL owns). Value is the VkSurfaceKHR as an integer. The
++        // handle stays the host's: we never destroy it.
++        opt = miscParams->find( "external_surface" );
++        if( opt != end )
++            mExternalSurfaceKHR = (VkSurfaceKHR)StringConverter::parseSizeT( opt->second );
++    }
++    //-------------------------------------------------------------------------
++    bool VulkanWindowSwapChainBased::adoptExternalSurface()
++    {
++        if( !mExternalSurfaceKHR )
++            return false;
++        mSurfaceKHR = mExternalSurfaceKHR;
++        return true;
+     }
+     //-------------------------------------------------------------------------
+     PixelFormatGpu VulkanWindowSwapChainBased::chooseSurfaceFormat( bool hwGamma )
+@@ -669,6 +684,13 @@ namespace Ogre
+     //-------------------------------------------------------------------------
+     void VulkanWindowSwapChainBased::destroySurface()
+     {
++        // A borrowed surface belongs to the host that created it. Drop our
++        // reference and leave the handle alive.
++        if( mSurfaceKHR && mSurfaceKHR == mExternalSurfaceKHR )
++        {
++            mSurfaceKHR = 0;
++            return;
++        }
+         if( mSurfaceKHR )
+         {
+             vkDestroySurfaceKHR( mDevice->mInstance->mVkInstance, mSurfaceKHR, 0 );
+diff --git a/RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp b/RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp
+index d58aae2d59..350446db96 100644
+--- a/RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp
++++ b/RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp
+@@ -397,6 +397,10 @@ namespace Ogre
+         if( mDevice->isDeviceLost() )  // notifyDeviceRestored() will call us again
+             return;
+ 
++        // Host-supplied surface takes precedence; see VulkanWindowSwapChainBased.
++        if( adoptExternalSurface() )
++            return;
++
+         VkAndroidSurfaceCreateInfoKHR andrSurfCreateInfo;
+         makeVkStruct( andrSurfCreateInfo, VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR );
+         andrSurfCreateInfo.window = mNativeWindow;
+diff --git a/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp b/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
+index b1823723d1..23874a4429 100644
+--- a/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
++++ b/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
+@@ -167,7 +167,7 @@ namespace Ogre
+             parseSharedParams( miscParams );
+         }
+ 
+-        if( !mXcbWindow )
++        if( !mXcbWindow && !mExternalSurfaceKHR )
+         {
+             initConnection();  // TODO: Connection must be shared by ALL windows
+             createWindow( mTitle, mRequestedWidth, mRequestedHeight, miscParams );
+@@ -184,11 +184,19 @@ namespace Ogre
+             (PFN_vkGetPhysicalDeviceXcbPresentationSupportKHR)vkGetInstanceProcAddr(
+                 mDevice->mInstance->mVkInstance, "vkGetPhysicalDeviceXcbPresentationSupportKHR" );
+ 
+-        if( !get_xcb_presentation_support( mDevice->mPhysicalDevice, mDevice->mGraphicsQueue.mFamilyIdx,
+-                                           mConnection, mScreen->root_visual ) )
++        // With a host-supplied surface there is no xcb window and no xcb
++        // connection here: the host owns both, and presentation support was
++        // settled when the host created the surface.
++        if( !mExternalSurfaceKHR )
+         {
+-            OGRE_EXCEPT( Exception::ERR_RENDERINGAPI_ERROR, "Vulkan not supported on given X11 window",
+-                         "VulkanXcbWindow::_initialize" );
++            if( !get_xcb_presentation_support( mDevice->mPhysicalDevice,
++                                               mDevice->mGraphicsQueue.mFamilyIdx, mConnection,
++                                               mScreen->root_visual ) )
++            {
++                OGRE_EXCEPT( Exception::ERR_RENDERINGAPI_ERROR,
++                             "Vulkan not supported on given X11 window",
++                             "VulkanXcbWindow::_initialize" );
++            }
+         }
+ 
+         VulkanTextureGpuManager *textureManager =
+@@ -213,6 +221,12 @@ namespace Ogre
+         if( mDevice->isDeviceLost() )  // notifyDeviceRestored() will call us again
+             return;
+ 
++        // The host may have created the surface already (SDL_Vulkan_CreateSurface
++        // on the window SDL owns, Wayland or X11 alike). Then there is no
++        // platform surface to make and no window handle needed.
++        if( adoptExternalSurface() )
++            return;
++
+         PFN_vkCreateXcbSurfaceKHR create_xcb_surface = (PFN_vkCreateXcbSurfaceKHR)vkGetInstanceProcAddr(
+             mDevice->mInstance->mVkInstance, "vkCreateXcbSurfaceKHR" );
+ 
+diff --git a/RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp b/RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp
+index 0e12fccd72..700c3c5614 100644
+--- a/RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp
++++ b/RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp
+@@ -259,7 +259,7 @@ namespace Ogre
+                 enableDoubleClick = StringConverter::parseBool( opt->second );
+         }
+ 
+-        if( !mIsExternal )
++        if( !mIsExternal && !mExternalSurfaceKHR )
+         {
+             DWORD dwStyleEx = 0;
+             MONITORINFOEX monitorInfoEx;
+@@ -452,6 +452,10 @@ namespace Ogre
+         if( mDevice->isDeviceLost() )  // notifyDeviceRestored() will call us again
+             return;
+ 
++        // Host-supplied surface takes precedence; see VulkanWindowSwapChainBased.
++        if( adoptExternalSurface() )
++            return;
++
+         VkWin32SurfaceCreateInfoKHR createInfo;
+         makeVkStruct( createInfo, VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR );
+         createInfo.hwnd = mHwnd;
