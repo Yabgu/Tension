@@ -47,7 +47,7 @@ pub type KeySpec = Vec<Key>;
 
 /// A compiled comparator and the memory holding its code.
 pub struct NativeComparator {
-    code: *mut libc::c_void,
+    code: *mut std::ffi::c_void,
     len: usize,
     keys: KeySpec,
 }
@@ -113,10 +113,13 @@ impl NativeComparator {
 impl Drop for NativeComparator {
     fn drop(&mut self) {
         if !self.code.is_null() && self.len > 0 {
-            // SAFETY: the page came from `mmap` with this exact length, and
-            // `code` is null-checked.
+            #[cfg(unix)]
             unsafe {
                 libc::munmap(self.code, self.len);
+            }
+            #[cfg(windows)]
+            unsafe {
+                windows_mem::VirtualFree(self.code, 0, windows_mem::MEM_RELEASE);
             }
             self.code = std::ptr::null_mut();
         }
@@ -149,7 +152,6 @@ fn emit_code(keys: &KeySpec) -> Result<Vec<u8>> {
     use cranelift_codegen::ir::condcodes::IntCC;
     use cranelift_codegen::ir::types;
     use cranelift_codegen::ir::{AbiParam, Function, InstBuilder, MemFlags, Signature, UserFuncName};
-    use cranelift_codegen::isa::CallConv;
     use cranelift_codegen::settings::Configurable;
     use cranelift_codegen::{settings, Context};
     use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -164,7 +166,7 @@ fn emit_code(keys: &KeySpec) -> Result<Vec<u8>> {
         .finish(settings::Flags::new(flag_builder))
         .map_err(|e| GraphError::Unsupported(format!("cranelift: ISA: {e}")))?;
 
-    let mut signature = Signature::new(CallConv::SystemV);
+    let mut signature = Signature::new(isa.default_call_conv());
     signature.params.push(AbiParam::new(types::I64)); // a
     signature.params.push(AbiParam::new(types::I64)); // b
     signature.returns.push(AbiParam::new(types::I8));
@@ -271,8 +273,42 @@ fn emit_code(keys: &KeySpec) -> Result<Vec<u8>> {
     Ok(compiled.code_buffer().to_vec())
 }
 
+#[cfg(windows)]
+mod windows_mem {
+    use std::ffi::c_void;
+
+    pub const MEM_COMMIT: u32 = 0x0000_1000;
+    pub const MEM_RESERVE: u32 = 0x0000_2000;
+    pub const MEM_RELEASE: u32 = 0x0000_8000;
+    pub const PAGE_READWRITE: u32 = 0x04;
+    pub const PAGE_EXECUTE_READ: u32 = 0x20;
+
+    extern "system" {
+        pub fn VirtualAlloc(
+            lpAddress: *mut c_void,
+            dwSize: usize,
+            flAllocationType: u32,
+            flProtect: u32,
+        ) -> *mut c_void;
+
+        pub fn VirtualProtect(
+            lpAddress: *mut c_void,
+            dwSize: usize,
+            flNewProtect: u32,
+            lpflOldProtect: *mut u32,
+        ) -> i32;
+
+        pub fn VirtualFree(
+            lpAddress: *mut c_void,
+            dwSize: usize,
+            dwFreeType: u32,
+        ) -> i32;
+    }
+}
+
 /// Map `code` into an executable page and return `(pointer, length)`.
-fn map_executable(code: &[u8]) -> Result<(*mut libc::c_void, usize)> {
+#[cfg(unix)]
+fn map_executable(code: &[u8]) -> Result<(*mut std::ffi::c_void, usize)> {
     let len = code.len().max(1);
     // SAFETY: a fresh anonymous mapping. The length is rounded up to a page by
     // the kernel, and `munmap` takes the same length.
@@ -301,6 +337,41 @@ fn map_executable(code: &[u8]) -> Result<(*mut libc::c_void, usize)> {
             libc::munmap(page, len);
         }
         return Err(GraphError::Unsupported("mprotect failed".to_string()));
+    }
+    Ok((page, len))
+}
+
+#[cfg(windows)]
+fn map_executable(code: &[u8]) -> Result<(*mut std::ffi::c_void, usize)> {
+    let len = code.len().max(1);
+    let page = unsafe {
+        windows_mem::VirtualAlloc(
+            std::ptr::null_mut(),
+            len,
+            windows_mem::MEM_COMMIT | windows_mem::MEM_RESERVE,
+            windows_mem::PAGE_READWRITE,
+        )
+    };
+    if page.is_null() {
+        return Err(GraphError::Unsupported("VirtualAlloc failed".to_string()));
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(code.as_ptr(), page as *mut u8, code.len());
+    }
+    let mut old_protect = 0u32;
+    let rc = unsafe {
+        windows_mem::VirtualProtect(
+            page,
+            len,
+            windows_mem::PAGE_EXECUTE_READ,
+            &mut old_protect,
+        )
+    };
+    if rc == 0 {
+        unsafe {
+            windows_mem::VirtualFree(page, 0, windows_mem::MEM_RELEASE);
+        }
+        return Err(GraphError::Unsupported("VirtualProtect failed".to_string()));
     }
     Ok((page, len))
 }

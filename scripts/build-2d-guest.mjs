@@ -18,10 +18,11 @@
 //
 // Usage: node scripts/build-2d-guest.mjs [--example <dir>]
 
-import { spawnSync } from 'node:child_process';
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { npmBin } from './lib/toolchain.mjs';
+import { spawn } from './lib/proc.mjs';
 
 const RUNNER = 'build-2d-guest';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -29,12 +30,6 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function die(message) {
   console.error(`${RUNNER}: ${message}`);
   process.exit(1);
-}
-
-function run(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
-  if (result.error) return null;
-  return result;
 }
 
 const argv = process.argv.slice(2);
@@ -87,14 +82,14 @@ console.log(`${RUNNER}: ${blob.length} bytes -> ${relative(exampleDir, outPath)}
 // `ogre.generated.ts`. Resolve the local pin first.
 const candidates = [
   process.env.TENSIONSCRIPT,
-  join(repo, 'tension-framework', 'node_modules', '.bin', 'tensionscript'),
-  join(exampleDir, 'node_modules', '.bin', 'tensionscript'),
+  npmBin(join(repo, 'tension-framework'), 'tensionscript'),
+  npmBin(exampleDir, 'tensionscript'),
   'tensionscript',
 ].filter(Boolean);
 
 let compiler = null;
 for (const candidate of candidates) {
-  const probe = run(candidate, ['--version']);
+  const probe = spawn(candidate, ['--version']);
   if (probe && probe.status === 0) {
     compiler = candidate;
     console.log(`${RUNNER}: ${candidate} (${probe.stdout.trim()})`);
@@ -132,7 +127,7 @@ console.log(`${RUNNER}: config ${relative(repo, config)}`);
 mkdirSync(join(exampleDir, 'build'), { recursive: true });
 const entry = join(exampleDir, 'src', 'main.ts');
 const out = join(exampleDir, 'build', 'game.wasm');
-const compile = run(compiler, [entry, '--config', config, '-o', out]);
+const compile = spawn(compiler, [entry, '--config', config, '-o', out], { cwd: exampleDir });
 if (!compile || compile.status !== 0) {
   console.error(compile?.stdout ?? '', compile?.stderr ?? '');
   die('the guest did not compile');

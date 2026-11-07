@@ -5,7 +5,7 @@
   "type": "module",
   "description": "TensionCore example: the isometric scene built with the tension-framework SDK instead of hand-written records",
   "scripts": {
-    "build": "node ../../../scripts/build-2d-guest.mjs",
+    "build": "node ../synthetic/emit.mjs . && node ../../../scripts/build-2d-guest.mjs",
     "start": "node test.mjs",
     "test:ci": "node test.mjs"
   },
