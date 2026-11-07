@@ -444,7 +444,7 @@ status. The list by verb, with the checks that produce each code:
   (`scene.cpp:306-320`).
 - **`submit_skin_matrices`** — `-EINVAL` for shapes, strides, or a matrix block
   that runs past the window (`adapter.cpp:1034-1051`).
-  **Not yet proven:** unlike the two batch verbs it does not check that the
+  **Inconsistent with the two batch verbs:** it does not check that the
   renderable is live. `SceneMirror::set_skin_matrices` silently ignores an id
   outside 1..2048 and stores matrices for an id that is not live
   (`scene.cpp:247-251`), so the verb returns 0 with `ret = count` even when
