@@ -2,6 +2,8 @@
 // Run the test suites, in parallel where that is safe.
 //
 //   1. codegen            the generated wire records are current
+//   1b. abi docs          the generated ABI references are current, and the
+//                         documented offsets match the C compiler's `offsetof`
 //   2. tension-framework  the guest fixtures against the host
 //   3. tension-ogre guest the capability's suite
 //   4. tension-input      the input DSO's suite
@@ -161,6 +163,18 @@ const SUITES = {
       '--out-h', join(repo, 'tension-ogre', 'src', 'generated'),
       '--check',
     ]),
+  },
+
+  // The ABI references are generated from the header and the registration
+  // sites, so the only question is whether they are current — and whether the
+  // offset column is right, which the generator alone cannot answer. The check
+  // compiles a probe against the real header and compares `offsetof`, so a
+  // wrong layout model fails here rather than in a reader's trust.
+  'abi-docs': {
+    title: 'abi docs',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'test-abi-docs.mjs')]),
   },
 
   framework: {
