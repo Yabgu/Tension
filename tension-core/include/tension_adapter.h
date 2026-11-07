@@ -164,6 +164,22 @@ typedef struct tension_ctrl_msg {
     uint32_t reserved;   /* must be 0 */
 } tension_ctrl_msg;
 
+/*
+ * The host's window surface (ABI v6). See the `host_surface` slot.
+ *
+ * `struct_size` is `sizeof(tension_host_surface)` and exists so a later ABI can
+ * grow this without a new slot: an adapter passes the size it was compiled
+ * against in, and the host writes no more than that.
+ */
+typedef struct tension_host_surface {
+    uint32_t struct_size;
+    uint32_t width;   /* current drawable size, pixels */
+    uint32_t height;
+    uint32_t reserved;
+    uint64_t instance; /* VkInstance, 0 = none */
+    uint64_t surface;  /* VkSurfaceKHR, 0 = none */
+} tension_host_surface;
+
 /** The source stamps. Not caller-supplied; see `tension_ctrl_msg`. */
 #define TENSION_CTRL_SRC_LAYER 0u
 #define TENSION_CTRL_SRC_CORE  1u
@@ -588,6 +604,28 @@ typedef struct tension_core_api {
      * queued. See `tension_ctrl_msg`.
      */
     int32_t (*post_control)(void *user, const tension_ctrl_msg *msg);
+
+    /*
+     * The host's window surface, appended under rule 11 at ABI version 6.
+     *
+     * A renderer cannot create its own window in this architecture, so the
+     * handles it needs to render into the host's are handed over here. Both are
+     * **borrowed**: the host created them and the host destroys them. An
+     * adapter builds a swapchain on `surface` and must never call
+     * `vkDestroySurfaceKHR` on it, nor `vkDestroyInstance` on `instance`.
+     *
+     * The handles are plain `uint64_t` rather than Vulkan types so that this
+     * header still knows nothing about Vulkan: an adapter that does not use it
+     * need not include a Vulkan header at all.
+     *
+     * Returns 0 and fills `out`, or -ENOSYS when the host owns no surface —
+     * no `--window`, or a window without a Vulkan one. -ENOSYS is the expected
+     * answer on a headless run, not a failure.
+     *
+     * Any thread (rule 7): it reads the host's own state, never guest memory.
+     * A render thread may call it once per frame to learn the current size.
+     */
+    int32_t (*host_surface)(void *user, tension_host_surface *out);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -801,25 +839,25 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, post_control)
-                      + sizeof(((tension_core_api *)0)->post_control)
+static_assert(offsetof(tension_core_api, host_surface)
+                      + sizeof(((tension_core_api *)0)->host_surface)
                   == sizeof(tension_core_api),
-              "tension_core_api: post_control must stay the last slot; an "
+              "tension_core_api: host_surface must stay the last slot; an "
               "append updates this assertion and the Rust table together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 20 * sizeof(void *),
-              "tension_core_api: expected 20 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 21 * sizeof(void *),
+              "tension_core_api: expected 21 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, post_control)
-                       + sizeof(((tension_core_api *)0)->post_control)
+_Static_assert(offsetof(tension_core_api, host_surface)
+                       + sizeof(((tension_core_api *)0)->host_surface)
                    == sizeof(tension_core_api),
-               "tension_core_api: post_control must stay the last slot; an "
+               "tension_core_api: host_surface must stay the last slot; an "
                "append updates this assertion and the Rust table together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 20 * sizeof(void *),
-               "tension_core_api: expected 20 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 21 * sizeof(void *),
+               "tension_core_api: expected 21 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif

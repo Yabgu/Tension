@@ -48,6 +48,21 @@ struct Config {
     uint32_t frame_hz = 60;
     uint32_t window_width = 1280;
     uint32_t window_height = 720;
+    /// The host's Vulkan instance and surface (ABI v6), or 0 for "the host owns
+    /// none" — in which case the backend behaves exactly as it did before v6 and
+    /// creates its own window. Not a config key: the guest cannot supply these,
+    /// they arrive from the host's table, and they are set after decoding.
+    uint64_t external_instance = 0;
+    uint64_t external_surface = 0;
+    /// Reads the host's *current* surface size, called once per frame by the
+    /// render thread. A function pointer rather than a value because the size
+    /// changes; a pointer rather than a `std::function` because `Config` is
+    /// copied into the backend and this must not allocate on the render thread.
+    ///
+    /// Null when there is no host surface, which is what makes the per-frame
+    /// check cost nothing on the pre-v6 path.
+    void (*host_size)(void *ctx, uint32_t *out_w, uint32_t *out_h) = nullptr;
+    void *host_size_ctx = nullptr;
 };
 
 /// Either a config or the named reason it was refused.

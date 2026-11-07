@@ -278,6 +278,15 @@ pub struct AdapterHost {
     /// import, and the host loop itself. One queue means one executor means one
     /// thread that touches SDL.
     control: Arc<crate::platform::ControlBus>,
+    /// The host's window surface, published once by `main` before adapters
+    /// load. `None` on a headless run, which is what `host_surface` answers
+    /// `-ENOSYS` for.
+    ///
+    /// A shared cell rather than a pointer to the window: `HostWindow` is not
+    /// `Sync` (SDL requires every window call on its creating thread) and an
+    /// adapter may call this from its render thread. This carries only the
+    /// handles and the size, which are plain data.
+    host_surface: Arc<Mutex<Option<crate::platform::HostSurface>>>,
     /// What `link` collected. Single-threaded in practice; `Sync` by
     /// construction.
     link: Mutex<LinkState>,
@@ -374,6 +383,7 @@ impl AdapterHost {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
             control,
+            host_surface: Arc::new(Mutex::new(None)),
             link: Mutex::new(LinkState::default()),
             ctx: Mutex::new(0),
             ctx_kind: AtomicU8::new(CTX_EMPTY),
@@ -397,6 +407,19 @@ impl AdapterHost {
     /// session drains.
     pub fn posting(&self) -> Arc<PostingSide> {
         Arc::clone(&self.posting)
+    }
+
+    /// Publish the host's surface for `host_surface` to serve.
+    ///
+    /// Called once by `main`, before any adapter loads, so an adapter's `init`
+    /// already sees it.
+    pub fn publish_host_surface(&self, surface: crate::platform::HostSurface) {
+        *self.host_surface.lock().expect("the surface mutex is never poisoned") = Some(surface);
+    }
+
+    /// What `host_surface` answers with.
+    pub fn host_surface(&self) -> Option<crate::platform::HostSurface> {
+        *self.host_surface.lock().expect("the surface mutex is never poisoned")
     }
 
     /// The window-control queue, for `post_control` and for the tests that

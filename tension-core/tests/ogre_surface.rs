@@ -93,6 +93,7 @@ struct ApiTable {
         ) -> i32,
     >,
     post_control: Option<unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32>,
+    host_surface: Option<unsafe extern "C" fn(*mut c_void, *mut std::ffi::c_void) -> i32>,
 }
 
 /// Mirrors `tension_ctrl_msg` (ABI v6). Eight 4-byte fields, no padding.
@@ -111,7 +112,7 @@ struct TensionCtrlMsg {
 
 // The mirror must stay the same size as the real table, or a DSO reading a slot
 // this file does not have reads past the end of a struct the test allocated.
-const _: () = assert!(std::mem::size_of::<ApiTable>() == 168);
+const _: () = assert!(std::mem::size_of::<ApiTable>() == 176);
 const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
 
 #[repr(C)]
@@ -363,6 +364,7 @@ fn test_ogre_adapter_surface() {
         shader_generate: None,
         compile_graph: None,
         post_control: None,
+        host_surface: None,
     };
 
     let refused = unsafe { init(std::ptr::null_mut(), &table) };
