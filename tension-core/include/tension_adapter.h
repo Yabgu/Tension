@@ -14,16 +14,16 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 6 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
- * struct and the `tension_adapter` vtable are append-only within a version;
- * changing the meaning of an existing field requires a new entry-point symbol.
- * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
- * the vtable; version 3 appended `signal_frame`; version 4 appended
- * `shader_generate` after it; version 5 appended `compile_graph`, which is the
- * first slot to take a graph blob rather than a layout; version 6 appended
- * `post_control`, the host's write channel for window state. A version-1 adapter is refused at load by the
- * version check, so the host never reads the vtable past where a version-1
- * struct ends.
+ * The ABI is alpha: it may break between releases. `TENSION_ADAPTER_ABI_VERSION`
+ * states today's shape — a fact, not a promise. While alpha lasts, the shape
+ * stays append-only: `tension_core_api` and `tension_adapter` grow at the end,
+ * never reorder or remove a field, and changing an existing field's meaning
+ * needs a new entry-point symbol. That discipline is what makes a version bump
+ * catchable; it is not a compatibility promise during alpha, only a courtesy
+ * that keeps the codebase coherent. Version 2 appended `guest_read_checked` and
+ * `layout_hash`; version 3 `signal_frame`; version 4 `shader_generate`; version
+ * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`.
+ * A version-1 adapter is refused at load, so the host never reads past its end.
  *
  * Design note: tension-ogre/DESIGN.md, Appendix A.
  *
@@ -71,7 +71,7 @@ extern "C" {
  *     interpret another capability's records or ids, and must not assume it is
  *     the only event source.
  * 11. `tension_core_api` and `tension_adapter` are append-only within an ABI
- *     version.
+ *     version — the discipline in force while alpha lasts, not a promise.
  * 12. Deferred submissions are *copied* by the session before they are queued.
  *     An adapter's `apply` receives bytes; it never receives a guest address.
  * ===================================================================== */
@@ -421,7 +421,7 @@ typedef struct tension_core_api {
                           uint32_t *out_capacity, uint32_t *out_flags);
 
     /*
-     * Look up a region's offset and size in the frozen arena layout. A
+     * Look up a region's offset and size in the session's arena layout. A
      * host-side lookup in the session's own table: it does not read guest
      * memory, so it is valid at `link` time, before `session_open` has run and
      * before the arena has any content. -ENOENT for a kind not in this chunk's
@@ -928,9 +928,10 @@ _Static_assert(sizeof(tension_adapter) == 10 * sizeof(void *),
 #endif
 
 /*
- * Frozen at ABI version 4. Additive fields are appended; the version check in
- * `init` is mandatory rather than advisory, and it is what refuses a
- * version-1 adapter before its shorter vtable is read as if it were longer.
+ * The ABI is alpha; `TENSION_ADAPTER_ABI_VERSION` is the shape it carries
+ * today. Additive fields are appended; the version check in `init` is mandatory
+ * rather than advisory, and it is what refuses a version-1 adapter before its
+ * shorter vtable is read as if it were longer.
  */
 
 #ifdef __cplusplus
