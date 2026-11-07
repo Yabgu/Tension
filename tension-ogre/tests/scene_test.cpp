@@ -580,6 +580,87 @@ void test_decode_record_fields_land_where_wire_says() {
           "past the camera table is refused");
 }
 
+// ── chunk 19: the guest's skin matrices ──────────────────────────────────
+
+std::vector<float> identity_matrix() { return std::vector<float>(64, 0.0f); }
+
+SceneMirror::SkinMatricesEntry skin_at(uint32_t renderable_id) {
+    SceneMirror::SkinMatricesEntry entry;
+    entry.renderable_id = renderable_id;
+    entry.matrices = identity_matrix();
+    return entry;
+}
+
+void test_apply_skin_matrices_accepts_a_live_batch() {
+    std::printf("test_apply_skin_matrices_accepts_a_live_batch\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(1)};
+
+    check_eq(mirror.apply_skin_matrices(batch), 0, "a live renderable's matrices land");
+    check(mirror.skin_matrices(1) != nullptr, "and the map holds them");
+    check(mirror.skin_matrices(1) != nullptr && mirror.skin_matrices(1)->size() == 64,
+          "all sixty-four floats of them");
+    check_eq(mirror.skin_generation(), 1, "one accepted batch, one generation bump");
+}
+
+void test_apply_skin_matrices_refuses_an_id_outside_the_table() {
+    std::printf("test_apply_skin_matrices_refuses_an_id_outside_the_table\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(kRenderableCapacity + 1)};
+
+    check_eq(mirror.apply_skin_matrices(batch), -EINVAL, "past the table is -EINVAL");
+    check_eq(mirror.skin_generation(), 0, "and nothing was recorded");
+
+    batch[0] = skin_at(0);
+    check_eq(mirror.apply_skin_matrices(batch), -EINVAL, "id 0 is never valid");
+}
+
+void test_apply_skin_matrices_refuses_a_dead_renderable() {
+    std::printf("test_apply_skin_matrices_refuses_a_dead_renderable\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(7)};
+
+    check_eq(mirror.apply_skin_matrices(batch), -ENOENT, "an id with no live renderable is -ENOENT");
+    check(mirror.skin_matrices(7) == nullptr, "and nothing was stored for it");
+    check_eq(mirror.skin_generation(), 0, "and the generation did not move");
+}
+
+void test_apply_skin_matrices_all_or_nothing() {
+    std::printf("test_apply_skin_matrices_all_or_nothing\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    // The first entry is good, the second names nothing. The good one must not
+    // land: a half-applied batch is the state this check exists to prevent.
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(1), skin_at(9)};
+
+    check_eq(mirror.apply_skin_matrices(batch), -ENOENT, "the batch is refused");
+    check(mirror.skin_matrices(1) == nullptr, "and the entry that passed validation was not stored");
+    check_eq(mirror.skin_generation(), 0, "and the generation did not move");
+}
+
+void test_apply_skin_matrices_accepts_a_mesh_with_no_skeleton() {
+    std::printf("test_apply_skin_matrices_accepts_a_mesh_with_no_skeleton\n");
+    // `guest-skin-noskel`, mode=matrix: the volume carries no .skeleton, so the
+    // loader reports 0 bones — and the renderer still draws the mesh through
+    // the skin Hlms with exactly these matrices. A rig gate here would refuse
+    // a state the renderer supports, which is why liveness is the only check.
+    SceneMirror mirror = mirror_with_one_renderable();
+    mirror.set_bone_count([](uint32_t) -> uint32_t { return 0u; });
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(1)};
+
+    check_eq(mirror.apply_skin_matrices(batch), 0, "a skeletonless blend-data mesh is accepted");
+    check(mirror.skin_matrices(1) != nullptr, "and its matrices are stored");
+}
+
+void test_remove_renderable_drops_its_skin_matrices() {
+    std::printf("test_remove_renderable_drops_its_skin_matrices\n");
+    SceneMirror mirror = mirror_with_one_renderable();
+    std::vector<SceneMirror::SkinMatricesEntry> batch{skin_at(1)};
+    check_eq(mirror.apply_skin_matrices(batch), 0, "the matrices land");
+
+    check_eq(mirror.remove_renderable(1), 0, "the renderable is removed");
+    check(mirror.skin_matrices(1) == nullptr, "and its matrices went with it");
+}
+
 } // namespace
 
 int main() {
@@ -611,6 +692,12 @@ int main() {
     test_apply_bones_refuses_bone_index_out_of_range();
     test_apply_bones_all_or_nothing();
     test_apply_bones_advances_generation();
+    test_apply_skin_matrices_accepts_a_live_batch();
+    test_apply_skin_matrices_refuses_an_id_outside_the_table();
+    test_apply_skin_matrices_refuses_a_dead_renderable();
+    test_apply_skin_matrices_all_or_nothing();
+    test_apply_skin_matrices_accepts_a_mesh_with_no_skeleton();
+    test_remove_renderable_drops_its_skin_matrices();
     test_decode_node_bounds_check();
     test_decode_record_fields_land_where_wire_says();
     std::printf("%d checks, %d failures\n", checks, failures);

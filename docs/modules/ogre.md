@@ -460,14 +460,17 @@ status. The list by verb, with the checks that produce each code:
   non-rigged target or a bone index past the rig's count
   (`scene.cpp:306-320`).
 - **`submit_skin_matrices`** — `-EINVAL` for shapes, strides, or a matrix block
-  that runs past the window (`adapter.cpp:1034-1051`).
-  **Inconsistent with the two batch verbs:** it does not check that the
-  renderable is live. `SceneMirror::set_skin_matrices` silently ignores an id
-  outside 1..2048 and stores matrices for an id that is not live
-  (`scene.cpp:247-251`), so the verb returns 0 with `ret = count` even when
-  nothing was stored. The apply pass only reads matrices for live rigged
-  renderables (`backend_ogre.cpp:2025-2040`), so nothing is corrupted — but a
-  guest cannot tell a silent drop from a success.
+  that runs past the window (`adapter.cpp:1028-1106`), and `-EINVAL` from the
+  mirror for an id outside the renderable table; `-ENOENT` for an id with no
+  live renderable (`scene.cpp:247-271`). The batch is all-or-nothing, like
+  `submit_motion` and `submit_bones`: every entry is validated before any is
+  stored, and an accepted batch advances the skin generation once.
+  **Liveness is the only check, deliberately.** The bone path also asks whether
+  the mesh has a skeleton; this one must not. A mesh whose volume carries no
+  skeleton still carries blend data, still routes to the skin Hlms, and its
+  matrices are exactly what that Hlms reads — its recorded bone count is 0, so
+  a rig gate would refuse the state `guest-skin-noskel` exists to exercise
+  (`scene.h:239-273`).
 - **`create_mesh`** — `-EINVAL` for a topology other than a triangle list, a
   format without `VF_POSITION` or with unknown bits, vertex bytes that are not a
   whole number of vertices, index bytes that are not whole triangles, arrays
