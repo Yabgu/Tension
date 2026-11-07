@@ -344,6 +344,10 @@ struct State {
     collected: Collected,
     guest: GuestBuf,
     logs: Vec<String>,
+    /// Where `guest_write` deposits bytes. The adapter's `screenshot` verb
+    /// writes pixels here through that slot; the render thread never touches
+    /// it, so a plain `Vec` is enough.
+    readback: Vec<u8>,
 }
 
 /// Did any captured log line contain `needle`?
@@ -396,6 +400,48 @@ fn wait_for_frames(state: &State, after: u32, timeout: std::time::Duration) -> u
         let frames = state.collected.frames.load(Ordering::SeqCst);
         if frames > after || std::time::Instant::now() >= deadline {
             return frames;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Ask the adapter for a frame of pixels, the way a guest would.
+///
+/// `ogre::screenshot(ptr, cap)` is the ABI's whole readback surface: it arms a
+/// request, and if a frame has landed since the last one it writes tightly
+/// packed RGBA8 to `ptr` and returns the byte count. `-1` means "armed, not
+/// ready yet" — the download happens on the render thread at the next
+/// `frameRenderingQueued`, which is *before* the swap, so this reads the image
+/// Ogre just drew rather than one the presentation engine owns.
+///
+/// Returns the bytes, or `None` if none arrived before the timeout.
+fn screenshot(
+    state_ptr: *mut c_void,
+    entry: &Registered,
+    capacity: u32,
+    timeout: std::time::Duration,
+) -> Option<Vec<u8>> {
+    let func = entry.func.expect("screenshot has a shim");
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        // SAFETY: `state_ptr` is the `State` the table's `user` points at, and
+        // this thread is the only one that clears the buffer. The render thread
+        // writes the *other* fields through atomics.
+        unsafe { (*(state_ptr as *mut State)).readback.clear() };
+        let mut ret = TensionValue { bits: 0 };
+        let args = [
+            TensionValue { bits: 0 },             // ptr: offset 0 in the sink
+            TensionValue { bits: capacity as u64 },
+        ];
+        let rc = unsafe { func(entry.ctx, args.as_ptr(), 2, &mut ret) };
+        let written = ret.bits as u32 as i32;
+        if rc == 0 && written > 0 {
+            // SAFETY: as above; the adapter has finished writing this buffer.
+            let bytes = unsafe { (*(state_ptr as *mut State)).readback.clone() };
+            return Some(bytes[..(written as usize).min(bytes.len())].to_vec());
+        }
+        if std::time::Instant::now() >= deadline {
+            return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
@@ -494,7 +540,7 @@ fn main() {
         abi_version: abi,
         user: state_ptr,
         guest_read: Some(guest_read),
-        guest_write: Some(refuse_guest_write),
+        guest_write: Some(guest_write),
         guest_size: Some(guest_size),
         resolve_callback: Some(refuse_resolve),
         call_callback: Some(refuse_call),
@@ -585,6 +631,52 @@ fn main() {
         "c. the host's extension names reached the plugin",
     );
 
+    // ── (c) the pixels, at the size the host asked for ───────────────────
+    //
+    // "A frame was presented" and "the swapchain holds a frame of the right
+    // size" are different claims, and only the first was proven until now. The
+    // readback is Ogre's own download ticket, taken in `frameRenderingQueued` —
+    // before the swap, so it reads the image just drawn rather than one the
+    // presentation engine owns.
+    //
+    // Dimension, not colour: the default clear is black, and "cleared to black"
+    // is indistinguishable from "never cleared" by mean pixel value. A byte
+    // count of `w * h * 4` is not ambiguous — a stale 320x240 swapchain would
+    // report 307200 here no matter what its pixels contained.
+    const SHOT_CAP: u32 = 4 * 1024 * 1024;
+    let shot = state
+        .collected
+        .imports
+        .iter()
+        .find(|registered| registered.name.to_str() == Ok("screenshot"))
+        .cloned();
+    check(shot.is_some(), "c. ogre::screenshot is registered");
+    let mut frame1_px = Vec::new();
+    if let Some(entry) = &shot {
+        let pixels = screenshot(state_ptr, entry, SHOT_CAP, std::time::Duration::from_secs(20));
+        let expected = (surface.width * surface.height * 4) as usize;
+        match &pixels {
+            Some(bytes) => {
+                println!(
+                    "  frame 1 readback: {} bytes (expected {expected} for {}x{})",
+                    bytes.len(),
+                    surface.width,
+                    surface.height
+                );
+                check(!bytes.is_empty(), "c. frame 1 readback returned pixels");
+                check(
+                    bytes.len() == expected,
+                    "c. frame 1 readback is exactly w*h*4 at the host's size",
+                );
+            }
+            None => {
+                println!("  FAIL frame 1 readback: no pixels within 20s");
+                std::process::exit(1);
+            }
+        }
+        frame1_px = pixels.unwrap_or_default();
+    }
+
     // ── (d) resize the host ──────────────────────────────────────────────
     window.set_size(640, 480).expect("set_size");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -660,6 +752,58 @@ fn main() {
         "e. the rebuild converged: the size check stopped firing once Ogre took the new size",
     );
 
+    // ── (e) the pixels, at the new size ──────────────────────────────────
+    //
+    // This is the pixel-level half of the resize claim. Ogre's window metadata
+    // says 640x480 after `setFinalResolution`, but metadata is what
+    // `requestResolution` writes; the swapchain images are what matter. A
+    // readback that comes back 640x480x4 means the rebuilt swapchain is the one
+    // being drawn into, not the old one still attached.
+    if let Some(entry) = &shot {
+        match screenshot(state_ptr, entry, SHOT_CAP, std::time::Duration::from_secs(20)) {
+            Some(bytes) => {
+                println!("  frame 2 readback: {} bytes (expected {})", bytes.len(), 640 * 480 * 4);
+                check(!bytes.is_empty(), "e. frame 2 readback returned pixels");
+                check(
+                    bytes.len() == 640 * 480 * 4,
+                    "e. frame 2 readback is exactly 640x480x4 — the rebuilt swapchain is the one drawn into",
+                );
+                // A frame that is new but never written to would be all zeroes.
+                // Dimension is the load-bearing claim; this only rules out the
+                // crudest form of "the image was never touched".
+                let non_zero = bytes.iter().filter(|byte| **byte != 0).count();
+                println!("  frame 2 non-zero bytes: {non_zero} of {}", bytes.len());
+                check(non_zero > 0, "e. frame 2 readback is not an untouched zero buffer");
+            }
+            None => {
+                println!("  FAIL frame 2 readback: no pixels within 20s after the resize");
+                std::process::exit(1);
+            }
+        }
+        // ── settled ──────────────────────────────────────────────────────
+        //
+        // No new resize, a couple of hundred milliseconds of ordinary frames:
+        // the size must not flap. A rebuild loop or a bounce between the host's
+        // size and Ogre's would show up here as a third dimension.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        match screenshot(state_ptr, entry, SHOT_CAP, std::time::Duration::from_secs(20)) {
+            Some(bytes) => {
+                println!("  settle readback: {} bytes", bytes.len());
+                check(
+                    bytes.len() == 640 * 480 * 4,
+                    "e. settled readback is still 640x480x4 — the size is stable",
+                );
+            }
+            None => {
+                println!("  FAIL settle readback: no pixels within 20s of settling");
+                std::process::exit(1);
+            }
+        }
+    }
+    if frame1_px.is_empty() {
+        println!("  note: frame 1 produced no pixels, so the 320x240 readback was not exercised");
+    }
+
     // ── (f) window_handle ────────────────────────────────────────────────
     //
     // Under Q2 this must be -ENODEV: the host owns the window, so Ogre has no
@@ -714,7 +858,25 @@ unsafe extern "C" fn guest_size(_: *mut c_void) -> u32 {
 
 unsafe extern "C" fn refuse_control(_: *mut c_void, _: *const CtrlMsg) -> i32 { ENOSYS }
 
-unsafe extern "C" fn refuse_guest_write(_: *mut c_void, _: u32, _: *const c_void, _: u32) -> i32 { ENOSYS }
+/// A real guest write, because `ogre::screenshot` hands its pixels back through
+/// this slot: refusing it would test the refusal instead of the screenshot.
+/// `ptr` is an offset into one flat guest buffer, which is how the adapter uses
+/// it (the test chooses the offset, always 0).
+unsafe extern "C" fn guest_write(user: *mut c_void, ptr: u32, src: *const c_void, len: u32) -> i32 {
+    if user.is_null() || src.is_null() {
+        return EINVAL;
+    }
+    let state = unsafe { &mut *(user as *mut State) };
+    let start = ptr as usize;
+    let end = start.saturating_add(len as usize);
+    if end > state.readback.len() {
+        state.readback.resize(end, 0);
+    }
+    unsafe {
+        std::ptr::copy_nonoverlapping(src as *const u8, state.readback.as_mut_ptr().add(start), len as usize);
+    }
+    0
+}
 
 unsafe extern "C" fn refuse_resolve(_: *mut c_void, _: u32, _: u32, _: *const u32, _: u32, _: *mut *mut c_void) -> i32 { ENOSYS }
 
