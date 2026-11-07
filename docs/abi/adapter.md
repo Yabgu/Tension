@@ -133,14 +133,22 @@ Since column: the version the slot's comment says it was appended under, or
 
 ## Error codes
 
-| value | name | meaning |
-|---|---|---|
-| 0 | `success` | (for calls that report a status) |
+| value | meaning |
+|---|---|
+| `0` | success (for calls that report a status) |
+| `-EINVAL` | malformed argument, unsupported shape, or a refused registration |
+| `-ENOENT` | unknown region kind or unknown event class |
+| `-EBUSY` | wrong thread or phase, or a re-entrant call refused |
+| `-EIO` | a guest callback trapped, or a fatal adapter fault |
+| `-ENOSPC` | a class queue is full, or a callback budget is exhausted |
+| `-EBADF` | the session is not READY |
+| `-ENOMEM` | allocation failure |
+| `-ENOSYS` | a required slot was left NULL |
 
 ## What an adapter must not do
 
 1. Never call the guest — not from the render thread, not from any thread.
-2. Never touch guest memory outside `publish`, `apply`, or an import call;
+2. Never touch guest memory outside `publish`, `apply`, or an import call; never from a background thread; never hold a memory view across anything.
 3. Never write a guest -> host region, or a region it did not declare.
 4. Never block inside `publish`.
 5. Never interpret another capability's records.

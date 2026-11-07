@@ -255,8 +255,18 @@ function numberedRules(header) {
   const text = section(header, 'what an adapter must not do');
   const rules = [];
   for (const line of text.split('\n')) {
-    const m = /^\s*\*\s+(\d+)\.\s+(.*)$/.exec(line);
-    if (m) rules.push({ n: Number(m[1]), text: m[2].trim() });
+    const start = /^\s*\*\s+(\d+)\.\s+(.*)$/.exec(line);
+    if (start) {
+      rules.push({ n: Number(start[1]), text: start[2].trim() });
+      continue;
+    }
+    // A rule that wraps continues on the next commented line. Dropping the
+    // second half would truncate the rule at its first clause, which reads as
+    // a weaker prohibition than the header states.
+    const more = /^\s*\*\s+(\S.*)$/.exec(line);
+    if (more && rules.length > 0) {
+      rules[rules.length - 1].text += ` ${more[1].trim()}`;
+    }
   }
   if (rules.length === 0) throw new Error('the "must not do" list parsed as empty');
   return rules;
@@ -267,11 +277,14 @@ function errnoTable(header) {
   const text = section(header, 'error codes at this boundary');
   const rows = [];
   for (const line of text.split('\n')) {
-    const m = /^\s*\*\s+(-?\d+)\s+(\S+)\s+(.*)$/.exec(line);
-    if (m && (m[1] === '0' || m[1].startsWith('-'))) {
-      rows.push({ value: m[1], name: m[2], meaning: m[3].trim() });
-    }
+    // `0 success (…)`, `-EINVAL malformed argument, …`. The name column carries
+    // the symbolic constant, which is what a shim returns in its comment.
+    // The header lists no separate symbolic name: the value *is* the name, and
+    // the rest of the line is what it means.
+    const m = /^\s*\*\s+(0|-E[A-Z]+)\s+(.*)$/.exec(line);
+    if (m) rows.push({ value: m[1], meaning: m[2].trim() });
   }
+  if (rows.length === 0) throw new Error('the errno table parsed as empty');
   return rows;
 }
 
@@ -577,9 +590,9 @@ function renderAdapterDoc(header, core, coreSize, adapter, adapterSize, rules, e
   lines.push('');
   lines.push('## Error codes');
   lines.push('');
-  lines.push('| value | name | meaning |');
-  lines.push('|---|---|---|');
-  for (const row of errnos) lines.push(`| ${row.value} | ${CODE(row.name)} | ${row.meaning} |`);
+  lines.push('| value | meaning |');
+  lines.push('|---|---|');
+  for (const row of errnos) lines.push(`| ${CODE(row.value)} | ${row.meaning} |`);
   lines.push('');
   lines.push('## What an adapter must not do');
   lines.push('');
