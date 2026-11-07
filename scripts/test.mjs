@@ -271,6 +271,21 @@ const SUITES = {
     ], { env: suiteEnv() }),
   },
 
+  // The pump: does the host notice a resize? `platform-surface` proves the
+  // surface can be created; this proves the window is serviced.
+  'platform-window': {
+    title: 'platform window',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_window',
+    ], { env: suiteEnv() }),
+  },
+
   core: {
     title: 'tension-core',
     // The `ogre_*` integration tests read the fixtures the two suites above
