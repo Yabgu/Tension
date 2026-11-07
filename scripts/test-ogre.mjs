@@ -383,8 +383,16 @@ if (!windowed) {
 } else if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !WIN) {
   console.log('== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY');
 } else {
+  // The expected-stderr regex matches a *substring* of the adapter's
+  // created-window line, so it is unanchored. Two defects were in this literal
+  // until now: the group was unterminated, which made `new RegExp` throw inside
+  // `caseRun` and killed the whole block before its second case; and the
+  // literal parentheses around the renderer name were unescaped, so even a
+  // terminated group would not have matched `created (OpenGL 3+ ...)`. The
+  // renderer name is the only part that varies — the size in that line is
+  // whatever the display gives us, so it is deliberately not matched.
   caseRun('windowed', 'guest-window.wasm', '^OK ',
-          'created (OpenGL 3+ Rendering Subsystem|Vulkan Rendering Subsystem',
+          'created \\((OpenGL 3\\+ Rendering Subsystem|Vulkan Rendering Subsystem)\\)',
           ['--renderer=gl3plus', '--frames=5']);
 
   acidCase('jobs-gl3plus', 'guest-jobs.wasm', '^ACID 5/5 passed',
