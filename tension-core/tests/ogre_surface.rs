@@ -127,11 +127,26 @@ struct Vtable {
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-// A mirror of the header's constant. It is a literal here because this is an
-// integration test and the bin's `ffi` module is not exported; it has to be
-// updated with the header, which the adapter-vtable assertion below enforces
-// by comparing the loaded DSO's value against it.
-const TENSION_ADAPTER_ABI_VERSION: u32 = 6;
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header.
+///
+/// A literal here would be a second copy of a number the header already owns,
+/// and this file only holds one because the bin's `ffi` module is not exported
+/// to an integration test. Parsing makes that harmless: an ABI bump moves the
+/// header and this follows. `ogre_smoke.rs` asserts the same thing the same
+/// way, for the same reason — both used to hold a literal, and both were wrong
+/// within one bump.
+fn tension_adapter_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
 const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;
@@ -305,7 +320,7 @@ fn test_ogre_adapter_surface() {
     *RECORDED.lock().expect("the recording mutex") = Some(Recorded::default());
 
     // ── the vtable itself ────────────────────────────────────────────────
-    assert_eq!(unsafe { (*vtable).abi_version }, TENSION_ADAPTER_ABI_VERSION);
+    assert_eq!(unsafe { (*vtable).abi_version }, tension_adapter_abi_version());
     let name = unsafe { CStr::from_ptr((*vtable).name) }.to_string_lossy().into_owned();
     assert_eq!(name, "ogre", "the vtable names the wasm module it implements");
     assert_eq!(unsafe { (*vtable).flags }, 0, "flags are reserved");
@@ -327,7 +342,7 @@ fn test_ogre_adapter_surface() {
     // this table a check on the real rule: an adapter may not call a slot it
     // does not need, and the host's other slots' *presence* is not a licence.
     let table = ApiTable {
-        abi_version: TENSION_ADAPTER_ABI_VERSION,
+        abi_version: tension_adapter_abi_version(),
         user: std::ptr::null_mut(),
         guest_read: None,
         guest_write: None,
