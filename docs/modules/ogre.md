@@ -347,9 +347,17 @@ ever touches an Ogre object (`backend.h:1-12`). The thread body is `render_main`
 The ordering invariant that matters: **the backend is destroyed on the thread
 that created it**, before the join completes. Reversing it — dropping
 `AdapterState::backend` while the thread still draws — is the measured SIGSEGV
-in the windowed build and SIGABRT headless (`adapter.cpp:1547-1552`). That is
+in the windowed build and SIGABRT headless (`adapter.cpp:1597-1605`). That is
 also why `~AdapterState` calls `stop_render_thread()` rather than relying on
-member destruction (`adapter.cpp:1553-1568`).
+member destruction (`adapter.cpp:1606-1618`).
+
+**Who runs teardown.** The host does, on both of its exit paths: the vtable's
+`shutdown` then `destroy`, reverse of link order, once
+(`tension-core/src/adapter/mod.rs:987-1024`, called from `main.rs:1743` on a
+trap and `main.rs:1815` on a clean return). The library is `dlclose`d after that
+(`adapter/ffi.rs:480-484`), which runs `~AdapterState` — by then a no-op. The
+destructor is the backstop for a path that skips the host's teardown, not the
+usual route.
 
 The thread's three partners, and what each may touch:
 

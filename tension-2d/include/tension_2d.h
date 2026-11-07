@@ -49,8 +49,10 @@ extern "C" {
  * capability's one session (capacity 1), and returns its handle, or:
  *   -EINVAL  `width`/`height` outside 1..16384, or `flags` has an unknown bit
  *   -EBUSY   a handle is already open
- *   -ENODEV  no GPU device on this machine (no driver, no Vulkan ICD), or a
- *            window was asked for and could not be created or claimed
+ *   -ENODEV  no GPU device on this machine (no driver, no Vulkan ICD), a run
+ *            under `SDL_VIDEODRIVER=dummy` — which has no GPU backend, and is
+ *            refused by name with `offscreen` suggested — or a window that was
+ *            asked for and could not be created or claimed
  *   -ENOSYS  this SDL build has no GPU backend
  *   -EIO     device creation failed for a reason SDL names
  *   -ENOMEM  the target could not be allocated
@@ -88,9 +90,13 @@ int32_t tension_2d_open(int32_t width, int32_t height, int32_t flags);
  * Releases every texture, pipeline, buffer, the target and the device. Returns
  * 0, or -EINVAL for an unknown handle.
  *
- * This is the teardown that actually runs: the host never calls the vtable's
- * `shutdown`/`destroy` (tension-input/DESIGN.md §3), so a capability holding
- * device state must release it through a verb.
+ * This is the teardown the guest controls, not the only one that runs. At the
+ * end of a run the host calls the vtable's `shutdown` and then `destroy` — on a
+ * clean exit and on a guest trap alike (`tension-core/src/adapter/mod.rs`,
+ * `teardown_adapters`, called from both exit paths in `main.rs`) — so a handle
+ * left open is released there rather than leaked. `close` exists because the
+ * canvas is fixed for the handle's life and a resize is `close` + `open`: it is
+ * the mid-run release, and the host's teardown is the backstop after it.
  */
 int32_t tension_2d_close(int32_t handle);
 
