@@ -408,10 +408,14 @@ const flags = [
   '-DOGRE_CONFIG_THREAD_PROVIDER=std',
   // OFF: FreeImage is not in this tree. The codec object is still compiled (see
   // step 2's patch, which empties it); OFF is what stops OGRE registering it.
-  // STBI stays OFF too — DDS has its own codec and is what the examples load,
-  // so nothing in the tree needs a PNG/JPEG decoder at runtime.
+  //
+  // ON: STBI is the replacement, not an optional extra. With both off Ogre has
+  // no image codec at all — no PNG, no JPEG, no TGA — and every texture load
+  // through Ogre::Image fails at runtime. `OGRE_CONFIG_ENABLE_STBI` defaults to
+  // FALSE upstream (CMakeLists.txt:556), so this has to be stated explicitly;
+  // leaving it out is the same as turning it off.
   '-DOGRE_CONFIG_ENABLE_FREEIMAGE=OFF',
-  '-DOGRE_CONFIG_ENABLE_STBI=OFF',
+  '-DOGRE_CONFIG_ENABLE_STBI=ON',
   '-DOGRE_CONFIG_ENABLE_JSON=ON',
   '-DOGRE_CONFIG_ENABLE_ZIP=ON',
 ];
@@ -421,22 +425,27 @@ say(`configuring (${SRC} -> ${BUILD})`);
 const started = Date.now();
 run('cmake', ['-S', SRC, '-B', BUILD, ...flags, ...extraFlags]);
 
-// Both codecs must be off, and both are held to it here. `cmake_dependent_option`
-// turns each one off *silently* when its probe comes up empty, so a configure on
-// a machine that happens to carry FreeImage.h would otherwise put the codec back
-// on without saying so — and the install would then ship a libfreeimage DT_NEEDED
-// that this tree no longer vendors.
+// FreeImage must be off and STBI must be on. Both are held to it here.
+// `cmake_dependent_option` turns each one off *silently* when its probe comes up
+// empty, so a configure on a machine that happens to carry FreeImage.h would
+// otherwise put the codec back on without saying so — and the install would then
+// ship a libfreeimage DT_NEEDED that this tree no longer vendors. The STBI half
+// is the mirror image: it defaults to FALSE upstream, so a dropped flag silently
+// leaves the build with no codec at all.
 const settings = join(BUILD, 'include', 'OgreBuildSettings.h');
 if (!existsSync(settings)) {
   die(`OGRE's configure produced no ${settings}`);
 }
 const settingsText = readFileSync(settings, 'utf8');
-for (const define of ['OGRE_NO_FREEIMAGE', 'OGRE_NO_STBI_CODEC']) {
-  if (!new RegExp(`^#define ${define} 1$`, 'm').test(settingsText)) {
-    die(`OGRE's configure did not disable ${define === 'OGRE_NO_FREEIMAGE' ? 'FreeImage' : 'the STBI codec'}\n` +
-        `  expected \`#define ${define} 1\` in ${settings}\n` +
-        '  check the configure output above');
-  }
+if (!/^#define OGRE_NO_FREEIMAGE 1$/m.test(settingsText)) {
+  die('OGRE\'s configure did not disable FreeImage\n' +
+      `  expected \`#define OGRE_NO_FREEIMAGE 1\` in ${settings}\n` +
+      '  check the configure output above');
+}
+if (/^#define OGRE_NO_STBI_CODEC 1$/m.test(settingsText)) {
+  die('OGRE\'s configure disabled the STBI codec\n' +
+      `  found \`#define OGRE_NO_STBI_CODEC 1\` in ${settings}\n` +
+      '  STBI is this tree\'s only image codec; without it no PNG/JPEG/TGA loads.');
 }
 
 for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
