@@ -192,6 +192,15 @@ function acidCase(name, wasm, acid, args = [], report = null) {
 caseRun('headless', 'guest-window.wasm', '^OK ', 'window "Tension" 1280x720 created',
         ['--renderer=null', '--frames=3']);
 
+// `headless` is a promise, not a decoration. With an explicit GPU renderer this
+// build cannot keep it — there is no offscreen render target, and every GPU
+// render system is brought up through createRenderWindow — so init refuses
+// synchronously with -EINVAL rather than opening the window the guest asked not
+// to have. The guest sees the errno; no thread, no window, no plugin load.
+caseRun('headless-refused', 'guest-window.wasm', '^OK init-refused -22$',
+        'headless=1 with an explicit renderer', ['--renderer=gl3plus', '--headless',
+                                                 '--expect-init-refusal=-22']);
+
 // No display at all: GL3+ throws on the X connection, the backend catches it,
 // and the guest is told which stage failed. Before the catch this aborted the
 // process with a core dump (DESIGN.md §8.1).

@@ -167,6 +167,7 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len) {
                     return refuse(ConfigError::ValueOutOfRange, key, line);
                 }
                 config.renderer = value;
+                config.renderer_set = true;
                 break;
 
             case TENSION_OGRE_KEY_HEADLESS:
@@ -228,6 +229,22 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len) {
     result.config = config;
     result.message = "ok";
     return result;
+}
+
+int32_t apply_headless_policy(Config &config) {
+    if (!config.headless) return 0;
+    // Already the no-window renderer: the guest asked for what it gets.
+    if (config.renderer == TENSION_OGRE_RENDERER_NULL) return 0;
+    // Explicit and contradictory. A GPU render system in this build is brought
+    // up through `createRenderWindow`; there is no offscreen render target and
+    // no way to make Vulkan, GL3+ or D3D11 produce frames without one. Falling
+    // back to NULL here would answer "headless" with "and also we quietly
+    // stopped rendering", which is the failure mode this policy exists to end.
+    if (config.renderer_set) return -EINVAL;
+    // No renderer key: the guest asked for no window and nothing else. NULL is
+    // the only renderer that can keep that promise, so it is the request.
+    config.renderer = TENSION_OGRE_RENDERER_NULL;
+    return 0;
 }
 
 } // namespace tension_ogre

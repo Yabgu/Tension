@@ -43,7 +43,12 @@ enum class ConfigError {
 struct Config {
     uint32_t abi_version = 0;
     uint32_t renderer = 1;   ///< TENSION_OGRE_RENDERER_GL3PLUS
-    bool headless = false;   ///< ask for no window; the NULL render system satisfies it
+    /// The guest's config carried a `renderer` key. Not on the wire; the
+    /// decoder records it because "unset" and "explicitly gl3plus" are
+    /// different requests once `headless` is in play: the first may be
+    /// resolved to the NULL render system, the second is a contradiction.
+    bool renderer_set = false;
+    bool headless = false;   ///< ask for no window; see `apply_headless_policy`
     bool vsync = false;
     uint32_t frame_hz = 60;
     uint32_t window_width = 1280;
@@ -91,6 +96,22 @@ struct ConfigDecodeResult {
 
 /// Decode `len` bytes at `bytes`. Never throws; every refusal is a result.
 ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len);
+
+/// Apply `headless` to a decoded config, in place. Returns 0, or -EINVAL.
+///
+/// `headless` means "do not open a window". This build has exactly one
+/// renderer that opens none — the NULL render system — so the policy is:
+///
+///   * `headless` with `renderer = null` is already satisfied (0);
+///   * `headless` with no `renderer` key resolves to null (0);
+///   * `headless` with an explicitly requested GPU renderer is a
+///     contradiction, and is refused rather than silently downgraded: the
+///     guest asked for a renderer that needs a window, and this build has no
+///     offscreen path for any of them.
+///
+/// Called by `init` before the host's handles are merged in, because a
+/// headless guest must not adopt the host's surface either.
+int32_t apply_headless_policy(Config &config);
 
 /// The name of an error token, e.g. `"unknown-key"`.
 const char *config_error_name(ConfigError error);
