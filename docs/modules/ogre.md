@@ -198,15 +198,17 @@ sides of the boundary:
   (`scene.h:80-120`; `wire.ts:291-360`). The skin window fits because
   `scene.h:120` asserts it does.
 
-**Not yet proven: nothing ties the two capacity sets together.** `kNodeCapacity
-= 1024` (`scene.h:33`) and `SCENE_NODE_COUNT = 1024` (`wire.ts:259`) are
-independent literals that happen to agree. The guest's startup check
-(`checkSubmissionRegions`, `tension-framework/assembly/ogre/index.ts:461-474`)
-asserts that the tables *fit the region*, not that the host's and the guest's
-counts are equal. A host count smaller than the guest's would move the host's
-table base and misread every camera as a node; a host count larger would leave
-tail slots unwritten. No test crosses the boundary to compare them. The remedy
-is a schema field or a startup handshake, and neither exists today.
+**The two capacity sets are pinned to each other by a test.** `kNodeCapacity =
+1024` (`scene.h:33`) and `SCENE_NODE_COUNT = 1024` (`wire.ts:259`) are still
+independent literals — a schema that emits both sides would be better, and it
+is a codegen change nobody has made — so `scripts/check-ogre-capacities.mjs`
+parses both files and compares all ten pairs (`node` capacity, camera, light,
+material, renderable, motion, bone, procedural window, skin table and skin
+data), failing with both paths, both line numbers and both values when they
+disagree. It runs in `npm test` as the `ogre capacities` suite. The guest's
+startup check (`checkSubmissionRegions`,
+`tension-framework/assembly/ogre/index.ts:461-474`) still asserts only that the
+tables *fit the region* — the cross-language equality is the new check's job.
 
 ### 4.2 Record shapes
 
