@@ -250,6 +250,27 @@ const SUITES = {
     ], { env: suiteEnv() }),
   },
 
+  // The host's window and surface, in its own suite so a failure is
+  // attributable. `cargo test` runs it too (it is a test target), but buries a
+  // window-open failure in cargo's output amid 300 other lines.
+  //
+  // It needs a display *driver that supports Vulkan*: wayland or x11 on a
+  // developer machine, x11 under CI's Xvfb. `offscreen` also passes and is
+  // reported as headless rather than as WSI; `dummy` cannot and fails, which is
+  // what the probe's own negative-control mode asserts.
+  'platform-surface': {
+    title: 'platform surface',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_surface',
+    ], { env: suiteEnv() }),
+  },
+
   core: {
     title: 'tension-core',
     // The `ogre_*` integration tests read the fixtures the two suites above
