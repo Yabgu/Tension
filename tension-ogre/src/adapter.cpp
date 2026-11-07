@@ -1053,8 +1053,11 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
-    // Refusals log; success is silent. This runs once per frame per rig, so a
-    // line here would flood the session log for no diagnostic value.
+    // Decode and shape-check every entry first; the mirror validates liveness
+    // over the whole batch and stores only if all of it passes. Refusals log,
+    // success is silent — this runs once per frame per rig.
+    std::vector<SceneMirror::SkinMatricesEntry> batch;
+    batch.reserve(static_cast<size_t>(count));
     for (int32_t i = 0; i < count; ++i) {
         const uint8_t *entry = table.data() + static_cast<size_t>(i) * kSkinRecordBytes;
         uint32_t renderable_id = 0, matrices_offset = 0, matrix_bytes = 0, flags = 0;
@@ -1087,7 +1090,19 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
                               matrices.data(), matrix_bytes) != 0) {
             return refuse(ret, -EINVAL);
         }
-        s.scene.set_skin_matrices(renderable_id, matrices);
+        SceneMirror::SkinMatricesEntry decoded;
+        decoded.renderable_id = renderable_id;
+        decoded.matrices = std::move(matrices);
+        batch.push_back(std::move(decoded));
+    }
+    const int32_t applied = s.scene.apply_skin_matrices(batch);
+    if (applied != 0) {
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "ogre: submit_skin_matrices refused a batch of %d (errno %d); nothing applied",
+                      count, applied);
+        log_line(3, line);
+        return refuse(ret, applied);
     }
     ret->i32 = count;
     return 0;

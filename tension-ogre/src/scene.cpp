@@ -244,10 +244,30 @@ int32_t SceneMirror::remove_renderable(uint32_t id) {
     return 0;
 }
 
-void SceneMirror::set_skin_matrices(uint32_t id, const std::vector<float> &matrices) {
-    if (id == 0 || id > kRenderableCapacity) return;
-    skin_matrices_[id] = matrices;
+int32_t SceneMirror::apply_skin_matrices(std::vector<SkinMatricesEntry> &batch) {
+    // Validation over the whole batch first, application second: the same rule
+    // `apply_bones` follows, and for the same reason.
+    for (size_t i = 0; i < batch.size(); ++i) {
+        const uint32_t id = batch[i].renderable_id;
+        if (id == 0 || id > kRenderableCapacity) {
+            note("skin[" + std::to_string(i) + "]: renderableId " + std::to_string(id) +
+                 " is outside the renderable table");
+            return -EINVAL;
+        }
+        if (!renderables_[id - 1].live) {
+            note("skin[" + std::to_string(i) + "]: renderableId " + std::to_string(id) +
+                 " is not live");
+            return -ENOENT;
+        }
+    }
+    for (SkinMatricesEntry &entry : batch) {
+        skin_matrices_[entry.renderable_id] = std::move(entry.matrices);
+    }
+    // One bump per accepted batch. The render thread compares this against what
+    // it has already pushed, so a batch and a single entry cost the same when
+    // nothing changed.
     ++skin_generation_;
+    return 0;
 }
 
 const std::vector<float> *SceneMirror::skin_matrices(uint32_t id) const {
