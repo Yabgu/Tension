@@ -243,4 +243,38 @@ if(TENSION_OGRE_BUILD_TESTS)
         set_target_properties(${test_target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
     endforeach()
+
+    # ── the image codec probe ───────────────────────────────────────────────
+    #
+    # The three tests above deliberately avoid OGRE: they are pure and need no
+    # render system. This one is the opposite — its whole point is to link
+    # OgreNextMain and prove the STBI codec is inside it and decodes. It exists
+    # because a build with no image codec at all passed every other suite: the
+    # in-tree assets are DDS, and DDS has its own codec, so nothing exercised
+    # PNG until this probe.
+    #
+    # Only meaningful when OGRE is the backend; the `none` backend has no reason
+    # to carry Ogre's headers.
+    if(TENSION_OGRE_BACKEND STREQUAL "ogre" AND OGRE_NEXT_MAIN_LIB)
+        add_executable(stbi_codec_test tests/probe_stbi_codec.cpp)
+        target_include_directories(stbi_codec_test PRIVATE
+            ${OGRE_NEXT_PREFIX}/include
+            ${OGRE_NEXT_PREFIX}/include/OGRE-Next)
+        target_link_libraries(stbi_codec_test PRIVATE ${OGRE_NEXT_MAIN_LIB})
+        if(MSVC)
+            target_compile_options(stbi_codec_test PRIVATE /W3 /utf-8 /EHsc)
+        else()
+            target_compile_options(stbi_codec_test PRIVATE -Wall -Wextra)
+        endif()
+        set_target_properties(stbi_codec_test PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
+        # Three levels up from build/tests/ is the repository root, where the
+        # in-tree Ogre-Next install lives. Written down here rather than relying
+        # on LD_LIBRARY_PATH, which a guest never gets and CI should not need.
+        if(UNIX)
+            set_target_properties(stbi_codec_test PROPERTIES
+                INSTALL_RPATH "$ORIGIN/../../../third_party/ogre-next-install/lib"
+                BUILD_WITH_INSTALL_RPATH TRUE)
+        endif()
+    endif()
 endif()

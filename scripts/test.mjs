@@ -139,8 +139,19 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'check-naga-pin.mjs')]),
   },
 
-  codegen: {
-    title: 'codegen',
+  // The checked-in Win32 overlay for Ogre's generated Vulkan settings header is
+  // a copy of a generated file, which is exactly the kind of thing that goes
+  // stale in silence: a symbol upstream adds stays undefined here, which still
+  // compiles and links, and quietly drops a backend. Cheap to check, so it runs
+  // with every other gate rather than only on the machine that cross-compiles.
+  'win32-headers': {
+    title: 'win32 headers',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-win32-headers.mjs')]),
+  },
+
+  codegen: {    title: 'codegen',
     needs: [],
     holds: [],
     run: () => execute(node, [

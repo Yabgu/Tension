@@ -142,13 +142,27 @@ if (mode === '--test') {
   // The unit tests need no OGRE: the loader's worker reads bytes and the backend
   // is a mock, the config decoder is pure parsing. They run here rather than in
   // CTest so a failure's output is the binary's own.
+  //
+  // `stbi_codec_test` is the exception — it links OgreNextMain on purpose, to
+  // prove the image codec is in the library and decodes. It is only built when
+  // the OGRE backend is, so it is run when present rather than required: the
+  // `none` backend has no Ogre to assert on.
   const testDir = join(outDir, 'tests');
-  const tests = readdirSync(testDir)
+  const present = readdirSync(testDir);
+  const required = present
     .filter((name) => /^(config|scene|loader)_test(\.exe)?$/.test(name))
     .sort();
-  if (tests.length === 0) {
+  if (required.length === 0) {
     die(`no test binaries in ${testDir}; the CMake configure did not build them`);
   }
+  const codec = present
+    .filter((name) => /^stbi_codec_test(\.exe)?$/.test(name))
+    .sort();
+  if (codec.length === 0) {
+    console.log(`${RUNNER}: stbi_codec_test not built (backend ${backend}); skipping`);
+  }
+
+  const tests = [...required, ...codec];
   for (const test of tests) {
     console.log(`${RUNNER}: running ${test}`);
     const result = inherit(join(testDir, test), []);
