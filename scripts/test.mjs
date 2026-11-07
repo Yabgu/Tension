@@ -153,6 +153,18 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'check-win32-headers.mjs')]),
   },
 
+  // The ogre table capacities exist twice — once in the adapter's C++ and once
+  // in the guest SDK's TensionScript — and they agree today by inspection. The
+  // check parses both files and compares every pair, so a number that moves on
+  // one side fails here instead of misreading the other side's table at run
+  // time.
+  'ogre-capacities': {
+    title: 'ogre capacities',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-ogre-capacities.mjs')]),
+  },
+
   codegen: {    title: 'codegen',
     needs: [],
     holds: [],
