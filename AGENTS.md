@@ -20,7 +20,9 @@ come first; the rest is the Windows build cheat-sheet.
    artifact, and an edit there is lost on the next `npm install`. Version bumps
    flow through `package.json`.
 3. **Never use destructive git commands and never commit on the user's behalf.**
-   Leave changes in the working tree for the user to review and commit.
+   Leave changes in the working tree for the user to review and commit. An
+   explicit instruction in the user's request to commit that step is the only
+   exception; then commit with the message the step requires.
 4. **Honor runtime tool/approval gates.** If a command is refused, surface it;
    do not route around it.
 5. **Declare records plain; name the storage model at every use.** A struct
