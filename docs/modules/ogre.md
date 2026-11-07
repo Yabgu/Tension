@@ -148,8 +148,10 @@ cannot be.** `apply_headless_policy` (`config.cpp:234-250`) resolves it in
 A headless guest also does not adopt the host's surface (the merge is skipped,
 `adapter.cpp:531`), and `headless` outranks `TENSION_RENDERER`: the operator's
 variable is a debugging knob, and it must not open the window a guest asked not
-to have (`adapter.cpp:257-268`). The NULL path creates no window object at all
-on the platform — `NULLWindow` is bookkeeping (`third_party/ogre-next/RenderSystems/NULL/src/OgreNULLWindow.cpp:35-57`) —
+to have (`adapter.cpp:257-268`). The NULL render system still makes an
+`Ogre::Window` object, but it is bookkeeping and nothing else — `NULLWindow`
+owns a texture and two buffers and touches no platform API
+(`third_party/ogre-next/RenderSystems/NULL/src/OgreNULLWindow.cpp:35-57`) —
 which is why a headless run completes with `DISPLAY` and `WAYLAND_DISPLAY` both
 unset. It renders nothing: `screenshot` refuses with `-ENOSYS`
 (`backend_ogre.cpp:1300-1304`), and jobs, submissions and the scene mirror all
@@ -495,10 +497,12 @@ status. The list by verb, with the checks that produce each code:
 `tension-ogre/CMakeLists.txt:242-261`):
 
 - `config_test.cpp` — round trip, defaults, golden bytes, unknown key ignored,
-  duplicate takes last, every refusal token, key names (`config_test.cpp:260-268`).
+  duplicate takes last, every refusal token, key names, the `renderer_set`
+  flag, and the four headless-policy outcomes (`config_test.cpp:261-335`).
 - `scene_test.cpp` — node/camera/light/material/renderable rules, cycle and
-  depth-32 refusals, motion and bone batches, all-or-nothing, field offsets
-  (`scene_test.cpp:585-616`).
+  depth-32 refusals, motion and bone batches, all-or-nothing, field offsets, and
+  the skin-matrix batch (accepted, outside the table, dead id, all-or-nothing,
+  a skeletonless mesh, dropped with its renderable) (`scene_test.cpp:594-664`).
 - `loader_test.cpp` — id allocation, `-ENOSPC`, release, `-ENOENT`, dirty-only
   mirroring, worker completion and failure, backend refusal, sweep, procedural
   mesh realisation (`loader_test.cpp:527-548`).
@@ -515,15 +519,23 @@ status. The list by verb, with the checks that produce each code:
   320×240, host resize to 640×480, `requestResolution`, frame 2 presents,
   screenshot 640×480, `window_handle` `-ENODEV`, clean teardown.
 
-**Guest fixtures** — `scripts/test-ogre.mjs`: 18 cases by default and 35 with
+**Guest fixtures** — `scripts/test-ogre.mjs`: 19 cases by default and 36 with
 `TENSION_OGRE_WINDOW_TEST=1`, whose 17 opt-in cases include the whole
 `*-gl3plus` renderer matrix and the four pixel-clause fixtures. The opt-in set
 ran for the first time on 2026-11-07 and passes.
 
-**What no test covers, and where a claim above is therefore [I]:** the
-cross-language capacity agreement (§4.1); `submit_skin_matrices` liveness (§7);
-the inert `headless` key (§3); the Windows path (`#if defined(_WIN32)` branches
-compile only on that target).
+**Gates that are not tests of behaviour:** `scripts/check-ogre-capacities.mjs`
+parses `scene.h` and `wire.ts` and compares the ten capacities (§4.1); it runs
+as the `ogre capacities` suite in `npm test`. `tools/codegen/generate.mjs
+--check` holds the record shapes to `schema/ogre.json` (§4.2), and
+`scripts/test-abi-docs.mjs` holds the generated ABI pages to the header.
+
+**What no test covers:** the Windows path (`#if defined(_WIN32)` branches
+compile only on that target); `headless` with a host surface published — the
+merge is skipped by construction (`adapter.cpp:531`), and no fixture runs the
+windowed host with a headless guest; and `headless` overriding
+`TENSION_RENDERER` (`adapter.cpp:257-268`), which only an operator can trigger.
+Everything else this page asserts has a test or a gate behind it.
 
 ## 9. Non-goals
 
