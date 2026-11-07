@@ -71,6 +71,37 @@ if (!compile || compile.status !== 0) {
 }
 console.log(`${RUNNER}: built ${harness}`);
 
+// ── 2a. the dummy driver is refused by name ─────────────────────────────────
+//
+// `dummy` comes up as a video driver with no GPU backend, so the device creation
+// fails with "No supported SDL_GPU backend found!" — which reads as "no GPU on
+// this machine" when the answer is "no GPU through this driver". The adapter
+// refuses it before the device is attempted, and says which driver to use.
+//
+// Run before the main scenario and on its own: the guard fires before any device
+// exists, so this case works on a host whose real GPU path cannot run at all.
+{
+  const dummy = run(harness, [dso], {
+    stdio: 'pipe',
+    encoding: 'utf8',
+    env: { ...process.env, SDL_VIDEODRIVER: 'dummy' },
+  });
+  if (!dummy || dummy.status !== 77) {
+    console.error(dummy?.stdout ?? '', dummy?.stderr ?? '');
+    die(`dummy: expected the harness to skip (77), got ${dummy ? dummy.status : 'spawn error'}`);
+  }
+  if (!/dummy/i.test(dummy.stderr) || !/offscreen/i.test(dummy.stderr)) {
+    console.error(dummy.stderr);
+    die('dummy: the refusal does not name the driver and the one that works');
+  }
+  // The harness writes the refused handle to stderr, beside the adapter's log.
+  if (!/^open -> -19$/m.test(dummy.stderr)) {
+    console.error(dummy.stderr);
+    die(`dummy: expected 'open -> -19' (-ENODEV) on stderr`);
+  }
+  console.log(`${RUNNER}: dummy driver refused by name (-ENODEV, points at offscreen)`);
+}
+
 // ── 2b. the runtime-compiled graph ──────────────────────────────────────────
 //
 // A graph the build never saw: `default_2d` with the quad at 1.5x. Written
@@ -100,6 +131,16 @@ const result = run(harness, [dso], {
 if (result?.status === 77) {
   console.log(`${RUNNER}: SKIP — no GPU device on this host`);
   process.exit(0);
+}
+if (result?.signal) {
+  // Not a refusal and not a skip: the process died inside the driver. Named
+  // separately from a failing exit so the next reader does not go looking for a
+  // defect in the adapter. Measured on an NVIDIA host (`libnvidia-glcore`,
+  // SDL_VIDEODRIVER=offscreen, the first `present`); the same build passes on a
+  // conformant Vulkan ICD with lavapipe.
+  console.error(`${RUNNER}: the harness died from ${result.signal} inside the GPU driver — ` +
+                'this host cannot run the render scenarios');
+  process.exit(1);
 }
 if (!result || result.status !== 0) {
   console.error(`${RUNNER}: FAIL (exit ${result?.status ?? 'spawn error'})`);
