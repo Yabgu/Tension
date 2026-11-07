@@ -133,11 +133,27 @@ endif()
 
 # The in-tree Ogre-Next lives outside the loader's default search path, and its
 # sonames are identical to a distro package's, so which one a process gets is
-# decided by the search path. Two spellings, both relative to the DSO's own
+# decided by the search path. All of them are relative to the DSO's own
 # directory:
-#   $ORIGIN                        a self-contained drop (all libs beside it)
-#   $ORIGIN/../ogre-next/lib       this repository's packages/ layout, where the
-#                                  payload packages are siblings
+#   $ORIGIN                                     a self-contained drop
+#   $ORIGIN/<payload sibling>                   the platform payload package
+#   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
+#
+# The middle one cannot be written down here. The payload lives in
+# `packages/ogre-<platform>-<arch>/lib` and its Ogre-Next sibling in
+# `packages/ogre-next-<platform>-<arch>/lib`, so the relative spelling depends on
+# the platform suffix, which this file does not know. It used to be spelled
+# `$ORIGIN/../../ogre-next/lib` — correct only for the pre-payload layout, where
+# the two directories had no suffix. Against the payload it resolved to
+# `packages/ogre-next/lib`, a stale leftover of that older build, and glibc takes
+# the first rpath hit without checking whether it is current. The result was an
+# adapter that loaded an Ogre-Next built before FreeImage was removed and died on
+# `libfreeimage.so.3` — while the build and every test passed, because both of
+# those reach the DSO through a different rpath entry.
+#
+# So scripts/build-native.mjs computes the directory from the paths it actually
+# wrote and passes it in. TENSION_OGRE_RPATH_EXTRA is `;`-separated and each
+# entry is appended to `$ORIGIN/`.
 #
 # `--disable-new-dtags` emits DT_RPATH rather than DT_RUNPATH on purpose:
 # DT_RPATH is consulted *before* LD_LIBRARY_PATH and DT_RUNPATH after, and the
@@ -147,16 +163,24 @@ endif()
 #
 # Windows needs none of this: the post-build step copies Ogre's DLLs beside the
 # adapter and tension-core loads it with LOAD_WITH_ALTERED_SEARCH_PATH.
+set(TENSION_OGRE_RPATH_EXTRA "" CACHE STRING
+    "Extra $ORIGIN-relative library directories for the payload layout (';'-separated)")
+
 if(UNIX)
+    set(_tension_ogre_rpath "$ORIGIN")
+    foreach(_tension_ogre_extra IN LISTS TENSION_OGRE_RPATH_EXTRA)
+        if(NOT _tension_ogre_extra STREQUAL "")
+            string(APPEND _tension_ogre_rpath ":$ORIGIN/${_tension_ogre_extra}")
+        endif()
+    endforeach()
+    # The build-tree install. Kept last and unconditional: it is what makes
+    # `tension-ogre/build/libtension_ogre.so` load without LD_LIBRARY_PATH, which
+    # is how the C++ and Rust suites run the adapter.
+    string(APPEND _tension_ogre_rpath ":$ORIGIN/../../third_party/ogre-next-install/lib")
+    message(STATUS "tension-ogre rpath: ${_tension_ogre_rpath}")
+
     set_target_properties(tension_ogre PROPERTIES
-        # Every layout the DSO is reached through, relative to itself:
-        #   $ORIGIN                                  a self-contained drop
-        #   $ORIGIN/../ogre-next/lib                 packages/ (npm payloads)
-        #   $ORIGIN/../../ogre-next/lib              ...after a realpath through packages/
-        #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
-        # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
-        # without LD_LIBRARY_PATH, which is how the test suite runs it.
-        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../../third_party/ogre-next-install/lib"
+        INSTALL_RPATH "${_tension_ogre_rpath}"
         BUILD_WITH_INSTALL_RPATH TRUE
         LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
     )

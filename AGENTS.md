@@ -161,6 +161,36 @@ each example's `bindings.ts` exist to give the positional `i32`s names and to
 convert a pointer once; they do no byte work, and a wrapper that starts doing
 byte work has stopped being a wrapper.
 
+### Payload linkage: a green build proves nothing
+
+The adapter is packaged into `packages/ogre-<platform>-<arch>/lib`, and it finds
+Ogre-Next through its own `DT_RPATH`, computed in `tension-ogre/CMakeLists.txt`
+from a value `scripts/build-native.mjs` passes in. Three separate copies of
+Ogre-Next exist in this tree — `third_party/ogre-next-install`, the platform
+payload, and whatever a previous layout left under `packages/` — and their
+sonames are identical. glibc takes the **first** rpath hit and does not check
+that the directory is current.
+
+That combination produced this branch's worst failure: the packaged adapter
+resolved Ogre-Next from a stale `packages/ogre-next/lib` built before FreeImage
+was removed, and every `npm start` in `examples/ogre/` died on
+`libfreeimage.so.3` — while `npm run build`, the C++ smoke test and the full
+Rust suite stayed green, because all three reach the DSO through a *different*
+rpath entry than the packaged copy does.
+
+Two mechanisms now keep it honest, and both are the point rather than nice
+additions:
+
+- `pruneStaleMetaPayloads()` deletes the pre-payload `packages/{ogre,ogre-next}/`
+  directories on every build, so the payload is the only copy.
+- `auditLinkage()` runs `ldd` on the *packaged* adapter with `LD_LIBRARY_PATH`
+  removed, and fails the build if anything is unresolved, resolves to a
+  FreeImage soname, or resolves an `libOgreNext*` outside the payload.
+
+When you touch packaging, rpath, or a payload directory, run the audit path
+specifically. A test that loads `tension-ogre/build/libtension_ogre.so` is not
+testing what a guest loads.
+
 ## Writing a guest in TensionScript
 
 Long form, with the compile-and-run evidence for each claim:
