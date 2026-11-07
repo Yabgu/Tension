@@ -113,10 +113,14 @@ impl NativeComparator {
 impl Drop for NativeComparator {
     fn drop(&mut self) {
         if !self.code.is_null() && self.len > 0 {
+            // SAFETY: the page came from `mmap` with this exact length, and
+            // `code` is null-checked.
             #[cfg(unix)]
             unsafe {
                 libc::munmap(self.code, self.len);
             }
+            // SAFETY: the page came from `VirtualAlloc` and is released whole
+            // (`dwSize` must be 0 with `MEM_RELEASE`).
             #[cfg(windows)]
             unsafe {
                 windows_mem::VirtualFree(self.code, 0, windows_mem::MEM_RELEASE);
@@ -284,6 +288,15 @@ mod windows_mem {
     pub const PAGE_EXECUTE_READ: u32 = 0x20;
 
     extern "system" {
+        pub fn GetCurrentProcess() -> *mut c_void;
+
+        #[allow(non_snake_case)]
+        pub fn FlushInstructionCache(
+            hProcess: *mut c_void,
+            lpBaseAddress: *const c_void,
+            dwSize: usize,
+        ) -> i32;
+
         pub fn VirtualAlloc(
             lpAddress: *mut c_void,
             dwSize: usize,
@@ -305,6 +318,21 @@ mod windows_mem {
         ) -> i32;
     }
 }
+
+// The comparator is called through `extern "C" fn(*const u8, *const u8) -> u8`
+// (see `NativeComparator::compare`), so the code must be emitted with that
+// same convention. `isa.default_call_conv()` supplies it — but only where
+// `extern "C"` *is* the target's default. On Windows that holds for x86-64
+// (both are Win64) and fails for 32-bit x86, where `extern "C"` is cdecl and
+// the default is fastcall: the callee would read its arguments from the wrong
+// registers and the sort would misbehave as memory errors rather than a build
+// failure. Refusing to compile is the honest outcome.
+#[cfg(all(windows, not(target_arch = "x86_64")))]
+compile_error!(
+    "the comparator JIT assumes extern \"C\" == the target's default calling \
+     convention, which holds on x86-64 Windows only. Teach `emit_code` the \
+     explicit convention for this target before building it."
+);
 
 /// Map `code` into an executable page and return `(pointer, length)`.
 #[cfg(unix)]
@@ -372,6 +400,28 @@ fn map_executable(code: &[u8]) -> Result<(*mut std::ffi::c_void, usize)> {
             windows_mem::VirtualFree(page, 0, windows_mem::MEM_RELEASE);
         }
         return Err(GraphError::Unsupported("VirtualProtect failed".to_string()));
+    }
+    // Writing code and changing its protection does not, on its own, make the
+    // bytes visible to the instruction fetcher: MSDN requires this call on
+    // every architecture. It is a no-op on x86-64, which is why its absence
+    // would not show up on the machine this was first built on — and it is not
+    // a no-op on ARM64, where stale bytes execute as garbage. The return value
+    // is documented as always succeeding; a failure here means the page is not
+    // executable, so treat it as one.
+    let flushed = unsafe {
+        windows_mem::FlushInstructionCache(
+            windows_mem::GetCurrentProcess(),
+            page as *const std::ffi::c_void,
+            len,
+        )
+    };
+    if flushed == 0 {
+        unsafe {
+            windows_mem::VirtualFree(page, 0, windows_mem::MEM_RELEASE);
+        }
+        return Err(GraphError::Unsupported(
+            "FlushInstructionCache failed".to_string(),
+        ));
     }
     Ok((page, len))
 }
