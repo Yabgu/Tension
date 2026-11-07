@@ -20,6 +20,7 @@
 //
 // Exit codes: 0 pass, 1 fail.
 
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -206,3 +207,24 @@ console.log(
   `${RUNNER}: PASS — framework frames are byte-identical to the hand-written scene, ` +
   `probes hold, three revert levers caught`,
 );
+
+// ── show it, unless asked not to ────────────────────────────────────────────
+//
+// Everything above asserted against offscreen frames. This last run is for the
+// person who typed `npm start`: one windowed guest, held open until the window
+// is closed. `--headless` or a missing display skips it, which is what CI does.
+const argv = process.argv.slice(2);
+const askedForHeadless = argv.includes('--headless') || process.env.TENSION_2D_HEADLESS === '1';
+const hasDisplay =
+  process.platform !== 'linux' || Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+
+if (!askedForHeadless && hasDisplay && !process.env.TENSION_2D_CHILD) {
+  console.log(`${RUNNER}: showing the framework scene — close the window to exit`);
+  const shown = spawnSync(fwCtx.core, [
+    '--capability', fwCtx.dso,
+    '--res', fwCtx.pak,
+    fwCtx.guest,
+    '--windowed',
+  ], { stdio: 'inherit', env: { ...process.env, TENSION_2D_CHILD: '1' } });
+  if (shown.error) console.error(`${RUNNER}: could not show the window: ${shown.error.message}`);
+}

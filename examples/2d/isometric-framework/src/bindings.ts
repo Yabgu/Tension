@@ -83,5 +83,11 @@ export function screenshot(handle: i32, ptr: usize, cap: i32): i32 {
 
 // --- wire constants --------------------------------------------------------
 
+/// `TENSION_2D_OPEN_WINDOWED`: `open`'s flags bit 0. Without it the capability
+/// renders offscreen and `screenshot` is the only way to see the frame; with it
+/// a window appears and every `present` blits the same frame to a swapchain.
+/// Tests pass 0 so their pixels do not depend on a compositor.
+export const OPEN_WINDOWED: i32 = 1;
+
 export const TEX_RGBA8: i32 = 1;
 export const INFO_SIZE: u32 = 24;

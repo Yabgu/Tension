@@ -65,8 +65,15 @@ backpack to the body, and the test asserts exactly that colour change.
 
 ```sh
 npm install   # once
-npm start
+npm start     # runs the assertions, then shows the scene in a window
+npm start -- --headless   # assertions only, no window
 ```
+
+`npm start` does both: it renders every frame offscreen first and asserts the
+probes (which is the part that can fail), then opens one windowed run and holds
+it until you close it. A machine with no `DISPLAY`/`WAYLAND_DISPLAY` skips the
+window instead of failing, and `TENSION_2D_HEADLESS=1` does the same for a script
+that cannot pass flags.
 
 Nothing to fetch. The tileset is committed; to change it, edit
 `examples/2d/assets/build-tileset.mjs` and run it — the example rebuilds from

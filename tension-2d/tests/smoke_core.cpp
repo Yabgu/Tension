@@ -1192,7 +1192,10 @@ int main(int argc, char **argv) {
         const BadOpen bad[] = {
             {"open(0, 360, 0)", 0, 360, 0, -EINVAL},
             {"open(640, 16385, 0)", 640, 16385, 0, -EINVAL},
-            {"open(640, 360, 1)", 640, 360, 1, -EINVAL},
+            // Bit 0 is `TENSION_2D_OPEN_WINDOWED` and is accepted; any other bit
+            // is not. `flags = 1` used to be the invalid case here, which is
+            // now the one flag with a meaning.
+            {"open(640, 360, 2)", 640, 360, 2, -EINVAL},
         };
         for (const BadOpen &b : bad) {
             const int32_t rc = call("open", {b.width, b.height, b.flags});

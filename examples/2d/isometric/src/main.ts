@@ -230,7 +230,10 @@ export function _start_game(): void {
     return;
   }
 
-  const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, 0);
+  // `--windowed` shows the frame; the default is offscreen, which is what the
+  // test harness runs and what makes its pixel assertions reproducible.
+  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
+  const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
   if (handle <= 0) {
     print("FAIL: open -> " + handle.toString());
     RuntimeSession.close();
@@ -337,6 +340,20 @@ export function _start_game(): void {
     if (!same(lantern, scene.LANTERN_COLOUR)) fail(name + ": the lantern is not in front");
 
     emitFrame(name, frame, FRAME_BYTES);
+  }
+
+  // Windowed: hold the last frame until the window is closed. Both facings were
+  // submitted already, so the target holds `front`; repainting it is the whole
+  // loop. `tension::2d` re-presents without clearing when nothing is submitted,
+  // and answers `-ECANCELED` once the window is gone.
+  if (hasArg("--windowed") && failures == 0) {
+    print("windowed: close the window to exit");
+    let keep: i32 = 0;
+    while (keep < 18000) {
+      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
+      RuntimeSession.wait(16);
+      keep++;
+    }
   }
 
   gfx.close(handle);

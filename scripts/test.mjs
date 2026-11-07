@@ -70,6 +70,10 @@ function suiteEnv(extra = {}) {
   // need all three, and a suite given the bare parent environment fails with
   // messages that name none of it.
   const env = { ...baseEnv(), ...extra };
+  // The 2D examples show a window when a display is present, because `npm start`
+  // should show something. A suite must not: it asserts pixels, and a window
+  // would make the result depend on a compositor (and pop up during CI).
+  env.TENSION_2D_HEADLESS = '1';
   if (!ogreLibs.length) return env;
 
   if (WIN) {

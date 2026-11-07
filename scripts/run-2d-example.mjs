@@ -73,11 +73,47 @@ if (!existsSync(sessionConfig)) {
   die(`missing ${sessionConfig}\n  Run \`node scripts/build-framework.mjs\` first.`);
 }
 
-console.log(`${RUNNER}: running the guest with tension::2d loaded`);
-const result = run(core, ['--capability', dso, join(exampleDir, 'build', 'game.wasm')], {
+// ── 3b. headless or a window ────────────────────────────────────────────────
+//
+// `npm start` shows a window: the guest is asked for `--windowed`, the adapter
+// creates and claims one, and every `present` blits the frame to a swapchain.
+// That is the point of running an example by hand.
+//
+// The suites never do this — they assert pixels, and a window would make the
+// result depend on a compositor. So the default here is a window and the opt-out
+// is explicit:
+//
+//   npm start                 a window, and the pixel assertion still runs
+//   npm start -- --headless   no window (what CI does)
+//   TENSION_2D_HEADLESS=1     same, for a script that cannot pass flags
+//
+// A machine with no display is detected and treated as headless rather than
+// failing: `SDL_Init(SDL_INIT_VIDEO)` failing is not the example's fault.
+const args = process.argv.slice(2);
+const askedForHeadless =
+  args.includes('--headless') || process.env.TENSION_2D_HEADLESS === '1';
+const hasDisplay =
+  process.platform !== 'linux' ||
+  Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
+const windowed = !askedForHeadless && hasDisplay;
+
+const guestArgs = ['--capability', dso, join(exampleDir, 'build', 'game.wasm')];
+if (windowed) guestArgs.push('--windowed');
+
+console.log(
+  windowed
+    ? `${RUNNER}: running the guest in a window (${args.includes('--headless') ? '' : '--headless to suppress'})`
+    : `${RUNNER}: running the guest headless` +
+        (askedForHeadless ? '' : ' (no display detected)'),
+);
+
+const result = run(core, guestArgs, {
   stdio: ['ignore', 'pipe', 'pipe'],
-  // `offscreen`, not `dummy`: dummy has no GPU backend (DESIGN.md §9).
-  env: { ...process.env, SDL_VIDEODRIVER: 'offscreen' },
+  // `offscreen` only when there is no window to show: it is a real video
+  // backend with a GPU, so it keeps the headless path identical to a windowed
+  // one in everything but presentation. `dummy` would have no GPU at all
+  // (DESIGN.md §9).
+  env: windowed ? process.env : { ...process.env, SDL_VIDEODRIVER: 'offscreen' },
 });
 
 if (!result) die('could not start tension-core');
