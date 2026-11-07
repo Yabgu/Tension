@@ -97,23 +97,39 @@ int32_t tension_2d_close(int32_t handle);
 /*
  * `set_pipeline(i32 handle, i32 blob_ptr, i32 blob_len) -> i32`  — verb_id 3.
  *
- * Prepares a pipeline and returns its `pipe_id`.
+ * Prepares a pipeline and returns its `pipe_id`. Two forms, chosen by whether
+ * `blob_ptr` is zero:
  *
- * At v1 the only accepted form is a **built-in preset**, addressed by passing
- * `blob_ptr == 0` and `blob_len` = the preset id (1..9). A guest-authored graph
- * blob (pipe_id 100..999) is -ENOSYS until the graph compiler lands; the ranges
- * are fixed now so a guest can branch on them without a version check.
+ *   `blob_ptr == 0`   a **built-in preset**. `blob_len` is the preset id, in
+ *                     `TENSION_2D_PIPE_PRESET_MIN..TENSION_2D_PIPE_PRESET_MAX`.
+ *                     Preset 1 (`default_2d`) is the only one this build
+ *                     compiles; another id in the range is `-ENOSYS`, and an id
+ *                     outside it is `-ENOENT`.
  *
- *   pipe_id 1..99     built-in presets
- *   pipe_id 100..999  guest-authored graphs (v1: -ENOSYS)
- *   pipe_id 1000+     `shader_compile_raw` provenance
+ *   `blob_ptr != 0`   a **serialized graph** (`T2DG`). The `blob_len` bytes at
+ *                     `blob_ptr` are hashed and resolved to the module pair the
+ *                     build compiled from that graph; a graph this build did
+ *                     not ship goes to the host's `compile_graph` slot (ABI v5),
+ *                     and the pipeline is built from the modules it returns.
+ *
+ * Which id comes back says where the modules came from — the ranges are the
+ * constants below, so a guest branches on them without a version check:
+ *
+ *   `PIPE_PRESET_MIN..PIPE_PRESET_MAX`   the built-in preset, `id == blob_len`
+ *   `PIPE_GUEST_MIN..PIPE_GUEST_MAX`     a graph embedded by
+ *                                        `scripts/build-2d.mjs`, at the id that
+ *                                        script's table assigns it
+ *   `PIPE_RAW_MIN` and up                a graph compiled at run time through
+ *                                        `compile_graph`
  *
  * Returns a positive `pipe_id`, or:
  *   -EINVAL   bad handle, or a malformed blob header
- *   -ENOENT   a preset id outside 1..9
- *   -ENOSYS   a guest graph in a build with no graph compiler
+ *   -ENOENT   a preset id outside `PIPE_PRESET_MIN..PIPE_PRESET_MAX`
+ *   -ENOSYS   a preset this build does not compile, or the errno the host's
+ *             graph compiler refused with
  *   -ENOSPC   the pipeline table is full
  *   -EIO      shader translation or pipeline creation failed
+ *   -ENODEV   no device
  */
 int32_t tension_2d_set_pipeline(int32_t handle, int32_t blob_ptr, int32_t blob_len);
 
@@ -121,13 +137,14 @@ int32_t tension_2d_set_pipeline(int32_t handle, int32_t blob_ptr, int32_t blob_l
  * `shader_compile_raw(i32 handle, i32 vs_ptr, i32 vs_len, i32 fs_ptr, i32
  * fs_len) -> i32`  — verb_id 4.
  *
- * The trust-users door: two shader sources in, a `pipe_id >= 1000` out. No
- * layout is validated against the source, because there is no layout — that is
- * what the caller gave up by not sending a graph.
+ * The trust-users door: two shader sources in, a `pipe_id >= PIPE_RAW_MIN` out.
+ * No layout is validated against the source, because there is no layout — that
+ * is what the caller gave up by not sending a graph.
  *
- * At v1 this answers -ENOSYS: the tree has no GLSL -> SPIR-V translator linked
- * into the DSO (DESIGN.md §8.1), so the door exists in the wire and not yet in
- * the build.
+ * It answers `-ENOSYS`. The DSO carries no GLSL -> SPIR-V translator, and the
+ * host's `compile_graph` takes a graph blob, not two shader sources. The graph
+ * door is verb 3; this one is the separate door for raw sources, and it is shut
+ * in this build.
  */
 int32_t tension_2d_shader_compile_raw(int32_t handle, int32_t vs_ptr, int32_t vs_len,
                                       int32_t fs_ptr, int32_t fs_len);
@@ -315,6 +332,15 @@ typedef struct tension_2d_info_record {
 
 /* ── pipe_id ranges ──────────────────────────────────────────────────── */
 
+/*
+ * What each range holds, and who assigns an id in it. `set_pipeline`'s comment
+ * above is the prose; these are the numbers it refers to.
+ *
+ * The names are historical: `PIPE_GUEST_*` marks the band a guest-facing graph
+ * id comes from, and today the graphs `scripts/build-2d.mjs` embeds occupy its
+ * start — that script's `PIPE_IDS` table picks the base, so an embedded graph's
+ * id is stable across builds of the same graph.
+ */
 #define TENSION_2D_PIPE_PRESET_MIN 1
 #define TENSION_2D_PIPE_PRESET_MAX 99
 #define TENSION_2D_PIPE_GUEST_MIN  100
@@ -340,10 +366,11 @@ typedef struct tension_2d_info_record {
  *
  *   -EINVAL  a bad handle, a non-zero `flags`, a malformed header, a stride
  *            that disagrees with the layout
- *   -ENOENT  an unknown pipe_id or texture id, or a preset id outside 1..9
+ *   -ENOENT  an unknown pipe_id or texture id, or a preset id outside
+ *            TENSION_2D_PIPE_PRESET_MIN..TENSION_2D_PIPE_PRESET_MAX
  *   -ENODEV  no device, or nothing presented yet
- *   -ENOSYS  a guest graph, a raw shader, or a container this build does not
- *            serve
+ *   -ENOSYS  a preset this build does not compile, a raw-shader request, or a
+ *            texture container this build does not decode
  *   -ENOSPC  a short bucket, a short guest buffer, a full pipeline table
  *   -EIO     SDL refused, or a decode or download failed
  *   -ENOMEM  allocation failure
