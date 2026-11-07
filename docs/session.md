@@ -53,7 +53,7 @@ callbacks at all: it is already inside a host call on the guest's stack, so
 
 ## 2. The seven verbs
 
-Registered in one place, `link_session` (`mod.rs:1497-1544`). The wasm-side
+Registered in one place, `link_session` (`mod.rs:1497-1540`). The wasm-side
 signatures and the guest SDK's wrappers are `docs/abi/guest.md`; this table
 records what each verb *does* and how it refuses.
 
