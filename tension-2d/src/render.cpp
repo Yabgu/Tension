@@ -488,6 +488,24 @@ int32_t Renderer::open(uint32_t width, uint32_t height, bool windowed, std::stri
     }
     impl_->sdl_started = true;
 
+    // `dummy` is a video driver with no GPU backend: `SDL_CreateGPUDevice` fails
+    // against it with "No supported SDL_GPU backend found!", which reads as "this
+    // machine has no GPU" when the real answer is "this driver has no GPU". A
+    // headless run that sets it out of habit — SDL's own docs suggest it for
+    // headless — then spends an afternoon on the wrong question. Refuse here,
+    // by name, before the device is attempted.
+    //
+    // The errno is unchanged: this is the same `-ENODEV` the device-creation
+    // failure would have produced, arrived at one step earlier and reported
+    // honestly. `offscreen` is the driver that does have a GPU backend.
+    if (const char *driver = SDL_GetCurrentVideoDriver();
+        driver != nullptr && std::strcmp(driver, "dummy") == 0) {
+        err = "open: SDL_VIDEODRIVER=dummy has no GPU backend — use offscreen for a "
+              "headless run";
+        impl_->release_all();
+        return -ENODEV;
+    }
+
     impl_->device = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, nullptr);
     if (impl_->device == nullptr) {
         // Distinguish "this build has no GPU backend" from "this machine has no

@@ -64,9 +64,18 @@ Every 2d scenario runs `SDL_VIDEODRIVER=offscreen`, so `SDL_CreateWindow`,
 never executed by a test. This is why the two-window problem above has never been
 observed in a run rather than merely unrecorded.
 
-## `SDL_VIDEODRIVER=dummy` gives the wrong diagnostic
+## `SDL_VIDEODRIVER=dummy` is refused with `-ENODEV` and a named driver
 
-`dummy` comes up as a video driver with no GPU backend, so `open` fails with
-`-ENODEV` and a device-creation message. The driver that works headless is
-`offscreen`. The refusal the design note asks for (`DESIGN.md:1213-1218`) is not
-implemented. Contradiction 25.
+`dummy` comes up as a video driver with no GPU backend. `open` refuses it before
+the device is attempted, naming both the driver and the one that works
+(`tension-2d/src/render.cpp:491-505`); the errno is the `-ENODEV` the
+device-creation failure would have produced. Contradiction 25, closed.
+
+## The 2D render scenarios do not run on this rig
+
+`scripts/test-2d.mjs` fixes a real harness defect this pass — its stub core never
+set `abi_version`, so every run failed at `init` since ABI v6 (contradiction 27).
+With that fixed, the scenarios reach `present` and die from SIGSEGV inside
+`libnvidia-glcore` under `SDL_VIDEODRIVER=offscreen`. The driver-guard case runs
+before any device exists and passes here; the pixel scenarios need a conformant
+Vulkan ICD, which is what the CI image's lavapipe provides.

@@ -373,6 +373,12 @@ int main(int argc, char **argv) {
     tension_core_api api;
     std::memset(&api, 0, sizeof api);
     api.user = &core;
+    // `adapter_init` refuses a table whose version does not match, and the
+    // refusal is the point: a stale DSO against a newer host reads the slots it
+    // knows and silently misses the rest. The stub is a host, so it has to state
+    // the version it speaks — leaving this zeroed made `init` answer -EINVAL from
+    // the ABI v6 change onward, and the suite failed before its first scenario.
+    api.abi_version = TENSION_ADAPTER_ABI_VERSION;
     api.guest_read = guest_read;
     api.guest_write = guest_write;
     api.guest_size = guest_size;
