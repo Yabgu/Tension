@@ -17,12 +17,16 @@ outside that tree carries its path.
 
 **The host owns the machine; the guest owns the world.** `tension-core` owns the
 process — the window, the Vulkan instance and surface, the event queue, the audio
-device, the clock, the main loop — and the guest is a WebAssembly module that
-must never learn that SDL3 or Vulkan exist. Between them is one narrow ABI of
-plain integers: a guest reaches the host through registered imports, a capability
-(a renderer, an input layer) reaches it through a versioned vtable, and
+device, the main loop — and the guest is a WebAssembly module that must never
+learn that SDL3 or Vulkan exist. Between them is one narrow ABI of plain
+integers: a guest reaches the host through registered imports, a capability (a
+renderer, an input layer) reaches it through a versioned vtable, and
 communication is batched where it is per-frame and asynchronous where it is I/O
 or latency-bound.
+
+Time is world, not machine. The host wakes the guest; it does not tell the guest
+what time it is. Guest simulation is deterministic by construction because the
+host contributes no clock.
 
 The separation is structural, not documentary. The adapter header includes only
 `<stddef.h>` and `<stdint.h>` (`tension-core/include/tension_adapter.h:35-36`),
@@ -45,7 +49,7 @@ handles it is given cross the boundary as `u64`
 | Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
 | Audio device (cpal) | host, `tension-core/src/audio/mod.rs:55` | `audio_init` | `audio_shutdown`, `audio/mod.rs:146` |
 | Filesystem | host, mediated by `tension::res`, `main.rs:1114` | startup | process exit |
-| Clock / timing | host, `std::time` behind `posting.rs:320` | — | — |
+| Time | **the guest, deliberately.** The host provides no clock import, no dt on the frame wake, and no tick callback. The guest derives time from frame identity (§4) — a determinism requirement, not an omission. | no import matching `clock`, `time`, `elapsed` or `now` exists among the 45 `Linker::func_wrap` registrations in `tension-core/src` `[verified]` | not applicable — the host creates no clock to destroy |
 | Main loop | host, `main.rs:1927` | after guest entry returns | loop exit |
 | Session (epoch, arena) | host, `main.rs:204` | guest asks | guest closes, or the host closes for it |
 | Guest `Store<HostState>` | host, `main.rs:895` | before instantiation | end of `main` |
@@ -167,6 +171,15 @@ One iteration (`main.rs:1927-2211`), in order:
    `session/epoch.rs:107`) publishes, matches and hands the wake batch to
    `__taskWake`.
 
+**The frame wake carries no time.** `rt.frame()` resolves to a task whose payload
+is the literal `0` (`tension-framework/assembly/runtime/rt.ts:256-257`;
+`main.rs:2094-2099` pushes `payload: 0`). No dt, no timestamp, no frame number —
+the guest counts its own wakes. Note that `FrameState.frameIndex` is the
+*session's epoch counter*, explicitly not the renderer's frame number
+(`tension-framework/assembly/runtime/wire.ts:301-302`); using it as a frame
+counter is a misreading the comment anticipates. A guest that wants a frame
+identity increments one of its own, once per resolved `rt.frame()`.
+
 **Resize latency.** A compositor resize becomes visible to a renderer at the
 next iteration's pump, so the bound is one slice plus the duration of one epoch
 — not a hard 16 ms. The comment at `main.rs:1947-1956` states the intent ("one
@@ -243,8 +256,9 @@ and `shutdown` must not touch guest memory (`adapter/mod.rs:974-983`). A
 renderer owns its own thread and creates its objects there.
 
 The slot-by-slot table is not duplicated here. The source of truth is the
-header; a generated companion (`docs/abi/adapter.md`) is planned but not yet
-written.
+header; [`docs/abi/adapter.md`](abi/adapter.md) is generated from it by
+`npm run docs:abi` and checked by `npm test`, which also compiles a probe that
+confirms every documented offset against the C compiler's `offsetof`.
 
 ## 7. The session boundary
 
@@ -305,9 +319,10 @@ This document deliberately does not cover:
   `tension-ogre/DESIGN.md` §3-6 and `tension-framework/assembly/ogre/*.ts`, and
   **they may disagree** — the next module doc has to reconcile them against the
   code rather than copy either.
-- **Per-adapter guest ABI details** — every import a guest can call. To be
-  generated (`docs/abi/guest.md`) from the registration sites.
-- **The ABI slot table** — generated from the header (`docs/abi/adapter.md`).
+- **Per-adapter guest ABI details** — every import a guest can call.
+  [`docs/abi/guest.md`](abi/guest.md), generated from the registration sites.
+- **The ABI slot table** — [`docs/abi/adapter.md`](abi/adapter.md), generated
+  from the header.
 - **Build and CI** — `docs/build.md`.
 - **Input attach** — deferred to the v7 input pass, which deletes the
   `tension-input` DSO and moves the pump into the epoch.
