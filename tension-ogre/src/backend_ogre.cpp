@@ -263,10 +263,24 @@ class BackendOgre final : public Backend {
                         ("tension-ogre-" + std::to_string(static_cast<long>(::getpid())));
             std::filesystem::create_directories(temp_dir_);
             const std::string plugins_cfg = (temp_dir_ / "plugins.cfg").string();
+            // FINDING (step 4): the host-instance route is disabled until the
+            // `VulkanExternalInstance*` handoff is built properly. See the note
+            // above `root_`.
+            const bool deferred_vulkan = false;
             {
+                // The Vulkan plugin is loaded separately below when the host
+                // owns the instance: `Root::loadPlugin` is the only route that
+                // accepts plugin params, and `external_instance` is read on the
+                // *first* load. A plugin listed here would be loaded by the
+                // constructor, without params, and `loadPlugin` afterwards would
+                // be a no-op guarded by `mPluginLibs` — measured in
+                // `OgreRoot.cpp:1474-1476`. So when the host supplies an
+                // instance the file names every *other* plugin only.
                 std::ofstream cfg(plugins_cfg);
                 cfg << "PluginFolder=" << dir << "\n";
-                cfg << "Plugin=" << plugin_name_ << "\n";
+                if (!deferred_vulkan) {
+                    cfg << "Plugin=" << plugin_name_ << "\n";
+                }
             }
             // OGRE's own log goes to a file, not to stdout: the guest's stdout
             // is the test's evidence, and a thousand lines of startup chatter
@@ -290,6 +304,33 @@ class BackendOgre final : public Backend {
             root_ = std::make_unique<Ogre::Root>(nullptr, plugins_cfg,
                                                  (temp_dir_ / "ogre.cfg").string(),
                                                  (temp_dir_ / "Ogre.log").string(), "tension");
+
+            if (deferred_vulkan) {
+                // DISABLED, and the reason is the finding this pass produced.
+                //
+                // `OgreVulkanRenderSystem.cpp:253-259` does not read a
+                // `VkInstance` from this option: it reads a
+                // `VulkanExternalInstance*` and immediately calls
+                // `enumerateExtensionsAndLayers` on it, which walks
+                // `instanceLayers` / `instanceExtensions` (FastArrays the caller
+                // must fill). Passing the raw handle makes it dereference a
+                // VkInstance as a struct pointer and segfaults on the render
+                // thread inside `VulkanPlugin::install`.
+                //
+                // Doing it correctly means the adapter enumerates the instance's
+                // layers and extensions itself and owns a
+                // `VulkanExternalInstance` for the plugin's lifetime. That is a
+                // real change, not a parameter, and it is a separate pass.
+                Ogre::NameValuePairList plugin_params;
+                {
+                    char value[32];
+                    std::snprintf(value, sizeof(value), "%llu",
+                                  static_cast<unsigned long long>(config.external_instance));
+                    plugin_params["external_instance"] = value;
+                }
+                root_->loadPlugin(library, false, &plugin_params);
+                log_line("ogre: Vulkan plugin loaded with the host's instance");
+            }
 
             // ── STAGE_RENDER_SYSTEM ──────────────────────────────────────
             status.set_stage(TENSION_OGRE_STAGE_RENDER_SYSTEM);
@@ -323,6 +364,15 @@ class BackendOgre final : public Backend {
             params["vsync"] = config.vsync ? "Yes" : "No";
             params["width"] = std::to_string(config.window_width);
             params["height"] = std::to_string(config.window_height);
+            if (config.external_surface != 0) {
+                // The host's surface, borrowed. Ogre adopts it instead of
+                // creating one, and creates no native window at all
+                // (third_party/patches/ogre-external-surface.patch).
+                char value[32];
+                std::snprintf(value, sizeof(value), "%llu",
+                              static_cast<unsigned long long>(config.external_surface));
+                params["external_surface"] = value;
+            }
             window_ = root_->createRenderWindow("Tension", config.window_width,
                                                 config.window_height, false, &params);
             if (window_ == nullptr) {
@@ -522,6 +572,26 @@ class BackendOgre final : public Backend {
             if (readback_requested_.load() && !download_armed_) {
                 window_->setWantsToDownload(true);
                 download_armed_ = true;
+            }
+            // The host owns the window, so its size is whatever SDL last
+            // reported — not what Ogre last saw. Compare once per frame and ask
+            // Ogre to rebuild its swapchain when they differ. This is the only
+            // consumer of the resize hunk
+            // (`third_party/patches/ogre-external-surface.patch`): with an
+            // external surface there is no native window for Ogre to measure,
+            // so nothing else would ever notice.
+            if (config_.external_surface != 0 && config_.host_size != nullptr) {
+                uint32_t host_w = 0, host_h = 0;
+                config_.host_size(config_.host_size_ctx, &host_w, &host_h);
+                if (host_w != 0 && host_h != 0 &&
+                    (host_w != window_->getWidth() || host_h != window_->getHeight())) {
+                    log_line("ogre: host surface is " + std::to_string(host_w) + "x" +
+                             std::to_string(host_h) + ", window is " +
+                             std::to_string(window_->getWidth()) + "x" +
+                             std::to_string(window_->getHeight()) +
+                             " — requesting a swapchain rebuild");
+                    window_->requestResolution(host_w, host_h);
+                }
             }
             if (!root_->renderOneFrame()) {
                 // The guest (or the window manager) closed the window: a normal

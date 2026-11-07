@@ -165,6 +165,24 @@ pub use tension_core::platform::{
 pub type PostControlFn =
     unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32;
 
+/// Mirrors `tension_host_surface`: the host's window surface, borrowed.
+///
+/// `struct_size` is `sizeof(tension_host_surface)` as the caller's headers see
+/// it, so a later ABI can grow this struct without a new slot.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionHostSurface {
+    pub struct_size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub reserved: u32,
+    pub instance: u64,
+    pub surface: u64,
+}
+
+pub type HostSurfaceFn =
+    unsafe extern "C" fn(*mut c_void, *mut TensionHostSurface) -> i32;
+
 /// Mirrors `tension_core_api`. The session fills every slot; the adapter may
 /// call any of them subject to the header's thread and phase rules.
 #[repr(C)]
@@ -205,6 +223,8 @@ pub struct TensionCoreApi {
     /// executor yet, so the slot answers `-ENOSYS` rather than accepting a
     /// message it would discard.
     pub post_control: Option<PostControlFn>,
+    /// ABI v6: the host's window surface, borrowed by a renderer.
+    pub host_surface: Option<HostSurfaceFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -267,7 +287,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 168);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 176);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -294,6 +314,11 @@ const _: () = {
     // ABI v6: post_control is the last slot; the header's `_Static_assert` pins
     // the same shape from the C side.
     assert!(std::mem::offset_of!(TensionCoreApi, post_control) == 160);
+    assert!(std::mem::offset_of!(TensionCoreApi, host_surface) == 168);
+    // The struct itself: four u32 then two u64, so `instance` lands on 16.
+    assert!(std::mem::size_of::<TensionHostSurface>() == 32);
+    assert!(std::mem::offset_of!(TensionHostSurface, instance) == 16);
+    assert!(std::mem::offset_of!(TensionHostSurface, surface) == 24);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -1466,6 +1491,44 @@ pub(crate) unsafe extern "C" fn post_control(
     }
 }
 
+/// `host_surface` — the window surface the host owns, borrowed by a renderer.
+///
+/// `-ENOSYS` when there is none, which is the expected answer on a headless run
+/// and not a failure: an adapter that gets it falls back to its own window, or
+/// to no window at all.
+pub(crate) unsafe extern "C" fn host_surface(
+    user: *mut c_void,
+    out: *mut TensionHostSurface,
+) -> i32 {
+    if user.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let published = match host.host_surface() {
+        Some(surface) => surface,
+        None => return ENOSYS,
+    };
+
+    // SAFETY: checked non-null above. `struct_size` is the caller's, so a
+    // shorter struct from an older adapter is written only as far as it goes.
+    let caller_size = unsafe { (*out).struct_size };
+    if caller_size != 0 && (caller_size as usize) < std::mem::size_of::<TensionHostSurface>() {
+        return EINVAL;
+    }
+    unsafe {
+        *out = TensionHostSurface {
+            struct_size: std::mem::size_of::<TensionHostSurface>() as u32,
+            width: published.width,
+            height: published.height,
+            reserved: 0,
+            instance: published.instance,
+            surface: published.surface,
+        };
+    }
+    0
+}
+
 /// The core API table, fully populated: every slot is a real function pointer, so
 /// an adapter that calls one gets a refusal rather than a null dereference.
 pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
@@ -1491,6 +1554,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         shader_generate: Some(shader_generate),
         compile_graph: Some(compile_graph),
         post_control: Some(post_control),
+        host_surface: Some(host_surface),
     }
 }
 
@@ -1815,13 +1879,14 @@ mod tests {
         // were appended under rule 11, moving the size 112 -> 128;
         // `guest_read_checked` (C4.1a) moved it 128 -> 136, `signal_frame`
         // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
-        // 144 -> 152, `compile_graph` (v5) moved it 152 -> 160, and
-        // `post_control` (v6) moved it 160 -> 168. The
+        // 144 -> 152, `compile_graph` (v5) moved it 152 -> 160,
+        // `post_control` (v6) moved it 160 -> 168, and `host_surface` (v6)
+        // moved it 168 -> 176. The
         // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 168);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 176);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
@@ -1831,6 +1896,7 @@ mod tests {
             assert_eq!(std::mem::offset_of!(TensionCoreApi, shader_generate), 144);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, compile_graph), 152);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, post_control), 160);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, host_surface), 168);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

@@ -1481,6 +1481,41 @@ fn main() -> anyhow::Result<()> {
         std::sync::Arc::clone(&store.data().posting),
         std::sync::Arc::clone(&store.data().control),
     );
+    // Publish the surface before any adapter loads, so an adapter's `init`
+    // already sees it. Created eagerly here rather than on demand because the
+    // adapter cannot ask for it otherwise: it reaches the host through a table
+    // built before it runs.
+    //
+    // Only when a capability was asked for. A `--window` run with no renderer
+    // still pays nothing for Vulkan, which is the laziness that matters.
+    if !adapters.is_empty() {
+        if let Some(window) = store.data_mut().host_window.as_mut() {
+            match window.surface() {
+                Ok(surface) => {
+                    adapter_host.publish_host_surface(surface);
+                    logging::log(
+                        Level::Info,
+                        "core",
+                        &format!(
+                            "--window: surface published to adapters ({}x{}, instance 0x{:x})",
+                            surface.width, surface.height, surface.instance
+                        ),
+                    );
+                }
+                Err(error) => {
+                    // Not fatal: an adapter that gets -ENOSYS falls back to
+                    // creating its own window, which is the pre-v6 behaviour and
+                    // still correct. Say so loudly though, because it means the
+                    // renderer is NOT on the host surface.
+                    logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("--window: adapters will not get a host surface: {error}"),
+                    );
+                }
+            }
+        }
+    }
     if !adapters.is_empty() {
         adapter::link_adapters(&mut linker, &mut adapters, adapter_host.api())?;
     }

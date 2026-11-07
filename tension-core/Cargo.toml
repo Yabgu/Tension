@@ -108,3 +108,8 @@ harness = false
 [[test]]
 name = "platform_control"
 harness = false
+
+# The end-to-end proof: SDL3's window and surface handed to Ogre-Next.
+[[test]]
+name = "ogre_host_surface"
+harness = false

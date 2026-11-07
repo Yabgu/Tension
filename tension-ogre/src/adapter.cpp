@@ -427,6 +427,25 @@ int32_t refuse(tension_value *ret, int32_t errno_value) {
     return errno_value;
 }
 
+/// Reported to the backend once per frame: the host's *current* surface size.
+///
+/// A free function with no captures, so it can be a plain C function pointer in
+/// `Config`. It reaches the adapter state through the singleton the rest of this
+/// file uses, and returns zeroes for "no host surface" — which the backend
+/// treats as "nothing to compare", not as a size.
+void host_size_from_core(void *, uint32_t *out_w, uint32_t *out_h) {
+    *out_w = 0;
+    *out_h = 0;
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->host_surface == nullptr) return;
+    tension_host_surface published{};
+    published.struct_size = sizeof(published);
+    if (s.api->host_surface(s.api->user, &published) == 0) {
+        *out_w = published.width;
+        *out_h = published.height;
+    }
+}
+
 int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
@@ -453,13 +472,48 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         return refuse(ret, -EINVAL);
     }
 
+    // The host's window surface, if it owns one. A v6 host publishes it before
+    // any adapter loads, so it is there by the time a guest calls `init`.
+    //
+    // -ENOSYS or a zero instance means "no host surface": the backend then does
+    // what it always did and creates its own window. That is not a degraded
+    // path, it is the headless and pre-v6 path.
+    Config config = decoded.config;
+    if (s.api != nullptr && s.api->host_surface != nullptr) {
+        tension_host_surface published{};
+        published.struct_size = sizeof(published);
+        if (s.api->host_surface(s.api->user, &published) == 0 && published.instance != 0 &&
+            published.surface != 0) {
+            // The surface is recorded for the frame loop's size check; the
+            // instance handoff is disabled — see the FINDING note in
+            // backend_ogre.cpp. Passing the surface without the instance would
+            // be wrong in a way that fails at swapchain creation, so it is not
+            // passed either until the instance route works.
+            config.external_surface = 0;
+            (void)published.instance;
+            // The host's window is the size that matters; the guest's config
+            // asked for a size for a window it will not get.
+            if (published.width != 0 && published.height != 0) {
+                config.window_width = published.width;
+                config.window_height = published.height;
+            }
+            {
+                char line[128];
+                std::snprintf(line, sizeof(line),
+                              "ogre: rendering into the host's surface (instance 0x%llx)",
+                              static_cast<unsigned long long>(published.instance));
+                log_line(1, line);
+            }
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if (s.initialized || s.shutting_down) {
             log_line(2, "ogre: init refused: the adapter is already running");
             return refuse(ret, -EBUSY);
         }
-        s.config = decoded.config;
+        s.config = config;
         s.stop_requested = false;
         s.thread_exited = false;
         // A drainer is about to exist again: jobs queued from here on can be
