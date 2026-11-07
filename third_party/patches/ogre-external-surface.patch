@@ -365,3 +365,79 @@ index 0e12fccd72..9d6d807316 100644
          if( !mHwnd || IsIconic( mHwnd ) )
              return;
  
+Frame gate and teardown (added after the first runtime attempt)
+---------------------------------------------------------------
+Two defects found the first time a frame was actually attempted on a
+host-supplied surface, both upstream, neither in the resize hunk:
+
+  * VulkanRenderSystem::validateDevice() returned false whenever the VkInstance
+    was external. Root::_fireFrameStarted treats that as fatal, so
+    renderOneFrame() answered "the window closed" before the first present.
+    Ogre's own Tutorial_VulkanExternal supplies an external *device* as well, so
+    it fails on mDevice->mIsExternal and was already dead — the instance term
+    was never exercised by it.
+
+  * ~VulkanXcbWindow() branches on mIsExternal, which means "the caller gave us
+    a parent X11 window". On the external-surface path create() skips
+    initConnection()/createWindow(), so mConnection is null and both branches
+    fault — the !mIsExternal one in xcb_destroy_window, the other in xcb_flush.
+    The guard is the connection, not the flag.
+
+diff --git a/RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp b/RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp
+--- a/RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp
++++ b/RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp
+@@ -1376,7 +1376,16 @@ namespace Ogre
+     //-------------------------------------------------------------------------
+     bool VulkanRenderSystem::validateDevice( bool forceDeviceElection )
+     {
+-        if( mDevice == nullptr || mDevice->mIsExternal || mInstance->mVkInstanceIsExternal )
++        // Tension: instance ownership is orthogonal to device validation.
++        //
++        // `mDevice->mIsExternal` is the right test: a VkDevice this render
++        // system did not create is one it cannot re-elect or recreate, and
++        // that is what this function exists to do. `mVkInstanceIsExternal` is
++        // not: an external VkInstance can still own a device Ogre created and
++        // therefore can validate. Returning false there makes
++        // `Root::_fireFrameStarted` fail every frame, so `renderOneFrame()`
++        // answers "the window closed" before the first present.
++        if( mDevice == nullptr || mDevice->mIsExternal )
+             return false;
+ 
+         bool anotherIsElected = false;
+diff --git a/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp b/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
+--- a/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
++++ b/RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp
+@@ -86,15 +86,25 @@ namespace Ogre
+     {
+         destroy();
+ 
+-        if( !mIsExternal )
+-        {
+-            xcb_destroy_window( mConnection, mXcbWindow );
+-            xcb_flush( mConnection );
+-            xcb_disconnect( mConnection );
+-        }
+-        else
++        // Tension: a host-supplied Vulkan surface means create() skipped
++        // initConnection() and createWindow(), so mConnection and mXcbWindow
++        // are null. Every branch below touches the connection, including the
++        // `mIsExternal` one (it flushes), and mIsExternal is not even the right
++        // flag here: it means "the caller gave us a parent X11 window", which
++        // is a different case that does have a connection. So the guard is the
++        // connection itself.
++        if( mConnection )
+         {
+-            xcb_flush( mConnection );
++            if( !mIsExternal )
++            {
++                xcb_destroy_window( mConnection, mXcbWindow );
++                xcb_flush( mConnection );
++                xcb_disconnect( mConnection );
++            }
++            else
++            {
++                xcb_flush( mConnection );
++            }
+         }
+ 
+         mConnection = 0;

@@ -401,6 +401,11 @@ fn wait_for_frames(state: &State, after: u32, timeout: std::time::Duration) -> u
     }
 }
 
+/// How many captured log lines contain `needle`.
+fn count_log(state: &State, needle: &str) -> usize {
+    state.logs.iter().filter(|line| line.contains(needle)).count()
+}
+
 /// Wait until a captured log line contains `needle`.
 fn wait_for_log(state: &State, needle: &str, timeout: std::time::Duration) -> bool {
     let deadline = std::time::Instant::now() + timeout;
@@ -639,6 +644,22 @@ fn main() {
         "e. a frame was presented after the rebuild request",
     );
 
+    // Did the rebuild take effect, or does the size check fire every frame?
+    //
+    // `requestResolution` on the external-surface path ends in
+    // `setFinalResolution`, so Ogre's own width becomes the host's and the
+    // per-frame comparison stops finding a difference. If that did not happen,
+    // the same log line repeats at the frame rate — which distinguishes "asked
+    // for a rebuild" from "rebuilt".
+    let rebuilds_before = count_log(&state, "requesting a swapchain rebuild");
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    let rebuilds_after = count_log(&state, "requesting a swapchain rebuild");
+    println!("  rebuild requests: {rebuilds_before} -> {rebuilds_after}");
+    check(
+        rebuilds_after == rebuilds_before,
+        "e. the rebuild converged: the size check stopped firing once Ogre took the new size",
+    );
+
     // ── (f) window_handle ────────────────────────────────────────────────
     //
     // Under Q2 this must be -ENODEV: the host owns the window, so Ogre has no
@@ -656,8 +677,13 @@ fn main() {
         let args = [TensionValue { bits: 0 }, TensionValue { bits: 0 }];
         let rc = unsafe { func(entry.ctx, args.as_ptr(), 2, &mut ret) };
         println!("  window_handle rc = {rc}");
+        // `tension_value` is a union: the shim writes `ret->i32`, so only the
+        // low 32 bits are set and the high half keeps whatever the caller left
+        // (zero here). Comparing the whole u64 against `ENODEV as u64` compares
+        // a sign-extended negative against a zero-extended one and fails on a
+        // correct answer — which is what the first version of this line did.
         check(
-            rc == ENODEV && ret.bits == ENODEV as u64,
+            rc == ENODEV && ret.bits as u32 as i32 == ENODEV,
             "f. ogre::window_handle answers -ENODEV while the host owns the window",
         );
     }

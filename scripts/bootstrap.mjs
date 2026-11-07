@@ -61,6 +61,7 @@ const OGRE_PATCHES = [
       'RenderSystems/Vulkan/include/OgreVulkanWindow.h',
       'RenderSystems/Vulkan/src/OgreVulkanWindow.cpp',
       'RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp',
+      'RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp',
       'RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp',
       'RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp',
     ],
