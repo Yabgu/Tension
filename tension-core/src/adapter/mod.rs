@@ -239,6 +239,22 @@ struct LinkState {
     required_regions: Vec<u32>,
 }
 
+/// The host's surface and the extensions it was created with, published as one
+/// value.
+///
+/// Two questions, one answer, because a renderer asks both and pairs them: the
+/// `VkInstance` from `host_surface` is only meaningful alongside the list that
+/// instance was created with. An empty list is a real answer ("the instance
+/// enabled no extensions"); `None` is "there is no instance", which is what
+/// `-ENOSYS` reports.
+#[derive(Clone, Debug)]
+pub struct PublishedSurface {
+    pub surface: crate::platform::HostSurface,
+    /// The names SDL asked for, in the order SDL returned them — exactly what
+    /// `main` passed to `vkCreateInstance`.
+    pub extensions: Vec<String>,
+}
+
 /// The core's side of the adapter ABI: the API table every adapter is handed,
 /// plus the per-run state the table's functions read and write.
 ///
@@ -285,8 +301,12 @@ pub struct AdapterHost {
     /// A shared cell rather than a pointer to the window: `HostWindow` is not
     /// `Sync` (SDL requires every window call on its creating thread) and an
     /// adapter may call this from its render thread. This carries only the
-    /// handles and the size, which are plain data.
-    host_surface: Arc<Mutex<Option<crate::platform::HostSurface>>>,
+    /// handles, the size, and the extension names, which are plain data.
+    ///
+    /// The extensions live in this cell rather than beside it so that the
+    /// handle and the list describing it can never come from different
+    /// publishes — see [`PublishedSurface`].
+    host_surface: Arc<Mutex<Option<PublishedSurface>>>,
     /// What `link` collected. Single-threaded in practice; `Sync` by
     /// construction.
     link: Mutex<LinkState>,
@@ -409,17 +429,43 @@ impl AdapterHost {
         Arc::clone(&self.posting)
     }
 
-    /// Publish the host's surface for `host_surface` to serve.
+    /// Publish the host's surface, and the extensions it was created with, for
+    /// `host_surface` and `host_surface_extension` to serve.
     ///
     /// Called once by `main`, before any adapter loads, so an adapter's `init`
-    /// already sees it.
-    pub fn publish_host_surface(&self, surface: crate::platform::HostSurface) {
-        *self.host_surface.lock().expect("the surface mutex is never poisoned") = Some(surface);
+    /// already sees it. One call, one cell: a renderer builds a
+    /// `VulkanExternalInstance` out of both answers, and a handle paired with
+    /// another instance's extension list is a swapchain created against a lie.
+    pub fn publish_host_surface(
+        &self,
+        surface: crate::platform::HostSurface,
+        extensions: Vec<String>,
+    ) {
+        *self.host_surface.lock().expect("the surface mutex is never poisoned") =
+            Some(PublishedSurface { surface, extensions });
     }
 
     /// What `host_surface` answers with.
     pub fn host_surface(&self) -> Option<crate::platform::HostSurface> {
-        *self.host_surface.lock().expect("the surface mutex is never poisoned")
+        self.host_surface
+            .lock()
+            .expect("the surface mutex is never poisoned")
+            .as_ref()
+            .map(|published| published.surface)
+    }
+
+    /// Run `f` over the extension names the instance was created with, or
+    /// `None` when no surface was published.
+    ///
+    /// `None` and "an empty list" are different answers: the first is a host
+    /// with no window (what `-ENOSYS` reports), the second a host that created
+    /// an instance requesting no extensions at all.
+    pub fn with_host_surface_extensions<R>(&self, f: impl FnOnce(&[String]) -> R) -> Option<R> {
+        self.host_surface
+            .lock()
+            .expect("the surface mutex is never poisoned")
+            .as_ref()
+            .map(|published| f(&published.extensions))
     }
 
     /// The window-control queue, for `post_control` and for the tests that

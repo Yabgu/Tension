@@ -433,6 +433,20 @@ int32_t refuse(tension_value *ret, int32_t errno_value) {
 /// `Config`. It reaches the adapter state through the singleton the rest of this
 /// file uses, and returns zeroes for "no host surface" — which the backend
 /// treats as "nothing to compare", not as a size.
+/// One of the host's instance extensions, by index, for the backend's
+/// `VulkanExternalInstance`.
+///
+/// A free function for the same reason as `host_size_from_core`: `Config` is
+/// copied into the backend and must not carry a `std::function` allocation. The
+/// `-ENOENT` the host returns at the end of its list is passed through
+/// unchanged — the render thread treats it as "stop", not as a failure.
+int32_t host_extension_from_core(void *, uint32_t index, char *out_name,
+                                 uint32_t capacity, uint32_t *out_len) {
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->host_surface_extension == nullptr) return -38; // -ENOSYS
+    return s.api->host_surface_extension(s.api->user, index, out_name, capacity, out_len);
+}
+
 void host_size_from_core(void *, uint32_t *out_w, uint32_t *out_h) {
     *out_w = 0;
     *out_h = 0;
@@ -484,13 +498,16 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         published.struct_size = sizeof(published);
         if (s.api->host_surface(s.api->user, &published) == 0 && published.instance != 0 &&
             published.surface != 0) {
-            // The surface is recorded for the frame loop's size check; the
-            // instance handoff is disabled — see the FINDING note in
-            // backend_ogre.cpp. Passing the surface without the instance would
-            // be wrong in a way that fails at swapchain creation, so it is not
-            // passed either until the instance route works.
-            config.external_surface = 0;
-            (void)published.instance;
+            // Both handles, and the reader the backend fills Ogre's
+            // `VulkanExternalInstance` from. The instance is the host's: the
+            // backend never creates one on this path, so a null `instance` here
+            // would leave the renderer with nothing to build a device on.
+            config.external_instance = published.instance;
+            config.external_surface = published.surface;
+            config.host_extension = &host_extension_from_core;
+            config.host_extension_ctx = nullptr;
+            config.host_size = &host_size_from_core;
+            config.host_size_ctx = nullptr;
             // The host's window is the size that matters; the guest's config
             // asked for a size for a window it will not get.
             if (published.width != 0 && published.height != 0) {

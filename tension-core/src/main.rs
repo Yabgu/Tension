@@ -1492,7 +1492,11 @@ fn main() -> anyhow::Result<()> {
         if let Some(window) = store.data_mut().host_window.as_mut() {
             match window.surface() {
                 Ok(surface) => {
-                    adapter_host.publish_host_surface(surface);
+                    // The names go with the handle, in one publish: an adapter
+                    // builds a `VulkanExternalInstance` from both, and Ogre
+                    // treats that list as the truth about what is enabled.
+                    let extensions = window.instance_extensions().to_vec();
+                    adapter_host.publish_host_surface(surface, extensions);
                     logging::log(
                         Level::Info,
                         "core",
