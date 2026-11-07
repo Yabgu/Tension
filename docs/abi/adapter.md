@@ -7,9 +7,12 @@ ABI version **6**. `tension_core_api` is **184 bytes**,
 `tension_adapter` is **80 bytes**, on a 64-bit target.
 
 This page is a projection of the header, not an independent statement of
-the contract: the comments, the thread rules and the append-only rule are
-the header's, and the offsets are computed from its declaration order. If
-this page and the header disagree, the header is right and this generator
+the contract. What it projects: the per-slot comments, the thread labels,
+the error codes, "What an adapter must not do", and the shape assertions —
+and the offsets, computed from declaration order. What it does not project:
+the numbered `Rules` block, including rule 11 (append-only within an ABI
+version). Rule 11 and every other rule live in the header and nowhere else.
+If this page and the header disagree, the header is right and this generator
 is wrong. `npm test` runs the drift check.
 
 ## `tension_core_api` — what the host provides an adapter
