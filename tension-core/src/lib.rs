@@ -16,6 +16,11 @@
 pub mod logging;
 pub mod pipeline;
 pub mod pipeline_default;
+// The host's window and its Vulkan surface. In the library rather than the
+// binary because the `platform_surface` probe is an integration test, and
+// because the window is core infrastructure from the north star onward — not a
+// property of one entry point.
+pub mod platform;
 pub mod res;
 pub mod shadergen_registry;
 pub mod world;
