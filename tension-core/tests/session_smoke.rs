@@ -177,6 +177,26 @@ fn test_missing_memory_export_refused() {
 }
 
 /// The bad-ABI twin of the reference adapter: same source, `abi_version` one
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header the fixtures are built
+/// against.
+///
+/// This assertion used to spell both numbers out — "adapter ABI 6" and "this
+/// build is 5" — which is three separate ways to go stale on one ABI bump, and
+/// all three did when the ABI became 6. The fixture declares `+1` (see
+/// `tests/support/echo_adapter.c`), so both numbers follow from the header.
+fn adapter_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
+
 /// past the current one.
 /// The loader refuses it at load — before `init`, before `link`, before any
 /// function pointer from its vtable is called — and the diagnostic names the
@@ -188,9 +208,12 @@ fn test_bad_abi_adapter_refused() {
 
     assert!(!output.status.success(), "the run must fail");
     let err = stderr(&output);
+    let current = adapter_abi_version();
     assert!(
-        err.contains("was built against adapter ABI 6") && err.contains("this build is 5"),
-        "the diagnostic must name both versions\nstderr: {err}"
+        err.contains(&format!("was built against adapter ABI {}", current + 1))
+            && err.contains(&format!("this build is {current}")),
+        "the diagnostic must name both versions (fixture {}, build {current})\nstderr: {err}",
+        current + 1
     );
     assert!(
         err.contains(ECHO_BAD_ABI),
