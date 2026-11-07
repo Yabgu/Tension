@@ -243,6 +243,12 @@ the vtable offsets; `ogre-guest` for the adapter's behaviour; `core` for the
 session and the host-surface path. The native build's guards (G1–G3) are *not* in
 this list because they run in `build-native.mjs` — `npm test` does not re-run them.
 
+The suite list is **[V]** (`scripts/test.mjs:126-341`). Which suite *runs* on this
+rig was not re-executed for this page; the last full run recorded before it was
+the pass-4 ogre suite (36 cases, exit 0) plus the unit suites, and the 2D suites
+need a GPU device the CI image supplies through lavapipe (`test-2d.mjs:101-105`
+returns exit 77 and the suite skips when none is present).
+
 ## 7. The ABI doc generator
 
 `scripts/gen-abi-doc.mjs` renders `docs/abi/adapter.md` and `docs/abi/guest.md`
@@ -361,6 +367,11 @@ elsewhere. That is what `--force` plus the test suite is for.
 (`build-stamp.mjs:19-24`). This is the most expensive kind when it slips through,
 because the build and the tests both pass; the failure needs a *load*, and the
 load happens in a consumer's tree.
+
+Everything in §10 up to here is **[V]** — each guard's failure condition is the
+code at the cited line. The judgement of *which* of the nine guard-discipline
+instances is most dangerous is **[I]**, and `docs/guard-discipline.md` does not
+rank them either.
 
 **What no guard catches:** a behaviour change that is correct in every checked
 respect and wrong in what it does. That is the test suites' job, and the reason
