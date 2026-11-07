@@ -152,50 +152,15 @@ pub type ClassInfoFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32, *mut u32) -> i32;
 pub type RegionLookupFn = unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32) -> i32;
 
-/// The control kind a message asks for (`tension_ctrl_kind`).
-///
-/// Unused until the executor lands; defined here so the header, the Rust mirror
-/// and the comment cannot drift apart.
-#[allow(dead_code)]
-pub const CTRL_RESIZE: u32 = 1;
-
-/// What the caller can expect afterwards (`tension_ctrl_visibility`).
-#[allow(dead_code)]
-pub const CTRL_CORE_ONLY: u32 = 0;
-#[allow(dead_code)]
-pub const CTRL_OBSERVABLE: u32 = 1;
-
-/// The source stamps the bus applies at enqueue (`TENSION_CTRL_SRC_*`).
-///
-/// Unused until the executor lands; named now so the stamps are defined in one
-/// place and the header, the Rust mirror and the comment cannot drift apart.
-#[allow(dead_code)]
-pub const CTRL_SRC_LAYER: u32 = 0;
-#[allow(dead_code)]
-pub const CTRL_SRC_CORE: u32 = 1;
-#[allow(dead_code)]
-pub const CTRL_SRC_GUEST: u32 = 2;
-
-/// Mirrors `tension_ctrl_msg`: one window-control message.
-///
-/// `source` is an *output* of the enqueue, not an input to it: the entry point
-/// stamps it, so a caller cannot claim to be the core and take reserved queue
-/// space. Callers pass 0.
-#[repr(C)]
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-pub struct TensionCtrlMsg {
-    pub kind: u32,
-    pub visibility: u32,
-    pub arg0: i32,
-    pub arg1: i32,
-    pub arg2: i32,
-    pub arg3: i32,
-    pub source: u32,
-    pub reserved: u32,
-}
-
-#[cfg(target_pointer_width = "64")]
-const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
+/// The control message and its constants live in the library, because the bus
+/// that stamps and queues them lives there too (`tension_core::platform`), and
+/// this bin is a separate crate. Re-exported rather than duplicated: two
+/// definitions of one `#[repr(C)]` struct is the drift this whole file exists
+/// to prevent.
+pub use tension_core::platform::{
+    TensionCtrlMsg, CTRL_CORE_ONLY, CTRL_OBSERVABLE, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST,
+    CTRL_SRC_LAYER,
+};
 
 pub type PostControlFn =
     unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32;
@@ -1460,18 +1425,45 @@ pub(crate) unsafe extern "C" fn release_callback_not_yet(
     ENOSYS
 }
 
-/// `post_control` before the executor exists.
+/// `post_control` — a layer asks the host to change the window.
 ///
-/// `-ENOSYS` rather than `0`: a queue that accepted a message and then dropped
-/// it would make "post_control returned success" meaningless, and a caller has
-/// no other way to learn the truth. The slot exists from ABI v6 so the table's
-/// shape is final and adapters can be built against it; the behaviour arrives
-/// with the queue.
-pub(crate) unsafe extern "C" fn post_control_not_yet(
-    _user: *mut c_void,
-    _msg: *const TensionCtrlMsg,
+/// The message is *stamped* with `TENSION_CTRL_SRC_LAYER` by the bus, not taken
+/// from the struct, so a layer cannot claim the core's reserved capacity. The
+/// reply is "queued", never "applied": the change happens later, on the window's
+/// own thread, when the host loop drains.
+///
+/// Any thread, per the header: it copies the message and never touches guest
+/// memory.
+pub(crate) unsafe extern "C" fn post_control(
+    user: *mut c_void,
+    msg: *const TensionCtrlMsg,
 ) -> i32 {
-    ENOSYS
+    if user.is_null() || msg.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the `AdapterHost` pointer this table was built with,
+    // and it outlives every call the table can make (`main` keeps it in its own
+    // frame for as long as the linker lives).
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    // SAFETY: checked non-null above; the ABI says the caller owns it and it is
+    // valid for this call.
+    let message = unsafe { *msg };
+
+    match host.control().post_layer(&message) {
+        Ok(()) => 0,
+        Err(tension_core::platform::ControlError::UnknownKind) => {
+            log_line("post_control refused: unknown kind");
+            EINVAL
+        }
+        Err(tension_core::platform::ControlError::Malformed) => {
+            log_line("post_control refused: reserved field is non-zero");
+            EINVAL
+        }
+        Err(tension_core::platform::ControlError::Full) => {
+            log_line("post_control refused: the control queue is full");
+            ENOSPC
+        }
+    }
 }
 
 /// The core API table, fully populated: every slot is a real function pointer, so
@@ -1498,7 +1490,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         signal_frame: Some(signal_frame),
         shader_generate: Some(shader_generate),
         compile_graph: Some(compile_graph),
-        post_control: Some(post_control_not_yet),
+        post_control: Some(post_control),
     }
 }
 
@@ -1537,6 +1529,7 @@ mod tests {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
                 host_window: None,
                 window_closed: false,
                 adapters: Vec::new(),
@@ -1669,33 +1662,116 @@ mod tests {
     }
 
     #[test]
-    fn post_control_answers_enosys_until_the_executor_exists() {
-        // ABI v6 adds the slot so the table's shape is final and adapters can
-        // be built against it. The behaviour arrives with the queue, and until
-        // then the slot must say so: a probe that accepted the message and did
-        // nothing would make `0` mean "maybe" for the first time in this ABI.
-        let api = *AdapterHost::new(test_posting()).api();
+    fn post_control_accepts_a_valid_message() {
+        // The full contract, not a weaker one. This test used to assert
+        // `ENOSYS` — "not 0" — because there was no queue; the danger in
+        // flipping it is that it becomes "returns 0" and stops checking
+        // anything else. So it asserts every branch the header documents.
+        let host = AdapterHost::new(test_posting());
+        let api = *host.api();
         let post = api.post_control.expect("post_control must be populated");
+        let bus = host.control();
 
-        let msg = TensionCtrlMsg {
+        // 1. A valid RESIZE is queued and answers 0.
+        let resize = TensionCtrlMsg {
             kind: CTRL_RESIZE,
             visibility: CTRL_OBSERVABLE,
             arg0: 640,
             arg1: 480,
             ..Default::default()
         };
-        let rc = unsafe { post(api.user, &msg) };
-        assert_eq!(rc, ENOSYS, "post_control without an executor must refuse, not accept");
+        assert_eq!(unsafe { post(api.user, &resize) }, 0, "a valid RESIZE is queued");
+        assert_eq!(bus.stats().queued, 1, "it is actually in the queue");
+        assert_eq!(bus.stats().posted, 1);
 
-        // Null is refused the same way, not dereferenced.
-        assert_eq!(unsafe { post(api.user, std::ptr::null()) }, ENOSYS);
+        // 2. The bus stamps the source; a layer cannot claim to be the core.
+        let queued = bus.drain();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued[0].source, CTRL_SRC_LAYER,
+            "the bus stamps LAYER, whatever the caller put in the struct"
+        );
+
+        // Forging the stamp has no effect: a message that says CORE is still
+        // admitted as a LAYER and still only consumes general capacity.
+        let forged = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_OBSERVABLE,
+            arg0: 1,
+            arg1: 2,
+            source: CTRL_SRC_CORE,
+            ..Default::default()
+        };
+        assert_eq!(unsafe { post(api.user, &forged) }, 0);
+        assert_eq!(bus.drain()[0].source, CTRL_SRC_LAYER, "forged source is overwritten");
+
+        // 3. An unknown kind is refused with -EINVAL and does not queue.
+        let unknown = TensionCtrlMsg { kind: 999, ..Default::default() };
+        assert_eq!(unsafe { post(api.user, &unknown) }, EINVAL);
+        assert_eq!(bus.stats().queued, 0, "a refused message is not queued");
+
+        // 4. A null message is refused rather than dereferenced.
+        assert_eq!(unsafe { post(api.user, std::ptr::null()) }, EINVAL);
+
+        // 5. A non-zero `reserved` is malformed.
+        let malformed = TensionCtrlMsg { kind: CTRL_RESIZE, reserved: 1, ..Default::default() };
+        assert_eq!(unsafe { post(api.user, &malformed) }, EINVAL);
+
+        // 6. A CORE_ONLY message is accepted (the core may send one) and, when
+        //    drained, leaves nothing observable behind — that is the contract
+        //    that makes the reserved capacity necessary.
+        let core_only = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_CORE_ONLY,
+            arg0: 320,
+            arg1: 240,
+            ..Default::default()
+        };
+        assert_eq!(bus.post_core(&core_only), Ok(super::super::super::platform::CoreAdmission::Queued));
+        assert_eq!(bus.drain().len(), 1);
+
+        // 7. Filling the general region gives -ENOSPC, and does not drop or
+        //    coalesce: the caller learns synchronously, like a full pending
+        //    queue.
+        let mut accepted = 0u32;
+        loop {
+            match unsafe { post(api.user, &resize) } {
+                0 => accepted += 1,
+                code => {
+                    assert_eq!(code, ENOSPC, "the only refusal at capacity is -ENOSPC");
+                    break;
+                }
+            }
+            assert!(accepted <= crate::platform::CTRL_QUEUE_CAPACITY as u32, "never unbounded");
+        }
+        assert_eq!(
+            accepted as usize,
+            crate::platform::CTRL_GENERAL_CAPACITY,
+            "a layer may fill exactly the general region"
+        );
+
+        // 8. With the general region full, the core still gets in — the whole
+        //    point of the reservation.
+        assert_eq!(
+            bus.post_core(&core_only),
+            Ok(super::super::super::platform::CoreAdmission::Queued),
+            "the core is not starved by a full general region"
+        );
+        assert_eq!(
+            bus.stats().queued,
+            crate::platform::CTRL_GENERAL_CAPACITY + 1,
+            "12 general entries plus the core's one; the other three reserved \
+             slots are still free for core traffic"
+        );
     }
 
     #[test]
     fn the_control_struct_matches_the_headers_shape() {
         // The header's `tension_ctrl_msg` is eight u32-sized fields; the Rust
-        // mirror must not grow an alignment padding the C side does not have,
-        // or every message crosses the boundary shifted.
+        // type must not grow an alignment padding the C side does not have, or
+        // every message crosses the boundary shifted. The type itself is
+        // defined in `platform` and re-exported up here, so this also proves
+        // the re-export is the type the ABI table carries.
         assert_eq!(std::mem::size_of::<TensionCtrlMsg>(), 32);
         assert_eq!(std::mem::offset_of!(TensionCtrlMsg, kind), 0);
         assert_eq!(std::mem::offset_of!(TensionCtrlMsg, visibility), 4);

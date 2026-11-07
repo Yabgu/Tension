@@ -103,3 +103,8 @@ harness = false
 [[test]]
 name = "platform_window"
 harness = false
+
+# The control-bus probe: a real window plus the queue, same main-thread rule.
+[[test]]
+name = "platform_control"
+harness = false

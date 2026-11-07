@@ -286,6 +286,20 @@ const SUITES = {
     ], { env: suiteEnv() }),
   },
 
+  // The control bus: a message from any source reaches the window.
+  'platform-control': {
+    title: 'platform control',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_control',
+    ], { env: suiteEnv() }),
+  },
+
   core: {
     title: 'tension-core',
     // The `ogre_*` integration tests read the fixtures the two suites above

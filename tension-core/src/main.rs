@@ -142,6 +142,10 @@ struct HostState {
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
     /// and never cleared by a trap (R7) — a fault leaves the work where it is.
     pending: session::apply::PendingQueue,
+    /// The window-control queue: what a layer posts through `post_control`,
+    /// what the guest posts through `tension::platform.control`, and what the
+    /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
+    control: std::sync::Arc<platform::ControlBus>,
     /// The host-owned window, when `--window` asked for one.
     ///
     /// Lives in the store rather than beside it because `host_loop` needs to
@@ -389,6 +393,38 @@ struct Cli {
 /// One argument rather than two: `<game.wasm>` ends option parsing, so a second
 /// bare number would be ambiguous with a game argument. `x` is the separator
 /// because `320x240` is how every window size in this tree is already written.
+
+/// The window width a guest sees, or 0 for "the host owns no window".
+///
+/// **This answers the window question, not the Vulkan question.** Whether a
+/// `VkInstance` and a `VkSurfaceKHR` exist is a renderer's business and is
+/// deliberately invisible here: a guest asking how big its window is must not
+/// depend on whether something has claimed the surface for swapchain work. The
+/// two were conflated in the first cut — the guest read 0 for a window that was
+/// plainly open — which is exactly the ambiguity `has_surface()` exists to
+/// prevent on the Rust side, re-created one layer up.
+///
+/// 0 is unambiguous because a real window is never 0 wide: `parse_window_size`
+/// refuses it at the CLI and `apply_control` clamps to 1.
+fn surface_width(caller: &Caller<'_, HostState>) -> u32 {
+    caller
+        .data()
+        .host_window
+        .as_ref()
+        .map(|window| window.published_size().0)
+        .unwrap_or(0)
+}
+
+/// The height, with the same "0 means no window" contract as [`surface_width`].
+fn surface_height(caller: &Caller<'_, HostState>) -> u32 {
+    caller
+        .data()
+        .host_window
+        .as_ref()
+        .map(|window| window.published_size().1)
+        .unwrap_or(0)
+}
+
 fn parse_window_size(value: &str) -> Result<(u32, u32), String> {
     let (width, height) = value
         .split_once('x')
@@ -876,7 +912,8 @@ fn main() -> anyhow::Result<()> {
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),
-            host_window: None,
+            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
+                host_window: None,
             window_closed: false,
             adapters: Vec::new(),
             session: None,
@@ -1265,6 +1302,56 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    // tension::platform ABI -----------------------------------------------
+    //
+    // The guest's half of the control bus. Three imports, registered beside
+    // `tension::io` because they are core services, not capabilities: a guest
+    // with no renderer and no capability still has a window to talk about.
+    //
+    // `control` constructs the message and posts it with source GUEST — the
+    // stamp is applied by the bus, so the value here is irrelevant and is set
+    // only so the struct is fully initialised.
+    //
+    // All three are ordinary imports with `flags = 0` in the adapter sense,
+    // which does not apply to them: the flag machinery lives in the *adapter*
+    // dispatch (`adapter/ffi.rs`), gated on `HostState::depth`, and a core
+    // import never goes through it. So these work from a scheduler-triggered
+    // frame as well as a normal one — verified by reading the resume path,
+    // which sets no depth.
+    linker.func_wrap(
+        "tension::platform",
+        "control",
+        |mut caller: Caller<'_, HostState>, kind: u32, a0: i32, a1: i32, a2: i32, a3: i32| -> i32 {
+            let msg = platform::TensionCtrlMsg {
+                kind,
+                visibility: platform::CTRL_OBSERVABLE,
+                arg0: a0,
+                arg1: a1,
+                arg2: a2,
+                arg3: a3,
+                source: platform::CTRL_SRC_GUEST,
+                reserved: 0,
+            };
+            let bus = std::sync::Arc::clone(&caller.data().control);
+            match bus.post_guest(&msg) {
+                Ok(()) => 0,
+                Err(platform::ControlError::UnknownKind) => -22, // EINVAL
+                Err(platform::ControlError::Malformed) => -22,
+                Err(platform::ControlError::Full) => -28,       // ENOSPC
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "surface_width",
+        |caller: Caller<'_, HostState>| -> u32 { surface_width(&caller) },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "surface_height",
+        |caller: Caller<'_, HostState>| -> u32 { surface_height(&caller) },
+    )?;
+
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
 
@@ -1390,9 +1477,10 @@ fn main() -> anyhow::Result<()> {
     // `main`'s frame, for as long as the linker does. It carries a clone of the
     // posting face, which is what an adapter thread reaches through
     // `post_event` with no borrow of the store at all.
-    let adapter_host = adapter::AdapterHost::new(std::sync::Arc::clone(
-        &store.data().posting,
-    ));
+    let adapter_host = adapter::AdapterHost::with_control(
+        std::sync::Arc::clone(&store.data().posting),
+        std::sync::Arc::clone(&store.data().control),
+    );
     if !adapters.is_empty() {
         adapter::link_adapters(&mut linker, &mut adapters, adapter_host.api())?;
     }
@@ -1855,6 +1943,63 @@ fn host_loop(
         if store.data().window_closed {
             logging::log(Level::Info, "core", "--window: closed; stopping the host loop");
             break;
+        }
+
+        // ── the control executor ────────────────────────────────────────
+        //
+        // One drain, one thread, one place that calls SDL_SetWindow*. The swap
+        // inside `drain` is what makes this safe against a producer on another
+        // thread: the queue is replaced, so a layer posting while this runs
+        // never blocks and is never blocked, and this loop holds no lock while
+        // it touches the window.
+        //
+        // Reserving part of the queue for CORE is what stops a guest spamming
+        // `control()` from starving the host's own timers, DPI and focus
+        // traffic. A core message that finds the queue genuinely full comes
+        // back as `ApplyNow` rather than being dropped: it is the one source
+        // whose loss would be undetectable.
+        let pending = {
+            let bus = std::sync::Arc::clone(&store.data().control);
+            bus.drain()
+        };
+        if !pending.is_empty() {
+            let mut applied = 0u32;
+            let mut failed = 0u32;
+            if let Some(window) = store.data_mut().host_window.as_mut() {
+                for msg in &pending {
+                    match window.apply_control(msg) {
+                        Ok(()) => applied += 1,
+                        Err(error) => {
+                            failed += 1;
+                            logging::log(
+                                Level::Warn,
+                                "core",
+                                &format!(
+                                    "--window: control kind {} from source {} refused: {error}",
+                                    msg.kind, msg.source
+                                ),
+                            );
+                        }
+                    }
+                }
+            } else if store.data().host_window.is_none() {
+                // No window: nothing to apply to. Not an error — a guest may
+                // post control with no `--window`, and the queue is drained so
+                // it cannot grow. Say so once at debug, not per message.
+                logging::log(
+                    Level::Debug,
+                    "core",
+                    &format!("--window: {} control message(s) with no host window", pending.len()),
+                );
+                applied = pending.len() as u32;
+            }
+            if applied > 0 {
+                logging::log(
+                    Level::Trace,
+                    "core",
+                    &format!("--window: applied {applied} control message(s), {failed} failed"),
+                );
+            }
         }
 
         // Block on the session's condition variable. A completion, a fault or a

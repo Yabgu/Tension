@@ -34,7 +34,207 @@
 
 use ash::vk;
 use ash::vk::Handle;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::Mutex;
+
+
+// ── the control bus ──────────────────────────────────────────────────────────
+
+/// Mirrors `tension_ctrl_msg` (ABI v6): one window-control message.
+///
+/// `source` is an *output* of the enqueue, not an input to it. [`ControlBus`]
+/// stamps it, so a caller cannot claim to be the core and consume the reserved
+/// capacity the core needs in order never to be starved.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionCtrlMsg {
+    pub kind: u32,
+    pub visibility: u32,
+    pub arg0: i32,
+    pub arg1: i32,
+    pub arg2: i32,
+    pub arg3: i32,
+    pub source: u32,
+    pub reserved: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
+
+/// `tension_ctrl_kind`. Kinds are additive; an unknown one is refused.
+pub const CTRL_RESIZE: u32 = 1;
+
+/// `tension_ctrl_visibility`.
+pub const CTRL_CORE_ONLY: u32 = 0;
+pub const CTRL_OBSERVABLE: u32 = 1;
+
+/// `TENSION_CTRL_SRC_*` — stamped by the bus, never taken from a caller.
+pub const CTRL_SRC_LAYER: u32 = 0;
+pub const CTRL_SRC_CORE: u32 = 1;
+pub const CTRL_SRC_GUEST: u32 = 2;
+
+/// Total queue depth.
+pub const CTRL_QUEUE_CAPACITY: usize = 16;
+/// Slots only the core may use. Four is enough for a frame's worth of timer,
+/// DPI and focus traffic and small enough that a guest cannot be starved of the
+/// general twelve by anything the core does.
+pub const CTRL_RESERVED_CORE: usize = 4;
+/// Slots a layer or a guest may use.
+pub const CTRL_GENERAL_CAPACITY: usize = CTRL_QUEUE_CAPACITY - CTRL_RESERVED_CORE;
+
+// Compile-time, because these two numbers are the whole starvation argument and
+// a later edit to either should fail the build rather than quietly make the
+// reservation meaningless.
+const _: () = assert!(CTRL_RESERVED_CORE > 0);
+const _: () = assert!(CTRL_RESERVED_CORE < CTRL_QUEUE_CAPACITY);
+const _: () = assert!(CTRL_GENERAL_CAPACITY + CTRL_RESERVED_CORE == CTRL_QUEUE_CAPACITY);
+
+/// Why a control message was refused. Every variant maps to an errno at the
+/// boundary; nothing is dropped silently.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControlError {
+    /// `kind` is not a value this build knows.
+    UnknownKind,
+    /// `reserved` was non-zero, so the message is not from this ABI's shape.
+    Malformed,
+    /// The caller's share of the queue is full.
+    Full,
+}
+
+/// What the bus did with a core-sourced message.
+///
+/// The core is the one source that must never be dropped, so when both its
+/// reserved slots and the general region are full it does not queue: it returns
+/// the message to the caller to apply directly. That is only legal on the
+/// window's own thread, which is where every core post originates — `host_loop`,
+/// after the pump. The enum exists so the caller cannot forget that case.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CoreAdmission {
+    Queued,
+    ApplyNow(TensionCtrlMsg),
+}
+
+/// One queue, three sources, one executor.
+///
+/// A single deque rather than one per source: arrival order across sources is
+/// then the order things actually happened, which is one rule instead of three.
+/// Reservation is expressed as an admission test on the non-core count, not as
+/// a second queue, so that ordering survives.
+#[derive(Debug, Default)]
+pub struct ControlBus {
+    inner: Mutex<BusState>,
+}
+
+#[derive(Debug, Default)]
+struct BusState {
+    entries: VecDeque<TensionCtrlMsg>,
+    /// How many queued entries came from a source other than the core. Never
+    /// more than [`CTRL_GENERAL_CAPACITY`], which is what keeps four slots free.
+    non_core: usize,
+    posted: u64,
+    applied: u64,
+    refused: u64,
+}
+
+/// What the bus has done, for the probe and for a startup line.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ControlStats {
+    pub posted: u64,
+    pub applied: u64,
+    pub refused: u64,
+    pub queued: usize,
+}
+
+impl ControlBus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Validate and stamp one message, then admit it.
+    ///
+    /// `claimed_source` is what the caller says it is; it is overwritten. The
+    /// caller's claim is never consulted, which is why forging it is pointless
+    /// rather than merely discouraged.
+    fn admit(&self, msg: &TensionCtrlMsg, source: u32) -> Result<CoreAdmission, ControlError> {
+        if msg.kind != CTRL_RESIZE {
+            return Err(ControlError::UnknownKind);
+        }
+        if msg.reserved != 0 {
+            return Err(ControlError::Malformed);
+        }
+
+        let mut stamped = *msg;
+        stamped.source = source;
+
+        let mut state = self.inner.lock().expect("the control mutex is never poisoned");
+
+        let admitted = if source == CTRL_SRC_CORE {
+            // Reserved slots first, then the general region: the core may use
+            // the whole queue, because it is the source that cannot be starved.
+            if state.entries.len() < CTRL_QUEUE_CAPACITY {
+                state.entries.push_back(stamped);
+                Ok(CoreAdmission::Queued)
+            } else {
+                // Both regions full. Apply now, on this thread.
+                Ok(CoreAdmission::ApplyNow(stamped))
+            }
+        } else if state.non_core < CTRL_GENERAL_CAPACITY && state.entries.len() < CTRL_QUEUE_CAPACITY {
+            state.entries.push_back(stamped);
+            state.non_core += 1;
+            Ok(CoreAdmission::Queued)
+        } else {
+            Err(ControlError::Full)
+        };
+
+        match admitted {
+            Ok(_) => state.posted += 1,
+            Err(_) => state.refused += 1,
+        }
+        admitted
+    }
+
+    /// A layer's post. Uses only the general region.
+    pub fn post_layer(&self, msg: &TensionCtrlMsg) -> Result<(), ControlError> {
+        self.admit(msg, CTRL_SRC_LAYER).map(|_| ())
+    }
+
+    /// A guest's post, from `tension::platform.control`. Uses only the general
+    /// region, so a guest cannot starve the core or another guest's queue
+    /// share beyond the twelve it may already use.
+    pub fn post_guest(&self, msg: &TensionCtrlMsg) -> Result<(), ControlError> {
+        self.admit(msg, CTRL_SRC_GUEST).map(|_| ())
+    }
+
+    /// The core's own post. May use any slot; returns `ApplyNow` when the queue
+    /// is genuinely full.
+    pub fn post_core(&self, msg: &TensionCtrlMsg) -> Result<CoreAdmission, ControlError> {
+        self.admit(msg, CTRL_SRC_CORE)
+    }
+
+    /// Take everything queued, in arrival order.
+    ///
+    /// Swap-drain: the queue is replaced rather than iterated, so a producer on
+    /// another thread never blocks on the executor and the executor never holds
+    /// the lock while calling into SDL. This is the mechanism that makes
+    /// `post_control` callable from any thread while the executor runs.
+    pub fn drain(&self) -> Vec<TensionCtrlMsg> {
+        let mut state = self.inner.lock().expect("the control mutex is never poisoned");
+        let taken: Vec<TensionCtrlMsg> = state.entries.drain(..).collect();
+        state.non_core = 0;
+        state.applied += taken.len() as u64;
+        taken
+    }
+
+    pub fn stats(&self) -> ControlStats {
+        let state = self.inner.lock().expect("the control mutex is never poisoned");
+        ControlStats {
+            posted: state.posted,
+            applied: state.applied,
+            refused: state.refused,
+            queued: state.entries.len(),
+        }
+    }
+}
 
 /// What a renderer needs to render into the host's window.
 ///
@@ -397,6 +597,36 @@ impl HostWindow {
         self.window
             .set_size(width, height)
             .map_err(|e| PlatformError::Sdl(e.to_string()))
+    }
+
+    /// Apply one control message.
+    ///
+    /// **The executor.** This is the only path by which a layer or a guest can
+    /// change the window, and it runs on the window's own thread because
+    /// `HostWindow` is not `Sync` and the bus hands messages to whoever holds
+    /// one. A `CORE_ONLY` message is handled and leaves nothing to observe,
+    /// which is exactly why the bus reserves capacity for the core: a dropped
+    /// `CORE_ONLY` would be undetectable.
+    pub fn apply_control(&mut self, msg: &TensionCtrlMsg) -> Result<(), PlatformError> {
+        match msg.kind {
+            CTRL_RESIZE => {
+                let width = msg.arg0.max(1) as u32;
+                let height = msg.arg1.max(1) as u32;
+                self.window
+                    .set_size(width, height)
+                    .map_err(|e| PlatformError::Sdl(e.to_string()))?;
+                // The resize *event* may arrive later; publish now so a guest
+                // polling on the next frame sees the size it asked for rather
+                // than a stale one, and let the event correct it if the window
+                // system clamps.
+                if msg.visibility == CTRL_OBSERVABLE {
+                    self.width.store(width, Ordering::Relaxed);
+                    self.height.store(height, Ordering::Relaxed);
+                }
+                Ok(())
+            }
+            other => Err(PlatformError::Sdl(format!("unknown control kind {other}"))),
+        }
     }
 
     /// The SDL version this process actually linked against.
