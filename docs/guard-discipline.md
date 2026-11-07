@@ -109,6 +109,62 @@ Fixed in `f812072`: all three now parse `#define TENSION_ADAPTER_ABI_VERSION`
 out of `tension-core/include/tension_adapter.h`, following the pattern
 `framework_layout.rs` already used for `TENSION_ADAPTER_LAYOUT_HASH`.
 
+## The other half: a guard that never runs
+
+> **A guard has to run, and has to be able to say whether it ran.** A suite that
+> is not in the gate is not evidence; one whose startup failure reads like an
+> assertion failure — or whose driver crash reads like a defect — tells a reader
+> the wrong thing about the tree.
+
+The rule at the top of this file governs a guard that runs and answers wrongly.
+Everything under **Instances** is that: a check that ran, passed, and was
+describing something else. This section is the other way a guard fails, and it is
+not the smaller one, because a suite nobody runs and a suite that passes produce
+exactly the same amount of evidence.
+
+### 10. `scripts/test-2d.mjs` — the suite was never in the gate, and its harness could not start
+
+The 2D capability's only test is a standalone script; it has no entry in
+`scripts/test.mjs`. Nothing ran it but a person who remembered to.
+
+It also could not run at all. `tension-2d/tests/smoke_core.cpp` builds its
+`tension_core_api` by hand and left `abi_version` zeroed; `adapter_init` refuses
+a mismatched table, so **every** invocation answered `init -> -22` from `3896be6`
+(ABI v6, 2026-11-07) until `272309e`, and exited 1. The message named the adapter,
+so a reader who did see it would have looked at `adapter.cpp`.
+
+Neither half is a presence check. The suite was correct and would have passed;
+nobody had wired it in, and when its harness broke the failure described the
+wrong component.
+
+Fixed by `272309e`: the stub sets `TENSION_ADAPTER_ABI_VERSION`, and the test
+script now names a driver crash as a driver crash.
+
+### 11. `npm test -- --isometric` — a crashed run reads as a failing one
+
+The isometric suites *are* in the gate, and on this rig they fail: `tension-core
+exited null` immediately after `2d: open: GPU device up`. That is SIGSEGV inside
+the GL driver on the first `present`, not a defect in the adapter — proven by
+running the same suite against a DSO built from the previous commit, which dies
+identically.
+
+Until `272309e`, `test-2d.mjs` reported that same death as `FAIL (exit spawn
+error)`, the line an adapter defect produces. A reader has no way to tell "this
+machine cannot run the scenario" from "the code is wrong", so the honest report —
+"the driver died" — was unavailable for exactly the failures most likely to be
+environmental.
+
+**What makes these guards rather than comments that run:**
+
+- A suite the gate does not run is a scratch script. Either wire it in, or say
+  where its results are recorded and who is expected to read them.
+- A harness must fail at startup with a message that names the harness. The
+  zeroed `abi_version` produced `init -> -22`, which reads as an adapter refusal
+  and was not one.
+- Exit codes must separate pass, skip, assertion failure and harness death. Four
+  states, four codes — a signal is not an exit status, and conflating them hides
+  the environment.
+
 ## Guards in this tree that are already correct, and why
 
 Worth naming so the shape is copyable:
