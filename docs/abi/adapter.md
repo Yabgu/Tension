@@ -74,7 +74,7 @@ Since column: the version the slot's comment says it was appended under, or
 
 **10. class_info** — Report one class's delivery mode, ring capacity and flags, so a producer can skip generating events nobody subscribed to. -ENOENT for an unknown class. Callable from any thread.
 
-**11. region_lookup** — Look up a region's offset and size in the frozen arena layout. A host-side lookup in the session's own table: it does not read guest memory, so it is valid at `link` time, before `session_open` has run and before the arena has any content. -ENOENT for a kind not in this chunk's twelve.
+**11. region_lookup** — Look up a region's offset and size in the session's arena layout. A host-side lookup in the session's own table: it does not read guest memory, so it is valid at `link` time, before `session_open` has run and before the arena has any content. -ENOENT for a kind not in this chunk's twelve.
 
 **12. log_named** — The logging slots appended under rule 11 (they landed at ABI version 1, 2026-10).
 
