@@ -46,3 +46,27 @@ publishes into the class sub-ring with no callback and waits for the guest to
 drain it (`tension-core/src/session/epoch.rs:292-318`). A guest that subscribes
 `RING` gets `POLLED` behaviour and no diagnostic says so.
 Source: `tension-ogre/DESIGN.md` §3.2 ("reserved and stubbed in chunk 1").
+
+## `tension-2d` owns its own window
+
+With `TENSION_2D_OPEN_WINDOWED`, the 2d capability creates and claims its own
+`SDL_Window` (`tension-2d/src/render.cpp:504-521`). The host owns a window too
+(`tension-core/src/platform.rs:352`), so a run with `--window` and
+the 2d capability has two windows and the guest's frame is not drawn into the
+host's. This contradicts the ownership model in `docs/architecture.md` §2 and is
+unfixed: SDL_GPU has no external-surface handoff, so the fix is a new capability
+path rather than a parameter. `docs/modules/2d.md` §3; contradiction 24.
+
+## The 2d windowed path is untested
+
+Every 2d scenario runs `SDL_VIDEODRIVER=offscreen`, so `SDL_CreateWindow`,
+`SDL_ClaimWindowForGPUDevice` and the swapchain blit in `present` are compiled and
+never executed by a test. This is why the two-window problem above has never been
+observed in a run rather than merely unrecorded.
+
+## `SDL_VIDEODRIVER=dummy` gives the wrong diagnostic
+
+`dummy` comes up as a video driver with no GPU backend, so `open` fails with
+`-ENODEV` and a device-creation message. The driver that works headless is
+`offscreen`. The refusal the design note asks for (`DESIGN.md:1213-1218`) is not
+implemented. Contradiction 25.
