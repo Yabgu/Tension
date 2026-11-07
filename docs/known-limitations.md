@@ -16,6 +16,12 @@ control-block triple (`magic`, `layoutHash`, `regionCount`) catches a guest that
 overwrites the arena's metadata at any entry, and the pre-`start` zero sweep is
 complete for the startup case only. Canaries make the common `memoryBase` drift
 loud; they do not make overlap impossible.
+
+The structural fix — a second wasm memory for the arena, so isolation is a
+property of the module rather than of a sampler — is not available today: the
+build emits one imported memory (`scripts/gen-session.mjs:207`,
+`importMemory: true`), and nothing in the guest ABI names a second
+(`docs/abi/guest.md`, "Memory").
 Source: `tension-ogre/DESIGN.md` §5.4, `tension-core/src/session/arena.rs:404-427`
 (the table they guard), `docs/architecture.md:272-278` (the one-line summary).
 
