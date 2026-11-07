@@ -493,10 +493,10 @@ status. The list by verb, with the checks that produce each code:
   320×240, host resize to 640×480, `requestResolution`, frame 2 presents,
   screenshot 640×480, `window_handle` `-ENODEV`, clean teardown.
 
-**Guest fixtures** — `scripts/test-ogre.mjs`: 35 cases by default, including the
-`*-gl3plus` renderer matrix and the pixel-clause fixtures. Seventeen more run
-only with `TENSION_OGRE_WINDOW_TEST=1`; those ran for the first time on
-2026-11-07 and pass.
+**Guest fixtures** — `scripts/test-ogre.mjs`: 18 cases by default and 35 with
+`TENSION_OGRE_WINDOW_TEST=1`, whose 17 opt-in cases include the whole
+`*-gl3plus` renderer matrix and the four pixel-clause fixtures. The opt-in set
+ran for the first time on 2026-11-07 and passes.
 
 **What no test covers, and where a claim above is therefore [I]:** the
 cross-language capacity agreement (§4.1); `submit_skin_matrices` liveness (§7);
