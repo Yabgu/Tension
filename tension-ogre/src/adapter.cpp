@@ -1594,12 +1594,15 @@ int32_t stop_render_thread() {
     return rc;
 }
 
-/// The DSO's last word. On the happy path the guest called `ogre::shutdown`
-/// and this finds nothing to do — no thread, no backend. On the trap path it
-/// is the only teardown the process gets, and the reason it exists: without
-/// it, the members below are destroyed here — `backend`, and with it
-/// `Ogre::Root` and its scene — while the render thread is still drawing,
-/// which is the SIGSEGV (windowed) and SIGABRT (headless) the probe measured.
+/// The DSO's last word, and the backstop rather than the rule. The host calls
+/// the vtable's `shutdown` then `destroy` on both of its exit paths — a clean
+/// return and a guest trap (`tension-core/src/adapter/mod.rs`,
+/// `teardown_adapters`, called from both in `main.rs`) — so on those this finds
+/// nothing to do: no thread, no backend. It exists for the path that skips
+/// them. Without it, unloading the library would destroy the members below —
+/// `backend`, and with it `Ogre::Root` and its scene — while the render thread
+/// is still drawing, which is the SIGSEGV (windowed) and SIGABRT (headless) the
+/// probe measured.
 AdapterState::~AdapterState() {
 #if defined(_WIN32)
     if (thread.joinable()) {
