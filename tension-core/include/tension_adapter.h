@@ -14,13 +14,14 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 5 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
+ * Frozen at ABI version 6 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
  * struct and the `tension_adapter` vtable are append-only within a version;
  * changing the meaning of an existing field requires a new entry-point symbol.
  * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
  * the vtable; version 3 appended `signal_frame`; version 4 appended
  * `shader_generate` after it; version 5 appended `compile_graph`, which is the
- * first slot to take a graph blob rather than a layout. A version-1 adapter is refused at load by the
+ * first slot to take a graph blob rather than a layout; version 6 appended
+ * `post_control`, the host's write channel for window state. A version-1 adapter is refused at load by the
  * version check, so the host never reads the vtable past where a version-1
  * struct ends.
  *
@@ -78,7 +79,95 @@ extern "C" {
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 5u
+#define TENSION_ADAPTER_ABI_VERSION 6u
+
+/* ── window control: the host's write channel ────────────────────────── */
+/*
+ * A capability cannot call SDL. `tension-core` owns the window, and SDL's
+ * window API is not thread-safe: every call must happen on the thread that
+ * created the window. So a capability that wants the window changed says *what*
+ * it wants and lets the host do it, on the host's thread, at a moment the host
+ * chooses.
+ *
+ * One queue, three sources, one executor:
+ *
+ *   source 0 (LAYER)  an adapter calls `post_control`. Any thread.
+ *   source 1 (CORE)   the host itself, for timers, DPI changes, focus.
+ *   source 2 (GUEST)  the guest's `tension::platform.control` import.
+ *
+ * All three land in the same queue and the same executor. That is deliberate:
+ * ordering between sources is then *arrival* order, one rule instead of three,
+ * and no source can bypass another's backpressure.
+ *
+ * The executor drains once per frame on the window's own thread and is the
+ * only code in the process that calls `SDL_SetWindow*`. Nothing else may.
+ */
+
+/*
+ * What a control message asks for. Kinds are additive: an unknown kind is
+ * refused with -EINVAL, never guessed at.
+ *
+ * Values are explicit and stable. `0` is not a kind, so a zeroed struct is
+ * refused rather than silently meaning something.
+ */
+typedef enum tension_ctrl_kind {
+    /** a0 = width in pixels, a1 = height. Clamping is the executor's job: a
+     *  layer sends what it wants, the host decides what the window system
+     *  allows, and the guest learns the result by polling. */
+    TENSION_CTRL_RESIZE = 1u
+} tension_ctrl_kind;
+
+/*
+ * What the caller can expect afterwards. This is the caller's declaration, not
+ * a hint: it decides whether the next state is worth polling.
+ */
+typedef enum tension_ctrl_visibility {
+    /** Handled, and deliberately leaves no readable state. A caller cannot
+     *  observe whether it happened, which is why a host must never silently
+     *  drop one of these — see the reserved-capacity rule below. */
+    TENSION_CTRL_CORE_ONLY = 0u,
+    /** Handled, and the resulting state is readable from `host_surface` on the
+     *  next poll. This is the only confirmation the guest gets: there are no
+     *  control callbacks. */
+    TENSION_CTRL_OBSERVABLE = 1u
+} tension_ctrl_visibility;
+
+/*
+ * One control message.
+ *
+ * **`source` is not the caller's to set.** Callers pass 0 and the receiving
+ * entry point stamps the truth before the message is queued:
+ *
+ *   the guest import         stamps TENSION_CTRL_SRC_GUEST
+ *   `post_control` (a layer) stamps TENSION_CTRL_SRC_LAYER
+ *   the host's own push      stamps TENSION_CTRL_SRC_CORE
+ *
+ * A non-zero value supplied by a caller is overwritten and has no effect. This
+ * matters because the source decides which queue region the message may occupy
+ * (the core has reserved capacity a layer cannot consume), so a forgeable field
+ * would let a layer take the host's slots. The field exists for the *executor*, 
+ * which needs to know who is talking; it is an output of the enqueue, not an
+ * input to it.
+ *
+ * Arguments are values, never guest pointers: `post_control` is callable from
+ * the host and from other threads, where there is no guest memory to read. A
+ * message needing bytes carries them inline or the verb does not exist yet.
+ */
+typedef struct tension_ctrl_msg {
+    uint32_t kind;       /* tension_ctrl_kind */
+    uint32_t visibility; /* tension_ctrl_visibility */
+    int32_t  arg0;
+    int32_t  arg1;
+    int32_t  arg2;
+    int32_t  arg3;
+    uint32_t source;     /* stamped by the bus; see above */
+    uint32_t reserved;   /* must be 0 */
+} tension_ctrl_msg;
+
+/** The source stamps. Not caller-supplied; see `tension_ctrl_msg`. */
+#define TENSION_CTRL_SRC_LAYER 0u
+#define TENSION_CTRL_SRC_CORE  1u
+#define TENSION_CTRL_SRC_GUEST 2u
 
 /*
  * The arena layout this build's `tension_core_api` is shaped against, as a
@@ -470,6 +559,35 @@ typedef struct tension_core_api {
                              uint8_t *vs_out, uint32_t vs_cap, uint8_t *fs_out,
                              uint32_t fs_cap, uint32_t *out_vs_len,
                              uint32_t *out_fs_len);
+
+    /*
+     * Ask the host to change the window, appended under rule 11 at ABI
+     * version 6.
+     *
+     * This is the only write channel a capability has for window state. It
+     * copies the message and returns; the change happens later, on the
+     * window's own thread, when the host drains its queue. So the answer is
+     * "queued", never "applied" — a caller that needs to know the result
+     * polls `host_surface`, and a caller that needs to know it *now* has the
+     * wrong model.
+     *
+     * Any thread (rule 7): it reads a caller-supplied struct, copies it, and
+     * never touches guest memory.
+     *
+     * Returns 0 when queued, or:
+     *   -EINVAL  `msg` is null, `kind` is not a value this build knows, or
+     *            `reserved` is non-zero
+     *   -ENOSPC  the queue region for this source is full. Synchronous, and
+     *            the same contract as a full pending queue: the caller learns
+     *            immediately that its message did not land. Nothing is
+     *            silently dropped or coalesced.
+     *   -ENOSYS  this build has no executor (a control channel that would
+     *            discard the message answers "not available", never 0)
+     *
+     * `msg->source` is ignored on input and stamped before the message is
+     * queued. See `tension_ctrl_msg`.
+     */
+    int32_t (*post_control)(void *user, const tension_ctrl_msg *msg);
 } tension_core_api;
 
 /* ── the adapter: what it provides to the session ────────────────────── */
@@ -683,25 +801,25 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, compile_graph)
-                      + sizeof(((tension_core_api *)0)->compile_graph)
+static_assert(offsetof(tension_core_api, post_control)
+                      + sizeof(((tension_core_api *)0)->post_control)
                   == sizeof(tension_core_api),
-              "tension_core_api: compile_graph must stay the last slot; an "
+              "tension_core_api: post_control must stay the last slot; an "
               "append updates this assertion and the Rust table together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 19 * sizeof(void *),
-              "tension_core_api: expected 19 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 20 * sizeof(void *),
+              "tension_core_api: expected 20 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, compile_graph)
-                       + sizeof(((tension_core_api *)0)->compile_graph)
+_Static_assert(offsetof(tension_core_api, post_control)
+                       + sizeof(((tension_core_api *)0)->post_control)
                    == sizeof(tension_core_api),
-               "tension_core_api: compile_graph must stay the last slot; an "
+               "tension_core_api: post_control must stay the last slot; an "
                "append updates this assertion and the Rust table together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 19 * sizeof(void *),
-               "tension_core_api: expected 19 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 20 * sizeof(void *),
+               "tension_core_api: expected 20 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif

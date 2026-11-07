@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 5;
+pub const ADAPTER_ABI_VERSION: u32 = 6;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -152,6 +152,54 @@ pub type ClassInfoFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32, *mut u32) -> i32;
 pub type RegionLookupFn = unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32) -> i32;
 
+/// The control kind a message asks for (`tension_ctrl_kind`).
+///
+/// Unused until the executor lands; defined here so the header, the Rust mirror
+/// and the comment cannot drift apart.
+#[allow(dead_code)]
+pub const CTRL_RESIZE: u32 = 1;
+
+/// What the caller can expect afterwards (`tension_ctrl_visibility`).
+#[allow(dead_code)]
+pub const CTRL_CORE_ONLY: u32 = 0;
+#[allow(dead_code)]
+pub const CTRL_OBSERVABLE: u32 = 1;
+
+/// The source stamps the bus applies at enqueue (`TENSION_CTRL_SRC_*`).
+///
+/// Unused until the executor lands; named now so the stamps are defined in one
+/// place and the header, the Rust mirror and the comment cannot drift apart.
+#[allow(dead_code)]
+pub const CTRL_SRC_LAYER: u32 = 0;
+#[allow(dead_code)]
+pub const CTRL_SRC_CORE: u32 = 1;
+#[allow(dead_code)]
+pub const CTRL_SRC_GUEST: u32 = 2;
+
+/// Mirrors `tension_ctrl_msg`: one window-control message.
+///
+/// `source` is an *output* of the enqueue, not an input to it: the entry point
+/// stamps it, so a caller cannot claim to be the core and take reserved queue
+/// space. Callers pass 0.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionCtrlMsg {
+    pub kind: u32,
+    pub visibility: u32,
+    pub arg0: i32,
+    pub arg1: i32,
+    pub arg2: i32,
+    pub arg3: i32,
+    pub source: u32,
+    pub reserved: u32,
+}
+
+#[cfg(target_pointer_width = "64")]
+const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
+
+pub type PostControlFn =
+    unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32;
+
 /// Mirrors `tension_core_api`. The session fills every slot; the adapter may
 /// call any of them subject to the header's thread and phase rules.
 #[repr(C)]
@@ -187,6 +235,11 @@ pub struct TensionCoreApi {
     pub shader_generate: Option<ShaderGenerateFn>,
     /// ABI v5: T2DG blob in, SPIR-V out. See `tension_adapter.h`.
     pub compile_graph: Option<CompileGraphFn>,
+    /// ABI v6: the host's write channel for window state. The message is
+    /// copied and applied later, on the window's own thread; this build has no
+    /// executor yet, so the slot answers `-ENOSYS` rather than accepting a
+    /// message it would discard.
+    pub post_control: Option<PostControlFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -249,7 +302,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 160);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 168);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -273,6 +326,9 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, guest_read_checked) == 128);
     assert!(std::mem::offset_of!(TensionCoreApi, shader_generate) == 144);
     assert!(std::mem::offset_of!(TensionCoreApi, compile_graph) == 152);
+    // ABI v6: post_control is the last slot; the header's `_Static_assert` pins
+    // the same shape from the C side.
+    assert!(std::mem::offset_of!(TensionCoreApi, post_control) == 160);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -1404,6 +1460,20 @@ pub(crate) unsafe extern "C" fn release_callback_not_yet(
     ENOSYS
 }
 
+/// `post_control` before the executor exists.
+///
+/// `-ENOSYS` rather than `0`: a queue that accepted a message and then dropped
+/// it would make "post_control returned success" meaningless, and a caller has
+/// no other way to learn the truth. The slot exists from ABI v6 so the table's
+/// shape is final and adapters can be built against it; the behaviour arrives
+/// with the queue.
+pub(crate) unsafe extern "C" fn post_control_not_yet(
+    _user: *mut c_void,
+    _msg: *const TensionCtrlMsg,
+) -> i32 {
+    ENOSYS
+}
+
 /// The core API table, fully populated: every slot is a real function pointer, so
 /// an adapter that calls one gets a refusal rather than a null dereference.
 pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
@@ -1428,6 +1498,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         signal_frame: Some(signal_frame),
         shader_generate: Some(shader_generate),
         compile_graph: Some(compile_graph),
+        post_control: Some(post_control_not_yet),
     }
 }
 
@@ -1596,6 +1667,45 @@ mod tests {
     }
 
     #[test]
+    fn post_control_answers_enosys_until_the_executor_exists() {
+        // ABI v6 adds the slot so the table's shape is final and adapters can
+        // be built against it. The behaviour arrives with the queue, and until
+        // then the slot must say so: a probe that accepted the message and did
+        // nothing would make `0` mean "maybe" for the first time in this ABI.
+        let api = *AdapterHost::new(test_posting()).api();
+        let post = api.post_control.expect("post_control must be populated");
+
+        let msg = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_OBSERVABLE,
+            arg0: 640,
+            arg1: 480,
+            ..Default::default()
+        };
+        let rc = unsafe { post(api.user, &msg) };
+        assert_eq!(rc, ENOSYS, "post_control without an executor must refuse, not accept");
+
+        // Null is refused the same way, not dereferenced.
+        assert_eq!(unsafe { post(api.user, std::ptr::null()) }, ENOSYS);
+    }
+
+    #[test]
+    fn the_control_struct_matches_the_headers_shape() {
+        // The header's `tension_ctrl_msg` is eight u32-sized fields; the Rust
+        // mirror must not grow an alignment padding the C side does not have,
+        // or every message crosses the boundary shifted.
+        assert_eq!(std::mem::size_of::<TensionCtrlMsg>(), 32);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, kind), 0);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, visibility), 4);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg0), 8);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg1), 12);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg2), 16);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg3), 20);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, source), 24);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, reserved), 28);
+    }
+
+    #[test]
     fn the_header_abi_version_matches_the_hosts_constant() {
         // `TENSION_ADAPTER_ABI_VERSION` (the C macro every adapter bakes into its
         // vtable) and `ADAPTER_ABI_VERSION` (what the loader checks) are the same
@@ -1627,12 +1737,13 @@ mod tests {
         // were appended under rule 11, moving the size 112 -> 128;
         // `guest_read_checked` (C4.1a) moved it 128 -> 136, `signal_frame`
         // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
-        // 144 -> 152, and `compile_graph` (v5) moved it 152 -> 160. The
+        // 144 -> 152, `compile_graph` (v5) moved it 152 -> 160, and
+        // `post_control` (v6) moved it 160 -> 168. The
         // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 160);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 168);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
@@ -1641,6 +1752,7 @@ mod tests {
             assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, shader_generate), 144);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, compile_graph), 152);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, post_control), 160);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

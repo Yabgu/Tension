@@ -1180,14 +1180,27 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 6, "the fixture declares a version this build does not load");
-                // Against the constant, not a literal: a literal here goes stale on
-                // every ABI bump and turns a passing refusal into a failing one.
+                // Derived, not literal. This assertion used to read
+                // `assert_eq!(found, 6, ...)` with a comment three lines down
+                // saying a literal here goes stale on every ABI bump — and it
+                // did exactly that when the ABI became 6 and the fixture moved
+                // to 7. The fixture derives its version the same way; both
+                // halves must be bump-proof or the pair drifts.
+                assert_eq!(
+                    found,
+                    ffi::ADAPTER_ABI_VERSION + 1,
+                    "the fixture declares a version this build does not load"
+                );
                 assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 6"), "the message names the fixture's version");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("ABI {}", ffi::ADAPTER_ABI_VERSION + 1)),
+            "the message names the fixture's version"
+        );
     }
 
     #[test]

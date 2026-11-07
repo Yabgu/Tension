@@ -409,7 +409,18 @@ int32_t shim_screenshot(void *, const tension_value *args, uint32_t nargs, tensi
 
 // ── vtable ───────────────────────────────────────────────────────────────
 
-int32_t adapter_init(void *, const tension_core_api *) {
+int32_t adapter_init(void *ctx, const tension_core_api *core) {
+    // The ABI version is checked here, as in tension-ogre and tension-input.
+    //
+    // This adapter did not check it until ABI v6. Nothing noticed, because the
+    // three adapters are always rebuilt together in this repository — but the
+    // check is the only thing that stops a stale DSO being loaded against a
+    // newer host, and the `tension_core_api` grows by appending: a v5 adapter on
+    // a v6 host reads every slot it knows about correctly and simply never sees
+    // the new ones. That is exactly the case where silence is wrong, because the
+    // missing slots are features it would silently not have.
+    (void)ctx;
+    if (core == nullptr || core->abi_version != TENSION_ADAPTER_ABI_VERSION) return -EINVAL;
     // The device is created in `open`, not here: "no GPU on this machine" is a
     // recoverable refusal at the verb, and a load failure is not, which is
     // tension-input's split exactly.
