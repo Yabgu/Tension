@@ -168,6 +168,29 @@ marked `override`) and `OgreVulkanWin32Window.cpp:254` (an int-to-pointer cast).
 If those two disappear, the pin moved; if more appear, the patch changed
 behaviour.
 
+### Known gap: the adapter needs a Vulkan plugin header on Win32
+
+The TU above compiles Ogre's own source. `tension-ogre` itself is a different
+problem: `tension-ogre/src/backend_ogre.cpp` includes `<OgreVulkanDevice.h>` to
+name `Ogre::VulkanExternalInstance` rather than mirror it, and on Linux that
+resolves through
+`third_party/ogre-next-install/include/OGRE-Next/RenderSystems/Vulkan/include/`
+— a path `tension-ogre/CMakeLists.txt` finds with `find_path`.
+
+A Win32 build of the adapter has neither half of that today:
+
+- the install tree is the Linux one, so the header is there but comes from a
+  Linux configure, and
+- the checked-in overlay (`third_party/patches/win32-headers/`) carries only
+  `OgreVulkanBuildSettings.h`, which Ogre's own headers include, not
+  `OgreVulkanDevice.h`, and not the `vulkan/vulkan_core.h` that header pulls in.
+
+Documented, not fixed. Closing it means either a Win32 `find_path` entry
+pointing at the pacman-installed `mingw-w64-ucrt-x86_64-vulkan-headers` include
+dir plus the plugin's own header dir, or extending `check-win32-headers.mjs` to
+verify a second header. Nothing compiles `tension-ogre` for Win32 today, so this
+is a gap in the platform story rather than a broken build.
+
 ## Caching in CI
 
 Both trees are large and stable between runs, so cache them separately:
