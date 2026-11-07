@@ -34,11 +34,16 @@
 #include "tension_adapter.h"
 
 #if defined(ECHO_BAD_ABI_VERSION)
-/* A version this build does not load. Kept distinct from both the current
- * version and the old-v1 fixture below, so the version refusal is proven
- * against a value that is simply wrong, not one that collides with either. It
- * moves with the current version: at v5 the current value is 5, so this is 6. */
-#define ECHO_ABI_VERSION 6u
+/* A version this build does not load: the one *after* the current one, derived
+ * rather than written down, so an ABI bump cannot make this fixture collide
+ * with the real version and quietly turn a passing refusal into a passing load.
+ *
+ * It used to be a literal (`6u`), with a comment saying it "moves with the
+ * current version" — and when the current version became 6, the fixture became
+ * indistinguishable from a correct one and `a_wrong_abi_version_is_refused_at_
+ * load` failed. A number that has to be remembered is a number that will be
+ * forgotten; this expression cannot be. */
+#define ECHO_ABI_VERSION (TENSION_ADAPTER_ABI_VERSION + 1u)
 #else
 #define ECHO_ABI_VERSION TENSION_ADAPTER_ABI_VERSION
 #endif
