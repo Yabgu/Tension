@@ -57,6 +57,20 @@ note is not evidence of a 3,240-line contract: roughly 1,400 of its lines are
 `tension-core/src/session/arena.rs`. The contract a guest can see is sixteen
 functions and eleven records.
 
+**Two nulls, two builds.** When `TENSION_OGRE_BACKEND` is anything but `ogre`,
+the same target compiles `backend_none.cpp` in place of `backend_ogre.cpp` and
+`hlms_tension_skin.cpp` (`tension-ogre/CMakeLists.txt:50-59`). `BackendNone`
+answers exactly one config — `renderer = null` — and every other renderer gets
+`nullptr` from `make_backend`, which the render thread records as a failed
+candidate with `-ENOSYS` (`backend_none.cpp:92-100`, `adapter.cpp:294-307`).
+It reports a 0×0 window and one frame per tick; it accepts a submitted scene
+only to track it, and refuses resource realisation and readback with `-ENOSYS`
+(`backend_none.cpp:18-82`). This is **not** the `headless` path of a real build:
+there, `renderer = null` is `BackendOgre` driving Ogre's NULL render system
+(§3). `BackendNone` exists so the session contract runs on a machine with no
+Ogre library at all; `docs/known-limitations.md` records what headless does and
+does not cover.
+
 ## 2. The sixteen verbs
 
 Every import is `i32` at the wasm boundary; guest pointers are `u32` offsets
