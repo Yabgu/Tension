@@ -20,7 +20,7 @@ use yaml_rust2::{ScanError, YamlLoader};
 
 use super::errors::CompileError;
 
-// ── the frozen numeric vocabulary (DESIGN.md §2, §4–§6) ─────────────────
+// ── the numeric vocabulary (tension-world/DESIGN.md §2, §4–§6) ───────────
 
 const MAGIC: &[u8; 8] = b"TNSWORLD";
 const FORMAT_VERSION: u16 = 1;

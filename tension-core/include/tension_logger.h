@@ -44,9 +44,11 @@ extern "C" {
 #endif
 
 /*
- * Severity, least severe first. The discriminants are frozen: a seventh level is
- * they are the level the host's `Level` enum uses and the level the guest's
- * TensionScript `Level` uses.
+ * Severity, least severe first. The discriminants are the ABI's: they are the
+ * level the host's `Level` enum uses and the level the guest's TensionScript
+ * `Level` uses, and `discriminants_are_the_abi`
+ * (`tension-core/src/logging/level.rs`) pins them. A seventh level is a new
+ * header, not a new discriminant.
  */
 typedef enum tension_log_level {
     TENSION_LOG_TRACE = 0,

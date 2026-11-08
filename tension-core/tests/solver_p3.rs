@@ -653,8 +653,8 @@ fn t12_unimplemented_methods_still_say_so() {
     let _g = lock();
     // P6 delivered verlet and implicit_euler, so the forward guard narrows
     // to spook: registered, not compiled — its method is constraint-based
-    // position-based dynamics and the frozen ABI has no constraint channel
-    // (DESIGN.md §10).
+    // position-based dynamics and the ABI has no constraint channel
+    // (`tension-solver/DESIGN.md` §10).
     assert_eq!(create(&Config::new("spook", "wasm").dim(1)), -38);
     // The two delivered methods create a handle now.
     for method in ["verlet", "implicit_euler"] {

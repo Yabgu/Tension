@@ -226,7 +226,7 @@ unsafe extern "C" fn record_region(
     out_size: *mut u32,
 ) -> i32 {
     with_recorded(|recorded| recorded.regions.push(kind));
-    // Plausible answers, from the frozen layout: the RESOURCE region.
+    // Plausible answers, from the layout: the RESOURCE region.
     if !out_offset.is_null() {
         unsafe { *out_offset = 0x3000 };
     }

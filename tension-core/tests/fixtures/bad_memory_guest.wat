@@ -1,6 +1,6 @@
 ;; A session guest whose declared memory is far too small for the arena its
 ;; ceiling implies: 4 pages initial, 8 pages maximum (256 KiB / 512 KiB), where
-;; the frozen layout's floor is ~5.96 MiB and the default ceiling is 8 MiB.
+;; the layout's floor is ~5.96 MiB and the default ceiling is 8 MiB.
 ;;
 ;; This module never runs. The session refuses the whole run before
 ;; instantiation, in `Session::prepare_arena`, naming the disagreement between

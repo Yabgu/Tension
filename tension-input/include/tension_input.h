@@ -185,7 +185,7 @@ int32_t input_close(int32_t handle);
 /* ── the event records ───────────────────────────────────────────────── */
 
 /*
- * The two classes this capability posts on, from the session's frozen
+ * The two classes this capability posts on, from the session's class
  * catalogue (tension-core/src/session/arena.rs): INPUT_KEY is 6, INPUT_MOUSE
  * is 7, both BATCHED. The `EventRecord` is 32 bytes — {seq u64, class u32,
  * flags u32, a u32, b u32, f0 f32, f1 f32} — and has no room for a device id,

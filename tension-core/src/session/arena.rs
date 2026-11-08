@@ -4,10 +4,12 @@
 //! a guest is, or what OGRE is — the module exists so that the layout can be
 //! tested, and pinned, without a store (`tension-ogre/DESIGN.md` §5).
 //!
-//! The layout is **frozen**: the twelve region kinds are `kind == index`, every
-//! region's offset is a compile-time constant, and `arena_size` only selects how
-//! much of the band is live. That is what lets an adapter call `region_lookup`
-//! at link time and cache the answers (`DESIGN.md` §5.2, §7.2).
+//! The layout is fixed at compile time: the twelve region kinds are `kind ==
+//! index`, every region's offset is a compile-time constant, and `arena_size`
+//! only selects how much of the band is live. That is what lets an adapter call
+//! `region_lookup` at link time and cache the answers. `layout_hash`
+//! fingerprints the shape, and `layout_hash_is_deterministic_and_stable`
+//! refuses a build whose shape moved without the recorded value moving too.
 //!
 //! The header page, and the region band's arithmetic (default sizes from
 //! `DESIGN.md` §5.2):
@@ -29,7 +31,7 @@
 //! 0x1C6020 MATERIAL          64 KiB
 //! 0x1D6020 RENDERABLE       128 KiB
 //! 0x1F6020 BUFFER_POOL        4 MiB
-//! 0x5F6020 end of the frozen layout (`LAYOUT_FLOOR`)
+//! 0x5F6020 end of the layout (`LAYOUT_FLOOR`)
 //! ```
 
 /// ASCII `TNSARENA`, little-endian in one `u64` — the same idea as the solver
@@ -115,8 +117,8 @@ pub const FAULT_SHUTDOWN: u32 = 4;
 
 // ── event classes and delivery modes ──────────────────────────────────────
 
-/// The thirteen classes of `DESIGN.md` §3.2, in the frozen id order (urgent
-/// first: delivery follows class id within an epoch).
+/// The thirteen classes, in id order (urgent first: delivery follows class id
+/// within an epoch).
 ///
 /// 0.6.0a appended the AI family (10-12) after `FRAME`. Appending — never
 /// inserting — is the rule: a class id is a subscription key and a wire value,
@@ -204,9 +206,13 @@ pub const CALLBACKS_ON_EVENT: usize = 12;
 /// cannot validate a signature must not accept it.
 pub const CALLBACKS_SLOTS: u16 = 2;
 
-/// The thirteen class ids, by name (`DESIGN.md` §3.2). The order is the delivery
-/// priority — urgent first — and it is frozen: a class id is a subscription key
-/// and a wire value.
+/// The thirteen class ids, by name. The order is the delivery priority — urgent
+/// first — and it is a wire value: a class id is a subscription key and what a
+/// compiled guest's `CLASS_*` constant means. `layout_hash` folds `CLASS_COUNT`,
+/// not the ids themselves, so what pins the ids is the guest tests that
+/// subscribe to a class by number and assert they receive it
+/// (`tension-framework/tests/guest-ogre.ts`, `guest-drop.ts`,
+/// `guest-ai-stream.ts`). Moving one is an SDK bump, not a local edit.
 pub const CLASS_DEVICE_LOST: u32 = 0;
 pub const CLASS_JOB_FAILED: u32 = 1;
 pub const CLASS_RESOURCE_FAILED: u32 = 2;
@@ -228,9 +234,9 @@ pub const CLASS_AI_READY: u32 = 10;
 pub const CLASS_AI_DONE: u32 = 11;
 pub const CLASS_AI_ERROR: u32 = 12;
 
-/// The thirteen classes as `(id, name)`, in the frozen order — the catalogue the
-/// ids above name, in one place. `DESIGN.md` §3.2 is the prose; this is what
-/// code reads when it has to print which class a record belongs to.
+/// The thirteen classes as `(id, name)`, in id order — the catalogue the ids
+/// above name, in one place. `docs/session.md` §3 has the rationale; this is
+/// what code reads when it has to print which class a record belongs to.
 pub const CLASSES: [(u32, &str); CLASS_COUNT] = [
     (CLASS_DEVICE_LOST, "DEVICE_LOST"),
     (CLASS_JOB_FAILED, "JOB_FAILED"),
@@ -291,7 +297,7 @@ pub const DEFAULT_CLASS_MODES: [u32; CLASS_COUNT] = [
 /// `class_info`'s `flags` word: the class is subscribed, so a producer that can
 /// skip work nobody asked for should keep producing.
 ///
-/// The frozen header documents the parameter ("so a producer can skip
+/// `tension_adapter.h` documents the parameter ("so a producer can skip
 /// generating events nobody subscribed to") but names no constant for it —
 /// which is why this bit is defined here and reported rather than assumed to be
 /// in the ABI. A v2 header adding `TENSION_CLASS_SUBSCRIBED` would name the same
@@ -305,14 +311,15 @@ pub const RD_GUEST_WRITES: u32 = 1 << 0;pub const RD_SESSION_WRITES: u32 = 1 << 
 pub const RD_WRITES_ONCE: u32 = 1 << 2;
 pub const RD_BYTES: u32 = 1 << 3;
 
-/// The twelve region kinds, in the frozen order (`kind == index`). These are the
+/// The twelve region kinds, in `kind == index` order. These are the
 /// values `tension_adapter.h`'s `TENSION_REGION_*` constants carry, and the ones
 /// `region_lookup` answers for.
 ///
 /// The bin build reads kinds as numbers (the required-region check), and names
 /// them through [`region_name`], so nothing but the tests reads these constants
 /// today. They carry the A2a-style annotation rather than being deleted: they
-/// are the frozen ABI's naming, and the layout test pins them to this order.
+/// are the ABI's naming, and `region_directions_are_the_frozen_ones` pins the
+/// directions while `layout_hash_is_deterministic_and_stable` pins the order.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const REGION_CONTROL: u32 = 0;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -377,7 +384,7 @@ pub const MATERIAL_SIZE: usize = 64 * 1024;
 pub const RENDERABLE_SIZE: usize = 128 * 1024;
 pub const BUFFER_POOL_SIZE: usize = 4 * 1024 * 1024;
 
-// The band, in kind order, from the frozen sizes above.
+// The band, in kind order, from the sizes above.
 pub const FRAME_STATE_OFFSET: usize = HEADER_PAGE_SIZE;
 pub const JOB_OFFSET: usize = FRAME_STATE_OFFSET + FRAME_STATE_SIZE;
 pub const RESOURCE_OFFSET: usize = JOB_OFFSET + JOB_SIZE;
@@ -389,12 +396,12 @@ pub const MATERIAL_OFFSET: usize = SCENE_OFFSET + SCENE_SIZE;
 pub const RENDERABLE_OFFSET: usize = MATERIAL_OFFSET + MATERIAL_SIZE;
 pub const BUFFER_POOL_OFFSET: usize = RENDERABLE_OFFSET + RENDERABLE_SIZE;
 
-/// One past the last byte the frozen layout uses: an `arena_size` below this is
+/// One past the last byte the layout uses: an `arena_size` below this is
 /// refused (C4), and the reserved gap runs from here to `max_arena_size`.
 pub const LAYOUT_FLOOR: usize = BUFFER_POOL_OFFSET + BUFFER_POOL_SIZE;
 
 /// The default reserved ceiling, and therefore the default `memoryBase`:
-/// `DESIGN.md` §5.2 sizes the frozen layout at ~5.96 MiB *inside* an 8 MiB
+/// the layout is ~5.96 MiB (`LAYOUT_FLOOR` is 6,250,528) *inside* an 8 MiB
 /// ceiling. This is a configuration default, not a shape fact, so it is
 /// deliberately not part of [`layout_hash`] — a session may run with a
 /// different ceiling and the same layout.
@@ -411,7 +418,7 @@ pub struct RegionDesc {
     pub align: u32,
 }
 
-/// The frozen region table, in kind order. `kind == index` is the lookup.
+/// The region table, in kind order. `kind == index` is the lookup.
 pub const REGIONS: [RegionDesc; REGION_COUNT] = [
     RegionDesc { kind: 0, flags: RD_SESSION_WRITES | RD_WRITES_ONCE, offset: CONTROL_OFFSET as u32, size: CONTROL_SIZE as u32, align: 64 },
     RegionDesc { kind: 1, flags: RD_SESSION_WRITES | RD_WRITES_ONCE, offset: SESSION_INFO_OFFSET as u32, size: SESSION_INFO_SIZE as u32, align: 16 },
@@ -1289,7 +1296,7 @@ pub fn set_control_nonce(arena: &mut [u8], nonce: u64) -> Result<(), LayoutError
 mod tests {
     use super::*;
 
-    /// An arena the size of the frozen layout, which is the smallest legal one.
+    /// An arena the size of the layout, which is the smallest legal one.
     fn arena() -> Vec<u8> {
         vec![0u8; LAYOUT_FLOOR]
     }
@@ -1379,7 +1386,7 @@ mod tests {
         assert_eq!(BUFFER_POOL_OFFSET, 0x1F6020);
         assert_eq!(LAYOUT_FLOOR, 0x5F6020);
         assert_eq!(LAYOUT_FLOOR, 6_250_528);
-        // §5.2's arithmetic: ~5.96 MiB of frozen layout inside an 8 MiB ceiling.
+        // The layout's ~5.96 MiB inside an 8 MiB ceiling.
         assert!(LAYOUT_FLOOR < 8 * 1024 * 1024);
         assert_eq!(8 * 1024 * 1024 - LAYOUT_FLOOR, 2_138_080);
     }

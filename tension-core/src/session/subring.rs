@@ -303,7 +303,7 @@ mod tests {
     use super::*;
     use crate::session::posting::PostingSide;
 
-    /// The default capacities: the widths the frozen table states.
+    /// The default capacities: the widths `arena::DEFAULT_RING_CAPACITIES` states.
     fn capacities() -> [u32; CLASS_COUNT] {
         arena::DEFAULT_RING_CAPACITIES
     }
@@ -313,7 +313,7 @@ mod tests {
         [2; CLASS_COUNT]
     }
 
-    /// A whole arena, the size of the frozen layout — what `prepare_arena`
+    /// A whole arena, the size of the layout — what `prepare_arena`
     /// leaves behind.
     fn arena_bytes() -> Vec<u8> {
         let mut arena = vec![0u8; arena::LAYOUT_FLOOR];

@@ -1427,7 +1427,7 @@ fn main() -> anyhow::Result<()> {
 
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
-    // the guest may call, and because `region_lookup` answers from the frozen
+    // the guest may call, and because `region_lookup` answers from the
     // layout — safe with no arena in sight (§7.2). Nothing loads unless
     // `--capability` (or `TENSION_CAPABILITY_PATH`) asks for it, so a plain run
     // is byte-for-byte the run it always was.

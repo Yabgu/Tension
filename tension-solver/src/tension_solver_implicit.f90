@@ -26,8 +26,8 @@
 ! (h·L < 1) lies inside explicit Euler's stability region (h·L <= 2), so
 ! this implementation cannot demonstrate implicit Euler's A-stability
 ! where explicit Euler would fail. True stiff robustness needs a Newton
-! solve, which needs a Jacobian channel the frozen ABI does not have
-! (DESIGN.md §10).
+! solve, which needs a Jacobian channel the ABI does not have
+! (tension-solver/DESIGN.md §10).
 !
 ! Parameters. `iterations` (max fixed-point iterations; schema default
 ! 10) and `convergenceTol` (acceptance tolerance; default 1e-8) are read;

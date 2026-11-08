@@ -68,8 +68,8 @@ static const char *const TS_BUILTINS[] = {
 #define TS_VERLET_INDEX 4
 #define TS_IMPLICIT_INDEX 5
 /* TS_BUILTINS[6] is "spook": registered, not compiled — its method is
- * constraint-based position-based dynamics, and the frozen ABI has no
- * constraint channel (DESIGN.md §10). */
+ * constraint-based position-based dynamics, and the ABI has no constraint
+ * channel (tension-solver/DESIGN.md §10). */
 
 /* sources: names and per-source `requires` (1 = requires `dim`). */
 static const char *const TS_SOURCES[] = {"world", "wasm", "native"};
