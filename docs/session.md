@@ -24,6 +24,12 @@ before its deletion in pass 7. Every [I] names the source it rests on; every [V]
 cites code that does the work. Do not read this page as stronger than its
 markers.
 
+> **Citations to design notes.** `tension-ogre/DESIGN.md` and
+> `tension-2d/DESIGN.md` were deleted in pass 7. Every claim these pages
+> drew from them is preserved here; a `DESIGN.md:` citation below is a
+> historical reference to a file no longer in the tree, kept so the
+> provenance of a sentence stays legible.
+
 ## 1. What a session is
 
 One session, one process. `HostState.session` is an `Option<Session>`

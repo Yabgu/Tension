@@ -13,6 +13,12 @@ would have to grow to make it a fact; where behaviour is asserted by no test it
 is marked **not yet proven**. If this page and the code disagree, the code is
 right and this page is a bug.
 
+> **Citations to design notes.** `tension-ogre/DESIGN.md` and
+> `tension-2d/DESIGN.md` were deleted in pass 7. Every claim these pages
+> drew from them is preserved here; a `DESIGN.md:` citation below is a
+> historical reference to a file no longer in the tree, kept so the
+> provenance of a sentence stays legible.
+
 ## 1. What this module is
 
 A capability DSO, built as `libtension_ogre.so` (`tension-ogre/CMakeLists.txt:61-66`),
