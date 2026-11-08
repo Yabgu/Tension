@@ -61,16 +61,32 @@ if (!existsSync(TILESET)) {
 let step = run('node', [join(here, 'build.mjs')], { stdio: 'inherit' });
 if (!step || step.status !== 0) die('build.mjs failed');
 
+const WIN = process.platform === 'win32';
+const EXE = WIN ? '.exe' : '';
+
 step = run('node', [join(repo, 'scripts', 'build-2d-guest.mjs')], { stdio: 'inherit' });
 if (!step || step.status !== 0) die('the guest did not build');
 
-const dso = join(repo, 'tension-2d', 'build', 'libtension_2d.so');
+const dso = existsSync(join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
+  ? join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
+  : join(repo, 'tension-2d', 'build', 'libtension_2d.so');
 if (!existsSync(dso)) {
   step = run('node', [join(repo, 'scripts', 'build-2d.mjs')], { stdio: 'inherit', cwd: repo });
   if (!step || step.status !== 0) die('the adapter did not build');
 }
-const core = join(repo, 'tension-core', 'target', 'debug', 'tension-core');
-if (!existsSync(core)) die(`no ${core}\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
+
+function findCore() {
+  if (process.env.TENSION_CORE && existsSync(process.env.TENSION_CORE)) {
+    return process.env.TENSION_CORE;
+  }
+  for (const profile of ['debug', 'release']) {
+    const candidate = join(repo, 'tension-core', 'target', profile, `tension-core${EXE}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+const core = findCore();
+if (!core) die(`no tension-core\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
 
 // ── 2. pack the pages into a resource pak ───────────────────────────────────
 // 12 MB of IWI does not belong in the guest's data segment; the pak is what the

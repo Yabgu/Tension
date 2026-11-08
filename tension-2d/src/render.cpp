@@ -357,7 +357,7 @@ struct Renderer::Impl {
         fsi.entrypoint = "main";
         fsi.format = SDL_GPU_SHADERFORMAT_SPIRV;
         fsi.stage = SDL_GPU_SHADERSTAGE_FRAGMENT;
-        fsi.num_samplers = 2;  // set 2: the sampled texture AND its sampler
+        fsi.num_samplers = 1;  // set 2: one texture-sampler pair (u_tex + u_sampler)
         SDL_GPUShader *fs = SDL_CreateGPUShader(device, &fsi);
         if (fs == nullptr) {
             SDL_ReleaseGPUShader(device, vs);

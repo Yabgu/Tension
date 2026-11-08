@@ -18,15 +18,17 @@
 
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { REPO, WIN, EXE, baseEnv, which, ucrt64Bin } from './lib/toolchain.mjs';
+import { missingSystemFilter, stageWindowsDependencies } from './lib/dll.mjs';
 
 const RUNNER = 'build-2d';
 const here = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repo = here;
 const src = join(repo, 'tension-2d');
 const out = join(src, 'build');
-const WIN = process.platform === 'win32';
 
 function die(message) {
   console.error(`${RUNNER}: ${message}`);
@@ -34,13 +36,24 @@ function die(message) {
 }
 
 function run(cmd, args, opts = {}) {
-  const result = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
+  const env = opts.env ?? baseEnv();
+  let executable = cmd;
+  if (!cmd.includes('/') && !cmd.includes('\\')) {
+    executable = which(cmd) ?? cmd;
+  }
+  const dir = dirname(executable);
+  if (dir && existsSync(dir)) {
+    env.PATH = `${dir}${delimiter}${env.PATH ?? ''}`;
+  }
+  const result = spawnSync(executable, args, { encoding: 'utf8', env, ...opts });
   if (result.error) return null;
   return result;
 }
 
 function pkgConfig(args) {
-  return run('pkg-config', args);
+  const pkg = which('pkg-config');
+  if (!pkg) return null;
+  return run(pkg, args);
 }
 
 function findSdl3() {
@@ -57,7 +70,16 @@ function findSdl3() {
       };
     }
   }
-  for (const prefix of [process.env.TENSION_SDL3_PREFIX, '/usr/local', '/usr'].filter(Boolean)) {
+  const ucrt = ucrt64Bin();
+  const prefixes = [
+    process.env.TENSION_SDL3_PREFIX,
+    ...(ucrt ? [join(ucrt, '..')] : []),
+    ...(WIN ? ['C:/msys64/ucrt64'] : []),
+    '/usr/local',
+    '/usr',
+  ].filter(Boolean);
+
+  for (const prefix of prefixes) {
     if (!existsSync(join(prefix, 'include', 'SDL3', 'SDL.h'))) continue;
     console.log(`${RUNNER}: SDL3 at ${prefix} (headers, no pkg-config)`);
     return { cflags: [`-I${join(prefix, 'include')}`], libs: [`-L${join(prefix, 'lib')}`, '-lSDL3'] };
@@ -67,8 +89,8 @@ function findSdl3() {
 
 const sdl = findSdl3();
 if (!sdl) {
-  die('SDL3 not found. Install it (Arch: pacman -S sdl3 · Debian: apt install libsdl3-dev),\n' +
-      '  or set TENSION_SDL3_PREFIX.');
+  die('SDL3 not found. Install it (Arch: pacman -S sdl3 · Debian: apt install libsdl3-dev ·\n' +
+      '  MSYS2: pacman -S mingw-w64-ucrt-x86_64-sdl3), or set TENSION_SDL3_PREFIX.');
 }
 
 const cxx = process.env.CXX ?? (WIN ? 'g++' : 'c++');
@@ -87,7 +109,7 @@ if (!buildCompiler || buildCompiler.status !== 0) {
   console.error(buildCompiler?.stdout ?? '', buildCompiler?.stderr ?? '');
   die('building compile_spirv failed');
 }
-const compileSpirv = join(repo, 'tension-shadergen', 'target', 'debug', 'compile_spirv');
+const compileSpirv = join(repo, 'tension-shadergen', 'target', 'debug', `compile_spirv${EXE}`);
 if (!existsSync(compileSpirv)) die(`expected ${compileSpirv} after the build`);
 
 /// GLSL file -> SPIR-V file. Stage is `vert` or `frag`.
@@ -279,8 +301,9 @@ console.log(`${RUNNER}: embedded ${join(out, 'shaders_spv.h')}`);
 // ── 4. link the DSO ──────────────────────────────────────────────────────────
 // -std=c++17 matches the other adapters. No SDL_shadercross: v1 targets Linux
 // with SPIR-V produced at build time (`docs/modules/2d.md` §4).
+const artifact = join(out, WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
 const args = [
-  '-std=c++17', '-O2', '-fPIC', '-Wall', '-Wextra',
+  '-std=c++17', '-O2', '-g', '-fPIC', '-Wall', '-Wextra',
   `-I${join(src, 'include')}`,
   `-I${join(src, 'src')}`,
   `-I${out}`,
@@ -290,7 +313,7 @@ const args = [
   join(src, 'src', 'render.cpp'),
   join(src, 'src', 'texture.cpp'),
   '-shared',
-  '-o', join(out, WIN ? 'libtension_2d.dll' : 'libtension_2d.so'),
+  '-o', artifact,
   ...sdl.libs,
   ...(WIN ? [] : ['-lpthread']),
 ];
@@ -300,14 +323,30 @@ if (link.stdout.trim()) console.log(link.stdout.trim());
 if (link.stderr.trim()) process.stderr.write(link.stderr);
 if (link.status !== 0) die('link failed');
 
-console.log(`${RUNNER}: built ${join(out, WIN ? 'libtension_2d.dll' : 'libtension_2d.so')}`);
+if (WIN) {
+  copyFileSync(artifact, join(out, 'libtension_2d.so'));
+  const gxx = which('g++');
+  const search = [
+    ...(gxx ? [join(gxx, '..')] : []),
+  ];
+  const unresolved = missingSystemFilter(stageWindowsDependencies(out, search.map(String)));
+  if (unresolved.length) {
+    die(`the adapter's DLL closure is incomplete: ${unresolved.join(', ')}`);
+  }
+}
+
+console.log(`${RUNNER}: built ${artifact}`);
 
 // The dependency surface, printed so nobody has to ask.
-if (!WIN) {
-  const needed = run('objdump', ['-p', join(out, 'libtension_2d.so')]);
-  if (needed?.status === 0) {
-    const lines = needed.stdout.split('\n').filter((l) => l.includes('NEEDED'));
-    console.log(`${RUNNER}: DT_NEEDED`);
-    for (const line of lines) console.log(`  ${line.trim()}`);
+const objdump = which('objdump');
+if (objdump) {
+  try {
+    const listing = spawnSync(objdump, ['-p', artifact], { encoding: 'utf8' }).stdout ?? '';
+    const needed = listing.split(/\r?\n/)
+      .filter((line) => line.includes('DLL Name:') || line.includes('NEEDED'))
+      .map((line) => `  ${line.trim().split(/\s+/).pop()}`);
+    if (needed.length) console.log(`${RUNNER}: DT_NEEDED:\n${needed.join('\n')}`);
+  } catch {
+    // Diagnostics only.
   }
 }

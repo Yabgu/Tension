@@ -25,6 +25,8 @@ import { fileURLToPath } from 'node:url';
 const RUNNER = 'run-2d-example';
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exampleDir = process.cwd();
+const WIN = process.platform === 'win32';
+const EXE = WIN ? '.exe' : '';
 
 function die(message) {
   console.error(`${RUNNER}: ${message}`);
@@ -37,8 +39,21 @@ function run(cmd, args, opts = {}) {
   return result;
 }
 
+function findCore() {
+  if (process.env.TENSION_CORE && existsSync(process.env.TENSION_CORE)) {
+    return process.env.TENSION_CORE;
+  }
+  for (const profile of ['debug', 'release']) {
+    const candidate = join(repo, 'tension-core', 'target', profile, `tension-core${EXE}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+
 // ── 1. the adapter ──────────────────────────────────────────────────────────
-const dso = join(repo, 'tension-2d', 'build', 'libtension_2d.so');
+const dso = existsSync(join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
+  ? join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
+  : join(repo, 'tension-2d', 'build', 'libtension_2d.so');
 if (!existsSync(dso)) {
   console.log(`${RUNNER}: no adapter, building it...`);
   const built = run('node', [join(repo, 'scripts', 'build-2d.mjs')], { stdio: 'inherit' });
@@ -60,10 +75,10 @@ const suite = run('node', [join(repo, 'scripts', 'test-2d.mjs')], { stdio: 'inhe
 if (!suite || suite.status !== 0) die('the adapter suite failed, so the guest is not to blame');
 
 // ── 4. the guest, under a real session ──────────────────────────────────────
-const core = join(repo, 'tension-core', 'target', 'debug', 'tension-core');
-if (!existsSync(core)) {
+const core = findCore();
+if (!core) {
   die(
-    `no tension-core at ${core}\n` +
+    `no tension-core found\n` +
       `  Run \`cargo build --manifest-path tension-core/Cargo.toml\` first.`,
   );
 }

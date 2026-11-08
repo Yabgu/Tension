@@ -20,6 +20,19 @@ import { emit } from './emit.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO = resolve(here, '..', '..', '..');
+const WIN = process.platform === 'win32';
+const EXE = WIN ? '.exe' : '';
+
+function findCore() {
+  if (process.env.TENSION_CORE && existsSync(process.env.TENSION_CORE)) {
+    return process.env.TENSION_CORE;
+  }
+  for (const profile of ['debug', 'release']) {
+    const candidate = join(REPO, 'tension-core', 'target', profile, `tension-core${EXE}`);
+    if (existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 export function run(cmd, args, opts = {}) {
   const result = spawnSync(cmd, args, { encoding: 'utf8', ...opts });
@@ -41,14 +54,16 @@ export function prepare(exampleDir, { log = console.log } = {}) {
   let step = run('node', [join(REPO, 'scripts', 'build-2d-guest.mjs')], { cwd: exampleDir, stdio: 'inherit' });
   if (!step || step.status !== 0) throw new Error('the guest did not build');
 
-  const dso = join(REPO, 'tension-2d', 'build', 'libtension_2d.so');
+  const dso = existsSync(join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
+    ? join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
+    : join(REPO, 'tension-2d', 'build', 'libtension_2d.so');
   if (!existsSync(dso)) {
     step = run('node', [join(REPO, 'scripts', 'build-2d.mjs')], { cwd: REPO, stdio: 'inherit' });
     if (!step || step.status !== 0) throw new Error('the adapter did not build');
   }
-  const core = join(REPO, 'tension-core', 'target', 'debug', 'tension-core');
-  if (!existsSync(core)) {
-    throw new Error(`no ${core}\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
+  const core = findCore();
+  if (!core) {
+    throw new Error(`no tension-core found\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
   }
 
   step = run('node', [join(REPO, 'scripts', 'pack-example.mjs'), '.'], { cwd: exampleDir, stdio: 'inherit' });
