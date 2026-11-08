@@ -240,7 +240,7 @@ fn test_duplicate_import_refused() {
 
 /// The reference adapter's own audit line: `region_lookup` answered for JOB at
 /// link time, i.e. before the arena exists. If a library were built without the
-/// frozen layout reaching that call, the echo adapter would log the other line
+/// layout reaching that call, the echo adapter would log the other line
 /// and the required-region check would never fire.
 #[test]
 fn test_region_lookup_answered_before_the_arena_existed() {
@@ -249,7 +249,7 @@ fn test_region_lookup_answered_before_the_arena_existed() {
     let err = stderr(&output);
     assert!(
         err.contains("echo: the JOB region answered at link time"),
-        "the link-time query must be answered from the frozen layout\nstderr: {err}"
+        "the link-time query must be answered from the layout\nstderr: {err}"
     );
 }
 

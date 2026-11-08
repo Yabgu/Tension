@@ -34,7 +34,7 @@
 //! instantiation.
 
 // `arena` is crate-visible so the adapter registry can answer `region_lookup`
-// from the one frozen layout rather than keeping a second copy of it.
+// from the one layout rather than keeping a second copy of it.
 pub(crate) mod arena;
 mod config;
 /// The posting face: the queues an adapter thread writes into, and the
@@ -67,7 +67,7 @@ use wasmtime::{Config, Engine, Instance};
 use crate::HostState;
 
 // The two shapes the session's own fields are stated in: the class count and the
-// slot count, both from the frozen layout.
+// slot count, both from the layout.
 use arena::{CALLBACKS_SLOTS, CLASS_COUNT};
 
 /// The errno table at this boundary (`DESIGN.md` §6.2, §6.3). `EINVAL` is the
@@ -155,7 +155,7 @@ pub enum SessionError {
     MemoryNew(String),
     /// The memory could not be defined in the linker.
     Link(String),
-    /// The arena's frozen layout does not fit the band the module claims.
+    /// The arena's layout does not fit the band the module claims.
     ArenaDoesNotFit { need: usize, have: usize },
     /// A structural write failed.
     Layout(arena::LayoutError),
@@ -499,7 +499,7 @@ impl Session {
     /// without being noticed.
     pub fn prepare_arena(&mut self, store: &mut Store<HostState>) -> Result<(), SessionError> {
         // What the module claims as its own, and what the layout needs: the
-        // larger of the frozen layout's end and the guest's `memoryBase`.
+        // larger of the layout's end and the guest's `memoryBase`.
         let declared_band = (self.declared_min_pages as usize) * WASM_PAGE_BYTES;
         let need = arena::LAYOUT_FLOOR.max(self.memory_base as usize);
 

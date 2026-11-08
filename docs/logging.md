@@ -46,7 +46,8 @@ stderr). The environment fallback is `TENSION_LOG_LEVEL`, `TENSION_LOG_FORMAT`,
 
 ## Levels and filtering
 
-Levels, least severe first. The numbers are the ABI's and are frozen:
+Levels, least severe first. The numbers are the ABI's, and
+`discriminants_are_the_abi` (`tension-core/src/logging/level.rs`) pins them:
 
 ```
 TRACE 0   DEBUG 1   INFO 2   WARN 3   ERROR 4   FATAL 5

@@ -795,7 +795,7 @@ const tension_adapter *tension_adapter_v1(void);
 /* ── the arena's region kinds ────────────────────────────────────────── */
 
 /*
- * Twelve kinds, frozen for this chunk. `kind == index`: the session writes the
+ * Twelve kinds, `kind == index`: the session writes the
  * region table in ascending kind order, so a guest finds a region by arithmetic
  * and no lookup verb exists. Direction bits live in the region descriptor; the
  * sizes below are the defaults, and they are compile-time constants — an

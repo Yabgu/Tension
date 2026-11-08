@@ -488,7 +488,7 @@ beyond that is implied.
   stderr) — not across the wasm boundary, because create has no err
   buffer (solver/DESIGN.md §9).
 - **No spook (P6).** `spook` returns `-ENOSYS` from create: it is
-  constraint-based position-based dynamics, and the frozen ABI has no
+  constraint-based position-based dynamics, and the ABI has no
   constraint channel (solver/DESIGN.md §10). The delivered set is the
   explicit-RK family (euler, heun, rk23, rk45) **plus `verlet` and
   `implicit_euler`**, which this bullet denied until 2026-09-21. Chunk 6a's P0

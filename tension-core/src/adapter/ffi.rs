@@ -50,7 +50,7 @@ use crate::HostState;
 
 /// `TENSION_ADAPTER_ABI_VERSION` — the only version this build loads.
 ///
-/// **Version history.** 1 was the frozen v1 contract (the logging slots appended
+/// **Version history.** 1 was the v1 contract (the logging slots appended
 /// under rule 11 still shipped inside it). 2 is v1 plus `layout_hash` on the
 /// adapter vtable and `guest_read_checked` on the core API (C4) — the first
 /// change that moved the *contract shape* enough to require the loader to refuse

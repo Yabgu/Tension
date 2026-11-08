@@ -653,7 +653,7 @@ mod tests {
             // and its imports are installed in the same linker.
             //
             // **A private copy of the library, per harness.** The echo adapter
-            // keeps its state in file-scope statics — the frozen vtable has no
+            // keeps its state in file-scope statics — the vtable has no
             // context accessor, which is the limitation §12's future work names —
             // so one `.so` is one instance per process: `dlopen` on the same path
             // twice hands back the same image, and two harnesses running
