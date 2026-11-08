@@ -495,7 +495,7 @@ fn t17_state_round_trip() {
 //
 // P7 reworked this test's fixture. Until P7, a plugin handle's public
 // state/set_state used the shim's own y/t, so a plugin could advance the
-// visible state without owning it. Since P7 (DESIGN.md §11) those entry
+// visible state without owning it. Since P7 (tension-solver/DESIGN.md §11) those entry
 // points dispatch through the vtable for plugin handles — a plugin with
 // visible state must present it, as this fixture now does.
 
@@ -667,7 +667,7 @@ fn t20_compiled_rules_match_schema() {
 
         // Every declared name is registered. All six compiled methods
         // create a handle (verlet and implicit_euler since P6); spook is
-        // registered but not compiled and answers -ENOSYS (DESIGN.md
+        // registered but not compiled and answers -ENOSYS (tension-solver/DESIGN.md
         // §10). Never -ENOENT, never -EINVAL. The probe uses dim 2 — a
         // dimension every method accepts (verlet requires even, dim >= 2;
         // its dim-1 floor is the method's own rule, pinned in V1/S1b).

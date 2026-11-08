@@ -3,7 +3,7 @@
 //!
 //! The sample plugin (`examples/plugins/midpoint/midpoint.c`) is compiled
 //! into this test binary by `tension-core/build.rs` (the shim has no
-//! load-from-disk; DESIGN.md §11), so P1/P6 exercise the example source
+//! load-from-disk; tension-solver/DESIGN.md §11), so P1/P6 exercise the example source
 //! itself. P4/P5's wrapping plugins are Rust fixtures here — they only
 //! call the public ABI, which is the point.
 //!

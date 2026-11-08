@@ -1,4 +1,4 @@
-//! The read-only resource VFS (DESIGN.md §7): path rules, fd table, `stat`,
+//! The read-only resource VFS (tension-res/DESIGN.md §7): path rules, fd table, `stat`,
 //! `readdir`, `read`/`seek`/`tell`.
 //!
 //! Two properties are structural rather than conventional:

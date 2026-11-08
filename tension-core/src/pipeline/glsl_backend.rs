@@ -289,7 +289,7 @@ fn resolve_emit(graph: &Graph, stage: &Stage) -> Result<[(Semantic, Option<f32>)
 ///
 /// The generator takes a `LayoutDesc` and has no notion of arithmetic over its
 /// fields — deliberately, because its job is a layout, not an expression. Its
-/// API is fixed (the graph compiler *calls* it, per DESIGN.md §6.5), so the
+/// API is fixed (the graph compiler *calls* it, per `docs/modules/2d.md` §4), so the
 /// scale is applied here, to the local the generator declared for that field.
 ///
 /// This is a seam, and it is a narrow one: it rewrites exactly one declaration

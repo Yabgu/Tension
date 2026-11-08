@@ -3,7 +3,7 @@
 //   tension-core --capability tension-ogre/build/libtension_ogre.so \
 //       tension-ogre/build/guest-skinning.wasm --renderer=gl3plus
 //
-// The clauses (DESIGN.md §14 — the last one the original scope named):
+// The clauses (`docs/modules/ogre.md` §8 — the last one the original scope named):
 //
 //   1. characterMedium.mesh loads: job DONE, resource id > 0
 //   2. the loader says it is **rigged**, with the probe's bone count (58)
@@ -26,7 +26,7 @@
 //      ways — some became foreground where none was, some became background
 //
 // Why the material is PBS and not Unlit, why the scale is 0.29, and why the bone
-// is `Spine`: the probes measured all three (DESIGN.md §5.1). HlmsUnlit has no
+// is `Spine`: the probes measured all three (`docs/modules/ogre.md` §4). HlmsUnlit has no
 // skeletal animation in its shaders at all — a correct rig under an Unlit
 // datablock renders a perfectly still mesh — and `Spine` is 20 on the converted
 // rig (chunk 12a read the bone list by name; `Hips` is 19), posing the whole
@@ -232,7 +232,7 @@ export function _start_game(): void {
   // ── clause 3: the scene ──────────────────────────────────────────────
   // PBS with the colour in emissive: a skinned mesh under HlmsUnlit would be a
   // still picture, and a PBS material with no light rig shows only what it
-  // emits (DESIGN.md §5.1, §14).
+  // emits (`docs/modules/ogre.md` §4, §8).
   clause = 3;
   const material = Material.pbs(0.0, 0.0, 0.0, 1.0, 0.0);
   material.materialId = 1;

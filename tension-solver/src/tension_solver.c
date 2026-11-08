@@ -6,7 +6,7 @@
  * table, the method registry, errno mapping. It implements exactly the
  * surface declared in include/tension_solver.h and nothing else. It does
  * not parse text: the guest's config crosses the wasm boundary in the
- * binary layout of DESIGN.md §12, and the host (tension-core) decodes that
+ * binary layout of tension-solver/DESIGN.md §12, and the host (tension-core) decodes that
  * into the `tension_solver_config` this level validates.
  *
  * The validation rules are compiled in, never loaded from schema.yaml at
@@ -84,7 +84,7 @@ static const int TS_SOURCE_REQUIRES_DIM[TS_SOURCE_COUNT] = {0, 1, 1};
 
 /* parameters[] — the global vocabulary, numeric. The order is schema.yaml's
  * declaration order and is load-bearing twice over: it is the bit order of
- * `parameters_bitmap` (DESIGN.md §12) and the bit order of the per-method
+ * `parameters_bitmap` (tension-solver/DESIGN.md §12) and the bit order of the per-method
  * masks below. */
 static const char *const TS_PARAMETERS[] = {
     "relTol",    "absTol",  "minStep",        "maxStep",     "fixedStep",
@@ -251,7 +251,7 @@ static int find_source_n(const char *name, size_t len)
 /* ── the configuration struct ────────────────────────────────────────── */
 /*
  * tension_solver_create takes the `tension_solver_config` the host decoded
- * from the guest wire (DESIGN.md §12). Nothing here scans text: the struct's
+ * from the guest wire (tension-solver/DESIGN.md §12). Nothing here scans text: the struct's
  * strings carry explicit lengths, so every name lookup is a (pointer,
  * length) comparison against the compiled tables, and the parameter values
  * arrive pre-typed — `iterations` as u32, which this level checks against
@@ -539,12 +539,12 @@ int32_t tension_solver_create(const tension_solver_config *config)
          * synthesizes it into the struct before calling here (P8e); a config
          * that arrives without one did not come from that path. The wire's
          * own rule is the mirror image: a world-source config states no dim
-         * (DESIGN.md §12), so a nonzero one is refused there. */
+         * (tension-solver/DESIGN.md §12), so a nonzero one is refused there. */
         return TS_EINVAL;
     }
 
     if (builtin >= 0 && builtin > TS_IMPLICIT_INDEX)
-        return TS_ENOSYS; /* spook: constraint channel pending (DESIGN.md §10) */
+        return TS_ENOSYS; /* spook: constraint channel pending (tension-solver/DESIGN.md §10) */
 
     if (plugin != NULL && src == TS_SRC_NATIVE && plugin->vt->derivative == NULL)
         return TS_EINVAL; /* the plugin's f is missing for source: native */
@@ -676,7 +676,7 @@ int32_t tension_solver_step(int32_t id, double dt)
                                                 &h->params, &status);
         break;
     default:
-        return TS_ENOSYS; /* spook: constraint channel pending (DESIGN.md §10) */
+        return TS_ENOSYS; /* spook: constraint channel pending (tension-solver/DESIGN.md §10) */
     }
     if (rc == 0)
         h->t += dt;

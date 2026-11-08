@@ -26,7 +26,7 @@ use crate::pipeline::{
 
 // ── the record ────────────────────────────────────────────────────────────
 
-/// `sprite`, the 28-byte record from `tension_2d.h` / DESIGN.md §5.
+/// `sprite`, the 28-byte record from `tension_2d.h` / `docs/modules/2d.md` §8.
 ///
 /// Field order here is the *index* order the graph's `load_field` arguments
 /// refer to, so it is part of the wire contract. Reordering this list silently

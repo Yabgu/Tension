@@ -2,7 +2,7 @@
 //!
 //! Direct `bind(C)` calls, like the phase-1 and phase-3 direct layers; the
 //! shim is exercised separately (`solver_p6_shim.rs`). The conventions
-//! under test are the module's documented ABI agreement (DESIGN.md §10):
+//! under test are the module's documented ABI agreement (tension-solver/DESIGN.md §10):
 //! state = [q, v], `_derivative` returns [q', v'] = [v, a].
 
 use std::ffi::c_void;

@@ -12,7 +12,7 @@
 //! energy exactly zero, and the frame exactly still once they are. The
 //! coefficient is 13 (1/s), contact-only and pure-angular, and the spinner's
 //! turn floor moved 30° → 25° as the smallest of the three levers the 9a-i probe
-//! measured (DESIGN.md §5.1, §12).
+//! measured (`docs/modules/ogre.md` §4).
 //!
 //! The structural half always runs (renderer=null, no display needed); the pixel
 //! half needs a window and is opt-in behind `TENSION_OGRE_WINDOW_TEST=1`, the

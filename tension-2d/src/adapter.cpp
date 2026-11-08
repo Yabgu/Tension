@@ -6,7 +6,7 @@
  * function-local static state, a registration table walked in `link`, shims
  * that validate, delegate and answer with a negative errno on refusal, and a
  * vtable whose `publish` and `apply` are NULL because this capability owns no
- * regions and has no deferrable verb (DESIGN.md §2).
+ * regions and has no deferrable verb (`docs/modules/2d.md` §1).
  *
  * Everything SDL-facing lives in render.cpp; everything colour-space-facing
  * lives in texture.cpp. This file is the ABI's edge and nothing else — which is
@@ -249,7 +249,7 @@ int32_t shim_shader_compile_raw(void *, const tension_value *, uint32_t nargs,
                                 tension_value *ret) {
     if (nargs != 5) return refuse(ret, -EINVAL);
     // The wire has the door; the build has no GLSL -> SPIR-V translator linked
-    // into the DSO (DESIGN.md §8.1). An honest -ENOSYS beats a half-door.
+    // into the DSO (`docs/modules/2d.md` §4). An honest -ENOSYS beats a half-door.
     log_line(2, "2d: shader_compile_raw: no shader translator in this build");
     return refuse(ret, -ENOSYS);
 }

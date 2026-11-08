@@ -459,7 +459,7 @@ int main(int argc, char **argv) {
     Ogre::HlmsDatablock *datablock = nullptr;
     Ogre::HlmsPbsDatablock *pbs_out = nullptr;
     if (use_pbs) {
-        // The acid test's exact parameters (DESIGN.md §14): the colour that
+        // The acid test's exact parameters (`docs/modules/ogre.md` §8): the colour that
         // shows is the emissive one, because with no light rig a PBS material
         // lit only by diffuse+specular renders black.
         auto *pbs_datablock = static_cast<Ogre::HlmsPbsDatablock *>(

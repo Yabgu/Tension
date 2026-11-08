@@ -31,7 +31,7 @@
 //! and a message — and the host applies the one layout, so a guest line is
 //! byte-identical to the same record from C or from Rust.
 //!
-//! Host ABI (module `tension::res`, DESIGN.md §7):
+//! Host ABI (module `tension::res`, `tension-res/DESIGN.md` §7):
 //!   res_open(path_ptr, path_len) -> fd | -errno
 //!   res_close(fd) -> 0 | -errno
 //!   res_read(fd, ptr, len) -> n | 0 | -errno
@@ -71,7 +71,7 @@ use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
-/// installing the imports it registers (`tension-ogre/DESIGN.md` §7). The run
+/// installing the imports it registers (`docs/architecture.md` §6). The run
 /// path below loads, links, and hands the session what the adapters declared.
 mod adapter;
 mod ai;
@@ -81,7 +81,7 @@ mod debug;
 mod dwarf;
 pub(crate) mod leb;
 /// The session component: it owns the arena memory the guest imports and the
-/// two verbs that open and close a session (`tension-ogre/DESIGN.md` §4–§6).
+/// two verbs that open and close a session (`docs/session.md` §2–§7).
 mod session;
 mod solver;
 
@@ -126,8 +126,8 @@ struct HostState {
     /// shim's solver id (solver/mod.rs). Per store, like everything here.
     solver: solver::SolverHost,
     /// The posting face: the queues an adapter thread writes into through
-    /// `post_event`, and the source of what the epoch publishes (`DESIGN.md`
-    /// §3.2–§3.4). Shared with the adapter host by `Arc`, and separate from
+    /// `post_event`, and the source of what the epoch publishes (`docs/session.md`
+    /// §3–§5). Shared with the adapter host by `Arc`, and separate from
     /// `session` on purpose: the verbs take the session out of the store for
     /// the duration of a call, and the epoch will need this while they have it.
     /// The arena memory, reachable without the session. The epoch runs *inside*
@@ -136,7 +136,7 @@ struct HostState {
     arena: Option<Memory>,
     /// How deep the session is inside callback invocations. Host-side, not in
     /// the arena: it is the re-entrancy guard a callback's `session_wait` hits
-    /// (`DESIGN.md` §6.3), and a guest that writes the arena cannot clear it.
+    /// (`docs/session.md` §7), and a guest that writes the arena cannot clear it.
     depth: u32,
     /// Deferred submissions: what a `queue_*` verb copied out of a callback, and
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
@@ -157,7 +157,7 @@ struct HostState {
     /// the same way it breaks when the guest closes its session.
     window_closed: bool,
     /// The loaded adapters, in registration order: what the epoch's publish
-    /// phase calls, and in what order (`DESIGN.md` §3.3).
+    /// phase calls, and in what order (`docs/session.md` §3).
     adapters: Vec<adapter::AdapterCall>,
     posting: std::sync::Arc<session::posting::PostingSide>,
     /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
@@ -364,7 +364,7 @@ struct Cli {
     symbol_paths: Vec<PathBuf>,
     res_paths: Vec<PathBuf>,
     /// Capability adapters to load: a path, or a bare name resolved through
-    /// `TENSION_CAPABILITY_PATH` (`DESIGN.md` §7, r2 decision 3).
+    /// `TENSION_CAPABILITY_PATH` (the CLI's `--capability` help states the rule).
     capability_paths: Vec<String>,
     /// `--log-level` values, in order. A later flag overrides an earlier one.
     log_levels: Vec<String>,
@@ -868,7 +868,7 @@ fn main() -> anyhow::Result<()> {
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
-    // at runtime. `load_file` keeps one copy of each pak (DESIGN.md §9.2).
+    // at runtime. `load_file` keeps one copy of each pak (`tension-res/DESIGN.md` §9.2).
     let mut resource_sets: Vec<ResourceSet<'static>> = Vec::with_capacity(cli.res_paths.len());
     for path in &cli.res_paths {
         let set = ResourceSet::load_file(path)
@@ -1601,7 +1601,7 @@ fn main() -> anyhow::Result<()> {
 
     // The arena as the session left it, before the guest's first instruction:
     // the control block's triple, the region band's zeros, and the gap's canary
-    // lattice (DESIGN.md §11 step 2).
+    // lattice (`docs/session.md` §8, step 2).
     if let Some(session) = store.data().session.as_ref() {
         session.verify_post_instantiate(&store)?;
     }
@@ -1843,7 +1843,7 @@ fn drop_host_window(store: &mut Store<HostState>) {
 // ---------------------------------------------------------------------------
 
 /// The checks that must pass on the guest's own structure before anything is
-/// instantiated (`DESIGN.md` §4, §11).
+/// instantiated (`docs/session.md` §2, §8).
 ///
 /// There were three in the round's list; two are here, because the third is
 /// already enforced: a module that imports `session::*` but declares no memory
@@ -1864,7 +1864,7 @@ fn drop_host_window(store: &mut Store<HostState>) {
 ///   would run guest code *before* that verification, which is exactly the window
 ///   the check exists to protect. The scope is the rationale: a guest with no
 ///   session import has no arena to verify, and the pre-session examples build
-///   with plain `asc`, which emits a start section by default (DESIGN.md §10).
+///   with plain `asc`, which emits a start section by default (`docs/session.md` §7).
 /// Drive a host-owned guest: wait, publish, match, wake.
 ///
 /// The primitive is the session's condition variable (`PostingSide::wait_for_events`,

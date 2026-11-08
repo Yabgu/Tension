@@ -1,5 +1,5 @@
 //! The epoch: publish, invoke, and (in A2c) apply — the only place the session
-//! decides when anything reaches the guest (`DESIGN.md` §3.3).
+//! decides when anything reaches the guest (`docs/session.md` §3).
 //!
 //! Everything here runs **on the guest thread, inside a `session::*` call**. An
 //! adapter posts from anywhere; the records wait in the class queues; an epoch
@@ -154,7 +154,7 @@ where
     let _ = hooks;
 
     // A fatal adapter fault, if one was signalled while the guest was blocked:
-    // the publish phase is where the job sweep belongs (`DESIGN.md` §8). The
+    // the publish phase is where the job sweep belongs (`docs/session.md` §3). The
     // sweep is a stub — chunk 1 has no job records — and no adapter triggers
     // this yet; the flag is what wakes a blocking wait.
     if posting.has_pending_faults() {
@@ -194,7 +194,7 @@ where
                 });
             }
             // Mirror the host's authoritative counters into the class's header
-            // (`DESIGN.md` §3.4). The arena copy is a report; the queue is the
+            // (`docs/session.md` §5). The arena copy is a report; the queue is the
             // truth, and the next publish overwrites whatever a guest wrote.
             let at = subring::event_subring_offset(&capacities, *class).map_err(SessionError::Subring)?;
             arena::set_ring_dropped(arena_bytes, at, queue.dropped().min(u32::MAX as u64) as u32)?;
@@ -415,7 +415,7 @@ where
     SessionError::CallbackTrap { slot }
 }
 
-/// `-EIO`: the fault errno at this boundary (`DESIGN.md` §6.3).
+/// `-EIO`: the fault errno at this boundary (`docs/session.md` §7).
 pub const EIO: i32 = -5;
 
 #[cfg(test)]

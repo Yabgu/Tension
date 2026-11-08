@@ -7,7 +7,7 @@
 // the numbers where the catalogue says, and say how many.
 //
 // It is not a solver binding. Which state slot is which body is game policy
-// (DESIGN.md §5.1), and `setFromState` only converts; the mapping stays where
+// (`docs/modules/ogre.md` §4), and `setFromState` only converts; the mapping stays where
 // the game can see it.
 
 import { MotionUpdate, MOTION_SIZE, MOTION_CAPACITY } from "./wire";

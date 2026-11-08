@@ -7,7 +7,7 @@
 // What one run proves, in order: the guest opens the session itself, asks the
 // capability for a renderer, is told when the window is up — an event posted
 // from *another thread*, which is why `session_wait` can block here and could
-// not against the chunk-1 stub (DESIGN.md §3.3) — reads the renderer's status
+// not against the chunk-1 stub (`docs/modules/ogre.md` §6) — reads the renderer's status
 // record (events are advisory, the record is the truth), watches the frame
 // counter tick, asks for shutdown, and closes.
 //

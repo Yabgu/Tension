@@ -3,7 +3,7 @@
 //   tension-core --capability tension-ogre/build/libtension_ogre.so \
 //       tension-ogre/build/guest-jobs.wasm --renderer=null
 //
-// The clauses (DESIGN.md §14: the acid test is the milestone gate):
+// The clauses (`docs/modules/ogre.md` §8: the acid test is the milestone gate):
 //
 //   1. a shipped mesh loads: jobState DONE, jobResult > 0
 //   2. a mesh that is not there fails: JOB_FAILED with -ENOENT, and the

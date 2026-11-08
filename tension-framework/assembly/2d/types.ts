@@ -94,7 +94,7 @@
 // adapter cannot decode — and both show up as pixels, in the examples'
 // assertions. That is where a wire defect belongs.
 
-/** The `sprite` record: 28 bytes, naturally aligned (DESIGN.md §5). */
+/** The `sprite` record: 28 bytes, naturally aligned (`docs/modules/2d.md` §8). */
 export struct SpriteRecord {
   x: i32;        // 0
   y: i32;        // 4

@@ -2,7 +2,7 @@
 //
 // One instance, held in a function-local static: the ABI's `ctx` argument is
 // whatever the loader passes (null everywhere in this repo), and the design's
-// `adapter_ctx` future-work item (DESIGN.md §12) is what would let two
+// `adapter_ctx` future-work item is what would let two
 // instances of one adapter coexist in one process. Until then this file says
 // so out loud rather than pretending the context pointer is doing work.
 

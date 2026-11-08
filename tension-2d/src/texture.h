@@ -5,7 +5,7 @@
  * what a pack step produces with `iwconv <in.png> <out.iwi>`.
  *
  * The eventual path is ImageViewer's `iw_decode_to_format(src, len, target,
- * space, premultiply)` (DESIGN.md §8), which would also give PNG and JPEG and
+ * space, premultiply)` (`docs/modules/2d.md` §8), which would also give PNG and JPEG and
  * the colour-space and premultiplication policy. That function does not exist
  * in ImageViewer yet, so this file deliberately does the narrow thing: one
  * container, one layout family, and `-ENOSYS` for everything else rather than a

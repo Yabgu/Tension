@@ -2,7 +2,7 @@
 //!
 //! Pure arithmetic over a byte slice. Nothing here knows what wasmtime is, what
 //! a guest is, or what OGRE is — the module exists so that the layout can be
-//! tested, and pinned, without a store (`tension-ogre/DESIGN.md` §5).
+//! tested, and pinned, without a store (`docs/session.md` §4).
 //!
 //! The layout is fixed at compile time: the twelve region kinds are `kind ==
 //! index`, every region's offset is a compile-time constant, and `arena_size`
@@ -12,7 +12,7 @@
 //! refuses a build whose shape moved without the recorded value moving too.
 //!
 //! The header page, and the region band's arithmetic (default sizes from
-//! `DESIGN.md` §5.2):
+//! `docs/session.md` §4):
 //!
 //! ```text
 //! 0x000  ArenaControl          256 B
@@ -42,7 +42,7 @@ pub const MAGIC: u64 = 0x414E_4552_4153_4E54;
 pub const FORMAT_VERSION: u16 = 1;
 
 /// The wire catalogue's version. A *meaning* change with identical offsets
-/// bumps this and leaves [`layout_hash`] alone (`DESIGN.md` §13).
+/// bumps this and leaves [`layout_hash`] alone (`docs/session.md` §4).
 pub const SCHEMA_VERSION: u16 = 1;
 
 /// The adapter ABI version the arena was written for.
@@ -147,7 +147,7 @@ pub const TABLE_DELIVERED: usize = 24;
 
 /// `EventRecord` fields — the 32-byte record a sub-ring holds.
 ///
-/// These offsets **are** part of [`layout_hash`] (`DESIGN.md` §5.1): a record's
+/// These offsets **are** part of [`layout_hash`] (`docs/session.md` §4): a record's
 /// size alone would let a reorder slip through, and a guest reads these fields by
 /// number. Folding them in moved the hash once, when this round did it; from
 /// here on a reorder breaks the hash, which is the point.
@@ -176,7 +176,7 @@ pub const STRING_HALF_CAPACITY: usize = 8;
 pub const STRING_HALF_FLAGS: usize = 12;
 
 /// `Subscription` fields — the transient 16-byte record `session_subscribe`
-/// takes (`DESIGN.md` §9). It may live anywhere in guest memory.
+/// takes (`docs/session.md` §4). It may live anywhere in guest memory.
 pub const SUBSCRIPTION_CLASS: usize = 0;
 pub const SUBSCRIPTION_MODE: usize = 4;
 pub const SUBSCRIPTION_FLAGS: usize = 8;
@@ -262,7 +262,7 @@ pub fn class_name(id: u32) -> &'static str {
         .unwrap_or("<unknown>")
 }
 
-/// The default ring capacity per class, in class-id order (`DESIGN.md` §3.2).
+/// The default ring capacity per class, in class-id order (`docs/session.md` §4).
 ///
 /// The AI classes get 16. Coalescing bounds the AI family at one un-drained
 /// READY plus one terminal per session, and `MAX_SESSIONS` is 4
@@ -272,7 +272,7 @@ pub fn class_name(id: u32) -> &'static str {
 pub const DEFAULT_RING_CAPACITIES: [u32; CLASS_COUNT] =
     [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16];
 
-/// The default delivery mode per class, in class-id order (`DESIGN.md` §3.2).
+/// The default delivery mode per class, in class-id order (`docs/session.md` §3).
 ///
 /// Deliberately **not** part of [`layout_hash`]: the mode is policy that crosses
 /// the ABI as `class_info`'s answer and as a `Subscription`'s field, whose
@@ -651,7 +651,7 @@ pub struct RingHeader {
 
 /// Write one class's ring header: empty, with the class's capacity and the
 /// record stride. `head` and `tail` are the producer's and the consumer's
-/// monotonic counters (`DESIGN.md` §3.3); a session that opens again rewrites
+/// monotonic counters (`docs/session.md` §3); a session that opens again rewrites
 /// the header rather than carrying counters over, because an open is a fresh
 /// session.
 ///
@@ -690,7 +690,7 @@ pub fn set_ring_tail(arena: &mut [u8], ring_offset: usize, value: u32) -> Result
 }
 
 /// Set a sub-ring's `dropped` counter — the mirror the publish phase writes
-/// (`DESIGN.md` §3.4). The authoritative value is the host-side queue's.
+/// (`docs/session.md` §5). The authoritative value is the host-side queue's.
 pub fn set_ring_dropped(arena: &mut [u8], ring_offset: usize, value: u32) -> Result<(), LayoutError> {
     put_u32(arena, ring_offset + TABLE_DROPPED, value)
 }
@@ -762,7 +762,7 @@ pub struct CallbacksRecord {
 impl CallbacksRecord {
     /// The record a guest that registers nothing is not obliged to write: every
     /// slot absent, at this build's ABI version. `callbacks_len = 0` in the
-    /// config means exactly this record (`DESIGN.md` §6.1, §8) — the limit case
+    /// config means exactly this record (`docs/session.md` §7, §3) — the limit case
     /// of "every slot is optional", which is why the open's validation and
     /// resolution paths need no special case beyond not reading anything.
     pub const fn absent() -> CallbacksRecord {
@@ -776,7 +776,7 @@ impl CallbacksRecord {
     }
 }
 
-/// A `Subscription` record as the guest writes it (`DESIGN.md` §9).
+/// A `Subscription` record as the guest writes it (`docs/session.md` §4).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Subscription {
     pub class: u32,
@@ -1032,7 +1032,7 @@ pub fn verify_band_is_zero(arena: &[u8], start: usize, end: usize) -> Result<(),
 ///
 /// It deliberately does **not** cover the guest's chosen `arena_size`, the
 /// region offsets as such, or anything else that varies per run: those are
-/// validated structurally at open (`DESIGN.md` §5.3). Hashing shape only means
+/// validated structurally at open (`docs/session.md` §4). Hashing shape only means
 /// a legitimate configuration cannot be refused for looking different.
 pub fn layout_hash() -> u32 {
     let mut h = Fnv(0x811C_9DC5);
@@ -1067,7 +1067,7 @@ pub fn layout_hash() -> u32 {
     }
 
     // Field offsets that both sides compute against — every record a guest
-    // reads by offset (`DESIGN.md` §5.1). The *name* is hashed beside the
+    // reads by offset (`docs/session.md` §4). The *name* is hashed beside the
     // offset, so a rename moves the hash as well as a move does: both change
     // what a compiled guest's constant means.
     for fields in [
@@ -1251,7 +1251,7 @@ pub fn ring_bytes(capacities: &[u32; CLASS_COUNT]) -> u64 {
 }
 
 /// Read the control block's own report of a field this module writes; the
-/// session's per-entry triple check uses these (`DESIGN.md` §5.3).
+/// session's per-entry triple check uses these (`docs/session.md` §4).
 pub fn control_magic(arena: &[u8]) -> u64 {
     u64::from_le_bytes(
         arena[CONTROL_OFFSET + CONTROL_MAGIC..CONTROL_OFFSET + CONTROL_MAGIC + 8]
@@ -1268,7 +1268,7 @@ pub fn control_region_count(arena: &[u8]) -> u32 {
     u32_at(arena, CONTROL_OFFSET + CONTROL_REGION_COUNT)
 }
 
-/// The control block's own report of the session's state (`DESIGN.md` §6.3).
+/// The control block's own report of the session's state (`docs/session.md` §7).
 pub fn control_state(arena: &[u8]) -> u32 {
     u32_at(arena, CONTROL_OFFSET + CONTROL_STATE)
 }
@@ -1675,7 +1675,7 @@ mod tests {
     }
 
     /// The recorded hash. Re-record only with a deliberate change to the shape
-    /// *or* to what the fingerprint covers (`DESIGN.md` §5.1).
+    /// *or* to what the fingerprint covers (`docs/session.md` §4).
     ///
     /// `303_487_325` was the value before field offsets were folded in; a
     /// reordering or renaming of any field a guest reads now moves it.

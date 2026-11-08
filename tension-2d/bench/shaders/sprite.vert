@@ -1,11 +1,11 @@
 #version 450
 // tension-2d/bench/shaders/sprite.vert
 //
-// The vertex stage of the sprite-batch pattern DESIGN.md §7 describes: one draw
+// The vertex stage of the sprite-batch pattern `docs/modules/2d.md` §5 describes: one draw
 // call for N sprites, no vertex buffer, the record read straight out of a
 // storage buffer at gl_InstanceIndex.
 //
-// The record is 28 bytes (DESIGN.md §5) and is read as seven u32 words rather
+// The record is 28 bytes (`docs/modules/2d.md` §8) and is read as seven u32 words rather
 // than through a typed std430 struct. That is deliberate and it is load-bearing:
 // a std430 struct lays its members out by the spec's own rules, and the design's
 // record is a packed wire format whose source of truth is a schema table, not a
@@ -35,7 +35,7 @@ const vec2 kCorners[6] = vec2[6](
 );
 
 // The bench renders to a fixed offscreen target; a real pipeline takes the
-// canvas size from the stage descriptor (DESIGN.md §6.2).
+// canvas size from the stage descriptor (`docs/modules/2d.md` §5).
 const vec2 kHalfCanvas = vec2(960.0, 540.0);
 
 void main() {

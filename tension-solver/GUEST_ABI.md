@@ -141,7 +141,7 @@ are not bound — the call order is create → bind → step, and the host
 performs the bind itself (the note following §3.5); `-EIO` when a
 callback returns a fatal
 error or an adaptive method cannot meet its tolerances within
-`minStep` (DESIGN.md §7).
+`minStep` (tension-solver/DESIGN.md §7).
 
 ### 3.3 `solver_state` — `i32(i32 id, ptr f64 t_out, ptr f64 y_out, i32 y_cap)`
 
@@ -184,7 +184,7 @@ not of a subsection.
 ### 3.6 The three callbacks the guest passes to `create` (`_derivative`, `deriv_buf_in`, `deriv_buf_out`)
 
 What the guest must provide is three callbacks from the module that
-calls `create` — the convention phase 4 proved (DESIGN.md §8):
+calls `create` — the convention phase 4 proved (tension-solver/DESIGN.md §8):
 
 - `_derivative(y_ptr, len, t, dy_ptr, dy_cap) -> i32` — f(t, y). The
   guest's function, wasm-level
@@ -226,7 +226,7 @@ the convention is valid. The host copies the current state into
 copies the result back from `deriv_buf_out` — so the guest's
 `_derivative` reads and writes pointers into its own memory and never
 sees a host address. That copy is deliberate: the mechanism, not an
-optimization (DESIGN.md §8).
+optimization (tension-solver/DESIGN.md §8).
 
 Two requirements the guest owns. `_derivative` must be a pure function
 of `(y, t)` — no RNG, no clocks, no hidden state — or
@@ -448,11 +448,11 @@ list is for the guest reader):
 - `-2 ENOENT` — unknown `method` in the config (method lookup failure
   at create).
 - `-5 EIO` — callback returned a fatal error; integrator internal
-  failure (e.g. `minStep` exhaustion, DESIGN.md §7).
+  failure (e.g. `minStep` exhaustion, tension-solver/DESIGN.md §7).
 - `-9 EBADF` — destroyed or never-allocated solver id.
 - `-12 ENOMEM` — allocation failure (create only).
 - `-22 EINVAL` — a config the host refuses (a wire that does not match
-  DESIGN.md §12, an empty method or source, an unmet source requirement,
+  tension-solver/DESIGN.md §12, an empty method or source, an unmet source requirement,
   an out-of-range parameter) or a bad argument; `step` on a
   `source: "wasm"` solver before its callbacks are bound.
 - `-24 EMFILE` — solver-id table full (create only).
@@ -467,7 +467,7 @@ requires. Phase 5 introduces no async, no cancellation, and no stepping
 on a background thread.
 
 What the guest can rely on, established in phase 4 and covered by its
-tests (DESIGN.md §8): multiple solvers on the same thread step one at a
+tests (tension-solver/DESIGN.md §8): multiple solvers on the same thread step one at a
 time and do not interfere. The host-to-guest callback path runs through
 a per-thread context that is installed around each synchronous step and
 cleared after it; two interleaved solvers — different sizes, different

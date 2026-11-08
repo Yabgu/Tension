@@ -133,15 +133,26 @@ The host calls the vtable's `shutdown` then `destroy` on both exit paths
 `tension-input/src/adapter.cpp:226` still say it never does. Both belong to the
 v7 input pass. Contradiction 28.
 
-## Source comments cite deleted design notes
+## Citations to the deleted design notes
 
 `tension-ogre/DESIGN.md` and `tension-2d/DESIGN.md` were deleted in `2c74bbe`.
-Measured at `0672e1e`: 166 references remain in 71 tracked files — mostly
-`file:line` comments in `tension-core/src/session/` (34), `main.rs` (8),
-`world/eval.rs` (6) and the per-module design notes that still exist. The pages
-in `docs/` already mark their `DESIGN.md:` citations as historical provenance.
-The source comments need a sweep: retarget to the new page, or drop the pointer
-and keep the claim. Contradiction 29.
+The sweep is done for everything outside two files: every source comment now
+points at `docs/session.md`, `docs/modules/ogre.md`, `docs/modules/2d.md`,
+`docs/abi/adapter.md` or `docs/architecture.md`, or states the claim without a
+pointer where no page carries it. Bare `DESIGN.md` references in
+`tension-res/`, `tension-solver/`, `tension-world/` and the core's
+`solver/`/`world/` modules name the note that still exists.
+
+What remains, deliberately:
+
+- **`INPUT.md`** — seven citations, quoted by the v7 input pass, which owns
+  that file.
+- **`SESSION.md`** — four citations inside its own argument, declared
+  historical in the header. Rewriting the argument is not a citation fix.
+- **`docs/`** — the pages that preserve a deleted note's claims cite it as
+  provenance, and each says so at the top of the section or the page.
+
+Contradiction 29.
 
 ## Win32: cross-compiled, never run; headers by overlay
 

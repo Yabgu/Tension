@@ -3,7 +3,7 @@
  *
  * Why this file exists
  * --------------------
- * DESIGN.md §7 argued the 2D adapter's rendering path from a figure nobody in
+ * The 2D design note argued the adapter's rendering path from a figure nobody in
  * the tree could reproduce: "~0.06 ms at 1k–10k sprites", reported from a
  * planning probe rather than measured in the repository. A budget written
  * against an unciteable number is a budget nobody can check, so this probe
@@ -13,7 +13,7 @@
  * ----------------
  * The per-bucket cost of the pattern §7 specifies, nothing else:
  *
- *   1. N records of 28 bytes (DESIGN.md §5) sit in a host array.
+ *   1. N records of 28 bytes (`docs/modules/2d.md` §8) sit in a host array.
  *   2. Each frame they are copied into a transfer buffer, uploaded to a
  *      GRAPHICS_STORAGE_READ buffer with one copy pass, and drawn with one
  *      SDL_DrawGPUPrimitives(6, N, 0, 0).
@@ -60,7 +60,7 @@
 #define WARMUP_FRAMES 10
 #define SAMPLE_FRAMES 31
 
-/* The `sprite` preset record, DESIGN.md §5. Laid out explicitly so the bench
+/* The `sprite` preset record, `docs/modules/2d.md` §8. Laid out explicitly so the bench
  * fails loudly if anyone changes the offsets without changing this struct. */
 typedef struct Sprite {
     Sint32   x;          /*  0 */
@@ -153,7 +153,7 @@ typedef struct {
  * Without it, a per-bucket number silently includes the command-buffer and
  * submission overhead that every frame pays once regardless of how many
  * sprites it carries. Subtracting it is what makes "cost per bucket" mean what
- * DESIGN.md §7 says it means.
+ * the design note said it means; the note is deleted and the number stands unverified.
  */
 static void measure_baseline(SDL_GPUDevice *dev, double *cpu_ms, double *total_ms) {
     SDL_GPUTextureCreateInfo tti = { 0 };

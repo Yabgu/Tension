@@ -24,7 +24,7 @@ use std::fmt;
 use std::marker::PhantomData;
 use std::path::Path;
 
-/// The 12-byte record the host ABI reports (`tension_res_stat`, DESIGN.md §7.4).
+/// The 12-byte record the host ABI reports (`tension_res_stat`, `tension-res/DESIGN.md` §7.4).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stat {

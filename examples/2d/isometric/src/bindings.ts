@@ -75,7 +75,7 @@ export function screenshot(handle: i32, ptr: usize, cap: i32): i32 {
   return screenshotRaw(handle, u32(ptr), cap);
 }
 
-// --- the `sprite` record (tension_2d.h, DESIGN.md §5) ----------------------
+// --- the `sprite` record (tension_2d.h, `docs/modules/2d.md` §8) ------------
 //
 // 28 bytes, naturally aligned. `tex` is the texture-array page.
 

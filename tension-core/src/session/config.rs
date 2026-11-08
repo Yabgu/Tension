@@ -29,11 +29,10 @@
 //! The first entry in the byte stream must be `abi_version`: a future version's
 //! stream must be refused before its remaining shape is interpreted at all.
 //!
-//! **The key form.** `tension-ogre/DESIGN.md` §6.1 now documents this stream
-//! with `u32` keys (amended in A1 round 2a), which is what this module
+//! **The key form.** The stream is `u32` keys, which is what this module
 //! implements: keys 1-6 for the seven required entries and `0x0100 + class` for
 //! the optional ring capacities. This module is authoritative for the decoder's
-//! behaviour; the note describes it.
+//! behaviour; no other page restates the encoding.
 
 use super::arena::{
     CLASS_COUNT, DEFAULT_RING_CAPACITIES, EVENT_TABLE_SIZE, LAYOUT_FLOOR, REGION_COUNT,
@@ -85,7 +84,7 @@ pub struct SessionConfig {
 /// One capability's declared need for a region kind: an adapter asked
 /// `region_lookup` about `kind` during `link`, so the registry recorded it and
 /// `session_open` must find that region inside the arena the config declares
-/// (`DESIGN.md` §7.2).
+/// (`docs/session.md` §4).
 ///
 /// The adapter's name travels with the kind because the refusal names both: an
 /// operator who loaded one capability reads a different message from one who
@@ -488,7 +487,7 @@ pub fn check_required_regions(
 /// what C4 refuses — every region ends at or below `LAYOUT_FLOOR` — so
 /// nothing is accepted here that the floor would have caught.
 ///
-/// One step of `DESIGN.md` §6.2 is deliberately *not* here: the memory import
+/// One step of `docs/session.md` §7's order is deliberately *not* here: the memory import
 /// match (C2/C3), which needs the module's declared page counts and therefore
 /// belongs to the session. A caller that needs the design's exact interleaving
 /// calls the staged functions instead.

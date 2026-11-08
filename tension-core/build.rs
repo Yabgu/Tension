@@ -23,7 +23,7 @@
 //! as `libtension_solver.a`, with the Fortran runtime on the link line.
 //! gfortran has a floor too — 14.0, for the same reason: the numerical core's
 //! results are compiled, and a different compiler is a different contract
-//! (DESIGN.md §5).
+//! (`tension-solver/DESIGN.md` §5).
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -34,7 +34,7 @@ use std::process::Command;
 const MIN_ZIG: (u64, u64) = (0, 16);
 /// The oldest gfortran whose numerical results this tree accepts, for the same
 /// reason the Zig floor exists: the solver's core is compiled, and a different
-/// compiler is a different contract (`DESIGN.md` §5). 14.0 is the floor that
+/// compiler is a different contract (`tension-solver/DESIGN.md` §5). 14.0 is the floor that
 /// covers the distributions this tree is built on; newer series are welcome.
 const MIN_GFORTRAN: (u64, u64) = (14, 0);
 
@@ -86,7 +86,7 @@ fn main() {
     //
     // The same shape as the tension-res block above: the subsystem's own
     // recipe builds its archive, and this script runs it and emits the link
-    // directives. The recipe pins the determinism flags (DESIGN.md §2); this
+    // directives. The recipe pins the determinism flags (`tension-solver/DESIGN.md` §2); this
     // side supplies the archive and the Fortran runtime it needs.
     let solver_dir = manifest
         .parent()
@@ -106,7 +106,7 @@ fn main() {
     //
     // The recipe runs here, on every platform. It used to live in
     // `tension-solver/build.sh` on Unix and be restated inline on Windows, which
-    // meant two copies of the pinned flags (DESIGN.md §2) and a shell the build
+    // meant two copies of the pinned flags (`tension-solver/DESIGN.md` §2) and a shell the build
     // otherwise does not need. One copy, no shell.
     {
         let out = &solver_lib;
@@ -204,7 +204,7 @@ fn main() {
 
     // ── the P7 sample plugin ──────────────────────────────────────────────
     //
-    // The shim has no plugin load-from-disk (DESIGN.md §11), so the P7
+    // The shim has no plugin load-from-disk (`tension-solver/DESIGN.md` §11), so the P7
     // tests exercise the real example source by compiling it straight into
     // the test binaries: one canonical midpoint.c, built twice — once here
     // for the tests, once by the example's own Makefile for its .so.
@@ -522,7 +522,7 @@ fn check_gfortran_version() {
         println!(
             "cargo:warning=tension-solver requires gfortran {min_major}.{min_minor} or newer; \
              installed is {version} ('{first}'). The build continues, but the numerical core's \
-             results are compiled by that toolchain (DESIGN.md §5). Upgrade gfortran, or set \
+             results are compiled by that toolchain (`tension-solver/DESIGN.md` §5). Upgrade gfortran, or set \
              TENSION_ALLOW_UNPINNED=1 to acknowledge."
         );
     }

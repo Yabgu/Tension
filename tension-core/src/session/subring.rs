@@ -1,5 +1,5 @@
 //! The arena side of delivery: the thirteen per-class sub-rings inside `EVENT_TABLE`
-//! (`DESIGN.md` §3.4), and the transfer that moves what the posting face queued
+//! (`docs/session.md` §5), and the transfer that moves what the posting face queued
 //! into the ring the guest reads.
 //!
 //! **The model, in one place.** A sub-ring is a linear buffer of `capacity`

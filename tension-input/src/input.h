@@ -98,7 +98,7 @@ class InputThread {
     /// the DSO later must not find threads in it — and false from the
     /// destructor, where the process is already ending and asking SDL to quit
     /// from inside the loader's unload callback is the deadlock that was
-    /// measured (`SDL_Quit` never returned; see DESIGN.md §7).
+    /// measured (`SDL_Quit` never returned; see `tension-input/DESIGN.md` §7).
     void stop(bool quit_sdl = true);
 
     /// Whether the thread is running (it stops on `input_close`).

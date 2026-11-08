@@ -199,7 +199,7 @@ void post_event(uint32_t class_id, uint32_t a, uint32_t b) {
 
 /// The render thread's failure path: the record, the log, and the event. Every
 /// catchable failure goes through here — never through an escaping exception
-/// (DESIGN.md §8.1).
+/// (`docs/modules/ogre.md` §5).
 void fail(uint32_t stage, int32_t error, const std::string &what) {
     AdapterState &s = adapter_state();
     char line[400];
@@ -1381,7 +1381,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         return sourced;
     }
 
-    // The declaration of the one region this sub-chunk writes (DESIGN.md §7.2:
+    // The declaration of the one region this sub-chunk writes (`docs/modules/ogre.md` §4:
     // asking about a kind at link time *is* the declaration).
     const int32_t found = core->region_lookup(core->user, TENSION_REGION_RESOURCE,
                                               &s.resource_offset, &s.resource_size);
@@ -1397,7 +1397,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     }
 
     // The guest-written regions this adapter reads. Asking for them at link is
-    // the declaration (DESIGN.md §7.2), and the set is what `session_open`
+    // the declaration (`docs/modules/ogre.md` §4), and the set is what `session_open`
     // checks the arena against.
     struct Region {
         uint32_t kind;

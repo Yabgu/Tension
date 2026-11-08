@@ -5,7 +5,7 @@
  * surface Rust links against. It is deliberately small: one opaque handle,
  * one 12-byte record, and the POSIX-shaped calls a virtual filesystem needs.
  *
- * Memory model (DESIGN.md §9.2):
+ * Memory model (tension-res/DESIGN.md §9.2):
  *   tension_res_load(...)          copies the blob into the handle; the caller
  *                                  may free its buffer immediately.
  *   tension_res_load_borrowed(...) borrows the caller's bytes; they must stay
@@ -53,7 +53,7 @@ extern "C" {
 /** Opaque handle: one loaded pak plus its fd table and readdir cursor. */
 typedef struct tension_res tension_res;
 
-/** What `stat` reports (DESIGN.md §7.4): 12 bytes, little-endian. */
+/** What `stat` reports (tension-res/DESIGN.md §7.4): 12 bytes, little-endian. */
 typedef struct tension_res_stat {
     uint32_t kind;  /* 0 = file, 1 = directory */
     uint32_t size;  /* payload bytes for a file, 0 for a directory */

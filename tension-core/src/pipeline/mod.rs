@@ -6,7 +6,7 @@
 //! and lowers it to (a) GLSL for the GPU and (b) a native comparator for the
 //! CPU sort.
 //!
-//! DESIGN.md §6 is the argument. This module is the first slice of it: enough
+//! `docs/modules/2d.md` §4 is the argument. This module is the first slice of it: enough
 //! to compile `default_2d` and produce pixels byte-identical to the
 //! hand-written preset, and nothing more.
 //!
@@ -61,7 +61,7 @@ pub enum DType {
     U8,
     I32,
     /// Unsigned 32-bit. `sort_key` is a depth value and depth is naturally
-    /// unsigned (DESIGN.md §5), so the comparator must not treat it as signed.
+    /// unsigned (`docs/modules/2d.md` §8), so the comparator must not treat it as signed.
     U32,
 }
 

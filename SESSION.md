@@ -3,7 +3,9 @@
 What a capability is allowed to assume about how many of it exist.
 
 **This is a design statement, not a description of the code.** Where the two
-differ the aspect table (§3) says so and §11 records the gap. The current
+differ the aspect table (§3) says so and §11 records the gap. Citations to
+`tension-ogre/DESIGN.md` are historical: that note was deleted, and its
+surviving claims are in `docs/modules/ogre.md`. The current
 code's singularity is an implementation limit, not a decision this design
 makes: where it made that choice knowingly it said so out loud, and where it
 did not the limit is implicit in a field.

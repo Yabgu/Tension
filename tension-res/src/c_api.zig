@@ -1,4 +1,4 @@
-//! The C ABI (DESIGN.md §9.2) — the only surface Rust links against.
+//! The C ABI (tension-res/DESIGN.md §9.2) — the only surface Rust links against.
 //!
 //! Everything here is a boundary, so the rules are strict:
 //!

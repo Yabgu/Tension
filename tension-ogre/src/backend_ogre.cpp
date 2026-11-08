@@ -2,7 +2,7 @@
 // headers, and the only place OGRE objects are made or unmade.
 //
 // Everything here runs on the render thread, inside the try/catch at the top of
-// each entry point (DESIGN.md §8.1). A caught failure never escapes: it becomes
+// each entry point (`docs/modules/ogre.md` §5). A caught failure never escapes: it becomes
 // the status mirror's error, the errno this file returns, and — from the
 // adapter, which owns the API table — a DEVICE_LOST event naming the stage.
 //
@@ -490,7 +490,7 @@ class BackendOgre final : public Backend {
             // PBS renders through a Forward+ light setup, and the setup has to
             // exist before the Hlms generates a PBS shader. Without it a PBS
             // datablock is created, binds, and draws nothing at all — the
-            // failure the probe first read as "PBS draws black" (DESIGN.md §5.1
+            // failure the probe first read as "PBS draws black" (`docs/modules/ogre.md` §4
             // measured it: 0 non-background pixels, for a plain cube as much as
             // for a rigged mesh).
             scene_->setForwardClustered(true, 16u, 8u, 24u, 96u, 2u, 0u, 0.0f, 100000.0f);
@@ -512,7 +512,7 @@ class BackendOgre final : public Backend {
             // guessable: `HlmsPbs`'s returns five folders and the last,
             // `Hlms/Pbs/Any/Main`, holds the vertex-shader piece. Stopping at
             // `Hlms/Pbs/Any` — the folder the Unlit path needs — leaves PBS with
-            // no vertex shader at all, silently (DESIGN.md §5.1).
+            // no vertex shader at all, silently (`docs/modules/ogre.md` §4).
             {
                 const char *media = std::getenv("TENSION_OGRE_MEDIA_DIR");
                 const std::string root = media ? std::string(media) : std::string(TENSION_OGRE_MEDIA_DIR);
@@ -1269,7 +1269,7 @@ class BackendOgre final : public Backend {
             refused += apply_renderables(mirror);
             // The bone pass last, and only when a new pose snapshot has landed:
             // a still rig costs one integer compare per frame, which is the
-            // point of the generation counter (DESIGN.md §5.1).
+            // point of the generation counter (`docs/modules/ogre.md` §4).
             apply_bone_updates(mirror);
             apply_skin_matrices(mirror);
         } catch (const Ogre::Exception &e) {
@@ -1415,7 +1415,7 @@ class BackendOgre final : public Backend {
         return -EIO;
     }
 
-    // ── the scene apply path's helpers, one per kind (DESIGN.md §5.1) ────
+    // ── the scene apply path's helpers, one per kind (`docs/modules/ogre.md` §4) ──
 
     /// The handle behind a guest-visible resource id. The adapter owns both
     /// tables and wires this at link time; a renderable names a resource by
@@ -1507,7 +1507,7 @@ class BackendOgre final : public Backend {
     /// The OGRE node for a guest node id, created on demand — with its
     /// ancestors, from the mirror's records — when the record has not been
     /// applied yet. A child can be submitted before its parent, and the render
-    /// thread must not depend on the guest's order (DESIGN.md §5.1). The
+    /// thread must not depend on the guest's order (`docs/modules/ogre.md` §4). The
     /// recursion is bounded by the mirror's 32-link cap.
     Ogre::SceneNode *node_for(uint32_t id) {
         if (id == 0 || id > kNodeCapacity) return nullptr;
@@ -1761,7 +1761,7 @@ class BackendOgre final : public Backend {
     }
 
     /// The values a material record carries. Unlit is the 3b path
-    /// (DESIGN.md §5.1): `setUseColour` + `setColour` is the pair the probe
+    /// (`docs/modules/ogre.md` §4): `setUseColour` + `setColour` is the pair the probe
     /// verified, and a texture only when slot 0 names one. PBS is the skinned
     /// path — HlmsUnlit has no skeletal animation in its shaders at all, so a
     /// rigged mesh drawn with it never moves — and its colour comes from
@@ -2145,7 +2145,7 @@ class BackendOgre final : public Backend {
                 // order to whichever surface the render system picked.
                 // Measured: Vulkan's swapchain comes back BGRA (red and blue
                 // exchanged) where GL3+ is RGBA; bulkPixelConversion is
-                // OGRE's own way between the two (DESIGN.md §15).
+                // OGRE's own way between the two (`docs/modules/ogre.md` §4).
                 last_frame_.assign(width * height * 4u, 0);
                 Ogre::TextureBox dst(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                                      1u, 1u, 4u, static_cast<uint32_t>(width * 4u),

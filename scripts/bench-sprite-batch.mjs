@@ -2,7 +2,7 @@
 // scripts/bench-sprite-batch.mjs — build and run the 2D sprite-batch probe.
 //
 // The probe is not linked into anything. It exists to re-measure the per-bucket
-// cost DESIGN.md §7 budgets against, so the document cites a file in this tree
+// cost `docs/modules/2d.md` §5 budgets against, so the page cites a file in this tree
 // rather than a number from a planning conversation it cannot reproduce.
 //
 // Steps: compile the two shaders to SPIR-V, compile sprite_batch.c against
@@ -39,7 +39,7 @@ function sdlFlags() {
         const libs = execFileSync('pkg-config', ['--libs', 'sdl3'], { encoding: 'utf8' }).trim();
         return { cflags, libs };
     } catch {
-        die('pkg-config sdl3 not found — SDL3 is a build prerequisite (DESIGN.md §8.1)');
+        die('pkg-config sdl3 not found — SDL3 is a build prerequisite (`docs/modules/2d.md` §1)');
     }
 }
 
@@ -119,7 +119,7 @@ if (process.argv.includes('--write-results')) {
         .join('\n');
     const doc = `${header}\n${body}\n\n// Notes\n` +
         '// - cpu_ms is frame start to submit-return: the batcher CPU cost, and the\n' +
-        '//   number DESIGN.md §7 quotes. total_ms adds SDL_WaitForGPUIdle.\n' +
+        '//   number `docs/modules/2d.md` §5 quotes. total_ms adds SDL_WaitForGPUIdle.\n' +
         '// - net_cpu_ms subtracts a measured empty-frame baseline (acquire, clear,\n' +
         '//   submit, wait with no draw), so it is the marginal cost of the bucket\n' +
         '//   rather than the fixed cost of a frame.\n' +

@@ -20,7 +20,7 @@ a file under `tension-core/src/session/` (`mod.rs`, `epoch.rs`, `posting.rs`,
 **Session has more design content than any other host subsystem.** Some claims
 in §3–8 are **[I]** — the rationale lives in `tension-ogre/DESIGN.md` or in a code
 comment rather than in code that enforces it, and the design note is quoted here
-before its deletion in pass 7. Every [I] names the source it rests on; every [V]
+rather than lost in its deletion. Every [I] names the source it rests on; every [V]
 cites code that does the work. Do not read this page as stronger than its
 markers.
 

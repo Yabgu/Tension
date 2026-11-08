@@ -15,7 +15,7 @@
 //!    `glslangValidator` on both stages and fails if either does not compile.
 //!    A string assertion cannot catch a type error; a compiler can.
 //!
-//! The layout is the `sprite` record from DESIGN.md §5: 28 bytes, natural
+//! The layout is the `sprite` record from `docs/modules/2d.md` §8: 28 bytes, natural
 //! alignment, `x`/`y` as `i32` pixels, `src_x`/`src_y`/`w`/`h` as `u16`.
 
 use std::process::Command;
@@ -124,7 +124,7 @@ fn the_two_stages_agree_on_varying_locations() {
 }
 
 /// The compiler gate. `glslangValidator` is a documented build prerequisite
-/// (DESIGN.md §8.1); if it is missing, this test fails rather than skipping,
+/// (`docs/modules/2d.md` §4); if it is missing, this test fails rather than skipping,
 /// because the alternative is a test suite that silently stops compiling
 /// anything.
 #[test]
@@ -147,7 +147,7 @@ fn the_generated_pair_compiles() {
         // spellings (`gl_InstanceIndex`, `gl_VertexIndex`) and rejects
         // `layout(set = N)`, which SDL_GPU requires for its fragment sampler at
         // set 2. A `-G`-compatible shader cannot sample a texture through
-        // SDL_GPU at all. `-V` is therefore the gate, and DESIGN.md §8.1 records
+        // SDL_GPU at all. `-V` is therefore the gate, and `docs/modules/2d.md` §4 records
         // the conflict.
         let output = Command::new("glslangValidator")
             .arg("-V")
@@ -162,7 +162,7 @@ fn the_generated_pair_compiles() {
             Ok(output) => output,
             Err(error) => panic!(
                 "could not run glslangValidator ({error}). It is a build prerequisite: \
-                 DESIGN.md §8.1."
+                 `docs/modules/2d.md` §4."
             ),
         };
 

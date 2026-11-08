@@ -7,7 +7,7 @@
  * and the adapter's C++ sources both answer to it, and neither invents a field
  * the other does not know.
  *
- * The design is tension-2d/DESIGN.md; this header is its wire, in C, and where
+ * The design is `docs/modules/2d.md`; this header is its wire, in C, and where
  * the two disagree the design is the argument and this is the shape.
  *
  * This header includes no SDL header, on purpose. The adapter's SDL-facing
@@ -203,7 +203,7 @@ int32_t tension_2d_present(int32_t handle);
  *
  * v1 reads **IWI** (`IWI1`, the format `IWImageIO.ixx` writes) with interleaved
  * 8-bit RGB or RGBA components. PNG and JPEG need ImageViewer's plugin DSOs and
- * arrive with `iw_decode_to_format` (DESIGN.md §8); until then they are
+ * arrive with `iw_decode_to_format` (`docs/modules/2d.md` §8); until then they are
  * -ENOSYS, not a guess.
  */
 int32_t tension_2d_texture_load(int32_t handle, int32_t src_ptr, int32_t src_len,
@@ -266,7 +266,7 @@ int32_t tension_2d_info(int32_t handle, int32_t ptr, int32_t cap);
  */
 int32_t tension_2d_screenshot(int32_t handle, int32_t ptr, int32_t cap);
 
-/* ── the `sprite` record (DESIGN.md §5) ──────────────────────────────── */
+/* ── the `sprite` record (docs/modules/2d.md §8) ───────────────────── */
 
 /*
  * 28 bytes, naturally aligned, no packed fields. Shaders read it as seven

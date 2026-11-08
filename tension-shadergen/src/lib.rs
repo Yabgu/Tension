@@ -29,7 +29,7 @@
 //! # Coordinate space
 //!
 //! Records carry **pixels**, because that is what a 2D game thinks in and what
-//! the `sprite` record layout in DESIGN.md §5 defines. A pixel coordinate is not
+//! the `sprite` record layout in `docs/modules/2d.md` §8 defines. A pixel coordinate is not
 //! a clip coordinate, so the generated vertex stage converts with a
 //! `u_canvas_half` uniform (set 1, binding 0, pushed per draw). The corner
 //! arithmetic the layout describes is emitted verbatim and asserted by the
@@ -126,7 +126,7 @@ pub enum Slot {
     /// The texture-coordinate set index, not a component: `TexCoord(0)` and
     /// `TexCoord(1)` are two separate groups.
     TexCoord(u8),
-    /// The atlas page index (DESIGN.md §5, `tex`). A naming group like every
+    /// The atlas page index (`docs/modules/2d.md` §8, `tex`). A naming group like every
     /// other slot: the value is the texture array's layer, not a coordinate.
     TexPage,
     Color,
@@ -283,7 +283,7 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
     let src_x = need(layout, Semantic::SrcX)?;
     let src_y = need(layout, Semantic::SrcY)?;
     // A layout without an explicit source size samples the whole sprite rect,
-    // which is what the `sprite` record in DESIGN.md §5 does: it carries one
+    // which is what the `sprite` record in `docs/modules/2d.md` §8 does: it carries one
     // `w`/`h` pair serving both the quad and the source.
     let src_w = field(layout, Semantic::SrcW).unwrap_or(size_w);
     let src_h = field(layout, Semantic::SrcH).unwrap_or(size_h);
@@ -313,7 +313,7 @@ pub fn generate_vertex(layout: &LayoutDesc, vocab: &dyn Vocabulary) -> Result<St
     let _ = writeln!(out);
     // One uniform block, two facts: the canvas for the pixel->clip projection
     // and the atlas size for the pixel->normalized-UV one. `texture()` takes
-    // normalized coordinates while the record carries pixels (DESIGN.md §5), so
+    // normalized coordinates while the record carries pixels (`docs/modules/2d.md` §8), so
     // without the second the sampler reads a clamp-to-edge smear instead of the
     // sprite's cell. On a solid-colour texture that mistake is invisible, which
     // is exactly why it survived the first smoke test.
@@ -510,7 +510,7 @@ pub fn default_generator() -> DefaultGenerator {
     DefaultGenerator
 }
 
-/// The `sprite` record layout (DESIGN.md §5), as the generator sees it.
+/// The `sprite` record layout (`docs/modules/2d.md` §8), as the generator sees it.
 ///
 /// Kept beside the generator because the adapter's build, the tests and any
 /// future guest SDK all need the same description, and copies would drift. The
@@ -540,7 +540,7 @@ pub fn sprite_layout() -> LayoutDesc {
 mod tests {
     use super::*;
 
-    /// The 28-byte `sprite` record (DESIGN.md §5): x, y, src_x, src_y, w, h,
+    /// The 28-byte `sprite` record (`docs/modules/2d.md` §8): x, y, src_x, src_y, w, h,
     /// sort_key. `tex`, `group_id`, `z` and `flags` are absent because the
     /// shader never loads them — the adapter reads those on the CPU.
     fn sprite() -> LayoutDesc {

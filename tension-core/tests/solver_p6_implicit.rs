@@ -1,7 +1,7 @@
 //! P6 integration tests for the implicit family (implicit_euler).
 //!
 //! Direct `bind(C)` calls. The algorithm under test is the module's
-//! documented fixed-point iteration (DESIGN.md §10), including its
+//! documented fixed-point iteration (tension-solver/DESIGN.md §10), including its
 //! convergence window: h·L < 1.
 
 use std::ffi::c_void;
@@ -199,7 +199,7 @@ fn i3_stiffness_window() {
     // -EIO with the state untouched rather than diverging silently. (This
     // is the specified honest failure: implicit Euler's A-stability would
     // need a Newton solve, which the derivative-only ABI cannot express —
-    // the module header and DESIGN.md §10 record it.)
+    // the module header and tension-solver/DESIGN.md §10 record it.)
     let params = default_params(); // iterations 10, tol 1e-8
     let mut y = [1.0f64];
     let mut ws = [0.0f64; 2];

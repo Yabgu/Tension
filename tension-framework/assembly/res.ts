@@ -6,7 +6,7 @@
 // same convention as `tension::io arg`; stat records are 12 bytes
 // {kind: u32, size: u32, flags: u32}; every error is a negative POSIX errno.
 //
-// The split this file implements (DESIGN.md §7):
+// The split this file implements (`tension-res/DESIGN.md` §7):
 //
 //   * the VFS is strict — a path that does not resolve returns -ENOENT,
 //     including every path when no pak is loaded;
