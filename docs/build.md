@@ -151,7 +151,7 @@ this tree reads it.
 
 | patch | what it changes | why |
 |---|---|---|
-| `ogre-no-freeimage-codec.patch` | empties `OgreFreeImageCodec2.cpp` behind `#if !OGRE_NO_FREEIMAGE` | the codec's submodule is gone; the TU compiles unconditionally |
+| `ogre-no-freeimage-codec.patch` | guards `BROKEN_FILES_IN_UNITY_BUILD` in `OgreMain/CMakeLists.txt` on `OGRE_CONFIG_ENABLE_FREEIMAGE` | the codec is disabled; CMake unconditionally added the TU via the unity exclude list |
 | `ogre-external-surface.patch` | Vulkan window adoption, the resize path, the teardown guard, `validateDevice` | lets Ogre render into a host-owned `VkSurfaceKHR` (`docs/modules/ogre.md` §6) |
 
 **Revert discipline.** After the build, `git checkout --` restores exactly the

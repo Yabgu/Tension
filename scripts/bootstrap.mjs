@@ -48,9 +48,9 @@ const OGRE_PATCHES = [
   {
     file: PATCH,
     label: 'OGRE_NO_FREEIMAGE',
-    marker: '#if !OGRE_NO_FREEIMAGE',
-    verifyIn: 'OgreMain/src/OgreFreeImageCodec2.cpp',
-    touches: ['OgreMain/src/OgreFreeImageCodec2.cpp'],
+    marker: 'list( APPEND BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )',
+    verifyIn: 'OgreMain/CMakeLists.txt',
+    touches: ['OgreMain/CMakeLists.txt'],
   },
   {
     file: join(THIRD, 'patches', 'ogre-external-surface.patch'),
@@ -126,19 +126,17 @@ function initSubmodule(dir, name) {
 
 initSubmodule(SRC, 'ogre-next');
 
-// 2. Patch the one translation unit OGRE compiles regardless of its options.
+// 2. Patch the OGRE-Next tree for options and integration.
 //
-// `OGRE_CONFIG_ENABLE_FREEIMAGE=OFF` clears the codec *registration* only.
+// `OGRE_CONFIG_ENABLE_FREEIMAGE=OFF` disables FreeImage, but
 // OgreMain/CMakeLists.txt:403 seeds BROKEN_FILES_IN_UNITY_BUILD with
-// src/OgreFreeImageCodec2.cpp unconditionally, and OgreAddTargets.cmake:55
-// appends that SEPARATE list to the target's sources — so the file is compiled
-// even with the option off, and it includes <FreeImage.h> unguarded. Without
-// this patch the build fails at that include (or at link, on a machine that
-// still has the header).
+// "src/OgreFreeImageCodec2.cpp" unconditionally. OgreAddTargets.cmake:54
+// appends that SEPARATE list to the target's _SOURCES — so the file was compiled
+// even with the option off, failing on #include <FreeImage.h> (or at link time).
 //
-// The patch adds `#if !OGRE_NO_FREEIMAGE` after OgreStableHeaders.h — the macro
-// is defined by OgreConfig.h through that include, so a guard above it would
-// read the macro as 0 and not guard anything. See the patch's own header.
+// The patch guards that line in OgreMain/CMakeLists.txt with
+// `if (OGRE_CONFIG_ENABLE_FREEIMAGE)` so the translation unit is never added to
+// the build when FreeImage is disabled. See the patch's own header.
 //
 // Idempotent by construction: a dry run first. If it applies, apply it. If it
 // reports the patch as already applied, skip. Anything else is a real failure —
@@ -410,8 +408,9 @@ const flags = [
   '-DOGRE_INSTALL_SAMPLES_SOURCE=OFF',
   '-DOGRE_INSTALL_DOCS=0',
   '-DOGRE_CONFIG_THREAD_PROVIDER=std',
-  // OFF: FreeImage is not in this tree. The codec object is still compiled (see
-  // step 2's patch, which empties it); OFF is what stops OGRE registering it.
+  // OFF: FreeImage is not in this tree. The patch guards OgreMain/CMakeLists.txt
+  // so the codec translation unit is never added to the build graph when OFF;
+  // OFF also sets OGRE_NO_FREEIMAGE so OGRE skips registering the codec.
   //
   // ON: STBI is the replacement, not an optional extra. With both off Ogre has
   // no image codec at all — no PNG, no JPEG, no TGA — and every texture load
@@ -437,6 +436,10 @@ if (FORCE && existsSync(BUILD)) {
 }
 
 console.log(`bootstrap: ${process.platform}/${process.arch} (${toolchainReport()})`);
+
+for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
+ogrePatchApplied = true;
+
 say(`configuring (${SRC} -> ${BUILD})`);
 const started = Date.now();
 run('cmake', ['-S', SRC, '-B', BUILD, ...flags, ...extraFlags]);
@@ -464,14 +467,12 @@ if (/^#define OGRE_NO_STBI_CODEC 1$/m.test(settingsText)) {
       '  STBI is this tree\'s only image codec; without it no PNG/JPEG/TGA loads.');
 }
 
-for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
-ogrePatchApplied = true;
-
 say(`building with ${nproc()} jobs`);
 run('cmake', ['--build', BUILD, '-j', nproc()]);
 
 say(`installing to ${INSTALL}`);
 run('cmake', ['--install', BUILD]);
+revertOgrePatch();
 
 // 4. The Vulkan plugin is what this build is for — a configure that dropped it
 // must not read as success, and a plugin that cannot load must not either.
