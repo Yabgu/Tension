@@ -17,11 +17,10 @@
 // and pretending otherwise here would move pixels inside src rects.
 
 import { Frame } from "./types";
-
-// The one verb the framework calls. Binding is not the guest's business to
-// repeat per example: a tileset knows its pages, so it knows the slots.
-@external("tension::2d", "set_texture")
-declare function hostSetTexture(handle: i32, pipeId: i32, slot: i32, textureId: i32): i32;
+// The one verb this module calls, from the SDK's single declaration site.
+// Binding is not the guest's business to repeat per example: a tileset knows
+// its pages, so it knows the slots.
+import { setTextureRaw } from "./verbs";
 
 export class Tileset {
   private pages: i32[];
@@ -141,7 +140,7 @@ export class Tileset {
   bind(handle: i32, pipeId: i32, firstSlot: i32 = 0): i32 {
     for (let i: i32 = 0; i < this.pages.length; i++) {
       const slot = firstSlot + i;
-      const rc = hostSetTexture(handle, pipeId, slot, this.pages[i]);
+      const rc = setTextureRaw(handle, pipeId, slot, this.pages[i]);
       if (rc != 0) return rc;
     }
     return 0;
