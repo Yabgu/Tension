@@ -144,6 +144,18 @@ until they get a hand-written home:
   per-call ABI trace is off by default (`TENSION_AI_TRACE=1` turns it on)
   because a drain loop would bury the event lines; llama.cpp's own logging is
   silenced at backend init (`TENSION_AI_LLAMA_LOG=1` restores it).
+  The keys, with host defaults: `model.path`, `model.blob`,
+  `model.gpu_layers` (0), `context.size` (2048), `context.threads` (0),
+  `context.batch` (512), `sampler.temp` (0.8), `sampler.top_p` (0.95),
+  `sampler.top_k` (40), `sampler.seed` (0), `sampler.max_tokens` (256),
+  `chat.template`. Roles are `0` system, `1` user, `2` assistant;
+  `session_generate` starts a completion and returns immediately, the host
+  generating on its own thread, and `session_cancel` stops it while keeping the
+  partial text readable. The `ai` feature is on by default (llama.cpp is linked
+  in-process); `--no-default-features --features audio` serves the same imports
+  from a deterministic headless adapter. Grammar and structured output are
+  deliberately not exposed: the pinned llama.cpp's grammar sampler aborts the
+  process, a version constraint rather than a design taste.
 
 ## Where to read next
 
