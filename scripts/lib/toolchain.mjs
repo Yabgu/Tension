@@ -67,6 +67,17 @@ export function ucrt64Bin() {
   return null;
 }
 
+/// Candidate MSYS2 `usr/bin` directory, where POSIX utilities like patch live.
+export function msys2UsrBin() {
+  const explicit = process.env.TENSION_MSYS2;
+  const roots = explicit ? [explicit, ...MSYS2_ROOTS] : MSYS2_ROOTS;
+  for (const root of roots) {
+    const bin = join(root, 'usr', 'bin');
+    if (isDirectory(bin)) return bin;
+  }
+  return null;
+}
+
 /// The `set` output of a Visual Studio developer environment, as a map, or
 /// null when there is no Visual Studio installation with the C++ tools.
 ///
@@ -203,7 +214,9 @@ export function baseEnv() {
   parts.push(env.PATH ?? '');
   const ucrt = ucrt64Bin();
   if (ucrt) parts.push(ucrt);
-  for (const name of ['zig']) parts.push(...extraDirs(name));
+  const msysUsr = msys2UsrBin();
+  if (msysUsr) parts.push(msysUsr);
+  for (const name of ['zig', 'patch']) parts.push(...extraDirs(name));
   env.PATH = dedupePath(parts.filter(Boolean).join(delimiter)).join(delimiter);
   env[MARKER] = '1';
 
@@ -240,7 +253,16 @@ export function npmBin(dir, name) {
 /// on PATH. That lookup lives here so the build
 /// keeps working on a machine that installed it the documented way.
 function extraDirs(name) {
-  if (!WIN || name !== 'zig') return [];
+  if (!WIN) return [];
+  if (name === 'patch') {
+    const dirs = [];
+    const gitUsrBin = join(process.env.ProgramFiles ?? 'C:\\Program Files', 'Git', 'usr', 'bin');
+    if (isDirectory(gitUsrBin)) dirs.push(gitUsrBin);
+    const gitUsrBinX86 = join(process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)', 'Git', 'usr', 'bin');
+    if (isDirectory(gitUsrBinX86)) dirs.push(gitUsrBinX86);
+    return dirs;
+  }
+  if (name !== 'zig') return [];
   const root = join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WinGet', 'Packages');
   const dirs = [];
   let packages;

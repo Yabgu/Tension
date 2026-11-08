@@ -21,12 +21,12 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WIN, baseEnv, capture, run, toolchainReport, ucrt64Bin } from './lib/toolchain.mjs';
+import { WIN, baseEnv, capture, need, run, toolchainReport, ucrt64Bin, which } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..');
@@ -155,7 +155,8 @@ function applyOgrePatch(entry) {
   // then reads EOF, changes nothing, and **exits 0** — so an exit-code check
   // alone reports a no-op as success. Capture the stream instead, and verify the
   // file afterwards rather than trusting any status.
-  const dry = spawnSync('patch', [...patchArgs, '--dry-run'], {
+  const patchBin = which('patch') ?? need('patch', 'install via MSYS2 (pacman -S patch) or Git for Windows');
+  const dry = spawnSync(patchBin, [...patchArgs, '--dry-run'], {
     cwd: SRC, encoding: 'utf8', env: baseEnv(), input: source,
   });
   if (dry.error) throw new Error(`patch: ${dry.error.message}`);
@@ -172,7 +173,7 @@ function applyOgrePatch(entry) {
         `  ${dryOut.trim().split('\n').join('\n  ')}`);
   }
 
-  const applied = spawnSync('patch', patchArgs, {
+  const applied = spawnSync(patchBin, patchArgs, {
     cwd: SRC, encoding: 'utf8', env: baseEnv(), input: source,
   });
   if (applied.error) throw new Error(`patch: ${applied.error.message}`);
@@ -296,6 +297,8 @@ if (WIN) {
   }
   extraFlags.push(
     '-G', 'Ninja',
+    '-DCMAKE_C_COMPILER=gcc',
+    '-DCMAKE_CXX_COMPILER=g++',
     '-DCMAKE_CXX_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DCMAKE_C_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DOGRE_BUILD_RENDERSYSTEM_D3D11=OFF',
@@ -420,6 +423,18 @@ const flags = [
   '-DOGRE_CONFIG_ENABLE_JSON=ON',
   '-DOGRE_CONFIG_ENABLE_ZIP=ON',
 ];
+
+if (existsSync(join(BUILD, 'CMakeCache.txt'))) {
+  const cache = readFileSync(join(BUILD, 'CMakeCache.txt'), 'utf8');
+  if (WIN && cache.includes('cl.exe')) {
+    say('cleaning previous MSVC build tree in favor of MinGW GCC');
+    rmSync(BUILD, { recursive: true, force: true });
+  }
+}
+if (FORCE && existsSync(BUILD)) {
+  say('cleaning build tree (--force)');
+  rmSync(BUILD, { recursive: true, force: true });
+}
 
 console.log(`bootstrap: ${process.platform}/${process.arch} (${toolchainReport()})`);
 say(`configuring (${SRC} -> ${BUILD})`);
