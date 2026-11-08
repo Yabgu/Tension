@@ -140,6 +140,11 @@ because beta blocks on it.
 
 - **NPM package.** `npx create-tension-app`, `tension dev`, `tension build`,
   `tension editor`, `tension package`, `tension test`.
+- **The editor is a development dependency, never part of a shipped game.**
+  Because the editor is a guest built against the same ABI as a game (§4.2), it
+  installs into a project's development toolchain and the runtime bundle
+  `tension build` produces carries no reference to it. How the packages are
+  split on npm follows from that; the split itself is not decided here.
 - **A project template** — what a Tension project looks like on disk is a
   decision the scaffold makes, and everything else hangs off it.
 - **Compiled HTML documentation**: searchable, versioned, cross-linked. The
@@ -151,7 +156,8 @@ because beta blocks on it.
 - **Time-travel debugging and replay.** Deterministic guests make record-replay
   nearly free. "Rewind to any frame, change one input, see what differs" is the
   headline feature of the platform, and it is only possible because the host
-  contributes no clock (§7).
+  contributes no clock (§7). It runs on the restorable snapshot primitive of
+  §4.3 — the same primitive save/load is built on.
 - **Profiling:** per-frame, per-guest-function, and GPU cost.
 - **Live property editing** in the inspector.
 
@@ -161,10 +167,21 @@ because beta blocks on it.
 - **A third-party library story.** npm? Rust crates? TensionScript-only? OPEN.
 - **An example gallery** of the full demos from §3.3.
 
+### 3.8 Non-goals for beta
+
+Stated so they do not creep in:
+
+- Localization and i18n.
+- Accessibility — screen readers, controller-only navigation.
+- A marketplace or package hosting.
+- Mobile.
+- Console.
+- Multiplayer (§4.3). Rollback netcode is deferred, not built (§5.6).
+
 ## 4. Decisions before beta
 
 Five decisions that must be made before the beta work starts, in the sense that
-later work does not survive getting them wrong. Two are made; three are open.
+later work does not survive getting them wrong. Four are made; one is open.
 
 ### 4.1 CSS / DOM / flat array — **DECIDED**
 
@@ -176,28 +193,39 @@ editor manipulates, and what a mod patches. Authoring syntax can change; the
 storage model cannot, because it is what the save format and the replay format
 are projections of.
 
-### 4.2 Editor as guest, or editor as host tool — **OPEN**
+### 4.2 Editor as guest — **DECIDED**
 
-- **(a) Editor as guest.** Tension runs Tension. Maximum dogfood: the editor is
-  a guest, so every gap in the guest API is a gap the editor hits first. Harder —
-  it needs the guest API to be good enough to build an editor on, before the
-  editor exists.
-- **(b) Editor as host tool.** Simpler and faster. It can use host-only
-  facilities the guest never gets, which means some of the editor is duplicated
-  in a second code path, and dogfooding is partial.
+The editor is itself a Tension guest, built against the same ABI games use,
+shipped as a development dependency and never in a game's runtime bundle. The
+rationale is the dogfood value: every friction point the editor hits is one real
+users hit, and it forces the guest ABI to be complete before beta rather than
+after. The cost is that the guest ABI must support a generic "opens a project
+directory given on the command line" pattern, which is more than a self-contained
+game needs.
 
-Not decided. The choice changes the beta schedule, not just the implementation:
-(a) roughly inverts the order of §10's steps six and seven.
+**Open design point, deferred to beta:** project-path access for the editor
+guest. A game guest reads its host-assembled resource library; the editor guest
+must read the user's project directory. The options identified are (a) the CLI
+mounts the project directory as an additional resource library under a known
+name, (b) a new host verb, something like `tension::host.project_path()`, or
+(c) a convention on the working directory. None is chosen. This is not solved in
+alpha.
 
-### 4.3 Multiplayer and rollback netcode — **OPEN**
+### 4.3 Multiplayer — deferred, snapshot/restore prepared — **DECIDED**
 
-Not decided whether multiplayer is in scope for beta.
+No multiplayer, no network subsystem, no prediction or reconciliation in beta.
 
-**The constraint that does not wait:** if rollback netcode is intended at any
-point, the world model must support snapshot and restore *now*. A world model
-built for a single authoritative simulation cannot be retrofitted with rollback;
-the state that has to be capturable has to be capturable by construction.
-Snapshot/restore is cheap to design in and expensive to add.
+**What is built anyway is the primitive.** The snapshot the world model produces
+is **restorable, not merely serializable**: it can be applied atomically and
+repeatedly, and it carries RNG state, timing state and epoch state, not just the
+object graph. Designing that in from the start is nearly free; retrofitting it
+onto a one-way save format is not. Rollback netcode later becomes a small
+addition on top of an existing primitive rather than a save-format migration and
+a snapshot redesign. The same primitive serves time-travel debugging (§3.6), so
+the cost is amortized beyond multiplayer.
+
+Multiplayer itself remains a beta non-goal (§3.8); rollback is deferred with the
+primitive in place (§5.6).
 
 ### 4.4 Asset pipeline intermediate format — **OPEN**
 
@@ -275,6 +303,17 @@ a subscriber; `register_event_layer` and the `window_handle` re-point land.
 `tension-input/DESIGN.md` — both of which still describe an X11 premise the
 architecture has left behind.
 **Unlocks when:** that pass opens. Nothing blocks it.
+
+### 5.6 Rollback netcode
+
+**What:** input prediction, reconciliation, and rolling guest state back to a
+confirmed frame across a network.
+**Why not now:** multiplayer is not in beta (§4.3). The primitive it needs is
+built anyway — the snapshot is restorable, not merely serializable — so what is
+deferred is the network layer on top of a primitive that save/load and
+time-travel debugging require regardless.
+**Unlocks when:** post-beta. Rollback is a small addition on top of the existing
+snapshot; multiplayer is a larger addition on top of rollback.
 
 ## 6. Deliberate non-builds
 
@@ -397,13 +436,18 @@ The npm scaffold and CLI come first, because they define what a Tension project
 is on disk and everything else hangs off that shape. Compiled HTML docs and
 proper examples come second, because they pay back for the whole beta. The world
 model decision (§4.1–4.4) comes third and must precede anything that manipulates
-objects. The snapshot format follows the world model directly — save/load and
-rollback are the same format seen from two directions. The command system and
-its undo/redo come next, because the editor is built out of commands and nothing
-else. Then the editor skeleton, single-window, command-driven. Save/load lands on
-top of the snapshot format. Pipelines, game controls, animation and audio run in
+objects. The snapshot format follows the world model directly, and it is a
+*restorable* snapshot rather than one-way serialization (§4.3): save/load and,
+later, rollback read the same primitive from two directions. The command system
+and its undo/redo come next, because the editor is built out of commands and
+nothing else. Then the editor skeleton — single-window, command-driven, and an
+editor *guest* built against the same ABI as a game (§4.2), including the
+project-path access that decision leaves open. Save/load lands on top of the
+snapshot format. Pipelines, game controls, animation and audio run in
 parallel with the editor work, because they do not depend on it. AI training
 starts early as research and ships when it is ready. Multi-window, hot reload and
-time-travel debugging run in parallel once the editor exists to debug. The ABI
-freeze comes last, after the world model, the snapshot format and the command
-system have settled — freezing before them would freeze the wrong shape.
+time-travel debugging run in parallel once the editor exists to debug. Rollback
+netcode and multiplayer are not in this sequence; they are post-beta (§5.6),
+resting on the snapshot primitive the fourth step builds. The ABI freeze comes
+last, after the world model, the snapshot format and the command system have
+settled — freezing before them would freeze the wrong shape.
