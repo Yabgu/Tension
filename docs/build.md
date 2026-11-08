@@ -35,7 +35,7 @@ framework build.
 
 - **In-tree** — `third_party/ogre-next-build` → `third_party/ogre-next-install`.
   What developers and the test suites use; the adapters' rpath names it
-  (`third_party/README.md:124-134`).
+  (`third_party/README.md:34-38`).
 - **Packaged** — `packages/*` carries platform payloads, one directory per
   suffix (`packages/core-linux-x64`, `packages/ogre-next-linux-x64`, …), consumed
   through `file:` dependencies. This is the shape a guest run resolves
@@ -69,8 +69,7 @@ tree — and never *"was this install produced by the current flag set?"*
 (`bootstrap.mjs:418-419`: `FREEIMAGE=OFF`, `STBI=ON`) against a tree that was
 installed *before* that change, and the script says "already exists — nothing to
 do", exit 0, while the installed `RenderSystem_Vulkan.so` still links
-`libfreeimage.so.3`. Recorded as
-contradiction 6, with the required fix: stamp the cmake flag set beside the
+`libfreeimage.so.3`. The required fix is to stamp the cmake flag set beside the
 install and reconfigure when it diverges. **Not fixed**; `--force` is currently
 the only remedy, which is exactly what the entry objects to.
 
@@ -388,8 +387,8 @@ the pixel fixtures assert specific colours at specific coordinates rather than
 - **The host loop's timing**: `docs/architecture.md` §4.
 - **Per-module behaviour** — `docs/modules/ogre.md`, `docs/modules/2d.md`.
 - **The LinSYS2 gotcha list**: `ci/linsys2.md`.
-- **The Ogre-Next pin's rationale and the FreeImage history**:
-  `third_party/README.md`.
+- **The Ogre-Next pin's rationale, and the removal of the FreeImage
+  dependency**: `third_party/README.md`.
 
 ## 12. Source index
 

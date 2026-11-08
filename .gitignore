@@ -102,9 +102,6 @@ packages/ogre/lib/
 packages/ogre-next/lib/
 packages/ogre-next/include/
 packages/ogre-next/Media/
-packages/freeimage/lib/
-packages/freeimage/include/
-packages/freeimage/bin/
 packages/core/bin/*
 !packages/core/bin/tension-core.js
 

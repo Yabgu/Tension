@@ -270,7 +270,8 @@ known expectation instead of a guess.
 ### 5.2 2D window ownership
 
 **What:** `tension-2d` creating its own `SDL_Window` rather than rendering into
-the host's surface (`docs/modules/2d.md` §3; contradiction 24).
+the host's surface (`docs/modules/2d.md` §3; `docs/known-limitations.md`,
+"`tension-2d` owns its own window").
 **Why not now:** SDL_GPU offers no external-surface handoff. Unifying means the
 2d path either gains a renderer that consumes a `VkSurfaceKHR` the way
 `tension-ogre` does, or SDL_GPU grows the capability upstream. It is a separate
@@ -423,7 +424,7 @@ This page records intent. Everything about what the code *does* lives here:
 | Build, guards, CI | `docs/build.md` |
 | What is known not to work | `docs/known-limitations.md` |
 | Why the guards look like this | `docs/guard-discipline.md` |
-| Doc-versus-code contradictions | `/home/acakar/work/docs-contradictions.md` (working file, outside the repo; deleted at beta) |
+| Doc-versus-code contradictions | `docs/known-limitations.md` — verified defects with their blockers and unlock conditions; `docs/modules/*.md` — design decisions, including what is deliberately not built |
 
 Where a decision in this page is already implemented, the entry cites the code.
 Where it is not, the absence is the fact.

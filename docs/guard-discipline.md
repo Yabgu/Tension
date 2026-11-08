@@ -1,7 +1,7 @@
 # Guard discipline — checks that establish correctness, not presence
 
-Promoted from `docs-contradictions.md` because the instance list is longer than
-an entry should be. This is a class-level defect, not a bug report.
+This page exists because the instance list outgrew any single limitations
+entry. This is a class-level defect, not a bug report.
 
 ## The rule
 
@@ -43,7 +43,7 @@ new flag is silently ignored.
 Observed: `npm run bootstrap` reported "already exists — nothing to do", exit 0,
 while `CMakeCache.txt` still said `OGRE_CONFIG_ENABLE_FREEIMAGE:BOOL=ON` and the
 installed `RenderSystem_Vulkan.so.4.0` still listed `NEEDED libfreeimage.so.3`.
-Documented as `docs-contradictions.md` #6.
+Documented in [`build.md`](build.md) §2.
 
 *Correction:* stamp the configure flag set beside the install (the way
 `writeStamp` already works for the adapters) and reconfigure on divergence.

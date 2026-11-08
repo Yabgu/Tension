@@ -190,8 +190,7 @@ region table is written once and never re-read (`write_region_table`,
 `arena.rs:601`; the only reader is a test, `mod.rs:1972`). What *is* re-checked
 is the control-block **triple** — magic, layout hash, region count — at exactly
 two points: `verify_post_instantiate` (`mod.rs:556-598`) and
-`verify_open_preconditions` (`mod.rs:859-905`). Not at every verb. Recorded as
-contradiction 23.
+`verify_open_preconditions` (`mod.rs:859-905`). Not at every verb.
 
 **What guards what.** The always-arena range `[0, layout_end)` has the triple as
 its runtime detector and the pre-`start` zero sweep as its complete startup
@@ -332,7 +331,7 @@ memory imports, refuses none/multiple/unknown-name/shared, and derives the page
 counts and `memoryBase` from them (`mod.rs:378-445`). That is before
 `session_open` exists as a call, so the open-time order has no C2/C3 step at all
 (`config.rs:505-509` says so explicitly). The ordering claim is a description of
-a version that never shipped. Recorded as contradiction 22.
+a version that never shipped.
 
 **The state machine** is four states (`mod.rs:113-122`):
 
@@ -358,8 +357,7 @@ Transitions, as the code implements them:
 - **A second `open` while READY is always `-EBUSY`** — whatever the parameters.
   The design note says "a second `session_open` with identical parameters returns
   0" (`DESIGN.md:1899-1900`); the code has no parameter comparison, and
-  `test_open_requires_uninit_state` pins the refusal (`mod.rs:2425`). Recorded as
-  contradiction 22. [V]
+  `test_open_requires_uninit_state` pins the refusal (`mod.rs:2425`). [V]
 
 **Instantiation order**, as the host actually does it (`main.rs:1548-1733`):
 `linker.instantiate` → `verify_post_instantiate` (triple, band still zero, gap

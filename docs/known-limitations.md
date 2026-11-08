@@ -77,7 +77,7 @@ capability has two windows and the guest's frame is not drawn into the host's.
 This contradicts the ownership model in [`architecture.md`](architecture.md) §2
 and is unfixed: SDL_GPU has no external-surface handoff, so the fix is a new
 capability path rather than a parameter. [`modules/2d.md`](modules/2d.md) §3;
-contradiction 24; deferral recorded in [`vision.md`](vision.md) §5.2.
+deferral recorded in [`vision.md`](vision.md) §5.2.
 
 **Every 2d scenario runs `SDL_VIDEODRIVER=offscreen`**, so `SDL_CreateWindow`,
 `SDL_ClaimWindowForGPUDevice` and the swapchain blit in `present` are compiled and
@@ -87,7 +87,7 @@ observed in a run rather than merely unrecorded.
 ## The 2D pixel scenarios do not run on this rig
 
 `scripts/test-2d.mjs` fixes a real harness defect — its stub core never set
-`abi_version`, so every run failed at `init` since ABI v6 (contradiction 27).
+`abi_version`, so every run failed at `init` since ABI v6.
 With that fixed, the scenarios reach `present` and die from SIGSEGV inside
 `libnvidia-glcore` under `SDL_VIDEODRIVER=offscreen`. The driver-guard case runs
 before any device exists and passes here; the pixel scenarios need a conformant
@@ -122,7 +122,7 @@ correctly. Fixing either is a patch hunk with a cost on every rebuild.
 The host calls the vtable's `shutdown` then `destroy` on both exit paths
 (`tension-core/src/adapter/mod.rs:987-1011`); `tension-input/DESIGN.md:60` and
 `tension-input/src/adapter.cpp:226` still say it never does. Both belong to the
-v7 input pass. Contradiction 28.
+v7 input pass.
 
 ## Citations to the deleted design notes
 
@@ -142,8 +142,6 @@ What remains, deliberately:
   historical in the header. Rewriting the argument is not a citation fix.
 - **`docs/`** — the pages that preserve a deleted note's claims cite it as
   provenance, and each says so at the top of the section or the page.
-
-Contradiction 29.
 
 ## Win32: cross-compiled, never run; headers by overlay
 

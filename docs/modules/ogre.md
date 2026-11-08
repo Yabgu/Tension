@@ -269,7 +269,6 @@ are hand-written and merely *commented* as covered by the layout hash
 
 ### 4.3 Where the three descriptions disagree
 
-Read `tension-ogre/DESIGN.md` §3-6 for the *why*; do not read it for the *what*.
 Every disagreement below was checked against code and the SDK, and code + SDK
 win. Four are concrete:
 

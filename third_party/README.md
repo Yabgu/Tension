@@ -1,4 +1,4 @@
-# third_party — Ogre-Next and FreeImage, from source
+# third_party — Ogre-Next, from source
 
 `ogre-next/` is a submodule of [Ogre-Next](https://github.com/OGRECave/ogre-next)
 pinned at `475f783d76` (2026-09-07). Not the newest release tag: v3.0.0 is
@@ -8,12 +8,8 @@ repository ran against the master commit — the CI packages it
 system install is built from it. Moving the pin is a `git checkout <ref>`
 inside the submodule plus a commit here.
 
-`freeimage/` is a submodule of [WinMerge/freeimage](https://github.com/WinMerge/freeimage)
-pinned at `6bf6929b96` (FreeImage 3.19.25, the fork's `winmerge` branch, which
-is its default). That fork is the maintained 3.19.x line with a CMake build;
-the upstream SourceForge tree stops at 3.18.0, which is what the fork's own
-`master` branch still is. It is a submodule and not a host package because
-OGRE cannot be configured without FreeImage either way — see below.
+`ogre-next/` is the only submodule in this tree. FreeImage used to be a second
+one; it was removed — see "FreeImage is gone" below.
 
 ## Bootstrap
 
@@ -31,21 +27,15 @@ header on Linux) live inside it.
 
 Needs (Arch names, the PKGBUILD's dependency set): `cmake git glslang
 spirv-tools vulkan-headers mesa freetype2 glu libxaw libxrandr rapidjson
-tinyxml zziplib vulkan-icd-loader`. FreeImage is not on that list — it is
-built from `freeimage/` and bundles its own codecs (zlib, libpng, libjpeg,
-libtiff, OpenJPEG, webp, libraw, OpenEXR), so no `freeimage` host package is
-needed.
+tinyxml zziplib vulkan-icd-loader`. No image-codec package appears on that
+list and none is needed: STBI is compiled into `OgreNextMain` itself and is
+the only codec this build has (see below).
 
 It builds into `third_party/ogre-next-build/` and installs into
-`third_party/ogre-next-install/`, and builds FreeImage into
-`third_party/freeimage-build/` / `third_party/freeimage-install/` — all
-four gitignored. FreeImage is built first and its install is handed to
-OGRE's `find_package(FreeImage)` (`-DFREEIMAGE_HOME`, `CMAKE_PREFIX_PATH`);
-on Linux the OGRE libraries also record it as a `DT_RUNPATH`, so
-`libOgreNextMain.so` resolves `libfreeimage.so.3` without
-`LD_LIBRARY_PATH` help. There is no equivalent on Windows, where DLLs are
-found through `PATH`: put `third_party/freeimage-install/bin` on it before
-running the host.
+`third_party/ogre-next-install/` — both gitignored. That is the whole
+dependency tree: there is no second install to find. On Linux the install's
+own `lib` directory is baked in as the `DT_RUNPATH`, so `libOgreNextMain.so`
+and the plugins resolve their siblings without `LD_LIBRARY_PATH` help.
 
 The flag set mirrors the AUR `ogre-next-git` PKGBUILD minus what we do not
 use: GL3Plus + Vulkan render systems, the HLMS / Overlay / PlanarReflections /
@@ -58,70 +48,64 @@ JSONs and `resources2.cfg` the adapter reads; measured: with it off,
 Nothing is built from `Samples/`. A cold configure + build + install takes a
 few minutes on 16 cores; the script reports its own timing.
 
-## FreeImage is not optional (upstream build bug)
+## FreeImage is gone; upstream assumes it is there
 
-`OGRE_CONFIG_ENABLE_FREEIMAGE=OFF` does not remove FreeImage from the build,
-so neither does it remove the dependency. In `OgreMain/CMakeLists.txt` the
-unity-build exclusion list is seeded with `src/OgreFreeImageCodec2.cpp`
+This tree builds Ogre-Next **without** FreeImage. There is no
+`third_party/freeimage` submodule, no install of one, and
+`scripts/bootstrap.mjs` passes `-DOGRE_CONFIG_ENABLE_FREEIMAGE=OFF` beside
+`-DOGRE_CONFIG_ENABLE_STBI=ON` (`bootstrap.mjs:420-421`). STBI — vendored
+inside Ogre-Next under `OgreMain/src/stbi/`, public domain — is the only
+image codec the build has.
+
+`OFF` alone is not enough, because upstream seeds the unity-build exclusion
+list in `OgreMain/CMakeLists.txt` with `src/OgreFreeImageCodec2.cpp`
 unconditionally, and `create_unity_build_files()`
 (`CMake/Utils/OgreAddTargets.cmake`) puts that `SEPARATE` list back into the
 target even when `OGRE_UNITY_BUILD` is off — outside the `if(OGRE_UNITY_BUILD)`
 block. The disable path's `list(REMOVE_ITEM)` names the file by absolute path
 while the exclusion list names it relatively, so it cannot cancel it either.
-
-What `OFF` actually does is set `OGRE_NO_FREEIMAGE 1` in `OgreBuildSettings.h`,
-which skips the codec *registration* in `OgreRoot.cpp`. The translation unit
-is still compiled and linked, and it still needs `FreeImage.h` and the
-library. Measured with `OFF` and no FreeImage installed:
+What `OFF` does is set `OGRE_NO_FREEIMAGE 1` in `OgreBuildSettings.h`, which
+skips the codec *registration* in `OgreRoot.cpp`; the translation unit is
+still compiled and linked, and it still needs `FreeImage.h`. Measured with
+`OFF` and no FreeImage installed:
 
     OgreFreeImageCodec2.cpp:48:10: fatal error: FreeImage.h: No such file or directory
 
-— on the target's last object, after the other 295 have built. Tension fixes
-this via `third_party/patches/ogre-no-freeimage-codec.patch`, which guards
-`BROKEN_FILES_IN_UNITY_BUILD` in `OgreMain/CMakeLists.txt` on
-`if (OGRE_CONFIG_ENABLE_FREEIMAGE)`. With that guard, `src/OgreFreeImageCodec2.cpp`
-is omitted from the target and the build succeeds without FreeImage. STBI is enabled
-as the image codec (`OGRE_CONFIG_ENABLE_STBI=ON`).
+— on the target's last object, after the other 295 have built.
 
-## Licensing: permissive only
+`third_party/patches/ogre-no-freeimage-codec.patch` guards that line on
+`if (OGRE_CONFIG_ENABLE_FREEIMAGE)`, so the translation unit is never added to
+the target and the build completes without FreeImage. `bootstrap.mjs` applies
+it before configuring and reverts it afterwards; the patch table in
+[`docs/build.md`](../docs/build.md) §4 is the reference.
 
-FreeImage is dual-licensed **FIPL-1.0 or GPLv2**, at your choice, and FIPL is
-file-level copyleft (it descends from MPL 1.1): §3.7 permits combining it into
-a Larger Work and §3.6 permits distributing the executable under a licence of
-your choice. Tension stays MIT. What it owes is the FIPL text and a pointer to
-the FreeImage source — both automatic here, since the source is this submodule
-and `cmake --install` puts `license-fi.txt` in
-`freeimage-install/share/licenses/`.
+STBI is therefore not optional either. It defaults to `FALSE` upstream
+(`CMakeLists.txt:556`), and with both codecs off the build still succeeds but
+no PNG/JPEG/TGA loads — every texture through `Ogre::Image` fails at runtime.
+`tension-ogre/tests/probe_stbi_codec.cpp` exists because a build with no codec
+at all once passed the whole suite.
 
-`libfreeimage.so` is not one licence, though: its codecs are compiled in
-statically (`DT_NEEDED` is only libc/libstdc++/libm/libgcc). `BUILD_LIBRAWLITE`
-is **OFF** deliberately. LibRawLite is LGPL-2.1-or-CDDL-1.0 — the only
-copyleft codec in the set — and dropping it removes the election question
-entirely. Every remaining bundled codec is permissive: zlib, libpng, IJG
-(libjpeg), libtiff, libwebp, libdeflate, OpenJPEG, OpenEXR, Imath, OpenJPH,
-Zstd.
+## Licensing: the election FreeImage forced, and no longer does
 
-The switch is safe because the fork implements it properly:
-`Source/FreeImage/PluginRAW.cpp` has an `#else` branch that still defines
-`InitRAW` as a stub. That keeps the RAW slot in `FREE_IMAGE_FORMAT` occupied,
-so `FreeImage.h`'s compile-time `FIF_*` values stay aligned with the runtime
-plugin indices (the fork's own comment cites issue #38). Measured after the
-change: `FIF_PNG` is still 13, `FIF_RAW` 34, `FIF_WEBP` 35, extensions correct
-for all 40 formats, `FreeImage_FIFSupportsReading(FIF_RAW)` false, zero
-`libraw` symbols in the library, and 1.5 MB off its size.
+Removing FreeImage removed the only licence election in this tree's native
+stack. FreeImage is dual-licensed **FIPL-1.0 or GPLv2**, FIPL being
+file-level copyleft descended from MPL 1.1, and its codec set was not
+uniform: LibRawLite is LGPL-2.1-or-CDDL-1.0, and the HEIF stack is
+LGPL-3.0-or-later — both compiled in statically even when the library was
+shared. Staying permissive therefore meant per-codec flags
+(`BUILD_LIBRAWLITE=OFF`, `BUILD_LIBHEIF`/`BUILD_LIBJXL` off) rather than one
+decision, and a contributor could reinstate a copyleft obligation by flipping
+one of them.
 
-Nothing here reads camera RAW: the loader sniffs PNG/DDS magic and the
-adapter hands bytes to `Ogre::Image2`, which never opens a `.CR2`/`.NEF`/`.DNG`.
-Turning it back on is one flag in `scripts/bootstrap.mjs`, and it reinstates the
-LGPL-2.1/CDDL choice — elect CDDL if that ever happens, not LGPL-2.1, because
-CDDL's larger-work clause avoids LGPL §6 relinking obligations for a
-statically-linked library.
+None of that survives the removal. STBI is public domain — its header says so
+in the first line (`OgreMain/src/stbi/stb_image.h`: "stb_image - v2.27 -
+public domain image loader") — so the codec the tree actually compiles in
+carries no notice to reproduce and no election to make. Tension stays MIT.
 
-Also keep `BUILD_LIBHEIF` and `BUILD_LIBJXL` **OFF** (they default off). The
-fork's HEIF stack is libheif + libde265 under LGPL-3.0-or-later, compiled
-statically even when FreeImage is shared; its own README states distributors
-must then meet LGPL source and relinking obligations. HEIF/AVIF is the one
-codec choice that would put a static LGPL-3 library inside the shipped `.so`.
+If FreeImage is ever brought back, the flags above are the ones to re-check,
+and CDDL is the correct election for LibRawLite rather than LGPL-2.1: CDDL's
+larger-work clause avoids LGPL §6 relinking obligations for a statically
+linked library.
 
 ## How the tree prefers it
 
@@ -180,7 +164,7 @@ destroys and recreates the swapchain, racing the frame that still held the
 old one (`OgreVulkanWindow.cpp:722`). Armed on the render thread, and
 normalised to RGBA8 with `PixelFormatGpuUtils::bulkPixelConversion` (the
 Vulkan swapchain is BGRA where GL3+ is RGBA), every tier pixel case runs
-under Vulkan. One gap remains, documented in `tension-ogre/DESIGN.md` §15: a guest-built
+under Vulkan. One gap remains: a guest-built
 (hand-built v1) mesh renders under GL3+ but not Vulkan — winding, attribute
 set, capture timing and the serializer shape are all measured out (round
 21g: serializing the hand-built mesh and re-importing it exactly as the
