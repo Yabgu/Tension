@@ -29,7 +29,7 @@
 //! The Fortran step loop then calls the
 //! trampoline per stage, believing it is any other C function; the
 //! trampoline performs P4's copy-in / call / copy-out dance against the
-//! guest's linear memory (DESIGN.md §8).
+//! guest's linear memory (`tension-solver/DESIGN.md` §8).
 //!
 //! The trampoline is a plain `extern "C"` fn and cannot carry a context
 //! argument — the ABI's derivative typedef has no user-data slot (a purity
@@ -56,7 +56,7 @@
 //! here live per store. A second guest in the same process would share the
 //! id table but not the records — and any guest could destroy any handle by
 //! guessing its id. The interpreter runs one guest per process today;
-//! DESIGN.md §9 records this as a known limitation, not a hidden one.
+//! `tension-solver/DESIGN.md` §9 records this as a known limitation, not a hidden one.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -273,7 +273,7 @@ unsafe extern "C" fn world_trampoline(
 /// module's exported `table` — with the signatures the convention declares.
 /// Any entry that is missing, out of range, null, or mis-shaped is `None`:
 /// create refuses it. The module must export its function table as `table`
-/// (AssemblyScript produces that with `asc --exportTable`); without the
+/// (TensionScript produces that with `--exportTable`); without the
 /// export there is no way to reach an indirect function, and create refuses
 /// as it does for any other bad index.
 fn resolve_callbacks(
@@ -310,7 +310,7 @@ fn table_func(table: &Table, caller: &mut Caller<'_, HostState>, index: i32) -> 
 // ── source: "world" ───────────────────────────────────────────────────────
 //
 // A world-source config carries the YAML itself, in the wire's `world` entry
-// (DESIGN.md §12). `dim` is *not* stated by the caller (schema.yaml: world-
+// (`tension-solver/DESIGN.md` §12). `dim` is *not* stated by the caller (schema.yaml: world-
 // sourced configs never state it) and the decoder refuses one that does; the
 // host compiles the YAML, derives dim from the compiled header, fills the
 // struct's `dim` with it, and keeps the bytes alive per id. The shim never

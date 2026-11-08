@@ -4,13 +4,13 @@
 //! These live in the binary crate because that is where the host imports
 //! live: `link_solver` registers over `Linker<HostState>`, and integration
 //! tests under `tests/` link only the library crate. The fixtures are
-//! hand-written WAT — the AssemblyScript end-to-end guest, which also
+//! hand-written WAT — the TensionScript end-to-end guest, which also
 //! exercises this same path, is `examples/solver/wasm/`.
 //!
 //! Fixture convention: each guest writes its observations into fixed guest
 //! memory addresses and the test reads them back, so the assertions live on
 //! the Rust side where the values can be printed. Addresses used below:
-//! 64 = the config wire (DESIGN.md §12), 400..416 = i32 results,
+//! 64 = the config wire (`tension-solver/DESIGN.md` §12), 400..416 = i32 results,
 //! 424 = `t`, 432 = `y`,
 //! 512 = `set_state` input, 1024 / 66560 = the `deriv_buf_*` regions.
 //!
@@ -30,7 +30,7 @@ use wasmtime::{Config, Engine, Instance, Linker, Memory, Module, Store};
 
 /// The C shim's solver table is process-global and carries no internal
 /// locking — it is built for the runtime's one-guest, one-thread model
-/// (DESIGN.md §9). Tests share one process, so they serialize — across
+/// (`tension-solver/DESIGN.md` §9). Tests share one process, so they serialize — across
 /// test modules too, on the one lock in `mod.rs`.
 fn lock() -> std::sync::MutexGuard<'static, ()> {
     super::TEST_LOCK
@@ -470,7 +470,10 @@ fn test_state() -> HostState {
         arena: None,
         depth: 0,
         pending: crate::session::apply::PendingQueue::new(),
-        adapters: Vec::new(),
+        control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
+                adapters: Vec::new(),
         session: None,
     }
 }

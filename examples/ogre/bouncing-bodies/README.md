@@ -133,7 +133,7 @@ this demo is the difference between a pile that never stops and one that reaches
 `asleep 64/64, kinetic energy 0.0` at frame 136: the run now ends on the
 `asleepCount() == bodies` condition rather than at the frame cap, and the picture
 freezes with every body at the orientation it stopped in. The coefficient is 13
-(1/s) — grounded in the acid test's own clauses, not tuned here (DESIGN.md §5.1,
+(1/s) — grounded in the acid test's own clauses, not tuned here (`docs/modules/ogre.md` §4,
 §12).
 
 ## Where the SDK surface is documented
@@ -141,7 +141,7 @@ freezes with every body at the orientation it stopped in. The coefficient is 13
 `tension-framework/assembly/physics.ts` — `World`, `Body`, `Contacts`, `resolve`
 and what is deliberately not in them; `tension-framework/assembly/solver.ts` —
 the integrator the layer drives; `tension-framework/assembly/ogre/motion.ts` —
-the table the poses travel in; and `tension-ogre/DESIGN.md` §5.1 (the state model
+the table the poses travel in; and `docs/modules/ogre.md` §4 (the state model
 and the measured cost) and §14 (the acid test this example's sibling fixture
 runs).
 

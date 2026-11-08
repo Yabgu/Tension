@@ -57,6 +57,6 @@ record types each one takes; `tension-framework/assembly/ogre/mesh.ts` —
 `MeshBuilder`, and what `create_mesh` requires of the bytes it is given;
 `tension-framework/assembly/ogre/wire.ts` — the exact byte layout of every
 record and of the regions the guest writes into, with the offsets pinned by a
-check the guest can run (`assertOgreWireOffsets`). `tension-ogre/DESIGN.md` §5.1
+check the guest can run (`assertOgreWireOffsets`). `docs/modules/ogre.md` §4
 is the design record behind all of it, including the measured construction
 sequence a mesh built this way needs.

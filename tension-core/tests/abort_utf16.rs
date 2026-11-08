@@ -1,7 +1,7 @@
 //! The host's `env.abort` diagnostic, pinned for UTF-16 — the `read_as_string`
 //! decode in `src/main.rs`.
 //!
-//! AssemblyScript's `stub` runtime traps through `env.abort(msg, file, line,
+//! TensionScript's `stub` runtime traps through `env.abort(msg, file, line,
 //! col)`; both strings are UTF-16 code units in the guest's memory, and the
 //! host decodes them into the line a failed run shows:
 //!

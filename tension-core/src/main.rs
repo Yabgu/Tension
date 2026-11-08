@@ -31,7 +31,7 @@
 //! and a message — and the host applies the one layout, so a guest line is
 //! byte-identical to the same record from C or from Rust.
 //!
-//! Host ABI (module `tension::res`, DESIGN.md §7):
+//! Host ABI (module `tension::res`, `tension-res/DESIGN.md` §7):
 //!   res_open(path_ptr, path_len) -> fd | -errno
 //!   res_close(fd) -> 0 | -errno
 //!   res_read(fd, ptr, len) -> n | 0 | -errno
@@ -60,17 +60,18 @@
 //! `--debug` turns on guest debug info (`Config::debug_info`) and reports what
 //! a debugger can see of the loaded guest; `--symbol-path <PATH>` (repeatable)
 //! says where the debugger should look for the guest's symbols and sources.
-//! See the `debug` module for why an AssemblyScript guest carries no source
+//! See the `debug` module for why a TensionScript guest carries no source
 //! lines even with both.
 
 use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
+use tension_core::platform;
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
-/// installing the imports it registers (`tension-ogre/DESIGN.md` §7). The run
+/// installing the imports it registers (`docs/architecture.md` §6). The run
 /// path below loads, links, and hands the session what the adapters declared.
 mod adapter;
 mod ai;
@@ -80,7 +81,7 @@ mod debug;
 mod dwarf;
 pub(crate) mod leb;
 /// The session component: it owns the arena memory the guest imports and the
-/// two verbs that open and close a session (`tension-ogre/DESIGN.md` §4–§6).
+/// two verbs that open and close a session (`docs/session.md` §2–§7).
 mod session;
 mod solver;
 
@@ -125,8 +126,8 @@ struct HostState {
     /// shim's solver id (solver/mod.rs). Per store, like everything here.
     solver: solver::SolverHost,
     /// The posting face: the queues an adapter thread writes into through
-    /// `post_event`, and the source of what the epoch publishes (`DESIGN.md`
-    /// §3.2–§3.4). Shared with the adapter host by `Arc`, and separate from
+    /// `post_event`, and the source of what the epoch publishes (`docs/session.md`
+    /// §3–§5). Shared with the adapter host by `Arc`, and separate from
     /// `session` on purpose: the verbs take the session out of the store for
     /// the duration of a call, and the epoch will need this while they have it.
     /// The arena memory, reachable without the session. The epoch runs *inside*
@@ -135,14 +136,28 @@ struct HostState {
     arena: Option<Memory>,
     /// How deep the session is inside callback invocations. Host-side, not in
     /// the arena: it is the re-entrancy guard a callback's `session_wait` hits
-    /// (`DESIGN.md` §6.3), and a guest that writes the arena cannot clear it.
+    /// (`docs/session.md` §7), and a guest that writes the arena cannot clear it.
     depth: u32,
     /// Deferred submissions: what a `queue_*` verb copied out of a callback, and
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
     /// and never cleared by a trap (R7) — a fault leaves the work where it is.
     pending: session::apply::PendingQueue,
+    /// The window-control queue: what a layer posts through `post_control`,
+    /// what the guest posts through `tension::platform.control`, and what the
+    /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
+    control: std::sync::Arc<platform::ControlBus>,
+    /// The host-owned window, when `--window` asked for one.
+    ///
+    /// Lives in the store rather than beside it because `host_loop` needs to
+    /// pump it once per iteration and has no other way to reach it. Dropped
+    /// after `teardown_adapters`, so no adapter can hold a handle into a dead
+    /// instance.
+    host_window: Option<platform::HostWindow>,
+    /// Set by the pump when the user closes the window. The loop breaks on it,
+    /// the same way it breaks when the guest closes its session.
+    window_closed: bool,
     /// The loaded adapters, in registration order: what the epoch's publish
-    /// phase calls, and in what order (`DESIGN.md` §3.3).
+    /// phase calls, and in what order (`docs/session.md` §3).
     adapters: Vec<adapter::AdapterCall>,
     posting: std::sync::Arc<session::posting::PostingSide>,
     /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
@@ -198,7 +213,7 @@ const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
 const EINVAL: i32 = -22;
 
-/// Read an AssemblyScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
+/// Read a TensionScript `String` (UTF-16LE data at `ptr`, `rtSize` at `ptr-4`)
 /// out of the guest memory and decode it to a Rust `String`.
 fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
     if ptr == 0 {
@@ -258,6 +273,10 @@ options:
                          object per line). Env fallback: TENSION_LOG_FORMAT
   --log-file <PATH>      append log lines to PATH instead of stderr. Env
                          fallback: TENSION_LOG_FILE
+  --window <W>x<H>       spike/dev flag: creates a host-owned window, and the
+                         Vulkan instance and surface that go with it. Only
+                         tension-ogre consumes the surface as of this pass;
+                         nothing else looks at it yet. Default off.
   --session-open         A1 test-only: open the session from the host before
                          `_start_game`, for a guest that does not call
                          `session_open` itself. Real guests open their own
@@ -345,7 +364,7 @@ struct Cli {
     symbol_paths: Vec<PathBuf>,
     res_paths: Vec<PathBuf>,
     /// Capability adapters to load: a path, or a bare name resolved through
-    /// `TENSION_CAPABILITY_PATH` (`DESIGN.md` §7, r2 decision 3).
+    /// `TENSION_CAPABILITY_PATH` (the CLI's `--capability` help states the rule).
     capability_paths: Vec<String>,
     /// `--log-level` values, in order. A later flag overrides an earlier one.
     log_levels: Vec<String>,
@@ -361,8 +380,67 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
+    /// `--window <W>x<H>`: a host-owned window, created before any capability
+    /// loads. `None` means no window, which is the default and what every
+    /// existing test and example gets.
+    window: Option<(u32, u32)>,
     wasm_path: String,
     args: Vec<String>,
+}
+
+/// Parse `--window`'s `WxH` argument.
+///
+/// One argument rather than two: `<game.wasm>` ends option parsing, so a second
+/// bare number would be ambiguous with a game argument. `x` is the separator
+/// because `320x240` is how every window size in this tree is already written.
+
+/// The window width a guest sees, or 0 for "the host owns no window".
+///
+/// **This answers the window question, not the Vulkan question.** Whether a
+/// `VkInstance` and a `VkSurfaceKHR` exist is a renderer's business and is
+/// deliberately invisible here: a guest asking how big its window is must not
+/// depend on whether something has claimed the surface for swapchain work. The
+/// two were conflated in the first cut — the guest read 0 for a window that was
+/// plainly open — which is exactly the ambiguity `has_surface()` exists to
+/// prevent on the Rust side, re-created one layer up.
+///
+/// 0 is unambiguous because a real window is never 0 wide: `parse_window_size`
+/// refuses it at the CLI and `apply_control` clamps to 1.
+fn surface_width(caller: &Caller<'_, HostState>) -> u32 {
+    caller
+        .data()
+        .host_window
+        .as_ref()
+        .map(|window| window.published_size().0)
+        .unwrap_or(0)
+}
+
+/// The height, with the same "0 means no window" contract as [`surface_width`].
+fn surface_height(caller: &Caller<'_, HostState>) -> u32 {
+    caller
+        .data()
+        .host_window
+        .as_ref()
+        .map(|window| window.published_size().1)
+        .unwrap_or(0)
+}
+
+fn parse_window_size(value: &str) -> Result<(u32, u32), String> {
+    let (width, height) = value
+        .split_once('x')
+        .ok_or_else(|| format!("`--window` wants <W>x<H>, got `{value}`"))?;
+    let parse = |part: &str, what: &str| -> Result<u32, String> {
+        part.parse::<u32>()
+            .map_err(|_| format!("`--window`: {what} `{part}` is not a number"))
+    };
+    let width = parse(width, "width")?;
+    let height = parse(height, "height")?;
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "`--window`: {width}x{height} is not a size; both must be at least 1"
+        ));
+    }
+    Ok((width, height))
 }
 
 /// Parse the arguments that follow the program name.
@@ -378,6 +456,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut log_levels = Vec::new();
     let mut log_format: Option<String> = None;
     let mut log_file: Option<PathBuf> = None;
+    let mut window: Option<(u32, u32)> = None;
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
@@ -447,6 +526,10 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 let value = rest.next().ok_or("`--log-file` needs a path")?;
                 log_file = Some(PathBuf::from(value));
             }
+            "--window" => {
+                let value = rest.next().ok_or("`--window` needs <W>x<H>")?;
+                window = Some(parse_window_size(&value)?);
+            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -476,6 +559,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
+        window,
         wasm_path,
         args: rest.collect(),
     })
@@ -512,7 +596,168 @@ fn build_log_config(cli: &Cli) -> Result<LogConfig, ConfigError> {
     Ok(config)
 }
 
+/// The `graph` subcommand.
+///
+/// One action today: `emit-default --out <dir>` writes the `default_2d` blob,
+/// the GLSL both lowerings produce for it, and the comparator's key table. The
+/// build script (`scripts/build-2d.mjs`) runs this, compiles the GLSL, and
+/// embeds the result — so the adapter carries a compiled graph rather than a
+/// second hand-written copy of one.
+///
+/// It is also the inspection tool: `tension-core graph emit-default --out /tmp`
+/// is how a reviewer reads what the graph actually says.
+const GRAPH_USAGE: &str = "\
+usage: tension-core graph emit-default --out <dir>
+
+  compile <blob> --out <dir>  compiles one blob to vs.spv/fs.spv
+  Writes default_2d.t2dg (the wire blob), default_2d.graph.vert and
+  default_2d.graph.frag (the GLSL both lowerings produce), and
+  default_2d.keys.txt (the comparator's key table).";
+
+fn run_graph(argv: Vec<String>) -> anyhow::Result<()> {
+    if argv.first().map(|a| a == "emit-default").unwrap_or(false) {
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    let Some(value) = argv.get(i) else {
+                        anyhow::bail!("--out needs a directory\n\n{GRAPH_USAGE}");
+                    };
+                    out = std::path::PathBuf::from(value);
+                }
+                other => anyhow::bail!("unknown argument `{other}`\n\n{GRAPH_USAGE}"),
+            }
+            i += 1;
+        }
+        std::fs::create_dir_all(&out)?;
+
+        // Both graphs, through the same path: parse, validate, lower. Emitting
+        // them from one loop is what makes the built-in preset and the second
+        // pipeline the same kind of thing to the build.
+        for (name, blob) in [
+            ("default_2d", tension_core::pipeline_default::serialize_default_2d()),
+            ("default_2d_scaled", tension_core::pipeline_default::serialize_default_2d_scaled()),
+        ] {
+            let graph = tension_core::pipeline::parser::parse(&blob)
+                .map_err(|e| anyhow::anyhow!("{name}: the serializer's own output failed to parse: {e}"))?;
+            tension_core::pipeline::validate::validate(&graph).map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            let stage = &graph.stages[0];
+            let lowered = tension_core::pipeline::glsl_backend::lower(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+            let keys = tension_core::pipeline::glsl_backend::sort_keys(&graph, stage)
+                .map_err(|e| anyhow::anyhow!("{name}: {e}"))?;
+
+            std::fs::write(out.join(format!("{name}.t2dg")), &blob)?;
+            std::fs::write(out.join(format!("{name}.graph.vert")), &lowered.vertex)?;
+            std::fs::write(out.join(format!("{name}.graph.frag")), &lowered.fragment)?;
+
+            let mut table = String::new();
+            for key in &keys {
+                // `offset dtype scale`: the scale is what a `mul` key adds, and
+                // 1.0 for every key a plain `load_field` produces.
+                table.push_str(&format!("{} {} {}\n", key.offset, key.dtype.to_wire(), key.scale.unwrap_or(1.0)));
+            }
+            std::fs::write(out.join(format!("{name}.keys.txt")), table)?;
+
+            println!("{name}: {} bytes, hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        }
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "emit-scaled").unwrap_or(false) {
+        // `graph emit-scaled --factor F --out FILE`: the scaled graph at any
+        // factor. The runtime-compilation test needs 1.5, which is not a
+        // shipped pipeline and therefore has to be compiled at run time.
+        let mut factor = 2.0f32;
+        let mut out = std::path::PathBuf::from("default_2d_scaled_custom.t2dg");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--factor" => {
+                    i += 1;
+                    factor = argv.get(i).and_then(|v| v.parse().ok()).unwrap_or(2.0);
+                }
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let blob = tension_core::pipeline_default::serialize(
+            &tension_core::pipeline_default::scaled_graph_with(factor),
+        );
+        if let Some(parent) = out.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(&out, &blob)?;
+        println!("{} bytes  hash 0x{:016x}", blob.len(), tension_core::pipeline::Graph::hash(&blob));
+        return Ok(());
+    }
+    if argv.first().map(|a| a == "compile").unwrap_or(false) {
+        // `graph compile <blob> --out <dir>`: the runtime compiler as a tool.
+        // The 2D stub core calls this to stand in for the host's
+        // `compile_graph` slot, and a human uses it to see what a blob turns
+        // into without a GPU.
+        let mut blob_path = None;
+        let mut out = std::path::PathBuf::from(".");
+        let mut i = 1;
+        while i < argv.len() {
+            match argv[i].as_str() {
+                "--out" => {
+                    i += 1;
+                    out = std::path::PathBuf::from(argv.get(i).cloned().unwrap_or_default());
+                }
+                other => blob_path = Some(std::path::PathBuf::from(other)),
+            }
+            i += 1;
+        }
+        let Some(blob_path) = blob_path else {
+            anyhow::bail!("graph compile needs a blob path\n\n{GRAPH_USAGE}");
+        };
+        let blob = std::fs::read(&blob_path)?;
+        let started = std::time::Instant::now();
+        // Distinct exit codes, because the 2D stub core maps them back to
+        // errnos and a flattened "something failed" would make the adapter's
+        // -EINVAL/-ENOSYS distinction untestable.
+        //   2 -> the blob is malformed or invalid  (-EINVAL)
+        //   3 -> the graph is valid but unsupported (-ENOSYS)
+        let compiled = match tension_core::pipeline::naga_backend::compile(&blob) {
+            Ok(compiled) => compiled,
+            Err(error) => {
+                eprintln!("graph compile: {error}");
+                let code = match error {
+                    tension_core::pipeline::GraphError::Malformed(_)
+                    | tension_core::pipeline::GraphError::Invalid(_) => 2,
+                    tension_core::pipeline::GraphError::Unsupported(_) => 3,
+                };
+                std::process::exit(code);
+            }
+        };
+        let elapsed = started.elapsed();
+        std::fs::create_dir_all(&out)?;
+        std::fs::write(out.join("vs.spv"), compiled.vertex_bytes())?;
+        std::fs::write(out.join("fs.spv"), compiled.fragment_bytes())?;
+        eprintln!(
+            "compiled {} in {:.3} ms (vs {} B, fs {} B)",
+            blob_path.display(),
+            elapsed.as_secs_f64() * 1e3,
+            compiled.vertex.len() * 4,
+            compiled.fragment.len() * 4
+        );
+        return Ok(());
+    }
+    anyhow::bail!("{GRAPH_USAGE}")
+}
+
 fn main() -> anyhow::Result<()> {
+    // Install the process-wide services the C ABI exposes. Registered before
+    // any adapter can load, so `shader_generate` answers with the default
+    // generator rather than `-ENOSYS` for a preset it should serve.
+    tension_core::init();
     let mut argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.first().map(|a| a == "pack").unwrap_or(false) {
         argv.remove(0);
@@ -524,6 +769,10 @@ fn main() -> anyhow::Result<()> {
             }
         };
         return run_pack(cli);
+    }
+    if argv.first().map(|a| a == "graph").unwrap_or(false) {
+        argv.remove(0);
+        return run_graph(argv);
     }
     if argv.first().map(|a| a == "layout-hash").unwrap_or(false) {
         // The arena's shape hash, for the AS build pipeline: `session.json` and
@@ -619,7 +868,7 @@ fn main() -> anyhow::Result<()> {
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
-    // at runtime. `load_file` keeps one copy of each pak (DESIGN.md §9.2).
+    // at runtime. `load_file` keeps one copy of each pak (`tension-res/DESIGN.md` §9.2).
     let mut resource_sets: Vec<ResourceSet<'static>> = Vec::with_capacity(cli.res_paths.len());
     for path in &cli.res_paths {
         let set = ResourceSet::load_file(path)
@@ -663,6 +912,9 @@ fn main() -> anyhow::Result<()> {
             arena: None,
             depth: 0,
             pending: session::apply::PendingQueue::new(),
+            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
+                host_window: None,
+            window_closed: false,
             adapters: Vec::new(),
             session: None,
         },
@@ -1050,6 +1302,56 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    // tension::platform ABI -----------------------------------------------
+    //
+    // The guest's half of the control bus. Three imports, registered beside
+    // `tension::io` because they are core services, not capabilities: a guest
+    // with no renderer and no capability still has a window to talk about.
+    //
+    // `control` constructs the message and posts it with source GUEST — the
+    // stamp is applied by the bus, so the value here is irrelevant and is set
+    // only so the struct is fully initialised.
+    //
+    // All three are ordinary imports with `flags = 0` in the adapter sense,
+    // which does not apply to them: the flag machinery lives in the *adapter*
+    // dispatch (`adapter/ffi.rs`), gated on `HostState::depth`, and a core
+    // import never goes through it. So these work from a scheduler-triggered
+    // frame as well as a normal one — verified by reading the resume path,
+    // which sets no depth.
+    linker.func_wrap(
+        "tension::platform",
+        "control",
+        |mut caller: Caller<'_, HostState>, kind: u32, a0: i32, a1: i32, a2: i32, a3: i32| -> i32 {
+            let msg = platform::TensionCtrlMsg {
+                kind,
+                visibility: platform::CTRL_OBSERVABLE,
+                arg0: a0,
+                arg1: a1,
+                arg2: a2,
+                arg3: a3,
+                source: platform::CTRL_SRC_GUEST,
+                reserved: 0,
+            };
+            let bus = std::sync::Arc::clone(&caller.data().control);
+            match bus.post_guest(&msg) {
+                Ok(()) => 0,
+                Err(platform::ControlError::UnknownKind) => -22, // EINVAL
+                Err(platform::ControlError::Malformed) => -22,
+                Err(platform::ControlError::Full) => -28,       // ENOSPC
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "surface_width",
+        |caller: Caller<'_, HostState>| -> u32 { surface_width(&caller) },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "surface_height",
+        |caller: Caller<'_, HostState>| -> u32 { surface_height(&caller) },
+    )?;
+
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
 
@@ -1063,7 +1365,7 @@ fn main() -> anyhow::Result<()> {
     solver::link_solver(&mut linker)?;
 
     // tension::session ABI -------------------------------------------------
-    // The memory is defined under both import names (the AssemblyScript
+    // The memory is defined under both import names (the TensionScript
     // toolchain emits `env::memory`; Tension documents `session::memory`), the
     // two verbs are registered, and the session is installed into the store —
     // the verbs reach it through `caller.data()`, so it must be there before the
@@ -1088,9 +1390,44 @@ fn main() -> anyhow::Result<()> {
     // this host instead of failing at instantiation with "unknown import".
     scheduler::link_scheduler(&mut linker)?;
 
+    // The host-owned window -------------------------------------------------
+    //
+    // Created before any adapter loads, because an adapter's `init` is the
+    // first thing that can ask for the surface (`host_surface`), and a surface
+    // cannot exist before the window does. Before instantiation too, so a guest
+    // that polls `tension::platform.surface_width()` on its first instruction
+    // gets the real size rather than a zero it has to special-case.
+    //
+    // Off unless asked for: every existing test, example and CI path passes no
+    // `--window`, so nothing about their behaviour changes.
+    if let Some((width, height)) = cli.window {
+        match platform::HostWindow::new("Tension", width, height) {
+            Ok(window) => {
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--window: {}x{} window open on '{}' (SDL {})",
+                        window.published_size().0,
+                        window.published_size().1,
+                        window.driver(),
+                        window.sdl_version()
+                    ),
+                );
+                store.data_mut().host_window = Some(window);
+            }
+            Err(error) => {
+                // A refused window is a startup failure, not a warning: the
+                // caller asked for one, and a run that continued headless while
+                // claiming otherwise is the failure mode this refuses.
+                anyhow::bail!("--window {width}x{height}: {error}");
+            }
+        }
+    }
+
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
-    // the guest may call, and because `region_lookup` answers from the frozen
+    // the guest may call, and because `region_lookup` answers from the
     // layout — safe with no arena in sight (§7.2). Nothing loads unless
     // `--capability` (or `TENSION_CAPABILITY_PATH`) asks for it, so a plain run
     // is byte-for-byte the run it always was.
@@ -1113,13 +1450,76 @@ fn main() -> anyhow::Result<()> {
             Err(error) => anyhow::bail!("--capability {}: {error}", path.display()),
         }
     }
+    // Did anything want the surface?
+    //
+    // The surface is created lazily, on the first `host_surface` call, so at
+    // this point "no surface" is a normal state and not a failure. Saying so is
+    // the difference between a developer wondering why `--window` produced no
+    // swapchain and knowing that no adapter asked: this pass has no
+    // `host_surface` slot at all, so the answer is always this line today, and
+    // that is worth stating plainly rather than leaving to be inferred.
+    if let Some(window) = store.data().host_window.as_ref() {
+        if !window.has_surface() {
+            let (width, height) = window.published_size();
+            logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "--window: {width}x{height} window open on '{}'; no adapter requested a \
+                     surface, so no VkInstance was created",
+                    window.driver()
+                ),
+            );
+        }
+    }
+
     // The host must outlive every call the imports make, so it lives here, in
     // `main`'s frame, for as long as the linker does. It carries a clone of the
     // posting face, which is what an adapter thread reaches through
     // `post_event` with no borrow of the store at all.
-    let adapter_host = adapter::AdapterHost::new(std::sync::Arc::clone(
-        &store.data().posting,
-    ));
+    let adapter_host = adapter::AdapterHost::with_control(
+        std::sync::Arc::clone(&store.data().posting),
+        std::sync::Arc::clone(&store.data().control),
+    );
+    // Publish the surface before any adapter loads, so an adapter's `init`
+    // already sees it. Created eagerly here rather than on demand because the
+    // adapter cannot ask for it otherwise: it reaches the host through a table
+    // built before it runs.
+    //
+    // Only when a capability was asked for. A `--window` run with no renderer
+    // still pays nothing for Vulkan, which is the laziness that matters.
+    if !adapters.is_empty() {
+        if let Some(window) = store.data_mut().host_window.as_mut() {
+            match window.surface() {
+                Ok(surface) => {
+                    // The names go with the handle, in one publish: an adapter
+                    // builds a `VulkanExternalInstance` from both, and Ogre
+                    // treats that list as the truth about what is enabled.
+                    let extensions = window.instance_extensions().to_vec();
+                    adapter_host.publish_host_surface(surface, extensions);
+                    logging::log(
+                        Level::Info,
+                        "core",
+                        &format!(
+                            "--window: surface published to adapters ({}x{}, instance 0x{:x})",
+                            surface.width, surface.height, surface.instance
+                        ),
+                    );
+                }
+                Err(error) => {
+                    // Not fatal: an adapter that gets -ENOSYS falls back to
+                    // creating its own window, which is the pre-v6 behaviour and
+                    // still correct. Say so loudly though, because it means the
+                    // renderer is NOT on the host surface.
+                    logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("--window: adapters will not get a host surface: {error}"),
+                    );
+                }
+            }
+        }
+    }
     if !adapters.is_empty() {
         adapter::link_adapters(&mut linker, &mut adapters, adapter_host.api())?;
     }
@@ -1201,12 +1601,12 @@ fn main() -> anyhow::Result<()> {
 
     // The arena as the session left it, before the guest's first instruction:
     // the control block's triple, the region band's zeros, and the gap's canary
-    // lattice (DESIGN.md §11 step 2).
+    // lattice (`docs/session.md` §8, step 2).
     if let Some(session) = store.data().session.as_ref() {
         session.verify_post_instantiate(&store)?;
     }
 
-    // AssemblyScript's runtime initializer, when the guest exports one.
+    // TensionScript's runtime initializer, when the guest exports one.
     //
     // The SDK builds with `--exportStart __start` so this is an export rather
     // than a `start` section: a start section would run guest code at
@@ -1341,6 +1741,10 @@ fn main() -> anyhow::Result<()> {
     // end of this function instead, after the host's own session close.
     if let Err(error) = guest_result {
         adapter::teardown_adapters(&mut adapters);
+        // The window goes after the last adapter, on both paths: an adapter
+        // holding a VkSurfaceKHR into an instance this drop destroys would be
+        // a use-after-free that only shows up on a trap path.
+        drop_host_window(&mut store);
         return Err(error);
     }
 
@@ -1410,7 +1814,28 @@ fn main() -> anyhow::Result<()> {
     // the session itself, or that never opened one, reaches the same place.)
     adapter::teardown_adapters(&mut adapters);
 
+    // Same ordering as the trapping path: adapters first, then the surface and
+    // instance they were handed.
+    drop_host_window(&mut store);
+
     Ok(())
+}
+
+/// Destroy the host's surface and instance, if there is one.
+///
+/// A named function rather than an assignment at two call sites, because the
+/// ordering requirement — after `teardown_adapters`, before the store drops —
+/// applies to both and is the kind of thing a third exit path would forget.
+fn drop_host_window(store: &mut Store<HostState>) {
+    if let Some(window) = store.data_mut().host_window.take() {
+        let (width, height) = window.published_size();
+        logging::log(
+            Level::Debug,
+            "core",
+            &format!("--window: closing {width}x{height} on '{}'", window.driver()),
+        );
+        drop(window);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1418,7 +1843,7 @@ fn main() -> anyhow::Result<()> {
 // ---------------------------------------------------------------------------
 
 /// The checks that must pass on the guest's own structure before anything is
-/// instantiated (`DESIGN.md` §4, §11).
+/// instantiated (`docs/session.md` §2, §8).
 ///
 /// There were three in the round's list; two are here, because the third is
 /// already enforced: a module that imports `session::*` but declares no memory
@@ -1439,7 +1864,7 @@ fn main() -> anyhow::Result<()> {
 ///   would run guest code *before* that verification, which is exactly the window
 ///   the check exists to protect. The scope is the rationale: a guest with no
 ///   session import has no arena to verify, and the pre-session examples build
-///   with plain `asc`, which emits a start section by default (DESIGN.md §10).
+///   with plain `asc`, which emits a start section by default (`docs/session.md` §7).
 /// Drive a host-owned guest: wait, publish, match, wake.
 ///
 /// The primitive is the session's condition variable (`PostingSide::wait_for_events`,
@@ -1516,6 +1941,104 @@ fn host_loop(
         let outstanding = store.data().scheduler.parked() > 0;
         if !running && !outstanding && store.data().wake_batch.is_empty() {
             break;
+        }
+
+        // Drain SDL before blocking, then block for at most one slice.
+        //
+        // **Why a bounded timeout rather than an event watch.** SDL events only
+        // reach the queue during a pump, so a watch callback cannot fire while
+        // this thread is parked in `wait_for_events` — it would wake the loop
+        // only after something else had already pumped, which is the case that
+        // needs no waking. The 16 ms slice already exists as the loop's safety
+        // net, and pumping once per slice bounds window-event latency to one
+        // frame at 60 Hz while leaving the wait fully interruptible by a guest
+        // wake. See `HOST_LOOP_SLICE_MS`.
+        //
+        // Thread rule: this is the same thread that ran `HostWindow::new`, which
+        // is the only thread SDL allows to touch a window's events.
+        {
+            let pumped = store
+                .data_mut()
+                .host_window
+                .as_mut()
+                .map(|window| window.pump());
+            if let Some(events) = pumped {
+                if let Some((width, height)) = events.resized {
+                    logging::log(
+                        Level::Debug,
+                        "core",
+                        &format!("--window: resized to {width}x{height}"),
+                    );
+                }
+                if events.close_requested {
+                    // The same effect as the guest closing its session: stop
+                    // driving it and let `main` tear down in order. Not an
+                    // error, and not a teardown here — the adapters still need
+                    // `shutdown` on their own threads, which `main` arranges.
+                    store.data_mut().window_closed = true;
+                }
+            }
+        }
+        if store.data().window_closed {
+            logging::log(Level::Info, "core", "--window: closed; stopping the host loop");
+            break;
+        }
+
+        // ── the control executor ────────────────────────────────────────
+        //
+        // One drain, one thread, one place that calls SDL_SetWindow*. The swap
+        // inside `drain` is what makes this safe against a producer on another
+        // thread: the queue is replaced, so a layer posting while this runs
+        // never blocks and is never blocked, and this loop holds no lock while
+        // it touches the window.
+        //
+        // Reserving part of the queue for CORE is what stops a guest spamming
+        // `control()` from starving the host's own timers, DPI and focus
+        // traffic. A core message that finds the queue genuinely full comes
+        // back as `ApplyNow` rather than being dropped: it is the one source
+        // whose loss would be undetectable.
+        let pending = {
+            let bus = std::sync::Arc::clone(&store.data().control);
+            bus.drain()
+        };
+        if !pending.is_empty() {
+            let mut applied = 0u32;
+            let mut failed = 0u32;
+            if let Some(window) = store.data_mut().host_window.as_mut() {
+                for msg in &pending {
+                    match window.apply_control(msg) {
+                        Ok(()) => applied += 1,
+                        Err(error) => {
+                            failed += 1;
+                            logging::log(
+                                Level::Warn,
+                                "core",
+                                &format!(
+                                    "--window: control kind {} from source {} refused: {error}",
+                                    msg.kind, msg.source
+                                ),
+                            );
+                        }
+                    }
+                }
+            } else if store.data().host_window.is_none() {
+                // No window: nothing to apply to. Not an error — a guest may
+                // post control with no `--window`, and the queue is drained so
+                // it cannot grow. Say so once at debug, not per message.
+                logging::log(
+                    Level::Debug,
+                    "core",
+                    &format!("--window: {} control message(s) with no host window", pending.len()),
+                );
+                applied = pending.len() as u32;
+            }
+            if applied > 0 {
+                logging::log(
+                    Level::Trace,
+                    "core",
+                    &format!("--window: applied {applied} control message(s), {failed} failed"),
+                );
+            }
         }
 
         // Block on the session's condition variable. A completion, a fault or a

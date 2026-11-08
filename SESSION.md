@@ -3,7 +3,9 @@
 What a capability is allowed to assume about how many of it exist.
 
 **This is a design statement, not a description of the code.** Where the two
-differ the aspect table (§3) says so and §11 records the gap. The current
+differ the aspect table (§3) says so and §11 records the gap. Citations to
+`tension-ogre/DESIGN.md` are historical: that note was deleted, and its
+surviving claims are in `docs/modules/ogre.md`. The current
 code's singularity is an implementation limit, not a decision this design
 makes: where it made that choice knowingly it said so out loud, and where it
 did not the limit is implicit in a field.
@@ -75,7 +77,7 @@ says **migration** and §11 has the item.
 | AI | the inference backend (llama.cpp's process init) | process | fatal | singleton | one per process by llama.cpp's own construction |
 | Solver | a solver handle: one bound system and its state | caller | recoverable | session | migration (A2) — keyed by id already, in a per-engine-session map |
 | Solver | the core's module globals (gravity, sleep mask, layout mode) | caller | recoverable | session | migration (A2) — two live worlds share them today; the seam is the core's |
-| Ogre | the renderer: Root, SceneManager, window, workspace, render thread, its tables | caller | recoverable | session | migration (A4) — one per process today; the two-Root question is open |
+| Ogre | the renderer: Root, SceneManager, workspace, render thread, its tables — **not** the window, which is the host's (`docs/architecture.md` §2) | caller | recoverable | session | migration (A4) — one per process today; the two-Root question is open |
 | Ogre | OGRE-Next's own process managers (LogManager, ResourceGroupManager, MeshManager, …) | process | fatal | singleton | not Tension's to re-key; the ground under A4 (§11) |
 
 Two notes the table cannot carry:
@@ -328,12 +330,16 @@ it is optional: if the capability-session handle alone distinguishes instances,
 the adapter has enough. Phase A is what exercises that handle-passing
 discipline, which is why Phase B is cheaper once Phase A has landed.
 
-**M3's precondition: per-instance state needs per-instance death.** The host
-today calls `init` and `link` and never calls the vtable's `shutdown` or
-`destroy`, so an adapter has no per-instance teardown hook to hang keyed state's
-destruction on. That is fixed on `polish/loader-sibling-quiet` — commit
-`1d86f40`, "make the adapter's destructor safe without shutdown" — and not yet
-on `main`. Once it lands, the precondition is met.
+**M3's precondition: per-instance state needs per-instance death.** When this
+was written, the host called `init` and `link` and never called the vtable's
+`shutdown` or `destroy`, so an adapter had no per-instance teardown hook to hang
+keyed state's destruction on. **That was fixed on 2026-10-15** — `9d3af39`,
+"harden the ABI boundary", added `LoadedAdapter::teardown`, which calls
+`shutdown` then `destroy` on both of the host's exit paths
+(`tension-core/src/adapter/mod.rs`; `docs/architecture.md` §3). The precondition
+is met; the paragraph above is kept because the reasoning is what made the fix
+happen. Contradiction 28 records the three source comments that still say
+otherwise.
 
 **The OGRE-Next question — pending verification.** Whether OGRE-Next can host two
 live `Root`s in one process is not yet established, and A4 depends on it. The

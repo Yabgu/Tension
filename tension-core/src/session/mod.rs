@@ -2,7 +2,7 @@
 //!
 //! The session owns the memory the guest imports, prepares the arena the guest
 //! reads, and answers the two verbs that open and close it
-//! (`tension-ogre/DESIGN.md` §4, §5, §6, §11). Delivery — `session_wait`,
+//! (`docs/session.md` §2–§8). Delivery — `session_wait`,
 //! `session_drain`, the subscriptions, the epoch, deferred submission — and the
 //! adapter loader are later rounds; the ring headers written here are the
 //! storage those phases will use, not a delivery mechanism.
@@ -34,24 +34,24 @@
 //! instantiation.
 
 // `arena` is crate-visible so the adapter registry can answer `region_lookup`
-// from the one frozen layout rather than keeping a second copy of it.
+// from the one layout rather than keeping a second copy of it.
 pub(crate) mod arena;
 mod config;
 /// The posting face: the queues an adapter thread writes into, and the
-/// sequence counter they share (`tension-ogre/DESIGN.md` §3.2, §7.2).
+/// sequence counter they share (`docs/session.md` §4).
 pub mod posting;
 /// The arena side: the thirteen per-class sub-rings, and the transfer that moves a
-/// class queue into its ring (`DESIGN.md` §3.3, §3.4).
+/// class queue into its ring (`docs/session.md` §3, §5).
 pub mod subring;
 /// The epoch: publish, invoke, apply — the only place delivery happens
-/// (`DESIGN.md` §3.3).
+/// (`docs/session.md` §3).
 pub mod epoch;
 /// Deferred submission: the pending queue a callback writes into, and the apply
-/// phase that drains it (`DESIGN.md` §3.5).
+/// phase that drains it (`docs/session.md` §6).
 pub mod apply;
 
 /// A capability's declared need for one region kind, re-exported because the
-/// run hands the set from the registry to the session (`DESIGN.md` §7.2).
+/// run hands the set from the registry to the session (`docs/session.md` §4).
 pub use config::RegionNeed;
 
 use wasmtime::{
@@ -67,10 +67,10 @@ use wasmtime::{Config, Engine, Instance};
 use crate::HostState;
 
 // The two shapes the session's own fields are stated in: the class count and the
-// slot count, both from the frozen layout.
+// slot count, both from the layout.
 use arena::{CALLBACKS_SLOTS, CLASS_COUNT};
 
-/// The errno table at this boundary (`DESIGN.md` §6.2, §6.3). `EINVAL` is the
+/// The errno table at this boundary (`docs/session.md` §7). `EINVAL` is the
 /// decoder's too, which is why it is declared here and imported by `config`:
 /// the parent owns the ABI surface.
 pub const EINVAL: i32 = -22;
@@ -86,7 +86,7 @@ const WASM_PAGE_BYTES: usize = 64 * 1024;
 
 /// The host's ceiling when a module declares no maximum, in pages (64 MiB).
 ///
-/// `DESIGN.md` §4 leaves this number open; the *policy* is the note's — a
+/// `docs/session.md` §2 leaves this number open; the *policy* is the page's — a
 /// module that declares no maximum gets the host's cap rather than an unbounded
 /// memory. The value is eight times the default `max_arena_size`: enough for a
 /// game's heap beside the arena at the default configuration, small enough that
@@ -105,7 +105,7 @@ pub const HOST_CAP_PAGES: u32 = 1024;
 /// conservative default: a session that never opens still has a coherent arena.
 const DEFAULT_ARENA_SIZE: u32 = arena::LAYOUT_FLOOR as u32;
 
-/// The session's state machine (`DESIGN.md` §6.3). The arena's control block
+/// The session's state machine (`docs/session.md` §7). The arena's control block
 /// carries the same values as its *report*; this enum is the authoritative
 /// machine, which lives host-side and is never guest-writable.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -125,7 +125,7 @@ pub enum SessionState {
 /// diagnostic does not need a debugger.
 #[derive(Debug)]
 pub enum SessionError {
-    /// The verb needs a state the session is not in (`DESIGN.md` §6.3).
+    /// The verb needs a state the session is not in (`docs/session.md` §7).
     NotUninit { state: SessionState },
     /// The `session_open` config was refused, with the decoder's reason.
     Config(config::ConfigError),
@@ -155,7 +155,7 @@ pub enum SessionError {
     MemoryNew(String),
     /// The memory could not be defined in the linker.
     Link(String),
-    /// The arena's frozen layout does not fit the band the module claims.
+    /// The arena's layout does not fit the band the module claims.
     ArenaDoesNotFit { need: usize, have: usize },
     /// A structural write failed.
     Layout(arena::LayoutError),
@@ -319,7 +319,7 @@ impl From<arena::LayoutError> for SessionError {
 }
 
 /// The session's memory lifecycle. Everything here is host-side state; the
-/// arena is the guest's view of the same facts (`DESIGN.md` §5).
+/// arena is the guest's view of the same facts (`docs/session.md` §4).
 #[derive(Debug)]
 pub struct Session {
     /// The arena memory, owned by the session and imported by the guest.
@@ -342,7 +342,7 @@ pub struct Session {
     /// The compiled-in shape hash this session was built against.
     layout_hash: u32,
     /// The region kinds the loaded adapters declared during `link`, in the order
-    /// they were first asked about (`DESIGN.md` §7.2). Empty when no adapter is
+    /// they were first asked about (`docs/session.md` §4). Empty when no adapter is
     /// loaded, which is what makes the check a no-op for a plain run.
     required_regions: Vec<config::RegionNeed>,
     /// The delivery callbacks resolved at open and pinned by signature. `None`
@@ -392,7 +392,7 @@ impl Session {
             _ => return Err(SessionError::MultipleMemoryImports),
         };
 
-        // The session defines the memory under both names (F1: the AssemblyScript
+        // The session defines the memory under both names (F1: the TensionScript
         // toolchain emits `env::memory`, Tension documents `session::memory`), so
         // those are the two a guest may use. Any other pair would be an unknown
         // import at instantiation; refusing it here names the fix.
@@ -475,7 +475,7 @@ impl Session {
 
     /// Define the arena memory in the linker under both import names. Both names
     /// resolve to the same object — probe-pinned, and the reason an
-    /// AssemblyScript guest and a hand-written guest see one arena.
+    /// TensionScript guest and a hand-written guest see one arena.
     pub fn install(
         &self,
         store: &mut Store<HostState>,
@@ -499,7 +499,7 @@ impl Session {
     /// without being noticed.
     pub fn prepare_arena(&mut self, store: &mut Store<HostState>) -> Result<(), SessionError> {
         // What the module claims as its own, and what the layout needs: the
-        // larger of the frozen layout's end and the guest's `memoryBase`.
+        // larger of the layout's end and the guest's `memoryBase`.
         let declared_band = (self.declared_min_pages as usize) * WASM_PAGE_BYTES;
         let need = arena::LAYOUT_FLOOR.max(self.memory_base as usize);
 
@@ -662,7 +662,7 @@ impl Session {
 // ── the verb surface (A1 2b) ──────────────────────────────────────────────
 
 /// One line per verb call and per refusal on stderr, prefixed the way every
-/// service in this repo prefixes its trace (`DESIGN.md` §6.1: the wasm boundary
+/// service in this repo prefixes its trace (`docs/session.md` §7: the wasm boundary
 /// has no error channel, so this is where a refusal is explained).
 ///
 /// Routed through the host logger under the name `session`, so the line carries
@@ -696,7 +696,7 @@ fn fresh_nonce() -> u64 {
 
 /// The guest's delivery callbacks, resolved once at `session_open` and pinned by
 /// `TypedFunc` so a mis-shaped table entry fails the open rather than the first
-/// delivery (`DESIGN.md` §8).
+/// delivery (`docs/session.md` §3).
 #[derive(Default)]
 pub struct ResolvedCallbacks {
     /// `i32 (class, table_ptr, count)`.
@@ -807,7 +807,7 @@ impl Session {
 
     /// The open gate: `UNINIT` and `CLOSED` may open; `READY` and `FAULTED` may
     /// not — a faulted session has half-published state and must be closed
-    /// first (`DESIGN.md` §6.3).
+    /// first (`docs/session.md` §7).
     fn open_state_check(&self) -> Result<(), SessionError> {
         match self.state {
             SessionState::Uninit | SessionState::Closed => Ok(()),
@@ -1151,7 +1151,7 @@ fn read_guest(
 /// `session::open(cfg_ptr, cfg_len) -> i32`.
 ///
 /// The guest's bytes are read on the guest thread inside this call — the arena's
-/// rendezvous (`DESIGN.md` §4). The session is taken out of the store for the
+/// rendezvous (`docs/session.md` §2). The session is taken out of the store for the
 /// duration, because the memory handle it owns is reached through the very store
 /// this call borrows; it is put back on every path, including a refusal, so a
 /// refused open leaves a live session behind it.
@@ -1348,7 +1348,7 @@ fn run_epoch_verb(
 }
 
 /// The depth guard a verb runs before anything else: a session verb called from
-/// inside a callback is refused with `-EBUSY` (`DESIGN.md` §6.3).
+/// inside a callback is refused with `-EBUSY` (`docs/session.md` §7).
 fn depth_refusal(caller: &Caller<'_, HostState>) -> Option<i32> {
     if caller.data().depth != 0 {
         log("session verb refused from inside a callback (-EBUSY)");
@@ -1544,7 +1544,7 @@ mod probes {
     use super::*;
 
     /// A guest that imports the session's arena memory under `env` — the spelling
-    /// the pinned AssemblyScript toolchain emits for `--importMemory`.
+    /// the pinned TensionScript toolchain emits for `--importMemory`.
     const GUEST_ENV_MEMORY: &str = r#"
 (module
   (import "env" "memory" (memory 4 256))
@@ -1629,7 +1629,7 @@ mod probes {
             .define(&mut store, "session", "memory", memory.clone())
             .expect("define session::memory");
 
-        // The AssemblyScript spelling.
+        // The TensionScript spelling.
         let env_guest = link_guest(&linker, &mut store, GUEST_ENV_MEMORY);
         let poke_env = env_guest
             .get_typed_func::<(i32, i32), ()>(&mut store, "poke")
@@ -1908,6 +1908,9 @@ mod lifecycle {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
                 adapters: Vec::new(),
                 session: None,
             },
@@ -2332,6 +2335,9 @@ mod verbs {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
                 adapters: Vec::new(),
                 session: None,
             },
@@ -2522,7 +2528,7 @@ mod verbs {
         // The diagnostic names the field and both hashes. It deliberately does
         // *not* name a type: one shape hash cannot say which entry differs, and
         // the config carries no manifest to compare against (see the round's
-        // report on DESIGN.md §6.1's wording).
+        // report on `docs/session.md` §7's wording).
         let message = error.to_string();
         assert!(message.contains("layout_hash"), "{message}");
         assert!(message.contains("deadbeef"), "{message}");

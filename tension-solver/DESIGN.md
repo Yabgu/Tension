@@ -438,7 +438,7 @@ bit-exact), steps (rk45, one step of 1.0 from y₀ = 1.0 →
 and is refused with `-EINVAL` when an index does not name a function of the
 declared signature; N1 (one module, two solvers, two derivatives) and N2 (a
 wrong-signature index) are the correction's evidence, and the example's
-numbers are unchanged after it. The AssemblyScript example — ten 0.1-steps
+numbers are unchanged after it. The TensionScript example — ten 0.1-steps
 to t = 1.0 at relTol 1e−8 — lands 1.2e−9 from e⁻¹, the accumulation over
 the loop, with t at 0.9999999999999999 for the same reason.
 

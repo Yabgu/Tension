@@ -76,10 +76,12 @@ library. Measured with `OFF` and no FreeImage installed:
 
     OgreFreeImageCodec2.cpp:48:10: fatal error: FreeImage.h: No such file or directory
 
-— on the target's last object, after the other 295 have built. That is why
-bootstrap builds FreeImage regardless, and why the flag is `ON` there: with
-`OFF` and the library present, OGRE links but has no PNG/JPEG decoder at all,
-and the adapter decodes every texture through `Ogre::Image2::load`.
+— on the target's last object, after the other 295 have built. Tension fixes
+this via `third_party/patches/ogre-no-freeimage-codec.patch`, which guards
+`BROKEN_FILES_IN_UNITY_BUILD` in `OgreMain/CMakeLists.txt` on
+`if (OGRE_CONFIG_ENABLE_FREEIMAGE)`. With that guard, `src/OgreFreeImageCodec2.cpp`
+is omitted from the target and the build succeeds without FreeImage. STBI is enabled
+as the image codec (`OGRE_CONFIG_ENABLE_STBI=ON`).
 
 ## Licensing: permissive only
 

@@ -8,7 +8,7 @@
 // tests read everything else.
 //
 // Capacity and geometry come from the wire catalogue and the arena layout:
-// SCENE is 256 KiB and holds three sub-tables end to end (DESIGN.md §5.1),
+// SCENE is 256 KiB and holds three sub-tables end to end (`docs/modules/ogre.md` §4.1),
 // MATERIAL is 64 KiB of 200-byte records, RENDERABLE 128 KiB of 56-byte ones.
 
 #ifndef TENSION_OGRE_SCENE_H
@@ -236,8 +236,9 @@ class SceneMirror {
     const BoneUpdate *bone_updates() const { return bones_.data(); }
     uint32_t bone_update_count() const { return bone_count_; }
     uint32_t bone_generation() const { return bone_generation_; }
-    /// Bumped by every `set_skin_matrices`, so the render thread re-reads the
-    /// map only when a guest actually sent something (the bone path's shape).
+    /// Bumped by every accepted skin-matrix batch, so the render thread
+    /// re-reads the map only when a guest actually sent something (the bone
+    /// path's shape).
     uint32_t skin_generation() const { return skin_generation_; }
 
     // ── the guest's skin matrices (chunk 19 round 19b) ───────────────────
@@ -248,7 +249,28 @@ class SceneMirror {
     // copies them into the Hlms that draws the rig. Removing a renderable drops
     // them, so an id reused later starts with no matrices rather than the last
     // occupant's.
-    void set_skin_matrices(uint32_t id, const std::vector<float> &matrices);
+    //
+    // One entry of a batch, as the shim decoded it: the matrices are
+    // column-major 4x4 floats in blocks of 64 bytes, already checked against
+    // the window's ceiling by the caller.
+    struct SkinMatricesEntry {
+        uint32_t renderable_id = 0;
+        std::vector<float> matrices;
+    };
+
+    /// Apply a whole skin-matrix batch at once. Every entry is validated before
+    /// any of it lands, for the reason `apply_bones` gives: a half-applied
+    /// batch is a rig bent to a shape nobody asked for. `-EINVAL` for an id
+    /// outside the table, `-ENOENT` for one that is not live; nothing is stored
+    /// on refusal, and an accepted batch advances the generation once.
+    ///
+    /// **Liveness is the only check, and that is deliberate.** The bone path
+    /// also asks whether the mesh has a skeleton; this one must not. A mesh
+    /// whose volume carries no skeleton file still carries blend data, still
+    /// routes to the skin Hlms, and its matrices are exactly what that Hlms
+    /// reads (`guest-skin-noskel`, mode=matrix). Its recorded bone count is 0,
+    /// so a rig gate here would refuse a state the renderer supports.
+    int32_t apply_skin_matrices(std::vector<SkinMatricesEntry> &batch);
     const std::vector<float> *skin_matrices(uint32_t id) const;
 
     // ── decoders: a record out of a guest-written region (no OGRE) ───────

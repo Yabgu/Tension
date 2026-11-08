@@ -6,7 +6,7 @@
 //! one event source, one region declaration. No renderer runs and no guest
 //! exists: the render thread starts only when a *guest* calls `ogre::init`, so
 //! this test is display-free and OGRE-free, which is what lets it live in
-//! `cargo test` (DESIGN.md §14, the structural layer).
+//! `cargo test` (`docs/modules/ogre.md` §8, the structural layer).
 //!
 //! The DSO is found at `TENSION_OGRE_DSO_PATH` when that is set, otherwise at
 //! `tension-ogre/build/libtension_ogre.so` beside this crate. Absent, the test
@@ -67,7 +67,55 @@ struct ApiTable {
         Option<unsafe extern "C" fn(*mut c_void, u32, u32, u32, u32, u32, f32, f32, *mut u64) -> i32>,
     class_info: Option<unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32, *mut u32) -> i32>,
     region_lookup: Option<unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32) -> i32>,
+    // Appended under rule 11. They were missing from this mirror until ABI v6:
+    // the table stopped at `region_lookup`, which was harmless only because the
+    // adapter never reads past it during init/link. A table shorter than the
+    // real one is a trap for the next slot a DSO *does* read, so the mirror is
+    // complete now and pinned by the size assertion below.
+    log_named: Option<unsafe extern "C" fn(*mut c_void, i32, *const c_char, *const c_char, u32)>,
+    log_structured: Option<unsafe extern "C" fn(*mut c_void, i32, *const c_char, *const c_char, u32)>,
+    guest_read_checked:
+        Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32>,
+    signal_frame: Option<unsafe extern "C" fn(*mut c_void)>,
+    shader_generate:
+        Option<unsafe extern "C" fn(*const c_void, *mut c_char, u32) -> i32>,
+    compile_graph: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const u8,
+            u32,
+            *mut u8,
+            u32,
+            *mut u8,
+            u32,
+            *mut u32,
+            *mut u32,
+        ) -> i32,
+    >,
+    post_control: Option<unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32>,
+    host_surface: Option<unsafe extern "C" fn(*mut c_void, *mut std::ffi::c_void) -> i32>,
+    host_surface_extension:
+        Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_char, u32, *mut u32) -> i32>,
 }
+
+/// Mirrors `tension_ctrl_msg` (ABI v6). Eight 4-byte fields, no padding.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct TensionCtrlMsg {
+    kind: u32,
+    visibility: u32,
+    arg0: i32,
+    arg1: i32,
+    arg2: i32,
+    arg3: i32,
+    source: u32,
+    reserved: u32,
+}
+
+// The mirror must stay the same size as the real table, or a DSO reading a slot
+// this file does not have reads past the end of a struct the test allocated.
+const _: () = assert!(std::mem::size_of::<ApiTable>() == 184);
+const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
 
 #[repr(C)]
 struct Vtable {
@@ -82,7 +130,26 @@ struct Vtable {
     destroy: Option<unsafe extern "C" fn(*mut c_void)>,
 }
 
-const TENSION_ADAPTER_ABI_VERSION: u32 = 3;
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header.
+///
+/// A literal here would be a second copy of a number the header already owns,
+/// and this file only holds one because the bin's `ffi` module is not exported
+/// to an integration test. Parsing makes that harmless: an ABI bump moves the
+/// header and this follows. `ogre_smoke.rs` asserts the same thing the same
+/// way, for the same reason — both used to hold a literal, and both were wrong
+/// within one bump.
+fn tension_adapter_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
 const TENSION_VT_I32: u32 = 1;
 const TENSION_IMPORT_REENTRANT_READONLY: u32 = 1 << 1;
 const TENSION_REGION_RESOURCE: u32 = 4;
@@ -159,7 +226,7 @@ unsafe extern "C" fn record_region(
     out_size: *mut u32,
 ) -> i32 {
     with_recorded(|recorded| recorded.regions.push(kind));
-    // Plausible answers, from the frozen layout: the RESOURCE region.
+    // Plausible answers, from the layout: the RESOURCE region.
     if !out_offset.is_null() {
         unsafe { *out_offset = 0x3000 };
     }
@@ -256,7 +323,7 @@ fn test_ogre_adapter_surface() {
     *RECORDED.lock().expect("the recording mutex") = Some(Recorded::default());
 
     // ── the vtable itself ────────────────────────────────────────────────
-    assert_eq!(unsafe { (*vtable).abi_version }, TENSION_ADAPTER_ABI_VERSION);
+    assert_eq!(unsafe { (*vtable).abi_version }, tension_adapter_abi_version());
     let name = unsafe { CStr::from_ptr((*vtable).name) }.to_string_lossy().into_owned();
     assert_eq!(name, "ogre", "the vtable names the wasm module it implements");
     assert_eq!(unsafe { (*vtable).flags }, 0, "flags are reserved");
@@ -271,8 +338,14 @@ fn test_ogre_adapter_surface() {
     );
 
     // ── init: ABI check and nothing else ─────────────────────────────────
+    //
+    // Every appended slot is `None` on purpose. `None` is a null function
+    // pointer, so if the adapter reads one during init or link the process
+    // faults — a loud failure rather than a silent read of garbage. That makes
+    // this table a check on the real rule: an adapter may not call a slot it
+    // does not need, and the host's other slots' *presence* is not a licence.
     let table = ApiTable {
-        abi_version: TENSION_ADAPTER_ABI_VERSION,
+        abi_version: tension_adapter_abi_version(),
         user: std::ptr::null_mut(),
         guest_read: None,
         guest_write: None,
@@ -286,10 +359,19 @@ fn test_ogre_adapter_surface() {
         post_event: None,
         class_info: None,
         region_lookup: Some(record_region),
+        log_named: None,
+        log_structured: None,
+        guest_read_checked: None,
+        signal_frame: None,
+        shader_generate: None,
+        compile_graph: None,
+        post_control: None,
+        host_surface: None,
+        host_surface_extension: None,
     };
 
     let refused = unsafe { init(std::ptr::null_mut(), &table) };
-    assert_eq!(refused, 0, "init accepts an ABI-2 table");
+    assert_eq!(refused, 0, "init accepts a table of the current ABI version");
     assert!(
         with_recorded(|recorded| recorded.imports.is_empty()),
         "init registers nothing: registration is valid only while link runs"

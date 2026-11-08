@@ -14,5 +14,25 @@
 //! only by the interpreter's `main`.
 
 pub mod logging;
+pub mod pipeline;
+pub mod pipeline_default;
+// The host's window and its Vulkan surface. In the library rather than the
+// binary because the `platform_surface` probe is an integration test, and
+// because the window is core infrastructure from the north star onward — not a
+// property of one entry point.
+pub mod platform;
 pub mod res;
+pub mod shadergen_registry;
 pub mod world;
+
+/// Register the process-wide services the C ABI expects to be present.
+///
+/// Called once at startup. There was no `init` in this library before v4; the
+/// shader generator is the first thing that needs installing rather than
+/// constructing on demand, because `tension_core_api.shader_generate` is an
+/// any-thread slot with no state to construct against.
+pub fn init() {
+    if !shadergen_registry::is_registered() {
+        shadergen_registry::register(Box::new(tension_shadergen::default_generator()));
+    }
+}

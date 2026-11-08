@@ -199,7 +199,7 @@ void post_event(uint32_t class_id, uint32_t a, uint32_t b) {
 
 /// The render thread's failure path: the record, the log, and the event. Every
 /// catchable failure goes through here — never through an escaping exception
-/// (DESIGN.md §8.1).
+/// (`docs/modules/ogre.md` §5).
 void fail(uint32_t stage, int32_t error, const std::string &what) {
     AdapterState &s = adapter_state();
     char line[400];
@@ -252,6 +252,21 @@ void render_main() {
             fail(TENSION_OGRE_STAGE_PLUGIN, -EINVAL, plan.source);
             finish_thread();
             return;
+        }
+        // `headless` outranks the operator's renderer preference. The promise
+        // the guest was given is "no window", and the only renderer here that
+        // keeps it is the NULL one; TENSION_RENDERER is a debugging knob, not a
+        // reason to open the window a guest asked not to have. The config's own
+        // contradiction was already refused in `init`.
+        if (s.config.headless && plan.chain[0] != TENSION_OGRE_RENDERER_NULL) {
+            char line[224];
+            std::snprintf(line, sizeof(line),
+                          "ogre: headless=1 overrides renderer %s (source: %s): no window",
+                          renderer_name(plan.chain[0]), plan.source.c_str());
+            log_line(1, line);
+            plan.chain[0] = TENSION_OGRE_RENDERER_NULL;
+            plan.count = 1;
+            plan.source = "headless";
         }
         {
             char line[256];
@@ -427,6 +442,39 @@ int32_t refuse(tension_value *ret, int32_t errno_value) {
     return errno_value;
 }
 
+/// Reported to the backend once per frame: the host's *current* surface size.
+///
+/// A free function with no captures, so it can be a plain C function pointer in
+/// `Config`. It reaches the adapter state through the singleton the rest of this
+/// file uses, and returns zeroes for "no host surface" — which the backend
+/// treats as "nothing to compare", not as a size.
+/// One of the host's instance extensions, by index, for the backend's
+/// `VulkanExternalInstance`.
+///
+/// A free function for the same reason as `host_size_from_core`: `Config` is
+/// copied into the backend and must not carry a `std::function` allocation. The
+/// `-ENOENT` the host returns at the end of its list is passed through
+/// unchanged — the render thread treats it as "stop", not as a failure.
+int32_t host_extension_from_core(void *, uint32_t index, char *out_name,
+                                 uint32_t capacity, uint32_t *out_len) {
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->host_surface_extension == nullptr) return -38; // -ENOSYS
+    return s.api->host_surface_extension(s.api->user, index, out_name, capacity, out_len);
+}
+
+void host_size_from_core(void *, uint32_t *out_w, uint32_t *out_h) {
+    *out_w = 0;
+    *out_h = 0;
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->host_surface == nullptr) return;
+    tension_host_surface published{};
+    published.struct_size = sizeof(published);
+    if (s.api->host_surface(s.api->user, &published) == 0) {
+        *out_w = published.width;
+        *out_h = published.height;
+    }
+}
+
 int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
@@ -453,13 +501,71 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         return refuse(ret, -EINVAL);
     }
 
+    // `headless` is a promise to the guest: no window. Resolve it before the
+    // host's handles are merged in, so a headless guest neither creates a
+    // window of its own nor adopts the host's surface. The policy refuses a
+    // contradiction (headless with an explicitly requested GPU renderer)
+    // rather than downgrading it — see `config.h`.
+    Config config = decoded.config;
+    {
+        const int32_t policy = apply_headless_policy(config);
+        if (policy != 0) {
+            const std::string line =
+                "ogre: init refused: headless=1 with an explicit renderer that needs a window; "
+                "this build has no offscreen path (use renderer=null, or drop headless)";
+            s.status.note_message(line);
+            log_line(3, line);
+            return refuse(ret, policy);
+        }
+        if (config.headless) {
+            log_line(1, "ogre: headless=1 — the NULL render system, no window");
+        }
+    }
+
+    // The host's window surface, if it owns one. A v6 host publishes it before
+    // any adapter loads, so it is there by the time a guest calls `init`.
+    //
+    // -ENOSYS or a zero instance means "no host surface": the backend then does
+    // what it always did and creates its own window. That is not a degraded
+    // path, it is the headless and pre-v6 path.
+    if (!config.headless && s.api != nullptr && s.api->host_surface != nullptr) {
+        tension_host_surface published{};
+        published.struct_size = sizeof(published);
+        if (s.api->host_surface(s.api->user, &published) == 0 && published.instance != 0 &&
+            published.surface != 0) {
+            // Both handles, and the reader the backend fills Ogre's
+            // `VulkanExternalInstance` from. The instance is the host's: the
+            // backend never creates one on this path, so a null `instance` here
+            // would leave the renderer with nothing to build a device on.
+            config.external_instance = published.instance;
+            config.external_surface = published.surface;
+            config.host_extension = &host_extension_from_core;
+            config.host_extension_ctx = nullptr;
+            config.host_size = &host_size_from_core;
+            config.host_size_ctx = nullptr;
+            // The host's window is the size that matters; the guest's config
+            // asked for a size for a window it will not get.
+            if (published.width != 0 && published.height != 0) {
+                config.window_width = published.width;
+                config.window_height = published.height;
+            }
+            {
+                char line[128];
+                std::snprintf(line, sizeof(line),
+                              "ogre: rendering into the host's surface (instance 0x%llx)",
+                              static_cast<unsigned long long>(published.instance));
+                log_line(1, line);
+            }
+        }
+    }
+
     {
         std::lock_guard<std::mutex> lock(s.mutex);
         if (s.initialized || s.shutting_down) {
             log_line(2, "ogre: init refused: the adapter is already running");
             return refuse(ret, -EBUSY);
         }
-        s.config = decoded.config;
+        s.config = config;
         s.stop_requested = false;
         s.thread_exited = false;
         // A drainer is about to exist again: jobs queued from here on can be
@@ -947,8 +1053,11 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
     }
 
     std::lock_guard<std::mutex> scene_lock(s.scene_mutex);
-    // Refusals log; success is silent. This runs once per frame per rig, so a
-    // line here would flood the session log for no diagnostic value.
+    // Decode and shape-check every entry first; the mirror validates liveness
+    // over the whole batch and stores only if all of it passes. Refusals log,
+    // success is silent — this runs once per frame per rig.
+    std::vector<SceneMirror::SkinMatricesEntry> batch;
+    batch.reserve(static_cast<size_t>(count));
     for (int32_t i = 0; i < count; ++i) {
         const uint8_t *entry = table.data() + static_cast<size_t>(i) * kSkinRecordBytes;
         uint32_t renderable_id = 0, matrices_offset = 0, matrix_bytes = 0, flags = 0;
@@ -981,7 +1090,19 @@ int32_t shim_submit_skin_matrices(void *, const tension_value *args, uint32_t na
                               matrices.data(), matrix_bytes) != 0) {
             return refuse(ret, -EINVAL);
         }
-        s.scene.set_skin_matrices(renderable_id, matrices);
+        SceneMirror::SkinMatricesEntry decoded;
+        decoded.renderable_id = renderable_id;
+        decoded.matrices = std::move(matrices);
+        batch.push_back(std::move(decoded));
+    }
+    const int32_t applied = s.scene.apply_skin_matrices(batch);
+    if (applied != 0) {
+        char line[200];
+        std::snprintf(line, sizeof(line),
+                      "ogre: submit_skin_matrices refused a batch of %d (errno %d); nothing applied",
+                      count, applied);
+        log_line(3, line);
+        return refuse(ret, applied);
     }
     ret->i32 = count;
     return 0;
@@ -1260,7 +1381,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         return sourced;
     }
 
-    // The declaration of the one region this sub-chunk writes (DESIGN.md §7.2:
+    // The declaration of the one region this sub-chunk writes (`docs/modules/ogre.md` §4:
     // asking about a kind at link time *is* the declaration).
     const int32_t found = core->region_lookup(core->user, TENSION_REGION_RESOURCE,
                                               &s.resource_offset, &s.resource_size);
@@ -1276,7 +1397,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     }
 
     // The guest-written regions this adapter reads. Asking for them at link is
-    // the declaration (DESIGN.md §7.2), and the set is what `session_open`
+    // the declaration (`docs/modules/ogre.md` §4), and the set is what `session_open`
     // checks the arena against.
     struct Region {
         uint32_t kind;
@@ -1473,12 +1594,15 @@ int32_t stop_render_thread() {
     return rc;
 }
 
-/// The DSO's last word. On the happy path the guest called `ogre::shutdown`
-/// and this finds nothing to do — no thread, no backend. On the trap path it
-/// is the only teardown the process gets, and the reason it exists: without
-/// it, the members below are destroyed here — `backend`, and with it
-/// `Ogre::Root` and its scene — while the render thread is still drawing,
-/// which is the SIGSEGV (windowed) and SIGABRT (headless) the probe measured.
+/// The DSO's last word, and the backstop rather than the rule. The host calls
+/// the vtable's `shutdown` then `destroy` on both of its exit paths — a clean
+/// return and a guest trap (`tension-core/src/adapter/mod.rs`,
+/// `teardown_adapters`, called from both in `main.rs`) — so on those this finds
+/// nothing to do: no thread, no backend. It exists for the path that skips
+/// them. Without it, unloading the library would destroy the members below —
+/// `backend`, and with it `Ogre::Root` and its scene — while the render thread
+/// is still drawing, which is the SIGSEGV (windowed) and SIGABRT (headless) the
+/// probe measured.
 AdapterState::~AdapterState() {
 #if defined(_WIN32)
     if (thread.joinable()) {

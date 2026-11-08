@@ -1,6 +1,6 @@
 # examples/res — a resource pak, end to end
 
-From this directory (after `npm install`, which fetches the AssemblyScript
+From this directory (after `npm install`, which fetches the TensionScript
 compiler):
 
     npm run build          # asc: assembly/index.ts -> build/game.wasm
@@ -18,7 +18,7 @@ the generated file byte for byte.
 
 A second generated asset, `data/compressed.bin` (2 MiB of zeros), is
 *compressible*: the packer stores it as a Deflate stream (PKWARE method 8,
-`STREAM FORMAT 2`, `STREAM EXPANDED SIZE`; DESIGN.md §8.4) and the runtime
+`STREAM FORMAT 2`, `STREAM EXPANDED SIZE`; `tension-res/DESIGN.md` §8.4) and the runtime
 expands it on open, so the guest reads it at its expanded size. Together the two
 generated Files are the two halves of the packer's per-File decision: one stored
 and chunked at scale, one compressed. `data/large.bin` stays stored on purpose —
@@ -29,14 +29,14 @@ chunk path, and a compressible pattern would collapse it and end that coverage.
 inside it is ~21 MB); run `npm run pack` before `npm start`.
 
 `npm run pack` turns the tree into `game.tns`, a Tension Volume whose structure follows the
-framing defined in ECMA-208 (DESIGN.md §2), with the directory hierarchy carried
+framing defined in ECMA-208 (`tension-res/DESIGN.md` §2), with the directory hierarchy carried
 by a content convention (§5.5, §6.7) in a child-index Stream. `npm start` starts
 the interpreter with that pak loaded; the guest reaches every byte through
 `tension::res` and never touches the kernel filesystem.
 
 The demo reads `data/large.bin` in spot reads rather than end to end: roughly
 10,600 chunks in 2048-byte Buffers is past the runtime's per-open chunk cache
-(DESIGN.md §8.3, `MAX_FILE_CHUNKS = 4096`), so the File is read uncached and a
+(`tension-res/DESIGN.md` §8.3, `MAX_FILE_CHUNKS = 4096`), so the File is read uncached and a
 full read would be O(N²) in chain walks. A few seeks — including one that
 straddles the first chunk boundary, and one to the last byte — still prove the
 multi-chunk path at scale.

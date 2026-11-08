@@ -1,5 +1,5 @@
 //! Deferred submission: the pending list a callback writes into, and the apply
-//! phase that drains it (`DESIGN.md` §3.5, §9).
+//! phase that drains it (`docs/session.md` §6, §4).
 //!
 //! A `queue_*` verb called from *inside* a callback cannot do its work there —
 //! the callback is running in the middle of an epoch, the store is mid-borrow,
@@ -259,7 +259,7 @@ where
 ///
 /// **A stub, and honest about it.** Chunk 1 has no job records: the capability
 /// catalogue that defines them is deferred until the OGRE version pin
-/// (`DESIGN.md` §5.1), so the job region holds nothing this function could
+/// (`docs/session.md` §4), so the job region holds nothing this function could
 /// sweep. It exists where the fatal-fault path will call it, logs when it is
 /// called with a fault, and reports zero jobs. Only the callback-trap path is
 /// exercised in chunk 1; no adapter triggers a fatal fault yet.

@@ -361,7 +361,7 @@ function sphere_contact(y: Float64Array, a: i32, b: i32, velocity_base: i32, dt:
 /// Brute-force pair detection over `count` bodies, run `repeats` times: the
 /// cost of the pass chunk 6 starts with, in milliseconds per pass. The timing
 /// is the renderer's frame counter, because a guest has no clock — the loop is
-/// inline rather than passed as a closure, which AssemblyScript does not have.
+/// inline rather than passed as a closure, which TensionScript does not have.
 function detection_cost(count: i32, repeats: i32): void {
   const y = new Float64Array(count * 6);
   for (let i = 0; i < count; i++) {

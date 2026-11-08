@@ -10,7 +10,7 @@
  *
  * This header includes no OGRE header, on purpose. Everything a guest can see
  * is the boundary, and the adapter's OGRE-facing includes live in src/ where
- * they cannot leak into the wire contract — DESIGN.md §0: the version pin is a
+ * they cannot leak into the wire contract — `docs/modules/ogre.md` §1: the version pin is a
  * build-time concern that the wire format does not depend on.
  *
  * The adapter registers sixteen imports. The first three — init, shutdown and
@@ -118,7 +118,7 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 /* ── the config TLV ──────────────────────────────────────────────────── */
 
 /*
- * The same wire shape as the session config (DESIGN.md §6.1): a `u32` entry
+ * The same wire shape as the session config (`docs/modules/ogre.md` §3): a `u32` entry
  * count in little-endian, then per entry a `u32` key, a `u8` tag and an `i64`
  * little-endian value. Every value here is carried by tag 2 and its upper four
  * bytes must be zero. `KEY_ABI_VERSION` must be the first entry in the byte
@@ -155,7 +155,7 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 
 /*
  * Two event classes, delivered through the session like any other event: the
- * guest subscribes, and the session decides when it runs (DESIGN.md §3.2).
+ * guest subscribes, and the session decides when it runs (`docs/session.md` §3).
  *
  *   RESOURCE_READY (5)  a = resource_id, b = 0
  *       The renderer is up. Resource id 1 is the renderer itself, so
@@ -166,7 +166,7 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
  *       Startup or a frame failed at `a`'s stage with `b`'s errno. The same
  *       errno also names the reason in `last_error`, and the renderer's record
  *       in the RESOURCE region carries it as a status, because events are
- *       advisory and the status table is the truth (DESIGN.md §0).
+ *       advisory and the status table is the truth (`docs/modules/ogre.md` §1).
  *
  * The stage codes, in the order startup performs them:
  */
@@ -275,7 +275,7 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
  *    0      `shutdown` before `init` — nothing to stop is not a failure.
  *
  * Diagnostics go to the session's log with the `[tension:ogre]` prefix, which
- * names the module, not the capability (DESIGN.md §6.1).
+ * names the module, not the capability (`docs/modules/ogre.md` §3).
  */
 
 #ifdef __cplusplus

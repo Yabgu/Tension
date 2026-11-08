@@ -1,0 +1,27 @@
+{
+  "name": "tension-example-isometric",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: a worked isometric scene \u2014 oversized tileset, depth sort, modular character",
+  "scripts": {
+    "build": "node build.mjs && node ../../../scripts/build-2d-guest.mjs",
+    "start": "node test.mjs",
+    "run": "node test.mjs",
+    "test:ci": "node test-synthetic.mjs"
+  },
+  "tension": {
+    "kind": "res",
+    "capability": "../../../tension-2d/build/libtension_2d.so",
+    "pack": {
+      "input": "assets",
+      "output": "build/isometric.tns"
+    }
+  },
+  "dependencies": {
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}

@@ -60,7 +60,7 @@ ball bounced 3 times, apex heights 3.0 2.0158 1.4435500000000002
 table's rules; `tension-framework/assembly/solver.ts` — the solver's class;
 `tension-framework/assembly/ogre/wire.ts` — the records, and the factories this
 example builds its camera, material and renderable with.
-`tension-ogre/DESIGN.md` §5.1 and `tension-solver/GUEST_ABI.md` are the design
+`docs/modules/ogre.md` §4 and `tension-solver/GUEST_ABI.md` are the design
 records behind them.
 
 ## Assets

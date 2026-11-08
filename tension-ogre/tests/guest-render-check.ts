@@ -215,7 +215,7 @@ export function _start_game(): void {
 
   // ── clause 4: the PBS cube, on the right ─────────────────────────────
   // Diffuse zero, specular zero, colour in emissive: a PBS material with no
-  // light rig has nothing else that shows (DESIGN.md §5.1).
+  // light rig has nothing else that shows (`docs/modules/ogre.md` §4).
   clause = 4;
   const pbs = new Material();
   pbs.materialId = 2;

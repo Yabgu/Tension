@@ -50,7 +50,7 @@ use crate::HostState;
 
 /// `TENSION_ADAPTER_ABI_VERSION` — the only version this build loads.
 ///
-/// **Version history.** 1 was the frozen v1 contract (the logging slots appended
+/// **Version history.** 1 was the v1 contract (the logging slots appended
 /// under rule 11 still shipped inside it). 2 is v1 plus `layout_hash` on the
 /// adapter vtable and `guest_read_checked` on the core API (C4) — the first
 /// change that moved the *contract shape* enough to require the loader to refuse
@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 3;
+pub const ADAPTER_ABI_VERSION: u32 = 6;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -152,6 +152,49 @@ pub type ClassInfoFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32, *mut u32) -> i32;
 pub type RegionLookupFn = unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut u32) -> i32;
 
+/// The control message and its constants live in the library, because the bus
+/// that stamps and queues them lives there too (`tension_core::platform`), and
+/// this bin is a separate crate. Re-exported rather than duplicated: two
+/// definitions of one `#[repr(C)]` struct is the drift this whole file exists
+/// to prevent.
+pub use tension_core::platform::{
+    TensionCtrlMsg, CTRL_CORE_ONLY, CTRL_OBSERVABLE, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST,
+    CTRL_SRC_LAYER,
+};
+
+pub type PostControlFn =
+    unsafe extern "C" fn(*mut c_void, *const TensionCtrlMsg) -> i32;
+
+/// Mirrors `tension_host_surface`: the host's window surface, borrowed.
+///
+/// `struct_size` is `sizeof(tension_host_surface)` as the caller's headers see
+/// it, so a later ABI can grow this struct without a new slot.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionHostSurface {
+    pub struct_size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub reserved: u32,
+    pub instance: u64,
+    pub surface: u64,
+}
+
+pub type HostSurfaceFn =
+    unsafe extern "C" fn(*mut c_void, *mut TensionHostSurface) -> i32;
+
+/// `host_surface_extension`: one of the instance extensions the host enabled.
+///
+/// `(user, index, out_name, capacity, out_len)`. 0 on success, `-ENOENT` past
+/// the end, `-EINVAL` for a null argument or a `capacity` below
+/// [`TENSION_EXTENSION_NAME_CAPACITY`], `-ENOSYS` when the host owns no surface.
+pub type HostSurfaceExtensionFn =
+    unsafe extern "C" fn(*mut c_void, u32, *mut c_char, u32, *mut u32) -> i32;
+
+/// The smallest `capacity` the extension slot accepts: 256, the size every
+/// Vulkan extension name fits in (`VK_MAX_EXTENSION_NAME_SIZE`).
+pub const TENSION_EXTENSION_NAME_CAPACITY: u32 = 256;
+
 /// Mirrors `tension_core_api`. The session fills every slot; the adapter may
 /// call any of them subject to the header's thread and phase rules.
 #[repr(C)]
@@ -181,6 +224,23 @@ pub struct TensionCoreApi {
     /// one frame was presented (0.7.0a). The host wakes whichever loop is
     /// driving the guest; a host with no loop ignores it.
     pub signal_frame: Option<SignalFrameFn>,
+    /// Appended under rule 11 at ABI version 4: shader source for a vertex
+    /// layout. `-ENOSYS` when the installed generator does not serve the layout,
+    /// which is the expected answer for a guest-defined one at v1.
+    pub shader_generate: Option<ShaderGenerateFn>,
+    /// ABI v5: T2DG blob in, SPIR-V out. See `tension_adapter.h`.
+    pub compile_graph: Option<CompileGraphFn>,
+    /// ABI v6: the host's write channel for window state. The message is
+    /// copied and applied later, on the window's own thread; this build has no
+    /// executor yet, so the slot answers `-ENOSYS` rather than accepting a
+    /// message it would discard.
+    pub post_control: Option<PostControlFn>,
+    /// ABI v6: the host's window surface, borrowed by a renderer.
+    pub host_surface: Option<HostSurfaceFn>,
+    /// ABI v6: the extensions the host enabled when it created the instance.
+    /// The handle cannot say this and enumeration would answer "available",
+    /// so the creator keeps the record and serves it here.
+    pub host_surface_extension: Option<HostSurfaceExtensionFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -195,6 +255,27 @@ pub type SignalFrameFn = unsafe extern "C" fn(*mut c_void);
 /// The bounds-checked read appended under rule 11 (C4.1a).
 pub type GuestReadCheckedFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut c_void, u32, u32) -> i32;
+/// Shader generation appended under rule 11 at ABI version 4: a packed layout
+/// descriptor in, NUL-terminated source out, the length back.
+pub type ShaderGenerateFn = unsafe extern "C" fn(*const u8, *mut c_char, u32) -> i32;
+
+/// Graph compilation appended under rule 11 at ABI version 5: a T2DG blob in,
+/// the two stages' SPIR-V out.
+///
+/// Unsafe because every pointer is a C caller's: the blob must be readable for
+/// `blob_len`, each output buffer writable for its capacity, and the two length
+/// out-parameters writable.
+pub type CompileGraphFn = unsafe extern "C" fn(
+    *mut c_void,   // user
+    *const u8,     // blob
+    u32,           // blob_len
+    *mut u8,       // vs_out
+    u32,           // vs_cap
+    *mut u8,       // fs_out
+    u32,           // fs_cap
+    *mut u32,      // out_vs_len
+    *mut u32,      // out_fs_len
+) -> i32;
 
 /// Mirrors `tension_adapter`. `publish` and `apply` may be NULL, which is why
 /// every function-pointer field here is an `Option`.
@@ -222,7 +303,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 144);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 184);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -244,6 +325,18 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, log_named) == 112);
     assert!(std::mem::offset_of!(TensionCoreApi, log_structured) == 120);
     assert!(std::mem::offset_of!(TensionCoreApi, guest_read_checked) == 128);
+    assert!(std::mem::offset_of!(TensionCoreApi, shader_generate) == 144);
+    assert!(std::mem::offset_of!(TensionCoreApi, compile_graph) == 152);
+    // ABI v6: post_control is the last slot; the header's `_Static_assert` pins
+    // the same shape from the C side.
+    assert!(std::mem::offset_of!(TensionCoreApi, post_control) == 160);
+    assert!(std::mem::offset_of!(TensionCoreApi, host_surface) == 168);
+    // ABI v6: `host_surface_extension` is the last slot.
+    assert!(std::mem::offset_of!(TensionCoreApi, host_surface_extension) == 176);
+    // The struct itself: four u32 then two u64, so `instance` lands on 16.
+    assert!(std::mem::size_of::<TensionHostSurface>() == 32);
+    assert!(std::mem::offset_of!(TensionHostSurface, instance) == 16);
+    assert!(std::mem::offset_of!(TensionHostSurface, surface) == 24);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -893,6 +986,170 @@ pub(crate) unsafe extern "C" fn signal_frame(user: *mut c_void) {
     host.posting.signal_wake();
 }
 
+/// Shader source for one vertex layout (v4). Any thread; reads the caller's
+/// descriptor, writes the caller's buffer, never touches guest memory.
+///
+/// The descriptor is packed and little-endian (see `tension_adapter.h`): six
+/// `u16` scalars then `field_count` eight-byte fields. Decoding here rather than
+/// in the generator keeps the generator a pure function of a `LayoutDesc` and
+/// keeps every raw pointer in the one module that already owns `unsafe`.
+///
+/// Returns the source's length (excluding the NUL) on success, `-ENOSPC` when
+/// `cap` cannot hold it, `-ENOSYS` when no generator is installed or the layout
+/// names no preset, and `-EINVAL` on a null or malformed descriptor.
+pub(crate) unsafe extern "C" fn shader_generate(
+    layout_ptr: *const u8,
+    out: *mut c_char,
+    cap: u32,
+) -> i32 {
+    if layout_ptr.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    let Some(layout) = decode_layout(layout_ptr) else {
+        return EINVAL;
+    };
+    match tension_core::shadergen_registry::generate(&layout) {
+        Ok(source) => {
+            let bytes = source.as_bytes();
+            // One byte for the terminator; a caller that passed exactly the
+            // source length gets ENOSPC rather than a truncated shader, because
+            // a truncated shader compiles and does the wrong thing.
+            if bytes.len() + 1 > cap as usize {
+                return ENOSPC;
+            }
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+            *out.add(bytes.len()) = 0;
+            bytes.len() as i32
+        }
+        Err(errno) => errno.code(),
+    }
+}
+
+/// `tension_core_api.compile_graph` — ABI v5.
+///
+/// Parse, validate, lower and compile, all through `pipeline::naga_backend`, so
+/// a graph compiled here is byte-for-byte the graph the build would have
+/// compiled. On `-ENOSPC` the required sizes are still written, so a caller can
+/// retry with bigger buffers rather than probing blindly.
+///
+/// # Safety
+///
+/// `blob` must be readable for `blob_len`; `vs_out`/`fs_out` writable for their
+/// capacities; `out_vs_len`/`out_fs_len` writable.
+pub(crate) unsafe extern "C" fn compile_graph(
+    _user: *mut c_void,
+    blob: *const u8,
+    blob_len: u32,
+    vs_out: *mut u8,
+    vs_cap: u32,
+    fs_out: *mut u8,
+    fs_cap: u32,
+    out_vs_len: *mut u32,
+    out_fs_len: *mut u32,
+) -> i32 {
+    if blob.is_null() || out_vs_len.is_null() || out_fs_len.is_null() {
+        return -libc::EINVAL;
+    }
+    let bytes = std::slice::from_raw_parts(blob, blob_len as usize);
+
+    let compiled = match ::tension_core::pipeline::naga_backend::compile(bytes) {
+        Ok(compiled) => compiled,
+        Err(error) => return error.errno(),
+    };
+
+    let vs = compiled.vertex_bytes();
+    let fs = compiled.fragment_bytes();
+    *out_vs_len = vs.len() as u32;
+    *out_fs_len = fs.len() as u32;
+
+    if vs.len() > vs_cap as usize || fs.len() > fs_cap as usize {
+        return -libc::ENOSPC;
+    }
+    if vs_out.is_null() || fs_out.is_null() {
+        return -libc::EINVAL;
+    }
+    std::ptr::copy_nonoverlapping(vs.as_ptr(), vs_out, vs.len());
+    std::ptr::copy_nonoverlapping(fs.as_ptr(), fs_out, fs.len());
+    0
+}
+
+/// The most fields a descriptor may name. Bounded so a corrupt `field_count`
+/// cannot walk the caller's memory looking for a reason to stop.
+const MAX_SHADER_FIELDS: usize = 64;
+
+/// Decode the packed descriptor. `None` means malformed, never "unsupported" —
+/// an unknown preset is `Errno::Enosys`, which the generator decides.
+unsafe fn decode_layout(ptr: *const u8) -> Option<tension_shadergen::LayoutDesc> {
+    use tension_shadergen::{DType, FieldDesc, LayoutDesc, Semantic, Slot};
+
+    // SAFETY: every read is `read_unaligned` at a fixed offset from `ptr`, and
+    // the caller guarantees `ptr` is readable for the descriptor it describes.
+    let scalar = |index: usize| -> u16 {
+        let at = unsafe { ptr.add(index * 2) };
+        u16::from_le_bytes(unsafe { [*at, *at.add(1)] })
+    };
+
+    let preset_id = scalar(0);
+    let record_size = scalar(1);
+    let alignment = scalar(2);
+    let field_count = usize::from(scalar(3));
+    if field_count > MAX_SHADER_FIELDS {
+        return None;
+    }
+
+    let mut fields = Vec::with_capacity(field_count);
+    for index in 0..field_count {
+        let base = 12 + index * 8;
+        let semantic = match scalar(base / 2) {
+            1 => Semantic::PosX,
+            2 => Semantic::PosY,
+            3 => Semantic::PosZ,
+            4 => Semantic::SrcX,
+            5 => Semantic::SrcY,
+            6 => Semantic::SrcW,
+            7 => Semantic::SrcH,
+            8 => Semantic::UVX,
+            9 => Semantic::UVY,
+            10 => Semantic::W,
+            11 => Semantic::H,
+            12 => Semantic::Tint,
+            13 => Semantic::SortKey,
+            14 => Semantic::Pad,
+            _ => return None,
+        };
+        let dtype = match scalar(base / 2 + 1) {
+            1 => DType::F32,
+            2 => DType::U16,
+            3 => DType::I16,
+            4 => DType::U8,
+            _ => return None,
+        };
+        let offset = scalar(base / 2 + 2);
+        let packed_slot = scalar(base / 2 + 3);
+        let slot = match (packed_slot & 0xff) as u8 {
+            1 => Slot::Position,
+            2 => Slot::TexCoord((packed_slot >> 8) as u8),
+            3 => Slot::Color,
+            4 => Slot::Normal,
+            5 => Slot::Tangent,
+            6 => Slot::Binormal,
+            _ => return None,
+        };
+        let step_rate = scalar(base / 2 + 4) as u8;
+        fields.push(FieldDesc { semantic, dtype, offset, slot, step_rate });
+    }
+
+    Some(LayoutDesc {
+        // The wire carries no string: a pointer in a packed descriptor would be
+        // an ABI hazard for no gain, and the name is diagnostics-only.
+        name: String::new(),
+        preset_id,
+        record_size,
+        alignment,
+        fields,
+    })
+}
+
 pub(crate) unsafe extern "C" fn guest_size(user: *mut c_void) -> u32 {
     AdapterHost::from_user(user)
         .map(|host| host.memory_size())
@@ -1147,7 +1404,7 @@ pub(crate) unsafe extern "C" fn post_event(
 /// The line goes through the `log` slot at level 1 (info), which the host now
 /// routes through its logger under the name `session` — so the refusal carries
 /// the configured layout. The message names the caller's mistake, which is what
-/// an adapter author needs to see (`DESIGN.md` §7.2).
+/// an adapter author needs to see (`docs/abi/adapter.md`).
 fn log_refusal(host: &AdapterHost, error: PostError) -> i32 {
     if let Some(log) = host.api().log {
         let text = format!("post_event: {error}");
@@ -1211,6 +1468,133 @@ pub(crate) unsafe extern "C" fn release_callback_not_yet(
     ENOSYS
 }
 
+/// `post_control` — a layer asks the host to change the window.
+///
+/// The message is *stamped* with `TENSION_CTRL_SRC_LAYER` by the bus, not taken
+/// from the struct, so a layer cannot claim the core's reserved capacity. The
+/// reply is "queued", never "applied": the change happens later, on the window's
+/// own thread, when the host loop drains.
+///
+/// Any thread, per the header: it copies the message and never touches guest
+/// memory.
+pub(crate) unsafe extern "C" fn post_control(
+    user: *mut c_void,
+    msg: *const TensionCtrlMsg,
+) -> i32 {
+    if user.is_null() || msg.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the `AdapterHost` pointer this table was built with,
+    // and it outlives every call the table can make (`main` keeps it in its own
+    // frame for as long as the linker lives).
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    // SAFETY: checked non-null above; the ABI says the caller owns it and it is
+    // valid for this call.
+    let message = unsafe { *msg };
+
+    match host.control().post_layer(&message) {
+        Ok(()) => 0,
+        Err(tension_core::platform::ControlError::UnknownKind) => {
+            log_line("post_control refused: unknown kind");
+            EINVAL
+        }
+        Err(tension_core::platform::ControlError::Malformed) => {
+            log_line("post_control refused: reserved field is non-zero");
+            EINVAL
+        }
+        Err(tension_core::platform::ControlError::Full) => {
+            log_line("post_control refused: the control queue is full");
+            ENOSPC
+        }
+    }
+}
+
+/// `host_surface` — the window surface the host owns, borrowed by a renderer.
+///
+/// `-ENOSYS` when there is none, which is the expected answer on a headless run
+/// and not a failure: an adapter that gets it falls back to its own window, or
+/// to no window at all.
+pub(crate) unsafe extern "C" fn host_surface(
+    user: *mut c_void,
+    out: *mut TensionHostSurface,
+) -> i32 {
+    if user.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let published = match host.host_surface() {
+        Some(surface) => surface,
+        None => return ENOSYS,
+    };
+
+    // SAFETY: checked non-null above. `struct_size` is the caller's, so a
+    // shorter struct from an older adapter is written only as far as it goes.
+    let caller_size = unsafe { (*out).struct_size };
+    if caller_size != 0 && (caller_size as usize) < std::mem::size_of::<TensionHostSurface>() {
+        return EINVAL;
+    }
+    unsafe {
+        *out = TensionHostSurface {
+            struct_size: std::mem::size_of::<TensionHostSurface>() as u32,
+            width: published.width,
+            height: published.height,
+            reserved: 0,
+            instance: published.instance,
+            surface: published.surface,
+        };
+    }
+    0
+}
+
+/// `host_surface_extension` — the names the host passed to `vkCreateInstance`.
+///
+/// A `VkInstance` handle does not record which extensions it was created with,
+/// and enumerating reports what is *available*, not what is enabled. Only the
+/// creator knows, so this reads the host's own record. `-ENOENT` past the end is
+/// how a caller enumerates: no count is part of the contract, and a host that
+/// later enables more extensions does not change the calling code.
+pub(crate) unsafe extern "C" fn host_surface_extension(
+    user: *mut c_void,
+    index: u32,
+    out_name: *mut c_char,
+    capacity: u32,
+    out_len: *mut u32,
+) -> i32 {
+    if user.is_null() || out_name.is_null() || out_len.is_null() {
+        return EINVAL;
+    }
+    // The floor, not the exact need: a shorter buffer would have to truncate a
+    // name, and a truncated extension name is silently a different extension.
+    if capacity < TENSION_EXTENSION_NAME_CAPACITY {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let Some(result) = host.with_host_surface_extensions(|extensions| {
+        extensions.get(index as usize).cloned()
+    }) else {
+        return ENOSYS;
+    };
+    let Some(name) = result else {
+        return ENOENT;
+    };
+    let bytes = name.as_bytes();
+    // Unreachable while the floor is 256 and no real name approaches it, but a
+    // length the buffer cannot hold must be refused rather than truncated.
+    if bytes.len() + 1 > capacity as usize {
+        return EINVAL;
+    }
+    // SAFETY: the destination holds `capacity >= 256` bytes and `bytes.len()`
+    // is below that, so name and terminator both fit.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr() as *const c_char, out_name, bytes.len());
+        *out_name.add(bytes.len()) = 0;
+        *out_len = bytes.len() as u32;
+    }
+    0
+}
+
 /// The core API table, fully populated: every slot is a real function pointer, so
 /// an adapter that calls one gets a refusal rather than a null dereference.
 pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
@@ -1233,6 +1617,11 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         log_structured: Some(log_structured),
         guest_read_checked: Some(guest_read_checked),
         signal_frame: Some(signal_frame),
+        shader_generate: Some(shader_generate),
+        compile_graph: Some(compile_graph),
+        post_control: Some(post_control),
+        host_surface: Some(host_surface),
+        host_surface_extension: Some(host_surface_extension),
     }
 }
 
@@ -1271,6 +1660,9 @@ mod tests {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
                 adapters: Vec::new(),
                 session: None,
             },
@@ -1401,6 +1793,128 @@ mod tests {
     }
 
     #[test]
+    fn post_control_accepts_a_valid_message() {
+        // The full contract, not a weaker one. This test used to assert
+        // `ENOSYS` — "not 0" — because there was no queue; the danger in
+        // flipping it is that it becomes "returns 0" and stops checking
+        // anything else. So it asserts every branch the header documents.
+        let host = AdapterHost::new(test_posting());
+        let api = *host.api();
+        let post = api.post_control.expect("post_control must be populated");
+        let bus = host.control();
+
+        // 1. A valid RESIZE is queued and answers 0.
+        let resize = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_OBSERVABLE,
+            arg0: 640,
+            arg1: 480,
+            ..Default::default()
+        };
+        assert_eq!(unsafe { post(api.user, &resize) }, 0, "a valid RESIZE is queued");
+        assert_eq!(bus.stats().queued, 1, "it is actually in the queue");
+        assert_eq!(bus.stats().posted, 1);
+
+        // 2. The bus stamps the source; a layer cannot claim to be the core.
+        let queued = bus.drain();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(
+            queued[0].source, CTRL_SRC_LAYER,
+            "the bus stamps LAYER, whatever the caller put in the struct"
+        );
+
+        // Forging the stamp has no effect: a message that says CORE is still
+        // admitted as a LAYER and still only consumes general capacity.
+        let forged = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_OBSERVABLE,
+            arg0: 1,
+            arg1: 2,
+            source: CTRL_SRC_CORE,
+            ..Default::default()
+        };
+        assert_eq!(unsafe { post(api.user, &forged) }, 0);
+        assert_eq!(bus.drain()[0].source, CTRL_SRC_LAYER, "forged source is overwritten");
+
+        // 3. An unknown kind is refused with -EINVAL and does not queue.
+        let unknown = TensionCtrlMsg { kind: 999, ..Default::default() };
+        assert_eq!(unsafe { post(api.user, &unknown) }, EINVAL);
+        assert_eq!(bus.stats().queued, 0, "a refused message is not queued");
+
+        // 4. A null message is refused rather than dereferenced.
+        assert_eq!(unsafe { post(api.user, std::ptr::null()) }, EINVAL);
+
+        // 5. A non-zero `reserved` is malformed.
+        let malformed = TensionCtrlMsg { kind: CTRL_RESIZE, reserved: 1, ..Default::default() };
+        assert_eq!(unsafe { post(api.user, &malformed) }, EINVAL);
+
+        // 6. A CORE_ONLY message is accepted (the core may send one) and, when
+        //    drained, leaves nothing observable behind — that is the contract
+        //    that makes the reserved capacity necessary.
+        let core_only = TensionCtrlMsg {
+            kind: CTRL_RESIZE,
+            visibility: CTRL_CORE_ONLY,
+            arg0: 320,
+            arg1: 240,
+            ..Default::default()
+        };
+        assert_eq!(bus.post_core(&core_only), Ok(super::super::super::platform::CoreAdmission::Queued));
+        assert_eq!(bus.drain().len(), 1);
+
+        // 7. Filling the general region gives -ENOSPC, and does not drop or
+        //    coalesce: the caller learns synchronously, like a full pending
+        //    queue.
+        let mut accepted = 0u32;
+        loop {
+            match unsafe { post(api.user, &resize) } {
+                0 => accepted += 1,
+                code => {
+                    assert_eq!(code, ENOSPC, "the only refusal at capacity is -ENOSPC");
+                    break;
+                }
+            }
+            assert!(accepted <= crate::platform::CTRL_QUEUE_CAPACITY as u32, "never unbounded");
+        }
+        assert_eq!(
+            accepted as usize,
+            crate::platform::CTRL_GENERAL_CAPACITY,
+            "a layer may fill exactly the general region"
+        );
+
+        // 8. With the general region full, the core still gets in — the whole
+        //    point of the reservation.
+        assert_eq!(
+            bus.post_core(&core_only),
+            Ok(super::super::super::platform::CoreAdmission::Queued),
+            "the core is not starved by a full general region"
+        );
+        assert_eq!(
+            bus.stats().queued,
+            crate::platform::CTRL_GENERAL_CAPACITY + 1,
+            "12 general entries plus the core's one; the other three reserved \
+             slots are still free for core traffic"
+        );
+    }
+
+    #[test]
+    fn the_control_struct_matches_the_headers_shape() {
+        // The header's `tension_ctrl_msg` is eight u32-sized fields; the Rust
+        // type must not grow an alignment padding the C side does not have, or
+        // every message crosses the boundary shifted. The type itself is
+        // defined in `platform` and re-exported up here, so this also proves
+        // the re-export is the type the ABI table carries.
+        assert_eq!(std::mem::size_of::<TensionCtrlMsg>(), 32);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, kind), 0);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, visibility), 4);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg0), 8);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg1), 12);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg2), 16);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, arg3), 20);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, source), 24);
+        assert_eq!(std::mem::offset_of!(TensionCtrlMsg, reserved), 28);
+    }
+
+    #[test]
     fn the_header_abi_version_matches_the_hosts_constant() {
         // `TENSION_ADAPTER_ABI_VERSION` (the C macro every adapter bakes into its
         // vtable) and `ADAPTER_ABI_VERSION` (what the loader checks) are the same
@@ -1430,18 +1944,31 @@ mod tests {
         // x86-64 (quoted in this module's docs); the const assertions above are
         // the compile-time half of this check. `log_named`/`log_structured`
         // were appended under rule 11, moving the size 112 -> 128;
-        // `guest_read_checked` (C4.1a) moved it 128 -> 136, and `signal_frame`
-        // (v3, 0.7.0a) moved it 136 -> 144. The adapter's `layout_hash` (C4.1c)
+        // `guest_read_checked` (C4.1a) moved it 128 -> 136, `signal_frame`
+        // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
+        // 144 -> 152, `compile_graph` (v5) moved it 152 -> 160,
+        // `post_control` (v6) moved it 160 -> 168, `host_surface` (v6)
+        // moved it 168 -> 176, and `host_surface_extension` (v6) moved it
+        // 176 -> 184. The
+        // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 144);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 184);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_structured), 120);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, guest_read_checked), 128);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, signal_frame), 136);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, shader_generate), 144);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, compile_graph), 152);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, post_control), 160);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, host_surface), 168);
+            assert_eq!(
+                std::mem::offset_of!(TensionCoreApi, host_surface_extension),
+                176
+            );
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

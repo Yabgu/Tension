@@ -13,7 +13,7 @@
 // fields: it changes no layout, adds no verb, and is meant for setup, not for
 // a per-frame path.
 //
-// The split this module lives in (`DESIGN.md` §2, §7): the adapter owns the
+// The split this module lives in (`docs/modules/ogre.md` §1, §2): the adapter owns the
 // renderer, the session owns delivery, and the guest owns the world. Nothing
 // here draws anything — `queueMeshLoad` asks for a resource and returns an id;
 // the adapter's `publish` hook is what fills the arena's regions, and

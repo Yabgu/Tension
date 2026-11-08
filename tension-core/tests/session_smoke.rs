@@ -9,7 +9,7 @@
 //! capability registers.
 //!
 //! The adapter libraries come from `build.rs` (`cargo:rustc-env`): the reference
-//! adapter and its bad-ABI twin. Nothing here is AssemblyScript — the guests are
+//! adapter and its bad-ABI twin. Nothing here is TensionScript — the guests are
 //! WAT files under `tests/fixtures/`, readable in one screen each.
 //!
 //! **`--session-open` is A1's convenience, not the design.** A1 has no guest SDK,
@@ -176,7 +176,28 @@ fn test_missing_memory_export_refused() {
     );
 }
 
-/// The bad-ABI twin of the reference adapter: same source, `abi_version = 3`.
+/// The bad-ABI twin of the reference adapter: same source, `abi_version` one
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header the fixtures are built
+/// against.
+///
+/// This assertion used to spell both numbers out — "adapter ABI 6" and "this
+/// build is 5" — which is three separate ways to go stale on one ABI bump, and
+/// all three did when the ABI became 6. The fixture declares `+1` (see
+/// `tests/support/echo_adapter.c`), so both numbers follow from the header.
+fn adapter_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
+
+/// past the current one.
 /// The loader refuses it at load — before `init`, before `link`, before any
 /// function pointer from its vtable is called — and the diagnostic names the
 /// file and both versions.
@@ -187,9 +208,12 @@ fn test_bad_abi_adapter_refused() {
 
     assert!(!output.status.success(), "the run must fail");
     let err = stderr(&output);
+    let current = adapter_abi_version();
     assert!(
-        err.contains("was built against adapter ABI 4") && err.contains("this build is 3"),
-        "the diagnostic must name both versions\nstderr: {err}"
+        err.contains(&format!("was built against adapter ABI {}", current + 1))
+            && err.contains(&format!("this build is {current}")),
+        "the diagnostic must name both versions (fixture {}, build {current})\nstderr: {err}",
+        current + 1
     );
     assert!(
         err.contains(ECHO_BAD_ABI),
@@ -216,7 +240,7 @@ fn test_duplicate_import_refused() {
 
 /// The reference adapter's own audit line: `region_lookup` answered for JOB at
 /// link time, i.e. before the arena exists. If a library were built without the
-/// frozen layout reaching that call, the echo adapter would log the other line
+/// layout reaching that call, the echo adapter would log the other line
 /// and the required-region check would never fire.
 #[test]
 fn test_region_lookup_answered_before_the_arena_existed() {
@@ -225,7 +249,7 @@ fn test_region_lookup_answered_before_the_arena_existed() {
     let err = stderr(&output);
     assert!(
         err.contains("echo: the JOB region answered at link time"),
-        "the link-time query must be answered from the frozen layout\nstderr: {err}"
+        "the link-time query must be answered from the layout\nstderr: {err}"
     );
 }
 

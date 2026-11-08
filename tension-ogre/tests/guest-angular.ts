@@ -38,7 +38,7 @@
 // and the fixture asserted the *shape* of their endless motion instead. Now they
 // stop: the coefficient is 13 (1/s), contact-only and pure-angular, and the
 // spinner's turn floor moved 30° → 25° as the smallest of the three levers the
-// probe measured (DESIGN.md §5.1, §12). Clause 2 is the strong form again.
+// probe measured (`docs/modules/ogre.md` §4). Clause 2 is the strong form again.
 //
 // The tolerances are chunk 8a's probe numbers for this configuration, not
 // numbers chosen to pass: v/v₀ = 0.7161 against the closed form's 5/7 = 0.7143

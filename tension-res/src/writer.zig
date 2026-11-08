@@ -1,4 +1,4 @@
-//! The packer — DESIGN.md §8.2.
+//! The packer — tension-res/DESIGN.md §8.2.
 //!
 //! A build-time tool: it walks a source directory, lays out an ECMA-208 (SIDF)
 //! volume, and writes it. The runtime never comes through here.

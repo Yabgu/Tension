@@ -21,7 +21,7 @@ This is the contract between the engine and a guest that wants
 numerical integration. It declares the wasm import module and its host
 function names, every signature, the `Solver` class shape, and the
 error conventions — the things a game author and the engine runtime
-must agree on for the solver to be reachable from AssemblyScript.
+must agree on for the solver to be reachable from TensionScript.
 
 It does not declare how the solver computes: the Butcher tables, the
 adaptive controller, the workspace discipline, and where determinism
@@ -107,7 +107,7 @@ refused with `-EINVAL` (the host logs why; §5).
 For `source: "wasm"`, the last three arguments are the callbacks the
 solver will use, in order: the derivative, `buf_in`, and `buf_out`.
 Each is an index into the module's function table, and the module must
-export that table as `table` — AssemblyScript produces the export with
+export that table as `table` — TensionScript produces the export with
 `asc --exportTable`. The host resolves the three indices at create and
 stores them per solver id; every one must name a function of the
 declared signature (§3.6), or create refuses with `-EINVAL`. Two
@@ -141,7 +141,7 @@ are not bound — the call order is create → bind → step, and the host
 performs the bind itself (the note following §3.5); `-EIO` when a
 callback returns a fatal
 error or an adaptive method cannot meet its tolerances within
-`minStep` (DESIGN.md §7).
+`minStep` (tension-solver/DESIGN.md §7).
 
 ### 3.3 `solver_state` — `i32(i32 id, ptr f64 t_out, ptr f64 y_out, i32 y_cap)`
 
@@ -184,7 +184,7 @@ not of a subsection.
 ### 3.6 The three callbacks the guest passes to `create` (`_derivative`, `deriv_buf_in`, `deriv_buf_out`)
 
 What the guest must provide is three callbacks from the module that
-calls `create` — the convention phase 4 proved (DESIGN.md §8):
+calls `create` — the convention phase 4 proved (tension-solver/DESIGN.md §8):
 
 - `_derivative(y_ptr, len, t, dy_ptr, dy_cap) -> i32` — f(t, y). The
   guest's function, wasm-level
@@ -199,7 +199,7 @@ calls `create` — the convention phase 4 proved (DESIGN.md §8):
   buffer.
 
 The three functions' table indices are what `create` takes (§3.1). The
-module must export its function table as `table` — AssemblyScript
+module must export its function table as `table` — TensionScript
 produces that export with `asc --exportTable` — because the host
 resolves the indices through it; a module without the export cannot
 create a `source: "wasm"` solver. Exporting the three functions by
@@ -207,9 +207,9 @@ name is not required (the example still does it; nothing reads the
 names).
 
 A note for guests that call the import directly instead of through the
-framework: AssemblyScript function references are not table indices. A
+framework: TensionScript function references are not table indices. A
 function value points at the function's table-index word — that is the
-word AssemblyScript's own `call_indirect` sites load through — so the
+word TensionScript's own `call_indirect` sites load through — so the
 index is the i32 that pointer addresses, and the framework's
 `Solver.create` converts with exactly that dereference. A hand-rolled
 guest must convert the same way, or hand `create` something that does
@@ -226,7 +226,7 @@ the convention is valid. The host copies the current state into
 copies the result back from `deriv_buf_out` — so the guest's
 `_derivative` reads and writes pointers into its own memory and never
 sees a host address. That copy is deliberate: the mechanism, not an
-optimization (DESIGN.md §8).
+optimization (tension-solver/DESIGN.md §8).
 
 Two requirements the guest owns. `_derivative` must be a pure function
 of `(y, t)` — no RNG, no clocks, no hidden state — or
@@ -270,14 +270,14 @@ for (let i = 0; i < len; i++) {
 ```
 
 **2. `Float64Array.wrap(ptr, len)` — reads as data, no allocation — but
-not in this toolchain.** AssemblyScript 0.28.8's `wrap` takes an
+not in this toolchain.** TensionScript's `wrap` takes an
 `ArrayBuffer`, not a pointer: `Float64Array.wrap(yPtr, len)` fails to
 compile (`TS2322: Type 'usize' is not assignable to type
 '~lib/arraybuffer/ArrayBuffer'`), and reinterpreting the data pointer as
 an `ArrayBuffer` with `changetype` compiles but is a lie — the emitted
 code then reads object-header fields out of the data (an `ArrayBuffer`'s
 length lives at negative offsets of its object). Verify in your own
-build before reaching for this shape; if a future AssemblyScript adds an
+build before reaching for this shape; if a future TensionScript adds an
 external-pointer overload, it would be the readable no-allocation form:
 
 ```ts
@@ -348,7 +348,7 @@ export class SolverCallbacks {
  *
  * A parameter left at its "absent" value is not written to the wire at
  * all and the schema's default applies. The absent values are sentinels,
- * not nulls, because AssemblyScript 0.28.8 has no nullable value types
+ * not nulls, because the compiler has no nullable value types
  * (`f64 | null` is `AS204`): NaN for the eight f64 parameters, -1 for
  * `iterations`, and null for the two string fields (`description`,
  * `world` — references, where null is legal).
@@ -448,11 +448,11 @@ list is for the guest reader):
 - `-2 ENOENT` — unknown `method` in the config (method lookup failure
   at create).
 - `-5 EIO` — callback returned a fatal error; integrator internal
-  failure (e.g. `minStep` exhaustion, DESIGN.md §7).
+  failure (e.g. `minStep` exhaustion, tension-solver/DESIGN.md §7).
 - `-9 EBADF` — destroyed or never-allocated solver id.
 - `-12 ENOMEM` — allocation failure (create only).
 - `-22 EINVAL` — a config the host refuses (a wire that does not match
-  DESIGN.md §12, an empty method or source, an unmet source requirement,
+  tension-solver/DESIGN.md §12, an empty method or source, an unmet source requirement,
   an out-of-range parameter) or a bad argument; `step` on a
   `source: "wasm"` solver before its callbacks are bound.
 - `-24 EMFILE` — solver-id table full (create only).
@@ -467,7 +467,7 @@ requires. Phase 5 introduces no async, no cancellation, and no stepping
 on a background thread.
 
 What the guest can rely on, established in phase 4 and covered by its
-tests (DESIGN.md §8): multiple solvers on the same thread step one at a
+tests (tension-solver/DESIGN.md §8): multiple solvers on the same thread step one at a
 time and do not interfere. The host-to-guest callback path runs through
 a per-thread context that is installed around each synchronous step and
 cleared after it; two interleaved solvers — different sizes, different
@@ -488,7 +488,7 @@ beyond that is implied.
   stderr) — not across the wasm boundary, because create has no err
   buffer (solver/DESIGN.md §9).
 - **No spook (P6).** `spook` returns `-ENOSYS` from create: it is
-  constraint-based position-based dynamics, and the frozen ABI has no
+  constraint-based position-based dynamics, and the ABI has no
   constraint channel (solver/DESIGN.md §10). The delivered set is the
   explicit-RK family (euler, heun, rk23, rk45) **plus `verlet` and
   `implicit_euler`**, which this bullet denied until 2026-09-21. Chunk 6a's P0
@@ -516,7 +516,7 @@ beyond that is implied.
 
 ## 8. Example: what a game writes
 
-Pseudo-AssemblyScript for the guest-side loop — a sketch of the
+Pseudo-TensionScript for the guest-side loop — a sketch of the
 sequence, not compilable as shown:
 
 ```

@@ -2,15 +2,17 @@
 //!
 //! Pure arithmetic over a byte slice. Nothing here knows what wasmtime is, what
 //! a guest is, or what OGRE is — the module exists so that the layout can be
-//! tested, and pinned, without a store (`tension-ogre/DESIGN.md` §5).
+//! tested, and pinned, without a store (`docs/session.md` §4).
 //!
-//! The layout is **frozen**: the twelve region kinds are `kind == index`, every
-//! region's offset is a compile-time constant, and `arena_size` only selects how
-//! much of the band is live. That is what lets an adapter call `region_lookup`
-//! at link time and cache the answers (`DESIGN.md` §5.2, §7.2).
+//! The layout is fixed at compile time: the twelve region kinds are `kind ==
+//! index`, every region's offset is a compile-time constant, and `arena_size`
+//! only selects how much of the band is live. That is what lets an adapter call
+//! `region_lookup` at link time and cache the answers. `layout_hash`
+//! fingerprints the shape, and `layout_hash_is_deterministic_and_stable`
+//! refuses a build whose shape moved without the recorded value moving too.
 //!
 //! The header page, and the region band's arithmetic (default sizes from
-//! `DESIGN.md` §5.2):
+//! `docs/session.md` §4):
 //!
 //! ```text
 //! 0x000  ArenaControl          256 B
@@ -29,7 +31,7 @@
 //! 0x1C6020 MATERIAL          64 KiB
 //! 0x1D6020 RENDERABLE       128 KiB
 //! 0x1F6020 BUFFER_POOL        4 MiB
-//! 0x5F6020 end of the frozen layout (`LAYOUT_FLOOR`)
+//! 0x5F6020 end of the layout (`LAYOUT_FLOOR`)
 //! ```
 
 /// ASCII `TNSARENA`, little-endian in one `u64` — the same idea as the solver
@@ -40,7 +42,7 @@ pub const MAGIC: u64 = 0x414E_4552_4153_4E54;
 pub const FORMAT_VERSION: u16 = 1;
 
 /// The wire catalogue's version. A *meaning* change with identical offsets
-/// bumps this and leaves [`layout_hash`] alone (`DESIGN.md` §13).
+/// bumps this and leaves [`layout_hash`] alone (`docs/session.md` §4).
 pub const SCHEMA_VERSION: u16 = 1;
 
 /// The adapter ABI version the arena was written for.
@@ -115,8 +117,8 @@ pub const FAULT_SHUTDOWN: u32 = 4;
 
 // ── event classes and delivery modes ──────────────────────────────────────
 
-/// The thirteen classes of `DESIGN.md` §3.2, in the frozen id order (urgent
-/// first: delivery follows class id within an epoch).
+/// The thirteen classes, in id order (urgent first: delivery follows class id
+/// within an epoch).
 ///
 /// 0.6.0a appended the AI family (10-12) after `FRAME`. Appending — never
 /// inserting — is the rule: a class id is a subscription key and a wire value,
@@ -145,7 +147,7 @@ pub const TABLE_DELIVERED: usize = 24;
 
 /// `EventRecord` fields — the 32-byte record a sub-ring holds.
 ///
-/// These offsets **are** part of [`layout_hash`] (`DESIGN.md` §5.1): a record's
+/// These offsets **are** part of [`layout_hash`] (`docs/session.md` §4): a record's
 /// size alone would let a reorder slip through, and a guest reads these fields by
 /// number. Folding them in moved the hash once, when this round did it; from
 /// here on a reorder breaks the hash, which is the point.
@@ -174,7 +176,7 @@ pub const STRING_HALF_CAPACITY: usize = 8;
 pub const STRING_HALF_FLAGS: usize = 12;
 
 /// `Subscription` fields — the transient 16-byte record `session_subscribe`
-/// takes (`DESIGN.md` §9). It may live anywhere in guest memory.
+/// takes (`docs/session.md` §4). It may live anywhere in guest memory.
 pub const SUBSCRIPTION_CLASS: usize = 0;
 pub const SUBSCRIPTION_MODE: usize = 4;
 pub const SUBSCRIPTION_FLAGS: usize = 8;
@@ -204,9 +206,13 @@ pub const CALLBACKS_ON_EVENT: usize = 12;
 /// cannot validate a signature must not accept it.
 pub const CALLBACKS_SLOTS: u16 = 2;
 
-/// The thirteen class ids, by name (`DESIGN.md` §3.2). The order is the delivery
-/// priority — urgent first — and it is frozen: a class id is a subscription key
-/// and a wire value.
+/// The thirteen class ids, by name. The order is the delivery priority — urgent
+/// first — and it is a wire value: a class id is a subscription key and what a
+/// compiled guest's `CLASS_*` constant means. `layout_hash` folds `CLASS_COUNT`,
+/// not the ids themselves, so what pins the ids is the guest tests that
+/// subscribe to a class by number and assert they receive it
+/// (`tension-framework/tests/guest-ogre.ts`, `guest-drop.ts`,
+/// `guest-ai-stream.ts`). Moving one is an SDK bump, not a local edit.
 pub const CLASS_DEVICE_LOST: u32 = 0;
 pub const CLASS_JOB_FAILED: u32 = 1;
 pub const CLASS_RESOURCE_FAILED: u32 = 2;
@@ -228,9 +234,9 @@ pub const CLASS_AI_READY: u32 = 10;
 pub const CLASS_AI_DONE: u32 = 11;
 pub const CLASS_AI_ERROR: u32 = 12;
 
-/// The thirteen classes as `(id, name)`, in the frozen order — the catalogue the
-/// ids above name, in one place. `DESIGN.md` §3.2 is the prose; this is what
-/// code reads when it has to print which class a record belongs to.
+/// The thirteen classes as `(id, name)`, in id order — the catalogue the ids
+/// above name, in one place. `docs/session.md` §3 has the rationale; this is
+/// what code reads when it has to print which class a record belongs to.
 pub const CLASSES: [(u32, &str); CLASS_COUNT] = [
     (CLASS_DEVICE_LOST, "DEVICE_LOST"),
     (CLASS_JOB_FAILED, "JOB_FAILED"),
@@ -256,7 +262,7 @@ pub fn class_name(id: u32) -> &'static str {
         .unwrap_or("<unknown>")
 }
 
-/// The default ring capacity per class, in class-id order (`DESIGN.md` §3.2).
+/// The default ring capacity per class, in class-id order (`docs/session.md` §4).
 ///
 /// The AI classes get 16. Coalescing bounds the AI family at one un-drained
 /// READY plus one terminal per session, and `MAX_SESSIONS` is 4
@@ -266,7 +272,7 @@ pub fn class_name(id: u32) -> &'static str {
 pub const DEFAULT_RING_CAPACITIES: [u32; CLASS_COUNT] =
     [1, 256, 256, 64, 4096, 4096, 256, 64, 1024, 256, 16, 16, 16];
 
-/// The default delivery mode per class, in class-id order (`DESIGN.md` §3.2).
+/// The default delivery mode per class, in class-id order (`docs/session.md` §3).
 ///
 /// Deliberately **not** part of [`layout_hash`]: the mode is policy that crosses
 /// the ABI as `class_info`'s answer and as a `Subscription`'s field, whose
@@ -291,7 +297,7 @@ pub const DEFAULT_CLASS_MODES: [u32; CLASS_COUNT] = [
 /// `class_info`'s `flags` word: the class is subscribed, so a producer that can
 /// skip work nobody asked for should keep producing.
 ///
-/// The frozen header documents the parameter ("so a producer can skip
+/// `tension_adapter.h` documents the parameter ("so a producer can skip
 /// generating events nobody subscribed to") but names no constant for it —
 /// which is why this bit is defined here and reported rather than assumed to be
 /// in the ABI. A v2 header adding `TENSION_CLASS_SUBSCRIBED` would name the same
@@ -305,14 +311,15 @@ pub const RD_GUEST_WRITES: u32 = 1 << 0;pub const RD_SESSION_WRITES: u32 = 1 << 
 pub const RD_WRITES_ONCE: u32 = 1 << 2;
 pub const RD_BYTES: u32 = 1 << 3;
 
-/// The twelve region kinds, in the frozen order (`kind == index`). These are the
+/// The twelve region kinds, in `kind == index` order. These are the
 /// values `tension_adapter.h`'s `TENSION_REGION_*` constants carry, and the ones
 /// `region_lookup` answers for.
 ///
 /// The bin build reads kinds as numbers (the required-region check), and names
 /// them through [`region_name`], so nothing but the tests reads these constants
 /// today. They carry the A2a-style annotation rather than being deleted: they
-/// are the frozen ABI's naming, and the layout test pins them to this order.
+/// are the ABI's naming, and `region_directions_are_the_frozen_ones` pins the
+/// directions while `layout_hash_is_deterministic_and_stable` pins the order.
 #[cfg_attr(not(test), allow(dead_code))]
 pub const REGION_CONTROL: u32 = 0;
 #[cfg_attr(not(test), allow(dead_code))]
@@ -377,7 +384,7 @@ pub const MATERIAL_SIZE: usize = 64 * 1024;
 pub const RENDERABLE_SIZE: usize = 128 * 1024;
 pub const BUFFER_POOL_SIZE: usize = 4 * 1024 * 1024;
 
-// The band, in kind order, from the frozen sizes above.
+// The band, in kind order, from the sizes above.
 pub const FRAME_STATE_OFFSET: usize = HEADER_PAGE_SIZE;
 pub const JOB_OFFSET: usize = FRAME_STATE_OFFSET + FRAME_STATE_SIZE;
 pub const RESOURCE_OFFSET: usize = JOB_OFFSET + JOB_SIZE;
@@ -389,12 +396,12 @@ pub const MATERIAL_OFFSET: usize = SCENE_OFFSET + SCENE_SIZE;
 pub const RENDERABLE_OFFSET: usize = MATERIAL_OFFSET + MATERIAL_SIZE;
 pub const BUFFER_POOL_OFFSET: usize = RENDERABLE_OFFSET + RENDERABLE_SIZE;
 
-/// One past the last byte the frozen layout uses: an `arena_size` below this is
+/// One past the last byte the layout uses: an `arena_size` below this is
 /// refused (C4), and the reserved gap runs from here to `max_arena_size`.
 pub const LAYOUT_FLOOR: usize = BUFFER_POOL_OFFSET + BUFFER_POOL_SIZE;
 
 /// The default reserved ceiling, and therefore the default `memoryBase`:
-/// `DESIGN.md` §5.2 sizes the frozen layout at ~5.96 MiB *inside* an 8 MiB
+/// the layout is ~5.96 MiB (`LAYOUT_FLOOR` is 6,250,528) *inside* an 8 MiB
 /// ceiling. This is a configuration default, not a shape fact, so it is
 /// deliberately not part of [`layout_hash`] — a session may run with a
 /// different ceiling and the same layout.
@@ -411,7 +418,7 @@ pub struct RegionDesc {
     pub align: u32,
 }
 
-/// The frozen region table, in kind order. `kind == index` is the lookup.
+/// The region table, in kind order. `kind == index` is the lookup.
 pub const REGIONS: [RegionDesc; REGION_COUNT] = [
     RegionDesc { kind: 0, flags: RD_SESSION_WRITES | RD_WRITES_ONCE, offset: CONTROL_OFFSET as u32, size: CONTROL_SIZE as u32, align: 64 },
     RegionDesc { kind: 1, flags: RD_SESSION_WRITES | RD_WRITES_ONCE, offset: SESSION_INFO_OFFSET as u32, size: SESSION_INFO_SIZE as u32, align: 16 },
@@ -644,7 +651,7 @@ pub struct RingHeader {
 
 /// Write one class's ring header: empty, with the class's capacity and the
 /// record stride. `head` and `tail` are the producer's and the consumer's
-/// monotonic counters (`DESIGN.md` §3.3); a session that opens again rewrites
+/// monotonic counters (`docs/session.md` §3); a session that opens again rewrites
 /// the header rather than carrying counters over, because an open is a fresh
 /// session.
 ///
@@ -683,7 +690,7 @@ pub fn set_ring_tail(arena: &mut [u8], ring_offset: usize, value: u32) -> Result
 }
 
 /// Set a sub-ring's `dropped` counter — the mirror the publish phase writes
-/// (`DESIGN.md` §3.4). The authoritative value is the host-side queue's.
+/// (`docs/session.md` §5). The authoritative value is the host-side queue's.
 pub fn set_ring_dropped(arena: &mut [u8], ring_offset: usize, value: u32) -> Result<(), LayoutError> {
     put_u32(arena, ring_offset + TABLE_DROPPED, value)
 }
@@ -755,7 +762,7 @@ pub struct CallbacksRecord {
 impl CallbacksRecord {
     /// The record a guest that registers nothing is not obliged to write: every
     /// slot absent, at this build's ABI version. `callbacks_len = 0` in the
-    /// config means exactly this record (`DESIGN.md` §6.1, §8) — the limit case
+    /// config means exactly this record (`docs/session.md` §7, §3) — the limit case
     /// of "every slot is optional", which is why the open's validation and
     /// resolution paths need no special case beyond not reading anything.
     pub const fn absent() -> CallbacksRecord {
@@ -769,7 +776,7 @@ impl CallbacksRecord {
     }
 }
 
-/// A `Subscription` record as the guest writes it (`DESIGN.md` §9).
+/// A `Subscription` record as the guest writes it (`docs/session.md` §4).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct Subscription {
     pub class: u32,
@@ -1025,7 +1032,7 @@ pub fn verify_band_is_zero(arena: &[u8], start: usize, end: usize) -> Result<(),
 ///
 /// It deliberately does **not** cover the guest's chosen `arena_size`, the
 /// region offsets as such, or anything else that varies per run: those are
-/// validated structurally at open (`DESIGN.md` §5.3). Hashing shape only means
+/// validated structurally at open (`docs/session.md` §4). Hashing shape only means
 /// a legitimate configuration cannot be refused for looking different.
 pub fn layout_hash() -> u32 {
     let mut h = Fnv(0x811C_9DC5);
@@ -1060,7 +1067,7 @@ pub fn layout_hash() -> u32 {
     }
 
     // Field offsets that both sides compute against — every record a guest
-    // reads by offset (`DESIGN.md` §5.1). The *name* is hashed beside the
+    // reads by offset (`docs/session.md` §4). The *name* is hashed beside the
     // offset, so a rename moves the hash as well as a move does: both change
     // what a compiled guest's constant means.
     for fields in [
@@ -1244,7 +1251,7 @@ pub fn ring_bytes(capacities: &[u32; CLASS_COUNT]) -> u64 {
 }
 
 /// Read the control block's own report of a field this module writes; the
-/// session's per-entry triple check uses these (`DESIGN.md` §5.3).
+/// session's per-entry triple check uses these (`docs/session.md` §4).
 pub fn control_magic(arena: &[u8]) -> u64 {
     u64::from_le_bytes(
         arena[CONTROL_OFFSET + CONTROL_MAGIC..CONTROL_OFFSET + CONTROL_MAGIC + 8]
@@ -1261,7 +1268,7 @@ pub fn control_region_count(arena: &[u8]) -> u32 {
     u32_at(arena, CONTROL_OFFSET + CONTROL_REGION_COUNT)
 }
 
-/// The control block's own report of the session's state (`DESIGN.md` §6.3).
+/// The control block's own report of the session's state (`docs/session.md` §7).
 pub fn control_state(arena: &[u8]) -> u32 {
     u32_at(arena, CONTROL_OFFSET + CONTROL_STATE)
 }
@@ -1289,7 +1296,7 @@ pub fn set_control_nonce(arena: &mut [u8], nonce: u64) -> Result<(), LayoutError
 mod tests {
     use super::*;
 
-    /// An arena the size of the frozen layout, which is the smallest legal one.
+    /// An arena the size of the layout, which is the smallest legal one.
     fn arena() -> Vec<u8> {
         vec![0u8; LAYOUT_FLOOR]
     }
@@ -1379,7 +1386,7 @@ mod tests {
         assert_eq!(BUFFER_POOL_OFFSET, 0x1F6020);
         assert_eq!(LAYOUT_FLOOR, 0x5F6020);
         assert_eq!(LAYOUT_FLOOR, 6_250_528);
-        // §5.2's arithmetic: ~5.96 MiB of frozen layout inside an 8 MiB ceiling.
+        // The layout's ~5.96 MiB inside an 8 MiB ceiling.
         assert!(LAYOUT_FLOOR < 8 * 1024 * 1024);
         assert_eq!(8 * 1024 * 1024 - LAYOUT_FLOOR, 2_138_080);
     }
@@ -1668,7 +1675,7 @@ mod tests {
     }
 
     /// The recorded hash. Re-record only with a deliberate change to the shape
-    /// *or* to what the fingerprint covers (`DESIGN.md` §5.1).
+    /// *or* to what the fingerprint covers (`docs/session.md` §4).
     ///
     /// `303_487_325` was the value before field offsets were folded in; a
     /// reordering or renaming of any field a guest reads now moves it.

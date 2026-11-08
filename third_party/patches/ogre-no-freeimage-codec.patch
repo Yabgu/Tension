@@ -1,0 +1,66 @@
+Tension: guard BROKEN_FILES_IN_UNITY_BUILD on OGRE_CONFIG_ENABLE_FREEIMAGE
+==========================================================================
+
+Why this patch exists
+---------------------
+OGRE-Next's OgreMain/CMakeLists.txt:403 unconditionally seeds
+
+    set( BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )
+
+and CMake/Utils/OgreAddTargets.cmake:54 then does
+
+    set(_SOURCES ${_PRIMARY} ${_EXCLUDES})
+
+where `_EXCLUDES` contains the `SEPARATE` list passed to `ogre_add_library`.
+That list is *appended* to the target's sources, not subtracted from them. The
+`if (OGRE_CONFIG_ENABLE_FREEIMAGE)` block at OgreMain/CMakeLists.txt:354 only
+adds the header, source and FreeImage_LIBRARIES when the option is ON; it never
+removes anything when it is OFF.
+
+Because of line 403, `-DOGRE_CONFIG_ENABLE_FREEIMAGE=OFF` leaves
+`src/OgreFreeImageCodec2.cpp` in `_EXCLUDES`, forcing `ogre_add_library` to
+compile it even when FreeImage is disabled. The translation unit includes
+`<FreeImage.h>`, so building without FreeImage installed fails:
+
+    OgreMain/src/OgreFreeImageCodec2.cpp:48:10: fatal error:
+      FreeImage.h: No such file or directory
+
+(or at link time on a machine where FreeImage happens to be installed).
+
+This patch fixes the root cause in CMake by guarding the initialization of
+`BROKEN_FILES_IN_UNITY_BUILD` with `if (OGRE_CONFIG_ENABLE_FREEIMAGE)`.
+When FreeImage is disabled, the file is never added to `BROKEN_FILES_IN_UNITY_BUILD`,
+so it is never added to `_SOURCES` and never compiled. When FreeImage is enabled,
+it remains in the SEPARATE list for unity builds as intended.
+
+Upstream state
+--------------
+Unfixed as of ogre-next master (pinned here at 475f783d76). If upstream adds
+the guard in CMake, this patch becomes a no-op (patch -N --forward reports
+"previously applied" and skips); if upstream changes the surrounding lines,
+bootstrap.mjs fails loudly with the rejected hunk rather than silently skipping.
+
+Source
+------
+Measured in this repo's FreeImage-removal experiment against the pinned submodule:
+OgreNextMain and the full tree build without FreeImage, and `ldd` lists no
+libfreeimage.
+
+Applied by scripts/bootstrap.mjs before CMake configuration. It is never edited
+in place by hand: AGENTS.md rule 1 keeps third_party/ogre-next read-only, and
+the build reproduces through `npm run bootstrap`.
+
+--- a/OgreMain/CMakeLists.txt
++++ b/OgreMain/CMakeLists.txt
+@@ -400,7 +400,10 @@
+ 
+ set (TARGET_LINK_FLAGS "")
+ 
+-set( BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )
++set( BROKEN_FILES_IN_UNITY_BUILD "" )
++if (OGRE_CONFIG_ENABLE_FREEIMAGE)
++	list( APPEND BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )
++endif ()
+ 
+ # setup OgreMain target
+ if (WINDOWS_STORE OR WINDOWS_PHONE)

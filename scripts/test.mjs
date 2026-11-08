@@ -2,6 +2,8 @@
 // Run the test suites, in parallel where that is safe.
 //
 //   1. codegen            the generated wire records are current
+//   1b. abi docs          the generated ABI references are current, and the
+//                         documented offsets match the C compiler's `offsetof`
 //   2. tension-framework  the guest fixtures against the host
 //   3. tension-ogre guest the capability's suite
 //   4. tension-input      the input DSO's suite
@@ -9,6 +11,9 @@
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
 //   8. line endings       no CRLF in a text file
+//   9. dependency pins    one naga version, not two
+//  10. isometric (CI)    the three 2D problems, from synthetic pages
+//  11. isometric frame   the framework library reproduces the scene byte for byte
 //
 // ## What "parallel" may and may not do here
 //
@@ -58,7 +63,6 @@ const node = process.execPath;
 // parent's environment.
 const ogreLibs = [
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
 ].filter(existsSync);
 
 function suiteEnv(extra = {}) {
@@ -68,6 +72,10 @@ function suiteEnv(extra = {}) {
   // need all three, and a suite given the bare parent environment fails with
   // messages that name none of it.
   const env = { ...baseEnv(), ...extra };
+  // The 2D examples show a window when a display is present, because `npm start`
+  // should show something. A suite must not: it asserts pixels, and a window
+  // would make the result depend on a compositor (and pop up during CI).
+  env.TENSION_2D_HEADLESS = '1';
   if (!ogreLibs.length) return env;
 
   if (WIN) {
@@ -122,8 +130,42 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
   },
 
-  codegen: {
-    title: 'codegen',
+  // A dependency-hygiene check rather than a test: cargo links two naga copies
+  // silently when `tension-core` and `tension-shadergen` disagree, and the
+  // symptom is a confusing "ambiguous" from `cargo tree`, not a compile error.
+  // Cheap enough to be a suite, and it belongs where every other gate runs.
+  deps: {
+    title: 'dependency pins',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-naga-pin.mjs')]),
+  },
+
+  // The checked-in Win32 overlay for Ogre's generated Vulkan settings header is
+  // a copy of a generated file, which is exactly the kind of thing that goes
+  // stale in silence: a symbol upstream adds stays undefined here, which still
+  // compiles and links, and quietly drops a backend. Cheap to check, so it runs
+  // with every other gate rather than only on the machine that cross-compiles.
+  'win32-headers': {
+    title: 'win32 headers',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-win32-headers.mjs')]),
+  },
+
+  // The ogre table capacities exist twice — once in the adapter's C++ and once
+  // in the guest SDK's TensionScript — and they agree today by inspection. The
+  // check parses both files and compares every pair, so a number that moves on
+  // one side fails here instead of misreading the other side's table at run
+  // time.
+  'ogre-capacities': {
+    title: 'ogre capacities',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'check-ogre-capacities.mjs')]),
+  },
+
+  codegen: {    title: 'codegen',
     needs: [],
     holds: [],
     run: () => execute(node, [
@@ -133,6 +175,18 @@ const SUITES = {
       '--out-h', join(repo, 'tension-ogre', 'src', 'generated'),
       '--check',
     ]),
+  },
+
+  // The ABI references are generated from the header and the registration
+  // sites, so the only question is whether they are current — and whether the
+  // offset column is right, which the generator alone cannot answer. The check
+  // compiles a probe against the real header and compares `offsetof`, so a
+  // wrong layout model fails here rather than in a reader's trust.
+  'abi-docs': {
+    title: 'abi docs',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'test-abi-docs.mjs')]),
   },
 
   framework: {
@@ -175,6 +229,101 @@ const SUITES = {
     holds: ['zig'],
     run: () => execute('zig', ['build', 'test'],
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
+  },
+
+  // The same scene from generated flat-colour pages: same canvas, same
+  // positions, same sort keys, same probes. Its assertions are cheap and its
+  // expectations are palette constants, so it catches a renderer bug without
+  // needing the art. `isometric-art` is the same scene drawn from the real
+  // tileset and catches art-pipeline bugs this one cannot.
+  isometric: {
+    title: 'isometric (synthetic)',
+    needs: [],
+    // Builds the adapter and the guest; both live in directories another 2D
+    // suite would also write.
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The worked example on the committed tileset. It used to be excluded from
+  // this list because the art was third-party and the example exited 77 on any
+  // machine without it; the tileset is drawn and committed now, so it runs
+  // everywhere the adapter does.
+  'isometric-art': {
+    title: 'isometric (art)',
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The framework layer: `Tileset` + `Composite` + `IsometricWorld` rebuild the
+  // same scene and their frames must equal the hand-written guest's, byte for
+  // byte. That assertion is the whole test — it fails if the framework's
+  // emission differs anywhere, including in fields no probe reads.
+  'isometric-framework': {
+    title: 'isometric (framework)',
+    // No `needs`: this suite builds and runs the hand-written guest itself as
+    // its comparison, so depending on the `isometric` suite would run it twice
+    // and would make the framework suite un-runnable on its own.
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The host's window and surface, in its own suite so a failure is
+  // attributable. `cargo test` runs it too (it is a test target), but buries a
+  // window-open failure in cargo's output amid 300 other lines.
+  //
+  // It needs a display *driver that supports Vulkan*: wayland or x11 on a
+  // developer machine, x11 under CI's Xvfb. `offscreen` also passes and is
+  // reported as headless rather than as WSI; `dummy` cannot and fails, which is
+  // what the probe's own negative-control mode asserts.
+  'platform-surface': {
+    title: 'platform surface',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_surface',
+    ], { env: suiteEnv() }),
+  },
+
+  // The pump: does the host notice a resize? `platform-surface` proves the
+  // surface can be created; this proves the window is serviced.
+  'platform-window': {
+    title: 'platform window',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_window',
+    ], { env: suiteEnv() }),
+  },
+
+  // The control bus: a message from any source reaches the window.
+  'platform-control': {
+    title: 'platform control',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_control',
+    ], { env: suiteEnv() }),
   },
 
   core: {
@@ -277,7 +426,7 @@ if (requested.length) {
 // `zig` on cargo's PATH (cargo's build script runs it by name).
 
 const needsPreparation = order.some((name) =>
-  ['framework', 'ogre-guest', 'input', 'core'].includes(name));
+  ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
 
 function banner(text) {
   console.log('\n======================================================================');

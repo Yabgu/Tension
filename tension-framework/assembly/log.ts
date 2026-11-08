@@ -51,7 +51,7 @@ export class Logger {
 
   /** The logger for `name`. Names are namespaces (`a:b` inherits from `a`). */
   static get(name: string): Logger {
-    // `Map#get` aborts on an absent key in AssemblyScript, so the guard is
+    // `Map#get` aborts on an absent key in TensionScript, so the guard is
     // `has` rather than a null check on the result.
     const registry = Logger.registry;
     if (registry.has(name)) return registry.get(name);

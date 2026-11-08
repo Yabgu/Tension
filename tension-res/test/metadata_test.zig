@@ -325,7 +325,7 @@ test "minimal fixture volume parses end to end" {
     try testing.expectEqual(@as(?u64, 6), ci.data_stream_size);
 
     // Walk the directory File's File Data (13.15.4) to its index Stream and
-    // probe it (DESIGN.md §6.7).
+    // probe it (tension-res/DESIGN.md §6.7).
     var at = dir_file + dh.consumed + di.consumed;
     at += try tableLen(minimal_sidf[at..], fields.SOURCE_DIRECTORY_HEADER);
     const path = try metadata.parsePathTable(minimal_sidf[at..]);

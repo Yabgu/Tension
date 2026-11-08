@@ -9,12 +9,10 @@
 //   packages/core             bin/tension-core.js  (spawns the payload binary)
 //   packages/ogre             index.js             (exports the adapter's path)
 //   packages/ogre-next        index.js             (exports lib/, include/, Media/)
-//   packages/freeimage        index.js             (exports lib/, include/, bin/)
 //
 //   packages/core-<platform>-<arch>/bin/tension-core[.exe]
 //   packages/ogre-<platform>-<arch>/lib/libtension_ogre.{so,dll}
 //   packages/ogre-next-<platform>-<arch>/{lib,include,Media}
-//   packages/freeimage-<platform>-<arch>/{lib,include,bin}
 //
 // The payload packages carry `os`/`cpu` and are what `npm pack` would publish;
 // the meta packages are what an example depends on, so a guest never names a
@@ -31,9 +29,9 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
 } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
@@ -46,7 +44,6 @@ const packages = join(repo, 'packages');
 export const SUFFIX = `${process.platform}-${process.arch}`;
 
 const OGRE_SRC = join(repo, 'third_party', 'ogre-next-install');
-const FREEIMAGE_SRC = join(repo, 'third_party', 'freeimage-install');
 
 /// Ogre's sample content. Removed from the package; see the README for the
 /// measurement that says nothing reads them.
@@ -64,6 +61,26 @@ function note(message) {
   console.log(`build-native: ${message}`);
 }
 
+/// The pre-payload layout copied lib/, include/ and Media/ into the meta
+/// packages themselves. `.gitignore` already calls anything left there a stale
+/// local build that must not travel, but a leftover does real damage before it
+/// is ever committed: the adapter's rpath used to spell the Ogre directory as
+/// `../../ogre-next/lib`, which is where the stale copy sits, and glibc takes
+/// the first rpath hit. The packaged adapter then loaded an Ogre-Next from
+/// before FreeImage was removed and `npm start` died on `libfreeimage.so.3`,
+/// while the build and both test suites stayed green. Deleting these makes the
+/// platform payload the only copy in the tree.
+const STALE_META_PAYLOADS = ['ogre/lib', 'ogre-next/lib', 'ogre-next/include', 'ogre-next/Media'];
+
+function pruneStaleMetaPayloads() {
+  for (const stale of STALE_META_PAYLOADS) {
+    const dir = join(packages, stale);
+    if (!existsSync(dir)) continue;
+    rmSync(dir, { recursive: true, force: true });
+    note(`pruned packages/${stale} (pre-payload build; the payload is authoritative)`);
+  }
+}
+
 /// The platform payload directory for a component.
 function payload(name) {
   return join(packages, `${name}-${SUFFIX}`);
@@ -78,7 +95,6 @@ function payload(name) {
 /// platform is ever built per checkout.
 const COMPONENT_DESCRIPTIONS = {
   'ogre-next': 'Ogre-Next 3.0 runtime: shared libraries, headers and the Hlms shader media.',
-  freeimage: 'FreeImage 3.19: the image codecs Ogre decodes textures with.',
   ogre: 'The OGRE capability adapter that tension-core dlopens for --capability.',
   core: 'The Tension interpreter: runs a guest wasm and loads capability adapters.',
 };
@@ -103,9 +119,9 @@ function writePayloadManifest(destination, component, files, extra = {}) {
 /// `dereference: true` is the trap here: a shared library ships as
 /// `libFoo.so -> libFoo.so.4.0 -> libFoo.so.4.0.0` and dereferencing turns one
 /// 9 MB file into three 9 MB files. First run of this script produced a 26 MB
-/// freeimage package from an 8.7 MB install, and a 29 MB ogre-next lib/ from
-/// 15 MB, for exactly that reason. The links are relative, so they stay valid
-/// inside the package.
+/// package from an 8.7 MB install, and a 29 MB ogre-next lib/ from 15 MB, for
+/// exactly that reason. The links are relative, so they stay valid inside the
+/// package.
 function copyTree(from, to) {
   rmSync(to, { recursive: true, force: true });
   mkdirSync(dirname(to), { recursive: true });
@@ -116,8 +132,7 @@ function copyTree(from, to) {
 ///
 /// `lstatSync`, not `statSync`: a shared library ships as a chain of relative
 /// symlinks, and following them counts the same megabytes once per link. The
-/// first version of this function reported freeimage as 25.8 MB when its
-/// contents are 8.7 MB.
+/// first version of this function reported one 8.7 MB install as 25.8 MB.
 function du(target) {
   if (!existsSync(target)) return 0;
   const st = lstatSync(target);
@@ -206,28 +221,6 @@ function packageOgreNext() {
   return destination;
 }
 
-// ── freeimage ────────────────────────────────────────────────────────────────
-
-function packageFreeImage() {
-  const destination = payload('freeimage');
-  if (!existsSync(FREEIMAGE_SRC)) {
-    note('freeimage: no third_party/freeimage-install — skipped');
-    return null;
-  }
-  note('freeimage: copying lib/, include/, bin/');
-  copyTree(join(FREEIMAGE_SRC, 'lib'), join(destination, 'lib'));
-  if (existsSync(join(FREEIMAGE_SRC, 'include'))) {
-    copyTree(join(FREEIMAGE_SRC, 'include'), join(destination, 'include'));
-  }
-  // Windows puts the DLL in bin/; the adapter and the host need it on the
-  // loader's search path, and `bin/` is where the npm payload keeps it.
-  if (existsSync(join(FREEIMAGE_SRC, 'bin'))) {
-    copyTree(join(FREEIMAGE_SRC, 'bin'), join(destination, 'bin'));
-  }
-  writePayloadManifest(destination, 'freeimage', ['lib/', 'include/', 'bin/']);
-  return destination;
-}
-
 // ── tension-res ──────────────────────────────────────────────────────────────
 
 /// The Zig static archive both native artifacts link.
@@ -271,9 +264,9 @@ function buildRes() {
 /// adapter is built by MSYS2's g++ against an Ogre built by the same toolchain,
 /// and the resulting imports reach well past the obvious ones — `zlib1.dll`
 /// and `libzzip.dll` come from OgreNextMain, the MinGW runtime from every
-/// object compiled by g++, FreeImage from Ogre's texture codec. Missing one
-/// surfaces as `LoadLibrary failed with error code 126`, which names no file at
-/// all, so the closure is computed here rather than guessed at.
+/// object compiled by g++. Missing one surfaces as `LoadLibrary failed with
+/// error code 126`, which names no file at all, so the closure is computed here
+/// rather than guessed at.
 ///
 /// `objdump` lists the imports (binutils ships with the compiler this build
 /// already requires). Anything not found in the payload or MSYS2's UCRT64 bin
@@ -333,6 +326,20 @@ function stageWindowsDependencies(libDir, extraSearch = []) {
 /// tree already does and what its DLL search-path handling expects.
 function buildAdapter(ogreNextPayload) {
   const buildDir = join(repo, 'tension-ogre', 'build-cmake');
+
+  // Where the Ogre-Next libraries sit relative to the packaged adapter. Both
+  // directories carry the platform suffix, so this cannot be spelled in
+  // CMakeLists.txt; computing it from the paths actually written here is the
+  // only way it stays true when the layout changes. The published spelling is
+  // added too because `npm pack` renames every package with the `tension-`
+  // scope prefix, which shifts the sibling's directory name.
+  const adapterLibDir = join(payload('ogre'), 'lib');
+  const ogreNextLibDir = join(ogreNextPayload, 'lib');
+  const rpathExtra = [
+    relative(adapterLibDir, ogreNextLibDir).split('\\').join('/'),
+    `../../tension-${basename(ogreNextPayload)}/lib`,
+  ];
+
   const args = [
     '-S', join(repo, 'tension-ogre'),
     '-B', buildDir,
@@ -340,6 +347,7 @@ function buildAdapter(ogreNextPayload) {
     '-DCMAKE_BUILD_TYPE=Release',
     `-DOGRE_NEXT_PREFIX=${ogreNextPayload}`,
     `-DTENSION_RES_DIR=${join(repo, 'tension-res')}`,
+    `-DTENSION_OGRE_RPATH_EXTRA=${rpathExtra.join(';')}`,
   ];
 
   if (WIN) {
@@ -380,17 +388,190 @@ function buildAdapter(ogreNextPayload) {
       }
     }
 
-    // FreeImage is a dependency of Ogre, not of the adapter; the closure walk
-    // below finds it if its DLL is reachable on the search path.
-    const freeImageBin = join(packages, `freeimage-${SUFFIX}`, 'bin');
+    // The adapter's own DLLs plus Ogre's, which the closure walk resolves from
+    // the Ogre payload and the payload's own lib/.
     const gxx = which('g++');
     stageWindowsDependencies(join(destination, 'lib'), [
-      ...(existsSync(freeImageBin) ? [freeImageBin] : []),
       ...(gxx ? [dirname(gxx)] : []),
     ]);
   }
+  auditLinkage(join(destination, 'lib'), ogreNextPayload, WIN ? null : built);
   writePayloadManifest(destination, 'ogre', ['lib/']);
   return destination;
+}
+
+/// Resolve the packaged adapter's dependencies the way a guest will, and refuse
+/// to finish when the result is not the payload this build just wrote.
+///
+/// The build succeeding proves nothing about loading. `tension-ogre/build/`
+/// reaches Ogre through the third_party rpath entry, so the C++ and Rust suites
+/// load it fine even when the packaged copy resolves somewhere else entirely —
+/// that is exactly how the packaged adapter spent this branch loading a
+/// pre-FreeImage Ogre-Next out of a stale `packages/ogre-next/lib` while every
+/// test passed and `npm start` failed. This is the check that would have said so.
+///
+/// `LD_LIBRARY_PATH` is dropped on purpose: it is the one thing that can hide a
+/// wrong rpath on a developer machine, and a guest does not get the variable set.
+function auditLinkage(adapterLibDir, ogreNextPayload, builtSo) {
+  if (WIN) return;  // No rpath; the DLL closure is staged and walked instead.
+
+  const so = join(adapterLibDir, 'libtension_ogre.so');
+  const env = { ...process.env };
+  delete env.LD_LIBRARY_PATH;
+
+  let output;
+  try {
+    output = capture('ldd', [so], { env });
+  } catch (error) {
+    fail(`could not resolve the packaged adapter's dependencies: ${error.message}`);
+  }
+
+  const unresolved = [];
+  for (const line of output.split('\n')) {
+    const match = /^\s*(\S+)\s+=>\s+(.*)$/.exec(line);
+    if (!match) continue;
+    const [, name, where] = match;
+    if (where.includes('not found')) {
+      unresolved.push(name);
+    } else if (/freeimage/i.test(line)) {
+      // Not a version check but a provenance one: this tree builds Ogre-Next
+      // with the codec off, so a FreeImage soname can only come from an Ogre
+      // install built before that change.
+      fail(`the packaged adapter resolves ${name} from ${where}\n` +
+           '  This tree builds Ogre-Next without FreeImage, so that is a stale install.\n' +
+           `  Expected to resolve against packages/ogre-next-${SUFFIX}/lib.`);
+    } else if (/libOgreNext/.test(name)) {
+      // Any Ogre-Next outside the payload is a stale copy winning the rpath
+      // race, which is silent and produces exactly the failure above.
+      if (!resolve(where).startsWith(resolve(ogreNextPayload)) &&
+          !resolve(where).startsWith(resolve(join(repo, 'third_party')))) {
+        fail(`the packaged adapter resolves ${name} from outside the payload\n` +
+             `  got:      ${where}\n` +
+             `  expected: under packages/ogre-next-${SUFFIX}/lib\n` +
+             '  A stale Ogre-Next directory is shadowing the payload on the rpath.');
+      }
+    }
+  }
+
+  if (unresolved.length > 0) {
+    fail(`the packaged adapter cannot load — unresolved: ${unresolved.join(', ')}\n` +
+         `  ${relative(repo, builtSo).split('\\').join('/')} resolves fine through the\n` +
+         '  third_party rpath entry, so the payload copy needs its own sibling directory.\n' +
+         '  See TENSION_OGRE_RPATH_EXTRA in tension-ogre/CMakeLists.txt.');
+  }
+
+  note(`linkage: ${relative(repo, so).split('\\').join('/')} resolves entirely within the payload`);
+}
+
+// ── SDL generation guards ────────────────────────────────────────────────────
+//
+// This project is SDL3 and only SDL3. Two ways a second generation comes back,
+// and neither is visible in a build log:
+//
+//   * a linker resolves libSDL2 from somewhere on the search path, and the
+//     packaged adapter then holds two SDL instances — two event queues, and a
+//     window neither one sees. That is a runtime puzzle, not a build error.
+//
+//   * someone reaches for Ogre's SDL2-era window params key. It is a stale
+//     string literal from Ogre's own samples: it carries a plain
+//     `{Display*, Window}` and links no SDL at all. It is legitimate inside
+//     third_party/ogre-next, which is vendor code we do not edit. Anywhere in
+//     our source it means someone bound the renderer to an X11 window and
+//     re-pinned the app to XWayland — the opposite of "Wayland where available".
+
+// Written as a concatenation on purpose: if this file contained the literal,
+// the scan below would flag the guard itself and the build could never pass.
+const SDL2_WINDOW_KEY = 'SDL2' + 'x11';
+
+/// Source scan: the SDL2-era key must not appear in project source. Vendor code
+/// under third_party/ is excluded — it is the origin of the literal, not a use.
+function auditSdlSourceReferences() {
+  const skipDirs = new Set(['node_modules', 'third_party', 'build', 'target', '.git', '.codewhale']);
+  const sourceFile = /\.(mjs|js|ts|c|cc|cpp|cxx|h|hpp|rs|md)$/;
+  const hits = [];
+
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (skipDirs.has(entry.name)) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (!sourceFile.test(entry.name)) continue;
+      let text;
+      try {
+        text = readFileSync(full, 'utf8');
+      } catch {
+        continue;  // unreadable is not a violation
+      }
+      text.split('\n').forEach((line, index) => {
+        if (line.includes(SDL2_WINDOW_KEY)) {
+          hits.push(`${relative(repo, full).split('\\').join('/')}:${index + 1}`);
+        }
+      });
+    }
+  };
+
+  walk(repo);
+
+  if (hits.length > 0) {
+    fail(`the SDL2-era Ogre window key "${SDL2_WINDOW_KEY}" appears in project source:\n` +
+         hits.map((hit) => `  ${hit}`).join('\n') + '\n' +
+         '  That key binds an X11 window and pins the renderer to XWayland.\n' +
+         '  The SDL3 path is SDL_WINDOW_VULKAN + SDL_Vulkan_CreateSurface, with the\n' +
+         '  instance created by the app and the surface handed to Ogre-Next.');
+  }
+
+  note('sdl: no SDL2-era window key in project source');
+}
+
+/// Linkage scan: no packaged native library may carry a pre-SDL3 soname. Only
+/// SDL3 (`libSDL3.so.0`) is acceptable. readelf is ELF-only; on Windows the DLL
+/// closure is staged and walked by stageWindowsDependencies instead.
+function auditSdlLinkage() {
+  if (WIN) return;
+
+  const libraries = [];
+  const walk = (dir) => {
+    if (!existsSync(dir)) return;
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (entry.isFile() && /\.so(\.|$)/.test(entry.name)) libraries.push(full);
+    }
+  };
+  walk(packages);
+
+  const offending = [];
+  let sdl3Seen = 0;
+
+  for (const library of libraries) {
+    let output;
+    try {
+      output = capture('readelf', ['-d', library]);
+    } catch {
+      continue;  // not a dynamic object; nothing to audit
+    }
+    for (const line of output.split('\n')) {
+      const needed = /Shared library: \[([^\]]+)\]/.exec(line);
+      if (!needed) continue;
+      const soname = needed[1];
+      if (/^libSDL3\.so/.test(soname)) sdl3Seen++;
+      if (/^libSDL2|^libSDL-1\.2|^libSDL\.so\.1/.test(soname)) {
+        offending.push(`${relative(repo, library).split('\\').join('/')} -> ${soname}`);
+      }
+    }
+  }
+
+  if (offending.length > 0) {
+    fail('a packaged library links a pre-SDL3 SDL — this project is SDL3 only\n' +
+         offending.map((hit) => `  ${hit}`).join('\n') + '\n' +
+         '  Two SDL instances mean two event queues and a window neither one sees.');
+  }
+
+  if (sdl3Seen === 0) {
+    note(`sdl: ${libraries.length} packaged librar(ies) checked, SDL3 not linked by any`);
+  } else {
+    note(`sdl: ${libraries.length} packaged librar(ies) checked, SDL3 present, no pre-SDL3 SDL`);
+  }
 }
 
 // ── core ─────────────────────────────────────────────────────────────────────
@@ -425,11 +606,21 @@ function buildCore() {
 
 console.log(`build-native: ${process.platform}/${process.arch} (${toolchainReport()})`);
 
+// Before anything is built: a stale pre-payload directory can shadow the
+// payload on the adapter's rpath and there is no error when it does.
+pruneStaleMetaPayloads();
+
+// Cheap and first: if an integration regressed to the X11-bound key, say so
+// before spending a build to find out.
+auditSdlSourceReferences();
+
 const ogreNext = packageOgreNext();
-packageFreeImage();
 buildRes();
 buildAdapter(ogreNext);
 buildCore();
+
+// The sonames only exist once the packages are staged, so this runs last.
+auditSdlLinkage();
 
 // ── build stamp ──────────────────────────────────────────────────────────────
 // Both binaries are now in place, so record what they were built from. The
@@ -449,7 +640,6 @@ note(`stamp: wrote ${relative(repo, stamped.path).split('\\').join('/')}`);
 const BUDGET = {
   [`packages/core-${SUFFIX}/bin/tension-core${EXE}`]: 50,
   [`packages/ogre-next-${SUFFIX}`]: 40,
-  [`packages/freeimage-${SUFFIX}`]: 15,
   [`packages/ogre-${SUFFIX}`]: 25,
 };
 console.log('');

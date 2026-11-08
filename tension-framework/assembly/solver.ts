@@ -67,7 +67,7 @@ export class SolverCallbacks {
  *
  * A parameter left at its "absent" value is not written to the wire at all:
  * the schema's declared default applies. The absent values are sentinels,
- * not `null`s, because AssemblyScript 0.28.8 has no nullable value types —
+ * not `null`s, because the compiler has no nullable value types —
  * `f64 | null` is a compile error there (AS204) — and nothing is lost: the
  * wire may not carry a stated NaN or a negative count anyway (the shim
  * refuses non-finite parameters and counts outside `int32_t`).
@@ -281,7 +281,7 @@ function encodeConfig(config: SolverConfig): Wire {
 }
 
 /**
- * The table index of a function reference. AssemblyScript function values are
+ * The table index of a function reference. TensionScript function values are
  * not table indices: a function reference points at the function's
  * table-index word (that is the word AS's own `call_indirect` sites load
  * through), so the index is the i32 the reference addresses. This is the one

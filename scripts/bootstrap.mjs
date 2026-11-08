@@ -1,11 +1,11 @@
 #!/usr/bin/env node
-// Build Ogre-Next, and the FreeImage it links, from the pinned submodules.
+// Build Ogre-Next from the pinned submodule.
 //
 // Builds `third_party/ogre-next` into `third_party/ogre-next-build` and installs
 // it into `third_party/ogre-next-install`, from where the adapter build picks it
-// up. `third_party/freeimage` is built first and installed into
-// `third_party/freeimage-install`; the FreeImage section below explains why OGRE
-// cannot be built without it.
+// up. It builds **without FreeImage**: the codec, its submodule and its install
+// tree are gone, and the one translation unit OGRE compiles unconditionally is
+// emptied by the patch step below.
 //
 // Why in-tree: the distro package's RenderSystem_Vulkan.so carries no DT_NEEDED
 // for glslang — upstream's link line never names it — so the plugin cannot load
@@ -21,12 +21,12 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync,
+  existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WIN, baseEnv, capture, run, toolchainReport, ucrt64Bin } from './lib/toolchain.mjs';
+import { WIN, baseEnv, capture, need, run, toolchainReport, ucrt64Bin, which } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..');
@@ -35,9 +35,38 @@ const THIRD = join(ROOT, 'third_party');
 const SRC = join(THIRD, 'ogre-next');
 const BUILD = join(THIRD, 'ogre-next-build');
 const INSTALL = join(THIRD, 'ogre-next-install');
-const FI_SRC = join(THIRD, 'freeimage');
-const FI_BUILD = join(THIRD, 'freeimage-build');
-const FI_INSTALL = join(THIRD, 'freeimage-install');
+const PATCH = join(THIRD, 'patches', 'ogre-no-freeimage-codec.patch');
+
+/// Every patch this project applies to the pinned Ogre-Next tree, in order.
+///
+/// Each entry names the files it touches, which is what `git checkout --`
+/// reverts after the build: reverting the whole submodule would discard any
+/// other local edit, so the list is explicit and narrow. `marker` is the proof
+/// the patch is in the tree — checked in the file itself after applying, never
+/// trusted from patch's exit status (see applyOgrePatch).
+const OGRE_PATCHES = [
+  {
+    file: PATCH,
+    label: 'OGRE_NO_FREEIMAGE',
+    marker: 'list( APPEND BROKEN_FILES_IN_UNITY_BUILD "src/OgreFreeImageCodec2.cpp" )',
+    verifyIn: 'OgreMain/CMakeLists.txt',
+    touches: ['OgreMain/CMakeLists.txt'],
+  },
+  {
+    file: join(THIRD, 'patches', 'ogre-external-surface.patch'),
+    label: 'external_surface',
+    marker: 'adoptExternalSurface',
+    verifyIn: 'RenderSystems/Vulkan/src/OgreVulkanWindow.cpp',
+    touches: [
+      'RenderSystems/Vulkan/include/OgreVulkanWindow.h',
+      'RenderSystems/Vulkan/src/OgreVulkanWindow.cpp',
+      'RenderSystems/Vulkan/src/Windowing/Android/OgreVulkanAndroidWindow.cpp',
+      'RenderSystems/Vulkan/src/OgreVulkanRenderSystem.cpp',
+      'RenderSystems/Vulkan/src/Windowing/X11/OgreVulkanXcbWindow.cpp',
+      'RenderSystems/Vulkan/src/Windowing/win32/OgreVulkanWin32Window.cpp',
+    ],
+  },
+];
 
 const FORCE = process.argv.includes('--force');
 for (const arg of process.argv.slice(2)) {
@@ -96,91 +125,99 @@ function initSubmodule(dir, name) {
 }
 
 initSubmodule(SRC, 'ogre-next');
-initSubmodule(FI_SRC, 'freeimage');
 
-// 2. FreeImage, from its own submodule.
+// 2. Patch the OGRE-Next tree for options and integration.
 //
-// This is not a preference, it is how OGRE's build is written. OgreMain's
-// CMakeLists seeds BROKEN_FILES_IN_UNITY_BUILD with src/OgreFreeImageCodec2.cpp
-// unconditionally, and create_unity_build_files() puts that SEPARATE list back
-// into the target even when OGRE_UNITY_BUILD is off — so the translation unit is
-// always compiled and linked. OGRE_CONFIG_ENABLE_FREEIMAGE=OFF only clears the
-// codec *registration*; it does not take the file out of the target, and the
-// adapter decodes every texture through Ogre::Image2::load, so the flag stays ON.
-const fiFlags = [
-  '-DCMAKE_BUILD_TYPE=Release',
-  `-DCMAKE_INSTALL_PREFIX=${FI_INSTALL}`,
-  // Shared, not static: the bundled codecs are separate CMake targets, so only
-  // the shared library is one self-contained file for OGRE to link.
-  '-DBUILD_SHARED_LIBS=ON',
-  '-DFREEIMAGE_STATIC=OFF',
-  '-DBUILD_TESTS=OFF',
-  // No camera RAW: LibRawLite is the only bundled codec under a copyleft
-  // licence, and it is compiled into libfreeimage statically. Nothing here reads
-  // camera RAW; the switch is safe because the fork keeps the RAW slot in
-  // FREE_IMAGE_FORMAT occupied with a stub, so the FIF_* values stay aligned.
-  '-DBUILD_LIBRAWLITE=OFF',
-];
+// `OGRE_CONFIG_ENABLE_FREEIMAGE=OFF` disables FreeImage, but
+// OgreMain/CMakeLists.txt:403 seeds BROKEN_FILES_IN_UNITY_BUILD with
+// "src/OgreFreeImageCodec2.cpp" unconditionally. OgreAddTargets.cmake:54
+// appends that SEPARATE list to the target's _SOURCES — so the file was compiled
+// even with the option off, failing on #include <FreeImage.h> (or at link time).
+//
+// The patch guards that line in OgreMain/CMakeLists.txt with
+// `if (OGRE_CONFIG_ENABLE_FREEIMAGE)` so the translation unit is never added to
+// the build when FreeImage is disabled. See the patch's own header.
+//
+// Idempotent by construction: a dry run first. If it applies, apply it. If it
+// reports the patch as already applied, skip. Anything else is a real failure —
+// an upstream upgrade moved the lines — and it is reported with patch's own
+// rejected-hunk output, never skipped.
+function applyOgrePatch(entry) {
+  if (!existsSync(entry.file)) die(`missing ${entry.file}`);
+  const target = join(SRC, entry.verifyIn);
+  const patchArgs = ['-p1', '-N', '-r', '-', '--forward'];
+  const source = readFileSync(entry.file, 'utf8');
 
-if (WIN) {
-  fiFlags.push('-G', 'Ninja');
-  // The Windows build compiles LibTIFF4's tif_win32.c for its wide-char and
-  // file-I/O entry points, and that file also defines
-  // _TIFFerrorHandler/_TIFFwarningHandler — which
-  // Source/FreeImage/PluginTIFF.cpp defines again, deliberately, as no-ops
-  // ("in FreeImage warnings and errors are disabled"). MSVC's project files keep
-  // the two in separate static libraries; this CMake build links both objects
-  // into one DLL, and GNU ld refuses the duplicate:
-  //
-  //   tif_win32.c:(.data+0x0): multiple definition of `_TIFFerrorHandler';
-  //   PluginTIFF.cpp:(.data+0x0): first defined here
-  //
-  // -fcommon does not help: both are initialized definitions, not tentative
-  // ones. The first definition in link order wins, and that is PluginTIFF's
-  // no-op pair — the behaviour FreeImage intends.
-  fiFlags.push('-DCMAKE_SHARED_LINKER_FLAGS=-Wl,--allow-multiple-definition');
-} else {
-  // The layout of the distro package this repository was measured against:
-  // libfreeimage.so.3 (+ the .so link) and freeimage.pc.
-  fiFlags.push('-DFREEIMAGE_LINUX_PACKAGE_LAYOUT=ON');
-}
+  // `spawnSync` directly, not `run()`: `run()` sets `stdio: 'inherit'`, and with
+  // an inherited stdin the `input` option is silently ignored. Measured: patch
+  // then reads EOF, changes nothing, and **exits 0** — so an exit-code check
+  // alone reports a no-op as success. Capture the stream instead, and verify the
+  // file afterwards rather than trusting any status.
+  const patchBin = which('patch') ?? need('patch', 'install via MSYS2 (pacman -S patch) or Git for Windows');
+  const dry = spawnSync(patchBin, [...patchArgs, '--dry-run'], {
+    cwd: SRC, encoding: 'utf8', env: baseEnv(), input: source,
+  });
+  if (dry.error) throw new Error(`patch: ${dry.error.message}`);
+  const dryOut = `${dry.stdout ?? ''}${dry.stderr ?? ''}`;
 
-// An install is a build here too: header + library on disk means done — but only
-// if it was built from *these* flags. The stamp records the flag set, so changing
-// one above rebuilds instead of silently reusing a library that still carries the
-// old code. An install that predates the stamp has no recorded flags and so
-// counts as stale, which is deliberate.
-const fiStamp = join(FI_INSTALL, '.bootstrap-flags');
-const fiWantStamp = `${fiFlags.join('\n')}\n`;
-const fiLibrary = () => findMatching(FI_INSTALL, (name) =>
-  name.startsWith('libfreeimage.so') || name === 'libfreeimage.a' ||
-  name === 'freeimage.dll' || name === 'libfreeimage.dll.a');
-
-let fiInstalled = existsSync(join(FI_INSTALL, 'include', 'FreeImage.h')) &&
-                  fiLibrary() !== null &&
-                  existsSync(fiStamp) &&
-                  readFileSync(fiStamp, 'utf8') === fiWantStamp;
-
-if (!fiInstalled || FORCE) {
-  if (isDirectory(FI_INSTALL) && existsSync(join(FI_INSTALL, 'include', 'FreeImage.h'))) {
-    say('FreeImage is installed but not with this flag set — rebuilding');
+  if (dry.status !== 0) {
+    if (/previously applied|already applied|Reversed \(or previously applied\)/i.test(dryOut)) {
+      say(`${entry.label}: already in the tree — skipping`);
+      return;
+    }
+    die(`the ${entry.label} patch does not apply — the submodule moved\n` +
+        `  patch: ${entry.file}\n` +
+        `  target: ${target}\n` +
+        `  ${dryOut.trim().split('\n').join('\n  ')}`);
   }
-  say(`building FreeImage (${FI_BUILD} -> ${FI_INSTALL})`);
-  run('cmake', ['-S', FI_SRC, '-B', FI_BUILD, ...fiFlags]);
-  run('cmake', ['--build', FI_BUILD, '-j', nproc()]);
-  run('cmake', ['--install', FI_BUILD]);
-  mkdirSync(FI_INSTALL, { recursive: true });
-  writeFileSync(fiStamp, fiWantStamp);
-} else {
-  say('in-tree FreeImage already installed — reusing it.');
+
+  const applied = spawnSync(patchBin, patchArgs, {
+    cwd: SRC, encoding: 'utf8', env: baseEnv(), input: source,
+  });
+  if (applied.error) throw new Error(`patch: ${applied.error.message}`);
+  const appliedOut = `${applied.stdout ?? ''}${applied.stderr ?? ''}`;
+
+  // The status is not the proof; the file is. A patch that reports success and
+  // changes nothing is exactly the failure the first version of this function
+  // had, and it surfaced two minutes later as a FreeImage.h compile error.
+  const guarded = readFileSync(target, 'utf8');
+  if (!guarded.includes(entry.marker)) {
+    die(`the ${entry.label} patch reported success but its marker is not in the file\n` +
+        `  marker: ${entry.marker}\n` +
+        `  target: ${target}\n` +
+        `  patch:  ${appliedOut.trim().split('\n').join('\n  ')}`);
+  }
+  say(`${entry.label}: applied`);
 }
 
-if (!existsSync(join(FI_INSTALL, 'include', 'FreeImage.h'))) {
-  die(`FreeImage install has no FreeImage.h at ${join(FI_INSTALL, 'include')}`);
+// Applied here, not at step 2, and reverted after the install. Two reasons:
+//
+//   * the early "already installed — nothing to do" exit sits between this point
+//     and the build, so a second bootstrap never patches at all and stays a true
+//     no-op rather than a patch-and-revert cycle;
+//   * AGENTS.md rule 1 keeps third_party/ogre-next read-only, and leaving the
+//     guard in its working tree would show the submodule as dirty on every
+//     checkout (`git status` reports `m third_party/ogre-next`) for a file no
+//     one committed. The patch is applied for the build and taken back after,
+//     so the tree a reviewer sees is the one the pin names.
+//
+// The consequence, stated so it is not a surprise: after a bootstrap the build
+// tree's object for this TU was compiled from a patched source that is no longer
+// on disk. That is fine for the supported path — AGENTS.md says OGRE is built
+// only through `npm run bootstrap`, which patches again before it builds — and a
+// direct `cmake --build` on third_party/ogre-next-build is not a supported path.
+let ogrePatchApplied = false;
+function revertOgrePatch() {
+  if (!ogrePatchApplied) return;
+  ogrePatchApplied = false;
+  if (!existsSync(join(SRC, '.git'))) return;  // a tarball checkout has nothing to restore
+  const touched = OGRE_PATCHES.flatMap((entry) => entry.touches);
+  spawnSync('git', ['checkout', '--', ...touched], {
+    cwd: SRC, encoding: 'utf8', env: baseEnv(),
+  });
 }
-const fiLib = fiLibrary();
-if (!fiLib) die(`FreeImage install has no library under ${FI_INSTALL}`);
-const fiLibDir = dirname(fiLib);
+process.on('exit', revertOgrePatch);
+process.on('SIGINT', () => { revertOgrePatch(); process.exit(130); });
 
 // 3. Idempotence: an install is a build; don't redo it unless asked.
 //
@@ -234,10 +271,7 @@ function linkableLib(names) {
   return null;
 }
 
-const extraFlags = [
-  `-DFREEIMAGE_HOME=${FI_INSTALL}`,
-  `-DCMAKE_PREFIX_PATH=${FI_INSTALL}`,
-];
+const extraFlags = [];
 
 // Whether this platform's flag set is supposed to produce the Vulkan render
 // system; the post-install check at the bottom holds the build to it.
@@ -261,6 +295,8 @@ if (WIN) {
   }
   extraFlags.push(
     '-G', 'Ninja',
+    '-DCMAKE_C_COMPILER=gcc',
+    '-DCMAKE_CXX_COMPILER=g++',
     '-DCMAKE_CXX_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DCMAKE_C_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DOGRE_BUILD_RENDERSYSTEM_D3D11=OFF',
@@ -337,10 +373,13 @@ if (WIN) {
     // NOTFOUND when it finds nothing, and OGRE's FindVulkan then dies with
     // "Found relative path while evaluating include directories".
     `-DVulkan_SHADERC_INCLUDE_DIR=${glslangInclude}`,
-    // libOgreNextMain.so records a DT_NEEDED on libfreeimage.so.3, and this
-    // install sits outside the loader's default path. Bake the directory in as a
-    // RUNPATH so every consumer resolves it without environment help.
-    `-DCMAKE_INSTALL_RPATH=${fiLibDir}`,
+    // The install sits outside the loader's default path, and the plugins
+    // (RenderSystem_*.so) have a DT_NEEDED on libOgreNextMain.so themselves.
+    // Bake the install's own lib directory in as a RUNPATH so that resolution
+    // needs no environment help. Before FreeImage was removed this pointed at
+    // the FreeImage install instead, because OgreMain recorded a DT_NEEDED on
+    // libfreeimage.so.3; that dependency is gone and no longer needs one.
+    `-DCMAKE_INSTALL_RPATH=${join(INSTALL, 'lib')}`,
   );
   vulkanExpected = true;
 }
@@ -369,28 +408,63 @@ const flags = [
   '-DOGRE_INSTALL_SAMPLES_SOURCE=OFF',
   '-DOGRE_INSTALL_DOCS=0',
   '-DOGRE_CONFIG_THREAD_PROVIDER=std',
-  // ON, not OFF: OFF would leave OGRE with no PNG/JPEG decoder at all, because
-  // OGRE_NO_FREEIMAGE skips the codec registration while the codec object is
-  // still compiled and linked.
-  '-DOGRE_CONFIG_ENABLE_FREEIMAGE=ON',
+  // OFF: FreeImage is not in this tree. The patch guards OgreMain/CMakeLists.txt
+  // so the codec translation unit is never added to the build graph when OFF;
+  // OFF also sets OGRE_NO_FREEIMAGE so OGRE skips registering the codec.
+  //
+  // ON: STBI is the replacement, not an optional extra. With both off Ogre has
+  // no image codec at all — no PNG, no JPEG, no TGA — and every texture load
+  // through Ogre::Image fails at runtime. `OGRE_CONFIG_ENABLE_STBI` defaults to
+  // FALSE upstream (CMakeLists.txt:556), so this has to be stated explicitly;
+  // leaving it out is the same as turning it off.
+  '-DOGRE_CONFIG_ENABLE_FREEIMAGE=OFF',
+  '-DOGRE_CONFIG_ENABLE_STBI=ON',
   '-DOGRE_CONFIG_ENABLE_JSON=ON',
   '-DOGRE_CONFIG_ENABLE_ZIP=ON',
 ];
 
+if (existsSync(join(BUILD, 'CMakeCache.txt'))) {
+  const cache = readFileSync(join(BUILD, 'CMakeCache.txt'), 'utf8');
+  if (WIN && cache.includes('cl.exe')) {
+    say('cleaning previous MSVC build tree in favor of MinGW GCC');
+    rmSync(BUILD, { recursive: true, force: true });
+  }
+}
+if (FORCE && existsSync(BUILD)) {
+  say('cleaning build tree (--force)');
+  rmSync(BUILD, { recursive: true, force: true });
+}
+
 console.log(`bootstrap: ${process.platform}/${process.arch} (${toolchainReport()})`);
+
+for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
+ogrePatchApplied = true;
+
 say(`configuring (${SRC} -> ${BUILD})`);
 const started = Date.now();
 run('cmake', ['-S', SRC, '-B', BUILD, ...flags, ...extraFlags]);
 
-// FreeImage is required, and the option is a cmake_dependent_option: a probe that
-// comes up empty turns the codec off *silently* at configure time. Hold the
-// configure to it here instead of discovering a missing texture decoder at run
-// time.
+// FreeImage must be off and STBI must be on. Both are held to it here.
+// `cmake_dependent_option` turns each one off *silently* when its probe comes up
+// empty, so a configure on a machine that happens to carry FreeImage.h would
+// otherwise put the codec back on without saying so — and the install would then
+// ship a libfreeimage DT_NEEDED that this tree no longer vendors. The STBI half
+// is the mirror image: it defaults to FALSE upstream, so a dropped flag silently
+// leaves the build with no codec at all.
 const settings = join(BUILD, 'include', 'OgreBuildSettings.h');
-if (!existsSync(settings) || !/^#define OGRE_NO_FREEIMAGE 0/m.test(readFileSync(settings, 'utf8'))) {
-  die("OGRE's configure did not find FreeImage — the codec is off\n" +
-      `  expected FreeImage.h in ${join(FI_INSTALL, 'include')} and a library in ${fiLibDir}\n` +
-      `  (-DFREEIMAGE_HOME=${FI_INSTALL} was passed; check the configure output above)`);
+if (!existsSync(settings)) {
+  die(`OGRE's configure produced no ${settings}`);
+}
+const settingsText = readFileSync(settings, 'utf8');
+if (!/^#define OGRE_NO_FREEIMAGE 1$/m.test(settingsText)) {
+  die('OGRE\'s configure did not disable FreeImage\n' +
+      `  expected \`#define OGRE_NO_FREEIMAGE 1\` in ${settings}\n` +
+      '  check the configure output above');
+}
+if (/^#define OGRE_NO_STBI_CODEC 1$/m.test(settingsText)) {
+  die('OGRE\'s configure disabled the STBI codec\n' +
+      `  found \`#define OGRE_NO_STBI_CODEC 1\` in ${settings}\n` +
+      '  STBI is this tree\'s only image codec; without it no PNG/JPEG/TGA loads.');
 }
 
 say(`building with ${nproc()} jobs`);
@@ -398,11 +472,19 @@ run('cmake', ['--build', BUILD, '-j', nproc()]);
 
 say(`installing to ${INSTALL}`);
 run('cmake', ['--install', BUILD]);
+revertOgrePatch();
 
 // 4. The Vulkan plugin is what this build is for — a configure that dropped it
-// must not read as success. The undefined-glslang check is the measured load
-// failure: OGRE loads plugins with RTLD_LAZY | RTLD_LOCAL and these references
-// bind eagerly, so an unresolved glslang:: symbol is a plugin that cannot load.
+// must not read as success, and a plugin that cannot load must not either.
+//
+// The load test is `ldd -r`, which asks the dynamic loader what it actually
+// cannot resolve. The earlier check grepped `nm -D --undefined-only` for
+// `glslang`, and that question cannot be answered that way: every reference to
+// `glslang::GlslangToSpv` is undefined *in this plugin* by design, because
+// `libglslang.so.16` supplies it through a DT_NEEDED entry. Measured on a
+// working plugin: 15 such symbols, `ldd -r` clean, `dlopen` fine — so the old
+// check failed on a good build. (`ldd -r` also catches the case that matters:
+// a sibling library that is not on the plugin's own RUNPATH.)
 const elapsed = () => Math.round((Date.now() - started) / 1000);
 if (vulkanExpected) {
   const vulkanRs = findMatching(INSTALL, (name) => name.startsWith('rendersystem_vulkan.'));
@@ -411,10 +493,13 @@ if (vulkanExpected) {
         '  the configure did not pick up the flags above; check its output for Vulkan');
   }
   if (!WIN) {
-    const undefinedSymbols = spawnSync('nm', ['-D', '--undefined-only', vulkanRs],
-                                       { encoding: 'utf8', env: baseEnv() });
-    if (undefinedSymbols.status === 0 && /glslang|spvtools/.test(undefinedSymbols.stdout)) {
-      die(`${vulkanRs} still has undefined glslang/SPIRV-Tools symbols — it cannot load`);
+    const resolved = spawnSync('ldd', ['-r', vulkanRs], { encoding: 'utf8', env: baseEnv() });
+    const unresolved = `${resolved.stdout ?? ''}${resolved.stderr ?? ''}`
+      .split('\n')
+      .filter((line) => /undefined symbol|not found/i.test(line));
+    if (unresolved.length) {
+      die(`${vulkanRs} cannot load — the loader reports ${unresolved.length} unresolved reference(s)\n` +
+          `  ${unresolved.slice(0, 5).join('\n  ')}`);
     }
   }
   say(`done in ${elapsed()}s — ${mainLib || join(INSTALL, 'lib', 'libOgreNextMain.so')}`);

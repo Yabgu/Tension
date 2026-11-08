@@ -98,12 +98,36 @@ endif()
 target_link_libraries(tension_ogre PRIVATE ${TENSION_RES_LIB})
 
 if(TENSION_OGRE_BACKEND STREQUAL "ogre")
+    # The Vulkan plugin's own headers: `OgreVulkanDevice.h` declares the
+    # `VulkanExternalInstance` this adapter fills when the host owns the
+    # instance. Mirroring that struct here instead would be a second definition
+    # of a layout that must match byte for byte, which is the drift class
+    # `docs/guard-discipline.md` names.
+    #
+    # Found, not assumed: the install puts the header under the plugin's
+    # `include/` on a Linux build and, on the Win32 overlay, beside its
+    # prerequisites. A missing header is a configure-time error with a readable
+    # message rather than a compile error pointing at an `#include`.
+    find_path(OGRE_VULKAN_INCLUDE_DIR
+        NAMES OgreVulkanDevice.h
+        PATHS
+            "${OGRE_NEXT_PREFIX}/include/OGRE-Next/RenderSystems/Vulkan/include"
+            "${OGRE_NEXT_PREFIX}/include/OGRE-Next/RenderSystems/Vulkan"
+        NO_DEFAULT_PATH
+    )
+    if(NOT OGRE_VULKAN_INCLUDE_DIR)
+        message(FATAL_ERROR
+            "OgreVulkanDevice.h not found under ${OGRE_NEXT_PREFIX}; the Vulkan "
+            "plugin's headers are what declare VulkanExternalInstance")
+    endif()
+
     target_include_directories(tension_ogre SYSTEM PRIVATE
         ${OGRE_NEXT_PREFIX}/include
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Common
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Unlit
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Pbs
+        ${OGRE_VULKAN_INCLUDE_DIR}
     )
 
     if(WIN32)
@@ -133,11 +157,27 @@ endif()
 
 # The in-tree Ogre-Next lives outside the loader's default search path, and its
 # sonames are identical to a distro package's, so which one a process gets is
-# decided by the search path. Two spellings, both relative to the DSO's own
+# decided by the search path. All of them are relative to the DSO's own
 # directory:
-#   $ORIGIN                        a self-contained drop (all libs beside it)
-#   $ORIGIN/../ogre-next/lib       this repository's packages/ layout, where the
-#                                  payload packages are siblings
+#   $ORIGIN                                     a self-contained drop
+#   $ORIGIN/<payload sibling>                   the platform payload package
+#   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
+#
+# The middle one cannot be written down here. The payload lives in
+# `packages/ogre-<platform>-<arch>/lib` and its Ogre-Next sibling in
+# `packages/ogre-next-<platform>-<arch>/lib`, so the relative spelling depends on
+# the platform suffix, which this file does not know. It used to be spelled
+# `$ORIGIN/../../ogre-next/lib` — correct only for the pre-payload layout, where
+# the two directories had no suffix. Against the payload it resolved to
+# `packages/ogre-next/lib`, a stale leftover of that older build, and glibc takes
+# the first rpath hit without checking whether it is current. The result was an
+# adapter that loaded an Ogre-Next built before FreeImage was removed and died on
+# `libfreeimage.so.3` — while the build and every test passed, because both of
+# those reach the DSO through a different rpath entry.
+#
+# So scripts/build-native.mjs computes the directory from the paths it actually
+# wrote and passes it in. TENSION_OGRE_RPATH_EXTRA is `;`-separated and each
+# entry is appended to `$ORIGIN/`.
 #
 # `--disable-new-dtags` emits DT_RPATH rather than DT_RUNPATH on purpose:
 # DT_RPATH is consulted *before* LD_LIBRARY_PATH and DT_RUNPATH after, and the
@@ -147,16 +187,24 @@ endif()
 #
 # Windows needs none of this: the post-build step copies Ogre's DLLs beside the
 # adapter and tension-core loads it with LOAD_WITH_ALTERED_SEARCH_PATH.
+set(TENSION_OGRE_RPATH_EXTRA "" CACHE STRING
+    "Extra $ORIGIN-relative library directories for the payload layout (';'-separated)")
+
 if(UNIX)
+    set(_tension_ogre_rpath "$ORIGIN")
+    foreach(_tension_ogre_extra IN LISTS TENSION_OGRE_RPATH_EXTRA)
+        if(NOT _tension_ogre_extra STREQUAL "")
+            string(APPEND _tension_ogre_rpath ":$ORIGIN/${_tension_ogre_extra}")
+        endif()
+    endforeach()
+    # The build-tree install. Kept last and unconditional: it is what makes
+    # `tension-ogre/build/libtension_ogre.so` load without LD_LIBRARY_PATH, which
+    # is how the C++ and Rust suites run the adapter.
+    string(APPEND _tension_ogre_rpath ":$ORIGIN/../../third_party/ogre-next-install/lib")
+    message(STATUS "tension-ogre rpath: ${_tension_ogre_rpath}")
+
     set_target_properties(tension_ogre PROPERTIES
-        # Every layout the DSO is reached through, relative to itself:
-        #   $ORIGIN                                  a self-contained drop
-        #   $ORIGIN/../ogre-next/lib                 packages/ (npm payloads)
-        #   $ORIGIN/../../ogre-next/lib              ...after a realpath through packages/
-        #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
-        # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
-        # without LD_LIBRARY_PATH, which is how the test suite runs it.
-        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib:$ORIGIN/../../third_party/ogre-next-install/lib:$ORIGIN/../../third_party/freeimage-install/lib"
+        INSTALL_RPATH "${_tension_ogre_rpath}"
         BUILD_WITH_INSTALL_RPATH TRUE
         LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
     )
@@ -219,4 +267,38 @@ if(TENSION_OGRE_BUILD_TESTS)
         set_target_properties(${test_target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
     endforeach()
+
+    # ── the image codec probe ───────────────────────────────────────────────
+    #
+    # The three tests above deliberately avoid OGRE: they are pure and need no
+    # render system. This one is the opposite — its whole point is to link
+    # OgreNextMain and prove the STBI codec is inside it and decodes. It exists
+    # because a build with no image codec at all passed every other suite: the
+    # in-tree assets are DDS, and DDS has its own codec, so nothing exercised
+    # PNG until this probe.
+    #
+    # Only meaningful when OGRE is the backend; the `none` backend has no reason
+    # to carry Ogre's headers.
+    if(TENSION_OGRE_BACKEND STREQUAL "ogre" AND OGRE_NEXT_MAIN_LIB)
+        add_executable(stbi_codec_test tests/probe_stbi_codec.cpp)
+        target_include_directories(stbi_codec_test PRIVATE
+            ${OGRE_NEXT_PREFIX}/include
+            ${OGRE_NEXT_PREFIX}/include/OGRE-Next)
+        target_link_libraries(stbi_codec_test PRIVATE ${OGRE_NEXT_MAIN_LIB})
+        if(MSVC)
+            target_compile_options(stbi_codec_test PRIVATE /W3 /utf-8 /EHsc)
+        else()
+            target_compile_options(stbi_codec_test PRIVATE -Wall -Wextra)
+        endif()
+        set_target_properties(stbi_codec_test PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
+        # Three levels up from build/tests/ is the repository root, where the
+        # in-tree Ogre-Next install lives. Written down here rather than relying
+        # on LD_LIBRARY_PATH, which a guest never gets and CI should not need.
+        if(UNIX)
+            set_target_properties(stbi_codec_test PROPERTIES
+                INSTALL_RPATH "$ORIGIN/../../../third_party/ogre-next-install/lib"
+                BUILD_WITH_INSTALL_RPATH TRUE)
+        endif()
+    endif()
 endif()

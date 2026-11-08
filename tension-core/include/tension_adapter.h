@@ -14,14 +14,18 @@
  * anything reaches the guest. That split is why this header has no `pump` and
  * no scheduler: the adapter never decides when the guest runs.
  *
- * Frozen at ABI version 2 (TENSION_ADAPTER_ABI_VERSION). The `tension_core_api`
- * struct and the `tension_adapter` vtable are append-only within a version;
- * changing the meaning of an existing field requires a new entry-point symbol.
- * Version 2 appended `guest_read_checked` to the core API and `layout_hash` to
- * the vtable; a version-1 adapter is refused at load by the version check, so
- * the host never reads the vtable past where a version-1 struct ends.
+ * The ABI is alpha: it may break between releases. `TENSION_ADAPTER_ABI_VERSION`
+ * states today's shape — a fact, not a promise. While alpha lasts, the shape
+ * stays append-only: `tension_core_api` and `tension_adapter` grow at the end,
+ * never reorder or remove a field, and changing an existing field's meaning
+ * needs a new entry-point symbol. That discipline is what makes a version bump
+ * catchable; it is not a compatibility promise during alpha, only a courtesy
+ * that keeps the codebase coherent. Version 2 appended `guest_read_checked` and
+ * `layout_hash`; version 3 `signal_frame`; version 4 `shader_generate`; version
+ * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`.
+ * A version-1 adapter is refused at load, so the host never reads past its end.
  *
- * Design note: tension-ogre/DESIGN.md, Appendix A.
+ * Design note: `docs/abi/adapter.md`.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -67,7 +71,7 @@ extern "C" {
  *     interpret another capability's records or ids, and must not assume it is
  *     the only event source.
  * 11. `tension_core_api` and `tension_adapter` are append-only within an ABI
- *     version.
+ *     version — the discipline in force while alpha lasts, not a promise.
  * 12. Deferred submissions are *copied* by the session before they are queued.
  *     An adapter's `apply` receives bytes; it never receives a guest address.
  * ===================================================================== */
@@ -75,7 +79,111 @@ extern "C" {
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 3u
+#define TENSION_ADAPTER_ABI_VERSION 6u
+
+/* ── window control: the host's write channel ────────────────────────── */
+/*
+ * A capability cannot call SDL. `tension-core` owns the window, and SDL's
+ * window API is not thread-safe: every call must happen on the thread that
+ * created the window. So a capability that wants the window changed says *what*
+ * it wants and lets the host do it, on the host's thread, at a moment the host
+ * chooses.
+ *
+ * One queue, three sources, one executor:
+ *
+ *   source 0 (LAYER)  an adapter calls `post_control`. Any thread.
+ *   source 1 (CORE)   the host itself, for timers, DPI changes, focus.
+ *   source 2 (GUEST)  the guest's `tension::platform.control` import.
+ *
+ * All three land in the same queue and the same executor. That is deliberate:
+ * ordering between sources is then *arrival* order, one rule instead of three,
+ * and no source can bypass another's backpressure.
+ *
+ * The executor drains once per frame on the window's own thread and is the
+ * only code in the process that calls `SDL_SetWindow*`. Nothing else may.
+ */
+
+/*
+ * What a control message asks for. Kinds are additive: an unknown kind is
+ * refused with -EINVAL, never guessed at.
+ *
+ * Values are explicit and stable. `0` is not a kind, so a zeroed struct is
+ * refused rather than silently meaning something.
+ */
+typedef enum tension_ctrl_kind {
+    /** a0 = width in pixels, a1 = height. Clamping is the executor's job: a
+     *  layer sends what it wants, the host decides what the window system
+     *  allows, and the guest learns the result by polling. */
+    TENSION_CTRL_RESIZE = 1u
+} tension_ctrl_kind;
+
+/*
+ * What the caller can expect afterwards. This is the caller's declaration, not
+ * a hint: it decides whether the next state is worth polling.
+ */
+typedef enum tension_ctrl_visibility {
+    /** Handled, and deliberately leaves no readable state. A caller cannot
+     *  observe whether it happened, which is why a host must never silently
+     *  drop one of these — see the reserved-capacity rule below. */
+    TENSION_CTRL_CORE_ONLY = 0u,
+    /** Handled, and the resulting state is readable from `host_surface` on the
+     *  next poll. This is the only confirmation the guest gets: there are no
+     *  control callbacks. */
+    TENSION_CTRL_OBSERVABLE = 1u
+} tension_ctrl_visibility;
+
+/*
+ * One control message.
+ *
+ * **`source` is not the caller's to set.** Callers pass 0 and the receiving
+ * entry point stamps the truth before the message is queued:
+ *
+ *   the guest import         stamps TENSION_CTRL_SRC_GUEST
+ *   `post_control` (a layer) stamps TENSION_CTRL_SRC_LAYER
+ *   the host's own push      stamps TENSION_CTRL_SRC_CORE
+ *
+ * A non-zero value supplied by a caller is overwritten and has no effect. This
+ * matters because the source decides which queue region the message may occupy
+ * (the core has reserved capacity a layer cannot consume), so a forgeable field
+ * would let a layer take the host's slots. The field exists for the *executor*, 
+ * which needs to know who is talking; it is an output of the enqueue, not an
+ * input to it.
+ *
+ * Arguments are values, never guest pointers: `post_control` is callable from
+ * the host and from other threads, where there is no guest memory to read. A
+ * message needing bytes carries them inline or the verb does not exist yet.
+ */
+typedef struct tension_ctrl_msg {
+    uint32_t kind;       /* tension_ctrl_kind */
+    uint32_t visibility; /* tension_ctrl_visibility */
+    int32_t  arg0;
+    int32_t  arg1;
+    int32_t  arg2;
+    int32_t  arg3;
+    uint32_t source;     /* stamped by the bus; see above */
+    uint32_t reserved;   /* must be 0 */
+} tension_ctrl_msg;
+
+/*
+ * The host's window surface (ABI v6). See the `host_surface` slot.
+ *
+ * `struct_size` is `sizeof(tension_host_surface)` and exists so a later ABI can
+ * grow this without a new slot: an adapter passes the size it was compiled
+ * against in, and the host writes no more than that.
+ */
+typedef struct tension_host_surface {
+    uint32_t struct_size;
+    uint32_t width;   /* current drawable size, pixels */
+    uint32_t height;
+    uint32_t reserved;
+    uint64_t instance; /* VkInstance, 0 = none */
+    uint64_t surface;  /* VkSurfaceKHR, 0 = none */
+} tension_host_surface;
+
+/** The source stamps. Not caller-supplied; see `tension_ctrl_msg`. */
+#define TENSION_CTRL_SRC_LAYER 0u
+#define TENSION_CTRL_SRC_CORE  1u
+#define TENSION_CTRL_SRC_GUEST 2u
 
 /*
  * The arena layout this build's `tension_core_api` is shaped against, as a
@@ -105,6 +213,46 @@ extern "C" {
 
 /** The most event sources one adapter may register. */
 #define TENSION_ADAPTER_MAX_SOURCES 8u
+
+/*
+ * The shader descriptor's codes (`shader_generate`, ABI version 4). Fixed
+ * numbers, appended to only: they cross the boundary packed, so a renumbering
+ * would silently reinterpret an old caller's layout. `PAD` exists so a
+ * struct's tail padding can be named rather than guessed at.
+ */
+#define TENSION_SEM_POS_X    1u
+#define TENSION_SEM_POS_Y    2u
+#define TENSION_SEM_POS_Z    3u
+#define TENSION_SEM_SRC_X    4u
+#define TENSION_SEM_SRC_Y    5u
+#define TENSION_SEM_SRC_W    6u
+#define TENSION_SEM_SRC_H    7u
+#define TENSION_SEM_UV_X     8u
+#define TENSION_SEM_UV_Y     9u
+#define TENSION_SEM_W       10u
+#define TENSION_SEM_H       11u
+#define TENSION_SEM_TINT    12u
+#define TENSION_SEM_SORT_KEY 13u
+#define TENSION_SEM_PAD     14u
+
+#define TENSION_DTYPE_F32 1u
+#define TENSION_DTYPE_U16 2u
+#define TENSION_DTYPE_I16 3u
+#define TENSION_DTYPE_U8  4u
+/* Appended at 5 under the same append-only rule as the semantics above. The
+ * sprite record carries signed pixel positions (`docs/modules/2d.md` §8), and none of 1..4
+ * can express one: F32 would reinterpret the bits, and I16 caps a position at
+ * 32767 px with a 1 px quantum. */
+#define TENSION_DTYPE_I32 5u
+
+/* The low byte of a field's `slot`; the high byte is the set index, which only
+ * TexCoord uses today. */
+#define TENSION_SLOT_POSITION 1u
+#define TENSION_SLOT_TEXCOORD 2u
+#define TENSION_SLOT_COLOR    3u
+#define TENSION_SLOT_NORMAL   4u
+#define TENSION_SLOT_TANGENT  5u
+#define TENSION_SLOT_BINORMAL 6u
 
 /* ── values ──────────────────────────────────────────────────────────── */
 
@@ -273,7 +421,7 @@ typedef struct tension_core_api {
                           uint32_t *out_capacity, uint32_t *out_flags);
 
     /*
-     * Look up a region's offset and size in the frozen arena layout. A
+     * Look up a region's offset and size in the session's arena layout. A
      * host-side lookup in the session's own table: it does not read guest
      * memory, so it is valid at `link` time, before `session_open` has run and
      * before the arena has any content. -ENOENT for a kind not in this chunk's
@@ -346,9 +494,175 @@ typedef struct tension_core_api {
      * the any-thread slots (rule 7).
      *
      * An adapter that presents no frames simply never calls it.
+     *
+     * No longer the last slot: `shader_generate` was appended after it at ABI
+     * version 4, and `compile_graph` after that at version 5, under the same
+     * rule.
      */
     void (*signal_frame)(void *user);
+
+    /*
+     * Generate shader source for one vertex/instance layout, appended under
+     * rule 11 at ABI version 4.
+     *
+     * The division of labour is the DWARF arc's, applied to shader text: the
+     * language emits the description, the engine transports the request and
+     * returns a string, and the engine never invents a layout it was not
+     * given.
+     *
+     * `layout_ptr` points at the packed descriptor below naming the vertex
+     * stream. `out` is the caller's buffer and `cap` its capacity in
+     * bytes; the result is one NUL-terminated UTF-8 string. Returns that
+     * string's length excluding the NUL on success, `-ENOSPC` when `cap` is
+     * too small (nothing is written), `-ENOSYS` when the host has no
+     * generator for that layout, and `-EINVAL` on a bad argument.
+     *
+     * A host may answer `-ENOSYS` for any layout it does not recognise: at
+     * v1 the registered generator serves the nine built-in presets only, so a
+     * guest-defined layout arrives here as `-ENOSYS` rather than as a guess.
+     * Callers must treat that as "no shader from the host" and fall back,
+     * not as a fatal error.
+     *
+     * Any-thread slot (rule 7): it reads the descriptor, writes the caller's
+     * buffer, and never touches guest memory.
+     *
+     * The descriptor is packed, little-endian, and fixed-width — no C struct
+     * and no pointers inside it, so it crosses the boundary the same way on
+     * every ABI this project builds for:
+     *
+     *   u16 preset_id      one of the nine built-in presets; 0 = none
+     *   u16 record_size    bytes per vertex/instance record
+     *   u16 alignment      the record's alignment
+     *   u16 field_count    entries in the array that follows
+     *   u16 reserved[2]    must be 0
+     *   field[field_count], 8 bytes each:
+     *     u16 semantic     TENSION_SEM_* below
+     *     u16 dtype        TENSION_DTYPE_*
+     *     u16 offset       bytes from the record start
+     *     u16 slot         low byte TENSION_SLOT_*, high byte the set index
+     *     u16 step_rate    0 = per-vertex, n = per-instance every n steps
+     *     u16 reserved     must be 0
+     */
+    int32_t (*shader_generate)(const void *layout_ptr, char *out, uint32_t cap);
+
+    /*
+     * Compile a pipeline graph to SPIR-V, appended under rule 11 at ABI
+     * version 5.
+     *
+     * `blob` is a T2DG graph. The host parses it, validates it, lowers it to
+     * GLSL through its shader generator, and compiles both stages to SPIR-V.
+     * The result lands in the caller's two buffers.
+     *
+     * This is how a capability draws a pipeline its build never saw: the
+     * capability owns the device, the host owns the compiler, and neither
+     * carries a copy of the other's dependency. It is the same division as
+     * `shader_generate` — the engine transports and returns, the language
+     * decides — one step further along.
+     *
+     * Returns 0 on success with `*out_vs_len`/`*out_fs_len` set to the byte
+     * counts written, or:
+     *   -EINVAL   a malformed blob, or a graph that fails validation
+     *   -ENOSYS   a well-formed graph this build cannot lower (unknown
+     *             primitive, unsupported stage shape)
+     *   -ENOSPC   either buffer is too small; nothing is written, and the
+     *             required sizes are still reported in `*out_vs_len` and
+     *             `*out_fs_len` so the caller can retry
+     *
+     * Any-thread slot (rule 7): it reads the blob, writes the caller's buffers,
+     * and never touches guest memory.
+     */
+    int32_t (*compile_graph)(void *user, const uint8_t *blob, uint32_t blob_len,
+                             uint8_t *vs_out, uint32_t vs_cap, uint8_t *fs_out,
+                             uint32_t fs_cap, uint32_t *out_vs_len,
+                             uint32_t *out_fs_len);
+
+    /*
+     * Ask the host to change the window, appended under rule 11 at ABI
+     * version 6.
+     *
+     * This is the only write channel a capability has for window state. It
+     * copies the message and returns; the change happens later, on the
+     * window's own thread, when the host drains its queue. So the answer is
+     * "queued", never "applied" — a caller that needs to know the result
+     * polls `host_surface`, and a caller that needs to know it *now* has the
+     * wrong model.
+     *
+     * Any thread (rule 7): it reads a caller-supplied struct, copies it, and
+     * never touches guest memory.
+     *
+     * Returns 0 when queued, or:
+     *   -EINVAL  `msg` is null, `kind` is not a value this build knows, or
+     *            `reserved` is non-zero
+     *   -ENOSPC  the queue region for this source is full. Synchronous, and
+     *            the same contract as a full pending queue: the caller learns
+     *            immediately that its message did not land. Nothing is
+     *            silently dropped or coalesced.
+     *   -ENOSYS  this build has no executor (a control channel that would
+     *            discard the message answers "not available", never 0)
+     *
+     * `msg->source` is ignored on input and stamped before the message is
+     * queued. See `tension_ctrl_msg`.
+     */
+    int32_t (*post_control)(void *user, const tension_ctrl_msg *msg);
+
+    /*
+     * The host's window surface, appended under rule 11 at ABI version 6.
+     *
+     * A renderer cannot create its own window in this architecture, so the
+     * handles it needs to render into the host's are handed over here. Both are
+     * **borrowed**: the host created them and the host destroys them. An
+     * adapter builds a swapchain on `surface` and must never call
+     * `vkDestroySurfaceKHR` on it, nor `vkDestroyInstance` on `instance`.
+     *
+     * The handles are plain `uint64_t` rather than Vulkan types so that this
+     * header still knows nothing about Vulkan: an adapter that does not use it
+     * need not include a Vulkan header at all.
+     *
+     * Returns 0 and fills `out`, or -ENOSYS when the host owns no surface —
+     * no `--window`, or a window without a Vulkan one. -ENOSYS is the expected
+     * answer on a headless run, not a failure.
+     *
+     * Any thread (rule 7): it reads the host's own state, never guest memory.
+     * A render thread may call it once per frame to learn the current size.
+     */
+    int32_t (*host_surface)(void *user, tension_host_surface *out);
+
+    /*
+     * One of the Vulkan instance extensions the host enabled, appended under
+     * rule 11 at ABI version 6 (slot 22).
+     *
+     * `host_surface` gives a renderer the host's `VkInstance`; it cannot give
+     * the extensions that instance was created with, because that list is not
+     * recoverable from the handle. Ogre-Next needs it: its external-instance
+     * path filters the caller's claims against what the loader reports as
+     * *available* and then uses the caller's list as the truth about what is
+     * enabled (`OgreVulkanDevice.cpp`, the `else  // externalInstance` branch).
+     * Enumerating from here would answer the wrong question — available is not
+     * enabled — so the host, which created the instance, reports its own
+     * record.
+     *
+     * `index` counts from 0. Returns
+     *   0        `out_name` holds the name, NUL-terminated, and `*out_len` its
+     *            length excluding the NUL
+     *   -ENOENT  `index` is past the last extension; this is how a caller
+     *            enumerates, and it is not an error
+     *   -EINVAL  a null argument, or `capacity` below
+     *            TENSION_EXTENSION_NAME_CAPACITY (the ABI's floor, 256 — every
+     *            Vulkan extension name fits, and a smaller buffer would
+     *            truncate a name that is then silently wrong)
+     *   -ENOSYS  the host owns no surface, so it has no instance to describe
+     *
+     * The list is fixed for the life of the instance: it is what was passed to
+     * `vkCreateInstance` before any adapter loaded.
+     *
+     * Any thread (rule 7): it reads the host's own state, never guest memory.
+     */
+    int32_t (*host_surface_extension)(void *user, uint32_t index, char *out_name,
+                                      uint32_t capacity, uint32_t *out_len);
 } tension_core_api;
+
+/* The smallest `capacity` `host_surface_extension` accepts; see that slot. */
+#define TENSION_EXTENSION_NAME_CAPACITY 256u
 
 /* ── the adapter: what it provides to the session ────────────────────── */
 
@@ -454,7 +768,7 @@ const tension_adapter *tension_adapter_v1(void);
  *  -ENOMEM  allocation failure
  *  -ENOSYS  a required slot was left NULL
  *
- * On the import-type refusals behind C3 (see tension-ogre/DESIGN.md §4.1): all
+ * On the import-type refusals behind C3 (see `docs/modules/ogre.md` §4): all
  * three directions — a provided minimum below the declared minimum, a provided
  * maximum above the declared maximum, and an unbounded provider — produce the
  * *same* wasmtime error string, with no page counts in it. The session's
@@ -481,7 +795,7 @@ const tension_adapter *tension_adapter_v1(void);
 /* ── the arena's region kinds ────────────────────────────────────────── */
 
 /*
- * Twelve kinds, frozen for this chunk. `kind == index`: the session writes the
+ * Twelve kinds, `kind == index`: the session writes the
  * region table in ascending kind order, so a guest finds a region by arithmetic
  * and no lookup verb exists. Direction bits live in the region descriptor; the
  * sizes below are the defaults, and they are compile-time constants — an
@@ -561,25 +875,27 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, signal_frame)
-                      + sizeof(((tension_core_api *)0)->signal_frame)
+static_assert(offsetof(tension_core_api, host_surface_extension)
+                      + sizeof(((tension_core_api *)0)->host_surface_extension)
                   == sizeof(tension_core_api),
-              "tension_core_api: signal_frame must stay the last slot; an "
-              "append updates this assertion and the Rust table together");
+              "tension_core_api: host_surface_extension must stay the last "
+              "slot; an append updates this assertion and the Rust table "
+              "together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 17 * sizeof(void *),
-              "tension_core_api: expected 17 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 22 * sizeof(void *),
+              "tension_core_api: expected 22 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, signal_frame)
-                       + sizeof(((tension_core_api *)0)->signal_frame)
+_Static_assert(offsetof(tension_core_api, host_surface_extension)
+                       + sizeof(((tension_core_api *)0)->host_surface_extension)
                    == sizeof(tension_core_api),
-               "tension_core_api: signal_frame must stay the last slot; an "
-               "append updates this assertion and the Rust table together");
+               "tension_core_api: host_surface_extension must stay the last "
+               "slot; an append updates this assertion and the Rust table "
+               "together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 17 * sizeof(void *),
-               "tension_core_api: expected 17 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 22 * sizeof(void *),
+               "tension_core_api: expected 22 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif
@@ -612,9 +928,10 @@ _Static_assert(sizeof(tension_adapter) == 10 * sizeof(void *),
 #endif
 
 /*
- * Frozen at ABI version 2. Additive fields are appended; the version check in
- * `init` is mandatory rather than advisory, and it is what refuses a
- * version-1 adapter before its shorter vtable is read as if it were longer.
+ * The ABI is alpha; `TENSION_ADAPTER_ABI_VERSION` is the shape it carries
+ * today. Additive fields are appended; the version check in `init` is mandatory
+ * rather than advisory, and it is what refuses a version-1 adapter before its
+ * shorter vtable is read as if it were longer.
  */
 
 #ifdef __cplusplus

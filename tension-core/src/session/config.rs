@@ -29,11 +29,10 @@
 //! The first entry in the byte stream must be `abi_version`: a future version's
 //! stream must be refused before its remaining shape is interpreted at all.
 //!
-//! **The key form.** `tension-ogre/DESIGN.md` §6.1 now documents this stream
-//! with `u32` keys (amended in A1 round 2a), which is what this module
+//! **The key form.** The stream is `u32` keys, which is what this module
 //! implements: keys 1-6 for the seven required entries and `0x0100 + class` for
 //! the optional ring capacities. This module is authoritative for the decoder's
-//! behaviour; the note describes it.
+//! behaviour; no other page restates the encoding.
 
 use super::arena::{
     CLASS_COUNT, DEFAULT_RING_CAPACITIES, EVENT_TABLE_SIZE, LAYOUT_FLOOR, REGION_COUNT,
@@ -85,7 +84,7 @@ pub struct SessionConfig {
 /// One capability's declared need for a region kind: an adapter asked
 /// `region_lookup` about `kind` during `link`, so the registry recorded it and
 /// `session_open` must find that region inside the arena the config declares
-/// (`DESIGN.md` §7.2).
+/// (`docs/session.md` §4).
 ///
 /// The adapter's name travels with the kind because the refusal names both: an
 /// operator who loaded one capability reads a different message from one who
@@ -115,7 +114,7 @@ pub enum ConfigError {
     ValueOutOfRange(&'static str),
     /// C1: the arena's declared sizes are inconsistent.
     ArenaRelation(&'static str),
-    /// C4: the frozen layout does not fit the declared live arena.
+    /// C4: the layout does not fit the declared live arena.
     LayoutFit { need: u64, have: u32 },
     /// A ring capacity is zero, or names a class outside the thirteen.
     RingCapacity { class: u32 },
@@ -168,7 +167,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::ArenaRelation(what) => write!(f, "arena sizes refused: {what}"),
             ConfigError::LayoutFit { need, have } => write!(
                 f,
-                "arena_size {have} is below the frozen layout's {need} bytes"
+                "arena_size {have} is below the layout's {need} bytes"
             ),
             ConfigError::RingCapacity { class } => write!(
                 f,
@@ -377,7 +376,7 @@ pub fn check_arena_relation(config: &SessionConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// C4: the frozen layout fits the declared live arena. Region sizes are
+/// C4: the layout fits the declared live arena. Region sizes are
 /// constants this chunk, so this is one comparison — and it is the check that
 /// keeps `region_lookup`'s link-time promise honest.
 pub fn check_layout_fit(config: &SessionConfig) -> Result<(), ConfigError> {
@@ -485,10 +484,10 @@ pub fn check_required_regions(
 /// The required-region check sits *before* C4 (§6.2): it is the more specific
 /// statement of the same guarantee and it can name the capability and the
 /// region, where C4 can only name two numbers. It refuses a strict subset of
-/// what C4 refuses — every frozen region ends at or below `LAYOUT_FLOOR` — so
+/// what C4 refuses — every region ends at or below `LAYOUT_FLOOR` — so
 /// nothing is accepted here that the floor would have caught.
 ///
-/// One step of `DESIGN.md` §6.2 is deliberately *not* here: the memory import
+/// One step of `docs/session.md` §7's order is deliberately *not* here: the memory import
 /// match (C2/C3), which needs the module's declared page counts and therefore
 /// belongs to the session. A caller that needs the design's exact interleaving
 /// calls the staged functions instead.

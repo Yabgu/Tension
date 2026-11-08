@@ -2,7 +2,7 @@
 ;;
 ;; This is F2's first load-time check, and it is also the reason that check can
 ;; be one line: every session guest must import the arena the session owns —
-;; there is no second, guest-provided memory (DESIGN.md §4) — so a guest that
+;; there is no second, guest-provided memory (`docs/session.md` §7) — so a guest that
 ;; speaks the session protocol without bringing an arena is refused before the
 ;; module is instantiated, with the fix named. The message is this check's
 ;; (specific: "imports `session::*` but declares no memory import"); the general

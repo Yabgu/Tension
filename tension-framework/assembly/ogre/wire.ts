@@ -41,8 +41,8 @@ import { regionOffset } from "../runtime/arena";
 // These are the only math types left. `Vec2f`, `Vec3f`, `Vec3f16`, `Vec4f`,
 // `Quatf`, `Colourf` and `Mat4f` were declared here and used by nothing: no field
 // nested them, no guest imported them, and the only `offsetof` that named them
-// compared them against themselves. They went on 2026-10-30 — see the wire
-// workaround inventory in `tension-ogre/DESIGN.md`. A raw-bytes view of a
+// compared them against themselves. They went on 2026-10-30 — no field nested
+// them and no guest imported them. A raw-bytes view of a
 // transform record still costs nothing to write: `@unmanaged` is a use-site
 // modifier since 0.11.1 (`changetype<@unmanaged T>(ptr)`), so it needs no second
 // declaration to sit beside the first.
@@ -131,7 +131,7 @@ export const RES_SHADER: u32 = 2;
 export const RES_FONT: u32 = 3;
 
 /** A mesh resource that carries a skeleton, in the `Resource` record's `flags`
- * (DESIGN.md §5.1). The resource's `size` carries the *bone count* for these,
+ * (`docs/modules/ogre.md` §4). The resource's `size` carries the *bone count* for these,
  * where other resources carry bytes. */
 export const RES_RIGGED: u32 = 1;
 
@@ -249,7 +249,7 @@ export const JOB_SIZE: u32 = 64;
 
 // --- the submission sub-tables ---------------------------------------------
 //
-// SCENE holds three tables end to end (DESIGN.md §5.1): 1024 `SceneNode`s,
+// SCENE holds three tables end to end (`docs/modules/ogre.md` §4.1): 1024 `SceneNode`s,
 // then 512 `CameraRecord`s, then 1024 `LightRecord`s. MATERIAL and RENDERABLE
 // hold one table each. The split is the capability catalogue's business rather
 // than the protocol's, so it does not move `layoutHash` — which is exactly why
@@ -423,9 +423,8 @@ function ogreWireContractProblem(): string | null {
   // (`tension-ogre/src/scene.h`, 116 `static_assert`s against `#pragma pack(1)`)
   // and documented above each declaration here, so the guest copy restated the
   // same literals in a second language without a second source of truth.
-  // Deleted 2026-10-30; see `tension-ogre/DESIGN.md`, "Wire workaround
-  // inventory". The replacement is the OGRE layout hash scoped in
-  // `docs/engine-adoption-plan.md`.
+  // Deleted 2026-10-30. The replacement — one OGRE layout hash both sides
+  // derive — is not built; the C++ `static_assert`s are the enforcement.
 
   // The two moving tables. Checked here as well as by their own assertions so a
   // build that forgets to call them still catches a moved field: most fixtures
@@ -436,7 +435,7 @@ function ogreWireContractProblem(): string | null {
   if (bone != null) return bone;
 
   // The procedural window's start is derived here and written as a literal in
-  // the adapter (DESIGN.md §5.1 pins it at 192 KiB); a derivation that drifts
+  // the adapter (`docs/modules/ogre.md` §4.1 pins it at 192 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
   // look, so the two are tied together by this.
   // Derived from the two table strides: 48*2048 + 48*2048. The adapter derives

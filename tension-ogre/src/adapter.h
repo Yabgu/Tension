@@ -2,7 +2,7 @@
 //
 // One instance, held in a function-local static: the ABI's `ctx` argument is
 // whatever the loader passes (null everywhere in this repo), and the design's
-// `adapter_ctx` future-work item (DESIGN.md §12) is what would let two
+// `adapter_ctx` future-work item is what would let two
 // instances of one adapter coexist in one process. Until then this file says
 // so out loud rather than pretending the context pointer is doing work.
 
@@ -85,9 +85,12 @@ struct AdapterState {
     /// The render thread's own "I am done" flag; the condvar carries it.
     bool thread_exited = false;
 
-    /// The library's last teardown — and, on a guest that traps, the only one:
-    /// the host never calls the vtable's `shutdown`, and a trapped guest never
-    /// reaches its own `ogre::shutdown`. Defined in adapter.cpp beside
+    /// The library's last teardown, and the backstop for any exit path that
+    /// never reaches the host's `teardown_adapters`. On the paths this host has,
+    /// `shutdown` has already run and this finds nothing to stop; on a path that
+    /// skipped it — and a trapped guest never reaches its own `ogre::shutdown`
+    /// either — this is what keeps the members below from being destroyed while
+    /// the render thread is still drawing. Defined in adapter.cpp beside
     /// `stop_render_thread`, which it shares with the `shutdown` slot.
     ~AdapterState();
 };

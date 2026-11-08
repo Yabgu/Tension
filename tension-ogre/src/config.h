@@ -43,11 +43,41 @@ enum class ConfigError {
 struct Config {
     uint32_t abi_version = 0;
     uint32_t renderer = 1;   ///< TENSION_OGRE_RENDERER_GL3PLUS
-    bool headless = false;   ///< ask for no window; the NULL render system satisfies it
+    /// The guest's config carried a `renderer` key. Not on the wire; the
+    /// decoder records it because "unset" and "explicitly gl3plus" are
+    /// different requests once `headless` is in play: the first may be
+    /// resolved to the NULL render system, the second is a contradiction.
+    bool renderer_set = false;
+    bool headless = false;   ///< ask for no window; see `apply_headless_policy`
     bool vsync = false;
     uint32_t frame_hz = 60;
     uint32_t window_width = 1280;
     uint32_t window_height = 720;
+    /// The host's Vulkan instance and surface (ABI v6), or 0 for "the host owns
+    /// none" — in which case the backend behaves exactly as it did before v6 and
+    /// creates its own window. Not a config key: the guest cannot supply these,
+    /// they arrive from the host's table, and they are set after decoding.
+    uint64_t external_instance = 0;
+    uint64_t external_surface = 0;
+    /// Reads the host's *current* surface size, called once per frame by the
+    /// render thread. A function pointer rather than a value because the size
+    /// changes; a pointer rather than a `std::function` because `Config` is
+    /// copied into the backend and this must not allocate on the render thread.
+    ///
+    /// Null when there is no host surface, which is what makes the per-frame
+    /// check cost nothing on the pre-v6 path.
+    void (*host_size)(void *ctx, uint32_t *out_w, uint32_t *out_h) = nullptr;
+    void *host_size_ctx = nullptr;
+    /// One of the Vulkan instance extensions the host enabled, read by index
+    /// until `-ENOENT`. The render thread fills a `VulkanExternalInstance` from
+    /// this before loading the Vulkan plugin, because Ogre's external-instance
+    /// path treats the caller's list as the record of what is enabled and a
+    /// handle alone cannot say.
+    ///
+    /// Null when there is no host instance, alongside `host_size`.
+    int32_t (*host_extension)(void *ctx, uint32_t index, char *out_name,
+                              uint32_t capacity, uint32_t *out_len) = nullptr;
+    void *host_extension_ctx = nullptr;
 };
 
 /// Either a config or the named reason it was refused.
@@ -66,6 +96,22 @@ struct ConfigDecodeResult {
 
 /// Decode `len` bytes at `bytes`. Never throws; every refusal is a result.
 ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len);
+
+/// Apply `headless` to a decoded config, in place. Returns 0, or -EINVAL.
+///
+/// `headless` means "do not open a window". This build has exactly one
+/// renderer that opens none — the NULL render system — so the policy is:
+///
+///   * `headless` with `renderer = null` is already satisfied (0);
+///   * `headless` with no `renderer` key resolves to null (0);
+///   * `headless` with an explicitly requested GPU renderer is a
+///     contradiction, and is refused rather than silently downgraded: the
+///     guest asked for a renderer that needs a window, and this build has no
+///     offscreen path for any of them.
+///
+/// Called by `init` before the host's handles are merged in, because a
+/// headless guest must not adopt the host's surface either.
+int32_t apply_headless_policy(Config &config);
 
 /// The name of an error token, e.g. `"unknown-key"`.
 const char *config_error_name(ConfigError error);

@@ -7,10 +7,10 @@
 // it. `npm run build` runs the bootstrap itself, once, and continues.
 //
 // The pre-check mirrors the bootstrap's own "is installed" test: main library,
-// Media tree, Vulkan render system, plus the FreeImage install the OGRE build
-// links. A false negative costs one no-op bootstrap run (the script is
-// idempotent); a false positive would let a half-built install through to fail
-// later inside the C++ compile, which is the expensive direction to be wrong.
+// Media tree, Vulkan render system. A false negative costs one no-op
+// bootstrap run (the script is idempotent); a false positive would let a
+// half-built install through to fail later inside the C++ compile, which is
+// the expensive direction to be wrong.
 //
 // Nothing here runs on an install that is already complete, so the steady-state
 // cost is a few stat calls and a short walk of the usual plugin directories.
@@ -24,7 +24,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
 
 const OGRE_INSTALL = join(repo, 'third_party', 'ogre-next-install');
-const FREEIMAGE_INSTALL = join(repo, 'third_party', 'freeimage-install');
 const BOOTSTRAP = join(repo, 'scripts', 'bootstrap.mjs');
 const WIN = process.platform === 'win32';
 
@@ -43,9 +42,8 @@ function isDirectory(path) {
 /// prefix for `RenderSystem_Vulkan.*`, so this does too.
 ///
 /// `match` receives the name lowercased. Windows artifacts are not spelled
-/// consistently — FreeImage installs `libFreeImage.dll`/`libFreeImage.dll.a`,
-/// capital F — and a case-sensitive compare would report a good install as
-/// missing.
+/// consistently — a DLL may be capitalised — and a case-sensitive compare would
+/// report a good install as missing.
 function findMatching(root, match) {
   let entries;
   try {
@@ -99,25 +97,15 @@ function hasVulkanPlugin(prefix) {
   return findMatching(prefix, match) !== null;
 }
 
-function hasFreeImage(prefix) {
-  if (!existsSync(join(prefix, 'include', 'FreeImage.h'))) return false;
-  return findMatching(prefix, (name) =>
-    name === 'libfreeimage.a' ||
-    name === 'libfreeimage.dll.a' ||
-    name === 'freeimage.dll' ||
-    name === 'libfreeimage.so' ||
-    name.startsWith('libfreeimage.so.')) !== null;
-}
 
 /// What the install is missing, as short reasons. Empty means it is complete
 /// enough for `build:native` to consume. Paths are injectable so the detector
 /// can be exercised without touching the real install.
-export function bootstrapProblems(ogre = OGRE_INSTALL, freeimage = FREEIMAGE_INSTALL) {
+export function bootstrapProblems(ogre = OGRE_INSTALL) {
   const problems = [];
   if (!hasMainLibrary(ogre)) problems.push('no OgreNextMain library');
   if (!hasMedia(ogre)) problems.push('no Media tree');
   if (!hasVulkanPlugin(ogre)) problems.push('no Vulkan render system');
-  if (!hasFreeImage(freeimage)) problems.push('no FreeImage install');
   return problems;
 }
 
@@ -142,11 +130,10 @@ export function ensureOgre({
     process.exit(1);
   },
   ogre = OGRE_INSTALL,
-  freeimage = FREEIMAGE_INSTALL,
   bootstrap = BOOTSTRAP,
   repoRoot = repo,
 } = {}) {
-  const missing = bootstrapProblems(ogre, freeimage);
+  const missing = bootstrapProblems(ogre);
   if (missing.length === 0) return;
 
   note(`OGRE-Next is not built yet (${missing.join(', ')})`);
@@ -160,7 +147,7 @@ export function ensureOgre({
     fail(`scripts/bootstrap.mjs failed (${why}); see its output above`);
   }
 
-  const still = bootstrapProblems(ogre, freeimage);
+  const still = bootstrapProblems(ogre);
   if (still.length) {
     fail(`bootstrap finished but the install is still incomplete (${still.join(', ')})`);
   }

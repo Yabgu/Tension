@@ -1,0 +1,22 @@
+{
+  "name": "tension-example-hello-sprites",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: ten sprites rendered by tension-2d from a TensionScript guest",
+  "scripts": {
+    "build": "node ../../../scripts/build-2d-guest.mjs",
+    "start": "node ../../../scripts/run-2d-example.mjs",
+    "run": "node ../../../scripts/run-2d-example.mjs"
+  },
+  "tension": {
+    "kind": "2d",
+    "capability": "../../../tension-2d/build/libtension_2d.so"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}

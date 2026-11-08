@@ -1,5 +1,5 @@
 //! The read interface every byte in tension-res is fetched through
-//! (DESIGN.md §6.8).
+//! (tension-res/DESIGN.md §6.8).
 //!
 //! A `BlockReader` is a type-erased `{ ctx, read_fn }` pair. `SliceReader` is
 //! the trivial implementation over an in-memory pak; tests wrap it with a

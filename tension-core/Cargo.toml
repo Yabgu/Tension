@@ -19,6 +19,20 @@ path = "src/main.rs"
 [dependencies]
 wasmtime = "=24.0.13"
 anyhow = "1.0.104"
+# The host owns the window. `sdl3` is core infrastructure now, not a capability
+# dependency, so it is unconditional: a feature-gated window would make two core
+# configurations to keep honest, and the north star has no "core without a
+# window" case.
+#
+# The `ash` feature makes `sdl3`'s Vulkan handles *be* `ash::vk` handles, so
+# `window.vulkan_create_surface(instance.handle())` type-checks without a cast.
+#
+# Both pinned exactly, for the `naga` reason below: a floating minor on a binding
+# crate is a runtime surprise. The pair was chosen so `sdl3-sys` 0.7.3 (generated
+# from SDL 3.4.20 headers) builds against the SDL 3.4.18 this tree ships — that
+# combination is verified, not assumed.
+sdl3 = { version = "=0.22.0", features = ["ash"] }
+ash = "=0.38.0"
 cpal = { version = "0.18.2", optional = true }
 arc-swap = "1.7"
 llama-cpp-2 = { version = "0.1.156", optional = true }
@@ -33,9 +47,69 @@ yaml-rust2 = "=0.13.0"
 # loading crate. libc is already in the tree through wasmtime; naming it makes
 # the dependency honest rather than implicit.
 libc = "0.2"
+# Shader source generation. A path dependency rather than a workspace:
+# `tension-core` is standalone (no `[workspace]` anywhere in this tree), and
+# the crate is versioned with it.
+tension-shadergen = { path = "../tension-shadergen" }
+
+# Cranelift is already in the tree as Wasmtime's compiler (same 0.111.13), so
+# naming it adds no download and no new licence — the argument the `libc` entry
+# above makes. The graph compiler's CPU lowering uses it directly.
+cranelift-codegen = "=0.111.13"
+cranelift-frontend = "=0.111.13"
+cranelift-native = "=0.111.13"
+
+# GLSL -> SPIR-V for runtime pipeline compilation (pipeline/naga_backend.rs).
+# Same crate and version as `tension-shadergen` uses, so one copy is linked.
+#
+# naga is developed in the wgpu repo (gfx-rs/naga is archived).
+# Pinned to 29.0.4: 30.0.1's glsl-in feature fails to compile. Retested
+# 2026-11-06 against a fresh crates.io artifact and it still fails:
+#
+#   error[E0599]: no method named `apply_default_interpolation` found for
+#   enum `ir::Binding` in the current scope
+#     --> naga-30.0.1/src/front/glsl/variables.rs:467:25
+#
+# The cause is a cfg gate, not a missing API. The method lives in
+# `src/front/interpolator.rs`, which 29.0.4 declares unconditionally and
+# 30.0.1 declares only under
+# `#[cfg(any(feature = "spv-in", feature = "wgsl-in"))]` (front/mod.rs:5-6) —
+# omitting `glsl-in`, which is the feature that uses it. Adding `wgsl-in` does make 30.0.1 compile;
+# that is not adopted, because it means shipping on a feature combination
+# upstream does not test, to satisfy a gate that clearly should have said
+# `any(spv-in, wgsl-in, glsl-in)`.
+#
+# Reproduction: `cargo check --manifest-path tension-core/Cargo.toml
+# --all-features` with this line set to 30.0.1. 29.0.4 builds and its output
+# renders correctly (scripts/test-2d.mjs, pixel assertions).
+# Do not bump without testing glsl-in first.
+naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
 
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`
 # parses the examples' package.json and (JSONC) launch.json as data rather than
 # grepping them: a structural check that cannot be fooled by a comment.
 serde_json = "1.0"
+
+# The surface probe needs a real window and a real Vulkan instance, so it is an
+# ordinary binary rather than a `#[test]` — see the file's header on the
+# `sdl3` main-thread rule.
+[[test]]
+name = "platform_surface"
+harness = false
+
+# The pump probe, for the same reason as `platform_surface`: a real window and
+# the `sdl3` main-thread rule.
+[[test]]
+name = "platform_window"
+harness = false
+
+# The control-bus probe: a real window plus the queue, same main-thread rule.
+[[test]]
+name = "platform_control"
+harness = false
+
+# The end-to-end proof: SDL3's window and surface handed to Ogre-Next.
+[[test]]
+name = "ogre_host_surface"
+harness = false

@@ -1,13 +1,13 @@
 {
   "name": "tension-framework",
   "version": "0.1.0",
-  "description": "Guest SDK for TensionCore: tension::io ABI bindings and game abstractions (AssemblyScript + TypeScript)",
+  "description": "Guest SDK for TensionCore: the capability bindings (tension::io, audio, ai, res, solver, ogre, input, 2d) and the game abstractions built on them",
   "type": "module",
   "ascMain": "assembly/index.ts",
   "types": "index.d.ts",
   "scripts": {
     "build": "tensionscript index.ts -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
-    "test": "bash tests/run.sh && node tests/rt-dispatch.mjs",
+    "test": "cd .. && node scripts/test.mjs --framework && node tension-framework/tests/rt-dispatch.mjs",
     "build:fixture": "bash tests/run.sh"
   },
   "exports": {
@@ -23,7 +23,7 @@
   "keywords": [
     "tension",
     "wasm",
-    "assemblyscript",
+    "tensionscript",
     "text-game"
   ],
   "license": "MIT",

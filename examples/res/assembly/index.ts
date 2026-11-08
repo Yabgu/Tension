@@ -18,7 +18,7 @@ import {
 /// bit-exact with the one below. It is deliberately *not* compressible: that
 /// File has to span more chunks than the runtime's per-open cache holds, and a
 /// repeating pattern would collapse under the packer's compression threshold
-/// (DESIGN.md §8.4) and silently end that coverage.
+/// (`tension-res/DESIGN.md` §8.4) and silently end that coverage.
 function patternByte(offset: i32): i32 {
   let x: u32 = (<u32>offset) * 747796405 + 2891336453;
   x ^= x >>> 15;
@@ -65,7 +65,7 @@ export function _start_game(): void {
   }
 
   // data/large.bin is 20 MiB in a volume whose Buffers are 2048 bytes: about
-  // 10600 chunks, well past the runtime's per-open chunk cache (DESIGN.md
+  // 10600 chunks, well past the runtime's per-open chunk cache (`tension-res/DESIGN.md`
   // §8.3, MAX_FILE_CHUNKS = 4096). It is also incompressible, so the packer
   // stores it (§8.4) and that chunking is real — this File is never cached, so
   // a full read would be O(N^2) in chain walks. These spot reads are the point

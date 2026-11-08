@@ -17,12 +17,12 @@
 ! for rk23; those numbers leave no room for the scratch vector the
 ! shared trial loop requires (and rk23's count omits its FSAL stage).
 ! The generic formula the brief asked to confirm against is what these
-! methods use — see DESIGN.md §7.
+! methods use — see tension-solver/DESIGN.md §7.
 !
 ! There is no module-level SAVE state anywhere in this file. Every
 ! mutable value lives in the caller's state and workspace arrays, which
 ! is what lets two solvers share one process without contaminating each
-! other (DESIGN.md §4), and what makes the interleaving test a
+! other (tension-solver/DESIGN.md §4), and what makes the interleaving test a
 ! structural proof rather than a promise.
 module tension_solver_erk
   use iso_c_binding
@@ -31,7 +31,7 @@ module tension_solver_erk
 
   ! The schema's parameter block, bind(C): one struct for every method.
   ! Each method reads the subset it needs and ignores the rest — the
-  ! config-object discipline at the ABI (DESIGN.md §7). Defaults are
+  ! config-object discipline at the ABI (tension-solver/DESIGN.md §7). Defaults are
   ! applied by the C shim, not here. The C mirror in
   ! src/solver_params.h must match this type field for field and in
   ! order; it carries a size assertion.

@@ -12,7 +12,6 @@
     "index.js"
   ],
   "dependencies": {
-    "@yabgu_gm/tension-ogre-next": "0.1.0",
-    "@yabgu_gm/tension-freeimage": "0.1.0"
+    "@yabgu_gm/tension-ogre-next": "0.1.0"
   }
 }

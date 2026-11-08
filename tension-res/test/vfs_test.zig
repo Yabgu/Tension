@@ -1,5 +1,5 @@
 //! VFS tests (phase 5): path normalization, the fd table, stat/stat_fd,
-//! readdir, and the error table of DESIGN.md §7 — against real packed volumes
+//! readdir, and the error table of tension-res/DESIGN.md §7 — against real packed volumes
 //! built by the same layout code the prune tests use.
 //!
 //! Fixtures are file-scope statics (the volume bytes must outlive the walker);

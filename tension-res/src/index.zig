@@ -1,4 +1,4 @@
-//! Child-index Stream: writer, parser, and probe — DESIGN.md §6.7.
+//! Child-index Stream: writer, parser, and probe — tension-res/DESIGN.md §6.7.
 //!
 //! This is the content convention that gives a Source directory File a
 //! prunable child index. It is *not* spec structure: ECMA-208 defines the
@@ -7,7 +7,7 @@
 //! (Sub)Header, first buffer = 1; §11.1 ruling 4) and `buffer_offset` per
 //! Figure 24 (bytes from the Buffer's start to a File Header). Every integer
 //! is little-endian per 6.1. The layout, its constants and the probe path are
-//! specified in DESIGN.md §6.7; constants cite it as `§6.7`.
+//! specified in tension-res/DESIGN.md §6.7; constants cite it as `§6.7`.
 //!
 //! Layout (all offsets stream-relative):
 //!

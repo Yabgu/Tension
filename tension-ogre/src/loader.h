@@ -1,7 +1,7 @@
 // The loader: jobs, bytes, and the work that must not happen on the render
 // thread.
 //
-// The split this file implements (DESIGN.md §8.1):
+// The split this file implements (`docs/modules/ogre.md` §5):
 //
 //   worker thread   resolve paths, read bytes, check magic, report. No OGRE
 //                   call, ever — which is what makes "is OGRE thread-safe?"

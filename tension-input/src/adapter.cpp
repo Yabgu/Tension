@@ -225,7 +225,7 @@ int32_t shim_input_close(void *, const tension_value *args, uint32_t nargs, tens
     /* Everything the capability owns goes with the handle — the window (above),
        then SDL and the thread. The host on `main` never calls the vtable's
        `shutdown`, so this is the teardown that runs; leaving the SDL thread
-       alive for the DSO's destructor to join is the hang DESIGN.md §7 records. */
+       alive for the DSO's destructor to join is the hang `tension-input/DESIGN.md` §7 records. */
     s.thread.stop(/*quit_sdl=*/true);
     ret->i32 = 0;
     return 0;

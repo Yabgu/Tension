@@ -1,7 +1,7 @@
 /*
  * The OGRE capability's stub adapter.
  *
- * It exists to prove the *shape* of the capability ABI end to end: an AssemblyScript
+ * It exists to prove the *shape* of the capability ABI end to end: a TensionScript
  * guest calls `ogre::queue_mesh_load`, gets a job id, waits, and receives a
  * `JOB_DONE` event whose payload resolves to a resource. Everything about OGRE
  * the renderer — the version pin, the HLMS materials, the scene, the render
@@ -17,7 +17,7 @@
  *   * not reentrant: its state is file-scope statics, like the reference echo
  *     adapter's, and `dlopen` on one path returns one image — so one process is
  *     one instance per adapter. The `adapter_ctx` vtable slot that would fix
- *     that is a recorded future-work item (`tension-ogre/DESIGN.md` §12);
+ *     that is a recorded future-work item;
  *     production use before it lands means one OGRE adapter per process, which
  *     is the plan anyway.
  *

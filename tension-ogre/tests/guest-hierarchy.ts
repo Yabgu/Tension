@@ -3,7 +3,7 @@
 //   tension-core --capability tension-ogre/build/libtension_ogre.so \
 //       tension-ogre/build/guest-hierarchy.wasm --renderer=gl3plus
 //
-// The clauses (DESIGN.md §14):
+// The clauses (`docs/modules/ogre.md` §8):
 //
 //   1. Barrel.mesh loads: job DONE, resource id > 0
 //   2. an Unlit material and a camera are submitted

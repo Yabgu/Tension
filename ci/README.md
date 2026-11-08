@@ -3,7 +3,7 @@
 A single Arch Linux image serves both continuous integration and development. It carries the
 full toolchain (zig, rustup, node/npm, gcc-fortran, clang), a headless
 graphics stack (Xvfb, Mesa software GL, lavapipe) and locally built
-OGRE-Next + freeimage packages. Everything runs under Xvfb, so the OGRE
+OGRE-Next packages. Everything runs under Xvfb, so the OGRE
 test suites work without a display or GPU.
 
 ## Layout
@@ -17,12 +17,11 @@ test suites work without a display or GPU.
 ## Prerequisites
 
 - `podman` (rootless) or `docker` (set `TENSION_CONTAINER_RUNTIME=docker`)
-- OGRE-Next and freeimage Arch packages, produced once with `makepkg`
-  (e.g. `paru -B` / `pikaur -B` in AUR clones of `ogre-next-git` and
-  `freeimage`). `ci/docker.mjs build` picks the latest non-debug package from
-  `$HOME/src/ogre-next-git` and `$HOME/src/freeimage` and caches a copy in
-  `ci/ogre-next-pkg/`. Override with `TENSION_OGRE_PKG_DIR` /
-  `TENSION_FREEIMAGE_PKG_DIR`, or drop `.pkg.tar.zst` files into
+- OGRE-Next Arch packages, produced once with `makepkg`
+  (e.g. `paru -B` / `pikaur -B` in an AUR clone of `ogre-next-git`).
+  `ci/docker.mjs build` picks the latest non-debug package from
+  `$HOME/src/ogre-next-git` and caches a copy in `ci/ogre-next-pkg/`.
+  Override with `TENSION_OGRE_PKG_DIR`, or drop `.pkg.tar.zst` files into
   `ci/ogre-next-pkg/` yourself.
 
 ## Commands
@@ -43,7 +42,15 @@ which builds and runs all six suites (tension-framework, the tension-ogre
 guest suite, tension-input, tension-core, the tension-ogre unit tests,
 tension-res) under Xvfb. The run is strict — a missing fixture fails the test
 rather than skipping it (`tension-core/tests/support/ci.rs`) — so a green run
-means the fixtures were built. In rootless podman the container runs as
+means the fixtures were built.
+
+**Scope of "everything runs under Xvfb".** That holds for the adapter suites,
+which render offscreen. It does **not** hold for `tension-core`'s
+`ogre_host_surface`, which opens a real SDL3 window and a host-owned
+`VkSurfaceKHR`: under Xvfb plus lavapipe it may run, but its authoritative proof
+is a Wayland session with a hardware Vulkan ICD. Treat the container as the
+place every suite is *exercised*, and the developer rig as where the host-surface
+path is *proven*. Recorded in `docs/known-limitations.md`. In rootless podman the container runs as
 root, which maps to the invoking host user — build artifacts written into
 the checkout (`target/`, `zig-out/`, etc.) stay host-owned.
 

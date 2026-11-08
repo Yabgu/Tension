@@ -1,4 +1,4 @@
-// The arena's wire types, as AssemblyScript sees them.
+// The arena's wire types, as TensionScript sees them.
 //
 // Every type here is `@unmanaged` with scalar fields in declared order, so a
 // `changetype<T>(offset)` is a *view* of guest memory: no allocation, no
@@ -22,8 +22,8 @@
 //
 // Both are **type level**: the manifest carries no per-field offsets, so a field
 // reorder inside a record that leaves the size unchanged is now unverified on
-// the guest side. The mechanical fix is one source emitting both sides, scoped
-// in `docs/engine-adoption-plan.md`.
+// the guest side. The mechanical fix — one source emitting both sides — is not
+// built.
 //
 // Measured 2026-10-30 on TensionScript 0.11.0: `sizeof` reports all ten records
 // exactly (256, 144, 24, 8, 32, 16, 64, 16, 32, 64), which is what makes the
@@ -31,10 +31,10 @@
 // purpose: a start section would run guest code before the session has verified
 // the arena, and `tension-core` refuses one outright.
 //
-// The constants are the frozen layout (`DESIGN.md` §5). The Rust side's
-// `arena::CLASSES` and `arena::REGIONS` are their authority; the cross-check
-// test in tension-core reads the generated `layout.ts` for the hash, and these
-// numbers move only when the arena's shape does.
+// The constants are the arena's wire layout. The Rust side's `arena::CLASSES`
+// and `arena::REGIONS` are their authority, and the open-time `LAYOUT_HASH`
+// check in `arena.ts` is what refuses a guest built against a different shape;
+// these numbers move only when the arena's shape does.
 
 // The managed struct's alias fixture is not a wire record (it has no host
 // declaration), but it is asserted by the same function, so the compiler's two
@@ -62,7 +62,8 @@ export const MODE_BATCHED: u32 = 2;
 export const MODE_RING: u32 = 3;
 export const MODE_POLLED: u32 = 4;
 
-/** The thirteen event classes, in the frozen id order (urgent first). */
+/** The thirteen event classes, in id order (urgent first); `arena::CLASSES` is
+ * the authority. */
 export const CLASS_DEVICE_LOST: u32 = 0;
 export const CLASS_JOB_FAILED: u32 = 1;
 export const CLASS_RESOURCE_FAILED: u32 = 2;
@@ -84,7 +85,8 @@ export const CLASS_AI_READY: u32 = 10;
 export const CLASS_AI_DONE: u32 = 11;
 export const CLASS_AI_ERROR: u32 = 12;
 
-/** The twelve region kinds, in the frozen order (`kind == index`). */
+/** The twelve region kinds, in `kind == index` order; `arena::REGIONS` is the
+ * authority. */
 export const REGION_CONTROL: u32 = 0;
 export const REGION_SESSION_INFO: u32 = 1;
 export const REGION_FRAME_STATE: u32 = 2;

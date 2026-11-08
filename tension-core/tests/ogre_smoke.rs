@@ -5,7 +5,7 @@
 //! 1. `test_ogre_adapter_loads_and_registers` — the stub adapter loads through
 //!    the registry and registers the seven `ogre::*` verbs under the module
 //!    name the SDK imports from. No guest, no session: just the ABI surface.
-//! 2. `test_ogre_stub_end_to_end` — the AssemblyScript fixture, built by
+//! 2. `test_ogre_stub_end_to_end` — the TensionScript fixture, built by
 //!    `tension-framework/tests/run.sh`, runs against this interpreter with the
 //!    stub loaded. That is the whole chain: session_open, `queueMeshLoad`, an
 //!    epoch whose publish completes the job, a `JOB_DONE` delivery, and a
@@ -142,6 +142,28 @@ mod tension_core_adapter_probe {
             &self.required_regions
         }
     }
+
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header the stub is compiled
+/// against.
+///
+/// Read rather than written down. This file used to assert `abi_version == 5`
+/// with the comment "the stub is built against the current ABI" — true right up
+/// until the ABI became 6, at which point the assertion tested the literal
+/// instead of the stub. `framework_layout.rs` already parses the layout hash
+/// this way; the version deserves the same treatment, because it moves for the
+/// same reason.
+fn adapter_header_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|e| panic!("{} is not readable: {e}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|rest| rest.trim().trim_end_matches('u'))
+        .and_then(|number| number.parse().ok())
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
 
     #[repr(C)]
     struct ApiTable {
@@ -303,7 +325,11 @@ mod tension_core_adapter_probe {
             region_lookup: Some(record_region),
         };
 
-        assert_eq!(api.abi_version, 3, "the stub is built against ABI 3");
+        assert_eq!(
+            api.abi_version,
+            adapter_header_abi_version(),
+            "the stub is built against the ABI the header declares"
+        );
         unsafe {
             if let Some(init) = (*adapter).init {
                 assert_eq!(init(std::ptr::null_mut(), &api), 0, "init");

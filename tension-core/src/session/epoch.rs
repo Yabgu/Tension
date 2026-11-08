@@ -1,5 +1,5 @@
 //! The epoch: publish, invoke, and (in A2c) apply — the only place the session
-//! decides when anything reaches the guest (`DESIGN.md` §3.3).
+//! decides when anything reaches the guest (`docs/session.md` §3).
 //!
 //! Everything here runs **on the guest thread, inside a `session::*` call**. An
 //! adapter posts from anywhere; the records wait in the class queues; an epoch
@@ -154,7 +154,7 @@ where
     let _ = hooks;
 
     // A fatal adapter fault, if one was signalled while the guest was blocked:
-    // the publish phase is where the job sweep belongs (`DESIGN.md` §8). The
+    // the publish phase is where the job sweep belongs (`docs/session.md` §3). The
     // sweep is a stub — chunk 1 has no job records — and no adapter triggers
     // this yet; the flag is what wakes a blocking wait.
     if posting.has_pending_faults() {
@@ -194,7 +194,7 @@ where
                 });
             }
             // Mirror the host's authoritative counters into the class's header
-            // (`DESIGN.md` §3.4). The arena copy is a report; the queue is the
+            // (`docs/session.md` §5). The arena copy is a report; the queue is the
             // truth, and the next publish overwrites whatever a guest wrote.
             let at = subring::event_subring_offset(&capacities, *class).map_err(SessionError::Subring)?;
             arena::set_ring_dropped(arena_bytes, at, queue.dropped().min(u32::MAX as u64) as u32)?;
@@ -415,7 +415,7 @@ where
     SessionError::CallbackTrap { slot }
 }
 
-/// `-EIO`: the fault errno at this boundary (`DESIGN.md` §6.3).
+/// `-EIO`: the fault errno at this boundary (`docs/session.md` §7).
 pub const EIO: i32 = -5;
 
 #[cfg(test)]
@@ -628,7 +628,10 @@ mod tests {
                     arena: None,
                     depth: 0,
                     pending: crate::session::apply::PendingQueue::new(),
-                    adapters: Vec::new(),
+                    control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
+                adapters: Vec::new(),
                     session: None,
                 },
             );
@@ -650,7 +653,7 @@ mod tests {
             // and its imports are installed in the same linker.
             //
             // **A private copy of the library, per harness.** The echo adapter
-            // keeps its state in file-scope statics — the frozen vtable has no
+            // keeps its state in file-scope statics — the vtable has no
             // context accessor, which is the limitation §12's future work names —
             // so one `.so` is one instance per process: `dlopen` on the same path
             // twice hands back the same image, and two harnesses running

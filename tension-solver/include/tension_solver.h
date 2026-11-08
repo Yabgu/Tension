@@ -33,7 +33,7 @@
  *     from schema.yaml at runtime; a CI test cross-checks the compiled
  *     rules against every backend and source declared in schema.yaml, and
  *     drift fails the test. The guest-facing wire layout the host decodes
- *     this struct from is DESIGN.md §12; the shim never sees the wire.
+ *     this struct from is tension-solver/DESIGN.md §12; the shim never sees the wire.
  *   - the two callbacks (derivative, validate) are guest-supplied. For
  *     `source: wasm` the guest exports them from the wasm module; for
  *     `source: native` the plugin supplies them in its registered vtable.
@@ -82,7 +82,7 @@ extern "C" {
  * For determinism to hold, the guest's implementation must be a pure
  * function of `(y, t)` — no RNG, no state outside `y`, no time-of-day or
  * environment dependencies. The engine cannot enforce this; the
- * composition theorem in DESIGN.md states it as a precondition.
+ * composition theorem in tension-solver/DESIGN.md states it as a precondition.
  */
 typedef int32_t (*tension_solver_derivative_fn)(
     const double *y, int32_t len, double t, double *dy, int32_t dy_cap);
@@ -264,7 +264,7 @@ const void *tension_solver_get_params(int32_t id);
 
 /*
  * The configuration object tension_solver_create takes. It is the host's
- * translation of the wire format declared in DESIGN.md §12; the C shim does
+ * translation of the wire format declared in tension-solver/DESIGN.md §12; the C shim does
  * not parse the wire.
  *
  * Lifetime: every pointer is borrowed. The struct and the strings it points

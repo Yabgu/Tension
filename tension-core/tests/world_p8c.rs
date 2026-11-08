@@ -13,7 +13,7 @@ use std::path::PathBuf;
 
 use tension_core::world::{self, compile, CompileError, FieldShape, ReservedKind};
 
-// ── a test-side decoder for DESIGN.md §4–§7 ─────────────────────────────
+// ── a test-side decoder for tension-world/DESIGN.md §4–§7 ─────────────────────────────
 
 fn u16_at(b: &[u8], off: usize) -> u16 {
     u16::from_le_bytes(b[off..off + 2].try_into().unwrap())

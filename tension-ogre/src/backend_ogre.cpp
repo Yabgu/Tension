@@ -2,7 +2,7 @@
 // headers, and the only place OGRE objects are made or unmade.
 //
 // Everything here runs on the render thread, inside the try/catch at the top of
-// each entry point (DESIGN.md §8.1). A caught failure never escapes: it becomes
+// each entry point (`docs/modules/ogre.md` §5). A caught failure never escapes: it becomes
 // the status mirror's error, the errno this file returns, and — from the
 // adapter, which owns the API table — a DEVICE_LOST event naming the stage.
 //
@@ -41,6 +41,10 @@
 #include <OgrePixelFormatGpuUtils.h>
 #include <OgreTextureGpuManager.h>
 #include <OgreWindow.h>
+// The `VulkanExternalInstance` the Vulkan plugin reads when the host owns the
+// instance: its layout is Ogre's, and mirroring it here would be a second copy
+// of a struct that must match byte for byte.
+#include <OgreVulkanDevice.h>
 
 #include <Compositor/OgreCompositorManager2.h>
 #include <Animation/OgreBone.h>
@@ -210,6 +214,21 @@ class BackendOgre final : public Backend {
     int32_t start(const Config &config, StatusWriter &status) override {
         config_ = config;
         status_for_messages_ = &status;
+        {
+            // What this backend was actually handed, before any branch acts on
+            // it. The host-owned path is chosen at runtime from these three
+            // fields, and a silently zero one is the difference between "Ogre
+            // adopted the host's surface" and "Ogre quietly made its own
+            // window" — a failure that renders fine and proves nothing.
+            char line[160];
+            std::snprintf(line, sizeof(line),
+                          "ogre: backend config: renderer=%u external_instance=0x%llx "
+                          "external_surface=0x%llx",
+                          static_cast<unsigned>(config.renderer),
+                          static_cast<unsigned long long>(config.external_instance),
+                          static_cast<unsigned long long>(config.external_surface));
+            log_line(line);
+        }
         try {
             const bool null_rs = renderer_ == TENSION_OGRE_RENDERER_NULL;
             const bool vulkan_rs = renderer_ == TENSION_OGRE_RENDERER_VULKAN;
@@ -263,10 +282,25 @@ class BackendOgre final : public Backend {
                         ("tension-ogre-" + std::to_string(static_cast<long>(::getpid())));
             std::filesystem::create_directories(temp_dir_);
             const std::string plugins_cfg = (temp_dir_ / "plugins.cfg").string();
+            // The host-instance route is taken only when there is a host
+            // instance *and* this is the Vulkan renderer: every other plugin
+            // ignores the option, and the pre-v6 path must stay byte-identical
+            // when core published nothing.
+            const bool deferred_vulkan = vulkan_rs && config.external_instance != 0;
             {
+                // The Vulkan plugin is loaded separately below when the host
+                // owns the instance: `Root::loadPlugin` is the only route that
+                // accepts plugin params, and `external_instance` is read on the
+                // *first* load. A plugin listed here would be loaded by the
+                // constructor, without params, and `loadPlugin` afterwards would
+                // be a no-op guarded by `mPluginLibs` — measured in
+                // `OgreRoot.cpp:1474-1476`. So when the host supplies an
+                // instance the file names every *other* plugin only.
                 std::ofstream cfg(plugins_cfg);
                 cfg << "PluginFolder=" << dir << "\n";
-                cfg << "Plugin=" << plugin_name_ << "\n";
+                if (!deferred_vulkan) {
+                    cfg << "Plugin=" << plugin_name_ << "\n";
+                }
             }
             // OGRE's own log goes to a file, not to stdout: the guest's stdout
             // is the test's evidence, and a thousand lines of startup chatter
@@ -290,6 +324,77 @@ class BackendOgre final : public Backend {
             root_ = std::make_unique<Ogre::Root>(nullptr, plugins_cfg,
                                                  (temp_dir_ / "ogre.cfg").string(),
                                                  (temp_dir_ / "Ogre.log").string(), "tension");
+
+            if (deferred_vulkan) {
+                // `OgreVulkanRenderSystem.cpp:253-259` does not read a
+                // `VkInstance` from this option: it reads a
+                // `VulkanExternalInstance*` and immediately hands it to
+                // `enumerateExtensionsAndLayers`, which walks `instanceLayers`
+                // and `instanceExtensions`. So the adapter owns one, fills it
+                // from the host's record, and passes its address.
+                //
+                // The lists are what the *host* enabled, not what this adapter
+                // would have asked for: the instance already exists, and Ogre
+                // filters these claims against what the loader reports as
+                // available, logging "claims X is present but it's not" for
+                // anything that fails. A fabricated list would therefore show
+                // up as a warning per entry rather than a crash — which is
+                // exactly why it must come from the host.
+                external_instance_ = std::make_unique<Ogre::VulkanExternalInstance>();
+                external_instance_->instance = reinterpret_cast<VkInstance>(
+                    static_cast<uintptr_t>(config.external_instance));
+                // `instanceLayers` stays empty on purpose: core creates its
+                // instance without enabling a layer. If validation is ever
+                // enabled at creation, the ABI grows a layer slot beside the
+                // extension one — an empty array here would then tell Ogre that
+                // no layer is enabled, quietly losing the diagnostic.
+                if (config.host_extension == nullptr) {
+                    return refuse(status, TENSION_OGRE_STAGE_PLUGIN, -EINVAL,
+                                  "the host supplied an instance but no way to read the "
+                                  "extensions it was created with");
+                }
+                char extension_name[256];
+                for (uint32_t index = 0;; ++index) {
+                    uint32_t length = 0;
+                    extension_name[0] = '\0';
+                    const int32_t rc = config.host_extension(
+                        config.host_extension_ctx, index, extension_name, sizeof(extension_name),
+                        &length);
+                    if (rc == -ENOENT) break;
+                    if (rc != 0) {
+                        return refuse(status, TENSION_OGRE_STAGE_PLUGIN, rc,
+                                      "the host could not report the extensions its instance "
+                                      "was created with");
+                    }
+                    VkExtensionProperties properties{};
+                    std::snprintf(properties.extensionName, sizeof(properties.extensionName), "%s",
+                                  extension_name);
+                    // The spec version is not a claim the host can make; 1 is
+                    // what the loader reports for every extension in practice,
+                    // and Ogre reads the name only.
+                    properties.specVersion = 1;
+                    external_instance_->instanceExtensions.push_back(properties);
+                    log_line("ogre: host instance extension: " + std::string(extension_name));
+                }
+                {
+                    char line[96];
+                    std::snprintf(line, sizeof(line),
+                                  "ogre: Vulkan plugin loading with the host's instance "
+                                  "(%u extension(s), no layers)",
+                                  static_cast<unsigned>(external_instance_->instanceExtensions.size()));
+                    log_line(line);
+                }
+                Ogre::NameValuePairList plugin_params;
+                {
+                    char value[32];
+                    std::snprintf(
+                        value, sizeof(value), "%llu",
+                        static_cast<unsigned long long>(
+                            reinterpret_cast<uintptr_t>(external_instance_.get())));
+                    plugin_params["external_instance"] = value;
+                }
+                root_->loadPlugin(library, false, &plugin_params);
+            }
 
             // ── STAGE_RENDER_SYSTEM ──────────────────────────────────────
             status.set_stage(TENSION_OGRE_STAGE_RENDER_SYSTEM);
@@ -323,6 +428,15 @@ class BackendOgre final : public Backend {
             params["vsync"] = config.vsync ? "Yes" : "No";
             params["width"] = std::to_string(config.window_width);
             params["height"] = std::to_string(config.window_height);
+            if (config.external_surface != 0) {
+                // The host's surface, borrowed. Ogre adopts it instead of
+                // creating one, and creates no native window at all
+                // (third_party/patches/ogre-external-surface.patch).
+                char value[32];
+                std::snprintf(value, sizeof(value), "%llu",
+                              static_cast<unsigned long long>(config.external_surface));
+                params["external_surface"] = value;
+            }
             window_ = root_->createRenderWindow("Tension", config.window_width,
                                                 config.window_height, false, &params);
             if (window_ == nullptr) {
@@ -376,7 +490,7 @@ class BackendOgre final : public Backend {
             // PBS renders through a Forward+ light setup, and the setup has to
             // exist before the Hlms generates a PBS shader. Without it a PBS
             // datablock is created, binds, and draws nothing at all — the
-            // failure the probe first read as "PBS draws black" (DESIGN.md §5.1
+            // failure the probe first read as "PBS draws black" (`docs/modules/ogre.md` §4
             // measured it: 0 non-background pixels, for a plain cube as much as
             // for a rigged mesh).
             scene_->setForwardClustered(true, 16u, 8u, 24u, 96u, 2u, 0u, 0.0f, 100000.0f);
@@ -398,7 +512,7 @@ class BackendOgre final : public Backend {
             // guessable: `HlmsPbs`'s returns five folders and the last,
             // `Hlms/Pbs/Any/Main`, holds the vertex-shader piece. Stopping at
             // `Hlms/Pbs/Any` — the folder the Unlit path needs — leaves PBS with
-            // no vertex shader at all, silently (DESIGN.md §5.1).
+            // no vertex shader at all, silently (`docs/modules/ogre.md` §4).
             {
                 const char *media = std::getenv("TENSION_OGRE_MEDIA_DIR");
                 const std::string root = media ? std::string(media) : std::string(TENSION_OGRE_MEDIA_DIR);
@@ -523,6 +637,26 @@ class BackendOgre final : public Backend {
                 window_->setWantsToDownload(true);
                 download_armed_ = true;
             }
+            // The host owns the window, so its size is whatever SDL last
+            // reported — not what Ogre last saw. Compare once per frame and ask
+            // Ogre to rebuild its swapchain when they differ. This is the only
+            // consumer of the resize hunk
+            // (`third_party/patches/ogre-external-surface.patch`): with an
+            // external surface there is no native window for Ogre to measure,
+            // so nothing else would ever notice.
+            if (config_.external_surface != 0 && config_.host_size != nullptr) {
+                uint32_t host_w = 0, host_h = 0;
+                config_.host_size(config_.host_size_ctx, &host_w, &host_h);
+                if (host_w != 0 && host_h != 0 &&
+                    (host_w != window_->getWidth() || host_h != window_->getHeight())) {
+                    log_line("ogre: host surface is " + std::to_string(host_w) + "x" +
+                             std::to_string(host_h) + ", window is " +
+                             std::to_string(window_->getWidth()) + "x" +
+                             std::to_string(window_->getHeight()) +
+                             " — requesting a swapchain rebuild");
+                    window_->requestResolution(host_w, host_h);
+                }
+            }
             if (!root_->renderOneFrame()) {
                 // The guest (or the window manager) closed the window: a normal
                 // end, not a failure. Positive means "stop", and the adapter
@@ -574,6 +708,9 @@ class BackendOgre final : public Backend {
                 root_->shutdown();
                 root_.reset();
             }
+            // After the root: the plugin read this struct on the way in and the
+            // render system may still hold the pointer while shutting down.
+            external_instance_.reset();
             screenshot_listener_.reset();
             render_system_ = nullptr;
             if (!temp_dir_.empty()) {
@@ -1132,7 +1269,7 @@ class BackendOgre final : public Backend {
             refused += apply_renderables(mirror);
             // The bone pass last, and only when a new pose snapshot has landed:
             // a still rig costs one integer compare per frame, which is the
-            // point of the generation counter (DESIGN.md §5.1).
+            // point of the generation counter (`docs/modules/ogre.md` §4).
             apply_bone_updates(mirror);
             apply_skin_matrices(mirror);
         } catch (const Ogre::Exception &e) {
@@ -1278,7 +1415,7 @@ class BackendOgre final : public Backend {
         return -EIO;
     }
 
-    // ── the scene apply path's helpers, one per kind (DESIGN.md §5.1) ────
+    // ── the scene apply path's helpers, one per kind (`docs/modules/ogre.md` §4) ──
 
     /// The handle behind a guest-visible resource id. The adapter owns both
     /// tables and wires this at link time; a renderable names a resource by
@@ -1370,7 +1507,7 @@ class BackendOgre final : public Backend {
     /// The OGRE node for a guest node id, created on demand — with its
     /// ancestors, from the mirror's records — when the record has not been
     /// applied yet. A child can be submitted before its parent, and the render
-    /// thread must not depend on the guest's order (DESIGN.md §5.1). The
+    /// thread must not depend on the guest's order (`docs/modules/ogre.md` §4). The
     /// recursion is bounded by the mirror's 32-link cap.
     Ogre::SceneNode *node_for(uint32_t id) {
         if (id == 0 || id > kNodeCapacity) return nullptr;
@@ -1624,7 +1761,7 @@ class BackendOgre final : public Backend {
     }
 
     /// The values a material record carries. Unlit is the 3b path
-    /// (DESIGN.md §5.1): `setUseColour` + `setColour` is the pair the probe
+    /// (`docs/modules/ogre.md` §4): `setUseColour` + `setColour` is the pair the probe
     /// verified, and a texture only when slot 0 names one. PBS is the skinned
     /// path — HlmsUnlit has no skeletal animation in its shaders at all, so a
     /// rigged mesh drawn with it never moves — and its colour comes from
@@ -2008,7 +2145,7 @@ class BackendOgre final : public Backend {
                 // order to whichever surface the render system picked.
                 // Measured: Vulkan's swapchain comes back BGRA (red and blue
                 // exchanged) where GL3+ is RGBA; bulkPixelConversion is
-                // OGRE's own way between the two (DESIGN.md §15).
+                // OGRE's own way between the two (`docs/modules/ogre.md` §4).
                 last_frame_.assign(width * height * 4u, 0);
                 Ogre::TextureBox dst(static_cast<uint32_t>(width), static_cast<uint32_t>(height),
                                      1u, 1u, 4u, static_cast<uint32_t>(width * 4u),
@@ -2117,6 +2254,11 @@ class BackendOgre final : public Backend {
     std::unique_ptr<ScreenshotListener> screenshot_listener_;
     /// The mirror the apply pass is reading from, for the duration of the call.
     const SceneMirror *applying_ = nullptr;
+    /// The `VulkanExternalInstance` handed to the Vulkan plugin, when the host
+    /// owns the instance. Declared before `root_` so it is destroyed after it:
+    /// the render system holds a pointer to this struct, and freeing it first
+    /// would leave Ogre reading freed memory during `shutdown`.
+    std::unique_ptr<Ogre::VulkanExternalInstance> external_instance_;
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;

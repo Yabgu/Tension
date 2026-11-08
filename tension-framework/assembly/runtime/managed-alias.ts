@@ -11,7 +11,8 @@
 // alias (measured: `aliases: c_x c_y fallback=x sizeof=16`), and this module is
 // the fixture that keeps it measured.
 //
-// **Why not in `wire.ts`?** Every record there is a frozen host declaration:
+// **Why not in `wire.ts`?** Every record there is a host declaration whose
+// layout is fixed:
 // a `changetype<T>(offset)` view whose size and field order the host writes.
 // `ManagedAliased` has no host declaration to compare against — no arena
 // offset, no manifest entry, no Rust struct. What it verifies is a property of

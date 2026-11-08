@@ -4,7 +4,7 @@
 //   tension-core --capability tension-ogre/build/libtension_ogre.so \
 //       tension-ogre/build/guest-triangle.wasm --renderer=gl3plus
 //
-// The clauses (DESIGN.md §14: the acid test is the milestone gate):
+// The clauses (`docs/modules/ogre.md` §8: the acid test is the milestone gate):
 //
 //   1. Barrel.mesh loads: job DONE, resource id > 0
 //   2. an Unlit material (0.9, 0.2, 0.2) is submitted

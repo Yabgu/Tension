@@ -1,6 +1,6 @@
 //! The adapter registry: loading, the lifecycle, and the import table.
 //!
-//! Three jobs (`tension-ogre/DESIGN.md` §7, Appendix B steps 7–8):
+//! Three jobs (`docs/architecture.md` §6, `docs/abi/adapter.md`):
 //!
 //! 1. **Load** a shared object, find `tension_adapter_v1`, and refuse it unless
 //!    its ABI version is this build's. Refusal is at load, not a warning: an
@@ -239,6 +239,22 @@ struct LinkState {
     required_regions: Vec<u32>,
 }
 
+/// The host's surface and the extensions it was created with, published as one
+/// value.
+///
+/// Two questions, one answer, because a renderer asks both and pairs them: the
+/// `VkInstance` from `host_surface` is only meaningful alongside the list that
+/// instance was created with. An empty list is a real answer ("the instance
+/// enabled no extensions"); `None` is "there is no instance", which is what
+/// `-ENOSYS` reports.
+#[derive(Clone, Debug)]
+pub struct PublishedSurface {
+    pub surface: crate::platform::HostSurface,
+    /// The names SDL asked for, in the order SDL returned them — exactly what
+    /// `main` passed to `vkCreateInstance`.
+    pub extensions: Vec<String>,
+}
+
 /// The core's side of the adapter ABI: the API table every adapter is handed,
 /// plus the per-run state the table's functions read and write.
 ///
@@ -272,6 +288,25 @@ unsafe impl Sync for FrozenApi {}
 
 pub struct AdapterHost {
     api: FrozenApi,
+    /// The window-control queue. Shared with the store by `Arc`, the way
+    /// `posting` is, because three sources reach it: this table's
+    /// `post_control` slot (a layer), the guest's `tension::platform.control`
+    /// import, and the host loop itself. One queue means one executor means one
+    /// thread that touches SDL.
+    control: Arc<crate::platform::ControlBus>,
+    /// The host's window surface, published once by `main` before adapters
+    /// load. `None` on a headless run, which is what `host_surface` answers
+    /// `-ENOSYS` for.
+    ///
+    /// A shared cell rather than a pointer to the window: `HostWindow` is not
+    /// `Sync` (SDL requires every window call on its creating thread) and an
+    /// adapter may call this from its render thread. This carries only the
+    /// handles, the size, and the extension names, which are plain data.
+    ///
+    /// The extensions live in this cell rather than beside it so that the
+    /// handle and the list describing it can never come from different
+    /// publishes — see [`PublishedSurface`].
+    host_surface: Arc<Mutex<Option<PublishedSurface>>>,
     /// What `link` collected. Single-threaded in practice; `Sync` by
     /// construction.
     link: Mutex<LinkState>,
@@ -352,9 +387,23 @@ pub(crate) const CTX_STORE: u8 = 2;
 
 impl AdapterHost {
     /// A host whose API table points back at itself, carrying `posting`.
+    /// A host with a fresh, private control queue.
+    ///
+    /// What every test wants: it is driving `post_control` directly and needs a
+    /// queue it can inspect, not the process's real one.
     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
+        Self::with_control(posting, Arc::new(crate::platform::ControlBus::new()))
+    }
+
+    /// A host sharing the process's control queue, which is what `main` builds.
+    pub fn with_control(
+        posting: Arc<PostingSide>,
+        control: Arc<crate::platform::ControlBus>,
+    ) -> Box<AdapterHost> {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
+            control,
+            host_surface: Arc::new(Mutex::new(None)),
             link: Mutex::new(LinkState::default()),
             ctx: Mutex::new(0),
             ctx_kind: AtomicU8::new(CTX_EMPTY),
@@ -378,6 +427,51 @@ impl AdapterHost {
     /// session drains.
     pub fn posting(&self) -> Arc<PostingSide> {
         Arc::clone(&self.posting)
+    }
+
+    /// Publish the host's surface, and the extensions it was created with, for
+    /// `host_surface` and `host_surface_extension` to serve.
+    ///
+    /// Called once by `main`, before any adapter loads, so an adapter's `init`
+    /// already sees it. One call, one cell: a renderer builds a
+    /// `VulkanExternalInstance` out of both answers, and a handle paired with
+    /// another instance's extension list is a swapchain created against a lie.
+    pub fn publish_host_surface(
+        &self,
+        surface: crate::platform::HostSurface,
+        extensions: Vec<String>,
+    ) {
+        *self.host_surface.lock().expect("the surface mutex is never poisoned") =
+            Some(PublishedSurface { surface, extensions });
+    }
+
+    /// What `host_surface` answers with.
+    pub fn host_surface(&self) -> Option<crate::platform::HostSurface> {
+        self.host_surface
+            .lock()
+            .expect("the surface mutex is never poisoned")
+            .as_ref()
+            .map(|published| published.surface)
+    }
+
+    /// Run `f` over the extension names the instance was created with, or
+    /// `None` when no surface was published.
+    ///
+    /// `None` and "an empty list" are different answers: the first is a host
+    /// with no window (what `-ENOSYS` reports), the second a host that created
+    /// an instance requesting no extensions at all.
+    pub fn with_host_surface_extensions<R>(&self, f: impl FnOnce(&[String]) -> R) -> Option<R> {
+        self.host_surface
+            .lock()
+            .expect("the surface mutex is never poisoned")
+            .as_ref()
+            .map(|published| f(&published.extensions))
+    }
+
+    /// The window-control queue, for `post_control` and for the tests that
+    /// drive it.
+    pub fn control(&self) -> Arc<crate::platform::ControlBus> {
+        Arc::clone(&self.control)
     }
 
     /// The region kinds the adapters declared during `link`, in the order they
@@ -833,7 +927,7 @@ where
 }
 
 /// The session channel, named here because this module is where the publish
-/// hook's failures are reported (`DESIGN.md` §7.2). Routed through the host
+/// hook's failures are reported (`docs/abi/adapter.md`). Routed through the host
 /// logger under the name `session`, so the line carries the configured layout —
 /// the old fixed `[tension:session]` prefix is now the layout's logger column.
 fn log_line(message: &str) {
@@ -1155,6 +1249,9 @@ mod tests {
                 arena: None,
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
+                control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                host_window: None,
+                window_closed: false,
                 adapters: Vec::new(),
                 session: None,
             },
@@ -1180,13 +1277,27 @@ mod tests {
                 expected,
                 ..
             } => {
-                assert_eq!(found, 4, "the fixture declares a version this build does not load");
+                // Derived, not literal. This assertion used to read
+                // `assert_eq!(found, 6, ...)` with a comment three lines down
+                // saying a literal here goes stale on every ABI bump — and it
+                // did exactly that when the ABI became 6 and the fixture moved
+                // to 7. The fixture derives its version the same way; both
+                // halves must be bump-proof or the pair drifts.
+                assert_eq!(
+                    found,
+                    ffi::ADAPTER_ABI_VERSION + 1,
+                    "the fixture declares a version this build does not load"
+                );
                 assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
-                assert_eq!(expected, 3);
             }
             other => panic!("expected an ABI refusal, got {other:?}"),
         }
-        assert!(error.to_string().contains("ABI 4"), "the message names the fixture's version");
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("ABI {}", ffi::ADAPTER_ABI_VERSION + 1)),
+            "the message names the fixture's version"
+        );
     }
 
     #[test]
@@ -1208,7 +1319,7 @@ mod tests {
                 ..
             } => {
                 assert_eq!(found, 1, "the fixture is a version-1 adapter");
-                assert_eq!(expected, 3);
+                assert_eq!(expected, ffi::ADAPTER_ABI_VERSION);
             }
             AdapterError::LayoutHash { .. } => panic!(
                 "a v1 adapter was refused for its layout hash — that means the host read \

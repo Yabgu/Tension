@@ -59,7 +59,6 @@ mkdirSync(out, { recursive: true });
 const libDirs = [
   out,
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
 ].filter(existsSync);
 
 if (WIN) {
@@ -193,9 +192,18 @@ function acidCase(name, wasm, acid, args = [], report = null) {
 caseRun('headless', 'guest-window.wasm', '^OK ', 'window "Tension" 1280x720 created',
         ['--renderer=null', '--frames=3']);
 
+// `headless` is a promise, not a decoration. With an explicit GPU renderer this
+// build cannot keep it — there is no offscreen render target, and every GPU
+// render system is brought up through createRenderWindow — so init refuses
+// synchronously with -EINVAL rather than opening the window the guest asked not
+// to have. The guest sees the errno; no thread, no window, no plugin load.
+caseRun('headless-refused', 'guest-window.wasm', '^OK init-refused -22$',
+        'headless=1 with an explicit renderer', ['--renderer=gl3plus', '--headless',
+                                                 '--expect-init-refusal=-22']);
+
 // No display at all: GL3+ throws on the X connection, the backend catches it,
 // and the guest is told which stage failed. Before the catch this aborted the
-// process with a core dump (DESIGN.md §8.1).
+// process with a core dump (`docs/modules/ogre.md` §8).
 //
 // The scenario is X11-shaped: on Windows there is no DISPLAY to unset, and the
 // GL3+ plugin opens a WGL window instead of throwing, so the case cannot be
@@ -384,8 +392,16 @@ if (!windowed) {
 } else if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !WIN) {
   console.log('== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY');
 } else {
+  // The expected-stderr regex matches a *substring* of the adapter's
+  // created-window line, so it is unanchored. Two defects were in this literal
+  // until now: the group was unterminated, which made `new RegExp` throw inside
+  // `caseRun` and killed the whole block before its second case; and the
+  // literal parentheses around the renderer name were unescaped, so even a
+  // terminated group would not have matched `created (OpenGL 3+ ...)`. The
+  // renderer name is the only part that varies — the size in that line is
+  // whatever the display gives us, so it is deliberately not matched.
   caseRun('windowed', 'guest-window.wasm', '^OK ',
-          'created (OpenGL 3+ Rendering Subsystem|Vulkan Rendering Subsystem',
+          'created \\((OpenGL 3\\+ Rendering Subsystem|Vulkan Rendering Subsystem)\\)',
           ['--renderer=gl3plus', '--frames=5']);
 
   acidCase('jobs-gl3plus', 'guest-jobs.wasm', '^ACID 5/5 passed',
