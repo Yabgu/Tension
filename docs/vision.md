@@ -213,16 +213,17 @@ alpha.
 
 ### 4.3 Multiplayer — deferred, snapshot/restore prepared — **DECIDED**
 
-No multiplayer, no network subsystem, no prediction or reconciliation in beta.
+No multiplayer, no network subsystem, and no prediction or reconciliation in
+beta.
 
 **What is built anyway is the primitive.** The snapshot the world model produces
 is **restorable, not merely serializable**: it can be applied atomically and
-repeatedly, and it carries RNG state, timing state and epoch state, not just the
-object graph. Designing that in from the start is nearly free; retrofitting it
-onto a one-way save format is not. Rollback netcode later becomes a small
-addition on top of an existing primitive rather than a save-format migration and
-a snapshot redesign. The same primitive serves time-travel debugging (§3.6), so
-the cost is amortized beyond multiplayer.
+repeatedly, including RNG state, timing state, and epoch state. This is nearly
+free when designed in from the start and expensive as a retrofit, so it is
+designed in now. Rollback later becomes a small addition on top of an existing
+primitive, not a save-format migration and snapshot redesign. The same primitive
+serves time-travel debugging (§3.6), so the cost is amortized beyond
+multiplayer.
 
 Multiplayer itself remains a beta non-goal (§3.8); rollback is deferred with the
 primitive in place (§5.6).
