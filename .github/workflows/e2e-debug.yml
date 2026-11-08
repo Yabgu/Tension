@@ -18,10 +18,13 @@
 #   gfortran   - tension-solver/build.sh, run from build.rs:162
 #   cc         - five C fixtures compiled unconditionally (build.rs:239-381);
 #                present in the runner image via build-essential
+#   SDL3       - `sdl3` is an unconditional dependency of the core, because the
+#                host owns the window. It links under `--no-default-features`
+#                too, which is how this job builds. The runner image does not
+#                ship it; it comes from apt below.
 # Nothing else is needed because `--no-default-features` drops cpal (no ALSA
 # headers) and llama-cpp-2 (no CMake/libclang C++ build). The E2E tests touch
-# neither; `--no-default-features --test e2e_debug` was measured green before
-# this file was written.
+# neither.
 
 name: E2E debug
 
@@ -75,6 +78,18 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gfortran
+
+      # The core links libSDL3 on every build now that the host owns the
+      # window, so the linker needs it whether or not a test opens one:
+      #   rust-lld: error: unable to find library -lSDL3
+      #
+      # Measured rather than assumed: Ubuntu 26.04 (what `ubuntu-latest`
+      # resolves to) ships libsdl3-dev 3.4.2, and all 22 SDL_* symbols
+      # tension-core references are exported by it. The binding crate's own
+      # floor is 3.1.3 (sdl3-sys `config.txt: lib_min_version`).
+      - name: Install SDL3
+        run: |
+          sudo apt-get install -y --no-install-recommends libsdl3-dev
 
       # Zig is pinned to the version this tree is built and tested with
       # locally (0.17.0), and the download is checksum-verified: a build
