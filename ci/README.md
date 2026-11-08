@@ -42,7 +42,15 @@ which builds and runs all six suites (tension-framework, the tension-ogre
 guest suite, tension-input, tension-core, the tension-ogre unit tests,
 tension-res) under Xvfb. The run is strict — a missing fixture fails the test
 rather than skipping it (`tension-core/tests/support/ci.rs`) — so a green run
-means the fixtures were built. In rootless podman the container runs as
+means the fixtures were built.
+
+**Scope of "everything runs under Xvfb".** That holds for the adapter suites,
+which render offscreen. It does **not** hold for `tension-core`'s
+`ogre_host_surface`, which opens a real SDL3 window and a host-owned
+`VkSurfaceKHR`: under Xvfb plus lavapipe it may run, but its authoritative proof
+is a Wayland session with a hardware Vulkan ICD. Treat the container as the
+place every suite is *exercised*, and the developer rig as where the host-surface
+path is *proven*. Recorded in `docs/known-limitations.md`. In rootless podman the container runs as
 root, which maps to the invoking host user — build artifacts written into
 the checkout (`target/`, `zig-out/`, etc.) stay host-owned.
 

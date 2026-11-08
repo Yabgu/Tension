@@ -317,10 +317,9 @@ workspace, render thread" as Ogre's: the window is the host's
 This document deliberately does not cover:
 
 - **Record and region layout** (what a material record's bytes mean, the
-  region catalogue, the sleep window). Source of truth today is
-  `tension-ogre/DESIGN.md` §3-6 and `tension-framework/assembly/ogre/*.ts`, and
-  **they may disagree** — the next module doc has to reconcile them against the
-  code rather than copy either.
+  region catalogue, the sleep window) — [`docs/modules/ogre.md`](modules/ogre.md)
+  §4, which reconciles the schema, the guest SDK and the (now deleted) design
+  note against the code.
 - **Per-adapter guest ABI details** — every import a guest can call.
   [`docs/abi/guest.md`](abi/guest.md), generated from the registration sites.
 - **The ABI slot table** — [`docs/abi/adapter.md`](abi/adapter.md), generated
