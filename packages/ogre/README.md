@@ -16,20 +16,11 @@ The link sets `DT_RPATH` (not `DT_RUNPATH`, via `--disable-new-dtags`) to:
 
     $ORIGIN
     $ORIGIN/../../tension-ogre-next/lib
-<<<<<<< HEAD
 
 The second is npm's flat layout: with `file:` dependencies, the packages land
 as siblings under `node_modules/@yabgu_gm/`, so `tension-ogre/lib` →
 `../../tension-ogre-next/lib` resolves. `$ORIGIN` alone covers the
 self-contained case, where the libraries are copied in beside it.
-=======
-    $ORIGIN/../../tension-freeimage/lib
-
-The second and third are npm's flat layout: with `file:` dependencies, the
-packages land as siblings under `node_modules/@yabgu_gm/`, so
-`tension-ogre/lib` → `../../tension-ogre-next/lib` resolves. `$ORIGIN` alone
-covers the self-contained case, where the libraries are copied in beside it.
->>>>>>> origin/main
 
 `DT_RPATH` rather than `DT_RUNPATH` is deliberate: RPATH is searched *before*
 `LD_LIBRARY_PATH`, RUNPATH after. The sonames (`libOgreNextMain.so.4.0`) are

@@ -59,10 +59,6 @@ mkdirSync(out, { recursive: true });
 const libDirs = [
   out,
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-<<<<<<< HEAD
-=======
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
->>>>>>> origin/main
 ].filter(existsSync);
 
 if (WIN) {
@@ -196,7 +192,6 @@ function acidCase(name, wasm, acid, args = [], report = null) {
 caseRun('headless', 'guest-window.wasm', '^OK ', 'window "Tension" 1280x720 created',
         ['--renderer=null', '--frames=3']);
 
-<<<<<<< HEAD
 // `headless` is a promise, not a decoration. With an explicit GPU renderer this
 // build cannot keep it — there is no offscreen render target, and every GPU
 // render system is brought up through createRenderWindow — so init refuses
@@ -209,11 +204,6 @@ caseRun('headless-refused', 'guest-window.wasm', '^OK init-refused -22$',
 // No display at all: GL3+ throws on the X connection, the backend catches it,
 // and the guest is told which stage failed. Before the catch this aborted the
 // process with a core dump (`docs/modules/ogre.md` §8).
-=======
-// No display at all: GL3+ throws on the X connection, the backend catches it,
-// and the guest is told which stage failed. Before the catch this aborted the
-// process with a core dump (DESIGN.md §8.1).
->>>>>>> origin/main
 //
 // The scenario is X11-shaped: on Windows there is no DISPLAY to unset, and the
 // GL3+ plugin opens a WGL window instead of throwing, so the case cannot be
@@ -402,7 +392,6 @@ if (!windowed) {
 } else if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY && !WIN) {
   console.log('== windowed: skipped — TENSION_OGRE_WINDOW_TEST=1 but no DISPLAY or WAYLAND_DISPLAY');
 } else {
-<<<<<<< HEAD
   // The expected-stderr regex matches a *substring* of the adapter's
   // created-window line, so it is unanchored. Two defects were in this literal
   // until now: the group was unterminated, which made `new RegExp` throw inside
@@ -413,10 +402,6 @@ if (!windowed) {
   // whatever the display gives us, so it is deliberately not matched.
   caseRun('windowed', 'guest-window.wasm', '^OK ',
           'created \\((OpenGL 3\\+ Rendering Subsystem|Vulkan Rendering Subsystem)\\)',
-=======
-  caseRun('windowed', 'guest-window.wasm', '^OK ',
-          'created (OpenGL 3+ Rendering Subsystem|Vulkan Rendering Subsystem',
->>>>>>> origin/main
           ['--renderer=gl3plus', '--frames=5']);
 
   acidCase('jobs-gl3plus', 'guest-jobs.wasm', '^ACID 5/5 passed',

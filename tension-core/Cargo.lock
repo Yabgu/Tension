@@ -1828,14 +1828,10 @@ dependencies = [
  "encoding_rs 0.8.40",
  "libc",
  "llama-cpp-2",
-<<<<<<< HEAD
  "naga",
  "sdl3",
  "serde_json",
  "tension-shadergen",
-=======
- "serde_json",
->>>>>>> origin/main
  "wasmtime",
  "yaml-rust2",
 ]

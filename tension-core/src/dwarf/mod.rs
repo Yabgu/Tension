@@ -11,11 +11,7 @@
 //! carry the sections a debugger needs? `main` asks it, `debug` reports it.
 //!
 //! History, because the name outlived the job: this module used to synthesise
-<<<<<<< HEAD
 //! `.debug_*` from a TensionScript source map (`encode.rs`, `source_map.rs`,
-=======
-//! `.debug_*` from an AssemblyScript source map (`encode.rs`, `source_map.rs`,
->>>>>>> origin/main
 //! `wasm.rs`, ~1.3k lines). That fallback was removed once every example
 //! produced compiler-emitted DWARF and lldb was measured consuming it through
 //! the host.

@@ -18,12 +18,7 @@
     "tension-framework": "file:../../../tension-framework",
     "@yabgu_gm/tension-core": "file:../../../packages/core",
     "@yabgu_gm/tension-ogre": "file:../../../packages/ogre",
-<<<<<<< HEAD
     "@yabgu_gm/tension-ogre-next": "file:../../../packages/ogre-next"
-=======
-    "@yabgu_gm/tension-ogre-next": "file:../../../packages/ogre-next",
-    "@yabgu_gm/tension-freeimage": "file:../../../packages/freeimage"
->>>>>>> origin/main
   },
   "devDependencies": {
     "@yabgu_gm/tensionscript": "^0.14.1"

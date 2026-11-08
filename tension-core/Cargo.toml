@@ -47,7 +47,6 @@ yaml-rust2 = "=0.13.0"
 # loading crate. libc is already in the tree through wasmtime; naming it makes
 # the dependency honest rather than implicit.
 libc = "0.2"
-<<<<<<< HEAD
 # Shader source generation. A path dependency rather than a workspace:
 # `tension-core` is standalone (no `[workspace]` anywhere in this tree), and
 # the crate is versioned with it.
@@ -85,15 +84,12 @@ cranelift-native = "=0.111.13"
 # renders correctly (scripts/test-2d.mjs, pixel assertions).
 # Do not bump without testing glsl-in first.
 naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
-=======
->>>>>>> origin/main
 
 [dev-dependencies]
 # Already in the tree through wasmtime, so this adds no download. `example_adoption`
 # parses the examples' package.json and (JSONC) launch.json as data rather than
 # grepping them: a structural check that cannot be fooled by a comment.
 serde_json = "1.0"
-<<<<<<< HEAD
 
 # The surface probe needs a real window and a real Vulkan instance, so it is an
 # ordinary binary rather than a `#[test]` — see the file's header on the
@@ -117,5 +113,3 @@ harness = false
 [[test]]
 name = "ogre_host_surface"
 harness = false
-=======
->>>>>>> origin/main

@@ -157,7 +157,6 @@ endif()
 
 # The in-tree Ogre-Next lives outside the loader's default search path, and its
 # sonames are identical to a distro package's, so which one a process gets is
-<<<<<<< HEAD
 # decided by the search path. All of them are relative to the DSO's own
 # directory:
 #   $ORIGIN                                     a self-contained drop
@@ -179,13 +178,6 @@ endif()
 # So scripts/build-native.mjs computes the directory from the paths it actually
 # wrote and passes it in. TENSION_OGRE_RPATH_EXTRA is `;`-separated and each
 # entry is appended to `$ORIGIN/`.
-=======
-# decided by the search path. Two spellings, both relative to the DSO's own
-# directory:
-#   $ORIGIN                        a self-contained drop (all libs beside it)
-#   $ORIGIN/../ogre-next/lib       this repository's packages/ layout, where the
-#                                  payload packages are siblings
->>>>>>> origin/main
 #
 # `--disable-new-dtags` emits DT_RPATH rather than DT_RUNPATH on purpose:
 # DT_RPATH is consulted *before* LD_LIBRARY_PATH and DT_RUNPATH after, and the
@@ -195,7 +187,6 @@ endif()
 #
 # Windows needs none of this: the post-build step copies Ogre's DLLs beside the
 # adapter and tension-core loads it with LOAD_WITH_ALTERED_SEARCH_PATH.
-<<<<<<< HEAD
 set(TENSION_OGRE_RPATH_EXTRA "" CACHE STRING
     "Extra $ORIGIN-relative library directories for the payload layout (';'-separated)")
 
@@ -214,18 +205,6 @@ if(UNIX)
 
     set_target_properties(tension_ogre PROPERTIES
         INSTALL_RPATH "${_tension_ogre_rpath}"
-=======
-if(UNIX)
-    set_target_properties(tension_ogre PROPERTIES
-        # Every layout the DSO is reached through, relative to itself:
-        #   $ORIGIN                                  a self-contained drop
-        #   $ORIGIN/../ogre-next/lib                 packages/ (npm payloads)
-        #   $ORIGIN/../../ogre-next/lib              ...after a realpath through packages/
-        #   $ORIGIN/../../third_party/ogre-next-install/lib   this repository's build tree
-        # The last one is what makes `tension-ogre/build/libtension_ogre.so` load
-        # without LD_LIBRARY_PATH, which is how the test suite runs it.
-        INSTALL_RPATH "$ORIGIN:$ORIGIN/../ogre-next/lib:$ORIGIN/../../ogre-next/lib:$ORIGIN/../freeimage/lib:$ORIGIN/../../freeimage/lib:$ORIGIN/../../third_party/ogre-next-install/lib:$ORIGIN/../../third_party/freeimage-install/lib"
->>>>>>> origin/main
         BUILD_WITH_INSTALL_RPATH TRUE
         LINK_FLAGS "-Wl,--disable-new-dtags,--exclude-libs,ALL"
     )
@@ -288,7 +267,6 @@ if(TENSION_OGRE_BUILD_TESTS)
         set_target_properties(${test_target} PROPERTIES
             RUNTIME_OUTPUT_DIRECTORY "${TENSION_OGRE_ROOT}/build/tests")
     endforeach()
-<<<<<<< HEAD
 
     # ── the image codec probe ───────────────────────────────────────────────
     #
@@ -323,6 +301,4 @@ if(TENSION_OGRE_BUILD_TESTS)
                 BUILD_WITH_INSTALL_RPATH TRUE)
         endif()
     endif()
-=======
->>>>>>> origin/main
 endif()

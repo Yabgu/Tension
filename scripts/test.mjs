@@ -2,11 +2,8 @@
 // Run the test suites, in parallel where that is safe.
 //
 //   1. codegen            the generated wire records are current
-<<<<<<< HEAD
 //   1b. abi docs          the generated ABI references are current, and the
 //                         documented offsets match the C compiler's `offsetof`
-=======
->>>>>>> origin/main
 //   2. tension-framework  the guest fixtures against the host
 //   3. tension-ogre guest the capability's suite
 //   4. tension-input      the input DSO's suite
@@ -14,12 +11,9 @@
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
 //   8. line endings       no CRLF in a text file
-<<<<<<< HEAD
 //   9. dependency pins    one naga version, not two
 //  10. isometric (CI)    the three 2D problems, from synthetic pages
 //  11. isometric frame   the framework library reproduces the scene byte for byte
-=======
->>>>>>> origin/main
 //
 // ## What "parallel" may and may not do here
 //
@@ -69,10 +63,6 @@ const node = process.execPath;
 // parent's environment.
 const ogreLibs = [
   join(repo, 'third_party', 'ogre-next-install', 'lib'),
-<<<<<<< HEAD
-=======
-  join(repo, 'third_party', 'freeimage-install', 'lib'),
->>>>>>> origin/main
 ].filter(existsSync);
 
 function suiteEnv(extra = {}) {
@@ -82,13 +72,10 @@ function suiteEnv(extra = {}) {
   // need all three, and a suite given the bare parent environment fails with
   // messages that name none of it.
   const env = { ...baseEnv(), ...extra };
-<<<<<<< HEAD
   // The 2D examples show a window when a display is present, because `npm start`
   // should show something. A suite must not: it asserts pixels, and a window
   // would make the result depend on a compositor (and pop up during CI).
   env.TENSION_2D_HEADLESS = '1';
-=======
->>>>>>> origin/main
   if (!ogreLibs.length) return env;
 
   if (WIN) {
@@ -143,7 +130,6 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
   },
 
-<<<<<<< HEAD
   // A dependency-hygiene check rather than a test: cargo links two naga copies
   // silently when `tension-core` and `tension-shadergen` disagree, and the
   // symptom is a confusing "ambiguous" from `cargo tree`, not a compile error.
@@ -180,10 +166,6 @@ const SUITES = {
   },
 
   codegen: {    title: 'codegen',
-=======
-  codegen: {
-    title: 'codegen',
->>>>>>> origin/main
     needs: [],
     holds: [],
     run: () => execute(node, [
@@ -195,7 +177,6 @@ const SUITES = {
     ]),
   },
 
-<<<<<<< HEAD
   // The ABI references are generated from the header and the registration
   // sites, so the only question is whether they are current — and whether the
   // offset column is right, which the generator alone cannot answer. The check
@@ -208,8 +189,6 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'test-abi-docs.mjs')]),
   },
 
-=======
->>>>>>> origin/main
   framework: {
     title: 'tension-framework',
     needs: [],
@@ -252,7 +231,6 @@ const SUITES = {
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
   },
 
-<<<<<<< HEAD
   // The same scene from generated flat-colour pages: same canvas, same
   // positions, same sort keys, same probes. Its assertions are cheap and its
   // expectations are palette constants, so it catches a renderer bug without
@@ -348,8 +326,6 @@ const SUITES = {
     ], { env: suiteEnv() }),
   },
 
-=======
->>>>>>> origin/main
   core: {
     title: 'tension-core',
     // The `ogre_*` integration tests read the fixtures the two suites above
@@ -450,11 +426,7 @@ if (requested.length) {
 // `zig` on cargo's PATH (cargo's build script runs it by name).
 
 const needsPreparation = order.some((name) =>
-<<<<<<< HEAD
   ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
-=======
-  ['framework', 'ogre-guest', 'input', 'core'].includes(name));
->>>>>>> origin/main
 
 function banner(text) {
   console.log('\n======================================================================');

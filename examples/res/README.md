@@ -29,11 +29,7 @@ chunk path, and a compressible pattern would collapse it and end that coverage.
 inside it is ~21 MB); run `npm run pack` before `npm start`.
 
 `npm run pack` turns the tree into `game.tns`, a Tension Volume whose structure follows the
-<<<<<<< HEAD
 framing defined in ECMA-208 (`tension-res/DESIGN.md` §2), with the directory hierarchy carried
-=======
-framing defined in ECMA-208 (DESIGN.md §2), with the directory hierarchy carried
->>>>>>> origin/main
 by a content convention (§5.5, §6.7) in a child-index Stream. `npm start` starts
 the interpreter with that pak loaded; the guest reaches every byte through
 `tension::res` and never touches the kernel filesystem.
