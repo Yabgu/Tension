@@ -79,15 +79,16 @@ so a test run never opens a window.
 package.json              build + start scripts
 asconfig.json             the shared session config with initialMemory raised
 src/main.ts               the guest
-src/bindings.ts           the ten verbs, the record, the submit header
 src/graph.generated.ts    the default_2d blob (generated; do not edit)
 ```
 
-`src/bindings.ts` is **hand-written**. `tension-2d/include/tension_2d.h` has no
-entry in `schema/`, so `tools/codegen/generate.mjs` cannot emit it — codegen
-covers `ogre` only. When the schema tool grows a `2d` entry this file should
-become generated output; until then every offset in it is transcribed from the
-header by hand, and the header is the authority.
+**The verbs are the framework's.** This example declares none of them: it
+opens a `Canvas` (`tension-framework/assembly/2d/canvas.ts`), whose methods
+wrap the nine `tension::2d` verbs and keep the adapter's errno. The one
+hand-written declaration set left in the tree is
+`examples/2d/isometric/src/bindings.ts`, kept deliberately as the wire oracle:
+it exercises the raw `@external` surface independently, so a wrapper that
+disagrees with the adapter is a diff rather than an opinion.
 
 ## Two things this example had to work around, and why
 

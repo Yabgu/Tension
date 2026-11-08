@@ -4,8 +4,8 @@
 //
 // This is the same frame `tension-2d/tests/smoke_core.cpp` renders, produced
 // through the real guest path instead of a C++ stub: a session, the
-// `tension::2d` capability loaded from its DSO, and the nine verbs called
-// through the session's imports. The 10240-pixel total is the assertion both
+// `tension::2d` capability loaded from its DSO, and the verbs called through
+// the framework's `Canvas`. The 10240-pixel total is the assertion both
 // paths share, so a difference means the guest is not doing what the stub does.
 //
 // What the guest is responsible for, and what it is not:
@@ -25,18 +25,17 @@
 import {
   arg,
   argCount,
+  Canvas,
   ConfigBuilder,
   Frame,
-  HEADER_SIZE,
-  Info,
+  OPEN_WINDOWED,
+  PIPE_PRESET_MIN,
   print,
   RECORD_SIZE,
   Rgba,
-  SpriteRecord,
-  SubmitHeader,
   RuntimeSession,
+  SpriteRecord,
 } from "tension-framework";
-import * as gfx from "./bindings";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 /// Whether the guest was started with `flag`. `--windowed` is the one this
@@ -55,7 +54,8 @@ function hasArg(flag: string): bool {
 const CANVAS_WIDTH: u32 = 640;
 const CANVAS_HEIGHT: u32 = 360;
 /// `memory.data` takes a compile-time size, so the readback is sized from the
-/// same two constants rather than from `gfx.frameBytes(...)`.
+/// same two constants rather than from `frameBytes(...)` -- the framework's
+/// helper is a function, and `memory.data` takes a compile-time size.
 const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
 
 const SPRITES: i32 = 10;
@@ -203,20 +203,21 @@ export function _start_game(): void {
   // 2. the capability
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
-  const handle = gfx.open(CANVAS_WIDTH, CANVAS_HEIGHT, flags);
-  if (handle <= 0) {
-    fail("open -> " + handle.toString());
+  const flags: i32 = hasArg("--windowed") ? OPEN_WINDOWED : 0;
+  const canvas = Canvas.open(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, flags);
+  if (!canvas.isValid()) {
+    fail("open -> " + canvas.lastError().toString());
     return;
   }
-  print("open -> handle " + handle.toString());
+  print("open -> handle " + canvas.handle.toString());
 
-  const infoBuf: usize = memory.data(<usize>gfx.INFO_SIZE, 8);
-  const infoLen = gfx.info(handle, infoBuf, <i32>gfx.INFO_SIZE);
-  const info = changetype<@unmanaged Info>(infoBuf);
-  if (infoLen != <i32>gfx.INFO_SIZE) {
-    fail("info -> " + infoLen.toString());
-    gfx.close(handle);
+  // `readInfo` is the one Canvas method that cannot return an errno, because
+  // the record is the return value. A refusal arrives as a zeroed record --
+  // `version` is 2 in every real answer -- and `lastError()` carries the code.
+  const info = canvas.readInfo();
+  if (info.version == 0) {
+    fail("info -> " + canvas.lastError().toString());
+    canvas.close();
     return;
   }
   print(
@@ -228,7 +229,7 @@ export function _start_game(): void {
   );
   if (info.canvasWidth != CANVAS_WIDTH || info.canvasHeight != CANVAS_HEIGHT) {
     fail("info reports a different canvas than open was given");
-    gfx.close(handle);
+    canvas.close();
     return;
   }
 
@@ -238,10 +239,10 @@ export function _start_game(): void {
   const BLOB_SIZE: u32 = 584; // DEFAULT_2D_BLOB.length, fixed at generation
   const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
   memory.copy(blobPtr, changetype<usize>(DEFAULT_2D_BLOB.dataStart), BLOB_SIZE);
-  const pipe = gfx.setPipeline(handle, blobPtr, BLOB_SIZE);
-  if (pipe < gfx.PIPE_PRESET_MIN) {
+  const pipe = canvas.pipelineGraph(blobPtr, BLOB_SIZE);
+  if (pipe < PIPE_PRESET_MIN) {
     fail("set_pipeline -> " + pipe.toString() + " (blob " + BLOB_SIZE.toString() + " bytes)");
-    gfx.close(handle);
+    canvas.close();
     return;
   }
   print("set_pipeline -> pipe " + pipe.toString());
@@ -249,20 +250,20 @@ export function _start_game(): void {
   // 4. the texture
   const atlas = buildAtlas();
   const atlasBytes = 74 + ATLAS_SIZE * ATLAS_SIZE * 3;
-  const tex = gfx.textureLoad(handle, atlas, atlasBytes);
+  const tex = canvas.loadTexture(atlas, atlasBytes);
   if (tex <= 0) {
     fail("texture_load -> " + tex.toString());
-    gfx.close(handle);
+    canvas.close();
     return;
   }
   // 4b. bind the atlas to page 0. The records below carry `tex = 0`, and this
   //     is the call that makes that field mean something: without it a pipeline
   //     samples the last-loaded texture implicitly, which works but leaves the
   //     tenth verb unexercised.
-  const bound = gfx.setTexture(handle, pipe, 0, tex);
+  const bound = canvas.bindTexture(pipe, 0, tex);
   if (bound != 0) {
     fail("set_texture -> " + bound.toString());
-    gfx.close(handle);
+    canvas.close();
     return;
   }
   print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)" +
@@ -273,31 +274,34 @@ export function _start_game(): void {
   let out = changetype<@unmanaged [SpriteRecord *]>(records);
   writeSprites(out);
 
-  const header: usize = memory.data(<usize>HEADER_SIZE, 4);
-  let hdr = changetype<@unmanaged [SubmitHeader *]>(header);
-  hdr[0].set(out, <u32>SPRITES);
-
-  const accepted = gfx.submit(handle, pipe, header, 0);
+  // `Canvas.submit` writes the 12-byte submit header itself, from the records
+  // and the count: the header is one value with one wire layout, and a caller
+  // that could pass a different stride could submit records the adapter cannot
+  // decode.
+  const accepted = canvas.submit(pipe, out, <u32>SPRITES, 0);
   if (accepted != SPRITES) {
     fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
-    gfx.close(handle);
+    canvas.close();
     return;
   }
   print("submit -> " + accepted.toString() + " records");
 
   // 6. draw
-  if (gfx.present(handle) != 0) {
+  if (canvas.present() != 0) {
     fail("present failed");
-    gfx.close(handle);
+    canvas.close();
     return;
   }
 
   // 7. read the frame back and count what is not black
   const frame: usize = memory.data(<usize>FRAME_BYTES, 8);
-  const written = gfx.screenshot(handle, frame, <i32>FRAME_BYTES);
+  // `screenshot` takes the frame as a pixel view -- `Rgba`, not raw bytes -- so
+  // the capacity `Canvas` checks and the pixels read below share one type.
+  let shot = changetype<@unmanaged [Rgba *]>(frame);
+  const written = canvas.screenshot(shot, FRAME_BYTES);
   if (written != <i32>FRAME_BYTES) {
     fail("screenshot -> " + written.toString() + ", expected " + FRAME_BYTES.toString());
-    gfx.close(handle);
+    canvas.close();
     return;
   }
 
@@ -360,12 +364,12 @@ export function _start_game(): void {
     // look at the window. One host-owned tick per repaint paces it.
     let keep: i32 = 0;
     while (keep < WINDOW_FRAMES) {
-      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
+      if (canvas.present() != 0) break; // -ECANCELED: the window is gone
       RuntimeSession.wait(16);
       keep++;
     }
   }
 
-  gfx.close(handle);
+  canvas.close();
   RuntimeSession.close();
 }

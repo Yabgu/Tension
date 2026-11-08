@@ -20,18 +20,15 @@
 // come from `scene.generated.ts`, emitted by the synthetic fixture. A game would
 // get them from its own data.
 
-import { arg, argCount, ConfigBuilder, print, ResFile, RuntimeSession } from "tension-framework";
+import { arg, argCount, Canvas, ConfigBuilder, OPEN_WINDOWED, print, RuntimeSession } from "tension-framework";
 import {
   Composite,
-  HEADER_SIZE,
   IsometricWorld,
   RECORD_SIZE,
   Rgba,
   SpriteRecord,
-  SubmitHeader,
   Tileset,
 } from "tension-framework";
-import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
 
 const FRAME_BYTES: u32 = scene.CANVAS_WIDTH * scene.CANVAS_HEIGHT * 4;
@@ -189,18 +186,18 @@ export function _start_game(): void {
 
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
-  const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
-  if (handle <= 0) {
-    print("FAIL: open -> " + handle.toString());
+  const flags: i32 = hasArg("--windowed") ? OPEN_WINDOWED : 0;
+  const canvas = Canvas.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
+  if (!canvas.isValid()) {
+    print("FAIL: open -> " + canvas.lastError().toString());
     RuntimeSession.close();
     return;
   }
 
-  const pipe = gfx.setPipelinePreset(handle, 1);
+  const pipe = canvas.pipeline(1);
   if (pipe < 1) {
     print("FAIL: set_pipeline(preset 1) -> " + pipe.toString());
-    gfx.close(handle);
+    canvas.close();
     RuntimeSession.close();
     return;
   }
@@ -209,16 +206,11 @@ export function _start_game(): void {
   // The pages, in slot order: `Tileset.load` assumes page i is slot i, which is
   // what makes a frame's `tex` the slot the shader indexes.
   const textures: i32[] = [];
+  // `Canvas.loadTextureFromRes` is the res-open / readAll / texture_load /
+  // close loop this example used to write by hand, in one call: -ENOENT when
+  // the path does not resolve, otherwise whatever `texture_load` refused with.
   for (let i: i32 = 0; i < scene.PAGE_FILES.length; i++) {
-    const file = ResFile.open(scene.PAGE_FILES[i]);
-    if (file === null) {
-      print("FAIL: no resource " + scene.PAGE_FILES[i]);
-      failures++;
-      continue;
-    }
-    const bytes = file.readAll();
-    const tex = gfx.textureLoad(handle, bytes.dataStart, <u32>bytes.length);
-    file.close();
+    const tex = canvas.loadTextureFromRes(scene.PAGE_FILES[i]);
     if (tex <= 0) {
       print("FAIL: texture_load(" + scene.PAGE_FILES[i] + ") -> " + tex.toString());
       failures++;
@@ -230,11 +222,11 @@ export function _start_game(): void {
   const tileset = Tileset.load(textures, scene.PAGE_SIZE, scene.PAGE_SIZE, scene.TILE_SIZE);
   if (!tileset.isValid()) {
     print("FAIL: Tileset.load refused " + textures.length.toString() + " pages");
-    gfx.close(handle);
+    canvas.close();
     RuntimeSession.close();
     return;
   }
-  const bound = tileset.bind(handle, pipe);
+  const bound = tileset.bind(canvas.handle, pipe);
   if (bound != 0) {
     print("FAIL: tileset.bind -> " + bound.toString());
     failures++;
@@ -251,7 +243,6 @@ export function _start_game(): void {
   tileset.define("hair", tileset.frameForPixel(scene.SHEET_HAIR_X, scene.SHEET_CHAR_Y, <u32>scene.CHAR_W, <u32>scene.CHAR_H));
   tileset.define("backpack", tileset.frameForPixel(scene.SHEET_BACKPACK_X, scene.SHEET_CHAR_Y, <u32>scene.CHAR_W, <u32>scene.CHAR_H));
 
-  const header: usize = memory.data(<usize>HEADER_SIZE, 4);
   const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
   // The same block, named twice: bytes for the verb, pixels for the probes.
   // `let`, not `const` — a const view in a scope that also has an integer const
@@ -293,24 +284,21 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    // The header fills itself from the same view the records went into: the
-    // record contract is one thing, and splitting its two halves across two
-    // modules is how they drift.
-    let hdr = changetype<@unmanaged [SubmitHeader *]>(header);
-    hdr[0].set(out, written);
-
-    const accepted = gfx.submit(handle, pipe, header, 0);
+    // `Canvas.submit` writes the header from the same view the records went
+    // into: the record contract is one thing, and splitting its two halves
+    // across two modules is how they drift.
+    const accepted = canvas.submit(pipe, out, written, 0);
     if (accepted != <i32>written) {
       print("FAIL: submit(" + name + ") -> " + accepted.toString() + ", expected " + written.toString());
       failures++;
       break;
     }
-    if (gfx.present(handle) != 0) {
+    if (canvas.present() != 0) {
       print("FAIL: present(" + name + ") failed");
       failures++;
       break;
     }
-    const got = gfx.screenshot(handle, frameBuf, <i32>FRAME_BYTES);
+    const got = canvas.screenshot(frame, FRAME_BYTES);
     if (got != <i32>FRAME_BYTES) {
       print("FAIL: screenshot(" + name + ") -> " + got.toString());
       failures++;
@@ -342,13 +330,13 @@ export function _start_game(): void {
     print("windowed: close the window to exit");
     let keep: i32 = 0;
     while (keep < 18000) {
-      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
+      if (canvas.present() != 0) break; // -ECANCELED: the window is gone
       RuntimeSession.wait(16);
       keep++;
     }
   }
 
-  gfx.close(handle);
+  canvas.close();
   RuntimeSession.close();
   print(failures == 0 ? "OK: built by Tileset + Composite + IsometricWorld" : "FAILED");
 }
