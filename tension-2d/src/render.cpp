@@ -5,7 +5,7 @@
  * know about a sprite arrives as bytes; everything it needs to know about a
  * guest stays on the other side of adapter.cpp.
  *
- * Shape (DESIGN.md §7): one storage buffer holding this frame's records, one
+ * Shape (`docs/modules/2d.md` §5): one storage buffer holding this frame's records, one
  * upload per frame through a transfer buffer, one graphic pipeline per preset,
  * and **one draw call per bucket** —
  * `SDL_DrawGPUPrimitives(pass, 6, count, 0, first_instance)` — with the vertex
@@ -33,7 +33,7 @@
 namespace tension_2d {
 namespace {
 
-/// The `sprite` record (DESIGN.md §5, tension_2d.h). Declared here so the
+/// The `sprite` record (`docs/modules/2d.md` §8, tension_2d.h). Declared here so the
 /// adapter can hand over raw bytes and this file can still sort them.
 struct Record {
     int32_t x;
@@ -710,14 +710,16 @@ int32_t Renderer::set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &p
         err = "set_pipeline: empty blob";
         return -EINVAL;
     }
-    // The blob is identified by its hash. A graph whose compiled artifacts were
-    // not embedded at build time is -ENOSYS: this DSO has no runtime compiler,
-    // and pretending otherwise would mean linking a Rust toolchain into a
-    // capability.
     // The blob is identified by its hash, and this DSO carries the artifacts
-    // for exactly the graphs it was built with. A blob this build was not built
-    // with is -ENOSYS from here; the adapter catches that and asks the host's
-    // `compile_graph` to compile it (adapter.cpp:187-231).
+    // for exactly the graphs it was built with. A blob this build did not embed
+    // is -ENOSYS from here.
+    //
+    // Compiling it is not this function's job, and not this DSO's: the graph
+    // compiler lives in `tension-core/src/pipeline/`, and linking it here would
+    // put a Rust toolchain inside a capability. `shim_set_pipeline`
+    // (`tension-2d/src/adapter.cpp`) is the caller that expects this -ENOSYS:
+    // it asks the host through the `compile_graph` core slot and re-enters via
+    // `set_pipeline_spirv` with the two modules that come back.
     const uint64_t hash = graph_hash(blob, len);
     const struct Tension2dGraphPipe *entry = nullptr;
     for (const auto &candidate : kGraphPipes) {
