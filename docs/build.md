@@ -338,9 +338,9 @@ Three known gaps:
 3. **No rpath on Windows.** `auditLinkage` returns early (`build-native.mjs:416`);
    the DLL closure is staged and walked instead, which is a weaker check.
 
-**macOS is untested throughout**, and `DESIGN.md`'s note that `-G` versus `-V`
-suggests the shader path needs revisiting there is still open
-(`docs/modules/2d.md` §7).
+**macOS is untested throughout**, including the `-G` versus `-V` difference in
+the shader build that the 2d design note flagged; no test in this tree covers
+it, and the note is deleted.
 
 ## 10. Kinds of failure
 
