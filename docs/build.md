@@ -399,6 +399,12 @@ the pixel fixtures assert specific colours at specific coordinates rather than
 
 ## 12. Source index
 
+**Citations are point-in-time.** They go stale when a cited file changes
+above them, and no drift gate exists for this page — only the generated
+`docs/abi/*.md` are drift-checked. Re-verify a citation before acting on
+it. The real fix (generated citations, or slot names without line
+numbers) is a future project.
+
 - `package.json` — the four-step `build` and every `npm run` alias.
 - `scripts/bootstrap.mjs` — patch, configure, build, install, revert.
 - `scripts/ensure-ogre.mjs` — the auto-bootstrap for a missing install.

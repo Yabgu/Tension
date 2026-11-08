@@ -568,6 +568,12 @@ Everything else this page asserts has a test or a gate behind it.
 
 ## 10. Source index
 
+**Citations are point-in-time.** They go stale when a cited file changes
+above them, and no drift gate exists for this page — only the generated
+`docs/abi/*.md` are drift-checked. Re-verify a citation before acting on
+it. The real fix (generated citations, or slot names without line
+numbers) is a future project.
+
 Files this page was derived from, and what each answers:
 
 - `tension-ogre/include/tension_ogre.h` — the guest boundary: keys, renderer
