@@ -716,7 +716,8 @@ int32_t Renderer::set_pipeline_blob(const uint8_t *blob, size_t len, uint32_t &p
     // capability.
     // The blob is identified by its hash, and this DSO carries the artifacts
     // for exactly the graphs it was built with. A blob this build was not built
-    // with is -ENOSYS: there is no runtime compiler (DESIGN.md §14).
+    // with is -ENOSYS from here; the adapter catches that and asks the host's
+    // `compile_graph` to compile it (adapter.cpp:187-231).
     const uint64_t hash = graph_hash(blob, len);
     const struct Tension2dGraphPipe *entry = nullptr;
     for (const auto &candidate : kGraphPipes) {
