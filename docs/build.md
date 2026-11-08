@@ -199,12 +199,6 @@ example were blamed on the source for two weeks (`:45-60`). This is
 (`build-examples.mjs:106-110`): the examples compile with the framework's flags,
 and a fallback set would produce guests that do not match the session.
 
-**Six example lockfiles still name a deleted package.** Each
-`examples/ogre/*/package-lock.json` resolves `@yabgu_gm/tension-freeimage`, which
-no longer exists in the tree — a clean `npm install` there fails. Not fixed in
-this pass: the remedy is six `npm install` runs, and a regeneration that is not
-checked in is not a fix. Recorded in contradiction 26.
-
 ## 6. Tests
 
 `node scripts/test.mjs` is the runner. Eighteen suites (`scripts/test.mjs:126-341`),

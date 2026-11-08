@@ -21,7 +21,6 @@ yet.
 | No offscreen GPU render path | `f1c57af` | the adapter has no offscreen target | an offscreen `VkImage` path | — |
 | Swapchain destroyed with the queue still holding its images (#17) | Ogre pin `475f783` | upstream `destroySwapchain` does not stall | a patch hunk, at a per-rebuild cost | — |
 | Draw against a rebuild's previous image layout (#18) | Ogre pin `475f783` | upstream rebinds no Hlms descriptors | the same patch area | — |
-| Six example lockfiles name a deleted package (#26) | package removal | needs the network to regenerate | `npm install` in each example | pass 7d |
 | Two input sources still assert the old teardown rule (#28) | `9d3af39` | the file belongs to the v7 pass | v7 input pass | v7 |
 | Source comments cite design notes that no longer exist (#29) | `2c74bbe` | none — mechanical | a sweep of ~166 sites | pass 7d |
 | HDR output | — | Ogre-Next has no output-HDR path | the colour-management API | vision §5.1 |
@@ -117,14 +116,6 @@ Two VUIDs fire and are deliberately not patched around:
 
 Both are validation-layer only on this rig: frames present and read back
 correctly. Fixing either is a patch hunk with a cost on every rebuild.
-
-## Six example lockfiles name a deleted package
-
-`examples/ogre/{animated-character,bouncing-ball,bouncing-bodies,hello-mesh,hello-triangle,input-camera}/package-lock.json`
-still resolve `@yabgu_gm/tension-freeimage`, which is not in the tree, so a clean
-`npm install` there fails. The remedy is six `npm install` runs and a regenerated
-lockfile; that needs the network and a registry state that matches, so it is not
-done here. Contradiction 26; [`build.md`](build.md) §5.
 
 ## Two input sources assert the old teardown rule
 
