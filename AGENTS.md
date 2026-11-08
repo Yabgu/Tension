@@ -132,8 +132,11 @@ documents the overloads a generator would not. `Canvas` (`assembly/2d/canvas.ts`
 wraps nine of the ten verbs and keeps the errno; `verbs.ts` is not re-exported,
 so a guest calls `Canvas`, not `openRaw`. `examples/2d/isometric` keeps its own
 copy of the declarations permanently as the wire oracle — the control that makes
-a lie in the wrapper a diff rather than an opinion. The other two examples still
-carry hand-written copies; migrating them is a separate pass.
+a lie in the wrapper a diff rather than an opinion. The other two
+(`hello-sprites`, `isometric-framework`) call `Canvas` and declare no verb at
+all. `Canvas` does not leak unused verbs into a guest that does not touch 2D:
+`examples/io`'s wasm imports zero `tension::2d` symbols, verified when the
+wrappers landed and re-verified after the migration.
 
 ### How a capability is loaded
 
