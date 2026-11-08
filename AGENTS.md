@@ -94,7 +94,7 @@ adapter ABI (`TENSION_ADAPTER_ABI_VERSION`, `tension_adapter.h`).
 **Implemented by an adapter DSO** (each registers `publish`/`apply`/`layout_hash`
 through the adapter ABI; a session must be given the DSO with `--capability`):
 
-- **`ogre`** — 11 verbs — `tension-ogre/build/libtension_ogre.so`. The 3D
+- **`ogre`** — 16 verbs — `tension-ogre/build/libtension_ogre.so`. The 3D
   renderer: scene nodes, cameras, lights, materials, meshes, jobs, bones,
   animation. Design: `docs/modules/ogre.md`.
 - **`tension::input`** — 6 verbs — `tension-input/build/libtension_input.so`.
@@ -125,12 +125,15 @@ the offsets and the stride. Worked examples:
 `examples/2d/isometric-framework` (the same scene via the library, frames
 byte-identical).
 
-**The 2D verbs are declared per example** (`examples/2d/*/src/bindings.ts`), not
-in the SDK: `tension-2d/include/tension_2d.h` has no `schema/` entry, so
-`tools/codegen` cannot generate them, and the hand-written module documents the
-overloads a generator would not. Only `set_texture` is declared inside the SDK,
-by `Tileset.bind`. Moving the rest there is a pending cleanup, not a design
-choice.
+**The 2D verbs are declared once, in the SDK**
+(`assembly/2d/verbs.ts`): `tension-2d/include/tension_2d.h` has no `schema/`
+entry, so `tools/codegen` cannot generate them, and the hand-written module
+documents the overloads a generator would not. `Canvas` (`assembly/2d/canvas.ts`)
+wraps nine of the ten verbs and keeps the errno; `verbs.ts` is not re-exported,
+so a guest calls `Canvas`, not `openRaw`. `examples/2d/isometric` keeps its own
+copy of the declarations permanently as the wire oracle — the control that makes
+a lie in the wrapper a diff rather than an opinion. The other two examples still
+carry hand-written copies; migrating them is a separate pass.
 
 ### How a capability is loaded
 
