@@ -89,33 +89,10 @@ builds the interpreter, the framework and every example.
 
 ## Debugging a guest
 
-`--debug` turns on wasmtime's DWARF handling and reports what a debugger can
-actually see of the guest before it runs. `--symbol-path <PATH>` says where to
-look for sources (repeatable). Options precede the guest path; `--` ends them.
-A missing guest, an unknown option, or a `--symbol-path` with no value exits `2`.
-
-TensionScript 0.14.0 and later embed DWARF when built with `--debug --sourceMap`;
-the host passes those sections through untouched, and Cranelift carries them
-across the JIT boundary so a source breakpoint resolves against the real guest.
-An older guest carries only a `name` section, and the host says so instead of
-building DWARF for it.
-
-In lldb, three things are load-bearing:
-
-- **Enable the GDB JIT loader** (`settings set plugin.jit-loader.gdb.enable on`),
-  or the module registration goes unseen and breakpoints never resolve.
-- **A guest breakpoint is pending until launch.** The JIT image does not exist
-  when it is set; that is the correct state, not a failure.
-- **Break by name with `-r 'game/'`**, not `-n`: the real symbol is
-  `wasm[0]::function[N]::<module>/<name>`. Locals print as the four wasm scalars,
-  and only while live; stepping shows native code while the source pane shows
-  `game.ts`.
-
-`examples/io/.vscode/launch.json` carries two working configurations — one
-against the debug host with Rust symbols, one against the release host so the
-stack holds guest frames. Expect a few cosmetic `unable to resolve a line table
-file address` lines at launch: they are slack in wasmtime's DWARF transform, not
-a failure.
+`npm run build:debug` emits DWARF, and `tension-core --debug` makes wasmtime
+register the guest with the debugger, so an ordinary `game.ts` breakpoint
+resolves. The recipe, the launch configurations and the failure modes are
+[`docs/debugging.md`](docs/debugging.md).
 
 ## ABI notes the generated pages do not carry
 
@@ -169,6 +146,7 @@ until they get a hand-written home:
 | The OGRE renderer: records, regions, render thread, host surface | [`docs/modules/ogre.md`](docs/modules/ogre.md) |
 | The 2D capability: SDL_GPU path, graph compiler, its own window | [`docs/modules/2d.md`](docs/modules/2d.md) |
 | Build products, bootstrap, guards, test suites, CI | [`docs/build.md`](docs/build.md) |
+| Guest debugging: DWARF, lldb, launch configs, env vars | [`docs/debugging.md`](docs/debugging.md) |
 | How a guard fails silently, and the two halves of the discipline | [`docs/guard-discipline.md`](docs/guard-discipline.md) |
 | Logger names, levels, formats, and who logs what | [`docs/logging.md`](docs/logging.md) |
 | Defects with reproductions, resolved and open | [`docs/known-issues.md`](docs/known-issues.md) |
