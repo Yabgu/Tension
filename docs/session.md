@@ -508,6 +508,12 @@ contract (sixteen imports, declared regions, `publish` no-op while clean);
 
 ## 12. Source index
 
+**Citations are point-in-time.** They go stale when a cited file changes
+above them, and no drift gate exists for this page — only the generated
+`docs/abi/*.md` are drift-checked. Re-verify a citation before acting on
+it. The real fix (generated citations, or slot names without line
+numbers) is a future project.
+
 - `session/mod.rs` — the verbs, the state machine, open's staged path, the arena
   preparation and its two verification points.
 - `session/epoch.rs` — the three phases, the invoke rules, the trap path.
