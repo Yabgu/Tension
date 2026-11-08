@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 // Build the framework's fixtures and run them against tension-core.
 //
+<<<<<<< HEAD
 // Three steps per fixture (`docs/build.md` §6):
+=======
+// Three steps per fixture (`tension-ogre/DESIGN.md` §10):
+>>>>>>> origin/main
 //
 //   1. the generator derives layout.ts and the asc flags from session.json, with
 //      the layout hash `tension-core layout-hash` prints — a disagreement stops

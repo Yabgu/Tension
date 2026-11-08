@@ -106,7 +106,11 @@ fn main() {
     //
     // The recipe runs here, on every platform. It used to live in
     // `tension-solver/build.sh` on Unix and be restated inline on Windows, which
+<<<<<<< HEAD
     // meant two copies of the pinned flags (`tension-solver/DESIGN.md` §2) and a shell the build
+=======
+    // meant two copies of the pinned flags (DESIGN.md §2) and a shell the build
+>>>>>>> origin/main
     // otherwise does not need. One copy, no shell.
     {
         let out = &solver_lib;

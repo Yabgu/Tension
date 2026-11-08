@@ -12,6 +12,10 @@
 //   TENSION_CONTAINER_RUNTIME     podman (default) or docker
 //   TENSION_OGRE_PKG_DIR          dir with built ogre-next-git-*.pkg.tar.zst packages
 //                                 (default: $HOME/src/ogre-next-git, an AUR build dir)
+<<<<<<< HEAD
+=======
+//   TENSION_FREEIMAGE_PKG_DIR     same for freeimage (default: $HOME/src/freeimage)
+>>>>>>> origin/main
 //
 // A port of `ci/docker.sh`. The container-side command is `npm test` rather than
 // `./test.sh`, because that script no longer exists: the suites are Node runners
@@ -43,15 +47,25 @@ commands:
                     repository bind-mounted at /app and X available
   clean             remove the ${image} image`;
 
+<<<<<<< HEAD
 /// Make sure the OGRE-Next packages are in ci/ogre-next-pkg.
+=======
+/// Make sure the OGRE-Next / freeimage packages are in ci/ogre-next-pkg.
+>>>>>>> origin/main
 ///
 /// Prefer what is already there; otherwise copy the latest non-debug package from
 /// the AUR build directory named by the environment variable.
 function syncPkg(name, pattern, envvar, defaultSrc) {
   const matches = (dir) => {
     if (!existsSync(dir)) return [];
+<<<<<<< HEAD
     // The patterns are shell globs — `ogre-next-git-r*.pkg.tar.zst` — so they
     // are translated rather than matched literally.
+=======
+    // The patterns are shell globs — `ogre-next-git-r*.pkg.tar.zst`,
+    // `freeimage-3*.pkg.tar.zst` — so they are translated rather than matched
+    // literally.
+>>>>>>> origin/main
     const regex = new RegExp('^' +
       pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.') +
       '$');
@@ -93,6 +107,11 @@ switch (command) {
     console.log(`==> preparing OGRE-Next packages in ${pkgDir}`);
     syncPkg('ogre-next', 'ogre-next-git-r*.pkg.tar.zst', 'TENSION_OGRE_PKG_DIR',
             join(homedir(), 'src', 'ogre-next-git'));
+<<<<<<< HEAD
+=======
+    syncPkg('freeimage', 'freeimage-3*.pkg.tar.zst', 'TENSION_FREEIMAGE_PKG_DIR',
+            join(homedir(), 'src', 'freeimage'));
+>>>>>>> origin/main
     console.log(`==> building ${image} (context: ${here})`);
     const result = spawnSync(runtime, ['build', '-t', image, here], { stdio: 'inherit' });
     if (result.error) die(`${runtime}: ${result.error.message}`);

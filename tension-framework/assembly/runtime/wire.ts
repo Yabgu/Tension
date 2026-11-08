@@ -13,6 +13,26 @@
 // hand-copy* and passed while `SessionInfo` drifted for a day (the hand-copy was
 // stale too). Two checks remain, and they compare against what the host actually
 // published:
+<<<<<<< HEAD
+=======
+//
+//   - `arena.ts`'s `checkLayout` / `assertLayout`: the guest's `LAYOUT_HASH`
+//     literal against the hash the host wrote into the arena at open;
+//   - `arena.ts`'s `manifestProblem()`, called at open from `runtime/index.ts`:
+//     the host's own `{typeId, size, align, pad}` entries against this build's
+//     `sizeof<T>()`.
+//
+// Both are **type level**: the manifest carries no per-field offsets, so a field
+// reorder inside a record that leaves the size unchanged is now unverified on
+// the guest side. The mechanical fix is one source emitting both sides, scoped
+// in `docs/engine-adoption-plan.md`.
+//
+// Measured 2026-10-30 on TensionScript 0.11.0: `sizeof` reports all ten records
+// exactly (256, 144, 24, 8, 32, 16, 64, 16, 32, 64), which is what makes the
+// manifest comparison meaningful. Neither check is a module-level statement on
+// purpose: a start section would run guest code before the session has verified
+// the arena, and `tension-core` refuses one outright.
+>>>>>>> origin/main
 //
 //   - `arena.ts`'s `checkLayout` / `assertLayout`: the guest's `LAYOUT_HASH`
 //     literal against the hash the host wrote into the arena at open;

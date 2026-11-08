@@ -17,11 +17,20 @@ test suites work without a display or GPU.
 ## Prerequisites
 
 - `podman` (rootless) or `docker` (set `TENSION_CONTAINER_RUNTIME=docker`)
+<<<<<<< HEAD
 - OGRE-Next Arch packages, produced once with `makepkg`
   (e.g. `paru -B` / `pikaur -B` in an AUR clone of `ogre-next-git`).
   `ci/docker.mjs build` picks the latest non-debug package from
   `$HOME/src/ogre-next-git` and caches a copy in `ci/ogre-next-pkg/`.
   Override with `TENSION_OGRE_PKG_DIR`, or drop `.pkg.tar.zst` files into
+=======
+- OGRE-Next and freeimage Arch packages, produced once with `makepkg`
+  (e.g. `paru -B` / `pikaur -B` in AUR clones of `ogre-next-git` and
+  `freeimage`). `ci/docker.mjs build` picks the latest non-debug package from
+  `$HOME/src/ogre-next-git` and `$HOME/src/freeimage` and caches a copy in
+  `ci/ogre-next-pkg/`. Override with `TENSION_OGRE_PKG_DIR` /
+  `TENSION_FREEIMAGE_PKG_DIR`, or drop `.pkg.tar.zst` files into
+>>>>>>> origin/main
   `ci/ogre-next-pkg/` yourself.
 
 ## Commands

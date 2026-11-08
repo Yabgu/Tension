@@ -11,7 +11,11 @@
 // documenting it means `npm run build` is the whole first-run story.
 
 import { spawnSync } from 'node:child_process';
+<<<<<<< HEAD
 import { existsSync, readFileSync } from 'node:fs';
+=======
+import { existsSync } from 'node:fs';
+>>>>>>> origin/main
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -41,6 +45,7 @@ const npm = (args, options = {}) => run('npm', args, { shell: WIN, ...options })
 run(process.execPath, [join(repo, 'scripts', 'gen-session.mjs'), ...process.argv.slice(2)]);
 
 // 2. The guest's build dependencies.
+<<<<<<< HEAD
 //
 // **Compare the version, do not merely look for the binary.** This guard used
 // to be `if (!existsSync(compiler))`, which is satisfied forever by the first
@@ -139,5 +144,14 @@ if (wanted !== null) {
   console.log(`build-framework: ${settled.packageName} ${after} matches the lock`);
 }
 
+=======
+const compiler = join(framework, 'node_modules', '.bin',
+                      WIN ? 'tensionscript.cmd' : 'tensionscript');
+if (!existsSync(compiler)) {
+  console.log('build-framework: installing tension-framework dependencies');
+  npm(['install', '--no-audit', '--no-fund'], { cwd: framework });
+}
+
+>>>>>>> origin/main
 // 3. The framework guest itself.
 npm(['run', 'build'], { cwd: framework });

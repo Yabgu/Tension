@@ -67,6 +67,7 @@ export function ucrt64Bin() {
   return null;
 }
 
+<<<<<<< HEAD
 /// Candidate MSYS2 `usr/bin` directory, where POSIX utilities like patch live.
 export function msys2UsrBin() {
   const explicit = process.env.TENSION_MSYS2;
@@ -78,6 +79,8 @@ export function msys2UsrBin() {
   return null;
 }
 
+=======
+>>>>>>> origin/main
 /// The `set` output of a Visual Studio developer environment, as a map, or
 /// null when there is no Visual Studio installation with the C++ tools.
 ///
@@ -214,9 +217,13 @@ export function baseEnv() {
   parts.push(env.PATH ?? '');
   const ucrt = ucrt64Bin();
   if (ucrt) parts.push(ucrt);
+<<<<<<< HEAD
   const msysUsr = msys2UsrBin();
   if (msysUsr) parts.push(msysUsr);
   for (const name of ['zig', 'patch']) parts.push(...extraDirs(name));
+=======
+  for (const name of ['zig']) parts.push(...extraDirs(name));
+>>>>>>> origin/main
   env.PATH = dedupePath(parts.filter(Boolean).join(delimiter)).join(delimiter);
   env[MARKER] = '1';
 
@@ -253,6 +260,7 @@ export function npmBin(dir, name) {
 /// on PATH. That lookup lives here so the build
 /// keeps working on a machine that installed it the documented way.
 function extraDirs(name) {
+<<<<<<< HEAD
   if (!WIN) return [];
   if (name === 'patch') {
     const dirs = [];
@@ -263,6 +271,9 @@ function extraDirs(name) {
     return dirs;
   }
   if (name !== 'zig') return [];
+=======
+  if (!WIN || name !== 'zig') return [];
+>>>>>>> origin/main
   const root = join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WinGet', 'Packages');
   const dirs = [];
   let packages;

@@ -13,8 +13,11 @@
     "bootstrap": "node scripts/bootstrap.mjs",
     "pack:all": "node scripts/pack-all.mjs",
     "test": "node scripts/test.mjs",
+<<<<<<< HEAD
     "docs:abi": "node scripts/gen-abi-doc.mjs",
     "test:abi-docs": "node scripts/test-abi-docs.mjs",
+=======
+>>>>>>> origin/main
     "check:eol": "node scripts/normalize-eol.mjs --check",
     "fix:eol": "node scripts/normalize-eol.mjs",
     "demo": "node scripts/demo.mjs",

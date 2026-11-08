@@ -116,7 +116,11 @@ expectIdentical('text/intro.txt', 'assets/text/intro.txt', 'text/intro.txt');
 expectIdentical('data/level1.bin', 'assets/data/level1.bin',
                 'chunked data/level1.bin (4096 B) read through its continuation chain');
 // data/large.bin is the generated 20 MiB File: ~10600 chunks, read uncached
+<<<<<<< HEAD
 // (`tension-res/DESIGN.md` §8). The reader walks the whole chain.
+=======
+// (DESIGN.md §8.3). The reader walks the whole chain.
+>>>>>>> origin/main
 expectIdentical('data/large.bin', 'build/large.bin',
                 `chunked data/large.bin (${largeBytes} B, stored) read through its continuation chain`);
 // data/compressed.bin is stored as a Deflate stream (STREAM FORMAT 2, COMPRESS

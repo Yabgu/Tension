@@ -8,7 +8,11 @@
 // tests read everything else.
 //
 // Capacity and geometry come from the wire catalogue and the arena layout:
+<<<<<<< HEAD
 // SCENE is 256 KiB and holds three sub-tables end to end (`docs/modules/ogre.md` §4.1),
+=======
+// SCENE is 256 KiB and holds three sub-tables end to end (DESIGN.md §5.1),
+>>>>>>> origin/main
 // MATERIAL is 64 KiB of 200-byte records, RENDERABLE 128 KiB of 56-byte ones.
 
 #ifndef TENSION_OGRE_SCENE_H

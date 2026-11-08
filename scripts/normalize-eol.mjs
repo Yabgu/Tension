@@ -55,11 +55,14 @@ const SKIP_DIRS = new Set([
 const SKIP_PATHS = [
   'third_party',
   join('packages', 'dist'),
+<<<<<<< HEAD
   // The example asset workspace: fetched from the asset host, gitignored, and
   // somebody else's files. Some asset packs ship CRLF in their READMEs and
   // `.tsx`, which is theirs to have; normalising a gitignored tree would also
   // rewrite 70 MB on every check.
   join('tension-2d', 'test-assets'),
+=======
+>>>>>>> origin/main
 ];
 
 function isText(name) {
@@ -68,6 +71,7 @@ function isText(name) {
   return dot >= 0 && TEXT_EXTENSIONS.has(name.slice(dot).toLowerCase());
 }
 
+<<<<<<< HEAD
 /// `packages/<name>-<platform>-<arch>/` is a native payload package: the
 /// platform-specific half of a `file:` dependency, filled by `build:native`
 /// from the OGRE install. Its contents are gitignored build products and carry
@@ -78,6 +82,9 @@ const PAYLOAD_PACKAGE = /^packages[\\/][a-z0-9-]+-(linux|windows|macos|darwin|wi
 
 function skipped(relPath) {
   if (PAYLOAD_PACKAGE.test(relPath)) return true;
+=======
+function skipped(relPath) {
+>>>>>>> origin/main
   return SKIP_PATHS.some((p) => relPath === p || relPath.startsWith(p + '/') ||
                                    relPath.startsWith(p + '\\'));
 }

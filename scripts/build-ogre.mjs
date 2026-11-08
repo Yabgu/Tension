@@ -142,6 +142,7 @@ if (mode === '--test') {
   // The unit tests need no OGRE: the loader's worker reads bytes and the backend
   // is a mock, the config decoder is pure parsing. They run here rather than in
   // CTest so a failure's output is the binary's own.
+<<<<<<< HEAD
   //
   // `stbi_codec_test` is the exception — it links OgreNextMain on purpose, to
   // prove the image codec is in the library and decodes. It is only built when
@@ -163,6 +164,15 @@ if (mode === '--test') {
   }
 
   const tests = [...required, ...codec];
+=======
+  const testDir = join(outDir, 'tests');
+  const tests = readdirSync(testDir)
+    .filter((name) => /^(config|scene|loader)_test(\.exe)?$/.test(name))
+    .sort();
+  if (tests.length === 0) {
+    die(`no test binaries in ${testDir}; the CMake configure did not build them`);
+  }
+>>>>>>> origin/main
   for (const test of tests) {
     console.log(`${RUNNER}: running ${test}`);
     const result = inherit(join(testDir, test), []);
@@ -177,12 +187,24 @@ if (mode === '--test') {
 const artifact = WIN ? 'libtension_ogre.dll' : 'libtension_ogre.so';
 
 // The post-build step stages Ogre's own DLLs beside the adapter, but not the rest
+<<<<<<< HEAD
 // of the closure (zlib1, libzzip, the MinGW runtime). Complete it here so this
 // directory is self-contained — the guest suite loads the adapter straight out
 // of it, and a missing dependency is a LoadLibrary error 126 that names no file.
 if (WIN && backend === 'ogre') {
   const gxx = which('g++');
   const search = [
+=======
+// of the closure (zlib1, libzzip, FreeImage, the MinGW runtime). Complete it here
+// so this directory is self-contained — the guest suite loads the adapter
+// straight out of it, and a missing dependency is a LoadLibrary error 126 that
+// names no file.
+if (WIN && backend === 'ogre') {
+  const freeImageBin = join(repo, 'packages', `freeimage-${process.platform}-${process.arch}`, 'bin');
+  const gxx = which('g++');
+  const search = [
+    ...(existsSync(freeImageBin) ? [freeImageBin] : []),
+>>>>>>> origin/main
     ...(gxx ? [join(gxx, '..')] : []),
   ];
   const unresolved = missingSystemFilter(stageWindowsDependencies(outDir, search.map(String)));
