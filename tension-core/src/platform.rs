@@ -23,8 +23,7 @@
 //! become incompatible and `SDL_Vulkan_CreateSurface` will fail or, worse,
 //! appear to succeed.** The fix then is not to patch around it: it is to take
 //! both the instance handle *and* the surface from the same loader, which means
-//! dropping `ash::Entry::load()` for SDL's `vkGetInstanceProcAddr`. Recorded as
-//! contradiction entry 11 in `docs-contradictions.md`.
+//! dropping `ash::Entry::load()` for SDL's `vkGetInstanceProcAddr`.
 //!
 //! # Ownership
 //!

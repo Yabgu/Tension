@@ -26,10 +26,10 @@
 //! # Is a resize event guaranteed?
 //!
 //! Measured on this rig, SDL coalesces back-to-back resizes and delivers one
-//! event carrying the final size (see `docs-contradictions.md`). So the probe
-//! sets one size, pumps until the published size changes or a bounded number of
-//! pumps elapse, and then asserts. It does **not** assume the event arrives on
-//! the first pump: on Wayland a resize is a round trip through the compositor.
+//! event carrying the final size. So the probe sets one size, pumps until the
+//! published size changes or a bounded number of pumps elapse, and then asserts.
+//! It does **not** assume the event arrives on the first pump: on Wayland a
+//! resize is a round trip through the compositor.
 
 use std::time::{Duration, Instant};
 
