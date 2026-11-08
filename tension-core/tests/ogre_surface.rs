@@ -6,7 +6,7 @@
 //! one event source, one region declaration. No renderer runs and no guest
 //! exists: the render thread starts only when a *guest* calls `ogre::init`, so
 //! this test is display-free and OGRE-free, which is what lets it live in
-//! `cargo test` (DESIGN.md §14, the structural layer).
+//! `cargo test` (`docs/modules/ogre.md` §8, the structural layer).
 //!
 //! The DSO is found at `TENSION_OGRE_DSO_PATH` when that is set, otherwise at
 //! `tension-ogre/build/libtension_ogre.so` beside this crate. Absent, the test

@@ -986,7 +986,7 @@ fn node_text(node: &Yaml) -> String {
     }
 }
 
-// ── emission (DESIGN.md §4–§7) ──────────────────────────────────────────
+// ── emission (`tension-world/DESIGN.md` §4–§7) ──────────────────────────
 
 fn component_entry_size(component: &Component, dimensions: usize) -> u32 {
     let d = dimensions as u32;
@@ -1015,7 +1015,7 @@ fn emit(world: &World) -> Vec<u8> {
     let mut names: Vec<&str> = world.components.iter().map(Component::name).collect();
     names.extend(world.connections.iter().filter_map(Connection::name));
     // Offsets of each name *within* the table; the entries below store
-    // them made absolute — DESIGN.md §3 fixes every offset as from file
+    // them made absolute — `tension-world/DESIGN.md` §3 fixes every offset as from file
     // start, never from a section.
     let mut name_offsets: Vec<u32> = Vec::with_capacity(names.len());
     let mut name_bytes_len = 0u32;

@@ -1,4 +1,4 @@
-//! Test-side writer for the configuration wire (DESIGN.md §12).
+//! Test-side writer for the configuration wire (`tension-solver/DESIGN.md` §12).
 //!
 //! The framework is the format's writer (`tension-framework/assembly/solver.ts`);
 //! the WAT fixtures the P5 and P8e tests instantiate cannot call

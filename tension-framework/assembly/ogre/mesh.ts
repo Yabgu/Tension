@@ -12,7 +12,7 @@
 // directly after them, which is the arrangement the examples use.
 //
 // What the adapter requires, and what it refuses, is worth knowing before using
-// this (DESIGN.md §5.1):
+// this (`docs/modules/ogre.md` §4):
 //
 //   * **position is the only required element.** A constant-colour Unlit draw
 //     renders identically with position alone and with position+normal+uv — the

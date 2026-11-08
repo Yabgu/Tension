@@ -22,7 +22,7 @@
  *
  * All little-endian. The C++ module would be a nicer dependency than a hand
  * parse, but modules are not linkable from this DSO without vendoring
- * ImageViewer, and vendoring is gated on `iw_decode_to_format` (DESIGN.md §8).
+ * ImageViewer, and vendoring is gated on `iw_decode_to_format` (`docs/modules/2d.md` §8).
  * When that lands this file becomes a thin caller and the parse goes away.
  *
  * SPDX-License-Identifier: MIT

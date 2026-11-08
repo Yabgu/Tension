@@ -96,13 +96,13 @@ through the adapter ABI; a session must be given the DSO with `--capability`):
 
 - **`ogre`** — 11 verbs — `tension-ogre/build/libtension_ogre.so`. The 3D
   renderer: scene nodes, cameras, lights, materials, meshes, jobs, bones,
-  animation. Design: `tension-ogre/DESIGN.md`.
+  animation. Design: `docs/modules/ogre.md`.
 - **`tension::input`** — 6 verbs — `tension-input/build/libtension_input.so`.
   Keyboard/pointer state and edge events. Design: `tension-input/DESIGN.md`.
 - **`tension::2d`** — 10 verbs — `tension-2d/build/libtension_2d.so`. Sprite
   batching over SDL_GPU: `open`, `close`, `set_pipeline`, `shader_compile_raw`,
   `submit`, `present`, `texture_load`, `info`, `screenshot`, `set_texture`.
-  Design: `tension-2d/DESIGN.md`.
+  Design: `docs/modules/2d.md`.
 
 ### Guest SDK
 

@@ -14,7 +14,7 @@
 ! velocities, the last dim/2 are the accelerations. This is the standard
 ! first-order-isation of a second-order mechanical system (q'' = a) and
 ! is the shape schema.yaml's `_derivative` carries for symplectic
-! methods (DESIGN.md §10).
+! methods (tension-solver/DESIGN.md §10).
 !
 ! Parameters. Verlet is fixed-step: the ABI's step(id, dt) carries the
 ! advance — one call is one Verlet step of size dt, and `status` reports

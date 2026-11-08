@@ -160,5 +160,5 @@ fn s2_implicit_euler_through_shim() {
 fn s3_spook_is_still_enosys() {
     let _g = lock();
     let id = create(&Config::new("spook", "wasm").dim(2));
-    assert_eq!(id, -38, "spook must remain -ENOSYS (DESIGN.md §10)");
+    assert_eq!(id, -38, "spook must remain -ENOSYS (tension-solver/DESIGN.md §10)");
 }

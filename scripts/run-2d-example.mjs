@@ -112,7 +112,7 @@ const result = run(core, guestArgs, {
   // `offscreen` only when there is no window to show: it is a real video
   // backend with a GPU, so it keeps the headless path identical to a windowed
   // one in everything but presentation. `dummy` would have no GPU at all
-  // (DESIGN.md §9).
+  // (`docs/modules/2d.md` §6).
   env: windowed ? process.env : { ...process.env, SDL_VIDEODRIVER: 'offscreen' },
 });
 

@@ -312,7 +312,7 @@ fn t9_purity_bit_identical() {
 
 // ═══ T10 ════════════════════════════════════════════════════════════════
 // The loader's refusals: compiled worlds with one field patched, at the
-// documented offsets (DESIGN.md §4).
+// documented offsets (tension-world/DESIGN.md §4).
 
 #[test]
 fn t10_bad_magic_refused() {

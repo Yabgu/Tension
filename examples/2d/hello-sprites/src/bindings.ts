@@ -5,7 +5,7 @@
 // be a second declaration of the wire.
 //
 // The adapter is `libtension_2d.so` (tension-2d/), the design is
-// tension-2d/DESIGN.md, and the wire is tension-2d/include/tension_2d.h. This
+// `docs/modules/2d.md`, and the wire is tension-2d/include/tension_2d.h. This
 // module is the third reader of that header and invents no field the others do
 // not have.
 //

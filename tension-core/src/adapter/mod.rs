@@ -1,6 +1,6 @@
 //! The adapter registry: loading, the lifecycle, and the import table.
 //!
-//! Three jobs (`tension-ogre/DESIGN.md` §7, Appendix B steps 7–8):
+//! Three jobs (`docs/architecture.md` §6, `docs/abi/adapter.md`):
 //!
 //! 1. **Load** a shared object, find `tension_adapter_v1`, and refuse it unless
 //!    its ABI version is this build's. Refusal is at load, not a warning: an
@@ -927,7 +927,7 @@ where
 }
 
 /// The session channel, named here because this module is where the publish
-/// hook's failures are reported (`DESIGN.md` §7.2). Routed through the host
+/// hook's failures are reported (`docs/abi/adapter.md`). Routed through the host
 /// logger under the name `session`, so the line carries the configured layout —
 /// the old fixed `[tension:session]` prefix is now the layout's logger column.
 fn log_line(message: &str) {

@@ -2,7 +2,7 @@
 //
 // It exists for two reasons. It keeps the adapter buildable and the session
 // contract exercisable on a machine with no OGRE at all — the structural and
-// smoke layers of DESIGN.md §14 run anywhere — and it is the shape a real
+// smoke layers run anywhere — and it is the shape a real
 // backend has to have: start, frame, stop, all on the render thread, all
 // reporting through return values and the status mirror.
 

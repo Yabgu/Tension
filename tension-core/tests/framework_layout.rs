@@ -1,4 +1,4 @@
-//! The manifest cross-check (`tension-ogre/DESIGN.md` §10, A3a.9).
+//! The manifest cross-check (`docs/session.md` §4).
 //!
 //! Three places hold the arena's shape hash: the generated constants the AS
 //! runtime compiles against (`tension-framework/assembly/runtime/layout.ts`),

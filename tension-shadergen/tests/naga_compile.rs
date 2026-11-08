@@ -44,7 +44,7 @@ use tension_shadergen::{
     Slot, Vocabulary,
 };
 
-/// The `sprite` record as the shader sees it (DESIGN.md §5). Named `classic2d`
+/// The `sprite` record as the shader sees it (`docs/modules/2d.md` §8). Named `classic2d`
 /// because that is what the 16-byte fixture was called before the batcher; the
 /// layout here is the real 28-byte one, which is what the adapter ships.
 fn sprite_layout() -> LayoutDesc {

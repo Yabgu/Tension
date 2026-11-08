@@ -1,7 +1,7 @@
 // Generate the session runtime's constants and `asc` flags from session.json,
 // and the guest's view of the arena manifest from the host's own source.
 //
-// One source of truth, two derivations (`tension-ogre/DESIGN.md` §10):
+// One source of truth, two derivations (`docs/build.md` §1):
 //
 //   assembly/runtime/layout.ts        the arena constants the guest sends in the
 //                                     TLV, and the layout hash it is compiled

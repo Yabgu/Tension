@@ -1,7 +1,7 @@
 //! `emit` — dump the generated GLSL for a preset.
 //!
 //! The adapter compiles its shaders at **build** time, not at run time: it has
-//! no GLSL -> SPIR-V translator linked into the DSO (DESIGN.md §8.1), and
+//! no GLSL -> SPIR-V translator linked into the DSO (`docs/modules/2d.md` §4), and
 //! spawning `glslangValidator` from inside a `dlopen`ed capability would be a
 //! worse dependency than a build step. So `scripts/build-2d.mjs` runs this
 //! binary, pipes the output through `glslangValidator -V`, and embeds the

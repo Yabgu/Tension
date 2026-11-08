@@ -312,7 +312,7 @@ class Game {
     // is down and away from the camera, so it comes from the camera's own side and
     // lights the faces a viewer can see. Intensity 20 and not 1: `intensity` is a
     // power scale, and a lit surface at 1.0 measures 26/255, which is a surface
-    // that is lit and looks black (DESIGN.md §5.1).
+    // that is lit and looks black (`docs/modules/ogre.md` §4).
     const light = new ogre.LightRecord();
     light.lightId = 1;
     light.kind = ogre.LIGHT_DIRECTIONAL;

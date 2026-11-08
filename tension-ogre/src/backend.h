@@ -9,7 +9,7 @@
 // that made the objects is the thread that unmakes them.
 //
 // `start` and `frame` report failure by returning a negative errno. They must
-// not throw: the render thread catches anyway (DESIGN.md §8.1), but a backend
+// not throw: the render thread catches anyway (`docs/modules/ogre.md` §5), but a backend
 // that reports through its return value keeps the stage code precise instead
 // of collapsing every failure into the catch-all's stage.
 

@@ -19,7 +19,7 @@
 //
 // **After a callback trap the session is FAULTED.** Every verb then refuses
 // with `-EBADF`, because FAULTED is not a state any operation runs in
-// (`DESIGN.md` §8): the verb that *discovered* the trap returns `-EIO`, and
+// (`docs/session.md` §3): the verb that *discovered* the trap returns `-EIO`, and
 // everything after it returns `-EBADF`. The guest's move is to close the
 // session and open it again — `RuntimeSession.recover` is that, and it loses
 // nothing:

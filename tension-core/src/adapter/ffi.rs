@@ -1404,7 +1404,7 @@ pub(crate) unsafe extern "C" fn post_event(
 /// The line goes through the `log` slot at level 1 (info), which the host now
 /// routes through its logger under the name `session` — so the refusal carries
 /// the configured layout. The message names the caller's mistake, which is what
-/// an adapter author needs to see (`DESIGN.md` §7.2).
+/// an adapter author needs to see (`docs/abi/adapter.md`).
 fn log_refusal(host: &AdapterHost, error: PostError) -> i32 {
     if let Some(log) = host.api().log {
         let text = format!("post_event: {error}");

@@ -1,4 +1,4 @@
-//! The configuration struct: the guest wire (DESIGN.md §12) and the C-layout
+//! The configuration struct: the guest wire (`tension-solver/DESIGN.md` §12) and the C-layout
 //! struct the shim takes.
 //!
 //! Two halves, one contract. [`decode_wire`] is the host as **strict reader**:

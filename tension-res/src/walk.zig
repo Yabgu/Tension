@@ -1,4 +1,4 @@
-//! The path walker (DESIGN.md §6.8): root discovery and per-level descent,
+//! The path walker (tension-res/DESIGN.md §6.8): root discovery and per-level descent,
 //! with every byte fetched through a `BlockReader` — no direct access to the
 //! pak image anywhere in this module.
 //!
@@ -197,7 +197,7 @@ pub const Walker = struct {
     }
 
     /// Resolve a path; `expect` distinguishes open-on-file from open-on-rectory
-    /// (DESIGN.md §6.8 error table).
+    /// (tension-res/DESIGN.md §6.8 error table).
     pub fn resolve(self: *const Walker, path: []const u8, expect: Expect) WalkError!Location {
         var comps: [MAX_COMPONENTS][]const u8 = undefined;
         const norm = try normalize(path, &comps);
@@ -262,7 +262,7 @@ pub const Walker = struct {
     }
 
     /// Open a directory File's child-index Stream by path (the VFS's
-    /// `readdir`, DESIGN.md §7.6). A file in that position is `NotDir`; a
+    /// `readdir`, tension-res/DESIGN.md §7.6). A file in that position is `NotDir`; a
     /// directory File without an index Stream is `NotFound` (§11).
     pub fn openDir(self: *const Walker, path: []const u8) WalkError!index.ChunkView {
         const loc = try self.resolve(path, .directory);
@@ -272,7 +272,7 @@ pub const Walker = struct {
     }
 
     /// Resolve a located File's Data stream to an image range (the VFS's
-    /// `read`, DESIGN.md §7.5). A File with no Data stream is `NotFound` — the
+    /// `read`, tension-res/DESIGN.md §7.5). A File with no Data stream is `NotFound` — the
     /// VFS opens it and reports `-EIO` on read (§11); a stream whose format is
     /// not Clear data is returned as-is so that policy stays in the VFS.
     pub fn openData(self: *const Walker, loc: Location) WalkError!DataStream {
@@ -655,7 +655,7 @@ pub const Walker = struct {
         return abs;
     }
 
-    /// Open a directory File's child-index Stream (DESIGN.md §6.8).
+    /// Open a directory File's child-index Stream (tension-res/DESIGN.md §6.8).
     fn openIndex(self: *const Walker, file_abs: u64) WalkError!index.ChunkView {
         var buf: [MAX_TABLE]u8 = undefined;
         var c = Cursor{ .reader = self.reader, .off = file_abs };

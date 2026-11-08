@@ -144,7 +144,7 @@ test "truncation: load fails when the structures it reads are damaged" {
     // Every cut either fails to load, or loads a handle whose root still
     // answers. A cut inside the root's index Stream (which `init` parses) must
     // fail; a cut inside trailing blank space is invisible to a reader that
-    // validates what it reads and nothing more (DESIGN.md §6.8) — the damage
+    // validates what it reads and nothing more (tension-res/DESIGN.md §6.8) — the damage
     // surfaces at read time, never as a panic and never as a wrong answer.
     var cut: usize = 200;
     var failed: usize = 0;

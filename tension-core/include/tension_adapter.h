@@ -25,7 +25,7 @@
  * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`.
  * A version-1 adapter is refused at load, so the host never reads past its end.
  *
- * Design note: tension-ogre/DESIGN.md, Appendix A.
+ * Design note: `docs/abi/adapter.md`.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -240,7 +240,7 @@ typedef struct tension_host_surface {
 #define TENSION_DTYPE_I16 3u
 #define TENSION_DTYPE_U8  4u
 /* Appended at 5 under the same append-only rule as the semantics above. The
- * sprite record carries signed pixel positions (DESIGN.md §5), and none of 1..4
+ * sprite record carries signed pixel positions (`docs/modules/2d.md` §8), and none of 1..4
  * can express one: F32 would reinterpret the bits, and I16 caps a position at
  * 32767 px with a 1 px quantum. */
 #define TENSION_DTYPE_I32 5u
@@ -768,7 +768,7 @@ const tension_adapter *tension_adapter_v1(void);
  *  -ENOMEM  allocation failure
  *  -ENOSYS  a required slot was left NULL
  *
- * On the import-type refusals behind C3 (see tension-ogre/DESIGN.md §4.1): all
+ * On the import-type refusals behind C3 (see `docs/modules/ogre.md` §4): all
  * three directions — a provided minimum below the declared minimum, a provided
  * maximum above the declared maximum, and an unbounded provider — produce the
  * *same* wasmtime error string, with no page counts in it. The session's

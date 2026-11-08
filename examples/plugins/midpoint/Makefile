@@ -3,7 +3,7 @@
 # host process at load time (they are deliberately left undefined here —
 # do not add -Wl,-z,defs).
 #
-# tension-core itself has no plugin load-from-disk path (DESIGN.md §11);
+# tension-core itself has no plugin load-from-disk path (`tension-solver/DESIGN.md` §11);
 # the in-tree P7 tests compile this same midpoint.c into the test binary
 # from tension-core/build.rs, so the example source is exercised verbatim.
 #

@@ -20,7 +20,7 @@ Two things about it are load-bearing, and neither is guessable:
   it is wrong: the texture must be created with
   `TextureFlags::AutomaticBatching`, because the Hlms samples through an array
   of 2D texture arrays and a texture without the flag is never packed into one
-  — the character then draws lit and black (`tension-ogre/DESIGN.md` §5.1).
+  — the character then draws lit and black (`docs/modules/ogre.md` §4).
 - **Clips are named, and the clock is the guest's.**
   `submitAnimation(renderableId, clipName, timeMs)` takes *absolute* time, not a
   delta: the guest computes `elapsed % duration`, and the adapter calls
@@ -102,7 +102,7 @@ earlier runs recorded. v1 and v2 assets produce byte-identical output.
 adapter does with it; `tension-framework/assembly/ogre/index.ts` — the verbs
 and the wrappers; `tension-framework/assembly/ogre/wire.ts` — the records, the
 region layouts, and the record readers (`isRigged`, `boneCount`); and
-`tension-ogre/DESIGN.md` §5.1 — the design record behind the renderer, the
+`docs/modules/ogre.md` §4 — the design record behind the renderer, the
 conversion chain and the animation verb. (`bones.ts` and `BoneBatch` are still
 there and still the way to pose a rig by hand — `walking-stickman`'s arm swing
 used to demonstrate them; this example no longer does.)

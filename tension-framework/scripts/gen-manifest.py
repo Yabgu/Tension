@@ -6,7 +6,7 @@ The host writes nine `{typeId, size, align, pad}` entries at `MANIFEST_OFFSET`
 open and compares each entry's size against its own declaration — the check that
 would have caught the `SessionInfo` drift (guest 128, host 144) at the first
 open instead of never. That check needs the id -> type correspondence, and
-today the correspondence exists only as prose (`tension-ogre/DESIGN.md` §5.1).
+today the correspondence exists only as prose (`docs/modules/ogre.md` §4).
 This script is where it becomes data.
 
 **The shape is `tension-core/tests/framework_layout.rs:34-44`'s**, the tree's

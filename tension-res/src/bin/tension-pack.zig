@@ -1,4 +1,4 @@
-//! tension-pack — the packer's command line frontend (DESIGN.md §8.2).
+//! tension-pack — the packer's command line frontend (tension-res/DESIGN.md §8.2).
 //!
 //!     tension-pack <source-dir> [-o output.tns] [-v]
 //!     tension-pack --help
@@ -22,7 +22,7 @@ const USAGE =
     \\  --version     print the version
     \\
     \\The source directory becomes the pak's root directory File; its children
-    \\are packed in NS1 byte order, with the layout of DESIGN.md §8.2.
+    \\are packed in NS1 byte order, with the layout of tension-res/DESIGN.md §8.2.
     \\
 ;
 

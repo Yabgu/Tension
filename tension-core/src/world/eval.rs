@@ -22,26 +22,26 @@
 //! force accumulator is a `[f64; 3]` on the stack, and the component
 //! gather loops over the connection table instead of building any index.
 //!
-//! The numeric vocabulary (DESIGN.md §2, §4–§6) is transcribed here
+//! The numeric vocabulary (`tension-world/DESIGN.md` §2, §4–§6) is transcribed here
 //! independently of `compiler.rs`: the reader is not the writer's mirror,
 //! and neither refers to the other's constants.
 
 use std::fmt;
 use std::str;
 
-/// DESIGN.md §2: the first eight bytes of every world file.
+/// `tension-world/DESIGN.md` §2: the first eight bytes of every world file.
 const MAGIC: &[u8; 8] = b"TNSWORLD";
-/// DESIGN.md §4: the only format version this reader knows.
+/// `tension-world/DESIGN.md` §4: the only format version this reader knows.
 const FORMAT_VERSION: u16 = 1;
-/// DESIGN.md §4: the header's size, and the component table's fixed start.
+/// `tension-world/DESIGN.md` §4: the header's size, and the component table's fixed start.
 const HEADER_LEN: u32 = 40;
-/// DESIGN.md §6: the sentinel `from`/`to` gravity carries.
+/// `tension-world/DESIGN.md` §6: the sentinel `from`/`to` gravity carries.
 const NO_ENDPOINT: u32 = 0xFFFF_FFFF;
-/// DESIGN.md §5: component type tags.
+/// `tension-world/DESIGN.md` §5: component type tags.
 const TAG_POINT_MASS: u16 = 1;
 const TAG_KINEMATIC: u16 = 2;
 const TAG_ANCHOR: u16 = 3;
-/// DESIGN.md §6: connection type tags.
+/// `tension-world/DESIGN.md` §6: connection type tags.
 const TAG_SPRING: u16 = 1;
 const TAG_PIN: u16 = 2;
 const TAG_GRAVITY: u16 = 3;
@@ -49,7 +49,7 @@ const TAG_GRAVITY: u16 = 3;
 /// Why a world could not be loaded or evaluated.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorldError<'a> {
-    /// The first eight bytes are not `TNSWORLD` (DESIGN.md §2).
+    /// The first eight bytes are not `TNSWORLD` (`tension-world/DESIGN.md` §2).
     BadMagic,
     /// `format_version` is not the one version this reader knows (§4, §9).
     BadVersion { found: u16 },
@@ -156,7 +156,7 @@ pub struct World<'a> {
 }
 
 impl<'a> World<'a> {
-    /// Read and validate the compiled bytes (DESIGN.md §4–§7).
+    /// Read and validate the compiled bytes (`tension-world/DESIGN.md` §4–§7).
     ///
     /// # Errors
     ///

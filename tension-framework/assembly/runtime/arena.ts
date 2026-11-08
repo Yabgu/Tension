@@ -1,7 +1,7 @@
 // The arena, as the guest sees it.
 //
 // The session owns the memory and writes the layout into it before the guest
-// exists (`tension-ogre/DESIGN.md` §5); this module is the read-only view. Two
+// exists (`docs/session.md` §4); this module is the read-only view. Two
 // things are worth knowing before using it:
 //
 //   * The arena is at address 0. The header page is fixed

@@ -278,7 +278,7 @@ console.log(`${RUNNER}: embedded ${join(out, 'shaders_spv.h')}`);
 
 // ── 4. link the DSO ──────────────────────────────────────────────────────────
 // -std=c++17 matches the other adapters. No SDL_shadercross: v1 targets Linux
-// with SPIR-V produced at build time (DESIGN.md §8.1).
+// with SPIR-V produced at build time (`docs/modules/2d.md` §4).
 const args = [
   '-std=c++17', '-O2', '-fPIC', '-Wall', '-Wextra',
   `-I${join(src, 'include')}`,

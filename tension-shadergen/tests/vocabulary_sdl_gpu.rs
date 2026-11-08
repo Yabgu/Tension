@@ -1,7 +1,7 @@
 //! Vocabulary conformance: does `tension-shadergen`'s seam fit a second
 //! renderer without changing the trait?
 //!
-//! DESIGN.md §6.7 makes this the gate before any adapter is scaffolded. The
+//! `docs/modules/2d.md` §1 makes SDL_GPU the gate before any adapter is scaffolded. The
 //! crate's own vocabulary is neutral (`a_position`, `a_texcoord0`, …) and its
 //! module doc claims the naming for a real renderer "lives in the adapter that
 //! owns the renderer" — but no adapter in the tree implements `Vocabulary`, so
@@ -51,7 +51,7 @@ impl Vocabulary for SdlGpuVocabulary {
     }
 }
 
-/// The 28-byte `sprite` record (DESIGN.md §5) as the shader sees it.
+/// The 28-byte `sprite` record (`docs/modules/2d.md` §8) as the shader sees it.
 fn classic2d_layout() -> LayoutDesc {
     LayoutDesc {
         name: "classic2d".to_string(),

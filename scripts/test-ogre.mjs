@@ -203,7 +203,7 @@ caseRun('headless-refused', 'guest-window.wasm', '^OK init-refused -22$',
 
 // No display at all: GL3+ throws on the X connection, the backend catches it,
 // and the guest is told which stage failed. Before the catch this aborted the
-// process with a core dump (DESIGN.md §8.1).
+// process with a core dump (`docs/modules/ogre.md` §8).
 //
 // The scenario is X11-shaped: on Windows there is no DISPLAY to unset, and the
 // GL3+ plugin opens a WGL window instead of throwing, so the case cannot be

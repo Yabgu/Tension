@@ -117,7 +117,7 @@ if (!emitScaled || emitScaled.status !== 0) {
 console.log(`${RUNNER}: ${emitScaled.stdout.trim()} -> ${runtimeBlob}`);
 
 // ── 3. run it headless ──────────────────────────────────────────────────────
-// `offscreen`, not `dummy`: dummy has no GPU backend (DESIGN.md §9).
+// `offscreen`, not `dummy`: dummy has no GPU backend (`docs/modules/2d.md` §6).
 const result = run(harness, [dso], {
   stdio: 'inherit',
   env: {

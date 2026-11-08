@@ -131,7 +131,7 @@ export const RES_SHADER: u32 = 2;
 export const RES_FONT: u32 = 3;
 
 /** A mesh resource that carries a skeleton, in the `Resource` record's `flags`
- * (DESIGN.md §5.1). The resource's `size` carries the *bone count* for these,
+ * (`docs/modules/ogre.md` §4). The resource's `size` carries the *bone count* for these,
  * where other resources carry bytes. */
 export const RES_RIGGED: u32 = 1;
 
@@ -249,7 +249,7 @@ export const JOB_SIZE: u32 = 64;
 
 // --- the submission sub-tables ---------------------------------------------
 //
-// SCENE holds three tables end to end (DESIGN.md §5.1): 1024 `SceneNode`s,
+// SCENE holds three tables end to end (`docs/modules/ogre.md` §4.1): 1024 `SceneNode`s,
 // then 512 `CameraRecord`s, then 1024 `LightRecord`s. MATERIAL and RENDERABLE
 // hold one table each. The split is the capability catalogue's business rather
 // than the protocol's, so it does not move `layoutHash` — which is exactly why
@@ -435,7 +435,7 @@ function ogreWireContractProblem(): string | null {
   if (bone != null) return bone;
 
   // The procedural window's start is derived here and written as a literal in
-  // the adapter (DESIGN.md §5.1 pins it at 192 KiB); a derivation that drifts
+  // the adapter (`docs/modules/ogre.md` §4.1 pins it at 192 KiB); a derivation that drifts
   // from that number would put the guest's bytes where the adapter does not
   // look, so the two are tied together by this.
   // Derived from the two table strides: 48*2048 + 48*2048. The adapter derives

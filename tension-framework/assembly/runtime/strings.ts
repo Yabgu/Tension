@@ -2,7 +2,7 @@
 // read by `(offset, len)`.
 //
 // The region is `1 MiB + 32 B`: two 16-byte `StringHalf` descriptors at its
-// start, then the buffer the two halves share (`DESIGN.md` §5.2 — the descriptors
+// start, then the buffer the two halves share (`docs/session.md` §4 — the descriptors
 // are why the size has a `+ 32`). Half 0 is the guest's and half 1 is the
 // session's; the descriptors say where each half starts inside the region and
 // how much it holds, and nothing else in chunk 1 writes them.

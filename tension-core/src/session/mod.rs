@@ -2,7 +2,7 @@
 //!
 //! The session owns the memory the guest imports, prepares the arena the guest
 //! reads, and answers the two verbs that open and close it
-//! (`tension-ogre/DESIGN.md` §4, §5, §6, §11). Delivery — `session_wait`,
+//! (`docs/session.md` §2–§8). Delivery — `session_wait`,
 //! `session_drain`, the subscriptions, the epoch, deferred submission — and the
 //! adapter loader are later rounds; the ring headers written here are the
 //! storage those phases will use, not a delivery mechanism.
@@ -38,20 +38,20 @@
 pub(crate) mod arena;
 mod config;
 /// The posting face: the queues an adapter thread writes into, and the
-/// sequence counter they share (`tension-ogre/DESIGN.md` §3.2, §7.2).
+/// sequence counter they share (`docs/session.md` §4).
 pub mod posting;
 /// The arena side: the thirteen per-class sub-rings, and the transfer that moves a
-/// class queue into its ring (`DESIGN.md` §3.3, §3.4).
+/// class queue into its ring (`docs/session.md` §3, §5).
 pub mod subring;
 /// The epoch: publish, invoke, apply — the only place delivery happens
-/// (`DESIGN.md` §3.3).
+/// (`docs/session.md` §3).
 pub mod epoch;
 /// Deferred submission: the pending queue a callback writes into, and the apply
-/// phase that drains it (`DESIGN.md` §3.5).
+/// phase that drains it (`docs/session.md` §6).
 pub mod apply;
 
 /// A capability's declared need for one region kind, re-exported because the
-/// run hands the set from the registry to the session (`DESIGN.md` §7.2).
+/// run hands the set from the registry to the session (`docs/session.md` §4).
 pub use config::RegionNeed;
 
 use wasmtime::{
@@ -70,7 +70,7 @@ use crate::HostState;
 // slot count, both from the layout.
 use arena::{CALLBACKS_SLOTS, CLASS_COUNT};
 
-/// The errno table at this boundary (`DESIGN.md` §6.2, §6.3). `EINVAL` is the
+/// The errno table at this boundary (`docs/session.md` §7). `EINVAL` is the
 /// decoder's too, which is why it is declared here and imported by `config`:
 /// the parent owns the ABI surface.
 pub const EINVAL: i32 = -22;
@@ -86,7 +86,7 @@ const WASM_PAGE_BYTES: usize = 64 * 1024;
 
 /// The host's ceiling when a module declares no maximum, in pages (64 MiB).
 ///
-/// `DESIGN.md` §4 leaves this number open; the *policy* is the note's — a
+/// `docs/session.md` §2 leaves this number open; the *policy* is the page's — a
 /// module that declares no maximum gets the host's cap rather than an unbounded
 /// memory. The value is eight times the default `max_arena_size`: enough for a
 /// game's heap beside the arena at the default configuration, small enough that
@@ -105,7 +105,7 @@ pub const HOST_CAP_PAGES: u32 = 1024;
 /// conservative default: a session that never opens still has a coherent arena.
 const DEFAULT_ARENA_SIZE: u32 = arena::LAYOUT_FLOOR as u32;
 
-/// The session's state machine (`DESIGN.md` §6.3). The arena's control block
+/// The session's state machine (`docs/session.md` §7). The arena's control block
 /// carries the same values as its *report*; this enum is the authoritative
 /// machine, which lives host-side and is never guest-writable.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -125,7 +125,7 @@ pub enum SessionState {
 /// diagnostic does not need a debugger.
 #[derive(Debug)]
 pub enum SessionError {
-    /// The verb needs a state the session is not in (`DESIGN.md` §6.3).
+    /// The verb needs a state the session is not in (`docs/session.md` §7).
     NotUninit { state: SessionState },
     /// The `session_open` config was refused, with the decoder's reason.
     Config(config::ConfigError),
@@ -319,7 +319,7 @@ impl From<arena::LayoutError> for SessionError {
 }
 
 /// The session's memory lifecycle. Everything here is host-side state; the
-/// arena is the guest's view of the same facts (`DESIGN.md` §5).
+/// arena is the guest's view of the same facts (`docs/session.md` §4).
 #[derive(Debug)]
 pub struct Session {
     /// The arena memory, owned by the session and imported by the guest.
@@ -342,7 +342,7 @@ pub struct Session {
     /// The compiled-in shape hash this session was built against.
     layout_hash: u32,
     /// The region kinds the loaded adapters declared during `link`, in the order
-    /// they were first asked about (`DESIGN.md` §7.2). Empty when no adapter is
+    /// they were first asked about (`docs/session.md` §4). Empty when no adapter is
     /// loaded, which is what makes the check a no-op for a plain run.
     required_regions: Vec<config::RegionNeed>,
     /// The delivery callbacks resolved at open and pinned by signature. `None`
@@ -662,7 +662,7 @@ impl Session {
 // ── the verb surface (A1 2b) ──────────────────────────────────────────────
 
 /// One line per verb call and per refusal on stderr, prefixed the way every
-/// service in this repo prefixes its trace (`DESIGN.md` §6.1: the wasm boundary
+/// service in this repo prefixes its trace (`docs/session.md` §7: the wasm boundary
 /// has no error channel, so this is where a refusal is explained).
 ///
 /// Routed through the host logger under the name `session`, so the line carries
@@ -696,7 +696,7 @@ fn fresh_nonce() -> u64 {
 
 /// The guest's delivery callbacks, resolved once at `session_open` and pinned by
 /// `TypedFunc` so a mis-shaped table entry fails the open rather than the first
-/// delivery (`DESIGN.md` §8).
+/// delivery (`docs/session.md` §3).
 #[derive(Default)]
 pub struct ResolvedCallbacks {
     /// `i32 (class, table_ptr, count)`.
@@ -807,7 +807,7 @@ impl Session {
 
     /// The open gate: `UNINIT` and `CLOSED` may open; `READY` and `FAULTED` may
     /// not — a faulted session has half-published state and must be closed
-    /// first (`DESIGN.md` §6.3).
+    /// first (`docs/session.md` §7).
     fn open_state_check(&self) -> Result<(), SessionError> {
         match self.state {
             SessionState::Uninit | SessionState::Closed => Ok(()),
@@ -1151,7 +1151,7 @@ fn read_guest(
 /// `session::open(cfg_ptr, cfg_len) -> i32`.
 ///
 /// The guest's bytes are read on the guest thread inside this call — the arena's
-/// rendezvous (`DESIGN.md` §4). The session is taken out of the store for the
+/// rendezvous (`docs/session.md` §2). The session is taken out of the store for the
 /// duration, because the memory handle it owns is reached through the very store
 /// this call borrows; it is put back on every path, including a refusal, so a
 /// refused open leaves a live session behind it.
@@ -1348,7 +1348,7 @@ fn run_epoch_verb(
 }
 
 /// The depth guard a verb runs before anything else: a session verb called from
-/// inside a callback is refused with `-EBUSY` (`DESIGN.md` §6.3).
+/// inside a callback is refused with `-EBUSY` (`docs/session.md` §7).
 fn depth_refusal(caller: &Caller<'_, HostState>) -> Option<i32> {
     if caller.data().depth != 0 {
         log("session verb refused from inside a callback (-EBUSY)");
@@ -2528,7 +2528,7 @@ mod verbs {
         // The diagnostic names the field and both hashes. It deliberately does
         // *not* name a type: one shape hash cannot say which entry differs, and
         // the config carries no manifest to compare against (see the round's
-        // report on DESIGN.md §6.1's wording).
+        // report on `docs/session.md` §7's wording).
         let message = error.to_string();
         assert!(message.contains("layout_hash"), "{message}");
         assert!(message.contains("deadbeef"), "{message}");

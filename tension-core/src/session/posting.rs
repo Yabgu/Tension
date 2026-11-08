@@ -246,7 +246,7 @@ pub enum WaitOutcome {
 pub struct PostingSide {
     queues: Vec<ClassQueue>,
     /// The next sequence number. Session-global, so a guest can order events
-    /// across classes by `seq` (`DESIGN.md` §3.3).
+    /// across classes by `seq` (`docs/session.md` §3).
     next_seq: AtomicU64,
     /// Whether a class has a subscriber: what `class_info` reports so a producer
     /// can skip generating events nobody asked for. `FRAME` starts off

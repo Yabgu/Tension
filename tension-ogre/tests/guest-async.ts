@@ -333,7 +333,7 @@ async function dropCase(tns: string): void {
     return;
   }
 
-  // Recovery: the region is the truth (tension-ogre/DESIGN.md:1842-1844).
+  // Recovery: the region is the truth.
   print("ASYNC EIO job=" + j2.toString() + " status=" + lostAwait.status.toString() +
     " payload=" + lostAwait.payload.toString() + " region-state=" + ogre.jobState(j2).toString());
   print("ASYNC live job=" + j3.toString() + " resource=" + liveAwait.payload.toString());

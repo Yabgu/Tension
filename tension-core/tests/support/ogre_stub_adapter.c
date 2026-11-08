@@ -17,7 +17,7 @@
  *   * not reentrant: its state is file-scope statics, like the reference echo
  *     adapter's, and `dlopen` on one path returns one image — so one process is
  *     one instance per adapter. The `adapter_ctx` vtable slot that would fix
- *     that is a recorded future-work item (`tension-ogre/DESIGN.md` §12);
+ *     that is a recorded future-work item;
  *     production use before it lands means one OGRE adapter per process, which
  *     is the plan anyway.
  *

@@ -1,6 +1,6 @@
 # tension-world — the vocabulary a game author writes for a simulated world.
 #
-# The binary format lives in DESIGN.md (P8b); this file declares the
+# The binary format lives in `tension-world/DESIGN.md` (P8b); this file declares the
 # vocabulary an author writes. The compiler (P8c) accepts exactly this
 # vocabulary and rejects everything else; the evaluator (P8d) reads the
 # compiled bytes and must understand every component and connection type

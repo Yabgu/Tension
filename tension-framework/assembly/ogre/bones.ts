@@ -12,7 +12,7 @@
 // bone.
 //
 // Two things are worth knowing before using it, both measured by the probe that
-// wrote this round (DESIGN.md §5.1):
+// wrote this round (`docs/modules/ogre.md` §4):
 //
 //   * the mesh must be **rigged** — `isRigged(meshResourceId)` — and it must be
 //     drawn with a **PBS** material. HlmsUnlit has no skeletal animation in its
@@ -107,7 +107,7 @@ export class BoneBatch {
    *
    * The conversion — the solver speaks `f64`, the wire speaks `f32` — is all
    * this does. Which state slot is which bone is game policy, and it stays in
-   * the game (DESIGN.md §5.1).
+   * the game (`docs/modules/ogre.md` §4).
    */
   setFromState(index: u32, renderableId: u32, boneIndex: u32, state: Float64Array, xSlot: i32,
                ySlot: i32, zSlot: i32): void {
