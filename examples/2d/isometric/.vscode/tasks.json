@@ -1,0 +1,29 @@
+{
+  // The pre-launch tasks. `debug` chains `build:debug`, which is `build` plus
+  // `--debug --sourceMap` — the map is the only thing that links a wasm
+  // instruction back to a `main.ts` line, so a launch that ran the release
+  // build would stop in wasm instead of in the source.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build",
+      "type": "shell",
+      "command": "npm run build",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "build:debug",
+      "type": "shell",
+      "command": "npm run build:debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "debug",
+      "dependsOn": ["build:debug"],
+      "dependsOrder": "sequence"
+    }
+  ]
+}

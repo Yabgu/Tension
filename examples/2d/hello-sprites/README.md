@@ -1,39 +1,37 @@
 # hello-sprites — a TensionScript guest drawing through `tension::2d`
 
-Ten sprites, rendered by the `tension-2d` capability from a Wasm guest written
-in TensionScript. It is the same frame the adapter's own C++ stub renders
-(`tension-2d/tests/smoke_core.cpp`), produced through the real guest path
-instead of a stub: a session, the capability loaded from its DSO, and the ten
-verbs called as wasm imports.
+Ten sprites, rendered by the in-core 2D renderer from a Wasm guest written in
+TensionScript: a session, the ten verbs called as wasm imports, and 10240
+non-black pixels at ten known positions.
 
-That equality is the point. The C++ stub proves the adapter works when driven
-from C; this example proves a **guest** can drive it — the memory model, the
-import registration, the `guest_read` window, and the graph blob's identity all
-survive the crossing into TensionScript.
+**10240 is the assertion.** It is `10 × 32 × 32` — ten 32-pixel quads, 64 pixels
+apart so none overlap — and it is checked against a literal, not against the
+guest's own "expected" line. That line is computed from the same `SPRITE_SIZE`
+that drew the frame, so a checker that trusted it would pass a guest that drew
+something else at a different size.
 
 ## Run it
 
 ```sh
-npm start
+npm run build
+npm start                     # a window, held until you close it
+npm test                      # headless, and it asserts the frame
 ```
 
-That builds the adapter if it is missing, builds the guest, runs the adapter's
-own suite, then runs the guest under `tension-core` with `libtension_2d.so`
-loaded — and fails if the frame is not the expected one.
+`npm start` is `tension-core build/game.wasm --window` and nothing else — no
+launcher, no DSO to find, no environment to set, because the renderer is in the
+binary. `npm test` runs the same guest headless (`SDL_VIDEODRIVER=offscreen`, so
+a pixel claim is reproducible) and fails unless the frame is the expected one.
 
-It also **shows the frame**: the guest is asked for a window, and holds it open
-until you close it. The window is a presentation path, not a second renderer —
-the same target the assertion measured is blitted to a swapchain — so what you
-see is what the test checked.
+From the repository root, without npm:
 
 ```sh
-npm start -- --headless    # assert only, no window
-TENSION_2D_HEADLESS=1 npm start
+tension-core examples/2d/hello-sprites/build/game.wasm --window
 ```
 
-A machine with no `DISPLAY` or `WAYLAND_DISPLAY` is treated as headless rather
-than failing, and every suite in `scripts/test.mjs` sets `TENSION_2D_HEADLESS=1`
-so a test run never opens a window.
+A machine that cannot create a graphics pipeline stops at `set_pipeline` with
+`-5`; `npm test` names that as the driver and states the assertion it would have
+made. See [`docs/known-limitations.md`](../../../docs/known-limitations.md).
 
 ```
   === TensionCore 2D demo: ten sprites through tension::2d ===
@@ -46,8 +44,6 @@ so a test run never opens a window.
   expected 10240 (10 x 32x32)
   OK: ten sprites at their recorded positions
 ```
-
-`10240` is `10 × 32 × 32`: ten 32-pixel quads, 64 pixels apart so none overlap.
 
 ## What the guest does
 

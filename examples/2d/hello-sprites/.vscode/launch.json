@@ -1,0 +1,46 @@
+{
+  // Debugging the example under tension-core. `tension-core` *is* the runtime,
+  // so the thing being debugged is `src/main.ts`, exactly as a Python script is
+  // debugged without debugging the python binary.
+  //
+  // No `--capability`: since Pass C of the 2D merge the renderer is in core, so
+  // there is no DSO path to resolve and no environment to set. The only thing
+  // this file does is name the binary and its arguments.
+  //
+  // `--window` is a **guest** argument here: it comes after the wasm path,
+  // because everything after the guest path is the guest's own `arg()` stream.
+  // The guest treats it as `--windowed` (see `wantsWindow` in `src/main.ts`).
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core (hello-sprites)",
+      // Three levels up: this repo opens the *example* as its workspace folder,
+      // so `.vscode/` is not part of the path. `examples/log`'s config is the
+      // depth-1 version of this same line.
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/game.wasm",
+        "--window"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // The wasmtime JIT emits code at run time, so the debugger has to be told
+      // to load its symbols from memory rather than from a file on disk.
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    }
+  ]
+}

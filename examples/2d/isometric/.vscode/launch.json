@@ -1,0 +1,43 @@
+{
+  // Debugging the isometric scene under tension-core.
+  //
+  // `--res` comes **before** the wasm path because it is a host option, and the
+  // host stops parsing options at the guest path: everything after that is the
+  // guest's own `arg()` stream. `--window` is a guest argument for that reason,
+  // and the guest treats it as `--windowed`.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core (isometric)",
+      // Three levels up: this repo opens the *example* as its workspace folder,
+      // so `.vscode/` is not part of the path. `examples/log`'s config is the
+      // depth-1 version of this same line.
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--res",
+        "${workspaceFolder}/build/isometric.tns",
+        "${workspaceFolder}/build/game.wasm",
+        "--window"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      // The wasmtime JIT emits code at run time, so the debugger has to be told
+      // to load its symbols from memory rather than from a file on disk.
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    }
+  ]
+}

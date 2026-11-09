@@ -34,8 +34,13 @@ function die(message) {
 
 const argv = process.argv.slice(2);
 let exampleDir = process.cwd();
+let debug = false;
 for (let i = 0; i < argv.length; i++) {
   if (argv[i] === '--example') exampleDir = resolve(argv[++i]);
+  // `--debug` also emits a source map, which is what `launch.json` needs: the
+  // map is the only thing that links a wasm instruction back to a `main.ts`
+  // line. Without it a breakpoint in a 2D example lands in wasm.
+  else if (argv[i] === '--debug') debug = true;
 }
 if (!existsSync(join(exampleDir, 'package.json'))) die(`no package.json in ${exampleDir}`);
 
@@ -127,9 +132,30 @@ console.log(`${RUNNER}: config ${relative(repo, config)}`);
 mkdirSync(join(exampleDir, 'build'), { recursive: true });
 const entry = join(exampleDir, 'src', 'main.ts');
 const out = join(exampleDir, 'build', 'game.wasm');
-const compile = spawn(compiler, [entry, '--config', config, '-o', out], { cwd: exampleDir });
+const compileFlags = debug ? ['--debug', '--sourceMap'] : [];
+const compile = spawn(compiler, [entry, '--config', config, ...compileFlags, '-o', out], {
+  cwd: exampleDir,
+});
 if (!compile || compile.status !== 0) {
   console.error(compile?.stdout ?? '', compile?.stderr ?? '');
   die('the guest did not compile');
+}
+// A `--debug` build is only worth anything if the compiler actually emitted
+// DWARF, so say so rather than let someone set a breakpoint in `main.ts` and
+// wonder. Measured: `tensionscript` 0.13.2 emits no `.debug_info` for these
+// guests with the exact flag set that does produce one for `examples/io`, and
+// the cause is not isolated. The flags are correct; the compiler is silent.
+if (debug) {
+  const wasm = readFileSync(out);
+  if (wasm.includes(Buffer.from('.debug_info')) || wasm.includes(Buffer.from('.debug_line'))) {
+    console.log(`${RUNNER}: DWARF present — a breakpoint in src/main.ts will resolve`);
+  } else {
+    console.log(
+      `${RUNNER}: asked for --debug --sourceMap, but the wasm carries no DWARF; a\n` +
+        `  breakpoint will land in wasm rather than in src/main.ts. Measured with\n` +
+        `  tensionscript 0.13.2 — the same flags do emit DWARF for examples/io, so this\n` +
+        `  is a compiler gap for these guests, not a missing flag. See docs/debugging.md.`,
+    );
+  }
 }
 console.log(`${RUNNER}: ${relative(exampleDir, out)} (${readFileSync(out).length} bytes)`);

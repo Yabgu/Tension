@@ -65,15 +65,23 @@ backpack to the body, and the test asserts exactly that colour change.
 
 ```sh
 npm install   # once
-npm start     # runs the assertions, then shows the scene in a window
-npm start -- --headless   # assertions only, no window
+npm run build # slice the tileset, compile the guest, pack the volume
+npm test      # assert: four probes, both revert levers, three screenshots
+npm start     # the same scene in a window, held until you close it
 ```
 
-`npm start` does both: it renders every frame offscreen first and asserts the
-probes (which is the part that can fail), then opens one windowed run and holds
-it until you close it. A machine with no `DISPLAY`/`WAYLAND_DISPLAY` skips the
-window instead of failing, and `TENSION_2D_HEADLESS=1` does the same for a script
-that cannot pass flags.
+**`npm test` is the one that can fail.** It renders every frame offscreen first
+— a pixel claim has to be reproducible, and a compositor makes it depend on the
+machine — and asserts the probes and the two revert levers.
+
+**`npm start` is one command**: `tension-core --res build/isometric.tns
+build/game.wasm --window`. No launcher, no DSO to find, no environment to set;
+the renderer is in the binary. `--res` comes *before* the wasm path because it
+is a host option, and `--window` comes after it because it is the guest's own
+word.
+
+A machine that cannot create a graphics pipeline stops at `set_pipeline` with
+`-5`, and `npm test` names that as the driver rather than as a broken scene.
 
 Nothing to fetch. The tileset is committed; to change it, edit
 `examples/2d/assets/build-tileset.mjs` and run it — the example rebuilds from
@@ -86,8 +94,7 @@ whatever that script draws.
    page, writes three IWI blobs (`build.mjs`);
 2. compiles the guest (`scripts/build-2d-guest.mjs`);
 3. packs the blobs into `build/isometric.tns` with `tension-pack`;
-4. runs the guest under `tension-core` with `libtension_2d.so` loaded and the
-   pak mounted;
+4. runs the guest under `tension-core` with the pak mounted;
 5. reads the two frames the guest prints, writes `back.png`, `front.png` and
    `preview.png`, and asserts every claim above.
 
