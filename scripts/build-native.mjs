@@ -578,10 +578,23 @@ function auditSdlLinkage() {
 
 function buildCore() {
   const ai = process.env.TENSION_AI === '1';
+  // Which backend the ten `tension::2d` imports resolve to (Pass A of the 2D
+  // merge). Default is the capability DSO — the tree exactly as it was.
+  // `TENSION_RENDER2D=rust` compiles the in-core renderer in, and the loader then
+  // skips a 2D DSO named on the command line instead of registering the same
+  // imports twice.
+  //
+  // The flag is deliberately a build switch and not a runtime one: it decides
+  // which code exists. Pass B flips the default and the flag goes away with the
+  // C++ adapter.
+  const render2d = process.env.TENSION_RENDER2D === 'rust';
+  const enabled = [ai ? 'ai' : 'audio'];
+  if (render2d) enabled.push('render2d-core');
   const features = ai
-    ? ['--features', 'ai']
-    : ['--no-default-features', '--features', 'audio'];
+    ? ['--features', enabled.join(',')]
+    : ['--no-default-features', '--features', enabled.join(',')];
   note(`core: cargo build --release ${features.join(' ')}`);
+  if (render2d) note('core: 2D renderer is in core (TENSION_RENDER2D=rust)');
   run('cargo', ['build', '--release', ...features], {
     cwd: join(repo, 'tension-core'),
   });
