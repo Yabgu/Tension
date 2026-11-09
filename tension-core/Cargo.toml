@@ -11,6 +11,17 @@ audio = ["dep:cpal"]
 # (needs cmake + g++). Build with `--no-default-features --features audio`
 # and `ai` falls back to the deterministic stub.
 ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
+# The 2D renderer in core instead of in a capability DSO (Pass A of the merge).
+#
+# Off is the tree as it was: the ten `tension::2d` imports come from
+# `tension-2d/build/libtension_2d.so`, and a run that names no `--capability`
+# simply does not have them. On, this binary registers the imports itself and a
+# `tension::2d` DSO named on the command line is skipped rather than loaded.
+#
+# A feature rather than a runtime flag because it decides which code exists, not
+# which code runs: `link_2d` is compiled in or out. Pass B flips the default and
+# then deletes the C++ adapter, at which point the feature goes too.
+render2d-core = []
 
 [[bin]]
 name = "tension-core"
@@ -112,4 +123,13 @@ harness = false
 # The end-to-end proof: SDL3's window and surface handed to Ogre-Next.
 [[test]]
 name = "ogre_host_surface"
+harness = false
+
+# The 2D renderer's device, window claim and swapchain guard. `harness = false`
+# for `platform_surface`'s reason: `sdl3::init()` lets the first calling thread
+# claim main-thread status, so a normal `#[test]` would pass once and refuse
+# every test after it. The probe needs a GPU, so it skips cleanly (and says so)
+# when none is usable — see the file's header.
+[[test]]
+name = "render2d_open"
 harness = false

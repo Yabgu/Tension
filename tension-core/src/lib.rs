@@ -21,6 +21,11 @@ pub mod pipeline_default;
 // because the window is core infrastructure from the north star onward — not a
 // property of one entry point.
 pub mod platform;
+// The in-core 2D renderer (Pass A of the merge). In the library rather than the
+// binary for `platform`'s reason — the `render2d_open` probe is an integration
+// test — and because the device and the window claim are core infrastructure
+// once 2D stops being a DSO.
+pub mod render2d;
 pub mod res;
 pub mod shadergen_registry;
 pub mod world;

@@ -67,6 +67,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::platform;
+use tension_core::render2d;
 use tension_core::res::{self, ResourceSet, Stat};
 use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
 
@@ -146,12 +147,32 @@ struct HostState {
     /// what the guest posts through `tension::platform.control`, and what the
     /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
     control: std::sync::Arc<platform::ControlBus>,
+    /// The in-core 2D renderer: GPU device, the one canvas, and who holds the
+    /// swapchain.
+    ///
+    /// Here rather than beside the store because every 2D verb is a `func_wrap`
+    /// that reaches `caller.data_mut()`, and because the window it claims is the
+    /// field below — the two have to be borrowable together, which is what one
+    /// struct gives and two do not.
+    ///
+    /// **Declared before `host_window` on purpose: field order is drop order.**
+    /// The GPU device holds a claim on that window, so the device must be gone
+    /// before the `SDL_Window` is. `main`'s teardown takes the window out first,
+    /// and this ordering is what makes a path that skips teardown — a panic, a
+    /// future early return — still correct rather than a use-after-free.
+    render2d: render2d::Render2dState,
     /// The host-owned window, when `--window` asked for one.
     ///
     /// Lives in the store rather than beside it because `host_loop` needs to
     /// pump it once per iteration and has no other way to reach it. Dropped
     /// after `teardown_adapters`, so no adapter can hold a handle into a dead
     /// instance.
+    ///
+    /// Since Pass A of the 2D merge this is also created **on demand**: a
+    /// renderer that opens a windowed canvas makes one at the size it declares
+    /// (`render2d::device::Render2dState::open_windowed`), so `--window` is no
+    /// longer the only way to get a window. `--window` remains for the one
+    /// example that has no renderer at all.
     host_window: Option<platform::HostWindow>,
     /// Set by the pump when the user closes the window. The loop breaks on it,
     /// the same way it breaks when the guest closes its session.
@@ -914,6 +935,11 @@ fn main() -> anyhow::Result<()> {
             pending: session::apply::PendingQueue::new(),
             control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
                 host_window: None,
+            // The in-core 2D renderer's device, canvas and swapchain guard. Default
+            // (all `None`) whether or not the feature is on: with it off nothing
+            // reads this, and leaving it out behind a `cfg` would make the struct
+            // two shapes for no benefit.
+            render2d: Default::default(),
             window_closed: false,
             adapters: Vec::new(),
             session: None,
@@ -1390,6 +1416,14 @@ fn main() -> anyhow::Result<()> {
     // this host instead of failing at instantiation with "unknown import".
     scheduler::link_scheduler(&mut linker)?;
 
+    // tension::2d ---------------------------------------------------------
+    //
+    // In-core only when the `render2d-core` feature is on. Off, the ten verbs
+    // come from the capability DSO exactly as they did before this pass, and
+    // nothing here is compiled.
+    #[cfg(feature = "render2d-core")]
+    link_2d(&mut linker)?;
+
     // The host-owned window -------------------------------------------------
     //
     // Created before any adapter loads, because an adapter's `init` is the
@@ -1434,6 +1468,23 @@ fn main() -> anyhow::Result<()> {
     let capability_paths = resolve_capability_paths(&cli.capability_paths)?;
     let mut adapters: Vec<adapter::LoadedAdapter> = Vec::with_capacity(capability_paths.len());
     for path in &capability_paths {
+        // With the in-core backend compiled in, a 2D DSO on the command line is
+        // skipped rather than loaded: `link_2d` already defined every
+        // `tension::2d` import, and a second registration would be the one a
+        // guest silently got. The log line is what stops this looking like the
+        // adapter failed to load.
+        #[cfg(feature = "render2d-core")]
+        if is_2d_capability(path) {
+            logging::log(
+                Level::Info,
+                "core",
+                &format!(
+                    "--capability {}: skipped — the 2D renderer is in core",
+                    path.display()
+                ),
+            );
+            continue;
+        }
         match adapter::load_adapter(path) {
             Ok(loaded) => {
                 logging::log(
@@ -1827,6 +1878,26 @@ fn main() -> anyhow::Result<()> {
 /// ordering requirement — after `teardown_adapters`, before the store drops —
 /// applies to both and is the kind of thing a third exit path would forget.
 fn drop_host_window(store: &mut Store<HostState>) {
+    // The 2D canvas goes first. Its GPU device holds a claim on the window
+    // below, and destroying a claimed window under a live device is the ordering
+    // that faults — so this mirrors the field order in `HostState` (where
+    // `render2d` is declared before `host_window` for the same reason), for the
+    // paths that reach teardown without a `close`.
+    if store.data().render2d.canvas().is_some() {
+        if let Err(error) = store.data_mut().render2d.close(1) {
+            logging::log(
+                Level::Warn,
+                "core",
+                &format!("teardown: the 2D canvas did not close cleanly ({error})"),
+            );
+        } else {
+            logging::log(
+                Level::Debug,
+                "core",
+                "teardown: the 2D canvas closed before the window",
+            );
+        }
+    }
     if let Some(window) = store.data_mut().host_window.take() {
         let (width, height) = window.published_size();
         logging::log(
@@ -1836,6 +1907,181 @@ fn drop_host_window(store: &mut Store<HostState>) {
         );
         drop(window);
     }
+}
+
+// ---------------------------------------------------------------------------
+// tension::2d — the in-core renderer (feature `render2d-core`)
+// ---------------------------------------------------------------------------
+
+/// Register the ten `tension::2d` verbs as `func_wrap`s.
+///
+/// # Why these live in the binary
+///
+/// A `func_wrap` closure takes `Caller<'_, HostState>`, and `HostState` is the
+/// binary's. The library owns the mechanism ([`render2d::Render2dState`]: the
+/// device, the window claim, the swapchain guard); this owns the guest-facing
+/// names. That is the split `platform` already makes, and it is what lets
+/// `tests/render2d_open.rs` drive the mechanism with no wasm in sight.
+///
+/// # Why all ten are registered when eight are `-ENOSYS`
+///
+/// A guest that imports `tension::2d` imports all of the verbs it calls, and a
+/// missing definition fails **instantiation**, not the call. Registering the
+/// eight keeps every existing 2D guest loadable against the in-core backend, so
+/// the dual path can be exercised end to end: `open` and `close` really work,
+/// and a guest that gets as far as `submit` is told plainly that the port is
+/// half done. Pass B replaces each body and this comment goes.
+///
+/// The signatures are `adapter.cpp:440-486`'s registration table, verb for verb:
+/// the arity and the parameter count are part of the contract, and a guest built
+/// against the DSO must not see a different shape.
+#[cfg(feature = "render2d-core")]
+fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
+    use render2d::error::{ENOSYS, EINVAL};
+
+    linker.func_wrap(
+        "tension::2d",
+        "open",
+        |mut caller: Caller<'_, HostState>, width: i32, height: i32, flags: i32| -> i32 {
+            // The DSO's validation, unchanged (`adapter.cpp:117-131`): bit 0 is
+            // the only flag, and a canvas is never zero-sized.
+            const OPEN_WINDOWED: i32 = 1;
+            if flags & !OPEN_WINDOWED != 0 {
+                logging::log(Level::Warn, "2d", &format!("open: unknown flag bits {flags:#x}"));
+                return EINVAL;
+            }
+            if width <= 0 || height <= 0 {
+                logging::log(
+                    Level::Warn,
+                    "2d",
+                    &format!("open: {width}x{height} is not a canvas size"),
+                );
+                return EINVAL;
+            }
+
+            let state = caller.data_mut();
+            let HostState {
+                render2d,
+                host_window,
+                ..
+            } = state;
+
+            let windowed = flags & OPEN_WINDOWED != 0;
+            let result = if windowed {
+                render2d.open_windowed(host_window, width as u32, height as u32)
+            } else {
+                render2d.open_offscreen(width as u32, height as u32)
+            };
+
+            match result {
+                Ok(handle) => {
+                    let kind = if windowed { "window" } else { "offscreen" };
+                    logging::log(
+                        Level::Info,
+                        "2d",
+                        &format!("open: GPU device up, {kind} {width}x{height} target"),
+                    );
+                    handle
+                }
+                Err(error) => {
+                    logging::log(
+                        Level::Error,
+                        "2d",
+                        &format!("open refused ({})", error.message()),
+                    );
+                    error.errno()
+                }
+            }
+        },
+    )?;
+
+    linker.func_wrap(
+        "tension::2d",
+        "close",
+        |mut caller: Caller<'_, HostState>, handle: i32| -> i32 {
+            let state = caller.data_mut();
+            match state.render2d.close(handle) {
+                Ok(value) => {
+                    logging::log(Level::Info, "2d", "close: device released");
+                    value
+                }
+                Err(error) => {
+                    logging::log(
+                        Level::Warn,
+                        "2d",
+                        &format!("close refused ({})", error.message()),
+                    );
+                    error.errno()
+                }
+            }
+        },
+    )?;
+
+    // The eight that Pass B ports. Arity is the DSO's, so a guest instantiates
+    // and is refused at the call rather than at load. Written out rather than
+    // generated by a macro: `IntoFunc` is implemented per closure shape, and a
+    // `macro_rules!` that repeats `$arg` produces a tuple pattern wasmtime does
+    // not accept.
+    linker.func_wrap(
+        "tension::2d",
+        "set_pipeline",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "shader_compile_raw",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32, _e: i32| -> i32 {
+            ENOSYS
+        },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "submit",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "present",
+        |_: Caller<'_, HostState>, _a: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "texture_load",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "info",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "screenshot",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
+    )?;
+    linker.func_wrap(
+        "tension::2d",
+        "set_texture",
+        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+    )?;
+
+    logging::log(Level::Debug, "2d", "link: ten verbs registered in core (open/close live)");
+    Ok(())
+}
+
+/// Whether a `--capability` path names the 2D adapter.
+///
+/// Only used when the in-core backend is compiled in: loading both would define
+/// every `tension::2d` import twice, and the second registration is what a
+/// guest would silently get. Matching on the file stem keeps the check honest
+/// for `libtension_2d.so`, `libtension_2d.dylib` and `tension_2d.dll` without a
+/// platform `cfg`.
+#[cfg(feature = "render2d-core")]
+fn is_2d_capability(path: &std::path::Path) -> bool {
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem == "libtension_2d" || stem == "tension_2d")
+        .unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------

@@ -630,6 +630,7 @@ mod tests {
                     pending: crate::session::apply::PendingQueue::new(),
                     control: std::sync::Arc::new(crate::platform::ControlBus::new()),
                 host_window: None,
+                render2d: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),
                     session: None,

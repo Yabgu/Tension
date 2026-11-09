@@ -576,6 +576,22 @@ impl HostWindow {
         self.window.size()
     }
 
+    /// The `sdl3` window, for a renderer that has to claim it.
+    ///
+    /// `pub(crate)` is the whole of the safety argument. An adapter reaches this
+    /// type only as two `u64`s across the C ABI — it never holds a `HostWindow`
+    /// — so widening this to `pub` could not widen an adapter's reach. But a
+    /// *core* module can hold one, and the 2D renderer must: `SDL_GPU` has no
+    /// external-surface API, so the only way it can present to the host's window
+    /// is to claim that window by handle (`SDL_ClaimWindowForGPUDevice`).
+    ///
+    /// The rule this does **not** break: no layer and no guest calls
+    /// `SDL_SetWindow*`. Claiming is not setting, and the setters stay behind
+    /// `apply_control`.
+    pub(crate) fn sdl_window(&self) -> &sdl3::video::Window {
+        &self.window
+    }
+
     /// Ask the window system to resize the window.
     ///
     /// **This is the executor's call, and the only place `SDL_SetWindowSize`
