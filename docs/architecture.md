@@ -50,7 +50,7 @@ handles it is given cross the boundary as `u64`
 | Render thread | renderer | `tension-ogre/src/adapter.cpp:616` | joined `adapter.cpp:1624` |
 | SDL event queue | host, `HostWindow::pump` | with the window | with the window |
 | Event layers (ABI v7) | the capability that registers one; the host owns the dispatcher | `register_event_layer`, from `link` | `unregister_event_layer`, or the host's `clear()` at teardown |
-| Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
+| Guest input attach | the `tension-input` DSO, as an event *layer* | `input_attach` (the words are kept; `kind` is ignored) | `input_close` |
 | Audio device (cpal) | host, `tension-core/src/audio/mod.rs:55` | `audio_init` | `audio_shutdown`, `audio/mod.rs:146` |
 | Filesystem | host, mediated by `tension::res`, `main.rs:1114` | startup | process exit |
 | Time | **the guest, deliberately.** The host provides no clock import, no dt on the frame wake, and no tick callback. The guest derives time from frame identity (§4) — a determinism requirement, not an omission. | no import matching `clock`, `time`, `elapsed` or `now` exists among the 48 `Linker::func_wrap` registrations in `tension-core/src` `[verified]` | not applicable — the host creates no clock to destroy |
@@ -234,9 +234,14 @@ window (the host's window then reports 0x0 and every later call fails).
 
 Four properties the implementation is built to hold:
 
-- **One thread.** `dispatch` runs on the window's thread, outside any guest call
-  (rule 13). It may call `post_event` and `post_control`; it must not touch guest
-  memory, must not block, and must not register or unregister a layer.
+- **One thread.** `dispatch` runs on the window's thread, outside any adapter
+  callback (a `publish` hook or a deferred `apply`) and never nested inside
+  another dispatch (rule 13). It may call `post_event` and `post_control`; it
+  must not touch guest memory, must not block, and must not register or
+  unregister a layer. The pump itself has two sites: the host loop's own
+  iteration, and the start of a blocking `session::wait` / `session::drain` —
+  the second is what serves a guest that drives its own loop, which is the only
+  way a renderer-less guest ever yields to the host.
 - **The mask is the host's filter.** A layer receives only the families it
   named; it cannot ask for one it did not subscribe to.
 - **No lock across adapter code.** `begin_dispatch` copies the layer table out
@@ -298,10 +303,13 @@ capability has one test for "headless" rather than two. This is what a
 capability that no longer owns a window handle uses to answer "is there a
 window, and how big".
 
-**Read — `pad_state`** (ABI v7). One gamepad slot's `tension_pad_record`.
-**`-ENOSYS` in this build**: the host does not open gamepads yet, and `-ENODEV`
-("no pad") would be a claim it cannot make. The slot and the record arrive
-together so the capability can be written against both.
+**Read — `pad_state`** (ABI v7). One gamepad slot's `tension_pad_record`, or
+`-ENODEV` for a slot with no pad. The host opens the pads (from `pump`, on the
+thread that initialised SDL) and samples every live slot at the end of each pump,
+so this is a mirror read and honestly any-thread — SDL's gamepad getters are not
+thread-safe, and a direct read from an arbitrary thread would be the same class
+of mistake the two-poller design was. A caller that wants every button or axis
+sample rather than the state subscribes to `TENSION_EVENT_PAD`.
 
 **Write — `post_control`** (`tension_adapter.h:606`). Copies a
 `tension_ctrl_msg` onto the control bus and returns. The answer is "queued",
@@ -427,8 +435,9 @@ This document deliberately does not cover:
 - **The ABI slot table** — [`docs/abi/adapter.md`](abi/adapter.md), generated
   from the header.
 - **Build and CI** — `docs/build.md`.
-- **Input attach** — deferred to the v7 input pass, which deletes the
-  `tension-input` DSO and moves the pump into the epoch.
+- **Input** — `tension-input/DESIGN.md` until V7c rewrites `INPUT.md` and adds
+  `docs/modules/input.md`. The capability is an event layer as of v7b: it owns no
+  SDL, no thread and no window, and the pump runs in the epoch.
 - **`tension-res`, `tension-solver`, `tension-world`** — their schemas and
   headers are the contract; no prose doc is planned.
 
