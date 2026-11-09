@@ -330,7 +330,28 @@ where
                 let outcome = callback.call(&mut *cx, (delivery.class as i32, ptr as i32, delivery.count as i32));
                 cx.as_context_mut().data_mut().depth = 0;
                 match outcome {
-                    Ok(_status) => delivered += delivery.count,
+                    Ok(_status) => {
+                        delivered += delivery.count;
+                        // The callback returning is the guest saying it consumed
+                        // the batch, so the host makes the reclaim write on its
+                        // behalf — the same write `rt.deliver` makes for a
+                        // host-loop guest. Without it the sub-ring fills at its
+                        // capacity once and every later record is dropped: 256
+                        // INPUT_KEY edges was the measured end of a session's
+                        // key input.
+                        if let Some(memory) = cx.as_context().data().arena {
+                            let end = delivery.first_slot + delivery.count;
+                            let arena_bytes = memory.data_mut(&mut *cx);
+                            if let Err(error) =
+                                subring::reclaim_through(arena_bytes, &capacities, delivery.class, end)
+                            {
+                                // The geometry was validated by the flush that
+                                // produced this delivery, so a refusal here is a
+                                // bug worth a line, not a failed frame.
+                                log(&format!("reclaim: {error:?}"));
+                            }
+                        }
+                    }
                     Err(trap) => {
                         return Err(fault_from_trap(session, cx, 0, "onBatch", delivery, &trap));
                     }

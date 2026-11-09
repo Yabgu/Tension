@@ -187,6 +187,43 @@ pub fn append_event_to_subring(
     Ok(())
 }
 
+/// Record that the guest has consumed a class's records through `slot`.
+///
+/// The sub-ring's `tail` is the guest's read cursor. Until v7b nothing advanced
+/// it: `compact_subring` only rewinds it to 0 after sliding the live records
+/// down, and `rt.deliver` (the host-loop path) writes it from the guest side
+/// (`header.n = header.head`). A guest driven by its own loop and delivering
+/// through `BATCHED` callbacks had no such writer, so the ring filled at its
+/// capacity once and every later record was counted as dropped — measured at
+/// exactly 256 `INPUT_KEY` edges on a live session, after which no key ever
+/// arrived again.
+///
+/// A callback returning *is* the guest saying it consumed the batch, so the host
+/// can make the same write on its behalf. `slot` is clamped to the ring's head:
+/// a caller cannot reclaim records that were never published.
+pub fn reclaim_through(
+    arena: &mut [u8],
+    capacities: &[u32; CLASS_COUNT],
+    class: u32,
+    slot: u32,
+) -> Result<(), SubringError> {
+    let at = event_subring_offset(capacities, class)?;
+    let header = arena::ring_header(arena, at);
+    let capacity = capacities[class as usize];
+    if header.capacity != capacity {
+        return Err(SubringError::HeaderMismatch {
+            class,
+            header: header.capacity,
+            expected: capacity,
+        });
+    }
+    let end = slot.min(header.head);
+    if end > header.tail {
+        arena::set_ring_tail(arena, at, end)?;
+    }
+    Ok(())
+}
+
 /// Make room in a sub-ring from what the guest has reclaimed.
 ///
 /// Slides the live records (`[tail, head)`) down to the front of the buffer,
