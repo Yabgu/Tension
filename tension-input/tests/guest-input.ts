@@ -3,16 +3,29 @@
 //   tension-core --capability tension-input/build/libtension_input.so \
 //       tension-input/build/guest-input.wasm
 //
-// What one run proves: the guest opens the session itself, opens an input
-// handle, attaches to input's *own* surface (kind 0 — no renderer involved,
-// which is the non-goal INPUT.md §6 states: a text game needs this capability
-// and no OGRE), reads one state record and prints its flags, and closes.
+// One file, four modes, because all four need the same three things: a session,
+// a host window the guest created itself, and an attached input capability.
 //
-// **The headless case is a legal answer.** With no display, `input_open`
-// (or the attach) refuses with `-ENODEV`, and this fixture prints
-// "OK headless -ENODEV" and exits 0 — the same shape as the ogre capability's
-// no-display case, where the refusal is the expected result and the guest says
-// so on stdout. A runner asserts on the `OK ` prefix either way.
+//   (default)        the functional case. Creates a 320x200 window, opens input,
+//                    attaches, reads one state record and every pad slot,
+//                    closes. Prints `OK attached flags=… pads=…`.
+//   --no-window      the refusal case. No window is created, so `attach` answers
+//                    -ENODEV and the fixture prints `OK headless -ENODEV`. That
+//                    is a legal answer, not a failure — the same shape the ogre
+//                    capability's no-display case uses.
+//   --mode=fidelity  the hard gate. Runs a fixed number of frames at
+//                    `--cadence=<ms>`, accumulating `mouse_dxf`/`mouse_dyf`, and
+//                    prints `FIDELITY dx=… dy=… frames=…`. The driver script
+//                    injects a known displacement while it runs; the totals must
+//                    agree with it (test-input-edge.mjs).
+//   --mode=latency   the soft gate. Same loop, but prints one `FRAME <index>
+//                    <count>` line per frame that saw key events, so the script
+//                    can time each observation against when it injected the key.
+//
+// **The guest has no clock**, deliberately — there is no monotonic-time import in
+// the ABI, and inventing one for a measurement would be a wire change in a pass
+// that is meant to remove a component. Everything here is counted in frames, and
+// the script that drives it owns the seconds.
 
 import { arg, argCount, print } from "../../tension-framework/assembly/io";
 import {
@@ -28,27 +41,29 @@ import {
   makeCallbacks,
 } from "../../tension-framework/assembly/runtime";
 import * as input from "../../tension-framework/assembly/input";
+import * as platform from "../../tension-framework/assembly/platform";
 
-/// -ENODEV: no display, no window, nothing attached yet (see the header).
+/// -ENODEV: no window, or nothing attached yet (see the header).
 const ENODEV: i32 = -19;
+/// -ENOENT: an empty gamepad slot, which is normal.
+const ENOENT: i32 = -2;
 
-/// Set by edge mode before the session opens; the callbacks are resolved from
-/// the record at open time, so one pair serves both modes.
 let edge_mode: bool = false;
 let key_events: u32 = 0;
 let mouse_events: u32 = 0;
-let key_lines: u32 = 0;
-let mouse_lines: u32 = 0;
+/// Set while a measurement loop is running: each frame that saw key events
+/// prints its index and how many it saw, so the script can time the first
+/// observation against the injection.
+let latency_mode: bool = false;
+let frame_index: u32 = 0;
 
 /// Print every record a batch carries. This is the guest end of the wire:
-/// SDL -> the DSO's post_event -> the session's ring -> here.
+/// SDL -> the host's pump -> the layer -> the session's ring -> here.
 function print_batch(class_: u32, ptr: u32, count: u32): i32 {
   for (let i: u32 = 0; i < count; i++) {
     const record = changetype<EventRecord>(ptr + i * EVENT_RECORD_SIZE);
     if (class_ == CLASS_INPUT_KEY) {
-      key_events++;
-      if (key_lines < 32) {
-        key_lines++;
+      if (key_events <= 8) {
         print(
           "  KEY   flags=0x" +
             hex(record.flags) +
@@ -59,9 +74,7 @@ function print_batch(class_: u32, ptr: u32, count: u32): i32 {
         );
       }
     } else if (class_ == CLASS_INPUT_MOUSE) {
-      mouse_events++;
-      if (mouse_lines < 32) {
-        mouse_lines++;
+      if (mouse_events <= 8) {
         print(
           "  MOUSE shape=" +
             (record.flags & 0x3).toString() +
@@ -80,11 +93,22 @@ function print_batch(class_: u32, ptr: u32, count: u32): i32 {
   return 0;
 }
 
+/// Every delivery is counted, whether or not it is printed: the measurement
+/// modes need the totals, and `--verbose` only decides how much of each line is
+/// shown. (Counting inside the printer was a bug worth this comment: the first
+/// latency run measured 0 keys because the printer never ran.)
+function count_batch(class_: u32, count: u32): void {
+  if (class_ == CLASS_INPUT_KEY) key_events += count;
+  else if (class_ == CLASS_INPUT_MOUSE) mouse_events += count;
+}
+
 function onBatch(class_: u32, ptr: u32, count: u32): i32 {
+  count_batch(class_, count);
   return edge_mode ? print_batch(class_, ptr, count) : 0;
 }
 
 function onEvent(class_: u32, ptr: u32): i32 {
+  count_batch(class_, 1);
   return edge_mode ? print_batch(class_, ptr, 1) : 0;
 }
 
@@ -117,21 +141,26 @@ function hex(value: u32): string {
   return digits;
 }
 
-/// Edge mode: the end-to-end test. Everything before this is structural — this
-/// is the one that carries a real key press and a real mouse delta from the
-/// device to a guest callback.
-function run_edge(): void {
-  const seconds = u32(I32.parseInt(flag("seconds", "20")));
-  edge_mode = true;
+/// A guest-created window, or an invalid handle.
+///
+/// **The guest owns this.** Under v7 there is no `--window` flag and no window
+/// the host made for input: an application that wants one asks for it, and the
+/// input capability joins whatever exists.
+function open_window(): platform.Window {
+  const config = new platform.WindowConfig();
+  config.target = platform.WindowTarget.Plain;
+  config.width = 320;
+  config.height = 200;
+  config.title = "tension-input";
+  config.flags = platform.WindowFlags.Resizable | platform.WindowFlags.Decorated;
+  return platform.createWindow(config);
+}
+
+/// The session, opened, with both reserved classes subscribed.
+function open_session(): void {
   const callbacks = makeCallbacks(onBatch, onEvent);
   const session_config = ConfigBuilder.forThisBuild(callbacks);
   assert(RuntimeSession.open(session_config, callbacks) == 0, "session_open refused");
-
-  const handle = input.open(0);
-  assert(handle > 0, "input_open refused: " + handle.toString());
-  assert(input.attach(handle, input.Kind.OwnSurface, 0, 0) == 0, "attach refused");
-  assert(input.setRelative(handle, true) == 0, "set_relative refused");
-
   const subscription = changetype<Subscription>(heap.alloc(SUBSCRIPTION_SIZE));
   subscription.class_ = CLASS_INPUT_KEY;
   subscription.mode = MODE_BATCHED;
@@ -140,84 +169,30 @@ function run_edge(): void {
   assert(RuntimeSession.subscribe(subscription) == 0, "subscribe INPUT_KEY refused");
   subscription.class_ = CLASS_INPUT_MOUSE;
   assert(RuntimeSession.subscribe(subscription) == 0, "subscribe INPUT_MOUSE refused");
-
-  print("EDGE: the probe's own window is 'tension-input' (320x200) and should take focus automatically;");
-  print("EDGE: if it does not, click it, then move the mouse and press a few KEYS.");
-  print("EDGE: running for " + seconds.toString() + " s (" + (seconds * 63).toString() + " wait(16) iterations).");
-
-  const state_buffer = heap.alloc(input.STATE_SIZE);
-  let dx: f32 = 0.0;
-  let dy: f32 = 0.0;
-  let epochs: u32 = 0;
-  let moved_epochs: u32 = 0;
-  let focused_epochs: u32 = 0;
-  let waits_with_records: u32 = 0;
-  let first_motion_iteration: i32 = -1;
-
-  const iterations = seconds * 63;
-  for (let i: u32 = 0; i < iterations; i++) {
-    if (i > 0 && i % 315 == 0) {
-      print("EDGE t~" + (i / 63).toString() + "s: keys=" + key_events.toString() + " mouse=" + mouse_events.toString() + " motion-epochs=" + moved_epochs.toString());
-    }
-    const delivered = RuntimeSession.wait(16);
-    if (delivered > 0) waits_with_records++;
-    // The epoch runs inside wait; these make the drain explicit, as the brief
-    // asks, and they are where a POLLED subscription would deliver instead.
-    RuntimeSession.drain(CLASS_INPUT_KEY);
-    RuntimeSession.drain(CLASS_INPUT_MOUSE);
-
-    const wrote = input.state(handle, state_buffer);
-    if (<u32>wrote == input.STATE_SIZE) {
-      const state = input.InputState.read(state_buffer);
-      epochs++;
-      if (state.focused()) focused_epochs++;
-      if (state.mouseDxf != 0.0 || state.mouseDyf != 0.0) {
-        moved_epochs++;
-        if (first_motion_iteration < 0) first_motion_iteration = <i32>i;
-        dx += state.mouseDxf;
-        dy += state.mouseDyf;
-      }
-    }
-  }
-
-  print("EDGE SUMMARY");
-  print("  key events .......... " + key_events.toString());
-  print("  mouse events ........ " + mouse_events.toString() + "  (buttons/wheel; motion is state)");
-  print("  epochs polled ....... " + epochs.toString());
-  print("  epochs focused ...... " + focused_epochs.toString());
-  print("  epochs with motion .. " + moved_epochs.toString());
-  print("  waits with records .. " + waits_with_records.toString());
-  print("  accumulated delta ... dx=" + dx.toString() + " dy=" + dy.toString());
-  print(
-    "  first motion at ..... " +
-      (first_motion_iteration < 0 ? "never" : (first_motion_iteration * 16).toString() + " ms into the loop")
-  );
-
-  assert(input.close(handle) == 0, "input_close");
-  assert(RuntimeSession.close() == 0, "session_close");
-  print("OK edge");
 }
 
-export function _start_game(): void {
-  if (has("edge")) {
-    run_edge();
-    return;
+// ── the functional case ─────────────────────────────────────────────────────
+
+function run_basic(create_window: bool): void {
+  open_session();
+  let window: platform.Window = new platform.Window(0, 0);
+  if (create_window) {
+    window = open_window();
+    if (!window.isValid()) {
+      // The host could not make a window (no display, no driver). That is the
+      // headless answer for this fixture, not a failure.
+      print("OK headless -ENODEV (createWindow answered " + window.error.toString() + ")");
+      assert(RuntimeSession.close() == 0, "session_close");
+      return;
+    }
   }
-  const callbacks = makeCallbacks(onBatch, onEvent);
-  const session_config = ConfigBuilder.forThisBuild(callbacks);
-  assert(RuntimeSession.open(session_config, callbacks) == 0, "session_open refused");
 
   const handle = input.open(0);
-  if (handle == ENODEV) {
-    print("OK headless -ENODEV");
-    assert(RuntimeSession.close() == 0, "session_close");
-    return;
-  }
   assert(handle > 0, "input_open refused with " + handle.toString());
 
-  // Kind 0: input's own surface. No token, no renderer, no other capability.
   const attached = input.attach(handle, input.Kind.OwnSurface, 0, 0);
-  if (attached == ENODEV) {
+  if (!create_window) {
+    assert(attached == ENODEV, "attach without a window answered " + attached.toString());
     print("OK headless -ENODEV");
     assert(input.close(handle) == 0, "input_close");
     assert(RuntimeSession.close() == 0, "session_close");
@@ -238,18 +213,139 @@ export function _start_game(): void {
   // Nothing has moved a pointer: the deltas are the attach settle's, already
   // discarded, so they are zero — the round-21 rule, visible from the guest.
   assert(state.mouseDxf == 0.0 && state.mouseDyf == 0.0, "a delta survived the settle window");
-  assert(state.padsPresent == 0, "a gamepad appeared out of nowhere");
 
-  // Zero gamepads is normal: every slot answers -ENOENT, and that is not an
-  // error (INPUT.md §3 Q2).
+  // Gamepads come from the host now: `pads_present` is what the host's mirror
+  // says, and an empty slot answers -ENOENT either way.
   const pad_buffer = heap.alloc(input.PAD_SIZE);
+  let live_slots: u32 = 0;
   for (let slot: i32 = 0; slot < <i32>input.PAD_SLOTS; slot++) {
     const rc = input.pad(handle, slot, pad_buffer);
-    assert(rc == -2, "pad(" + slot.toString() + ") answered " + rc.toString() + ", not -ENOENT");
+    if (rc == 0) live_slots++;
+    else assert(rc == ENOENT, "pad(" + slot.toString() + ") answered " + rc.toString());
   }
+  assert(state.padsPresent == live_slots, "pads_present disagrees with the pad records");
 
-  print("OK attached flags=0x" + hex(state.flags) + " pads=" + state.padsPresent.toString());
+  // Relative mouse mode is a *request* to the host's executor now. The flag
+  // reports the accepted request; the host logs the refusal if it cannot apply
+  // it, which on a real window it can.
+  assert(input.setRelative(handle, true) == 0, "set_relative refused");
+  const after_relative = input.state(handle, buffer);
+  assert(<u32>after_relative == input.STATE_SIZE, "state after set_relative");
+  const relative_state = input.InputState.read(buffer);
+  assert(relative_state.relative(), "RELATIVE is not set after a successful request");
+  assert(input.setRelative(handle, false) == 0, "set_relative off refused");
+
+  print(
+    "OK attached flags=0x" +
+      hex(state.flags) +
+      " pads=" +
+      state.padsPresent.toString() +
+      " window=" +
+      window.info().width.toString() +
+      "x" +
+      window.info().height.toString()
+  );
 
   assert(input.close(handle) == 0, "input_close");
+  assert(window.close() == 0, "window close");
   assert(RuntimeSession.close() == 0, "session_close");
+}
+
+// ── the measurement loops ───────────────────────────────────────────────────
+
+/// Attach, then run `frames` frames at `cadence_ms`.
+///
+/// Each frame is one `session.wait`, which is also the pump: the host drains SDL
+/// and dispatches the batch before the epoch runs (thread rule 13). So the frame
+/// period *is* the pump period, and varying it is how the fidelity question
+/// ("does a slow guest lose motion?") gets asked.
+function measure(cadence_ms: i32, frames: u32, fidelity: bool): void {
+  open_session();
+  const window = open_window();
+  assert(window.isValid(), "createWindow refused: " + window.error.toString());
+
+  const handle = input.open(0);
+  assert(handle > 0, "input_open refused");
+  assert(input.attach(handle, input.Kind.OwnSurface, 0, 0) == 0, "attach refused");
+  assert(input.setRelative(handle, true) == 0, "set_relative refused");
+
+  // The settle window is 500 ms of *wall* time and the guest has no clock, so it
+  // is spent as frames: at any cadence 40 frames is at least 80 ms and at most
+  // 1.3 s, and the driver script starts injecting only after READY, which is
+  // printed after this. An over-long wait is harmless; a short one is not.
+  const settle_frames: u32 = <u32>(500 / cadence_ms) + 8;
+  for (let i: u32 = 0; i < settle_frames; i++) {
+    RuntimeSession.wait(cadence_ms);
+    RuntimeSession.drain(CLASS_INPUT_KEY);
+    RuntimeSession.drain(CLASS_INPUT_MOUSE);
+  }
+
+  print("READY");
+  const buffer = heap.alloc(input.STATE_SIZE);
+  let flags: u32 = 0;
+  let dx: f32 = 0.0;
+  let dy: f32 = 0.0;
+  let polled: u32 = 0;
+  for (let i: u32 = 0; i < frames; i++) {
+    // Before the wait, not after: the callbacks run *inside* it, so a counter
+    // read afterwards already includes this frame's delivery.
+    const keys_before = key_events;
+    RuntimeSession.wait(cadence_ms);
+    RuntimeSession.drain(CLASS_INPUT_KEY);
+    RuntimeSession.drain(CLASS_INPUT_MOUSE);
+    frame_index = i;
+    const wrote = input.state(handle, buffer);
+    if (<u32>wrote == input.STATE_SIZE) {
+      const state = input.InputState.read(buffer);
+      flags = state.flags;
+      polled++;
+      dx += state.mouseDxf;
+      dy += state.mouseDyf;
+    }
+    // The latency probe reads this: which frame saw key events, and how many.
+    if (latency_mode && key_events != keys_before) {
+      print("FRAME " + i.toString() + " " + key_events.toString());
+    }
+  }
+
+  if (fidelity) {
+    print(
+      "FIDELITY dx=" +
+        dx.toString() +
+        " dy=" +
+        dy.toString() +
+        " frames=" +
+        polled.toString() +
+        " keys=" +
+        key_events.toString()
+    );
+  } else {
+    print(
+      "LATENCY frames=" +
+        polled.toString() +
+        " keys=" +
+        key_events.toString() +
+        " mouse=" +
+        mouse_events.toString() +
+        " flags=0x" +
+        hex(flags)
+    );
+  }
+
+  assert(input.close(handle) == 0, "input_close");
+  assert(window.close() == 0, "window close");
+  assert(RuntimeSession.close() == 0, "session_close");
+}
+
+export function _start_game(): void {
+  const mode = flag("mode", "");
+  if (mode.length > 0) {
+    const cadence = I32.parseInt(flag("cadence", "16"));
+    const frames = u32(I32.parseInt(flag("frames", "120")));
+    edge_mode = has("verbose");
+    latency_mode = mode == "latency";
+    measure(cadence, frames, mode == "fidelity");
+    return;
+  }
+  run_basic(!has("no-window"));
 }

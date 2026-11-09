@@ -41,11 +41,19 @@ declare function closeRaw(handle: i32): i32;
 
 // --- the wire constants (tension_input.h) ----------------------------------
 
-/** What a token is. Kinds 2-4 answer `-ENOSYS` on this build. */
+/** What a token is.
+ *
+ * **Ignored since v7.** The host owns the window, and a capability joins it by
+ * subscribing to its events rather than by naming a surface — so `attach`
+ * accepts the four arguments it always did and reads only the handle. Pass
+ * `Kind.OwnSurface` and zeros; the values stay so a guest built against v6 keeps
+ * working, and `kind` stops meaning anything rather than becoming a different
+ * kind of failure.
+ */
 export enum Kind {
   /** input's own surface: input makes and owns a window. No renderer needed. */
   OwnSurface = 0,
-  /** An X11 window id in `lo` — what `ogre::window_handle` hands over. */
+  /** An X11 window id in `lo` — what `ogre::window_handle` used to hand over. */
   X11Window = 1,
   /** A Wayland `wl_surface` pointer in lo/hi. */
   WaylandSurface = 2,
@@ -108,6 +116,8 @@ export function open(flags: i32 = 0): i32 {
 }
 
 /** Attach to a surface whose token is two halves. */
+/** Send the handle's four attach words. `kind` is ignored since v7: the host
+ * owns the window and this capability joins it by subscribing. */
 export function attach(handle: i32, kind: Kind, lo: i32, hi: i32): i32 {
   return attachRaw(handle, kind, lo, hi);
 }
@@ -118,7 +128,13 @@ export function attachToken(handle: i32, kind: Kind, token: u64): i32 {
   return attachRaw(handle, kind, <i32>(token & 0xFFFFFFFF), <i32>(token >>> 32));
 }
 
-/** Relative mouse mode: grab the pointer, deliver raw deltas. */
+/**
+ * Relative mouse mode: grab the pointer, deliver raw deltas.
+ *
+ * Queued through the host's control executor — there is no window here to
+ * attach to — so the request is applied by the host loop, and the RELATIVE flag
+ * in `state()` reports the request the host accepted.
+ */
 export function setRelative(handle: i32, on: bool): i32 {
   return setRelativeRaw(handle, on ? 1 : 0);
 }

@@ -533,6 +533,83 @@ fn window_contract(probe: &mut Probe) -> bool {
     true
 }
 
+/// What one frame's host work costs, measured rather than estimated.
+///
+/// The two soft numbers this pass reports: the pump (SDL's drain, the record
+/// publish, and the pad sample) and one dispatch of a six-event batch — the
+/// size a frame of input actually is. Neither is a budget: the guest owns the
+/// frame rate (vision.md §5), so the question is only "what fraction of a frame
+/// does the host take", and the answer is a division.
+///
+/// Deliberately not instrumented in the production path: a clock read per pump
+/// would cost more than the thing it measured, and this probe runs the same
+/// `pump()` the host loop calls.
+fn pump_cost(probe: &mut Probe) {
+    println!("host cost per frame");
+    let shared = HostShared::new();
+    let mut slot: Option<tension_core::platform::HostWindow> = None;
+    let config = WindowConfig {
+        target: WindowTarget::Plain,
+        width: 320,
+        height: 240,
+        mode: WindowMode::Windowed,
+        flags: window_flags::RESIZABLE,
+        x: WINDOW_POS_CENTERED,
+        y: WINDOW_POS_CENTERED,
+        ..Default::default()
+    };
+    if let Err(error) = create_window(&mut slot, &config, &shared) {
+        println!("  skip no window on this rig: {error}");
+        return;
+    }
+    let window = slot.as_mut().expect("create_window stored a window");
+
+    // A layer that costs what the input capability's does: a switch per event
+    // and a handful of field updates. A no-op layer would measure the function
+    // pointer and nothing else.
+    {
+        let mut bus = shared.events.lock().expect("unpoisoned");
+        let one = layer(EVENT_KEY | EVENT_MOUSE_MOTION, a_dispatch);
+        // SAFETY: `one` is live for the call.
+        if let Err(error) = unsafe { bus.register(&one) } {
+            probe.fail(&format!("the cost layer was refused ({error})"));
+            return;
+        }
+    }
+    let batch = [
+        key_event(true, None, None, sdl3::keyboard::Mod::NOMOD, false),
+        key_event(false, None, None, sdl3::keyboard::Mod::NOMOD, false),
+        TensionEvent::new(EVENT_MOUSE_MOTION, 1, 10, 10, 0, 0),
+        TensionEvent::new(EVENT_MOUSE_MOTION, 1, 11, 11, 0, 0),
+        TensionEvent::new(EVENT_MOUSE_MOTION, 1, 12, 12, 0, 0),
+        TensionEvent::new(EVENT_MOUSE_MOTION, 1, 13, 13, 0, 0),
+    ];
+
+    const ITERATIONS: u32 = 2_000;
+    let start = std::time::Instant::now();
+    for _ in 0..ITERATIONS {
+        window.pump();
+    }
+    let pump_us = start.elapsed().as_secs_f64() * 1e6 / f64::from(ITERATIONS);
+
+    let start = std::time::Instant::now();
+    for _ in 0..ITERATIONS {
+        shared.dispatch(&batch);
+    }
+    let dispatch_us = start.elapsed().as_secs_f64() * 1e6 / f64::from(ITERATIONS);
+
+    println!("  pump (drain + publish + pad sample): {pump_us:.2} us");
+    println!("  dispatch of 6 events, 1 layer:      {dispatch_us:.2} us");
+    let frame = pump_us + dispatch_us;
+    for hz in [60.0, 144.0, 240.0] {
+        let budget_us = 1e6 / hz;
+        println!("  as a fraction of a {hz:.0} Hz frame ({budget_us:.0} us): {:.2}%",
+                 frame / budget_us * 100.0);
+    }
+    probe.check("the pump and one dispatch cost under one millisecond together",
+                frame < 1_000.0);
+}
+
 fn main() {
     let mut probe = Probe::new();
     bus_contract(&mut probe);
@@ -549,6 +626,8 @@ fn main() {
     };
     if !ran {
         println!("note: the window half did not run; the bus half above stands on its own");
+    } else {
+        pump_cost(&mut probe);
     }
 
     if probe.failures.is_empty() {

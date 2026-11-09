@@ -4,19 +4,22 @@
 // Builds the DSO, compiles the guest fixture with the framework's generated
 // flags, and runs three cases:
 //
-//   with-display  input opens, attaches to its own surface (kind 0), reads a
-//                 state record, and closes. No renderer is loaded: that is the
-//                 point of the capability being its own DSO (INPUT.md §6).
-//   no-driver     SDL_VIDEODRIVER names a driver this build cannot provide: the
-//                 refusal is -ENODEV, and the guest says so on stdout.
-//   no-env        DISPLAY and WAYLAND_DISPLAY unset. On a machine whose Wayland
-//                 backend still finds the compositor this comes up anyway; the
-//                 case asserts only that the guest answers, and the log says
-//                 which driver it got.
+//   with-display  the guest creates its own 320x200 window, opens input,
+//                 attaches, reads a state record and every pad slot, requests
+//                 relative mouse mode, and closes. No renderer is loaded.
+//   no-driver     SDL_VIDEODRIVER names a video driver this machine does not
+//                 have: the host cannot make a window, so `attach` has nothing
+//                 to join and the guest prints the headless answer.
+//   no-env        DISPLAY and WAYLAND_DISPLAY unset. Same shape: whatever SDL
+//                 manages, the guest answers, and the answer is asserted to be
+//                 one of the two legal ones.
 //
-// The guest handles its own failure, so a non-zero exit here is the bug.
+// **The window is the guest's now (v7).** Before this pass the capability made
+// one, which is why every case here used to start with "input's probe window
+// appears". Nothing in the DSO touches a window, so a case that creates none is
+// the `no-window` refusal case, and that is the third scenario below.
 //
-// `--edge` runs the end-to-end device probe instead (see scripts/test-input-edge.mjs).
+// `--edge` runs the measurement probe instead (scripts/test-input-edge.mjs).
 //
 // Usage: node scripts/test-input.mjs [--edge]
 
@@ -37,36 +40,21 @@ const framework = join(repo, 'tension-framework');
 const out = join(suite, 'build');
 const RUNNER = 'tension-input tests';
 
-// The capability itself is POSIX/X11-only (src/input.cpp dlopens libX11), so
-// there is nothing to test here on Windows. A skip with the reason, never a pass.
+// The build recipe still refuses Windows until V7c lands the docs that explain
+// why the gate can go. A skip with the reason, never a pass.
 if (WIN) {
-  console.log(`${RUNNER}: SKIPPED — the input capability is POSIX/X11-only today\n` +
-              '  (src/input.cpp loads libX11 to size the window SDL created)' );
+  console.log(`${RUNNER}: SKIPPED — the capability is gated to POSIX until V7c\n` +
+              '  (the source is portable as of v7b; the docs are not written yet)');
   process.exit(0);
 }
-
-// And it needs a *working* display: the probe window is the thing under test.
-//
-// `DISPLAY` being set is not the same as the display working. Measured on WSL2
-// with WSLg: `DISPLAY=:0` and `WAYLAND_DISPLAY=wayland-0` were both set, but
-// `xdpyinfo` could not connect, SDL's thread never reported startup, and — the
-// part that cost the most time — the host did not exit after logging
-// "input: init: the SDL thread did not start". It hung until killed. A suite that
-// waits on a broken display is worse than one that says so.
-if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
-  console.log(`${RUNNER}: SKIPPED — no DISPLAY or WAYLAND_DISPLAY\n` +
-              '  the capability opens a probe window, and SDL blocks rather than failing' );
-  process.exit(0);
-}
-
 
 const core = process.env.TENSION_CORE ??
   join(repo, 'tension-core', 'target', 'debug', `tension-core${WIN ? '.exe' : ''}`);
-const dso = join(out, WIN ? 'libtension_input.dll' : 'libtension_input.so');
+const dso = join(out, 'libtension_input.so');
 
 if (!existsSync(core)) {
   fail(RUNNER, 'the interpreter is not built. Run:\n' +
-               '    cargo build --manifest-path tension-core/Cargo.toml --no-default-features');
+               '    cargo build --manifest-path tension-core/Cargo.toml');
 }
 
 const built = inherit(process.execPath, [join(repo, 'scripts', 'build-input.mjs')]);
@@ -92,41 +80,30 @@ if (process.env.TENSION_SESSION_READY === '1') {
 const asc = npmBin(framework, 'tensionscript');
 if (!existsSync(asc)) fail(RUNNER, 'tensionscript is not installed in tension-framework/node_modules');
 
+const guest = join(out, 'guest-input.wasm');
 const compiled = spawn(asc, [join(suite, 'tests', 'guest-input.ts'),
                              '--config', join(framework, 'build', 'session.asconfig.json'),
-                             '-o', join(out, 'guest-input.wasm')]);
+                             '-o', guest]);
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
   fail(RUNNER, 'guest-input.ts did not compile');
 }
 
-const guest = join(out, 'guest-input.wasm');
-
 /// Run the guest and assert a stdout prefix.
 ///
-/// `timeout` is not optional: the capability opens a window through SDL, and on a
-/// machine with no reachable display SDL does not fail — its thread never reports
-/// startup, and the host then keeps running. Measured on WSL2: 1,400+ seconds of
-/// silence before this change.
-///
-/// Returns `{ skipped: true }` when the environment could not provide a display.
-/// The test is the capability's own diagnostic (`the SDL thread did not start`),
-/// not an inference from `DISPLAY`: a broken display and a missing one are the
-/// same thing to SDL, and both mean this case cannot be exercised rather than
-/// that it regressed. Any other timeout is a failure.
-function caseRun(name, wantPrefix, env = {}) {
-  const result = spawn(core, ['--capability', dso, guest], { env, timeout: 60_000 });
-  const environmentRefused = /SDL thread did not start/.test(result.stderr);
-
+/// `timeout` is not optional: a broken display does not make SDL fail, it makes
+/// it block, and a suite that waits on one is worse than one that says so.
+/// Measured on WSL2 before this was added: 1,400+ seconds of silence.
+function caseRun(name, args, wantPrefix, env = {}) {
+  const result = spawn(core, ['--capability', dso, guest, ...args], { env, timeout: 90_000 });
   if (result.signal === 'SIGKILL' || result.error?.code === 'ETIMEDOUT') {
-    if (environmentRefused) return { skipped: true };
-    fail(RUNNER, `${name}: timed out after 60 s and SDL did not report a reason ` +
+    fail(RUNNER, `${name}: timed out after 90 s ` +
                  `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
   }
-  if (environmentRefused) return { skipped: true };
   if (result.status !== 0) {
     fail(RUNNER, `${name}: the interpreter exited ${result.status} ` +
-                 `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
+                 `(stdout: ${result.stdout.trim().split('\n').slice(-3).join(' | ')}; ` +
+                 `stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
   }
   if (!result.stdout.startsWith(wantPrefix)) {
     fail(RUNNER, `${name}: expected stdout starting "${wantPrefix}", got: ${result.stdout.trim()}`);
@@ -135,40 +112,40 @@ function caseRun(name, wantPrefix, env = {}) {
 }
 
 // ── case 1: with a display ────────────────────────────────────────────────────
-// The capability needs a display to open its probe window.
-const headless = !WIN && !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
+// The guest creates the window, so this is the case that proves the whole path:
+// createWindow -> open -> attach -> state.
+const headless = !process.env.DISPLAY && !process.env.WAYLAND_DISPLAY;
 if (headless) {
-  console.log('== with-display: skipped — no DISPLAY or WAYLAND_DISPLAY (SDL would block)');
+  console.log('== with-display: skipped — no DISPLAY or WAYLAND_DISPLAY');
 } else {
-  const result = caseRun('with-display', 'OK ');
-  if (result.skipped) {
-    console.log('== with-display: SKIPPED — the display is not reachable\n' +
-                `  DISPLAY=${process.env.DISPLAY ?? '<unset>'} ` +
-                `WAYLAND_DISPLAY=${process.env.WAYLAND_DISPLAY ?? '<unset>'}; ` +
-                'SDL reported "the SDL thread did not start"');
-    console.log('\ntension-input tests: the display-dependent cases could not run on this host');
-    process.exit(0);
-  }
-  console.log(`== with-display: ok — ${result.stdout.trim()}`);
+  const result = caseRun('with-display', [], 'OK attached');
+  console.log(`== with-display: ok — ${result.stdout.trim().split('\n')[0]}`);
 }
 
-if (!WIN) {
-  // ── case 2: a video driver this build cannot provide ────────────────────
-  // SDL_Init fails, the DSO's init still returns 0 (the capability loads; the
-  // refusal point is the verb), and input_open answers -ENODEV.
-  {
-    const result = caseRun('no-driver', 'OK headless -ENODEV',
-                           { SDL_VIDEODRIVER: 'tension-no-such-driver' });
-    console.log(`== no-driver: ok — ${result.stdout.trim()}`);
-  }
+// ── case 2: no window at all ────────────────────────────────────────────────
+// The refusal that replaces "no display": the capability is fine, there is just
+// nothing to attach to.
+{
+  const result = caseRun('no-window', ['--no-window'], 'OK headless -ENODEV');
+  console.log(`== no-window: ok — ${result.stdout.trim()}`);
+}
 
-  // ── case 3: no DISPLAY, no WAYLAND_DISPLAY ─────────────────────────────
-  {
-    const result = caseRun('no-env', 'OK ',
-                           { DISPLAY: undefined, WAYLAND_DISPLAY: undefined });
-    const driver = result.stderr.match(/video driver '[^']*'/)?.[0] ?? '(driver not logged)';
-    console.log(`== no-env: ok — ${result.stdout.trim()} (${driver})`);
-  }
+// ── case 3: a video driver this machine does not have ───────────────────────
+// The host cannot create a window, so the guest's createWindow fails and it
+// reports the headless answer instead of attaching.
+{
+  const result = caseRun('no-driver', [], 'OK headless', { SDL_VIDEODRIVER: 'tension-no-such-driver' });
+  console.log(`== no-driver: ok — ${result.stdout.trim()}`);
+}
+
+// ── case 4: no DISPLAY, no WAYLAND_DISPLAY ──────────────────────────────────
+// Whatever driver SDL finds (the `offscreen` one, usually), the guest answers
+// with one of the two legal lines. The log says which driver it got.
+{
+  const result = caseRun('no-env', [], 'OK ',
+                         { DISPLAY: undefined, WAYLAND_DISPLAY: undefined });
+  const driver = result.stderr.match(/video driver '[^']*'/)?.[0] ?? '(driver not logged)';
+  console.log(`== no-env: ok — ${result.stdout.trim()} (${driver})`);
 }
 
 console.log('tension-input tests: all cases passed');
