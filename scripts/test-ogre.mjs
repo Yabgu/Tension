@@ -211,9 +211,10 @@ caseRun('target-auto', 'guest-window.wasm', '^OK ', 'window "Tension" 1280x720 c
         ['--renderer=null', '--target=auto', '--frames=3']);
 
 // `swapchain` is a requirement, not a preference. This host published no
-// surface (no `--window`), so init refuses -ENODEV before a thread exists —
-// rather than doing what auto would do and making a window of its own. The
-// case needs no GPU and no display: the refusal lands before any plugin load.
+// surface (the guest never called `createWindow`), so init refuses -ENODEV
+// before a thread exists rather than making a window of its own — `auto` would
+// now refuse identically. The case needs no GPU and no display: the refusal
+// lands before any plugin load.
 caseRun('target-swapchain-refused', 'guest-window.wasm', '^OK init-refused -19$',
         'target=swapchain requires the host\'s surface',
         ['--renderer=gl3plus', '--target=swapchain', '--expect-init-refusal=-19']);
