@@ -461,9 +461,18 @@ class BackendOgre final : public Backend {
                 return refuse(status, TENSION_OGRE_STAGE_WINDOW, -EIO,
                               "createRenderWindow returned null");
             }
-            log_line("ogre: window \"Tension\" " + std::to_string(window_->getWidth()) + "x" +
-                     std::to_string(window_->getHeight()) + " created (" + render_system_name_ +
-                     ")");
+            // **The size Ogre is actually building its swapchain at**, which is
+            // not the same thing as `window_->getWidth()` once a frame has run:
+            // `createSwapchain` clamps the window texture to the surface's own
+            // extent (`vkGetPhysicalDeviceSurfaceCapabilitiesKHR`), so `getWidth`
+            // ends up reporting whatever the host's window currently is. The
+            // per-frame comparison has to be against this record — the size we
+            // last asked for — or it compares the host's size with itself and
+            // never fires.
+            applied_width_ = window_->getWidth();
+            applied_height_ = window_->getHeight();
+            log_line("ogre: window \"Tension\" " + std::to_string(applied_width_) + "x" +
+                     std::to_string(applied_height_) + " created (" + render_system_name_ + ")");
 
             // The native handle the guest can hand to another capability
             // (INPUT.md Q1: the renderer learns the token, the guest relays it,
@@ -665,14 +674,27 @@ class BackendOgre final : public Backend {
             if (config_.external_surface != 0 && config_.host_size != nullptr) {
                 uint32_t host_w = 0, host_h = 0;
                 config_.host_size(config_.host_size_ctx, &host_w, &host_h);
+                // Compared against `applied_*`, not `window_->getWidth()`: see
+                // where `applied_*` is set. The window's own size follows the
+                // surface once a swapchain has been rebuilt, so comparing the
+                // two would compare the host with itself — the check would look
+                // right and never fire. Measured: on X11 a resize was silently
+                // absorbed by Ogre's out-of-date-swapchain path, which rebuilds
+                // at the surface's extent and leaves `getWidth()` reporting it.
                 if (host_w != 0 && host_h != 0 &&
-                    (host_w != window_->getWidth() || host_h != window_->getHeight())) {
+                    (host_w != applied_width_ || host_h != applied_height_)) {
                     log_line("ogre: host surface is " + std::to_string(host_w) + "x" +
-                             std::to_string(host_h) + ", window is " +
-                             std::to_string(window_->getWidth()) + "x" +
-                             std::to_string(window_->getHeight()) +
+                             std::to_string(host_h) + ", swapchain is " +
+                             std::to_string(applied_width_) + "x" +
+                             std::to_string(applied_height_) +
                              " — requesting a swapchain rebuild");
                     window_->requestResolution(host_w, host_h);
+                    // The host is authoritative (it owns the window), so the
+                    // request is the new record whether or not the driver
+                    // honours it exactly; a driver that clamps reports the
+                    // clamped size next frame and the check converges.
+                    applied_width_ = host_w;
+                    applied_height_ = host_h;
                 }
             }
             if (!root_->renderOneFrame()) {
@@ -2280,6 +2302,11 @@ class BackendOgre final : public Backend {
     std::unique_ptr<Ogre::Root> root_;
     Ogre::RenderSystem *render_system_ = nullptr;
     Ogre::Window *window_ = nullptr;
+    /// The size the swapchain was last built at — what the per-frame host-size
+    /// check compares against. Not `window_->getWidth()`, which tracks the
+    /// surface once the swapchain has been rebuilt (see where it is set).
+    uint32_t applied_width_ = 0;
+    uint32_t applied_height_ = 0;
     /// The window's native handle, cached by the render thread the moment the
     /// window exists and cleared before it is destroyed. 0 is "no window yet"
     /// (no platform Tension builds for hands out 0 as a real handle).

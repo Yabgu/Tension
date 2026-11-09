@@ -43,7 +43,7 @@ handles it is given cross the boundary as `u64`
 | `VkInstance` | host | `platform.rs:452` | `platform.rs:664` |
 | `VkSurfaceKHR` | host | `platform.rs:457` | `platform.rs:663` |
 | `VkDevice` | renderer (Ogre-Next — current, not settled) | inside `root_->init`, from the host's instance | `OgreVulkanDevice.cpp:525` |
-| Ogre swapchain | renderer (Ogre-Next — current, not settled) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:711` |
+| Ogre swapchain | renderer (Ogre-Next — current, not settled) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:738` |
 | GPU device + swapchain | renderer (2D, in core) | `render2d/device.rs`, first windowed `open` | `Render2dState::close`, or the store's drop |
 | Which renderer owns the swapchain | core | `Render2dState::claim_swapchain` | released by the holder |
 | The guest's window *request* | the guest | `tension::platform.create_window` (`tension_window_config`) | one-shot: the host keeps the window, not the request |
@@ -142,7 +142,7 @@ For the Ogre adapter, `shutdown` sets `shutting_down`, then
 `stop_render_thread()` (`tension-ogre/src/adapter.cpp:1559-1572`), which
 signals the thread and joins it (`adapter.cpp:1600-1627`, `:1624`). The backend's
 `stop()` runs *on the render thread* — the thread that created every Ogre object
-— and unmakes things in this order (`tension-ogre/src/backend_ogre.cpp:694-735`):
+— and unmakes things in this order (`tension-ogre/src/backend_ogre.cpp:721-762`):
 
 1. scene, then resources (an `Item` holds its mesh's vertex buffers),
 2. `native_window_ = 0` before the window is destroyed, so a concurrent
@@ -167,7 +167,7 @@ and the `Sdl` handle is the last field so `SDL_Quit` runs after everything
   is the path that would otherwise forget.
 - *`external_instance_` freed before `root_->shutdown()`* — the render system
   reads the struct it was handed during shutdown, so the reset has to come after
-  (`backend_ogre.cpp:723-726`).
+  (`backend_ogre.cpp:750-753`).
 - *Backend freed while the render thread is drawing* — SIGSEGV windowed, SIGABRT
   headless; this is why `AdapterState::~AdapterState` calls
   `stop_render_thread()` on the trap path (`adapter.cpp:1648-1660`).

@@ -47,8 +47,8 @@ object on it, the loader's worker thread, the job/resource tables and the scene
 mirror. It does not own the window, the `VkInstance`, or the `VkSurfaceKHR` —
 those are the host's (`docs/architecture.md` §2). The `VkDevice` and the
 swapchain are made by Ogre from the host's instance and surface
-(`backend_ogre.cpp:290`, `:453`), and destroyed by Ogre on the render thread
-(`backend_ogre.cpp:711-722`).
+(`backend_ogre.cpp:290`, `:458`), and destroyed by Ogre on the render thread
+(`backend_ogre.cpp:738-753`).
 
 **Ogre-Next is the current backend, not the settled choice.** The target key is
 the first part of the contract that outlives it: `tension_ogre.h` defines `auto`,
@@ -190,7 +190,7 @@ owns a texture and two buffers and touches no platform API
 (`third_party/ogre-next/RenderSystems/NULL/src/OgreNULLWindow.cpp:35-57`) —
 which is why a headless run completes with `DISPLAY` and `WAYLAND_DISPLAY` both
 unset. It renders nothing: `screenshot` refuses with `-ENOSYS`
-(`backend_ogre.cpp:1313-1317`), and jobs, submissions and the scene mirror all
+(`backend_ogre.cpp:1340-1344`), and jobs, submissions and the scene mirror all
 still run (`scripts/test-ogre.mjs`, the `headless` and `jobs` cases).
 
 **`target` names where the frame goes, and it is a contract rather than a
@@ -401,7 +401,7 @@ ever touches an Ogre object (`backend.h:1-12`). The thread body is `render_main`
    (`adapter.cpp:330-335`). On success, `RESOURCE_READY` is posted once
    (`adapter.cpp:338-340`). The first frame is rendered inside `start`, *before*
    readiness is announced, so "ready" means "a frame presented"
-   (`backend_ogre.cpp:619-630`).
+   (`backend_ogre.cpp:628-639`).
 2. **Frame.** Each iteration drains finished loads onto the render thread
    (`adapter.cpp:347`), applies the scene mirror under the guest lock
    (`:351-357`), applies queued animation requests (`:366-383`), renders
@@ -481,29 +481,42 @@ when an instance was supplied:
   treats the caller's list as the record of what is enabled and only sanity
   checks it against enumeration (`backend_ogre.cpp:358-381`).
 - `createRenderWindow` receives `external_surface` in its params
-  (`backend_ogre.cpp:432-453`); Ogre adopts the surface and creates no native
+  (`backend_ogre.cpp:432-457`); Ogre adopts the surface and creates no native
   window (`third_party/patches/ogre-external-surface.patch`).
 
 **Resize.** With an external surface there is no native window for Ogre to
 measure, so nothing else would notice a host resize. Once per frame the backend
-reads the host's current size and, when it differs from the window's, logs
-`host surface is WxH, window is AxB — requesting a swapchain rebuild` and calls
-`requestResolution` (`backend_ogre.cpp:660-672`). This is the only consumer of
-the resize patch hunk; the hunk has been executed at runtime, and the frame
-after it presented at the new size (`tension-core/tests/ogre_host_surface.rs`,
+reads the host's current size and, when it differs from **the size the swapchain
+was last built at**, logs `host surface is WxH, swapchain is AxB — requesting a
+swapchain rebuild` and calls `requestResolution` (`backend_ogre.cpp:674-699`).
+The frame after it presented at the new size (`tension-core/tests/ogre_host_surface.rs`,
 assertions d–e).
 
-**Teardown order on this path** (`backend_ogre.cpp:694-735`): clear the scene,
+The comparison is against a recorded size and not `window_->getWidth()`, and
+that distinction is the whole correctness of this path. `createSwapchain` clamps
+the window texture to the surface's own extent
+(`vkGetPhysicalDeviceSurfaceCapabilitiesKHR`), so after any rebuild `getWidth()`
+reports *the host's* size — comparing it with the host's size compares a number
+with itself and never fires. Measured on this rig: a host resize was silently
+absorbed by Ogre's out-of-date-swapchain path, which rebuilds at the surface
+extent, so the notification looked correct and never ran. On a driver that does
+not report out-of-date surfaces (Wayland, where the extent is the client's
+choice) nothing would have rebuilt at all. `applied_width_`/`applied_height_`
+are set at window creation and updated on each request; the host is
+authoritative, so a driver that clamps reports the clamped size next frame and
+the check converges.
+
+**Teardown order on this path** (`backend_ogre.cpp:721-762`): clear the scene,
 discard every resource, clear the cached native handle, `destroyRenderWindow`
 (which destroys the swapchain), `root_->shutdown()`, `root_.reset()`, then
 `external_instance_.reset()`. The `VulkanExternalInstance` is declared *before*
-`root_` so that it is destroyed *after* it (`backend_ogre.cpp:2270-2275`): the
+`root_` so that it is destroyed *after* it (`backend_ogre.cpp:2298-2303`): the
 render system holds a pointer to that struct while shutting down. Freeing it
 first would leave Ogre reading freed memory.
 
 Without a host surface the module is unchanged from the pre-v6 path: the plugin
 is named in `plugins.cfg`, Ogre creates its own window, and the native handle is
-cached for `window_handle` (`backend_ogre.cpp:469-494`). On this rig that
+cached for `window_handle` (`backend_ogre.cpp:478-503`). On this rig that
 handle is non-zero; under a host surface it stays 0 and `window_handle` answers
 `-ENODEV` — deliberately, until the v7 input pass re-points it
 (`tension-core/tests/ogre_host_surface.rs`, assertion f).
@@ -519,7 +532,7 @@ status. The list by verb, with the checks that produce each code:
   Asynchronous failures do not come back here: a missing plugin, an unknown
   render system, a refused window or a failed first frame arrive later as
   `DEVICE_LOST` with a stage code (`tension_ogre.h:155-179`,
-  `backend_ogre.cpp:256-630`).
+  `backend_ogre.cpp:256-639`).
 - **`shutdown`** — `0` when nothing ran; otherwise the join's result, `-EIO` if
   the thread did not stop within 5 s, in which case it is detached
   (`adapter.cpp:546-559`, `:1508-1536`).
@@ -597,8 +610,10 @@ status. The list by verb, with the checks that produce each code:
 - `ogre_hierarchy.rs` — a guest fixture's hierarchy, structurally and in pixels.
 - `ogre_host_surface.rs` — the host-owned path end to end: instance and surface
   non-zero, adapter adopts them, frame 1 presents, screenshot dimensions
-  320×240, host resize to 640×480, `requestResolution`, frame 2 presents,
-  screenshot 640×480, `window_handle` `-ENODEV`, clean teardown.
+  320×240, host resize to 640×480, `requestResolution`, exactly one rebuild
+  request (it converges rather than firing every frame), frame 2 presents,
+  screenshot 640×480 and still 640×480 after settling, `window_handle`
+  `-ENODEV`, clean teardown.
 
 **Guest fixtures** — `scripts/test-ogre.mjs`: 19 cases by default and 36 with
 `TENSION_OGRE_WINDOW_TEST=1`, whose 17 opt-in cases include the whole
