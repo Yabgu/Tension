@@ -257,11 +257,22 @@ impl Render2dState {
         self.claim_swapchain(RendererId::Render2d)?;
 
         if host_window.is_none() {
-            let window = HostWindow::new("Tension", width, height).map_err(|error| {
+            // The same path a guest takes, so there is one window-creation
+            // implementation rather than two that drift: `create_window` with
+            // `target: Gpu`, which is what makes SDL_GPU able to claim it and
+            // what keeps `SDL_WINDOW_VULKAN` off a window no Vulkan surface
+            // will be built from.
+            let config = crate::platform::WindowConfig {
+                target: crate::platform::WindowTarget::Gpu,
+                width,
+                height,
+                title: "Tension".to_string(),
+                ..Default::default()
+            };
+            crate::platform::create_window(host_window, &config).map_err(|error| {
                 self.release_swapchain(RendererId::Render2d);
                 Render2dError::NoDevice(format!("creating the host window: {error}"))
             })?;
-            *host_window = Some(window);
         } else if let Some(window) = host_window.as_ref() {
             let (open_width, open_height) = window.published_size();
             if (open_width, open_height) != (width, height) {
@@ -269,13 +280,13 @@ impl Render2dState {
                 // mismatch shows the same frame larger or smaller rather than a
                 // crop. Worth a line because it is the one case where the canvas
                 // size and the window size disagree, and the reason is always
-                // that `--window` chose first.
+                // that the guest created the window first.
                 crate::logging::log(
                     crate::logging::Level::Info,
                     "2d",
                     &format!(
                         "open: canvas is {width}x{height}, window is \
-                         {open_width}x{open_height} (from --window); presenting scaled"
+                         {open_width}x{open_height} (created by the guest); presenting scaled"
                     ),
                 );
             }

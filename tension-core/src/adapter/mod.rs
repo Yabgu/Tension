@@ -445,6 +445,18 @@ impl AdapterHost {
             Some(PublishedSurface { surface, extensions });
     }
 
+    /// The cell `host_surface` serves from.
+    ///
+    /// Cloned into `HostState` so the *guest* thread can publish: before the
+    /// programmatic window API the surface was published once, by `main`,
+    /// before any adapter loaded. Now a window comes into existence midway
+    /// through a run, on a guest call, so the store needs a handle to the same
+    /// cell the adapters read. One cell, two writers at different times, and
+    /// the mutex is what keeps a publish from tearing a read.
+    pub fn host_surface_cell(&self) -> Arc<Mutex<Option<PublishedSurface>>> {
+        Arc::clone(&self.host_surface)
+    }
+
     /// What `host_surface` answers with.
     pub fn host_surface(&self) -> Option<crate::platform::HostSurface> {
         self.host_surface
@@ -1251,6 +1263,7 @@ mod tests {
                 pending: crate::session::apply::PendingQueue::new(),
                 control: std::sync::Arc::new(crate::platform::ControlBus::new()),
                 host_window: None,
+                host_surface: None,
                 render2d: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),

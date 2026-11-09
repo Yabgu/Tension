@@ -161,19 +161,30 @@ struct HostState {
     /// and this ordering is what makes a path that skips teardown — a panic, a
     /// future early return — still correct rather than a use-after-free.
     render2d: render2d::Render2dState,
-    /// The host-owned window, when `--window` asked for one.
+    /// The host-owned window, when the guest asked for one (`create_window`).
     ///
     /// Lives in the store rather than beside it because `host_loop` needs to
     /// pump it once per iteration and has no other way to reach it. Dropped
     /// after `teardown_adapters`, so no adapter can hold a handle into a dead
     /// instance.
     ///
-    /// Since Pass A of the 2D merge this is also created **on demand**: a
-    /// renderer that opens a windowed canvas makes one at the size it declares
-    /// (`render2d::device::Render2dState::open_windowed`), so `--window` is no
-    /// longer the only way to get a window. `--window` remains for the one
-    /// example that has no renderer at all.
+    /// Created **on demand and only on demand**: by the guest's
+    /// `tension::platform.create_window`, or by a 2D canvas opening windowed
+    /// (`render2d::device::Render2dState::open_windowed`, which goes through the
+    /// same call). There is no startup window and no flag that makes one, so a
+    /// run with no windowed renderer and no `create_window` never opens SDL's
+    /// video subsystem at all.
     host_window: Option<platform::HostWindow>,
+    /// The cell `host_surface` serves from, shared with `AdapterHost` by `Arc`.
+    ///
+    /// **Why it is here and not only in `AdapterHost`.** Before the programmatic
+    /// window API, `main` created the window before any adapter loaded and
+    /// published the surface once, so the cell could live in the adapter host
+    /// alone. Now the window is created by a *guest call*, halfway through the
+    /// run, and the guest thread is the one that must publish — so the store
+    /// holds a handle to the same cell the adapters read. `None` until the
+    /// adapter host is built (a run with no capability never needs it).
+    host_surface: Option<std::sync::Arc<std::sync::Mutex<Option<adapter::PublishedSurface>>>>,
     /// Set by the pump when the user closes the window. The loop breaks on it,
     /// the same way it breaks when the guest closes its session.
     window_closed: bool,
@@ -294,10 +305,6 @@ options:
                          object per line). Env fallback: TENSION_LOG_FORMAT
   --log-file <PATH>      append log lines to PATH instead of stderr. Env
                          fallback: TENSION_LOG_FILE
-  --window <W>x<H>       spike/dev flag: creates a host-owned window, and the
-                         Vulkan instance and surface that go with it. Only
-                         tension-ogre consumes the surface as of this pass;
-                         nothing else looks at it yet. Default off.
   --session-open         A1 test-only: open the session from the host before
                          `_start_game`, for a guest that does not call
                          `session_open` itself. Real guests open their own
@@ -401,19 +408,9 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
-    /// `--window <W>x<H>`: a host-owned window, created before any capability
-    /// loads. `None` means no window, which is the default and what every
-    /// existing test and example gets.
-    window: Option<(u32, u32)>,
     wasm_path: String,
     args: Vec<String>,
 }
-
-/// Parse `--window`'s `WxH` argument.
-///
-/// One argument rather than two: `<game.wasm>` ends option parsing, so a second
-/// bare number would be ambiguous with a game argument. `x` is the separator
-/// because `320x240` is how every window size in this tree is already written.
 
 /// The window width a guest sees, or 0 for "the host owns no window".
 ///
@@ -446,24 +443,6 @@ fn surface_height(caller: &Caller<'_, HostState>) -> u32 {
         .unwrap_or(0)
 }
 
-fn parse_window_size(value: &str) -> Result<(u32, u32), String> {
-    let (width, height) = value
-        .split_once('x')
-        .ok_or_else(|| format!("`--window` wants <W>x<H>, got `{value}`"))?;
-    let parse = |part: &str, what: &str| -> Result<u32, String> {
-        part.parse::<u32>()
-            .map_err(|_| format!("`--window`: {what} `{part}` is not a number"))
-    };
-    let width = parse(width, "width")?;
-    let height = parse(height, "height")?;
-    if width == 0 || height == 0 {
-        return Err(format!(
-            "`--window`: {width}x{height} is not a size; both must be at least 1"
-        ));
-    }
-    Ok((width, height))
-}
-
 /// Parse the arguments that follow the program name.
 ///
 /// The first non-option argument is the guest; everything from there on belongs
@@ -477,7 +456,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut log_levels = Vec::new();
     let mut log_format: Option<String> = None;
     let mut log_file: Option<PathBuf> = None;
-    let mut window: Option<(u32, u32)> = None;
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
@@ -547,10 +525,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 let value = rest.next().ok_or("`--log-file` needs a path")?;
                 log_file = Some(PathBuf::from(value));
             }
-            "--window" => {
-                let value = rest.next().ok_or("`--window` needs <W>x<H>")?;
-                window = Some(parse_window_size(&value)?);
-            }
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -580,7 +554,6 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
-        window,
         wasm_path,
         args: rest.collect(),
     })
@@ -935,6 +908,7 @@ fn main() -> anyhow::Result<()> {
             pending: session::apply::PendingQueue::new(),
             control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
                 host_window: None,
+            host_surface: None,
             // The in-core 2D renderer's device, canvas and swapchain guard. Default
             // (all `None`) whether or not the feature is on: with it off nothing
             // reads this, and leaving it out behind a `cfg` would make the struct
@@ -1378,6 +1352,254 @@ fn main() -> anyhow::Result<()> {
         |caller: Caller<'_, HostState>| -> u32 { surface_height(&caller) },
     )?;
 
+    // The programmatic window API (ABI v7).
+    //
+    // These are the guest's whole window surface now that `--window` is gone:
+    // an application that wants a window asks for one, and the host creates it
+    // with the flags its target implies. Everything else about a window is
+    // either read (`window_info`) or, from E1b, mutated.
+    //
+    // **`create_window` is the only place `SDL_CreateWindow` is reached from a
+    // guest call**, and it runs on the interpreter thread — the same thread the
+    // host loop pumps on, which is what SDL requires and what `SDL_GPU`'s claim
+    // requires too. No queue, no deferral: a guest that creates a window and
+    // immediately claims it must be able to.
+    linker.func_wrap(
+        "tension::platform",
+        "create_window",
+        |mut caller: Caller<'_, HostState>, cfg_ptr: u32, cfg_len: u32| -> i32 {
+            const CONFIG_BYTES: u32 = 56;
+            const EINVAL: i32 = -22;
+            const EBUSY: i32 = -16;
+            const EIO: i32 = -5;
+            const MAX_TITLE: u32 = 4096;
+
+            if cfg_len < CONFIG_BYTES {
+                return EINVAL;
+            }
+            let Some(bytes) = read_guest_span(&mut caller, cfg_ptr, CONFIG_BYTES) else {
+                return EINVAL;
+            };
+            let u32_at = |at: usize| -> u32 {
+                u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+            };
+            let i32_at = |at: usize| -> i32 {
+                i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+            };
+
+            // `struct_size` is the caller's own build. A shorter struct than this
+            // host reads would leave fields the caller never wrote, so it is a
+            // refusal rather than a default.
+            if u32_at(0) < CONFIG_BYTES {
+                return EINVAL;
+            }
+            let Some(target) = platform::WindowTarget::from_u32(u32_at(4)) else {
+                return EINVAL;
+            };
+            let Some(mode) = platform::WindowMode::from_u32(u32_at(16)) else {
+                return EINVAL;
+            };
+            let flags = u32_at(20);
+            if flags & !platform::window_flags::KNOWN != 0 {
+                return EINVAL;
+            }
+            let title_ptr = u32_at(48);
+            let title_len = u32_at(52);
+            if title_len > MAX_TITLE {
+                return EINVAL;
+            }
+            let title = if title_len == 0 {
+                String::new()
+            } else {
+                let Some(raw) = read_guest_span(&mut caller, title_ptr, title_len) else {
+                    return EINVAL;
+                };
+                match String::from_utf8(raw) {
+                    Ok(text) => text,
+                    Err(_) => return EINVAL,
+                }
+            };
+
+            let config = platform::WindowConfig {
+                target,
+                width: u32_at(8),
+                height: u32_at(12),
+                mode,
+                flags,
+                x: i32_at(24),
+                y: i32_at(28),
+                min_width: u32_at(32),
+                min_height: u32_at(36),
+                max_width: u32_at(40),
+                max_height: u32_at(44),
+                title,
+            };
+
+            let data = caller.data_mut();
+            if data.host_window.is_some() {
+                // Said here rather than in `platform::create_window` so the
+                // errno is the guest's `-EBUSY` and not a generic `-EIO`.
+                return EBUSY;
+            }
+            match platform::create_window(&mut data.host_window, &config) {
+                Ok(id) => {
+                    crate::logging::log(
+                        Level::Info,
+                        "core",
+                        &format!(
+                            "create_window: {}x{} target={:?} on '{}' (SDL {})",
+                            config.width,
+                            config.height,
+                            config.target,
+                            data.host_window
+                                .as_ref()
+                                .map(|w| w.driver().to_string())
+                                .unwrap_or_default(),
+                            data.host_window
+                                .as_ref()
+                                .map(|w| w.sdl_version())
+                                .unwrap_or_default()
+                        ),
+                    );
+                    // A Vulkan window's surface is what a renderer adopts, and
+                    // it is created — and published — here, before the guest can
+                    // call `ogre::init`. Failing to make it fails the whole
+                    // create: a window that cannot carry the surface its target
+                    // promised is worse than no window, because the guest would
+                    // go on to init a renderer into nothing.
+                    if config.target == platform::WindowTarget::Vulkan {
+                        let made = data
+                            .host_window
+                            .as_mut()
+                            .map(|window| {
+                                window.surface().map(|surface| {
+                                    (surface, window.instance_extensions().to_vec())
+                                })
+                            })
+                            .unwrap_or_else(|| {
+                                Err(platform::PlatformError::Sdl(
+                                    "the window vanished during creation".to_string(),
+                                ))
+                            });
+                        match made {
+                            Ok((surface, extensions)) => {
+                                if let Some(cell) = data.host_surface.as_ref() {
+                                    *cell.lock().expect("the surface mutex is never poisoned") =
+                                        Some(adapter::PublishedSurface { surface, extensions });
+                                }
+                                crate::logging::log(
+                                    Level::Info,
+                                    "core",
+                                    &format!(
+                                        "create_window: surface published ({}x{}, instance 0x{:x})",
+                                        surface.width, surface.height, surface.instance
+                                    ),
+                                );
+                            }
+                            Err(error) => {
+                                data.host_window = None;
+                                crate::logging::log(
+                                    Level::Warn,
+                                    "core",
+                                    &format!("create_window: no Vulkan surface: {error}"),
+                                );
+                                return EIO;
+                            }
+                        }
+                    }
+                    id as i32
+                }
+                Err(platform::PlatformError::Busy(_)) => EBUSY,
+                Err(error) => {
+                    crate::logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("create_window refused: {error}"),
+                    );
+                    EIO
+                }
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "close_window",
+        |mut caller: Caller<'_, HostState>, id: u32| -> i32 {
+            const ENODEV: i32 = -19;
+            const EBUSY: i32 = -16;
+            let data = caller.data_mut();
+            if id != platform::WINDOW_ID {
+                return ENODEV;
+            }
+            // A renderer adopted this window and built a swapchain on it. Tearing
+            // it down underneath is the crash the teardown order exists to
+            // prevent, so the guest closes the canvas first and the window second.
+            if let Some(owner) = data.render2d.owner() {
+                crate::logging::log(
+                    Level::Warn,
+                    "core",
+                    &format!(
+                        "close_window refused: the swapchain is held by {}; close it first",
+                        owner.name()
+                    ),
+                );
+                return EBUSY;
+            }
+            // Dropping the window destroys the surface and the instance first,
+            // in that order (`HostWindow::drop`); clearing the cell is what makes
+            // a renderer that reads afterwards see "no window" rather than a
+            // handle into freed state.
+            if data.host_window.take().is_some() {
+                crate::logging::log(Level::Info, "core", "close_window: window closed");
+            }
+            if let Some(cell) = data.host_surface.as_ref() {
+                *cell.lock().expect("the surface mutex is never poisoned") = None;
+            }
+            0
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "window_info",
+        |mut caller: Caller<'_, HostState>, id: u32, out_ptr: u32| -> i32 {
+            const INFO_BYTES: usize = 40;
+            const EINVAL: i32 = -22;
+            // One window per process, so an unknown id is a caller bug rather
+            // than a lookup miss. **No window is not an error**: it writes a
+            // zeroed record and returns 0, which is what makes `width > 0` the
+            // whole headless guard in a guest's update loop.
+            let info = if id == platform::WINDOW_ID {
+                caller.data().host_window.as_ref().map(|window| window.info())
+            } else {
+                return EINVAL;
+            }
+            .unwrap_or_default();
+
+            let mut rec = [0u8; INFO_BYTES];
+            let fields: [u32; 9] = [
+                INFO_BYTES as u32,
+                info.width,
+                info.height,
+                info.pixel_width,
+                info.pixel_height,
+                info.dpi_scale_milli,
+                info.mode.as_u32(),
+                u32::from(info.focused),
+                u32::from(info.minimized),
+            ];
+            for (index, value) in fields.iter().enumerate() {
+                rec[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            // The last word is the close latch, written separately so the array
+            // above stays a table of the nine leading fields the header lists.
+            rec[36..40].copy_from_slice(&u32::from(info.close_requested).to_le_bytes());
+            if !write_guest(&mut caller, out_ptr as i32, &rec) {
+                return EINVAL;
+            }
+            0
+        },
+    )?;
+
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
 
@@ -1424,40 +1646,13 @@ fn main() -> anyhow::Result<()> {
     #[cfg(feature = "render2d-core")]
     link_2d(&mut linker)?;
 
-    // The host-owned window -------------------------------------------------
+        // The window ----------------------------------------------------------
     //
-    // Created before any adapter loads, because an adapter's `init` is the
-    // first thing that can ask for the surface (`host_surface`), and a surface
-    // cannot exist before the window does. Before instantiation too, so a guest
-    // that polls `tension::platform.surface_width()` on its first instruction
-    // gets the real size rather than a zero it has to special-case.
-    //
-    // Off unless asked for: every existing test, example and CI path passes no
-    // `--window`, so nothing about their behaviour changes.
-    if let Some((width, height)) = cli.window {
-        match platform::HostWindow::new("Tension", width, height) {
-            Ok(window) => {
-                logging::log(
-                    Level::Info,
-                    "core",
-                    &format!(
-                        "--window: {}x{} window open on '{}' (SDL {})",
-                        window.published_size().0,
-                        window.published_size().1,
-                        window.driver(),
-                        window.sdl_version()
-                    ),
-                );
-                store.data_mut().host_window = Some(window);
-            }
-            Err(error) => {
-                // A refused window is a startup failure, not a warning: the
-                // caller asked for one, and a run that continued headless while
-                // claiming otherwise is the failure mode this refuses.
-                anyhow::bail!("--window {width}x{height}: {error}");
-            }
-        }
-    }
+    // **There is none at startup, and there is no flag that makes one.** The
+    // runtime runs a guest; a window is application configuration, so it is
+    // created by `tension::platform.create_window` when the guest asks. This is
+    // the whole of the `--window` removal: no flag, no startup creation, and no
+    // second way in.
 
     // Capability adapters --------------------------------------------------
     // Loaded before instantiation because `link` is what registers the imports
@@ -1501,29 +1696,6 @@ fn main() -> anyhow::Result<()> {
             Err(error) => anyhow::bail!("--capability {}: {error}", path.display()),
         }
     }
-    // Did anything want the surface?
-    //
-    // The surface is created lazily, on the first `host_surface` call, so at
-    // this point "no surface" is a normal state and not a failure. Saying so is
-    // the difference between a developer wondering why `--window` produced no
-    // swapchain and knowing that no adapter asked: this pass has no
-    // `host_surface` slot at all, so the answer is always this line today, and
-    // that is worth stating plainly rather than leaving to be inferred.
-    if let Some(window) = store.data().host_window.as_ref() {
-        if !window.has_surface() {
-            let (width, height) = window.published_size();
-            logging::log(
-                Level::Info,
-                "core",
-                &format!(
-                    "--window: {width}x{height} window open on '{}'; no adapter requested a \
-                     surface, so no VkInstance was created",
-                    window.driver()
-                ),
-            );
-        }
-    }
-
     // The host must outlive every call the imports make, so it lives here, in
     // `main`'s frame, for as long as the linker does. It carries a clone of the
     // posting face, which is what an adapter thread reaches through
@@ -1532,45 +1704,18 @@ fn main() -> anyhow::Result<()> {
         std::sync::Arc::clone(&store.data().posting),
         std::sync::Arc::clone(&store.data().control),
     );
-    // Publish the surface before any adapter loads, so an adapter's `init`
-    // already sees it. Created eagerly here rather than on demand because the
-    // adapter cannot ask for it otherwise: it reaches the host through a table
-    // built before it runs.
+    // Hand the surface cell to the store, so `create_window` can publish into
+    // it later.
     //
-    // Only when a capability was asked for. A `--window` run with no renderer
-    // still pays nothing for Vulkan, which is the laziness that matters.
-    if !adapters.is_empty() {
-        if let Some(window) = store.data_mut().host_window.as_mut() {
-            match window.surface() {
-                Ok(surface) => {
-                    // The names go with the handle, in one publish: an adapter
-                    // builds a `VulkanExternalInstance` from both, and Ogre
-                    // treats that list as the truth about what is enabled.
-                    let extensions = window.instance_extensions().to_vec();
-                    adapter_host.publish_host_surface(surface, extensions);
-                    logging::log(
-                        Level::Info,
-                        "core",
-                        &format!(
-                            "--window: surface published to adapters ({}x{}, instance 0x{:x})",
-                            surface.width, surface.height, surface.instance
-                        ),
-                    );
-                }
-                Err(error) => {
-                    // Not fatal: an adapter that gets -ENOSYS falls back to
-                    // creating its own window, which is the pre-v6 behaviour and
-                    // still correct. Say so loudly though, because it means the
-                    // renderer is NOT on the host surface.
-                    logging::log(
-                        Level::Warn,
-                        "core",
-                        &format!("--window: adapters will not get a host surface: {error}"),
-                    );
-                }
-            }
-        }
-    }
+    // **This is the inversion.** The surface used to be published here, once,
+    // before any adapter loaded. It cannot be any more: the window does not
+    // exist until a guest asks for one, and the guest thread is the thread that
+    // creates it. So the cell is shared now and written mid-run, and the
+    // consumer — a renderer's `ogre::init` — reads it when it is called, which
+    // is after the guest's `createWindow` if the guest got the order right. A
+    // renderer that inits first gets `-ENOSYS` from `host_surface`, and the
+    // adapter turns that into `-ENODEV`: no window yet, not a broken host.
+    store.data_mut().host_surface = Some(adapter_host.host_surface_cell());
     if !adapters.is_empty() {
         adapter::link_adapters(&mut linker, &mut adapters, adapter_host.api())?;
     }
@@ -1903,7 +2048,7 @@ fn drop_host_window(store: &mut Store<HostState>) {
         logging::log(
             Level::Debug,
             "core",
-            &format!("--window: closing {width}x{height} on '{}'", window.driver()),
+            &format!("window: closing {width}x{height} on '{}'", window.driver()),
         );
         drop(window);
     }
@@ -1921,6 +2066,24 @@ fn drop_host_window(store: &mut Store<HostState>) {
 /// "your span is wrong" is an argument error at the verb), and a pointer
 /// arithmetic overflow is `-EINVAL`.
 ///
+/// Read a span out of guest memory, or `None` when there is no memory or the
+/// span runs past its end.
+///
+/// The window API's version of the copy rule: a guest pointer is used only
+/// inside the call that carried it, and what is kept afterwards is an owned
+/// copy. Not feature-gated, unlike `guest_bytes`, because the window API exists
+/// in both builds.
+fn read_guest_span(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> Option<Vec<u8>> {
+    let mem = caller.get_export("memory").and_then(|e| e.into_memory())?;
+    let data = mem.data(&*caller);
+    let start = ptr as usize;
+    let end = start.checked_add(len as usize)?;
+    if end > data.len() {
+        return None;
+    }
+    Some(data[start..end].to_vec())
+}
+
 /// The copy is the point, not an implementation detail: the guest pointer is not
 /// kept past the call (`tension_adapter.h` rule 6), and the renderer sorts and
 /// re-reads records after the verb has returned.
@@ -2523,7 +2686,7 @@ fn host_loop(
                     logging::log(
                         Level::Debug,
                         "core",
-                        &format!("--window: resized to {width}x{height}"),
+                        &format!("window: resized to {width}x{height}"),
                     );
                 }
                 if events.close_requested {
@@ -2536,7 +2699,7 @@ fn host_loop(
             }
         }
         if store.data().window_closed {
-            logging::log(Level::Info, "core", "--window: closed; stopping the host loop");
+            logging::log(Level::Info, "core", "window: closed; stopping the host loop");
             break;
         }
 
@@ -2570,7 +2733,7 @@ fn host_loop(
                                 Level::Warn,
                                 "core",
                                 &format!(
-                                    "--window: control kind {} from source {} refused: {error}",
+                                    "window: control kind {} from source {} refused: {error}",
                                     msg.kind, msg.source
                                 ),
                             );
@@ -2579,12 +2742,13 @@ fn host_loop(
                 }
             } else if store.data().host_window.is_none() {
                 // No window: nothing to apply to. Not an error — a guest may
-                // post control with no `--window`, and the queue is drained so
-                // it cannot grow. Say so once at debug, not per message.
+                // post control without having created a window, and the queue is
+                // drained so it cannot grow. Say so once at debug, not per
+                // message.
                 logging::log(
                     Level::Debug,
                     "core",
-                    &format!("--window: {} control message(s) with no host window", pending.len()),
+                    &format!("window: {} control message(s) with no host window", pending.len()),
                 );
                 applied = pending.len() as u32;
             }
@@ -2592,7 +2756,7 @@ fn host_loop(
                 logging::log(
                     Level::Trace,
                     "core",
-                    &format!("--window: applied {applied} control message(s), {failed} failed"),
+                    &format!("window: applied {applied} control message(s), {failed} failed"),
                 );
             }
         }

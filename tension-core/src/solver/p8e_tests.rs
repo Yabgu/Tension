@@ -194,6 +194,7 @@ fn test_state() -> HostState {
         pending: crate::session::apply::PendingQueue::new(),
         control: std::sync::Arc::new(crate::platform::ControlBus::new()),
                 host_window: None,
+                host_surface: None,
                 render2d: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),

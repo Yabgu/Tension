@@ -32,7 +32,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tension_core::platform::HostWindow;
+use tension_core::platform::{HostWindow, WindowTarget};
 
 // ── the adapter ABI, mirrored ────────────────────────────────────────────────
 //
@@ -485,7 +485,7 @@ fn main() {
     };
 
     // ── (a) the host owns a window and a surface ─────────────────────────
-    let mut window = match HostWindow::new("tension-ogre-host-surface", 320, 240) {
+    let mut window = match HostWindow::new("tension-ogre-host-surface", 320, 240, WindowTarget::Vulkan) {
         Ok(window) => window,
         Err(error) => {
             eprintln!("SKIP: no host window on this machine: {error}");

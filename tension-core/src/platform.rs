@@ -34,7 +34,7 @@
 use ash::vk;
 use ash::vk::Handle;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 
@@ -235,6 +235,155 @@ impl ControlBus {
     }
 }
 
+// ── the programmatic window API (ABI v7, guest-facing) ──────────────────────
+
+/// What a created window's pixels are meant for. The value decides the flags
+/// the window is created with, and on Windows the difference is load-bearing:
+/// an `SDL_WINDOW_VULKAN` window makes SDL want a Vulkan loader, and a
+/// D3D12-only machine need not have one.
+///
+/// The numbers are `TENSION_WINDOW_TARGET_*` in `tension_adapter.h`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WindowTarget {
+    /// An ordinary window. No graphics API is promised anything.
+    Plain,
+    /// The window will be handed to `SDL_GPU`. On Linux SDL builds a Vulkan
+    /// surface from an ordinary window; on Windows and macOS it uses D3D12 and
+    /// Metal natively. No `VULKAN` flag either way.
+    Gpu,
+    /// The window will be handed to `SDL_Vulkan_CreateSurface`, which requires
+    /// `SDL_WINDOW_VULKAN` at creation. What a renderer that wants the host's
+    /// `VkSurfaceKHR` needs — Ogre-Next's external-surface path.
+    Vulkan,
+}
+
+impl WindowTarget {
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(WindowTarget::Plain),
+            1 => Some(WindowTarget::Gpu),
+            2 => Some(WindowTarget::Vulkan),
+            _ => None,
+        }
+    }
+}
+
+/// `TENSION_WINDOW_MODE_*`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WindowMode {
+    #[default]
+    Windowed,
+    Fullscreen,
+    BorderlessFullscreen,
+}
+
+impl WindowMode {
+    pub fn from_u32(value: u32) -> Option<Self> {
+        match value {
+            0 => Some(WindowMode::Windowed),
+            1 => Some(WindowMode::Fullscreen),
+            2 => Some(WindowMode::BorderlessFullscreen),
+            _ => None,
+        }
+    }
+
+    pub fn as_u32(self) -> u32 {
+        match self {
+            WindowMode::Windowed => 0,
+            WindowMode::Fullscreen => 1,
+            WindowMode::BorderlessFullscreen => 2,
+        }
+    }
+}
+
+/// `TENSION_WINDOW_FLAG_*`. Named so a caller does not OR bare integers, and
+/// `KNOWN` is what the shim validates against: a flag this build does not
+/// define is refused rather than ignored, because a caller that asked for
+/// always-on-top and silently did not get it has no way to find out.
+pub mod window_flags {
+    pub const RESIZABLE: u32 = 1 << 0;
+    pub const DECORATED: u32 = 1 << 1;
+    pub const ALWAYS_ON_TOP: u32 = 1 << 2;
+    pub const HIDDEN: u32 = 1 << 3;
+    pub const HIGH_DPI: u32 = 1 << 4;
+    pub const KNOWN: u32 = RESIZABLE | DECORATED | ALWAYS_ON_TOP | HIDDEN | HIGH_DPI;
+}
+
+/// `TENSION_WINDOW_POS_CENTERED`: let the window system place the window. A
+/// sentinel rather than 0, because 0 is the origin and a caller may mean it.
+pub const WINDOW_POS_CENTERED: i32 = i32::MIN;
+
+/// A window the guest — or an in-core renderer — asks the host to create.
+///
+/// One-shot: nothing caches this. After creation the facts live on the window
+/// (`published_size`, the atomics), and a second copy would be a second thing
+/// to keep in step.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WindowConfig {
+    pub target: WindowTarget,
+    pub width: u32,
+    pub height: u32,
+    pub mode: WindowMode,
+    pub flags: u32,
+    /// `WINDOW_POS_CENTERED`, or an absolute desktop position.
+    pub x: i32,
+    pub y: i32,
+    /// 0 means "no bound", matching the wire.
+    pub min_width: u32,
+    pub min_height: u32,
+    pub max_width: u32,
+    pub max_height: u32,
+    pub title: String,
+}
+
+impl Default for WindowConfig {
+    fn default() -> Self {
+        // What a caller that filled nothing in gets: a plain resizable window at
+        // 1280x720 with a title, which is the shape every example wants.
+        WindowConfig {
+            target: WindowTarget::Plain,
+            width: 1280,
+            height: 720,
+            mode: WindowMode::Windowed,
+            flags: window_flags::RESIZABLE | window_flags::DECORATED | window_flags::HIGH_DPI,
+            x: WINDOW_POS_CENTERED,
+            y: WINDOW_POS_CENTERED,
+            min_width: 0,
+            min_height: 0,
+            max_width: 0,
+            max_height: 0,
+            title: "Tension".to_string(),
+        }
+    }
+}
+
+/// A snapshot of the window's state, as `tension_window_info` carries it.
+///
+/// `width == 0` means "there is no window", which is the whole headless guard —
+/// not an error. A guest's update loop reads this every frame and must not have
+/// to special-case "no window" as a failure.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WindowInfo {
+    /// Logical units: what a UI lays out in.
+    pub width: u32,
+    pub height: u32,
+    /// Drawable pixels: what a render target is allocated at.
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    /// Display scale x 1000 (1000 = 1.0). An integer because this crosses the
+    /// ABI and a float there is a rounding argument waiting to happen.
+    pub dpi_scale_milli: u32,
+    pub mode: WindowMode,
+    pub focused: bool,
+    pub minimized: bool,
+    pub close_requested: bool,
+}
+
+/// The window id every created window has. One window per process is this
+/// ABI's limit (`docs/known-limitations.md`), and ids are 1-based, so the
+/// number is fixed rather than allocated.
+pub const WINDOW_ID: u32 = 1;
+
 /// What a renderer needs to render into the host's window.
 ///
 /// Plain integers rather than Vulkan types: this crosses the adapter ABI as two
@@ -277,6 +426,9 @@ pub enum PlatformError {
     /// The window exists but has no Vulkan-backed drawable — the `dummy`
     /// driver, for instance, which has no WSI at all.
     NoVulkanSurface(String),
+    /// The request is legal but cannot be served now: a window already exists,
+    /// or a renderer still holds the one being closed.
+    Busy(String),
 }
 
 impl std::fmt::Display for PlatformError {
@@ -285,6 +437,7 @@ impl std::fmt::Display for PlatformError {
             PlatformError::Sdl(message) => write!(f, "sdl: {message}"),
             PlatformError::Vulkan(message) => write!(f, "vulkan: {message}"),
             PlatformError::NoVulkanSurface(message) => write!(f, "no vulkan surface: {message}"),
+            PlatformError::Busy(message) => write!(f, "busy: {message}"),
         }
     }
 }
@@ -331,6 +484,23 @@ pub struct HostWindow {
     /// one-frame mis-sized swapchain under load.
     width: AtomicU32,
     height: AtomicU32,
+    /// Drawable pixels, which on a high-DPI display is not `width`/`height`.
+    /// Written by the pump from `PIXEL_SIZE_CHANGED` and read by `window_info`;
+    /// a renderer that allocates a target from the logical size draws a blurry
+    /// frame on a 2x display.
+    pixel_width: AtomicU32,
+    pixel_height: AtomicU32,
+    /// Display scale x 1000, so this can be an atomic without a float.
+    dpi_scale_milli: AtomicU32,
+    /// What the window system says, refreshed by the pump from the events SDL
+    /// actually delivers. Initialised from the creation request, because a
+    /// window created fullscreen may never emit ENTER_FULLSCREEN.
+    fullscreen: AtomicBool,
+    focused: AtomicBool,
+    minimized: AtomicBool,
+    /// Latched: once the user asks to close, it stays asked until the window is
+    /// destroyed. A guest reading it every frame wants a state, not an edge.
+    close_requested: AtomicBool,
     title: String,
     /// Last, so it outlives everything above it: `Sdl`'s drop calls `SDL_Quit`,
     /// which tears down the video subsystem under every window that outlived
@@ -340,15 +510,28 @@ pub struct HostWindow {
 }
 
 impl HostWindow {
-    /// Create a window. Must be called from the main thread: `sdl3` refuses to
-    /// initialise anywhere else (`sdl3::sdl::Sdl::new`), and that restriction is
-    /// the portable one even though SDL 3.4 itself is more permissive.
+    /// Create a window for a renderer that will claim it, with the flags its
+    /// target implies.
     ///
-    /// The window is created with `SDL_WINDOW_VULKAN` from the start. Adding
-    /// that flag later is not possible on every driver, and on Wayland the
-    /// surface is a property of the window's creation, not something bolted on
-    /// after.
-    pub fn new(title: &str, width: u32, height: u32) -> Result<Self, PlatformError> {
+    /// Must be called from the main thread: `sdl3` refuses to initialise
+    /// anywhere else (`sdl3::sdl::Sdl::new`), and that restriction is the
+    /// portable one even though SDL 3.4 itself is more permissive. `SDL_GPU`'s
+    /// `SDL_ClaimWindowForGPUDevice` carries the same rule, so creating and
+    /// claiming on one thread falls out rather than being arranged.
+    ///
+    /// **`target` decides whether `SDL_WINDOW_VULKAN` is set, and it has to be
+    /// decided here.** `SDL_Vulkan_CreateSurface` requires the flag, adding it
+    /// later is not possible on every driver, and on Wayland the surface is a
+    /// property of the window's creation. A `Gpu` window does not set it: SDL_GPU
+    /// builds its own surface from an ordinary window on Linux and uses D3D12
+    /// or Metal natively elsewhere, and on Windows asking for the flag makes SDL
+    /// require a Vulkan loader a D3D12-only machine need not have.
+    pub fn new(
+        title: &str,
+        width: u32,
+        height: u32,
+        target: WindowTarget,
+    ) -> Result<Self, PlatformError> {
         let sdl = sdl3::init().map_err(|e| PlatformError::Sdl(e.to_string()))?;
         let video = sdl
             .video()
@@ -359,12 +542,13 @@ impl HostWindow {
             .event_pump()
             .map_err(|e| PlatformError::Sdl(e.to_string()))?;
 
+        let mut flags = sdl3::video::WindowFlags::RESIZABLE
+            | sdl3::video::WindowFlags::HIGH_PIXEL_DENSITY;
+        if target == WindowTarget::Vulkan {
+            flags |= sdl3::video::WindowFlags::VULKAN;
+        }
         let mut builder = video.window(title, width, height);
-        builder.set_flags(
-            sdl3::video::WindowFlags::VULKAN
-                | sdl3::video::WindowFlags::RESIZABLE
-                | sdl3::video::WindowFlags::HIGH_PIXEL_DENSITY,
-        );
+        builder.set_flags(flags);
         let window = builder
             .build()
             .map_err(|e| PlatformError::Sdl(e.to_string()))?;
@@ -379,6 +563,13 @@ impl HostWindow {
             extensions: Vec::new(),
             width: AtomicU32::new(width),
             height: AtomicU32::new(height),
+            pixel_width: AtomicU32::new(width),
+            pixel_height: AtomicU32::new(height),
+            dpi_scale_milli: AtomicU32::new(1000),
+            fullscreen: AtomicBool::new(false),
+            focused: AtomicBool::new(true),
+            minimized: AtomicBool::new(false),
+            close_requested: AtomicBool::new(false),
             title: title.to_string(),
             _sdl: sdl,
         })
@@ -405,8 +596,8 @@ impl HostWindow {
         }
 
         // Loaded here rather than in `new`, because a window does not need
-        // Vulkan: `--window` on a machine with no Vulkan should open the
-        // window and report that nothing asked for a surface, not refuse to
+        // Vulkan: a `plain` or `gpu` window on a machine with no Vulkan should
+        // open and report that nothing asked for a surface, not refuse to
         // start. Measured that this ordering is legal — SDL creates a
         // SDL_WINDOW_VULKAN window happily before any library is loaded, and
         // `SDL_Vulkan_GetInstanceExtensions` answers correctly once it is.
@@ -541,31 +732,111 @@ impl HostWindow {
         while let Some(event) = self.event_pump.poll_event() {
             events.drained += 1;
             match event {
-                sdl3::event::Event::Quit { .. } => events.close_requested = true,
+                sdl3::event::Event::Quit { .. } => {
+                    self.close_requested.store(true, Ordering::Relaxed);
+                    events.close_requested = true;
+                }
                 sdl3::event::Event::Window {
-                    win_event: sdl3::event::WindowEvent::CloseRequested,
-                    window_id: id,
-                    ..
-                } if id == window_id => events.close_requested = true,
-                sdl3::event::Event::Window {
-                    win_event: sdl3::event::WindowEvent::Resized(width, height),
+                    win_event,
                     window_id: id,
                     ..
                 } if id == window_id => {
-                    // Pixels, not points: `Window::size()` is the drawable size,
-                    // which is what a swapchain is built from.
-                    let (width, height) = (width.max(0) as u32, height.max(0) as u32);
-                    if width > 0 && height > 0 {
-                        self.width.store(width, Ordering::Relaxed);
-                        self.height.store(height, Ordering::Relaxed);
-                        events.resized = Some((width, height));
-                    }
+                    self.apply_window_event(&mut events, win_event);
+                }
+                // A display's scale changed under the window (a monitor switch,
+                // or the compositor's DPI setting). The scale belongs to the
+                // display, so the event is display-scoped; the window just
+                // re-reads its own.
+                sdl3::event::Event::Display {
+                    display_event: sdl3::event::DisplayEvent::ContentScaleChanged,
+                    ..
+                } => {
+                    let scale = (self.window.display_scale() * 1000.0).round() as u32;
+                    self.dpi_scale_milli.store(scale.max(1), Ordering::Relaxed);
                 }
                 _ => {}
             }
         }
 
         events
+    }
+
+    /// One window event against this window's state.
+    ///
+    /// Split out of [`pump`] so the pump stays one readable loop, and so every
+    /// arm here is visibly "an atomic updated from an event" — the contract
+    /// `window_info` depends on. Nothing here calls SDL except the DPI read,
+    /// which is why the caller has already established this is the window's
+    /// thread.
+    fn apply_window_event(&self, events: &mut PlatformEvents, event: sdl3::event::WindowEvent) {
+        use sdl3::event::WindowEvent;
+        match event {
+            WindowEvent::CloseRequested => {
+                // Latched, not an edge: a guest polling `window_info` wants to
+                // know the user asked, not that they asked once.
+                self.close_requested.store(true, Ordering::Relaxed);
+                events.close_requested = true;
+            }
+            WindowEvent::Resized(width, height) => {
+                // Logical size. The drawable size arrives separately, as
+                // `PixelSizeChanged`, and is what a swapchain is built from.
+                let (width, height) = (width.max(0) as u32, height.max(0) as u32);
+                if width > 0 && height > 0 {
+                    self.width.store(width, Ordering::Relaxed);
+                    self.height.store(height, Ordering::Relaxed);
+                    events.resized = Some((width, height));
+                }
+            }
+            WindowEvent::PixelSizeChanged(width, height) => {
+                let (width, height) = (width.max(0) as u32, height.max(0) as u32);
+                if width > 0 && height > 0 {
+                    self.pixel_width.store(width, Ordering::Relaxed);
+                    self.pixel_height.store(height, Ordering::Relaxed);
+                }
+            }
+            WindowEvent::EnterFullscreen => self.fullscreen.store(true, Ordering::Relaxed),
+            WindowEvent::LeaveFullscreen => self.fullscreen.store(false, Ordering::Relaxed),
+            WindowEvent::FocusGained => self.focused.store(true, Ordering::Relaxed),
+            WindowEvent::FocusLost => self.focused.store(false, Ordering::Relaxed),
+            WindowEvent::Minimized => self.minimized.store(true, Ordering::Relaxed),
+            WindowEvent::Restored | WindowEvent::Maximized => {
+                self.minimized.store(false, Ordering::Relaxed)
+            }
+            _ => {}
+        }
+    }
+
+    /// The window's state as one snapshot, from the atomics only.
+    ///
+    /// Safe from any thread: no SDL call, no lock, no allocation. A renderer's
+    /// frame loop and a guest's update loop both read it, from different
+    /// threads, which is exactly why the fields are atomics.
+    pub fn info(&self) -> WindowInfo {
+        let (width, height) = (self.width.load(Ordering::Relaxed), self.height.load(Ordering::Relaxed));
+        let (pixel_width, pixel_height) = (
+            self.pixel_width.load(Ordering::Relaxed),
+            self.pixel_height.load(Ordering::Relaxed),
+        );
+        WindowInfo {
+            width,
+            height,
+            // A driver that never sends PIXEL_SIZE_CHANGED leaves these at the
+            // creation size, which equals the logical size on a 1x display. That
+            // is the honest answer rather than zero: a renderer allocating from
+            // zero pixels fails, and the fallback is the size the window asked
+            // for.
+            pixel_width: if pixel_width == 0 { width } else { pixel_width },
+            pixel_height: if pixel_height == 0 { height } else { pixel_height },
+            dpi_scale_milli: self.dpi_scale_milli.load(Ordering::Relaxed),
+            mode: if self.fullscreen.load(Ordering::Relaxed) {
+                WindowMode::Fullscreen
+            } else {
+                WindowMode::Windowed
+            },
+            focused: self.focused.load(Ordering::Relaxed),
+            minimized: self.minimized.load(Ordering::Relaxed),
+            close_requested: self.close_requested.load(Ordering::Relaxed),
+        }
     }
 
     /// The window's current drawable size in pixels, read from SDL.
@@ -644,6 +915,38 @@ impl HostWindow {
         }
     }
 
+    /// Put the window into or out of fullscreen.
+    ///
+    /// **Main thread only.** Where `apply_control` is the path a *layer* takes,
+    /// this is the path the host itself takes at creation, on the thread that
+    /// made the window. The pump keeps `info().mode` true from the events SDL
+    /// emits when the switch completes.
+    pub fn set_fullscreen(&mut self, on: bool) -> Result<(), PlatformError> {
+        self.window
+            .set_fullscreen(on)
+            .map_err(|e| PlatformError::Sdl(e.to_string()))
+    }
+
+    /// Window chrome on or off. Returns `false` when the driver refused; that is
+    /// a hint no driver owes us, so it is not an error.
+    pub fn set_bordered(&mut self, bordered: bool) -> bool {
+        self.window.set_bordered(bordered)
+    }
+
+    /// Resize bounds. 0 in either dimension means "no bound" on the wire, and a
+    /// caller that means it does not call this.
+    pub fn set_min_size(&mut self, width: u32, height: u32) -> Result<(), PlatformError> {
+        self.window
+            .set_minimum_size(width, height)
+            .map_err(|e| PlatformError::Sdl(format!("{e:?}")))
+    }
+
+    pub fn set_max_size(&mut self, width: u32, height: u32) -> Result<(), PlatformError> {
+        self.window
+            .set_maximum_size(width, height)
+            .map_err(|e| PlatformError::Sdl(format!("{e:?}")))
+    }
+
     /// The SDL version this process actually linked against.
     ///
     /// Worth a log line at startup: the `sdl3` crate is generated from a
@@ -660,6 +963,64 @@ impl HostWindow {
     pub fn driver(&self) -> &'static str {
         self.video.current_video_driver()
     }
+}
+
+/// Create the host's window from a guest's (or a renderer's) request.
+///
+/// One window per process: a second request is [`PlatformError::Busy`] rather
+/// than a replacement, because a replacement would silently orphan a renderer's
+/// claim on the first one. Closing first is the caller's move.
+///
+/// **Main thread only** — it calls `SDL_CreateWindow`, and every later call on
+/// the window must be from the same thread.
+pub fn create_window(
+    slot: &mut Option<HostWindow>,
+    config: &WindowConfig,
+) -> Result<u32, PlatformError> {
+    if slot.is_some() {
+        return Err(PlatformError::Busy(
+            "the host already owns a window; close it before creating another".to_string(),
+        ));
+    }
+    if config.width == 0 || config.height == 0 {
+        return Err(PlatformError::Sdl(format!(
+            "a window cannot be {}x{}",
+            config.width, config.height
+        )));
+    }
+
+    let mut window = HostWindow::new(&config.title, config.width, config.height, config.target)?;
+
+    // Mode is applied after creation, because SDL's fullscreen flags are a
+    // state transition rather than a creation parameter on every driver:
+    // `SDL_SetWindowFullscreen` picks the display, clamps to its mode, and emits
+    // ENTER_FULLSCREEN — the event the pump latches. Doing it here keeps the
+    // window's own record true from the first frame, even on a driver that never
+    // emits the event for a window born fullscreen.
+    match config.mode {
+        WindowMode::Windowed => {}
+        WindowMode::Fullscreen => {
+            window.set_fullscreen(true)?;
+            window.fullscreen.store(true, Ordering::Relaxed);
+        }
+        WindowMode::BorderlessFullscreen => {
+            window.set_fullscreen(true)?;
+            window.fullscreen.store(true, Ordering::Relaxed);
+            // Borderless is the window system's decoration, not the mode: the
+            // request is "fullscreen with no chrome".
+            window.set_bordered(false);
+        }
+    }
+
+    if config.min_width > 0 && config.min_height > 0 {
+        window.set_min_size(config.min_width, config.min_height)?;
+    }
+    if config.max_width > 0 && config.max_height > 0 {
+        window.set_max_size(config.max_width, config.max_height)?;
+    }
+
+    *slot = Some(window);
+    Ok(WINDOW_ID)
 }
 
 impl Drop for HostWindow {
