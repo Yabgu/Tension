@@ -143,7 +143,7 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1359` |
 | `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1377` |
 | `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1534` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1571` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1578` |
 
 ## `tension::res`
 
