@@ -30,9 +30,11 @@
 // purpose: a guest asking how big its window is must not depend on whether
 // something has claimed the surface for swapchain work.
 //
-// Scope: RESIZE is the only kind in this ABI version. Kinds are additive, so a
-// future host may accept more; a guest must treat an unknown kind as a refusal
-// rather than assume.
+// Scope: RESIZE is the only *control* kind, and it is the mutation path a
+// layer takes. Window creation is not a control message: the guest calls
+// `createWindow` and the host creates it synchronously, because the guest's next
+// instruction may claim the window for a renderer and a queued creation would be
+// a frame too late.
 
 /** `tension::platform.control(kind, a0, a1, a2, a3) -> i32`. */
 @external("tension::platform", "control")
@@ -45,6 +47,19 @@ declare function surfaceWidthRaw(): u32;
 /** `tension::platform.surface_height() -> u32`. */
 @external("tension::platform", "surface_height")
 declare function surfaceHeightRaw(): u32;
+
+/** `tension::platform.create_window(cfgPtr, cfgLen) -> i32`: the window id, or
+ *  a negative errno. */
+@external("tension::platform", "create_window")
+declare function createWindowRaw(cfgPtr: u32, cfgLen: u32): i32;
+
+/** `tension::platform.close_window(id) -> i32`. */
+@external("tension::platform", "close_window")
+declare function closeWindowRaw(id: u32): i32;
+
+/** `tension::platform.window_info(id, outPtr) -> i32`. */
+@external("tension::platform", "window_info")
+declare function windowInfoRaw(id: u32, outPtr: u32): i32;
 
 /** The control kinds this ABI defines (`tension_ctrl_kind`). */
 export enum ControlKind {
@@ -97,4 +112,180 @@ export function surfaceHeight(): u32 {
 export function resize(width: i32, height: i32): i32 {
   if (width < 1 || height < 1) return ControlError.UnknownKind;
   return controlRaw(ControlKind.Resize, width, height, 0, 0);
+}
+
+// ── the programmatic window API (ABI v7) ────────────────────────────────────
+//
+// The runtime takes no window flag: an application that wants a window asks for
+// one. This is the top of that path, and the shape is deliberately the plainest
+// thing that works:
+//
+//   const win = platform.createWindow(cfg);
+//   if (!win.isValid()) { /* no display, or already created */ }
+//   // …later, every frame:
+//   const info = win.info();          // width == 0 when there is no window
+//
+// **`createWindow` is synchronous**, unlike `resize`. The host creates the
+// window on the interpreter thread inside this call, so a guest can claim it for
+// a renderer on the very next line. The cost is that a slow window system stalls
+// one call; the alternative — queue it — means the renderer's `init` runs before
+// the window exists, which is the ordering bug this exists to avoid.
+//
+// **`info()` on no window is not an error.** It returns a zeroed record with
+// `width == 0`, because a frame loop should not have to treat "I have no window"
+// as a failure. `win.isValid()` and `info().width > 0` agree.
+
+/** Where the window's pixels are meant to go. The value picks the flags the
+ *  host creates the window with, and on Windows the difference decides whether
+ *  a Vulkan loader is required at all. */
+export enum WindowTarget {
+  /** An ordinary window; no graphics API is promised anything. */
+  Plain = 0,
+  /** The window will be handed to SDL_GPU (Vulkan on Linux, D3D12/Metal
+   *  elsewhere). No `VULKAN` flag: SDL_GPU builds its own surface. */
+  Gpu = 1,
+  /** The window will be handed to `SDL_Vulkan_CreateSurface`. Required if you
+   *  want `VkSurfaceKHR` from the host — an `ogre` renderer on the host's
+   *  surface. */
+  Vulkan = 2,
+}
+
+export enum WindowMode {
+  Windowed = 0,
+  Fullscreen = 1,
+  BorderlessFullscreen = 2,
+}
+
+/** `TENSION_WINDOW_FLAG_*`. OR these together. */
+export enum WindowFlags {
+  None = 0,
+  Resizable = 1,
+  Decorated = 2,
+  AlwaysOnTop = 4,
+  Hidden = 8,
+  HighDpi = 16,
+}
+
+/** What `createWindow` takes. Construct it, set the fields, pass it. */
+export class WindowConfig {
+  target: WindowTarget = WindowTarget.Plain;
+  width: u32 = 1280;
+  height: u32 = 720;
+  mode: WindowMode = WindowMode.Windowed;
+  flags: u32 = WindowFlags.Resizable | WindowFlags.Decorated | WindowFlags.HighDpi;
+  /** `I32.MIN_VALUE` = let the window system place it. */
+  x: i32 = I32.MIN_VALUE;
+  y: i32 = I32.MIN_VALUE;
+  /** 0 = no bound. */
+  minWidth: u32 = 0;
+  minHeight: u32 = 0;
+  maxWidth: u32 = 0;
+  maxHeight: u32 = 0;
+  title: string = "Tension";
+}
+
+/** A window's state, as `info()` returns it. */
+export class WindowInfo {
+  /** Logical units. **0 means there is no window** — the whole headless guard. */
+  width: u32 = 0;
+  height: u32 = 0;
+  /** Drawable pixels. Equal to `width`/`height` on a 1x display. */
+  pixelWidth: u32 = 0;
+  pixelHeight: u32 = 0;
+  /** Display scale x 1000; 1000 is 1.0. */
+  dpiScaleMilli: u32 = 1000;
+  mode: WindowMode = WindowMode.Windowed;
+  focused: bool = false;
+  minimized: bool = false;
+  /** The user asked to close it. Latched, not an edge. */
+  closeRequested: bool = false;
+}
+
+/// The bytes `tension_window_config` occupies, including `struct_size`.
+const WINDOW_CONFIG_BYTES: u32 = 56;
+/// The bytes `tension_window_info` writes.
+const WINDOW_INFO_BYTES: u32 = 40;
+
+/** A window handle. Ids are 1-based, so `handle == 0` means "no window". */
+export class Window {
+  handle: u32;
+  /** The errno `createWindow` returned, or 0. */
+  error: i32;
+
+  constructor(handle: u32, error: i32) {
+    this.handle = handle;
+    this.error = error;
+  }
+
+  isValid(): bool {
+    return this.handle > 0;
+  }
+
+  /** This window's state. On `!isValid()` every field is zero, `width`
+   *  included — not an error code, so an update loop needs no branch. */
+  info(): WindowInfo {
+    const out = new WindowInfo();
+    if (!this.isValid()) return out;
+    const staging: u32 = <u32>heap.alloc(WINDOW_INFO_BYTES);
+    const rc = windowInfoRaw(this.handle, staging);
+    if (rc == 0) {
+      out.width = load<u32>(staging + 4);
+      out.height = load<u32>(staging + 8);
+      out.pixelWidth = load<u32>(staging + 12);
+      out.pixelHeight = load<u32>(staging + 16);
+      out.dpiScaleMilli = load<u32>(staging + 20);
+      out.mode = load<u32>(staging + 24) as WindowMode;
+      out.focused = load<u32>(staging + 28) != 0;
+      out.minimized = load<u32>(staging + 32) != 0;
+      out.closeRequested = load<u32>(staging + 36) != 0;
+    }
+    heap.free(staging);
+    return out;
+  }
+
+  /** Destroy the window. Refused with -EBUSY while a renderer holds its
+   *  swapchain: close the canvas first. 0 when it is already gone. */
+  close(): i32 {
+    if (!this.isValid()) return 0;
+    return closeWindowRaw(this.handle);
+  }
+}
+
+/**
+ * Create the host's window.
+ *
+ * One window per process. A second call answers -EBUSY (`Window.error`), and so
+ * does closing a window a renderer still holds.
+ *
+ * The title is a UTF-8 string copied into guest memory for the call; the host
+ * copies it into the window and keeps nothing.
+ */
+export function createWindow(config: WindowConfig): Window {
+  const staging: u32 = <u32>heap.alloc(WINDOW_CONFIG_BYTES);
+  const titleBytes = String.UTF8.encode(config.title, false);
+  const titlePtr: u32 = titleBytes.byteLength > 0 ? <u32>heap.alloc(titleBytes.byteLength) : 0;
+  if (titlePtr != 0) {
+    memory.copy(<usize>titlePtr, changetype<usize>(titleBytes), titleBytes.byteLength);
+  }
+
+  store<u32>(staging + 0, WINDOW_CONFIG_BYTES);
+  store<u32>(staging + 4, config.target);
+  store<u32>(staging + 8, config.width);
+  store<u32>(staging + 12, config.height);
+  store<u32>(staging + 16, config.mode);
+  store<u32>(staging + 20, config.flags);
+  store<i32>(staging + 24, config.x);
+  store<i32>(staging + 28, config.y);
+  store<u32>(staging + 32, config.minWidth);
+  store<u32>(staging + 36, config.minHeight);
+  store<u32>(staging + 40, config.maxWidth);
+  store<u32>(staging + 44, config.maxHeight);
+  store<u32>(staging + 48, titlePtr);
+  store<u32>(staging + 52, titleBytes.byteLength);
+
+  const rc = createWindowRaw(staging, WINDOW_CONFIG_BYTES);
+  heap.free(staging);
+  if (titlePtr != 0) heap.free(titlePtr);
+
+  return rc > 0 ? new Window(<u32>rc, 0) : new Window(0, rc);
 }
