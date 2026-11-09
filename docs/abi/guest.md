@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-77 imports across 12 modules: 45 registered by the host in 9 modules, 32 by 3 capability adapters.
+80 imports across 12 modules: 48 registered by the host in 9 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -29,28 +29,28 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:976` |
+| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:950` |
 
 ## `ogre` — capability
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1378` |
-| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1379` |
-| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1380` |
-| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1382` |
-| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1383` |
-| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1385` |
-| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1387` |
-| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1388` |
-| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1389` |
-| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1392` |
-| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1394` |
-| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1397` |
-| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1398` |
-| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1399` |
-| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1395` |
-| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1402` |
+| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1391` |
+| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1392` |
+| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1393` |
+| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1395` |
+| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1396` |
+| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1398` |
+| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1400` |
+| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1401` |
+| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1402` |
+| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1405` |
+| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1407` |
+| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1410` |
+| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1411` |
+| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1412` |
+| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1408` |
+| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1415` |
 
 ## `scheduler`
 
@@ -71,7 +71,7 @@ says how in its own shim; the shared codes are in
 | `pending` | `(void) → i32` | `tension-core/src/session/mod.rs:1536` |
 
 The `session` module is reserved: these verbs are the host's own. An
-adapter that tries to register here is refused at load (`tension-core/src/adapter/mod.rs:1155`).
+adapter that tries to register here is refused at load (`tension-core/src/adapter/mod.rs:1167`).
 
 ## `tension::2d` — core, and a capability on the bisect path
 
@@ -127,33 +127,36 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/main.rs:991` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1017` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1032` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1047` |
-| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1100` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1106` |
+| `print` | `(i32, i32)` | `tension-core/src/main.rs:965` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:991` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1006` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1021` |
+| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1074` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1080` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1347` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1370` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1375` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1321` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1344` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1349` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1367` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1524` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1561` |
 
 ## `tension::res`
 
 | import | signature | registered at |
 |---|---|---|
-| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1141` |
-| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1155` |
-| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1172` |
-| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1213` |
-| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1230` |
-| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1247` |
-| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1267` |
-| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1291` |
+| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1115` |
+| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1129` |
+| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1146` |
+| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1187` |
+| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1204` |
+| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1221` |
+| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1241` |
+| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1265` |
 
 ## `tension::solver`
 

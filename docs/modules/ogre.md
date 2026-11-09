@@ -199,13 +199,17 @@ after the headless policy and before the host's handles are merged in, so an
 `offscreen` guest cannot adopt a surface the host happens to publish
 (`adapter.cpp:525-551`):
 
-- `auto` is the absence of a request — the pre-key behaviour, and what an
-  adapter that does not know key 8 already does (`config.cpp:225-232`);
-- `swapchain` requires the host's surface. When the host published none, `init`
-  refuses `-ENODEV` synchronously, before a thread exists (`adapter.cpp:590-602`),
-  rather than doing what `auto` would do and making a window of its own. The
-  backend repeats the refusal as a backstop for a `Config` built by another route
-  (`backend_ogre.cpp:440-452`);
+- `auto` and `swapchain` now name **the same requirement**: the host's surface,
+  or `-ENODEV`. `auto` used to mean "the host's surface if there is one, and
+  otherwise make yourself a window"; that second half is gone, because the
+  backend no longer has a window-creation path at all — a window is the guest's
+  to create (`tension::platform.create_window`, target `vulkan`) and the host's
+  to own. The refusal is raised in `init`, synchronously, before a thread exists
+  (`adapter.cpp`), with the message naming the call the guest forgot;
+- the backend repeats the refusal as a backstop for a `Config` that reached it
+  by another route: without a host surface, every GPU render system refuses at
+  `STAGE_WINDOW` (`backend_ogre.cpp`). Only the NULL render system is exempt,
+  and its window object is bookkeeping, not a window;
 - `offscreen` means no window, and on this backend that is the NULL render
   system: it resolves the renderer to null and sets `headless`
   (`config.cpp:279-288`), so an explicitly requested GPU renderer is refused
@@ -218,9 +222,14 @@ A fourth value is a refusal (`-EINVAL`, naming `0..2`), not a default: it is a
 guest that read a header this adapter does not implement. The cases are
 `scripts/test-ogre.mjs`'s `target-auto`, `target-swapchain-refused`,
 `target-offscreen` and `target-unknown-refused`, plus `target-swapchain-window`,
-which opens a real host window and asserts the adoption; that one skips when
-there is no display, or when `TENSION_TEST_ALLOW_SKIP=1`, and states what it
-would run.
+which has the *guest* create a Vulkan window (`--create-window`) and asserts the
+adoption; that one skips when there is no display, or when
+`TENSION_TEST_ALLOW_SKIP=1`, and states what it would run.
+
+The windowed suite (`TENSION_OGRE_WINDOW_TEST=1`) is the proof that this is not
+theory: every windowed fixture creates its own window through
+`tension-ogre/tests/host-window.ts` before `ogre::init`, and the pixel clauses
+pass — including the ones that read back a frame the host's window sized.
 
 ## 4. Records, regions and the schema
 

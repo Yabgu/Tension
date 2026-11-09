@@ -203,26 +203,31 @@ and a fallback set would produce guests that do not match the session.
 ```sh
 cd examples/2d/hello-sprites
 npm run build
-tension-core build/game.wasm --window
+tension-core build/game.wasm --windowed
 ```
 
 From another directory:
 
 ```sh
-tension-core examples/2d/hello-sprites/build/game.wasm --window
+tension-core examples/2d/hello-sprites/build/game.wasm --windowed
 ```
 
 That is the whole invocation. There is no launcher, no DSO to find, no
-environment to set: the renderer is in the binary, and the guest asks for a
-window by name on its own `arg()` stream. `npm start` in the example's directory
-is that same line, and `npm test` runs it headless and asserts the frame.
+environment to set: the renderer is in the binary. **`--windowed` is the
+application's own word**, not a runtime flag — it comes after the wasm path, the
+guest reads it from `arg()`, and the guest calls
+`tension::platform.create_window` when it sees it. Drop the word and the same
+guest draws offscreen instead, which is what `npm test` does.
+
+`npm start` in the example's directory is that same line; `npm test` runs it
+headless and asserts the frame.
 
 ### Running one, and the flags that are still there
 
 ```
 tension-core [--debug] [--symbol-path <dir>] [--res <pak>] [--capability <path|name>]
              [--log-level <spec>] [--log-format <text|json>] [--log-file <path>]
-             [--window <W>x<H>] <game.wasm> [game args...]
+             <game.wasm> [game args...]
 ```
 
 **Options go before the guest path; everything after it is the guest's own
@@ -231,24 +236,19 @@ tension-core [--debug] [--symbol-path <dir>] [--res <pak>] [--capability <path|n
 that puts `--res` after the wasm path passes the string to the game and loads no
 resources; the log will say so, which is the only warning you get.
 
-**`--window <W>x<H>` and the guest's `--window`.**
-Since the 2D merge a renderer creates its own window on demand, so `--window` is
-no longer how a 2D game gets a window — it is how an **operator** gets one: a
-test that wants a specific size before a guest starts, the tooling path, and
-`examples/platform-control`, which resizes a window and draws nothing. When a
-host `--window` exists, a windowed canvas claims it; when it does not, one is
-created at the canvas size.
+**There is no window flag, and there will not be one.** A window is application
+configuration: the guest calls `tension::platform.create_window` with a target
+(`plain`, `gpu`, `vulkan`), a size and flags, and the host creates it. A runtime
+that opened a window unasked would be deciding something the application owns —
+the same reason `node` has no `--title`.
 
-The guest-side word is `--windowed` (originally) and `--window` (since Pass C,
-when `npm start` made that the word a person types). The host never sees it: it
-is after the wasm path. The 2D examples accept both.
+`--window` still appears in a guest's `arg()` stream when an application wants
+it there, and the 2D examples use `--windowed` for exactly that: the guest reads
+the word and decides. The runtime does not know the word exists.
 
-**`--window` is not going away.** Since the 2D merge a renderer creates its own
-window on demand (`Canvas.windowed()`), so `--window` is no longer how a 2D game
-gets a window — it is how an **operator** gets one: a test that wants a specific
-size before a guest starts, the tooling path, and `examples/platform-control`,
-which resizes a window and draws nothing. When a `--window` exists, a windowed
-canvas claims it; when it does not, one is created at the canvas size.
+The ordering rule has a second half now: **`createWindow` before `ogre::init`.**
+A renderer that asks the host for its surface before a window exists is refused
+with `-ENODEV`; it does not create a window of its own and it does not wait.
 
 The rest are transitional, and their retirement is scheduled rather than
 forgotten:
@@ -260,7 +260,7 @@ forgotten:
 | `--log-level`, `--log-format`, `--log-file` | a guest can declare its own log destination and level through an import (`tension::log.set_level`) | future |
 | `--session-open`, `--session-callbacks`, `--post-test-events` | the A1/A2 fixtures retire; all three are marked "test-only" in `USAGE` | when those fixtures go |
 | `--debug`, `--symbol-path` | never — they are the debugger's interface, and a guest has no business setting them | — |
-| `--window` | never — see above | — |
+| `--window` | **retired by the programmatic window API** — it was the last application flag; the guest creates its window with `platform.createWindow`, and `--windowed` in a guest's `arg()` stream is the application's own word | done |
 | the 2D example launcher | **retired by Pass C** — replaced by the invocation at the top of this section, and its pixel assertion by each 2D example's `test.mjs` | done |
 | `scripts/test-2d.mjs` | **retired by Pass B** — it drove a stub core against the C++ adapter, and both are gone | done |
 

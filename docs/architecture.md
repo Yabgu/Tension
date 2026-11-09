@@ -38,7 +38,7 @@ handles it is given cross the boundary as `u64`
 
 | Resource | Owner | Created | Destroyed |
 |---|---|---|---|
-| `SDL_Window` | host | `platform.rs:351`, on demand (`--window`, or a renderer's first windowed `open`) | `platform.rs:650`, or `main`'s teardown |
+| `SDL_Window` | host | `platform::create_window`, on the guest's `tension::platform.create_window` call (or a 2D renderer's first windowed `open`) | `platform::close_window`, or `main`'s teardown |
 | SDL video + event pump | host | `platform.rs:353-362` | field order, `platform.rs:336-340` |
 | `VkInstance` | host | `platform.rs:452` | `platform.rs:664` |
 | `VkSurfaceKHR` | host | `platform.rs:457` | `platform.rs:663` |
@@ -46,12 +46,13 @@ handles it is given cross the boundary as `u64`
 | Ogre swapchain | renderer (Ogre-Next — current, not settled) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:711` |
 | GPU device + swapchain | renderer (2D, in core) | `render2d/device.rs`, first windowed `open` | `Render2dState::close`, or the store's drop |
 | Which renderer owns the swapchain | core | `Render2dState::claim_swapchain` | released by the holder |
+| The guest's window *request* | the guest | `tension::platform.create_window` (`tension_window_config`) | one-shot: the host keeps the window, not the request |
 | Render thread | renderer | `tension-ogre/src/adapter.cpp:616` | joined `adapter.cpp:1624` |
 | SDL event queue | host, `platform.rs:536` | with the window | with the window |
 | Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
 | Audio device (cpal) | host, `tension-core/src/audio/mod.rs:55` | `audio_init` | `audio_shutdown`, `audio/mod.rs:146` |
 | Filesystem | host, mediated by `tension::res`, `main.rs:1114` | startup | process exit |
-| Time | **the guest, deliberately.** The host provides no clock import, no dt on the frame wake, and no tick callback. The guest derives time from frame identity (§4) — a determinism requirement, not an omission. | no import matching `clock`, `time`, `elapsed` or `now` exists among the 45 `Linker::func_wrap` registrations in `tension-core/src` `[verified]` | not applicable — the host creates no clock to destroy |
+| Time | **the guest, deliberately.** The host provides no clock import, no dt on the frame wake, and no tick callback. The guest derives time from frame identity (§4) — a determinism requirement, not an omission. | no import matching `clock`, `time`, `elapsed` or `now` exists among the 48 `Linker::func_wrap` registrations in `tension-core/src` `[verified]` | not applicable — the host creates no clock to destroy |
 | Main loop | host, `main.rs:1927` | after guest entry returns | loop exit |
 | Session (epoch, arena) | host, `main.rs:204` | guest asks | guest closes, or the host closes for it |
 | Guest `Store<HostState>` | host, `main.rs:895` | before instantiation | end of `main` |
@@ -59,11 +60,34 @@ handles it is given cross the boundary as `u64`
 
 The rows that are not obvious:
 
-**The window precedes the surface, and the surface is lazy.** `HostWindow::new`
-creates an `SDL_WINDOW_VULKAN` window and nothing else (`platform.rs:352-375`).
-The `VkInstance` is created on the first `surface()` call (`platform.rs:403`),
-which only happens when an adapter was actually loaded (`main.rs:1489-1517`). A
-`--window` run with no renderer opens a window and never loads Vulkan.
+**The window is created by the guest, and there is no flag that creates one.**
+`tension-core` takes no window option: a run with no `create_window` call has no
+window, and `tension::platform.window_info` reports `width == 0` rather than an
+error. The guest asks; the host creates. A renderer never creates one — the
+Ogre backend has no own-window path at all — so "the window the frame goes to"
+and "the window the host owns" are the same object by construction.
+
+**The surface is created, and published, inside that call.** `HostWindow::new`
+sets `SDL_WINDOW_VULKAN` only for `target: Vulkan` (`platform.rs`, `HostWindow::new`),
+and `create_window` calls `surface()` and publishes the handles into the cell that
+`host_surface` serves from. So the ordering rule in the guest contract is
+**`createWindow` and then `ogre::init`**: a renderer that inits first gets
+`-ENOSYS` from `host_surface`, which the adapter reports as `-ENODEV`. Published
+mid-run rather than at load — that inversion is what the programmatic API cost,
+and it is one shared `Arc<Mutex<…>>` rather than a second mechanism.
+
+The three targets are the contract, not a hint:
+
+| target | flags at creation | who can use the window |
+|---|---|---|
+| `PLAIN` | `RESIZABLE`, `HIGH_DPI` | anything; no graphics API promised |
+| `GPU` | `RESIZABLE`, `HIGH_DPI` | `SDL_GPU` — it builds its own surface on Linux and uses D3D12/Metal elsewhere, so no `VULKAN` flag |
+| `VULKAN` | the above plus `VULKAN` | `SDL_Vulkan_CreateSurface`, which *requires* the flag; what `host_surface` hands a renderer |
+
+`GPU` exists because asking for a Vulkan window on Windows makes SDL want a
+Vulkan loader that a D3D12-only machine need not have. `VULKAN` exists because
+`SDL_Vulkan_CreateSurface` refuses a window without the flag — and the flag
+cannot be added after creation on every driver.
 
 **The instance is created from SDL's list, not a guessed one.**
 `vulkan_instance_extensions()` (`platform.rs:422`) is what SDL asks for on the

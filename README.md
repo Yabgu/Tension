@@ -85,7 +85,7 @@ to resolve, stage or load — the binary runs the guest:
 ```sh
 cd examples/2d/hello-sprites
 npm run build
-tension-core build/game.wasm --window       # or: npm start
+tension-core build/game.wasm --windowed     # or: npm start
 npm test                                    # the frame assertion
 ```
 
@@ -93,16 +93,22 @@ npm test                                    # the frame assertion
 `node_modules/.bin` provides it after `npm install`. From anywhere else:
 
 ```sh
-tension-core examples/2d/hello-sprites/build/game.wasm --window
+tension-core examples/2d/hello-sprites/build/game.wasm --windowed
 ```
 
 Options go **before** the wasm path; everything after it is the guest's own
-`arg()` stream. That is why `--window` is a guest word in the lines above and
-`--res` would come first:
+`arg()` stream. That is why `--windowed` is a guest word in the lines above and
+`--res` comes first:
 
 ```sh
-tension-core --res build/isometric.tns build/game.wasm --window
+tension-core --res build/isometric.tns build/game.wasm --windowed
 ```
+
+**There is no window flag.** A window is application configuration, so the guest
+creates it — `tension::platform.createWindow` with a target (`plain`, `gpu`,
+`vulkan`) — and `--windowed` is just the word the 2D examples read to decide
+whether to ask. A runtime that opened a window unasked would be owning something
+the application owns.
 
 The Ogre examples still need the adapter and the generated layout, so they go
 through the shared runner until Pass D retires it:

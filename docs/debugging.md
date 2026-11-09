@@ -161,8 +161,9 @@ retired: `examples/2d/{hello-sprites,isometric,isometric-framework}/.vscode/`.
 They are the shortest configs in the tree, because there is nothing to resolve —
 no `--capability`, no DSO, no environment. `isometric` and
 `isometric-framework` also pass `--res`, which is a host option and therefore
-comes **before** the wasm path; `--window` comes after it, because it is the
-guest's own word.
+comes **before** the wasm path; `--windowed` comes after it, because it is the
+guest's own word — the runtime has no window flag at all, and the guest creates
+the window itself.
 
 Each has a `build:debug` task and a `build:debug` npm script, and the launch
 configuration runs it — so `--debug` and `--sourceMap` reach the compiler. **It

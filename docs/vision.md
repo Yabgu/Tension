@@ -180,8 +180,8 @@ Stated so they do not creep in:
 
 ## 4. Decisions before beta
 
-Five decisions that must be made before the beta work starts, in the sense that
-later work does not survive getting them wrong. Four are made; one is open.
+The decisions that must be made before the beta work starts, in the sense that
+later work does not survive getting them wrong. Six are made; one is open.
 
 ### 4.1 CSS / DOM / flat array — **DECIDED**
 
@@ -247,6 +247,24 @@ The decision is what makes the training story tractable: a model small enough to
 retrain on a laptop, trained on a deterministic guest's own steps, is a different
 product from a fine-tuned large model, and only the first one is compatible with
 the determinism claim.
+
+### 4.6 The 2D backend — **DECIDED**
+
+`SDL_GPU`, in core. Not a choice to revisit: `SDL_GPU` has no external-surface
+handoff, so the renderer claims the host's `SDL_Window` instead of borrowing a
+`VkSurfaceKHR`, and that is what makes one window and one owner possible with the
+2D renderer inside `tension-core` (`docs/modules/2d.md` §3). A second 2D backend
+would be a second window-claiming story to keep in step for no capability the
+first lacks.
+
+### 4.7 Window creation — **DECIDED**
+
+Programmatic and guest-driven. `platform.createWindow` with an explicit target;
+the runtime takes no window-configuration flag. The reason it is a decision and
+not a preference: it decides what a "run" of a Tension game is. With the flag,
+the runtime owned a piece of every application's configuration, and the launch
+line carried it (`docs/build.md` §5). Without it, `tension-core game.wasm` is the
+whole invocation and the application owns what an application owns.
 
 ## 5. Deliberate deferrals
 
@@ -348,6 +366,14 @@ a delta. A guest that needs elapsed time counts its own wakes.
 **No SDL3 dependency in the guest.** The guest must not know SDL3 exists. The
 boundary header cannot even name an SDL type (`tension_adapter.h:35-36`), and
 that is structural rather than documentary.
+
+**No implicit window creation.** The runtime takes no window flag and creates no
+window unasked: a guest that wants one calls `tension::platform.create_window`
+and names a target (`plain`, `gpu`, `vulkan`), a size and flags. A runtime that
+opened a window because a program mentioned one would be owning application
+configuration — the same reason `node` has no `--title`. The one flag this
+replaced, `--window`, is gone; a word like `--windowed` in a guest's `arg()`
+stream is the application's own and the runtime does not know it exists.
 
 **No frozen ABI during alpha.** The ABI is alpha and may break between releases.
 Append-only within a version is the discipline we keep because it makes version

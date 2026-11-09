@@ -23,6 +23,7 @@ yet.
 | Two input sources still assert the old teardown rule (#28) | `9d3af39` | the file belongs to the v7 pass | v7 input pass | v7 |
 | Source comments cite design notes that no longer exist (#29) | `2c74bbe` | none — mechanical | a sweep of ~166 sites | pass 7d |
 | HDR output | — | Ogre-Next has no output-HDR path | the colour-management API | vision §5.1 |
+| Hardware floor: a Vulkan, D3D12 or Metal GPU (~2017 or newer) | the renderer split | there is no software-rendering path; `SDL_GPU` needs one of those three, and Ogre's Vulkan backend needs Vulkan | a software backend (lavapipe covers CI, not users) | vision §5.1 |
 | Win32 is cross-compiled, never run | — | needs a Windows machine and a Win32 host-surface variant | both exist | vision §5.3 |
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
 | Input dispatcher still in the DSO | — | scheduled as its own pass | that pass opens | vision §5.5 |
@@ -122,6 +123,16 @@ image. The value exists so a backend that can render offscreen implements one
 contract instead of inventing a second one — it is not a claim that this backend
 can. A guest that asks for `offscreen` and an explicit GPU renderer is refused
 with `-EINVAL`, exactly as `headless` over a GPU renderer is.
+
+## The hardware floor is a 2017-or-newer GPU
+
+Both renderers need a modern graphics API: the 2D renderer is `SDL_GPU`, which
+resolves to Vulkan, D3D12 or Metal, and the 3D backend is Ogre-Next's Vulkan
+render system. There is no software fallback for either, and none is planned —
+CI uses lavapipe (a software Vulkan ICD) so the suites can run headless, but a
+machine without one of those three APIs cannot render, and no amount of
+configuration changes that. The window itself can be created on such a machine
+(`target: plain`); what fails is the renderer's device, at the point it asks.
 
 ## Upstream Vulkan validation at teardown and rebuild
 
