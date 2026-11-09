@@ -47,8 +47,14 @@ object on it, the loader's worker thread, the job/resource tables and the scene
 mirror. It does not own the window, the `VkInstance`, or the `VkSurfaceKHR` —
 those are the host's (`docs/architecture.md` §2). The `VkDevice` and the
 swapchain are made by Ogre from the host's instance and surface
-(`backend_ogre.cpp:289`, `:440`), and destroyed by Ogre on the render thread
-(`backend_ogre.cpp:698-709`).
+(`backend_ogre.cpp:290`, `:453`), and destroyed by Ogre on the render thread
+(`backend_ogre.cpp:711-722`).
+
+**Ogre-Next is the current backend, not the settled choice.** The target key is
+the first part of the contract that outlives it: `tension_ogre.h` defines `auto`,
+`swapchain` and `offscreen` in engine-agnostic terms, and a replacement 3D backend
+implements those three values rather than inventing its own way to name a
+destination. Nothing else in this page is meant to outlive the backend.
 
 **A note on size.** Nine translation units, about 6,300 lines of C++; a guest
 SDK of about 1,800 lines across eight TypeScript files. The 3,240-line design
@@ -122,37 +128,47 @@ The wire is the same argmap the session uses: `u32 entry_count`, then per entry
 `u32 key`, `u8 tag` (2 = `i64`), `i64 value` little-endian with the upper four
 bytes zero (`tension-ogre/src/config.h:7-12`). `abi_version` must be the first
 entry and must equal `TENSION_OGRE_ABI_VERSION` (1)
-(`tension_ogre.h:131`, `config.cpp:120-129`, `:150-160`).
+(`tension_ogre.h:131`, `config.cpp:119-128`, `:150-160`).
 
 | key | id | default | accepted range |
 |---|---|---|---|
 | `abi_version` | 1 | — required | 1 |
-| `renderer` | 2 | 1 (`GL3PLUS`) | 0..4 (`config.cpp:162-171`) |
-| `headless` | 3 | false | 0/1 (`config.cpp:174-187`) |
+| `renderer` | 2 | 1 (`GL3PLUS`) | 0..4 (`config.cpp:162-172`) |
+| `headless` | 3 | false | 0/1 (`config.cpp:174-188`) |
 | `vsync` | 4 | false | 0/1 |
 | `frame_hz` | 5 | 60 | 1..1000 (`config.cpp:17-20`) |
 | `window_width` | 6 | 1280 | 1..16384 |
 | `window_height` | 7 | 720 | 1..16384 |
+| `target` | 8 | 0 (`AUTO`) | 0..2, `auto`/`swapchain`/`offscreen` |
+
+The last key is deliberately not an Ogre feature. `target` is where the frame
+goes, and the three values are the contract any 3D backend implements: `auto`
+(the pre-key behaviour — the host's surface when there is one, an own window
+otherwise), `swapchain` (the host's surface, required), `offscreen` (no window).
+A backend that cannot honour a value refuses it and says which; it does not
+quietly do something else with the frame. The header states the contract
+(`tension_ogre.h:138-161`) and this backend's implementation lives in
+`config.cpp` / `adapter.cpp` / `backend_ogre.cpp`.
 
 Policy, both halves deliberate (`config.h:14-19`): the **structure** is strict —
 a truncated entry, a tag that is not 2, a value wider than 32 bits, trailing
 bytes, or a missing `abi_version` are each their own refusal (`ConfigError`,
 `config.h:29-39`); the **key space** is permissive — an unknown key is validated
 structurally and then ignored, because the argmap is a namespace a newer SDK may
-grow (`config.cpp:206-214`). A duplicate key takes the last value
-(`tension-ogre/tests/config_test.cpp:263`).
+grow (`config.cpp:225-232`). A duplicate key takes the last value
+(`tension-ogre/tests/config_test.cpp:262`).
 
 Two fields are *not* config keys and no guest can set them: `external_instance`,
 `external_surface` and the two function pointers `host_size` / `host_extension`
-(`config.h:66-84`). They are filled from the host's table inside `init`
-(`adapter.cpp:487-520`). The reason is structural: the values are handles the
+(`config.h:61-85`). They are filled from the host's table inside `init`
+(`adapter.cpp:553-588`). The reason is structural: the values are handles the
 host owns, and the function pointers are plain C pointers rather than
 `std::function` so that `Config` can be copied into the backend without an
-allocation on the render thread (`config.h:68-74`).
+allocation on the render thread (`config.h:67-74`).
 
 **`headless` is honoured through the NULL render system, and refused where it
-cannot be.** `apply_headless_policy` (`config.cpp:234-250`) resolves it in
-`init`, before the host's handles are merged in (`adapter.cpp:505-525`):
+cannot be.** `apply_headless_policy` (`config.cpp:252-266`) resolves it in
+`init`, before the host's handles are merged in (`adapter.cpp:509-523`):
 
 - `headless` with `renderer = null` is already satisfied;
 - `headless` with no `renderer` key resolves to null — the guest asked for no
@@ -166,16 +182,45 @@ cannot be.** `apply_headless_policy` (`config.cpp:234-250`) resolves it in
   quietly stopped rendering".
 
 A headless guest also does not adopt the host's surface (the merge is skipped,
-`adapter.cpp:531`), and `headless` outranks `TENSION_RENDERER`: the operator's
+`adapter.cpp:559`), and `headless` outranks `TENSION_RENDERER`: the operator's
 variable is a debugging knob, and it must not open the window a guest asked not
-to have (`adapter.cpp:257-268`). The NULL render system still makes an
+to have (`adapter.cpp:247-268`). The NULL render system still makes an
 `Ogre::Window` object, but it is bookkeeping and nothing else — `NULLWindow`
 owns a texture and two buffers and touches no platform API
 (`third_party/ogre-next/RenderSystems/NULL/src/OgreNULLWindow.cpp:35-57`) —
 which is why a headless run completes with `DISPLAY` and `WAYLAND_DISPLAY` both
 unset. It renders nothing: `screenshot` refuses with `-ENOSYS`
-(`backend_ogre.cpp:1300-1304`), and jobs, submissions and the scene mirror all
+(`backend_ogre.cpp:1313-1317`), and jobs, submissions and the scene mirror all
 still run (`scripts/test-ogre.mjs`, the `headless` and `jobs` cases).
+
+**`target` names where the frame goes, and it is a contract rather than a
+preference.** `apply_target_policy` (`config.cpp:268-294`) runs in `init` right
+after the headless policy and before the host's handles are merged in, so an
+`offscreen` guest cannot adopt a surface the host happens to publish
+(`adapter.cpp:525-551`):
+
+- `auto` is the absence of a request — the pre-key behaviour, and what an
+  adapter that does not know key 8 already does (`config.cpp:225-232`);
+- `swapchain` requires the host's surface. When the host published none, `init`
+  refuses `-ENODEV` synchronously, before a thread exists (`adapter.cpp:590-602`),
+  rather than doing what `auto` would do and making a window of its own. The
+  backend repeats the refusal as a backstop for a `Config` built by another route
+  (`backend_ogre.cpp:440-452`);
+- `offscreen` means no window, and on this backend that is the NULL render
+  system: it resolves the renderer to null and sets `headless`
+  (`config.cpp:279-288`), so an explicitly requested GPU renderer is refused
+  `-EINVAL` exactly as `headless` over a GPU renderer is. It produces no image —
+  `known-limitations.md` keeps "No offscreen GPU render path" open — and the
+  value exists so a backend that *can* render offscreen implements this contract
+  instead of inventing another one.
+
+A fourth value is a refusal (`-EINVAL`, naming `0..2`), not a default: it is a
+guest that read a header this adapter does not implement. The cases are
+`scripts/test-ogre.mjs`'s `target-auto`, `target-swapchain-refused`,
+`target-offscreen` and `target-unknown-refused`, plus `target-swapchain-window`,
+which opens a real host window and asserts the adoption; that one skips when
+there is no display, or when `TENSION_TEST_ALLOW_SKIP=1`, and states what it
+would run.
 
 ## 4. Records, regions and the schema
 
@@ -347,7 +392,7 @@ ever touches an Ogre object (`backend.h:1-12`). The thread body is `render_main`
    (`adapter.cpp:330-335`). On success, `RESOURCE_READY` is posted once
    (`adapter.cpp:338-340`). The first frame is rendered inside `start`, *before*
    readiness is announced, so "ready" means "a frame presented"
-   (`backend_ogre.cpp:606-616`).
+   (`backend_ogre.cpp:619-630`).
 2. **Frame.** Each iteration drains finished loads onto the render thread
    (`adapter.cpp:347`), applies the scene mirror under the guest lock
    (`:351-357`), applies queued animation requests (`:366-383`), renders
@@ -410,11 +455,11 @@ The backend then takes a path that is deliberately narrow — Vulkan, and only
 when an instance was supplied:
 
 - `deferred_vulkan = vulkan_rs && config.external_instance != 0`
-  (`backend_ogre.cpp:289`). Every other combination behaves exactly as it did
+  (`backend_ogre.cpp:290`). Every other combination behaves exactly as it did
   before ABI v6.
 - The plugins config file omits the Vulkan plugin, because `Root::loadPlugin` is
   the only route that accepts plugin params and `external_instance` is read on
-  the first load (`backend_ogre.cpp:296-320`; measured: `OgreRoot.cpp:1474-1476`).
+  the first load (`backend_ogre.cpp:297-321`; measured: `OgreRoot.cpp:1474-1476`).
 - At plugin-load time, on Vulkan, `ensure_glslang_global` dlopens the plugin
   once and, if that fails, preloads `libglslang.so.16` (then the unversioned
   soname) with `RTLD_GLOBAL` (`backend_ogre.cpp:169-183`). The reason is an
@@ -423,33 +468,33 @@ when an instance was supplied:
 - A `VulkanExternalInstance` is allocated, its `instance` set from the host's
   handle, `instanceLayers` left empty, and `instanceExtensions` filled by
   iterating `host_surface_extension` until `-ENOENT`
-  (`backend_ogre.cpp:337-392`). The list must come from the host because Ogre
+  (`backend_ogre.cpp:344-397`). The list must come from the host because Ogre
   treats the caller's list as the record of what is enabled and only sanity
-  checks it against enumeration (`backend_ogre.cpp:365-380`).
+  checks it against enumeration (`backend_ogre.cpp:358-381`).
 - `createRenderWindow` receives `external_surface` in its params
-  (`backend_ogre.cpp:430-441`); Ogre adopts the surface and creates no native
+  (`backend_ogre.cpp:432-453`); Ogre adopts the surface and creates no native
   window (`third_party/patches/ogre-external-surface.patch`).
 
 **Resize.** With an external surface there is no native window for Ogre to
 measure, so nothing else would notice a host resize. Once per frame the backend
 reads the host's current size and, when it differs from the window's, logs
 `host surface is WxH, window is AxB — requesting a swapchain rebuild` and calls
-`requestResolution` (`backend_ogre.cpp:643-658`). This is the only consumer of
+`requestResolution` (`backend_ogre.cpp:660-672`). This is the only consumer of
 the resize patch hunk; the hunk has been executed at runtime, and the frame
 after it presented at the new size (`tension-core/tests/ogre_host_surface.rs`,
 assertions d–e).
 
-**Teardown order on this path** (`backend_ogre.cpp:681-722`): clear the scene,
+**Teardown order on this path** (`backend_ogre.cpp:694-735`): clear the scene,
 discard every resource, clear the cached native handle, `destroyRenderWindow`
 (which destroys the swapchain), `root_->shutdown()`, `root_.reset()`, then
 `external_instance_.reset()`. The `VulkanExternalInstance` is declared *before*
-`root_` so that it is destroyed *after* it (`backend_ogre.cpp:2257-2262`): the
+`root_` so that it is destroyed *after* it (`backend_ogre.cpp:2270-2275`): the
 render system holds a pointer to that struct while shutting down. Freeing it
 first would leave Ogre reading freed memory.
 
 Without a host surface the module is unchanged from the pre-v6 path: the plugin
 is named in `plugins.cfg`, Ogre creates its own window, and the native handle is
-cached for `window_handle` (`backend_ogre.cpp:455-480`). On this rig that
+cached for `window_handle` (`backend_ogre.cpp:469-494`). On this rig that
 handle is non-zero; under a host surface it stays 0 and `window_handle` answers
 `-ENODEV` — deliberately, until the v7 input pass re-points it
 (`tension-core/tests/ogre_host_surface.rs`, assertion f).
@@ -465,7 +510,7 @@ status. The list by verb, with the checks that produce each code:
   Asynchronous failures do not come back here: a missing plugin, an unknown
   render system, a refused window or a failed first frame arrive later as
   `DEVICE_LOST` with a stage code (`tension_ogre.h:155-179`,
-  `backend_ogre.cpp:255-616`).
+  `backend_ogre.cpp:256-630`).
 - **`shutdown`** — `0` when nothing ran; otherwise the join's result, `-EIO` if
   the thread did not stop within 5 s, in which case it is detached
   (`adapter.cpp:546-559`, `:1508-1536`).

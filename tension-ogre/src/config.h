@@ -53,6 +53,11 @@ struct Config {
     uint32_t frame_hz = 60;
     uint32_t window_width = 1280;
     uint32_t window_height = 720;
+    /// Where the frame goes: `TENSION_OGRE_TARGET_AUTO` unless the guest asked.
+    /// Decoded here, resolved into a renderer and a headless flag by
+    /// `apply_target_policy`, and used by the backend as a prohibition: any
+    /// value but AUTO forbids `createRenderWindow` from making a native window.
+    uint32_t target = 0;
     /// The host's Vulkan instance and surface (ABI v6), or 0 for "the host owns
     /// none" — in which case the backend behaves exactly as it did before v6 and
     /// creates its own window. Not a config key: the guest cannot supply these,
@@ -97,8 +102,7 @@ struct ConfigDecodeResult {
 /// Decode `len` bytes at `bytes`. Never throws; every refusal is a result.
 ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len);
 
-/// Apply `headless` to a decoded config, in place. Returns 0, or -EINVAL.
-///
+/// Apply `headless` to a decoded config, in place. Returns 0, or -EINVAL.///
 /// `headless` means "do not open a window". This build has exactly one
 /// renderer that opens none — the NULL render system — so the policy is:
 ///
@@ -112,6 +116,21 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len);
 /// Called by `init` before the host's handles are merged in, because a
 /// headless guest must not adopt the host's surface either.
 int32_t apply_headless_policy(Config &config);
+
+/// Apply `target` to a decoded config, in place. Returns 0, -EINVAL, or
+/// -ENODEV. Called after `apply_headless_policy` and before the host's handles
+/// are merged in.
+///
+/// `AUTO` changes nothing. `SWAPCHAIN` is a promise the host can only keep as a
+/// whole: the merge below publishes the surface, so this function can do no
+/// more than reject the obvious contradiction (`headless` plus "use the host's
+/// window"), and `init` refuses -ENODEV when no surface arrives.
+/// `OFFSCREEN` means no window, and this build has exactly one renderer that
+/// opens none — so it resolves to NULL, refusing an explicitly requested GPU
+/// renderer for the same reason `headless` does: there is no offscreen target to
+/// render into, and pretending otherwise would answer "offscreen" with pixels
+/// from nowhere.
+int32_t apply_target_policy(Config &config);
 
 /// The name of an error token, e.g. `"unknown-key"`.
 const char *config_error_name(ConfigError error);

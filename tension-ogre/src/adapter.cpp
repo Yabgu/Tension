@@ -522,6 +522,34 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         }
     }
 
+    // `target` is the other half of "where does the frame go": `headless` is the
+    // guest saying "no window", `target` names the destination it expects. It is
+    // resolved before the host's handles are merged in, for the same reason
+    // `headless` is: an OFFSCREEN guest must not adopt a surface the host happens
+    // to publish, and a SWAPCHAIN guest must not settle for a window of its own.
+    //
+    // The surface itself is checked after the merge, below: this policy can see
+    // the contradiction in the guest's own config, not whether a host surface
+    // exists.
+    {
+        const int32_t policy = apply_target_policy(config);
+        if (policy != 0) {
+            const std::string line =
+                config.target == TENSION_OGRE_TARGET_SWAPCHAIN
+                    ? "ogre: init refused: target=swapchain with headless=1 — the host's "
+                      "window and no window cannot both hold"
+                    : "ogre: init refused: target=offscreen with an explicit renderer that "
+                      "needs a window; this build has no offscreen target (use renderer=null, "
+                      "or drop the renderer key)";
+            s.status.note_message(line);
+            log_line(3, line);
+            return refuse(ret, policy);
+        }
+        if (config.target == TENSION_OGRE_TARGET_OFFSCREEN) {
+            log_line(1, "ogre: target=offscreen — the NULL render system, no window");
+        }
+    }
+
     // The host's window surface, if it owns one. A v6 host publishes it before
     // any adapter loads, so it is there by the time a guest calls `init`.
     //
@@ -557,6 +585,20 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
                 log_line(1, line);
             }
         }
+    }
+
+    // target=swapchain is a request the host either satisfies or does not, and
+    // it is answered here, synchronously, before a thread exists. The
+    // alternative — let the backend make its own window because the host
+    // published nothing — is exactly the silent downgrade this key exists to
+    // prevent, and it is indistinguishable from success to the guest.
+    if (config.target == TENSION_OGRE_TARGET_SWAPCHAIN && config.external_surface == 0) {
+        const std::string line =
+            "ogre: init refused: target=swapchain requires the host's surface, and the host "
+            "published none";
+        s.status.note_message(line);
+        log_line(3, line);
+        return refuse(ret, -ENODEV);
     }
 
     {

@@ -20,6 +20,14 @@
 //   --headless                ask for no window whatever the renderer is; with
 //                             an explicit GPU renderer this is a contradiction
 //                             the adapter refuses synchronously
+//   --target=auto|swapchain|offscreen|N
+//                             where the frame goes. `swapchain` requires the
+//                             host's surface: with none, init refuses -ENODEV.
+//                             `offscreen` is no window (the NULL render system,
+//                             no image). A number goes on the wire unchanged, so
+//                             a case can prove an undefined value is refused.
+//                             Omitted means auto — the key is not sent, which is
+//                             the pre-key wire.
 //   --expect-init-refusal=N   assert ogre::init returns N and print
 //                             "OK init-refused N" — the synchronous refusals
 //                             (a bad config, headless over a GPU renderer)
@@ -108,6 +116,7 @@ export function _start_game(): void {
   const height = u32(I32.parseInt(flag("window-height", "720")));
   const expect_fail = has("expect-fail");
   const force_headless = has("headless");
+  const target_name = flag("target", "");
   const expect_init_refusal = I32.parseInt(flag("expect-init-refusal", "0"));
 
   // Before anything else: shutdown with nothing running is 0, not an error.
@@ -132,6 +141,16 @@ export function _start_game(): void {
     .vsync(false)
     .frameHz(60)
     .windowSize(width, height);
+  // Sent only when asked for. A guest that never mentions the target leaves the
+  // key off the wire, which is what "auto" means and what an adapter without
+  // the key already does.
+  if (target_name == "swapchain") ogre_config.target(ogre.Target.Swapchain);
+  else if (target_name == "offscreen") ogre_config.target(ogre.Target.Offscreen);
+  else if (target_name == "auto") ogre_config.target(ogre.Target.Auto);
+  // A number is passed through as-is, so a fixture can ask for a value this
+  // build does not define and watch the decoder refuse it ("a fourth value is a
+  // refusal, not a default").
+  else if (target_name != "") ogre_config.target(<ogre.Target>u32(I32.parseInt(target_name)));
 
   const callbacks = makeCallbacks(onBatch, onEvent);
   const session_config = ConfigBuilder.forThisBuild(callbacks);

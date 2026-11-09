@@ -63,6 +63,7 @@
 #define OGRE_KEY_FRAME_HZ 5u
 #define OGRE_KEY_WINDOW_WIDTH 6u
 #define OGRE_KEY_WINDOW_HEIGHT 7u
+#define OGRE_KEY_TARGET 8u
 
 /* The Job record, as the wire defines it. */
 typedef struct {
@@ -228,7 +229,7 @@ static int32_t ogre_init_call(void *ctx, const tension_value *args, uint32_t nar
             abi_seen = 1;
             continue;
         }
-        if (key < OGRE_KEY_RENDERER || key > OGRE_KEY_WINDOW_HEIGHT) {
+        if (key < OGRE_KEY_RENDERER || key > OGRE_KEY_TARGET) {
             note_error(ERR_BAD_CONFIG, (uint32_t)(sizeof(ERR_BAD_CONFIG) - 1));
             return -22;
         }

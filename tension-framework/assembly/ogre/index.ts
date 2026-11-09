@@ -129,6 +129,20 @@ export const KEY_VSYNC: u32 = 4;
 export const KEY_FRAME_HZ: u32 = 5;
 export const KEY_WINDOW_WIDTH: u32 = 6;
 export const KEY_WINDOW_HEIGHT: u32 = 7;
+export const KEY_TARGET: u32 = 8;
+
+/** Where the frame goes. Engine-agnostic: the three values are the contract a
+ * 3D backend implements, not a feature of one. A backend that cannot honour a
+ * value refuses `init` and names it. `Auto` is what a config without this key
+ * means, so a guest that never calls `target()` gets the pre-key behaviour. */
+export enum Target {
+  /** The host's surface if it published one, otherwise an own window. */
+  Auto = 0,
+  /** The host's surface, required: `init` refuses -ENODEV when there is none. */
+  Swapchain = 1,
+  /** No window. On this backend, the NULL render system — no image. */
+  Offscreen = 2,
+}
 
 /** Renderer names `renderer` accepts, as the design fixed them (§0). */
 export enum Renderer {
@@ -170,6 +184,14 @@ export class ConfigBuilder {
   windowSize(width: u32, height: u32): ConfigBuilder {
     this.argmap.put(KEY_WINDOW_WIDTH, width);
     this.argmap.put(KEY_WINDOW_HEIGHT, height);
+    return this;
+  }
+
+  /** Where the frame goes. Omitted means `Target.Auto`; a guest that cares says
+   * so, which is what makes `target=swapchain` a requirement rather than a
+   * preference. */
+  target(where: Target): ConfigBuilder {
+    this.argmap.put(KEY_TARGET, <u32>where);
     return this;
   }
 

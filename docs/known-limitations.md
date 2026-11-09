@@ -17,7 +17,7 @@ yet.
 | `RING` delivery behaves like `POLLED` | epoch v1 | only `BATCHED` and `DIRECT` are special-cased | a ring delivery path | — |
 | The 2D *pixels* are never checked on this rig | the module | every scenario uses `SDL_VIDEODRIVER=offscreen`, and no pipeline can be created here | a conformant ICD (CI's lavapipe) | CI |
 | The 2D scenarios do not run on this rig | pre-dates `272309e` | `vkCreateGraphicsPipelines` → `VK_ERROR_OUT_OF_HOST_MEMORY` under Mesa `dzn` | a conformant ICD (CI's lavapipe) | CI |
-| No offscreen GPU render path | `f1c57af` | the adapter has no offscreen target | an offscreen `VkImage` path | — |
+| No offscreen GPU render path — `target=offscreen` names it, it does not supply it | `f1c57af` | the adapter has no offscreen target; the value resolves to the NULL render system, which produces no image | an offscreen `VkImage` path | — |
 | Swapchain destroyed with the queue still holding its images (#17) | Ogre pin `475f783` | upstream `destroySwapchain` does not stall | a patch hunk, at a per-rebuild cost | — |
 | Draw against a rebuild's previous image layout (#18) | Ogre pin `475f783` | upstream rebinds no Hlms descriptors | the same patch area | — |
 | Two input sources still assert the old teardown rule (#28) | `9d3af39` | the file belongs to the v7 pass | v7 input pass | v7 |
@@ -111,10 +111,17 @@ image provides lavapipe, which is what makes them run there.
 
 ## No offscreen GPU render path
 
-`headless` is honoured (`tension-ogre/src/config.cpp:234-250`): with no
+`headless` is honoured (`tension-ogre/src/config.cpp:252-266`): with no
 `renderer` key it resolves to the null renderer, and with an explicit GPU
 renderer it is refused with `-EINVAL`, because this build has no offscreen
 target to render into. Headless means "no window", not "render without one".
+
+`target=offscreen` (`tension-ogre/src/config.cpp:268-294`) makes the same
+promise under the contract's own name: no window, the NULL render system, no
+image. The value exists so a backend that can render offscreen implements one
+contract instead of inventing a second one — it is not a claim that this backend
+can. A guest that asks for `offscreen` and an explicit GPU renderer is refused
+with `-EINVAL`, exactly as `headless` over a GPU renderer is.
 
 ## Upstream Vulkan validation at teardown and rebuild
 

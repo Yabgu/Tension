@@ -35,22 +35,22 @@ says how in its own shim; the shared codes are in
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1336` |
-| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1337` |
-| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1338` |
-| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1340` |
-| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1341` |
-| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1343` |
-| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1345` |
-| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1346` |
-| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1347` |
-| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1350` |
-| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1352` |
-| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1355` |
-| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1356` |
-| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1357` |
-| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1353` |
-| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1360` |
+| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1378` |
+| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1379` |
+| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1380` |
+| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1382` |
+| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1383` |
+| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1385` |
+| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1387` |
+| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1388` |
+| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1389` |
+| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1392` |
+| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1394` |
+| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1397` |
+| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1398` |
+| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1399` |
+| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1395` |
+| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1402` |
 
 ## `scheduler`
 

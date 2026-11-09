@@ -135,6 +135,29 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 #define TENSION_OGRE_KEY_FRAME_HZ 5u    /* u32, frames per second to pace to */
 #define TENSION_OGRE_KEY_WINDOW_WIDTH 6u  /* u32, pixels */
 #define TENSION_OGRE_KEY_WINDOW_HEIGHT 7u /* u32, pixels */
+#define TENSION_OGRE_KEY_TARGET 8u        /* u32, a TENSION_OGRE_TARGET_* */
+
+/**
+ * Where the frame goes. This key is engine-agnostic on purpose: it is the
+ * contract a 3D backend declares, not a feature of one. A backend that cannot
+ * honour a value refuses it and says which — it does not quietly do something
+ * else with the frame.
+ *
+ *   AUTO       consume the host's surface when the host published one,
+ *              otherwise make an own window. What an adapter without this key
+ *              does, and therefore what an older guest gets.
+ *   SWAPCHAIN  the host's surface, required. With none, `init` refuses with
+ *              -ENODEV before any thread exists, because the request cannot be
+ *              satisfied by making a window instead.
+ *   OFFSCREEN  no window at all. On this backend that resolves to the NULL
+ *              render system, which produces no image — `known-limitations.md`
+ *              keeps "no offscreen GPU render path" open. The value exists so
+ *              a backend that *can* render offscreen implements the same
+ *              contract rather than inventing a second one.
+ */
+#define TENSION_OGRE_TARGET_AUTO 0u
+#define TENSION_OGRE_TARGET_SWAPCHAIN 1u /* require the host's surface */
+#define TENSION_OGRE_TARGET_OFFSCREEN 2u /* never a window; NULL renderer */
 
 /** The ABI version this capability's config carries. */
 #define TENSION_OGRE_ABI_VERSION 1u
@@ -251,19 +274,26 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 /*
  * The adapter's errno vocabulary is tension_adapter.h's, with one recorded
  * exception. The boundary's list is closed and has no -ENODEV in it, so "no
- * display" is -EIO here — and `window_handle` returns -ENODEV anyway, because
- * none of the closed list's codes names "no window *yet*": -EINVAL is a
- * malformed argument, -ENOENT an unknown region or class, -EIO a fault. The
+ * display" is -EIO here — and -ENODEV is used anyway, by two verbs, because
+ * none of the closed list's codes names "no window or device *yet*": -EINVAL is
+ * a malformed argument, -ENOENT an unknown region or class, -EIO a fault. The
  * absent-window case is none of those, it is the normal state of a renderer
- * that is still starting. The amendment tension-core owes is one line in
- * tension_adapter.h's list (`-ENODEV  no window or device yet`); until it
- * lands, this header is where the deviation is recorded.
+ * that is still starting. `window_handle` answers it, and `init` answers it when
+ * the guest asked for `target=swapchain` and the host published no surface.
+ * The amendment tension-core owes is one line in tension_adapter.h's list
+ * (`-ENODEV  no window or device yet`); until it lands, this header is where
+ * the deviation is recorded.
  *
  * The rest of the vocabulary:
  *
  *   -EINVAL  the config TLV is malformed, unknown-keyed, trailing, or not
- *            version 1. Returned by `init`, synchronously, before any thread
- *            exists.
+ *            version 1. Also a config whose keys contradict each other:
+ *            `headless` over an explicit GPU renderer, `target=offscreen` over
+ *            one, `target=swapchain` with `headless`. Returned by `init`,
+ *            synchronously, before any thread exists.
+ *   -ENODEV  `init` with `target=swapchain` when the host published no surface,
+ *            and `window_handle` before a window exists. Both are "there is no
+ *            window right now", not a fault.
  *   -EBUSY   `init` while one is live, or (from the session, not the adapter)
  *            any of these three verbs called from inside a callback.
  *   -EIO     the window could not be created, the plugin is missing, the

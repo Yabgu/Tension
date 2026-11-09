@@ -89,6 +89,7 @@ const char *config_key_name(uint32_t key) {
         case TENSION_OGRE_KEY_FRAME_HZ: return "frame_hz";
         case TENSION_OGRE_KEY_WINDOW_WIDTH: return "window_width";
         case TENSION_OGRE_KEY_WINDOW_HEIGHT: return "window_height";
+        case TENSION_OGRE_KEY_TARGET: return "target";
         default: return "<unknown>";
     }
 }
@@ -204,6 +205,23 @@ ConfigDecodeResult decode_config(const uint8_t *bytes, size_t len) {
                 break;
             }
 
+            case TENSION_OGRE_KEY_TARGET:
+                // The three values are the contract; a fourth is a guest that
+                // read a newer header than this adapter implements, and it is
+                // refused here rather than resolved to a default it did not ask
+                // for. Unlike an unknown *key*, this key is known and the value
+                // is a request the adapter is answerable for.
+                if (!in_range(value, TENSION_OGRE_TARGET_AUTO, TENSION_OGRE_TARGET_OFFSCREEN)) {
+                    char line[128];
+                    std::snprintf(line, sizeof(line),
+                                  "config refused: `target` is %u, and 0..%u are the target ids "
+                                  "(auto, swapchain, offscreen)",
+                                  value, TENSION_OGRE_TARGET_OFFSCREEN);
+                    return refuse(ConfigError::ValueOutOfRange, key, line);
+                }
+                config.target = value;
+                break;
+
             default:
                 // An unknown key is ignored, the way the session's decoder
                 // ignores one: the argmap is a namespace a newer SDK may grow,
@@ -245,6 +263,33 @@ int32_t apply_headless_policy(Config &config) {
     // the only renderer that can keep that promise, so it is the request.
     config.renderer = TENSION_OGRE_RENDERER_NULL;
     return 0;
+}
+
+int32_t apply_target_policy(Config &config) {
+    switch (config.target) {
+        case TENSION_OGRE_TARGET_AUTO:
+            return 0;
+
+        case TENSION_OGRE_TARGET_SWAPCHAIN:
+            // "The host's window" and "do not open a window" cannot both hold.
+            // The surface itself is checked after the host's handles are merged
+            // in (`adapter.cpp`), because this function cannot see them.
+            return config.headless ? -EINVAL : 0;
+
+        case TENSION_OGRE_TARGET_OFFSCREEN:
+            // The same policy `headless` gets, for the same reason: a GPU render
+            // system here is brought up through `createRenderWindow`, and there
+            // is no offscreen target to produce frames into. An explicitly
+            // requested GPU renderer is a contradiction that gets refused rather
+            // than downgraded.
+            if (config.renderer_set && config.renderer != TENSION_OGRE_RENDERER_NULL) return -EINVAL;
+            config.renderer = TENSION_OGRE_RENDERER_NULL;
+            config.headless = true;
+            return 0;
+    }
+    // Unreachable through the decoder, which refuses any other value; a Config
+    // built by hand still gets an answer rather than a silent AUTO.
+    return -EINVAL;
 }
 
 } // namespace tension_ogre

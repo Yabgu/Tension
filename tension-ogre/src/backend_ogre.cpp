@@ -220,11 +220,12 @@ class BackendOgre final : public Backend {
             // fields, and a silently zero one is the difference between "Ogre
             // adopted the host's surface" and "Ogre quietly made its own
             // window" — a failure that renders fine and proves nothing.
-            char line[160];
+            char line[192];
             std::snprintf(line, sizeof(line),
-                          "ogre: backend config: renderer=%u external_instance=0x%llx "
+                          "ogre: backend config: renderer=%u target=%u external_instance=0x%llx "
                           "external_surface=0x%llx",
                           static_cast<unsigned>(config.renderer),
+                          static_cast<unsigned>(config.target),
                           static_cast<unsigned long long>(config.external_instance),
                           static_cast<unsigned long long>(config.external_surface));
             log_line(line);
@@ -436,6 +437,18 @@ class BackendOgre final : public Backend {
                 std::snprintf(value, sizeof(value), "%llu",
                               static_cast<unsigned long long>(config.external_surface));
                 params["external_surface"] = value;
+            } else if (!null_rs && config.target != TENSION_OGRE_TARGET_AUTO) {
+                // `target` forbids a window of our own: the only one this
+                // backend may render into is the host's. `init` already refused
+                // this combination before a thread existed; this is the backstop
+                // for a `Config` that reached the backend by another route,
+                // because a window that appears anyway is precisely the silent
+                // downgrade the key exists to prevent. The NULL render system is
+                // exempt: its "window" is bookkeeping and touches no platform API
+                // (`OgreNULLWindow.cpp`), so no native window is created there.
+                return refuse(status, TENSION_OGRE_STAGE_WINDOW, -ENODEV,
+                              "target describes a window this backend may not create, and the "
+                              "host supplied no surface");
             }
             window_ = root_->createRenderWindow("Tension", config.window_width,
                                                 config.window_height, false, &params);

@@ -27,6 +27,7 @@
 #include <vector>
 
 using tension_ogre::apply_headless_policy;
+using tension_ogre::apply_target_policy;
 using tension_ogre::Config;
 using tension_ogre::ConfigDecodeResult;
 using tension_ogre::decode_config;
@@ -98,7 +99,8 @@ void test_full_round_trip() {
         .entry(TENSION_OGRE_KEY_VSYNC, 1)
         .entry(TENSION_OGRE_KEY_FRAME_HZ, 30)
         .entry(TENSION_OGRE_KEY_WINDOW_WIDTH, 640)
-        .entry(TENSION_OGRE_KEY_WINDOW_HEIGHT, 480);
+        .entry(TENSION_OGRE_KEY_WINDOW_HEIGHT, 480)
+        .entry(TENSION_OGRE_KEY_TARGET, TENSION_OGRE_TARGET_SWAPCHAIN);
     const auto result = decode(b.done());
     check(result.ok, "decodes");
     check_eq(result.config.abi_version, 1, "abi_version");
@@ -108,6 +110,7 @@ void test_full_round_trip() {
     check_eq(result.config.frame_hz, 30, "frame_hz");
     check_eq(result.config.window_width, 640, "window_width");
     check_eq(result.config.window_height, 480, "window_height");
+    check_eq(result.config.target, TENSION_OGRE_TARGET_SWAPCHAIN, "target");
 }
 
 /// A missing optional key takes this build's default, not zero.
@@ -123,6 +126,8 @@ void test_defaults_for_absent_keys() {
     check_eq(result.config.frame_hz, 60, "frame_hz defaults to 60");
     check_eq(result.config.window_width, 1280, "window_width defaults to 1280");
     check_eq(result.config.window_height, 720, "window_height defaults to 720");
+    check_eq(result.config.target, TENSION_OGRE_TARGET_AUTO,
+             "target defaults to auto (the pre-key behaviour)");
 }
 
 /// The wire itself, pinned as literals: count, then 13 bytes per entry.
@@ -146,8 +151,12 @@ void test_golden_bytes() {
 void test_unknown_key_ignored() {
     std::printf("test_unknown_key_ignored\n");
     Builder b;
+    // 9 and 0x0200, not 8: 8 is `target` now, and a *known* key with an
+    // impossible value is a refusal — which is what this test existed to
+    // distinguish. Keeping the probe on a key the header does not define keeps
+    // the claim about the key space rather than about one key's range.
     b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1)
-        .entry(8, 1234)
+        .entry(9, 1234)
         .entry(0x0200, 7)
         .entry(TENSION_OGRE_KEY_FRAME_HZ, 30);
     const auto result = decode(b.done());
@@ -334,6 +343,90 @@ void test_headless_policy_does_nothing_without_the_flag() {
     check_eq(config.renderer, TENSION_OGRE_RENDERER_VULKAN, "the renderer stays vulkan");
 }
 
+/// The three target values, each decoding to itself, and nothing else decoding.
+void test_target_values() {
+    std::printf("test_target_values\n");
+    const uint32_t targets[] = {TENSION_OGRE_TARGET_AUTO, TENSION_OGRE_TARGET_SWAPCHAIN,
+                               TENSION_OGRE_TARGET_OFFSCREEN};
+    for (const uint32_t target : targets) {
+        Builder b;
+        b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(TENSION_OGRE_KEY_TARGET, target);
+        const auto result = decode(b.done());
+        check(result.ok, "target=" + std::to_string(target) + " decodes");
+        check_eq(result.config.target, target, "target round-trips");
+    }
+}
+
+void test_target_out_of_range_is_refused() {
+    std::printf("test_target_out_of_range_is_refused\n");
+    Builder b;
+    b.entry(TENSION_OGRE_KEY_ABI_VERSION, 1).entry(TENSION_OGRE_KEY_TARGET, 3);
+    const auto result = decode(b.done());
+    check(!result.ok, "target=3 is refused, not resolved to auto");
+    check(result.error == ConfigError::ValueOutOfRange, "the refusal names the range");
+    check_eq(result.error_key, TENSION_OGRE_KEY_TARGET, "and the key");
+    check(result.message.find("swapchain") != std::string::npos,
+          "the message names the three values");
+}
+
+/// `target` resolves into the same two fields `headless` uses, before the host's
+/// handles are merged in.
+void test_target_policy() {
+    std::printf("test_target_policy\n");
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_AUTO;
+        config.renderer = TENSION_OGRE_RENDERER_GL3PLUS;
+        config.renderer_set = true;
+        check_eq(apply_target_policy(config), 0, "auto changes nothing");
+        check_eq(config.renderer, TENSION_OGRE_RENDERER_GL3PLUS, "auto keeps the renderer");
+        check(!config.headless, "auto asks for no null renderer");
+    }
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_SWAPCHAIN;
+        check_eq(apply_target_policy(config), 0, "swapchain alone is a legal request");
+    }
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_SWAPCHAIN;
+        config.headless = true;
+        check(apply_target_policy(config) == -EINVAL,
+              "swapchain with headless is a contradiction, not a downgrade");
+    }
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_OFFSCREEN;
+        check_eq(apply_target_policy(config), 0, "offscreen with no renderer key resolves to null");
+        check_eq(config.renderer, TENSION_OGRE_RENDERER_NULL, "the NULL render system");
+        check(config.headless, "and no window");
+    }
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_OFFSCREEN;
+        config.renderer = TENSION_OGRE_RENDERER_GL3PLUS;
+        config.renderer_set = true;
+        check(apply_target_policy(config) == -EINVAL,
+              "offscreen over an explicit GPU renderer is refused: no offscreen path exists");
+        check_eq(config.renderer, TENSION_OGRE_RENDERER_GL3PLUS,
+                 "and the guest's request stays legible in the message");
+    }
+
+    {
+        Config config;
+        config.target = TENSION_OGRE_TARGET_OFFSCREEN;
+        config.renderer = TENSION_OGRE_RENDERER_NULL;
+        config.renderer_set = true;
+        check_eq(apply_target_policy(config), 0, "offscreen over an explicit null is satisfied");
+        check(config.headless, "and means no window");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -349,6 +442,9 @@ int main() {
     test_headless_policy_accepts_the_null_renderer();
     test_headless_policy_refuses_an_explicit_gpu_renderer();
     test_headless_policy_does_nothing_without_the_flag();
+    test_target_values();
+    test_target_out_of_range_is_refused();
+    test_target_policy();
 
     std::printf("%d checks, %d failures\n", checks, failures);
     return failures == 0 ? 0 : 1;

@@ -201,6 +201,78 @@ caseRun('headless-refused', 'guest-window.wasm', '^OK init-refused -22$',
         'headless=1 with an explicit renderer', ['--renderer=gl3plus', '--headless',
                                                  '--expect-init-refusal=-22']);
 
+// ── target: where the frame goes ──────────────────────────────────────────
+//
+// The key is engine-agnostic: these three cases pin the contract, not an Ogre
+// feature. `auto` is sent explicitly here (rather than omitted) so the case
+// proves the key decodes end-to-end; an omitted key is covered by every case
+// above, all of which are auto by default.
+caseRun('target-auto', 'guest-window.wasm', '^OK ', 'window "Tension" 1280x720 created',
+        ['--renderer=null', '--target=auto', '--frames=3']);
+
+// `swapchain` is a requirement, not a preference. This host published no
+// surface (no `--window`), so init refuses -ENODEV before a thread exists —
+// rather than doing what auto would do and making a window of its own. The
+// case needs no GPU and no display: the refusal lands before any plugin load.
+caseRun('target-swapchain-refused', 'guest-window.wasm', '^OK init-refused -19$',
+        'target=swapchain requires the host\'s surface',
+        ['--renderer=gl3plus', '--target=swapchain', '--expect-init-refusal=-19']);
+
+// `offscreen` resolves to the NULL render system: no window, and on this
+// backend no image (`known-limitations.md`, "No offscreen GPU render path").
+// The log line is the evidence that the value reached the backend, not just the
+// decoder.
+caseRun('target-offscreen', 'guest-window.wasm', '^OK ',
+        'target=offscreen — the NULL render system',
+        ['--renderer=null', '--target=offscreen', '--frames=3']);
+
+// A fourth target value is a refusal, not a default: the guest read a header
+// this adapter does not implement.
+caseRun('target-unknown-refused', 'guest-window.wasm', '^OK init-refused -22$',
+        '0\.\.2 are the target ids',
+        ['--renderer=null', '--target=3', '--expect-init-refusal=-22']);
+
+// ── target=swapchain against a real host window ───────────────────────────
+//
+// The case above proves the refusal; this one proves the adoption: core opens
+// the window (`--window 640x360`) and publishes the VkInstance / VkSurfaceKHR,
+// and the renderer takes them instead of making a window of its own. It needs a
+// display and a Vulkan stack that can make a surface and a swapchain; pipeline
+// creation is *not* required, because guest-window draws nothing.
+//
+// Measured on this rig (WSL2, Mesa `dzn`, 2026-11-09): PASS — Ogre logged
+// "rendering into the host's surface", created no window of its own, and ran
+// frames. Skips on a headless machine, and skips when TENSION_TEST_ALLOW_SKIP=1
+// says a missing GPU environment is acceptable — stating what would have run.
+{
+  const hasDisplay = WIN || process.env.DISPLAY || process.env.WAYLAND_DISPLAY;
+  const skipAllowed = process.env.TENSION_TEST_ALLOW_SKIP === '1';
+  if (!hasDisplay || skipAllowed) {
+    console.log('== target-swapchain-window: SKIP — ' +
+                (!hasDisplay ? 'no DISPLAY or WAYLAND_DISPLAY: a host window cannot be opened'
+                             : 'TENSION_TEST_ALLOW_SKIP=1') +
+                '; would run: core --window 640x360 with guest --renderer=vulkan ' +
+                '--target=swapchain, asserting OK and that the renderer adopted the host surface');
+  } else {
+    const result = spawn(core, ['--window', '640x360', '--capability', dso,
+                                join(out, 'guest-window.wasm'),
+                                '--renderer=vulkan', '--target=swapchain', '--frames=3'],
+                         { env: guestEnv });
+    if (result.status !== 0) {
+      fail(RUNNER, `target-swapchain-window: the interpreter exited ${result.status} ` +
+                   `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
+    }
+    if (!/^OK /m.test(result.stdout)) {
+      fail(RUNNER, `target-swapchain-window: no OK line (got: ${result.stdout.trim()})`);
+    }
+    if (!/rendering into the host's surface/.test(result.stderr)) {
+      fail(RUNNER, 'target-swapchain-window: the renderer did not report adopting the ' +
+                   "host's surface");
+    }
+    console.log(`== target-swapchain-window: ok — ${result.stdout.trim().split(/\r?\n/).pop()}`);
+  }
+}
+
 // No display at all: GL3+ throws on the X connection, the backend catches it,
 // and the guest is told which stage failed. Before the catch this aborted the
 // process with a core dump (`docs/modules/ogre.md` §8).
