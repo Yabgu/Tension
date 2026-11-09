@@ -629,6 +629,7 @@ mod tests {
                     depth: 0,
                     pending: crate::session::apply::PendingQueue::new(),
                     control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                shared: crate::platform::HostShared::new(),
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),

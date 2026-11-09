@@ -96,6 +96,15 @@ struct ApiTable {
     host_surface: Option<unsafe extern "C" fn(*mut c_void, *mut std::ffi::c_void) -> i32>,
     host_surface_extension:
         Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_char, u32, *mut u32) -> i32>,
+    // ABI v7: the event dispatcher. The record pointers are typed as `c_void`
+    // here because this mirror exists to pin the *layout* — the sizes these
+    // tests care about are pointer sizes, and copying the four record structs
+    // into three files would be three more places to drift.
+    register_event_layer:
+        Option<unsafe extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32>,
+    unregister_event_layer: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>,
+    host_window_info: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>,
+    pad_state: Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_void) -> i32>,
 }
 
 /// Mirrors `tension_ctrl_msg` (ABI v6). Eight 4-byte fields, no padding.
@@ -114,7 +123,7 @@ struct TensionCtrlMsg {
 
 // The mirror must stay the same size as the real table, or a DSO reading a slot
 // this file does not have reads past the end of a struct the test allocated.
-const _: () = assert!(std::mem::size_of::<ApiTable>() == 184);
+const _: () = assert!(std::mem::size_of::<ApiTable>() == 216);
 const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
 
 #[repr(C)]
@@ -368,6 +377,10 @@ fn test_ogre_adapter_surface() {
         post_control: None,
         host_surface: None,
         host_surface_extension: None,
+        register_event_layer: None,
+        unregister_event_layer: None,
+        host_window_info: None,
+        pad_state: None,
     };
 
     let refused = unsafe { init(std::ptr::null_mut(), &table) };

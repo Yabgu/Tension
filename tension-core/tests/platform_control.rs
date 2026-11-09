@@ -26,7 +26,8 @@
 use std::time::{Duration, Instant};
 
 use tension_core::platform::{
-    ControlBus, ControlError, HostWindow, TensionCtrlMsg, WindowTarget, CTRL_CORE_ONLY,
+    ControlBus, ControlError, HostShared, HostWindow, TensionCtrlMsg, WindowTarget,
+    CTRL_CORE_ONLY,
     CTRL_GENERAL_CAPACITY,
     CTRL_OBSERVABLE, CTRL_QUEUE_CAPACITY, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST,
     CTRL_SRC_LAYER,
@@ -60,7 +61,13 @@ fn wait_for_size(window: &mut HostWindow, want: (u32, u32)) -> Result<(), String
 
 fn run() -> Result<(), String> {
     let mut window =
-        HostWindow::new("tension-control-probe", 320, 240, WindowTarget::Plain).map_err(|e| format!("new: {e}"))?;
+        HostWindow::new(
+            "tension-control-probe",
+            320,
+            240,
+            WindowTarget::Plain,
+            HostShared::new(),
+        ).map_err(|e| format!("new: {e}"))?;
     let bus = ControlBus::new();
     println!("driver: {} at {:?}", window.driver(), window.published_size());
 

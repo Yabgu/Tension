@@ -62,6 +62,11 @@ const _: () = assert!(std::mem::size_of::<TensionCtrlMsg>() == 32);
 
 /// `tension_ctrl_kind`. Kinds are additive; an unknown one is refused.
 pub const CTRL_RESIZE: u32 = 1;
+/// Pointer confinement, on or off (arg0: 0 disables, 1 enables). A layer's way
+/// of asking for relative mouse mode without ever seeing the `SDL_Window`: the
+/// call itself is the executor's (`apply_control`), on the window's thread, and
+/// it is the only place `SDL_SetWindowRelativeMouseMode` is reached.
+pub const CTRL_RELATIVE_MOUSE: u32 = 2;
 
 /// `tension_ctrl_visibility`.
 pub const CTRL_CORE_ONLY: u32 = 0;
@@ -155,7 +160,7 @@ impl ControlBus {
     /// caller's claim is never consulted, which is why forging it is pointless
     /// rather than merely discouraged.
     fn admit(&self, msg: &TensionCtrlMsg, source: u32) -> Result<CoreAdmission, ControlError> {
-        if msg.kind != CTRL_RESIZE {
+        if msg.kind != CTRL_RESIZE && msg.kind != CTRL_RELATIVE_MOUSE {
             return Err(ControlError::UnknownKind);
         }
         if msg.reserved != 0 {
@@ -401,6 +406,623 @@ pub struct HostSurface {
     pub height: u32,
 }
 
+// ── the event wire (ABI v7) ──────────────────────────────────────────────────
+//
+// A capability does not own SDL's event queue: the host initialises the video
+// subsystem, owns the window, and pumps on the thread that did so. A capability
+// that wants events registers a *layer* and receives batches, synchronously,
+// once per pump. `tension_adapter.h`'s event-wire block is the argument; this is
+// the Rust half, and the two are pinned against each other by exact size and
+// offset assertions on both sides.
+
+/// Event families — `TENSION_EVENT_*`. One per event, and a layer's mask is a
+/// bitwise OR of them.
+pub const EVENT_QUIT: u32 = 1;
+pub const EVENT_WINDOW: u32 = 2;
+pub const EVENT_KEY: u32 = 4;
+pub const EVENT_TEXT: u32 = 8;
+pub const EVENT_MOUSE_MOTION: u32 = 16;
+pub const EVENT_MOUSE_BUTTON: u32 = 32;
+pub const EVENT_MOUSE_WHEEL: u32 = 64;
+pub const EVENT_PAD: u32 = 128;
+
+/// Every family this build defines. A registration whose mask names anything
+/// outside this is refused rather than silently subscribed to nothing.
+pub const EVENT_FAMILIES_KNOWN: u32 = EVENT_QUIT
+    | EVENT_WINDOW
+    | EVENT_KEY
+    | EVENT_TEXT
+    | EVENT_MOUSE_MOTION
+    | EVENT_MOUSE_BUTTON
+    | EVENT_MOUSE_WHEEL
+    | EVENT_PAD;
+
+/// `TENSION_EVENT_WINDOW`'s subtype, in `a0`.
+pub const WINDOW_EVENT_RESIZED: u32 = 1;
+pub const WINDOW_EVENT_PIXEL_SIZE_CHANGED: u32 = 2;
+pub const WINDOW_EVENT_FOCUS_GAINED: u32 = 3;
+pub const WINDOW_EVENT_FOCUS_LOST: u32 = 4;
+pub const WINDOW_EVENT_MINIMIZED: u32 = 5;
+pub const WINDOW_EVENT_RESTORED: u32 = 6;
+pub const WINDOW_EVENT_ENTER_FULLSCREEN: u32 = 7;
+pub const WINDOW_EVENT_LEAVE_FULLSCREEN: u32 = 8;
+pub const WINDOW_EVENT_CLOSE_REQUESTED: u32 = 9;
+
+/// `TENSION_EVENT_KEY`'s `flags` bits. The direction is a flag rather than a
+/// second subtype so a consumer tests one word for "is this a press".
+pub const KEY_FLAG_DOWN: u32 = 1;
+pub const KEY_FLAG_REPEAT: u32 = 2;
+
+/// `TENSION_EVENT_PAD`'s subtype, in `a0`.
+pub const PAD_EVENT_ADDED: u32 = 1;
+pub const PAD_EVENT_REMOVED: u32 = 2;
+pub const PAD_EVENT_BUTTON_DOWN: u32 = 3;
+pub const PAD_EVENT_BUTTON_UP: u32 = 4;
+pub const PAD_EVENT_AXIS: u32 = 5;
+
+/// How many events one pump may translate. A batch larger than this in a single
+/// drain is not a frame's input; the excess is counted and reported rather than
+/// silently allocating, because this runs inside the frame's own budget.
+pub const EVENT_BATCH_CAPACITY: usize = 256;
+
+/// `TENSION_MAX_EVENT_LAYERS`: how many layers one host serves.
+pub const TENSION_MAX_EVENT_LAYERS: usize = 8;
+
+/// `TENSION_PAD_SLOTS`: how many gamepad slots the host serves. The record and
+/// the slot arrived with ABI v7; this build's `pad_state` answers `-ENOSYS`.
+pub const PAD_SLOTS: u32 = 8;
+
+/// Mirrors `tension_event`: one event, 40 bytes, 8-byte alignment.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionEvent {
+    pub family: u32,
+    pub flags: u32,
+    pub a0: i64,
+    pub a1: i64,
+    pub a2: i64,
+    pub a3: i64,
+}
+
+impl TensionEvent {
+    /// A zeroed event, for the pump's stack buffer: `[TensionEvent::EMPTY; N]`
+    /// is only possible with a `const` value, which `Default` is not.
+    pub const EMPTY: Self = Self {
+        family: 0,
+        flags: 0,
+        a0: 0,
+        a1: 0,
+        a2: 0,
+        a3: 0,
+    };
+
+    pub const fn new(family: u32, flags: u32, a0: i64, a1: i64, a2: i64, a3: i64) -> Self {
+        Self {
+            family,
+            flags,
+            a0,
+            a1,
+            a2,
+            a3,
+        }
+    }
+}
+
+const _: () = assert!(std::mem::size_of::<TensionEvent>() == 40);
+const _: () = assert!(std::mem::offset_of!(TensionEvent, a0) == 8);
+
+/// A layer's `dispatch`: a batch of the events whose families its mask names.
+///
+/// # Safety
+///
+/// `events` is valid for `count` reads for the duration of the call. The callee
+/// must not retain it.
+pub type EventDispatchFn =
+    unsafe extern "C" fn(*mut std::ffi::c_void, *const TensionEvent, u32) -> i32;
+
+/// A layer's `shutdown`, called once when the dispatcher is torn down.
+///
+/// # Safety
+///
+/// `layer_user` is the token this host issued, still valid at the call.
+pub type EventShutdownFn = unsafe extern "C" fn(*mut std::ffi::c_void);
+
+/// Mirrors `tension_event_layer`: one subscription, 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct TensionEventLayer {
+    pub struct_size: u32,
+    pub reserved: u32,
+    pub event_mask: u32,
+    pub reserved2: u32,
+    pub dispatch: Option<EventDispatchFn>,
+    pub shutdown: Option<EventShutdownFn>,
+}
+
+const _: () = assert!(std::mem::size_of::<TensionEventLayer>() == 32);
+const _: () = assert!(std::mem::offset_of!(TensionEventLayer, dispatch) == 16);
+
+/// Mirrors `tension_pad_record`: one gamepad slot, 48 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq)]
+pub struct TensionPadRecord {
+    pub version: u32,
+    pub flags: u32,
+    pub buttons: u32,
+    pub reserved0: u32,
+    pub axes: [f32; 6],
+    pub reserved1: u64,
+}
+
+const _: () = assert!(std::mem::size_of::<TensionPadRecord>() == 48);
+const _: () = assert!(std::mem::offset_of!(TensionPadRecord, axes) == 16);
+
+/// Mirrors `tension_window_info`: what `host_window_info` writes, 40 bytes.
+///
+/// The guest's `tension::platform.window_info` writes this same record to guest
+/// memory, and this is the adapter-facing copy of it — one layout, two
+/// destinations. `mode` is the ABI's number (`WindowMode::as_u32`), not the
+/// Rust enum, because the wire is what both sides agreed on.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+pub struct TensionWindowInfo {
+    pub struct_size: u32,
+    pub width: u32,
+    pub height: u32,
+    pub pixel_width: u32,
+    pub pixel_height: u32,
+    pub dpi_scale_milli: u32,
+    pub mode: u32,
+    pub focused: u32,
+    pub minimized: u32,
+    pub close_requested: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<TensionWindowInfo>() == 40);
+
+impl TensionWindowInfo {
+    /// The record for "the host owns no window": every field zero, **including**
+    /// `struct_size`, which is what a caller that checks nothing will see as a
+    /// zeroed record rather than a live window of size 0.
+    pub const EMPTY: Self = Self {
+        struct_size: 0,
+        width: 0,
+        height: 0,
+        pixel_width: 0,
+        pixel_height: 0,
+        dpi_scale_milli: 0,
+        mode: 0,
+        focused: 0,
+        minimized: 0,
+        close_requested: 0,
+    };
+
+    /// One live window's record.
+    pub fn from_info(info: &WindowInfo) -> Self {
+        Self {
+            struct_size: std::mem::size_of::<Self>() as u32,
+            width: info.width,
+            height: info.height,
+            pixel_width: info.pixel_width,
+            pixel_height: info.pixel_height,
+            dpi_scale_milli: info.dpi_scale_milli,
+            mode: info.mode.as_u32(),
+            focused: u32::from(info.focused),
+            minimized: u32::from(info.minimized),
+            close_requested: u32::from(info.close_requested),
+        }
+    }
+}
+
+/// One registered layer, as the bus keeps it.
+///
+/// The token is a `usize`, not a raw pointer, for the same reason
+/// `AdapterHost::ctx` is: the bus is shared by `Arc<Mutex<..>>` and therefore
+/// has to be `Send`, which a `*mut c_void` is not. Nothing dereferences it — it
+/// is an opaque 1-based handle, exactly as rule 2 describes ids.
+#[derive(Copy, Clone)]
+struct RegisteredLayer {
+    token: usize,
+    mask: u32,
+    dispatch: EventDispatchFn,
+    shutdown: Option<EventShutdownFn>,
+    /// Set once a non-zero `dispatch` return has been logged, so a layer that
+    /// reports the same failure every frame is one line rather than sixty a
+    /// second.
+    logged_error: bool,
+}
+
+impl RegisteredLayer {
+    const EMPTY: Self = Self {
+        token: 0,
+        mask: 0,
+        // Never called: `LayerSnapshot::dispatch` walks only `len` entries.
+        dispatch: no_dispatch,
+        shutdown: None,
+        logged_error: false,
+    };
+}
+
+/// The placeholder for unused snapshot slots. It is never invoked — a snapshot
+/// carries a length, and only entries below it are dispatched — but it must be
+/// *some* function, and a loud one is better than a fabricated address.
+unsafe extern "C" fn no_dispatch(_: *mut std::ffi::c_void, _: *const TensionEvent, _: u32) -> i32 {
+    -38 // -ENOSYS: an empty slot was dispatched, which is a bug in this module
+}
+
+/// The layer table, copied out of the bus so the mutex can be released before
+/// any adapter code runs.
+///
+/// **This copy is what makes the dispatcher deadlock-free.** A layer may call
+/// `post_event` and `post_control` from its dispatch (rule 13 allows both, and
+/// input needs them). If the bus's mutex were still held, a layer that called
+/// `register_event_layer` would block on the same lock the dispatcher is
+/// holding — on one thread, which is a deadlock, not a refusal. Copying the
+/// table means the lock is free for the whole dispatch, and the `dispatching`
+/// flag inside the bus (checked under that lock) is what turns a re-entrant
+/// registration into `-EBUSY`.
+#[derive(Copy, Clone)]
+pub struct LayerSnapshot {
+    layers: [RegisteredLayer; TENSION_MAX_EVENT_LAYERS],
+    len: usize,
+}
+
+impl LayerSnapshot {
+    /// How many layers the snapshot holds.
+    pub fn len(&self) -> usize {
+        self.len
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Hand `events` to every layer whose mask names at least one of their
+    /// families, and record each layer's non-zero return in `failed`.
+    ///
+    /// One `dispatch` call per layer per pump, with only that layer's events —
+    /// the filtering is the host's, so a layer cannot receive a family it did
+    /// not subscribe to even if it asks. Returns the number of layers called.
+    ///
+    /// **Main thread, outside any guest call** (rule 13). The caller must not
+    /// hold the bus's lock.
+    pub fn dispatch(&self, events: &[TensionEvent], failed: &mut [bool; TENSION_MAX_EVENT_LAYERS]) -> u32 {
+        if events.is_empty() {
+            return 0;
+        }
+        let mut filtered = [TensionEvent::EMPTY; EVENT_BATCH_CAPACITY];
+        let mut called = 0u32;
+        for index in 0..self.len {
+            let layer = self.layers[index];
+            let mut count = 0usize;
+            for event in events {
+                if layer.mask & event.family != 0 && count < filtered.len() {
+                    filtered[count] = *event;
+                    count += 1;
+                }
+            }
+            if count == 0 {
+                continue;
+            }
+            // SAFETY: `layer.dispatch` is a function pointer this host validated
+            // at registration (non-null), `filtered` is a live stack array of
+            // `count` initialised events, and `layer.token` is the token this
+            // host issued for that layer.
+            let status = unsafe { (layer.dispatch)(layer.token as *mut std::ffi::c_void, filtered.as_ptr(), count as u32) };
+            failed[index] = status != 0;
+            called += 1;
+        }
+        called
+    }
+}
+
+/// A window event with no payload beyond its subtype.
+///
+/// `pub` so a probe can assert the wire's encoding without a device: this is the
+/// translation contract, and a test that needs a compositor to check a constant
+/// is a test that will be skipped exactly where it matters.
+pub fn window_state_event(subtype: u32) -> TensionEvent {
+    TensionEvent::new(EVENT_WINDOW, 0, subtype as i64, 0, 0, 0)
+}
+
+/// Append one event to the pump's batch, counting what does not fit.
+///
+/// A separate function rather than a closure so the pump's loop keeps `self`
+/// borrowable: a closure capturing `count` and `overflow` mutably cannot also
+/// call `self.apply_window_event`.
+fn push_event(
+    batch: &mut [TensionEvent; EVENT_BATCH_CAPACITY],
+    count: &mut usize,
+    overflow: &mut u32,
+    event: TensionEvent,
+) {
+    if *count < batch.len() {
+        batch[*count] = event;
+        *count += 1;
+    } else {
+        *overflow += 1;
+    }
+}
+
+/// One key event on the wire: `a0` scancode, `a1` keycode, `a2` modifiers,
+/// `a3` repeat, and the direction in `flags`.
+///
+/// `pub` for the same reason as [`window_state_event`]: the encoding is the
+/// contract, and a probe can only check it without a keyboard this way.
+pub fn key_event(
+    down: bool,
+    keycode: Option<sdl3::keyboard::Keycode>,
+    scancode: Option<sdl3::keyboard::Scancode>,
+    keymod: sdl3::keyboard::Mod,
+    repeat: bool,
+) -> TensionEvent {
+    let mut flags = 0u32;
+    if down {
+        flags |= KEY_FLAG_DOWN;
+    }
+    if repeat {
+        flags |= KEY_FLAG_REPEAT;
+    }
+    TensionEvent::new(
+        EVENT_KEY,
+        flags,
+        scancode.map(|code| code as i32 as i64).unwrap_or(0),
+        keycode.map(|code| code as u32 as i64).unwrap_or(0),
+        keymod.bits() as i64,
+        if repeat { 1 } else { 0 },
+    )
+}
+
+/// One mouse-button event: `a0` button, `a1` down, `a2` clicks, `a3` the mask
+/// after the change, and the device id in `flags`.
+///
+/// The mask is read from SDL rather than tracked here: a button held when the
+/// window opened is in SDL's answer and not in any sequence of events this pump
+/// has seen. It is a call, but `SDL_GetMouseState` touches no window state and
+/// this is already the window's thread.
+fn button_event(
+    down: bool,
+    which: u32,
+    button: sdl3::mouse::MouseButton,
+    clicks: u8,
+    pump: &sdl3::EventPump,
+) -> TensionEvent {
+    let mask = sdl3::mouse::MouseState::new(pump).to_sdl_state();
+    TensionEvent::new(
+        EVENT_MOUSE_BUTTON,
+        which,
+        button as u8 as i64,
+        if down { 1 } else { 0 },
+        clicks as i64,
+        mask as i64,
+    )
+}
+
+/// The dispatcher: who is subscribed, and whether a dispatch is in flight.
+///
+/// One per process, shared by `Arc<Mutex<..>>` between the window (which pumps
+/// and dispatches) and the API table (which registers and unregisters).
+#[derive(Default)]
+pub struct EventBus {
+    layers: Vec<RegisteredLayer>,
+    /// 1-based, never reused: a freed token that came back would let a layer
+    /// unregister somebody else's subscription.
+    next_token: usize,
+    /// True between `begin_dispatch` and `end_dispatch`.
+    dispatching: bool,
+}
+
+impl EventBus {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Validate and admit one subscription, returning the token.
+    ///
+    /// # Safety
+    ///
+    /// `layer` must point to a readable `tension_event_layer` for the duration
+    /// of the call. The struct is copied field by field and nothing is retained.
+    pub unsafe fn register(&mut self, layer: *const TensionEventLayer) -> Result<usize, i32> {
+        const EINVAL: i32 = -22;
+        const ENOSPC: i32 = -28;
+        const EBUSY: i32 = -16;
+
+        if layer.is_null() {
+            return Err(EINVAL);
+        }
+        let layer = unsafe { *layer };
+        if (layer.struct_size as usize) < std::mem::size_of::<TensionEventLayer>()
+            || layer.reserved != 0
+            || layer.reserved2 != 0
+            || layer.event_mask == 0
+            || layer.event_mask & !EVENT_FAMILIES_KNOWN != 0
+        {
+            return Err(EINVAL);
+        }
+        let Some(dispatch) = layer.dispatch else {
+            return Err(EINVAL);
+        };
+        // A registration from inside a dispatch would mutate the table the
+        // snapshot was copied from, so it is refused. The bus is unlocked here
+        // (see `LayerSnapshot`), which is what lets this be a refusal rather
+        // than a deadlock.
+        if self.dispatching {
+            return Err(EBUSY);
+        }
+        if self.layers.len() >= TENSION_MAX_EVENT_LAYERS {
+            return Err(ENOSPC);
+        }
+        let token = self.next_token + 1;
+        self.next_token = token;
+        self.layers.push(RegisteredLayer {
+            token,
+            mask: layer.event_mask,
+            dispatch,
+            shutdown: layer.shutdown,
+            logged_error: false,
+        });
+        Ok(token)
+    }
+
+    /// Remove a subscription. `shutdown` is **not** called: see the header.
+    pub fn unregister(&mut self, token: usize) -> Result<(), i32> {
+        const EINVAL: i32 = -22;
+        const EBUSY: i32 = -16;
+        if self.dispatching {
+            return Err(EBUSY);
+        }
+        let Some(index) = self.layers.iter().position(|layer| layer.token == token) else {
+            return Err(EINVAL);
+        };
+        self.layers.remove(index);
+        Ok(())
+    }
+
+    /// Copy the table out and mark a dispatch in flight.
+    ///
+    /// `None` when a dispatch is already running — a pump that somehow nests
+    /// (it cannot today: both pump call sites are on one thread, sequentially)
+    /// drops its batch rather than recursing into adapter code.
+    pub fn begin_dispatch(&mut self) -> Option<LayerSnapshot> {
+        if self.dispatching || self.layers.is_empty() {
+            return None;
+        }
+        self.dispatching = true;
+        let mut layers = [RegisteredLayer::EMPTY; TENSION_MAX_EVENT_LAYERS];
+        layers[..self.layers.len()].copy_from_slice(&self.layers);
+        Some(LayerSnapshot {
+            layers,
+            len: self.layers.len(),
+        })
+    }
+
+    /// Close a dispatch and absorb each layer's result.
+    pub fn end_dispatch(
+        &mut self,
+        snapshot: &LayerSnapshot,
+        failed: &[bool; TENSION_MAX_EVENT_LAYERS],
+    ) {
+        self.dispatching = false;
+        for index in 0..snapshot.len {
+            if !failed[index] {
+                continue;
+            }
+            let token = snapshot.layers[index].token;
+            let Some(layer) = self.layers.iter_mut().find(|layer| layer.token == token) else {
+                continue;
+            };
+            if !layer.logged_error {
+                layer.logged_error = true;
+                crate::logging::log(
+                    crate::logging::Level::Warn,
+                    "core",
+                    &format!(
+                        "event layer {} returned a non-zero status from dispatch; the frame is \
+                         unaffected and this is logged once",
+                        token
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Take the table out, so `shutdown` can be called with no lock held.
+    pub fn take_layers(&mut self) -> LayerSnapshot {
+        let mut layers = [RegisteredLayer::EMPTY; TENSION_MAX_EVENT_LAYERS];
+        let len = self.layers.len();
+        layers[..len].copy_from_slice(&self.layers);
+        self.layers.clear();
+        self.dispatching = false;
+        LayerSnapshot { layers, len }
+    }
+
+    /// How many layers are registered. For the probe and the startup line.
+    pub fn len(&self) -> usize {
+        self.layers.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.layers.is_empty()
+    }
+}
+
+/// The state one host shares with its adapters: the dispatcher, and the window
+/// record `host_window_info` serves.
+///
+/// One struct rather than two `Arc`s because both are written by the same
+/// event — a pump updates the record and dispatches the batch — and a reader
+/// that took them from different pumps could see a size the batch disagrees
+/// with. `main` builds one, hands a clone to `AdapterHost` and another to the
+/// window, and later to whatever window replaces it.
+pub struct HostShared {
+    pub events: Mutex<EventBus>,
+    /// The window's state as of the last pump; `None` when no window exists.
+    pub window: Mutex<Option<WindowInfo>>,
+}
+
+impl HostShared {
+    pub fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self {
+            events: Mutex::new(EventBus::new()),
+            window: Mutex::new(None),
+        })
+    }
+
+    /// Dispatch one batch, releasing the lock for the whole of it.
+    ///
+    /// Returns the number of layers called, and the number of layers whose
+    /// dispatch returned non-zero.
+    pub fn dispatch(&self, events: &[TensionEvent]) -> (u32, u32) {
+        let snapshot = match self.events.lock() {
+            Ok(mut bus) => bus.begin_dispatch(),
+            Err(poisoned) => poisoned.into_inner().begin_dispatch(),
+        };
+        let Some(snapshot) = snapshot else {
+            return (0, 0);
+        };
+        let mut failed = [false; TENSION_MAX_EVENT_LAYERS];
+        let called = snapshot.dispatch(events, &mut failed);
+        let failures = failed[..snapshot.len()].iter().filter(|failed| **failed).count() as u32;
+        match self.events.lock() {
+            Ok(mut bus) => bus.end_dispatch(&snapshot, &failed),
+            Err(poisoned) => poisoned.into_inner().end_dispatch(&snapshot, &failed),
+        }
+        (called, failures)
+    }
+
+    /// The dispatcher's own teardown: every layer still registered gets its
+    /// `shutdown`, once, with no lock held.
+    ///
+    /// Called on both of `main`'s exit paths, after the adapters have been torn
+    /// down — a layer whose adapter is already gone would be a call into
+    /// unloaded code, so the ordering is adapters first, then this. It is
+    /// idempotent: a second call finds no layers.
+    pub fn clear(&self) {
+        let snapshot = match self.events.lock() {
+            Ok(mut bus) => bus.take_layers(),
+            Err(poisoned) => poisoned.into_inner().take_layers(),
+        };
+        for index in 0..snapshot.len {
+            let Some(shutdown) = snapshot.layers[index].shutdown else {
+                continue;
+            };
+            // SAFETY: the token is this host's, `shutdown` was validated as a
+            // non-null function pointer at registration, and the table was
+            // taken out of the bus so nothing can call into the layer again.
+            unsafe { shutdown(snapshot.layers[index].token as *mut std::ffi::c_void) };
+        }
+    }
+}
+
+impl Default for HostShared {
+    fn default() -> Self {
+        Self {
+            events: Mutex::new(EventBus::new()),
+            window: Mutex::new(None),
+        }
+    }
+}
 
 /// What one pump of the window's event queue found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -414,6 +1036,12 @@ pub struct PlatformEvents {
     /// a loop wants "did anything happen?", and a count would invite it to
     /// infer meaning from a number that has none.
     pub drained: u32,
+    /// How many events the pump translated onto the event wire, and how many
+    /// were dropped because one drain produced more than
+    /// [`EVENT_BATCH_CAPACITY`]. A non-zero `overflow` means a layer missed
+    /// events this pump — said out loud rather than silently truncated.
+    pub translated: u32,
+    pub overflow: u32,
 }
 
 /// Why a window or a surface could not be created.
@@ -501,7 +1129,21 @@ pub struct HostWindow {
     /// Latched: once the user asks to close, it stays asked until the window is
     /// destroyed. A guest reading it every frame wants a state, not an edge.
     close_requested: AtomicBool,
+    /// Pointer confinement, as `apply_control` set it. Not part of
+    /// `WindowInfo` (the guest's record is about the window, not the pointer),
+    /// but a layer asks for it and the host must remember what it granted.
+    relative_mouse: AtomicBool,
     title: String,
+    /// The dispatcher and the published window record, shared with the API
+    /// table so an adapter can register a layer and read `host_window_info`.
+    ///
+    /// Held by the window rather than by the host loop because `pump` is the one
+    /// place events are drained, and it is reached from two callers — the host
+    /// loop and the 2D renderer's present. Dispatching *inside* `pump` is what
+    /// makes it impossible for one of them to drain an event the other never
+    /// dispatches; before v7 there were two pollers on one queue and the split
+    /// was measured to be nondeterministic.
+    shared: std::sync::Arc<HostShared>,
     /// Last, so it outlives everything above it: `Sdl`'s drop calls `SDL_Quit`,
     /// which tears down the video subsystem under every window that outlived
     /// it. Never read — it is a lifetime anchor, and the leading underscore is
@@ -531,6 +1173,7 @@ impl HostWindow {
         width: u32,
         height: u32,
         target: WindowTarget,
+        shared: std::sync::Arc<HostShared>,
     ) -> Result<Self, PlatformError> {
         let sdl = sdl3::init().map_err(|e| PlatformError::Sdl(e.to_string()))?;
         let video = sdl
@@ -570,7 +1213,9 @@ impl HostWindow {
             focused: AtomicBool::new(true),
             minimized: AtomicBool::new(false),
             close_requested: AtomicBool::new(false),
+            relative_mouse: AtomicBool::new(false),
             title: title.to_string(),
+            shared,
             _sdl: sdl,
         })
     }
@@ -725,6 +1370,12 @@ impl HostWindow {
     /// `HOST_LOOP_SLICE_MS`.
     pub fn pump(&mut self) -> PlatformEvents {
         let mut events = PlatformEvents::default();
+        // One batch per pump, on the stack and capped. This runs inside the
+        // frame's own budget, so an unbounded batch would let a burst of input
+        // allocate its way into that budget; the excess is counted instead.
+        let mut batch = [TensionEvent::EMPTY; EVENT_BATCH_CAPACITY];
+        let mut count = 0usize;
+        let mut overflow = 0u32;
 
         self.event_pump.pump_events();
         let window_id = self.window.id();
@@ -735,13 +1386,21 @@ impl HostWindow {
                 sdl3::event::Event::Quit { .. } => {
                     self.close_requested.store(true, Ordering::Relaxed);
                     events.close_requested = true;
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(EVENT_QUIT, 0, 0, 0, 0, 0),
+                    );
                 }
                 sdl3::event::Event::Window {
                     win_event,
                     window_id: id,
                     ..
                 } if id == window_id => {
-                    self.apply_window_event(&mut events, win_event);
+                    if let Some(wire) = self.apply_window_event(&mut events, win_event) {
+                        push_event(&mut batch, &mut count, &mut overflow, wire);
+                    }
                 }
                 // A display's scale changed under the window (a monitor switch,
                 // or the compositor's DPI setting). The scale belongs to the
@@ -754,10 +1413,205 @@ impl HostWindow {
                     let scale = (self.window.display_scale() * 1000.0).round() as u32;
                     self.dpi_scale_milli.store(scale.max(1), Ordering::Relaxed);
                 }
+                // ── the wire's families ─────────────────────────────────
+                //
+                // Key: `a0` scancode, `a1` keycode, `a2` the modifier word,
+                // `a3` repeat. Both codes are `Option` in `sdl3` and `0` is a
+                // real value for neither (`Scancode::Unknown` and
+                // `Keycode::Unknown` are 0), so "absent" and "unknown" collapse
+                // to the same wire value — which is honest: an adapter that sees
+                // 0 cannot tell them apart because there is nothing to tell.
+                sdl3::event::Event::KeyDown {
+                    keycode,
+                    scancode,
+                    keymod,
+                    repeat,
+                    ..
+                } => {
+                    let wire = key_event(true, keycode, scancode, keymod, repeat);
+                    push_event(&mut batch, &mut count, &mut overflow, wire);
+                }
+                sdl3::event::Event::KeyUp {
+                    keycode,
+                    scancode,
+                    keymod,
+                    repeat,
+                    ..
+                } => {
+                    let wire = key_event(false, keycode, scancode, keymod, repeat);
+                    push_event(&mut batch, &mut count, &mut overflow, wire);
+                }
+                sdl3::event::Event::TextInput { text, .. } => {
+                    // `a0` is the first codepoint, `a1` how many follow. SDL
+                    // delivers UTF-8; the wire carries scalars, and a consumer
+                    // that needs the whole string reads `text` from its own
+                    // SDL-free input path — which is why this family is an
+                    // edge signal ("text arrived, here is the first scalar")
+                    // rather than a text buffer.
+                    let mut scalars = text.chars();
+                    let first = scalars.next().map(|c| c as u32 as i64).unwrap_or(0);
+                    let length = text.chars().count() as i64;
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(EVENT_TEXT, 0, first, length, 0, 0),
+                    );
+                }
+                // Mouse motion: `a0`/`a1` are the integer position, and
+                // `a2`/`a3` hold the sub-pixel delta as an f32 bit pattern
+                // (low 32 bits, zero-extended). The delta is not rounded: the
+                // input capability accumulates it as a float precisely so a slow
+                // drag does not truncate to zero every frame.
+                sdl3::event::Event::MouseMotion {
+                    which,
+                    x,
+                    y,
+                    xrel,
+                    yrel,
+                    ..
+                } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(
+                            EVENT_MOUSE_MOTION,
+                            which,
+                            x as i64,
+                            y as i64,
+                            (xrel.to_bits() as i64) & 0xFFFF_FFFF,
+                            (yrel.to_bits() as i64) & 0xFFFF_FFFF,
+                        ),
+                    );
+                }
+                // Buttons: `a0` button, `a1` down, `a2` clicks, `a3` the button
+                // mask after the change. `flags` is the device id.
+                sdl3::event::Event::MouseButtonDown {
+                    which,
+                    mouse_btn,
+                    clicks,
+                    ..
+                } => {
+                    let wire = button_event(true, which, mouse_btn, clicks, &self.event_pump);
+                    push_event(&mut batch, &mut count, &mut overflow, wire);
+                }
+                sdl3::event::Event::MouseButtonUp {
+                    which,
+                    mouse_btn,
+                    clicks,
+                    ..
+                } => {
+                    let wire = button_event(false, which, mouse_btn, clicks, &self.event_pump);
+                    push_event(&mut batch, &mut count, &mut overflow, wire);
+                }
+                // Wheel: `a0`/`a1` are the integer direction, `a2`/`a3` the f32
+                // bit patterns. Both are sent because "how many notches" and
+                // "how much" are different questions and SDL answers them in
+                // floats on a trackpad.
+                sdl3::event::Event::MouseWheel { which, x, y, .. } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(
+                            EVENT_MOUSE_WHEEL,
+                            which,
+                            y as i64,
+                            x as i64,
+                            (y.to_bits() as i64) & 0xFFFF_FFFF,
+                            (x.to_bits() as i64) & 0xFFFF_FFFF,
+                        ),
+                    );
+                }
+                // Pads: `a0` subtype, `a1` the joystick instance id, `a2` the
+                // button or axis index, `a3` the value. Slots are the host's to
+                // assign; this family is how a capability learns a pad exists.
+                sdl3::event::Event::GamepadAdded { which, .. } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(EVENT_PAD, 0, PAD_EVENT_ADDED as i64, which.raw() as i64, 0, 0),
+                    );
+                }
+                sdl3::event::Event::GamepadRemoved { which, .. } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(EVENT_PAD, 0, PAD_EVENT_REMOVED as i64, which.raw() as i64, 0, 0),
+                    );
+                }
+                sdl3::event::Event::GamepadButtonDown { which, button, .. } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(
+                            EVENT_PAD,
+                            0,
+                            PAD_EVENT_BUTTON_DOWN as i64,
+                            which.raw() as i64,
+                            button as i64,
+                            1,
+                        ),
+                    );
+                }
+                sdl3::event::Event::GamepadButtonUp { which, button, .. } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(
+                            EVENT_PAD,
+                            0,
+                            PAD_EVENT_BUTTON_UP as i64,
+                            which.raw() as i64,
+                            button as i64,
+                            0,
+                        ),
+                    );
+                }
+                sdl3::event::Event::GamepadAxisMotion {
+                    which,
+                    axis,
+                    value,
+                    ..
+                } => {
+                    push_event(
+                        &mut batch,
+                        &mut count,
+                        &mut overflow,
+                        TensionEvent::new(
+                            EVENT_PAD,
+                            0,
+                            PAD_EVENT_AXIS as i64,
+                            which.raw() as i64,
+                            axis as i64,
+                            value as i64,
+                        ),
+                    );
+                }
                 _ => {}
             }
         }
 
+        // Publish the record, then dispatch the batch. That order is what lets a
+        // layer read `host_window_info` from inside its dispatch and see the
+        // state the batch belongs to rather than the previous frame's.
+        {
+            let info = self.info();
+            match self.shared.window.lock() {
+                Ok(mut cell) => *cell = Some(info),
+                Err(poisoned) => *poisoned.into_inner() = Some(info),
+            }
+        }
+        if count > 0 {
+            self.shared.dispatch(&batch[..count]);
+        }
+        events.translated = count as u32;
+        events.overflow = overflow;
         events
     }
 
@@ -768,7 +1622,11 @@ impl HostWindow {
     /// `window_info` depends on. Nothing here calls SDL except the DPI read,
     /// which is why the caller has already established this is the window's
     /// thread.
-    fn apply_window_event(&self, events: &mut PlatformEvents, event: sdl3::event::WindowEvent) {
+    fn apply_window_event(
+        &self,
+        events: &mut PlatformEvents,
+        event: sdl3::event::WindowEvent,
+    ) -> Option<TensionEvent> {
         use sdl3::event::WindowEvent;
         match event {
             WindowEvent::CloseRequested => {
@@ -776,6 +1634,14 @@ impl HostWindow {
                 // know the user asked, not that they asked once.
                 self.close_requested.store(true, Ordering::Relaxed);
                 events.close_requested = true;
+                Some(TensionEvent::new(
+                    EVENT_WINDOW,
+                    0,
+                    WINDOW_EVENT_CLOSE_REQUESTED as i64,
+                    0,
+                    0,
+                    0,
+                ))
             }
             WindowEvent::Resized(width, height) => {
                 // Logical size. The drawable size arrives separately, as
@@ -785,24 +1651,62 @@ impl HostWindow {
                     self.width.store(width, Ordering::Relaxed);
                     self.height.store(height, Ordering::Relaxed);
                     events.resized = Some((width, height));
+                    return Some(TensionEvent::new(
+                        EVENT_WINDOW,
+                        0,
+                        WINDOW_EVENT_RESIZED as i64,
+                        width as i64,
+                        height as i64,
+                        0,
+                    ));
                 }
+                None
             }
             WindowEvent::PixelSizeChanged(width, height) => {
                 let (width, height) = (width.max(0) as u32, height.max(0) as u32);
                 if width > 0 && height > 0 {
                     self.pixel_width.store(width, Ordering::Relaxed);
                     self.pixel_height.store(height, Ordering::Relaxed);
+                    return Some(TensionEvent::new(
+                        EVENT_WINDOW,
+                        0,
+                        WINDOW_EVENT_PIXEL_SIZE_CHANGED as i64,
+                        width as i64,
+                        height as i64,
+                        0,
+                    ));
                 }
+                None
             }
-            WindowEvent::EnterFullscreen => self.fullscreen.store(true, Ordering::Relaxed),
-            WindowEvent::LeaveFullscreen => self.fullscreen.store(false, Ordering::Relaxed),
-            WindowEvent::FocusGained => self.focused.store(true, Ordering::Relaxed),
-            WindowEvent::FocusLost => self.focused.store(false, Ordering::Relaxed),
-            WindowEvent::Minimized => self.minimized.store(true, Ordering::Relaxed),
+            WindowEvent::EnterFullscreen => {
+                self.fullscreen.store(true, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_ENTER_FULLSCREEN))
+            }
+            WindowEvent::LeaveFullscreen => {
+                self.fullscreen.store(false, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_LEAVE_FULLSCREEN))
+            }
+            WindowEvent::FocusGained => {
+                self.focused.store(true, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_FOCUS_GAINED))
+            }
+            WindowEvent::FocusLost => {
+                self.focused.store(false, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_FOCUS_LOST))
+            }
+            WindowEvent::Minimized => {
+                self.minimized.store(true, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_MINIMIZED))
+            }
+            // Maximised is not minimised: both leave the window restored from
+            // the atomics' point of view, and the atomics carry one boolean. The
+            // wire reports the pair as RESTORED rather than inventing a
+            // subtype the state record cannot distinguish.
             WindowEvent::Restored | WindowEvent::Maximized => {
-                self.minimized.store(false, Ordering::Relaxed)
+                self.minimized.store(false, Ordering::Relaxed);
+                Some(window_state_event(WINDOW_EVENT_RESTORED))
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -911,6 +1815,30 @@ impl HostWindow {
                 }
                 Ok(())
             }
+            // Pointer confinement. The caller (a layer) never sees the window;
+            // this is the only place `SDL_SetWindowRelativeMouseMode` is
+            // reached, which is what keeps "no layer calls SDL" true by
+            // ownership rather than by convention.
+            CTRL_RELATIVE_MOUSE => {
+                let on = msg.arg0 != 0;
+                // Called through the sys binding rather than `MouseUtil`: the
+                // crate hands that type out only from an `Sdl` it does not
+                // expose a constructor for, and this is the window's thread with
+                // a live `SDL_Window`, which is the whole precondition.
+                //
+                // SAFETY: `self.window` is a window this process created and has
+                // not destroyed, and this call is on the thread that created it.
+                let ok = unsafe {
+                    sdl3::sys::mouse::SDL_SetWindowRelativeMouseMode(self.window.raw(), on)
+                };
+                if !ok {
+                    return Err(PlatformError::Sdl(
+                        sdl3::get_error().to_string(),
+                    ));
+                }
+                self.relative_mouse.store(on, Ordering::Relaxed);
+                Ok(())
+            }
             other => Err(PlatformError::Sdl(format!("unknown control kind {other}"))),
         }
     }
@@ -976,6 +1904,7 @@ impl HostWindow {
 pub fn create_window(
     slot: &mut Option<HostWindow>,
     config: &WindowConfig,
+    shared: &std::sync::Arc<HostShared>,
 ) -> Result<u32, PlatformError> {
     if slot.is_some() {
         return Err(PlatformError::Busy(
@@ -989,7 +1918,13 @@ pub fn create_window(
         )));
     }
 
-    let mut window = HostWindow::new(&config.title, config.width, config.height, config.target)?;
+    let mut window = HostWindow::new(
+        &config.title,
+        config.width,
+        config.height,
+        config.target,
+        std::sync::Arc::clone(shared),
+    )?;
 
     // Mode is applied after creation, because SDL's fullscreen flags are a
     // state transition rather than a creation parameter on every driver:

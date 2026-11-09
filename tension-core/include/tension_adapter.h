@@ -23,7 +23,10 @@
  * that keeps the codebase coherent. Version 2 appended `guest_read_checked` and
  * `layout_hash`; version 3 `signal_frame`; version 4 `shader_generate`; version
  * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`,
- * `host_surface` and `host_surface_extension`.
+ * `host_surface` and `host_surface_extension`; version 7
+ * `register_event_layer`, `unregister_event_layer`, `host_window_info` and
+ * `pad_state` (the event dispatcher: a capability subscribes to the host's
+ * input events instead of owning an SDL queue of its own).
  *
  * The window structs below (`tension_window_config`, `tension_window_info`)
  * arrived with the *guest* programmatic window API, which is what let
@@ -33,6 +36,12 @@
  * cannot create one — casting a slot for it would be a contract nothing could
  * honour. They live here because this header is where the wire's structs live.
  * A version-1 adapter is refused at load, so the host never reads past its end.
+ *
+ * Version 7 added the event wire (`tension_event`, `tension_event_layer`) and
+ * moved `tension_pad_record` here from `tension_input.h`, so the record one
+ * capability writes and the slot that serves it are declared in one place. No
+ * existing slot changed and no struct changed layout; the four new slots are
+ * appended, which is what rule 11 permits and what the version check enforces.
  *
  * Design note: `docs/abi/adapter.md`.
  *
@@ -83,12 +92,18 @@ extern "C" {
  *     version — the discipline in force while alpha lasts, not a promise.
  * 12. Deferred submissions are *copied* by the session before they are queued.
  *     An adapter's `apply` receives bytes; it never receives a guest address.
+ * 13. A registered event layer's `dispatch` runs on the thread that owns the
+ *     window — the same one that initialised SDL — synchronously after each
+ *     pump, outside any guest call. It may call `post_event` and `post_control`
+ *     (both are any-thread safe and neither blocks). It must not touch guest
+ *     memory, must not block, and must not register or unregister a layer —
+ *     that is refused with -EBUSY rather than deadlocking the pump.
  * ===================================================================== */
 
 /* ── constants ───────────────────────────────────────────────────────── */
 
 /** The ABI version this header describes. Checked in `init`; not advisory. */
-#define TENSION_ADAPTER_ABI_VERSION 6u
+#define TENSION_ADAPTER_ABI_VERSION 7u
 
 /* ── window control: the host's write channel ────────────────────────── */
 /*
@@ -296,6 +311,177 @@ typedef struct tension_window_info {
 #define TENSION_CTRL_SRC_LAYER 0u
 #define TENSION_CTRL_SRC_CORE  1u
 #define TENSION_CTRL_SRC_GUEST 2u
+
+/* ── the event wire (ABI v7) ─────────────────────────────────────────── */
+/*
+ * A capability does not own SDL's event queue. `tension-core` initialises the
+ * video subsystem, owns the window, and pumps the queue on the thread that did
+ * so; a capability that wants events subscribes a *layer* and receives batches.
+ *
+ * Why this exists at all, in one paragraph. Before v7 the input capability ran
+ * its own thread, called `SDL_Init` there, and polled the queue itself. Three
+ * things were wrong with that: SDL requires the video subsystem to be used from
+ * the thread that initialised it (illegal, and fatal on macOS); two pollers on
+ * one queue split it nondeterministically — measured, 4000 pushed events came
+ * out 2452/1548 on one run and 1796/2204 on the next, with none lost or
+ * duplicated; and a second `SDL_Quit` on that thread tears the video subsystem
+ * down under the host's own window (measured: the host's window then reports
+ * 0x0 and every later call fails). One owner fixes all three, and the layer is
+ * how a capability keeps seeing what it used to poll.
+ *
+ * Thread rule 13 governs `dispatch`. There is exactly one dispatcher, on one
+ * thread, and the ordering is mechanical: the pump translates, then dispatches,
+ * in the same call. A layer cannot miss a frame's events by being slow, because
+ * it is called synchronously and the next pump cannot start until it returns.
+ */
+
+/* Event families. A layer's `event_mask` is a bitwise OR of these, and an
+ * event carries exactly one in `family`. A layer that does not name a family
+ * never sees its events — the filter is the host's, not the layer's, so a
+ * layer cannot accidentally receive a family it did not ask for. */
+#define TENSION_EVENT_QUIT 1u
+#define TENSION_EVENT_WINDOW 2u
+#define TENSION_EVENT_KEY 4u
+#define TENSION_EVENT_TEXT 8u
+#define TENSION_EVENT_MOUSE_MOTION 16u
+#define TENSION_EVENT_MOUSE_BUTTON 32u
+#define TENSION_EVENT_MOUSE_WHEEL 64u
+#define TENSION_EVENT_PAD 128u
+
+/* Every family this build defines; a mask outside this is -EINVAL. */
+#define TENSION_EVENT_FAMILIES_KNOWN                                           \
+    (TENSION_EVENT_QUIT | TENSION_EVENT_WINDOW | TENSION_EVENT_KEY |           \
+     TENSION_EVENT_TEXT | TENSION_EVENT_MOUSE_MOTION |                         \
+     TENSION_EVENT_MOUSE_BUTTON | TENSION_EVENT_MOUSE_WHEEL | TENSION_EVENT_PAD)
+
+/*
+ * `TENSION_EVENT_WINDOW`'s subtype, in `a0`. The payload follows the subtype:
+ *
+ *   RESIZED, PIXEL_SIZE_CHANGED   a1 = width, a2 = height (PIXEL_SIZE is
+ *                                 drawable pixels; RESIZED is logical units)
+ *   FOCUS_GAINED, FOCUS_LOST, MINIMIZED, RESTORED, ENTER_FULLSCREEN,
+ *   LEAVE_FULLSCREEN, CLOSE_REQUESTED   no payload
+ *
+ * These are subtypes rather than families because they share one meaning for a
+ * consumer — "something about the window changed" — and eight more mask bits
+ * would push the mask past a byte for no gain.
+ */
+#define TENSION_WINDOW_EVENT_RESIZED 1u
+#define TENSION_WINDOW_EVENT_PIXEL_SIZE_CHANGED 2u
+#define TENSION_WINDOW_EVENT_FOCUS_GAINED 3u
+#define TENSION_WINDOW_EVENT_FOCUS_LOST 4u
+#define TENSION_WINDOW_EVENT_MINIMIZED 5u
+#define TENSION_WINDOW_EVENT_RESTORED 6u
+#define TENSION_WINDOW_EVENT_ENTER_FULLSCREEN 7u
+#define TENSION_WINDOW_EVENT_LEAVE_FULLSCREEN 8u
+#define TENSION_WINDOW_EVENT_CLOSE_REQUESTED 9u
+
+/* `TENSION_EVENT_KEY`'s `flags` bits. `a0` = scancode, `a1` = keycode,
+ * `a2` = the modifier state, `a3` = 1 when this is an auto-repeat. */
+#define TENSION_KEY_FLAG_DOWN 1u
+#define TENSION_KEY_FLAG_REPEAT 2u
+
+/* `TENSION_EVENT_PAD`'s subtype, in `a0`. `a1` = the device's joystick instance
+ * id, `a2` = button or axis index, `a3` = value (a button's 0/1, or an axis's
+ * raw -32768..32767). Slots are the host's to assign, not the wire's: an
+ * adapter that needs a stable slot number asks `pad_state`, and this event is
+ * how it learns a pad appeared. */
+#define TENSION_PAD_EVENT_ADDED 1u
+#define TENSION_PAD_EVENT_REMOVED 2u
+#define TENSION_PAD_EVENT_BUTTON_DOWN 3u
+#define TENSION_PAD_EVENT_BUTTON_UP 4u
+#define TENSION_PAD_EVENT_AXIS 5u
+
+/*
+ * One event (ABI v7). 40 bytes, 8-byte alignment.
+ *
+ * `family` is one `TENSION_EVENT_*` value and decides what the four payload
+ * words mean — see the table above and the comment at each family's translation
+ * site in `platform.rs`. `flags` is family-specific and is *not* a second
+ * payload word: it holds the bits a consumer tests before decoding anything,
+ * and it is where a family with no flags of its own puts its device id (the
+ * mouse families: `which`, so a consumer can still tell a synthetic
+ * position-derived motion from a real one — the rule the input capability
+ * measured and depends on).
+ *
+ * Signed payloads are `int64_t` rather than a union so this stays one POD type
+ * the host fills and the adapter reads, with no tag handling beyond `family`.
+ */
+typedef struct tension_event {
+    uint32_t family;
+    uint32_t flags;
+    int64_t a0;
+    int64_t a1;
+    int64_t a2;
+    int64_t a3;
+} tension_event;
+
+/**
+ * One event subscription (ABI v7). See `register_event_layer`.
+ *
+ * `layer_user` — the argument both callbacks receive — is **the host's token
+ * for this layer**, written to `out_layer_user` by `register_event_layer`. It is
+ * how a layer names itself when it unregisters, and a layer that needs its own
+ * per-instance state keeps it in its own module: this struct has no field for
+ * it, and the two reserved words are what a future version would spend on one.
+ *
+ * `shutdown`, when present, is called **once**, when the host tears the
+ * dispatcher down — not on `unregister_event_layer`, which is a layer leaving of
+ * its own accord and therefore already past the point of needing a call.
+ *
+ * `dispatch` is required; `shutdown` may be NULL. A zeroed struct is refused
+ * rather than read as "no mask, no callbacks".
+ */
+typedef struct tension_event_layer {
+    uint32_t struct_size; /* sizeof(tension_event_layer) */
+    uint32_t reserved;    /* 0 */
+    uint32_t event_mask;  /* TENSION_EVENT_* bitmask */
+    uint32_t reserved2;   /* 0 */
+    /* Called on the main thread, once per pump, with a batch of the events
+     * whose families this layer named. Return 0 to mark the batch consumed
+     * (counted); anything else is logged once for this layer and never fails
+     * the frame — a layer that misreports its own health must not stop the
+     * window from pumping. */
+    int32_t (*dispatch)(void *layer_user, const tension_event *events,
+                        uint32_t count);
+    /* Called once at teardown, on the main thread. May be NULL. */
+    void (*shutdown)(void *layer_user);
+} tension_event_layer;
+
+/*
+ * One gamepad slot (ABI v7). 48 bytes, 4-byte alignment.
+ *
+ * Moved here from `tension_input.h` when `pad_state` was appended: the record
+ * used to be the input capability's private wire, which was right while input
+ * owned SDL. Now the host owns the devices, so the record is the boundary's and
+ * `tension_input.h` includes this header rather than restating the layout (its
+ * `TENSION_INPUT_PAD_*` names stay as aliases its adapter already uses).
+ *
+ *   off  size  field
+ *   ---  ----  ----------------------------------------------------------
+ *    0     4   version (TENSION_PAD_RECORD_VERSION)
+ *    4     4   flags — TENSION_PAD_RECORD_ATTACHED while a pad is there
+ *    8     4   buttons (the gamepad button mask, bit n = button n)
+ *   12     4   reserved
+ *   16    24   axes[6] f32: left x/y, right x/y in [-1, 1]; triggers [0, 1]
+ *   40     8   reserved (zero)
+ */
+typedef struct tension_pad_record {
+    uint32_t version;
+    uint32_t flags;
+    uint32_t buttons;
+    uint32_t reserved0;
+    float axes[6];
+    uint64_t reserved1;
+} tension_pad_record;
+
+#define TENSION_PAD_RECORD_SIZE 48u
+#define TENSION_PAD_RECORD_VERSION 1u
+#define TENSION_PAD_RECORD_ATTACHED 1u
+
+/** How many gamepad slots the host serves. */
+#define TENSION_PAD_SLOTS 8u
+
 
 /*
  * The arena layout this build's `tension_core_api` is shaped against, as a
@@ -772,7 +958,110 @@ typedef struct tension_core_api {
     int32_t (*host_surface_extension)(void *user, uint32_t index, char *out_name,
                                       uint32_t capacity, uint32_t *out_len);
 
+    /*
+     * Subscribe a layer to the host's input events (ABI v7, slot 23).
+     *
+     * The host owns the video subsystem and the window, and pumps their queue
+     * on the thread that initialised them. A capability that wants to see what
+     * happens there registers a layer instead of initialising SDL itself. What
+     * changed and why is in the header's event-wire block above; the contract
+     * here is the shape.
+     *
+     * `layer->dispatch` is called on the main thread, synchronously, once per
+     * pump, with the contiguous batch of events whose families the layer's
+     * `event_mask` names (thread rule 13). Registration may happen from any
+     * thread that is not inside a dispatch — in practice `link`, which runs on
+     * the interpreter thread before any event exists.
+     *
+     * `*out_layer_user` receives the host's token for this layer: non-NULL,
+     * stable until it is unregistered, and the value both callbacks and
+     * `unregister_event_layer` use. Rule 2 applies — 0 is never a valid token.
+     *
+     * Returns
+     *   0        registered, `*out_layer_user` written
+     *   -EINVAL  a null argument, a `struct_size` below
+     *            `sizeof(tension_event_layer)`, a non-zero reserved word, a NULL
+     *            `dispatch`, or a mask with a family this build does not define
+     *   -ENOSPC  no free layer slot (TENSION_MAX_EVENT_LAYERS are served)
+     *   -EBUSY   called from inside a `dispatch`
+     *
+     * The layer is *not* called before this returns 0, and a host that has no
+     * window simply never pumps: registering costs nothing and a layer that
+     * wants to know whether a window exists asks `host_window_info`.
+     */
+    int32_t (*register_event_layer)(void *user,
+                                    const tension_event_layer *layer,
+                                    void **out_layer_user);
+
+    /*
+     * Remove a layer (ABI v7, slot 24).
+     *
+     * `layer_user` is the token `register_event_layer` wrote. The layer's
+     * `shutdown` is **not** called: unregistering is a capability leaving of
+     * its own accord, and it knows it did. `shutdown` exists for the case the
+     * capability cannot know — the host tearing the dispatcher down — and it is
+     * called exactly once, for every layer still registered at that moment.
+     *
+     * Any thread that is not inside a dispatch: in practice `init`'s failure
+     * path or `shutdown`, which is where a capability tears its own layer down
+     * before it stops existing.
+     *
+     * Returns 0, or -EINVAL for an unknown token, or -EBUSY from inside a
+     * dispatch. Registration may follow a removal: the slot a removed layer
+     * held is reusable, and the freed token is never handed out again.
+     */
+    int32_t (*unregister_event_layer)(void *user, void *layer_user);
+
+    /*
+     * The host's window state (ABI v7, slot 25).
+     *
+     * `tension_window_info`, the same record the guest reads through
+     * `tension::platform.window_info`, written into the caller's buffer as far
+     * as `out->struct_size` allows. This is how a capability that used to own a
+     * window learns whether the host has one and how big it is, without a
+     * handle to it: the input capability needs exactly this to answer a
+     * `state` record's ATTACHED and FOCUSED bits honestly.
+     *
+     * The values are the pump's snapshot, i.e. as of the last frame the host
+     * pumped. A layer reading this from inside its own `dispatch` therefore sees
+     * the state the batch it is holding belongs to.
+     *
+     * Any thread (rule 7): it reads the host's published record, never guest
+     * memory, and it never calls SDL.
+     *
+     * Returns
+     *   0        written; a run with no window writes a zeroed record (the
+     *            guest-side convention — `width == 0` is "no window")
+     *   -EINVAL  a null `out`, or a `struct_size` below the record's
+     *   -ENOSYS  this build has no window plumbing at all (a host built without
+     *            the platform module)
+     */
+    int32_t (*host_window_info)(void *user, tension_window_info *out);
+
+    /*
+     * One gamepad slot's state (ABI v7, slot 26).
+     *
+     * `tension_pad_record` into the caller's storage, or -ENODEV when the slot
+     * has no pad — which is the answer for every slot on a machine with none, and
+     * a state rather than an error, exactly as `input_pad` documents it.
+     * `slot` counts from 0 to TENSION_PAD_SLOTS-1; anything else is -EINVAL.
+     *
+     * **This build answers -ENOSYS for every slot.** The slot exists so the wire
+     * record and the slot arrive together (they are one contract), and so an
+     * adapter can be written against it; the host does not track gamepads until
+     * the input capability moves onto the dispatcher, which is when the devices
+     * become the host's to open. A caller must treat -ENOSYS as "this host does
+     * not serve pad state" and not as "no pad", because the two mean different
+     * things to a guest.
+     *
+     * Any thread (rule 7): it reads the host's own mirror.
+     */
+    int32_t (*pad_state)(void *user, uint32_t slot, tension_pad_record *out);
+
 } tension_core_api;
+
+/* The most event layers one host serves; `register_event_layer`'s -ENOSPC. */
+#define TENSION_MAX_EVENT_LAYERS 8u
 
 /* The smallest `capacity` `host_surface_extension` accepts; see that slot. */
 #define TENSION_EXTENSION_NAME_CAPACITY 256u
@@ -988,29 +1277,57 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, host_surface_extension)
-                      + sizeof(((tension_core_api *)0)->host_surface_extension)
+static_assert(offsetof(tension_core_api, pad_state)
+                      + sizeof(((tension_core_api *)0)->pad_state)
                   == sizeof(tension_core_api),
-              "tension_core_api: host_surface_extension must stay the last "
+              "tension_core_api: pad_state must stay the last "
               "slot; an append updates this assertion and the Rust table "
               "together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 22 * sizeof(void *),
-              "tension_core_api: expected 22 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 26 * sizeof(void *),
+              "tension_core_api: expected 26 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, host_surface_extension)
-                       + sizeof(((tension_core_api *)0)->host_surface_extension)
+_Static_assert(offsetof(tension_core_api, pad_state)
+                       + sizeof(((tension_core_api *)0)->pad_state)
                    == sizeof(tension_core_api),
-               "tension_core_api: host_surface_extension must stay the last "
+               "tension_core_api: pad_state must stay the last "
                "slot; an append updates this assertion and the Rust table "
                "together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 22 * sizeof(void *),
-               "tension_core_api: expected 22 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 26 * sizeof(void *),
+               "tension_core_api: expected 26 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
+#endif
+
+/*
+ * The v7 event wire's shape. Asserted from both languages because the two
+ * sides decode the same bytes: a field reordered on one side is a silently
+ * misinterpreted payload on the other, and these are cheap.
+ *
+ * `tension_event` is 40 bytes because four `int64_t` payload words follow two
+ * `uint32_t`s; `a0` therefore starts at 8, which is also the struct's alignment.
+ */
+#if defined(__cplusplus)
+static_assert(sizeof(tension_event) == 40, "tension_event is 40 bytes");
+static_assert(offsetof(tension_event, a0) == 8, "tension_event: a0 at 8");
+static_assert(sizeof(tension_event_layer) == 32,
+              "tension_event_layer: four u32 then two pointers");
+static_assert(offsetof(tension_event_layer, dispatch) == 16,
+              "tension_event_layer: dispatch after the four u32");
+static_assert(sizeof(tension_pad_record) == TENSION_PAD_RECORD_SIZE,
+              "tension_pad_record must be the size the wire declares");
+#elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(tension_event) == 40, "tension_event is 40 bytes");
+_Static_assert(offsetof(tension_event, a0) == 8, "tension_event: a0 at 8");
+_Static_assert(sizeof(tension_event_layer) == 32,
+               "tension_event_layer: four u32 then two pointers");
+_Static_assert(offsetof(tension_event_layer, dispatch) == 16,
+               "tension_event_layer: dispatch after the four u32");
+_Static_assert(sizeof(tension_pad_record) == TENSION_PAD_RECORD_SIZE,
+               "tension_pad_record must be the size the wire declares");
 #endif
 
 /*

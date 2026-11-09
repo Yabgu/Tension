@@ -294,6 +294,11 @@ pub struct AdapterHost {
     /// import, and the host loop itself. One queue means one executor means one
     /// thread that touches SDL.
     control: Arc<crate::platform::ControlBus>,
+    /// The event dispatcher and the published window record (ABI v7). Shared
+    /// with the store by `Arc`, because registration happens on the interpreter
+    /// thread (`link`) and dispatch happens inside the window's pump — one
+    /// object, two callers, and a mutex between them.
+    shared: Arc<crate::platform::HostShared>,
     /// The host's window surface, published once by `main` before adapters
     /// load. `None` on a headless run, which is what `host_surface` answers
     /// `-ENOSYS` for.
@@ -392,17 +397,29 @@ impl AdapterHost {
     /// What every test wants: it is driving `post_control` directly and needs a
     /// queue it can inspect, not the process's real one.
     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
-        Self::with_control(posting, Arc::new(crate::platform::ControlBus::new()))
+        Self::with_control(
+            posting,
+            Arc::new(crate::platform::ControlBus::new()),
+            crate::platform::HostShared::new(),
+        )
     }
 
-    /// A host sharing the process's control queue, which is what `main` builds.
+    /// A host sharing the process's control queue and event dispatcher, which is
+    /// what `main` builds.
+    ///
+    /// Both are shared rather than owned because they are the two channels a
+    /// capability has to the window: `post_control` says what to change, the
+    /// dispatcher says what happened. A test that wants to drive either one gets
+    /// a private pair from [`AdapterHost::new`].
     pub fn with_control(
         posting: Arc<PostingSide>,
         control: Arc<crate::platform::ControlBus>,
+        shared: Arc<crate::platform::HostShared>,
     ) -> Box<AdapterHost> {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
             control,
+            shared,
             host_surface: Arc::new(Mutex::new(None)),
             link: Mutex::new(LinkState::default()),
             ctx: Mutex::new(0),
@@ -421,6 +438,11 @@ impl AdapterHost {
     /// The table to hand to `init` and `link`.
     pub fn api(&self) -> &TensionCoreApi {
         &self.api.0
+    }
+
+    /// The event dispatcher and the published window record (ABI v7).
+    pub fn shared(&self) -> &Arc<crate::platform::HostShared> {
+        &self.shared
     }
 
     /// The posting face: what the posting shims answer with, and what the
@@ -1262,6 +1284,7 @@ mod tests {
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
                 control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                shared: crate::platform::HostShared::new(),
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),

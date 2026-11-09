@@ -32,7 +32,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use tension_core::platform::{HostWindow, WindowTarget};
+use tension_core::platform::{HostShared, HostWindow, WindowTarget};
 
 // ── the adapter ABI, mirrored ────────────────────────────────────────────────
 //
@@ -116,9 +116,18 @@ struct ApiTable {
     host_surface: Option<unsafe extern "C" fn(*mut c_void, *mut TensionHostSurface) -> i32>,
     host_surface_extension:
         Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_char, u32, *mut u32) -> i32>,
+    // ABI v7: the event dispatcher. The record pointers are typed as `c_void`
+    // here because this mirror exists to pin the *layout* — the sizes these
+    // tests care about are pointer sizes, and copying the four record structs
+    // into three files would be three more places to drift.
+    register_event_layer:
+        Option<unsafe extern "C" fn(*mut c_void, *const c_void, *mut *mut c_void) -> i32>,
+    unregister_event_layer: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>,
+    host_window_info: Option<unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32>,
+    pad_state: Option<unsafe extern "C" fn(*mut c_void, u32, *mut c_void) -> i32>,
 }
 
-const _: () = assert!(std::mem::size_of::<ApiTable>() == 184);
+const _: () = assert!(std::mem::size_of::<ApiTable>() == 216);
 const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface) == 168);
 const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface_extension) == 176);
 const _: () = assert!(std::mem::size_of::<TensionHostSurface>() == 32);
@@ -377,6 +386,23 @@ fn encode_config(renderer: u32, width: u32, height: u32, headless: bool) -> Vec<
     out
 }
 
+/// `TENSION_ADAPTER_ABI_VERSION`, parsed from the header.
+///
+/// `ogre_surface.rs` and `ogre_smoke.rs` parse it the same way, for the same
+/// reason: the bin's `ffi` module is not exported to an integration test, and a
+/// literal here is a second copy of a number that changed twice in one week.
+fn adapter_header_abi_version() -> u32 {
+    let header = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("include")
+        .join("tension_adapter.h");
+    let text = std::fs::read_to_string(&header)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", header.display()));
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix("#define TENSION_ADAPTER_ABI_VERSION "))
+        .map(|value| value.trim_end_matches('u').trim().parse::<u32>().expect("a number"))
+        .unwrap_or_else(|| panic!("{} has no TENSION_ADAPTER_ABI_VERSION", header.display()))
+}
+
 fn dso_path() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("TENSION_OGRE_DSO") {
         let path = PathBuf::from(path);
@@ -485,7 +511,13 @@ fn main() {
     };
 
     // ── (a) the host owns a window and a surface ─────────────────────────
-    let mut window = match HostWindow::new("tension-ogre-host-surface", 320, 240, WindowTarget::Vulkan) {
+    let mut window = match HostWindow::new(
+        "tension-ogre-host-surface",
+        320,
+        240,
+        WindowTarget::Vulkan,
+        HostShared::new(),
+    ) {
         Ok(window) => window,
         Err(error) => {
             eprintln!("SKIP: no host window on this machine: {error}");
@@ -516,7 +548,14 @@ fn main() {
     let vtable = entry();
     check(!vtable.is_null(), "b. the vtable is non-null");
     let abi = unsafe { (*vtable).abi_version };
-    check(abi == 6, "b. the adapter is built against ABI 6");
+    // Parsed from the header rather than written down: this check used to hold a
+    // literal, and it went stale on the very next bump (ABI v7), failing with
+    // the adapter — which was rebuilt correctly — accused of being old. A number
+    // the header owns has no business in a second copy.
+    check(
+        abi == adapter_header_abi_version(),
+        &format!("b. the adapter is built against ABI {}", adapter_header_abi_version()),
+    );
 
     let mut state = Box::new(State::default());
     state.collected.surface = Some(TensionHostSurface {
@@ -560,6 +599,11 @@ fn main() {
         post_control: Some(refuse_control),
         host_surface: Some(host_surface),
         host_surface_extension: Some(host_surface_extension),
+        // ABI v7: Ogre registers no event layer, so these stay NULL.
+        register_event_layer: None,
+        unregister_event_layer: None,
+        host_window_info: None,
+        pad_state: None,
     };
 
     let init = unsafe { (*vtable).init }.expect("init is present");

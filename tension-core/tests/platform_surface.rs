@@ -44,7 +44,7 @@
 //! Run: `cargo test --test platform_surface` (registered in `npm test`), or
 //! `-- --negative-controls` for the failure path.
 
-use tension_core::platform::{HostWindow, WindowTarget};
+use tension_core::platform::{HostShared, HostWindow, WindowTarget};
 
 /// What the driver's instance extension list must contain.
 ///
@@ -61,7 +61,13 @@ fn expected_extension(driver: &str) -> Option<&'static str> {
 }
 
 fn run_positive() -> Result<(), String> {
-    let mut window = HostWindow::new("tension-surface-probe", 320, 240, WindowTarget::Vulkan)
+    let mut window = HostWindow::new(
+        "tension-surface-probe",
+        320,
+        240,
+        WindowTarget::Vulkan,
+        HostShared::new(),
+    )
         .map_err(|e| format!("HostWindow::new failed: {e}"))?;
 
     let driver = window.driver();

@@ -24,8 +24,8 @@
 //! refuses every later one, so a normal `#[test]` would pass exactly once.
 
 use tension_core::platform::{
-    create_window, window_flags, HostWindow, PlatformError, WindowConfig, WindowMode, WindowTarget,
-    WINDOW_POS_CENTERED,
+    create_window, window_flags, HostShared, HostWindow, PlatformError, WindowConfig, WindowMode,
+    WindowTarget, WINDOW_POS_CENTERED,
 };
 
 fn plain(width: u32, height: u32) -> WindowConfig {
@@ -54,8 +54,13 @@ fn run() -> Result<(), String> {
     }
 
     // ── 1. create at the requested size ──────────────────────────────────
+    //
+    // The dispatcher the window would publish into. A window cannot exist
+    // without one (ABI v7), and this probe registers no layers, so a private
+    // bus is the honest thing to hand it.
+    let shared = HostShared::new();
     let mut slot: Option<HostWindow> = None;
-    let id = create_window(&mut slot, &plain(320, 240)).map_err(|e| format!("create: {e}"))?;
+    let id = create_window(&mut slot, &plain(320, 240), &shared).map_err(|e| format!("create: {e}"))?;
     println!("created id {id} on '{}'", slot.as_ref().map(|w| w.driver()).unwrap_or("?"));
     if id != 1 {
         return Err(format!("the first window's id is {id}, not 1"));
@@ -74,7 +79,7 @@ fn run() -> Result<(), String> {
     }
 
     // ── 2. a second create is refused, and leaves the first alone ────────
-    match create_window(&mut slot, &plain(640, 480)) {
+    match create_window(&mut slot, &plain(640, 480), &shared) {
         Err(PlatformError::Busy(_)) => println!("second create: -EBUSY as documented"),
         Err(other) => return Err(format!("second create refused with {other}, not Busy")),
         Ok(_) => return Err("a second window was created; one window per process is the limit".to_string()),
@@ -101,7 +106,7 @@ fn run() -> Result<(), String> {
     let mut config = plain(320, 240);
     config.target = WindowTarget::Vulkan;
     config.title = "tension-create-probe (vulkan)".to_string();
-    create_window(&mut vulkan_slot, &config).map_err(|e| format!("create(vulkan): {e}"))?;
+    create_window(&mut vulkan_slot, &config, &shared).map_err(|e| format!("create(vulkan): {e}"))?;
     let window = vulkan_slot.as_mut().ok_or("create(vulkan) stored nothing")?;
     let surface = window.surface().map_err(|e| format!("surface: {e}"))?;
     println!(

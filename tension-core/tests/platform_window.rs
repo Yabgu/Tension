@@ -33,7 +33,7 @@
 
 use std::time::{Duration, Instant};
 
-use tension_core::platform::{HostWindow, WindowTarget};
+use tension_core::platform::{HostShared, HostWindow, WindowTarget};
 
 /// How long to keep pumping for the compositor to answer.
 ///
@@ -60,7 +60,13 @@ fn pump_until_resized(window: &mut HostWindow) -> Result<(u32, u32), String> {
 
 fn run() -> Result<(), String> {
     let mut window =
-        HostWindow::new("tension-window-probe", 320, 240, WindowTarget::Plain).map_err(|e| format!("new: {e}"))?;
+        HostWindow::new(
+            "tension-window-probe",
+            320,
+            240,
+            WindowTarget::Plain,
+            HostShared::new(),
+        ).map_err(|e| format!("new: {e}"))?;
 
     println!("driver: {}", window.driver());
     let (start_width, start_height) = window.published_size();

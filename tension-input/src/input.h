@@ -61,14 +61,12 @@ static_assert(offsetof(StateRecord, mouse_dxf) == 56,
               "the float delta is where the guest reads it");
 
 /// The gamepad slot record, INPUT.md §3 Q5 (v1's state half).
-struct PadRecord {
-    uint32_t version;
-    uint32_t flags;
-    uint32_t buttons;
-    uint32_t reserved0;
-    float axes[6];
-    uint64_t reserved1;
-};
+///
+/// An alias, not a definition: the layout moved to `tension_adapter.h` at ABI v7
+/// when `pad_state` made the record the boundary's instead of this capability's
+/// private wire. Keeping one definition is what stops the two drifting; the
+/// assertions below still pin the size and the field offset either way.
+using PadRecord = tension_pad_record;
 static_assert(sizeof(PadRecord) == TENSION_INPUT_PAD_SIZE,
               "the pad record is the size the wire declares");
 

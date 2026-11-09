@@ -48,7 +48,8 @@ handles it is given cross the boundary as `u64`
 | Which renderer owns the swapchain | core | `Render2dState::claim_swapchain` | released by the holder |
 | The guest's window *request* | the guest | `tension::platform.create_window` (`tension_window_config`) | one-shot: the host keeps the window, not the request |
 | Render thread | renderer | `tension-ogre/src/adapter.cpp:616` | joined `adapter.cpp:1624` |
-| SDL event queue | host, `platform.rs:536` | with the window | with the window |
+| SDL event queue | host, `HostWindow::pump` | with the window | with the window |
+| Event layers (ABI v7) | the capability that registers one; the host owns the dispatcher | `register_event_layer`, from `link` | `unregister_event_layer`, or the host's `clear()` at teardown |
 | Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
 | Audio device (cpal) | host, `tension-core/src/audio/mod.rs:55` | `audio_init` | `audio_shutdown`, `audio/mod.rs:146` |
 | Filesystem | host, mediated by `tension::res`, `main.rs:1114` | startup | process exit |
@@ -192,9 +193,14 @@ One iteration (`main.rs:1927-2211`), in order:
    is still parked, then whether a wake batch is pending (`main.rs:1934-1941`).
    Nothing is lost by testing in that order: a completion that arrives while the
    guest is stopping still gets drained.
-2. **Pump.** `HostWindow::pump` (`platform.rs:536`) drains SDL, updates the
-   published size atomics on a resize (`platform.rs:556-562`), and reports
-   `resized` / `close_requested` (`main.rs:1960-1980`).
+2. **Pump.** `HostWindow::pump` drains SDL, updates the published size atomics,
+   translates what it drained onto the event wire, publishes the window record,
+   **and dispatches the batch to every registered layer** (§4.1). It reports
+   `resized` / `close_requested` to the loop, and `translated` / `overflow` for
+   diagnostics. The pump is reached from two places — this loop and the 2D
+   renderer's present — which is why the dispatch lives inside it rather than
+   beside it: whichever of the two drains an event is the one that dispatches
+   it, and no event can be drained without being offered.
 3. **Close.** `close_requested` sets `window_closed` (`main.rs:1978`) and the
    loop breaks (`main.rs:1982`). Not an error, and not a teardown here — the
    adapters still need `shutdown` on their own threads, which `main` arranges.
@@ -208,6 +214,39 @@ One iteration (`main.rs:1927-2211`), in order:
 6. **Epoch.** `run_epoch_with_store` (`main.rs:2070` →
    `session/epoch.rs:107`) publishes, matches and hands the wake batch to
    `__taskWake`.
+
+### 4.1 The dispatcher
+
+Input events reach a capability through a **layer**, not through SDL. The host
+initialises the video subsystem, owns the window, and pumps on the thread that
+did so; a capability subscribes a `tension_event_layer` with a family mask and
+receives a batch once per pump (ABI v7, `tension_adapter.h`). The ordering is
+mechanical rather than conventional: `pump` translates, then dispatches, in the
+same call.
+
+Why it is the host's job (measured, not asserted): SDL requires the video
+subsystem to be used from the thread that initialised it, and a second
+`SDL_Init` on another thread is what the old `tension-input` DSO did. Two
+pollers on one queue split it nondeterministically — 4000 pushed events came out
+2452/1548 on one run and 1796/2204 on the next, none lost, none duplicated — and
+a second `SDL_Quit` on that thread tears the subsystem down under the host's own
+window (the host's window then reports 0x0 and every later call fails).
+
+Four properties the implementation is built to hold:
+
+- **One thread.** `dispatch` runs on the window's thread, outside any guest call
+  (rule 13). It may call `post_event` and `post_control`; it must not touch guest
+  memory, must not block, and must not register or unregister a layer.
+- **The mask is the host's filter.** A layer receives only the families it
+  named; it cannot ask for one it did not subscribe to.
+- **No lock across adapter code.** `begin_dispatch` copies the layer table out
+  and releases the bus mutex; `end_dispatch` reacquires it. That is what makes a
+  re-entrant `register` a `-EBUSY` refusal instead of a deadlock on the same
+  thread (`platform_events` asserts the lock is free from inside a dispatch).
+  The bus is cleared at teardown *before* the window drops, so a layer is never
+  called into after its adapter has been unloaded.
+- **Bounded.** Eight layers, 256 events per pump; the excess is counted in
+  `PlatformEvents::overflow` rather than truncating silently.
 
 **The frame wake carries no time.** `rt.frame()` resolves to a task whose payload
 is the literal `0` (`tension-framework/assembly/runtime/rt.ts:256-257`;
@@ -252,6 +291,18 @@ the last (`adapter/mod.rs:463`). This exists because a `VkInstance` handle alone
 is not enough for a renderer that validates its own extension list: Ogre's
 external-instance path requires the caller to supply the list it enabled.
 
+**Read — `host_window_info`** (ABI v7). The host's window record
+(`tension_window_info`) as of the last pump, or a zeroed one when there is no
+window — the same `width == 0` convention the guest's `window_info` uses, so a
+capability has one test for "headless" rather than two. This is what a
+capability that no longer owns a window handle uses to answer "is there a
+window, and how big".
+
+**Read — `pad_state`** (ABI v7). One gamepad slot's `tension_pad_record`.
+**`-ENOSYS` in this build**: the host does not open gamepads yet, and `-ENODEV`
+("no pad") would be a claim it cannot make. The slot and the record arrive
+together so the capability can be written against both.
+
 **Write — `post_control`** (`tension_adapter.h:606`). Copies a
 `tension_ctrl_msg` onto the control bus and returns. The answer is "queued",
 never "applied" (`tension_adapter.h:585-586`); a caller that needs the result
@@ -266,6 +317,15 @@ host's own traffic. A core message that finds the queue genuinely full is
 returned as `ApplyNow` instead of being dropped (`platform.rs:106-118`, `:210`).
 `source` is stamped by the bus, not trusted from the caller
 (`platform.rs:197-212`).
+
+**Subscribe — `register_event_layer`** (ABI v7). Registers a
+`tension_event_layer`: a family mask, a `dispatch`, and an optional `shutdown`.
+Returns a host-assigned token (1-based, never reused) which is the `layer_user`
+both callbacks receive and the only name `unregister_event_layer` accepts. Eight
+layers are served; `-ENOSPC` past that, `-EBUSY` from inside a dispatch, and
+`-EINVAL` for a malformed layer. `shutdown` is called once, when the host clears
+the dispatcher at teardown — not on unregister, which is a capability leaving of
+its own accord.
 
 **Guest side — three imports.** `tension::platform.control`,
 `tension::platform.surface_width`, `tension::platform.surface_height`
@@ -282,11 +342,13 @@ pointer to a static vtable (`adapter/mod.rs:1029-1060`). The host checks the
 (`adapter/mod.rs:1070-1071`) — the version answers "is this the right shape",
 the hash answers "is this the right build of it".
 
-The ABI is alpha and at version 6 today (`tension_adapter.h:82`): it may break
+The ABI is alpha and at version 7 today (`tension_adapter.h`): it may break
 between releases. Within a version it is append-only — `post_control` at offset
-160, `host_surface` at 168, `host_surface_extension` at 176 (`ffi.rs:330-336`,
-pinned by the header's `_Static_assert` block) — and changing the meaning of an
-existing field requires a new entry-point symbol (`tension_adapter.h:17-22`).
+160, `host_surface` at 168, `host_surface_extension` at 176, and the four
+dispatcher slots at 184/192/200/208 (`ffi.rs`, pinned by the header's
+`_Static_assert` block and by `TensionCoreApi`'s size, 216 bytes) — and changing
+the meaning of an existing field requires a new entry-point symbol
+(`tension_adapter.h:17-22`).
 Append-only is the discipline in force while alpha lasts, not a compatibility
 promise.
 

@@ -58,7 +58,7 @@ use crate::HostState;
 /// version check below in `load_adapter`, **before** the vtable is read past
 /// where a v1 struct ends, which is what makes the refusal fail-closed instead
 /// of an out-of-bounds read of the missing `layout_hash`.
-pub const ADAPTER_ABI_VERSION: u32 = 6;
+pub const ADAPTER_ABI_VERSION: u32 = 7;
 
 /// The errnos at this boundary (`tension_adapter.h`, A.7).
 pub const EINVAL: i32 = -22;
@@ -158,8 +158,8 @@ pub type RegionLookupFn = unsafe extern "C" fn(*mut c_void, u32, *mut u32, *mut 
 /// definitions of one `#[repr(C)]` struct is the drift this whole file exists
 /// to prevent.
 pub use tension_core::platform::{
-    TensionCtrlMsg, CTRL_CORE_ONLY, CTRL_OBSERVABLE, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST,
-    CTRL_SRC_LAYER,
+    TensionCtrlMsg, TensionEventLayer, TensionPadRecord, TensionWindowInfo, CTRL_CORE_ONLY,
+    CTRL_OBSERVABLE, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST, CTRL_SRC_LAYER,
 };
 
 pub type PostControlFn =
@@ -194,6 +194,32 @@ pub type HostSurfaceExtensionFn =
 /// The smallest `capacity` the extension slot accepts: 256, the size every
 /// Vulkan extension name fits in (`VK_MAX_EXTENSION_NAME_SIZE`).
 pub const TENSION_EXTENSION_NAME_CAPACITY: u32 = 256;
+
+/// `register_event_layer`: subscribe a layer to the host's input events (ABI v7).
+///
+/// `(user, layer, out_layer_user)`. 0 on success with the token written;
+/// `-EINVAL` for a null argument, a short `struct_size`, a non-zero reserved
+/// word, a NULL `dispatch`, or an unknown family bit; `-ENOSPC` when the eight
+/// layer slots are taken; `-EBUSY` from inside a dispatch.
+///
+/// Unsafe because `out_layer_user` is a caller's pointer.
+pub type RegisterEventLayerFn =
+    unsafe extern "C" fn(*mut c_void, *const TensionEventLayer, *mut *mut c_void) -> i32;
+
+/// `unregister_event_layer`: remove a layer by the token registration returned.
+/// `-EINVAL` for an unknown token, `-EBUSY` from inside a dispatch.
+pub type UnregisterEventLayerFn = unsafe extern "C" fn(*mut c_void, *mut c_void) -> i32;
+
+/// `host_window_info`: the host's window record, or a zeroed one when there is
+/// no window. Never `-ENODEV` — a guest's `width == 0` is the headless answer
+/// and this follows the same convention so a layer has one test, not two.
+pub type HostWindowInfoFn =
+    unsafe extern "C" fn(*mut c_void, *mut crate::platform::TensionWindowInfo) -> i32;
+
+/// `pad_state`: one gamepad slot into the caller's record. This build answers
+/// `-ENOSYS`; see the slot's doc in `tension_adapter.h`.
+pub type PadStateFn =
+    unsafe extern "C" fn(*mut c_void, u32, *mut crate::platform::TensionPadRecord) -> i32;
 
 /// Mirrors `tension_core_api`. The session fills every slot; the adapter may
 /// call any of them subject to the header's thread and phase rules.
@@ -241,6 +267,18 @@ pub struct TensionCoreApi {
     /// The handle cannot say this and enumeration would answer "available",
     /// so the creator keeps the record and serves it here.
     pub host_surface_extension: Option<HostSurfaceExtensionFn>,
+    /// ABI v7: subscribe a layer to the host's event queue. The host owns SDL;
+    /// a capability that wants events registers here instead of initialising a
+    /// second video subsystem on another thread.
+    pub register_event_layer: Option<RegisterEventLayerFn>,
+    /// ABI v7: remove a layer. `shutdown` is not called — see the header.
+    pub unregister_event_layer: Option<UnregisterEventLayerFn>,
+    /// ABI v7: the host's window state, for a capability that no longer owns a
+    /// window handle and still has to answer "is there a window, and how big".
+    pub host_window_info: Option<HostWindowInfoFn>,
+    /// ABI v7: one gamepad slot. `-ENOSYS` in this build; the slot and the
+    /// record arrive together so the capability can be written against both.
+    pub pad_state: Option<PadStateFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -303,7 +341,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 184);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 216);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -331,8 +369,14 @@ const _: () = {
     // the same shape from the C side.
     assert!(std::mem::offset_of!(TensionCoreApi, post_control) == 160);
     assert!(std::mem::offset_of!(TensionCoreApi, host_surface) == 168);
-    // ABI v6: `host_surface_extension` is the last slot.
     assert!(std::mem::offset_of!(TensionCoreApi, host_surface_extension) == 176);
+    // ABI v7: the four dispatcher slots, appended in this order, and `pad_state`
+    // is the last one. The header's `_Static_assert` pins the same shape from
+    // the C side, so an append has to be deliberate in both places.
+    assert!(std::mem::offset_of!(TensionCoreApi, register_event_layer) == 184);
+    assert!(std::mem::offset_of!(TensionCoreApi, unregister_event_layer) == 192);
+    assert!(std::mem::offset_of!(TensionCoreApi, host_window_info) == 200);
+    assert!(std::mem::offset_of!(TensionCoreApi, pad_state) == 208);
     // The struct itself: four u32 then two u64, so `instance` lands on 16.
     assert!(std::mem::size_of::<TensionHostSurface>() == 32);
     assert!(std::mem::offset_of!(TensionHostSurface, instance) == 16);
@@ -1595,6 +1639,116 @@ pub(crate) unsafe extern "C" fn host_surface_extension(
     0
 }
 
+/// `register_event_layer` (ABI v7) — subscribe a layer to the host's events.
+///
+/// The token handed back is the host's, 1-based and never reused; it is the
+/// `layer_user` both of the layer's callbacks receive, and the only name
+/// `unregister_event_layer` accepts.
+///
+/// The bus is locked only for the length of this call. Dispatch takes the lock,
+/// copies the table out and releases it before any adapter code runs — which is
+/// what lets a layer call `post_event` from its dispatch without deadlocking on
+/// a mutex this thread would already hold.
+pub(crate) unsafe extern "C" fn register_event_layer(
+    user: *mut c_void,
+    layer: *const TensionEventLayer,
+    out_layer_user: *mut *mut c_void,
+) -> i32 {
+    if user.is_null() || layer.is_null() || out_layer_user.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let mut bus = match host.shared().events.lock() {
+        Ok(bus) => bus,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    // SAFETY: the caller promises `layer` is readable for this call; the bus
+    // copies what it needs and retains no pointer.
+    match unsafe { bus.register(layer) } {
+        Ok(token) => {
+            // SAFETY: checked non-null above, and a token is never 0 (rule 2).
+            unsafe { *out_layer_user = token as *mut c_void };
+            0
+        }
+        Err(error) => error,
+    }
+}
+
+/// `unregister_event_layer` (ABI v7) — remove a layer by its token.
+pub(crate) unsafe extern "C" fn unregister_event_layer(
+    user: *mut c_void,
+    layer_user: *mut c_void,
+) -> i32 {
+    if user.is_null() || layer_user.is_null() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let mut bus = match host.shared().events.lock() {
+        Ok(bus) => bus,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    match bus.unregister(layer_user as usize) {
+        Ok(()) => 0,
+        Err(error) => error,
+    }
+}
+
+/// `host_window_info` (ABI v7) — the host's window record as of the last pump.
+///
+/// A run with no window writes the zeroed record and answers 0, which is the
+/// same convention the guest's `window_info` uses: one test (`width == 0`) for
+/// "headless" whether the reader is a guest or a capability.
+pub(crate) unsafe extern "C" fn host_window_info(
+    user: *mut c_void,
+    out: *mut TensionWindowInfo,
+) -> i32 {
+    if user.is_null() || out.is_null() {
+        return EINVAL;
+    }
+    // The caller's own build, honoured the same way `host_surface` honours it:
+    // a record shorter than this build's is refused rather than half-written,
+    // and a longer one is written only as far as this build goes.
+    // SAFETY: `out` is checked non-null; the caller promises it is writable.
+    let caller_size = unsafe { (*out).struct_size };
+    if (caller_size as usize) < std::mem::size_of::<TensionWindowInfo>() {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let record = match host.shared().window.lock() {
+        Ok(cell) => cell.as_ref().map(TensionWindowInfo::from_info),
+        Err(poisoned) => poisoned
+            .into_inner()
+            .as_ref()
+            .map(TensionWindowInfo::from_info),
+    }
+    .unwrap_or(TensionWindowInfo::EMPTY);
+    // SAFETY: the destination is a caller-owned record of at least this build's
+    // size, established above.
+    unsafe { *out = record };
+    0
+}
+
+/// `pad_state` (ABI v7) — one gamepad slot.
+///
+/// **`-ENOSYS` for every slot in this build.** The host does not own the pads
+/// yet: the input capability still opens them itself, and will hand that over in
+/// the pass that moves it onto the dispatcher. Answering `-ENODEV` ("no pad")
+/// would be a claim this build cannot make — there may well be a pad, and it
+/// would be a pad the host is not looking at.
+pub(crate) unsafe extern "C" fn pad_state(
+    user: *mut c_void,
+    slot: u32,
+    out: *mut TensionPadRecord,
+) -> i32 {
+    if user.is_null() || out.is_null() || slot >= crate::platform::PAD_SLOTS {
+        return EINVAL;
+    }
+    ENOSYS
+}
+
 /// The core API table, fully populated: every slot is a real function pointer, so
 /// an adapter that calls one gets a refusal rather than a null dereference.
 pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
@@ -1622,6 +1776,10 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         post_control: Some(post_control),
         host_surface: Some(host_surface),
         host_surface_extension: Some(host_surface_extension),
+        register_event_layer: Some(register_event_layer),
+        unregister_event_layer: Some(unregister_event_layer),
+        host_window_info: Some(host_window_info),
+        pad_state: Some(pad_state),
     }
 }
 
@@ -1661,6 +1819,7 @@ mod tests {
                 depth: 0,
                 pending: crate::session::apply::PendingQueue::new(),
                 control: std::sync::Arc::new(crate::platform::ControlBus::new()),
+                shared: crate::platform::HostShared::new(),
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),
@@ -1950,13 +2109,13 @@ mod tests {
         // (v3, 0.7.0a) moved it 136 -> 144, `shader_generate` (v4) moved it
         // 144 -> 152, `compile_graph` (v5) moved it 152 -> 160,
         // `post_control` (v6) moved it 160 -> 168, `host_surface` (v6)
-        // moved it 168 -> 176, and `host_surface_extension` (v6) moved it
-        // 176 -> 184. The
+        // moved it 168 -> 176, `host_surface_extension` (v6) moved it
+        // 176 -> 184, and the four dispatcher slots (v7) moved it 184 -> 216. The
         // adapter's `layout_hash` (C4.1c)
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 184);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 216);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
@@ -1971,6 +2130,13 @@ mod tests {
                 std::mem::offset_of!(TensionCoreApi, host_surface_extension),
                 176
             );
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, register_event_layer), 184);
+            assert_eq!(
+                std::mem::offset_of!(TensionCoreApi, unregister_event_layer),
+                192
+            );
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, host_window_info), 200);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, pad_state), 208);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

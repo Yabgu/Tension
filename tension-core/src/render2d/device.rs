@@ -250,6 +250,7 @@ impl Render2dState {
         host_window: &mut Option<HostWindow>,
         width: u32,
         height: u32,
+        shared: &std::sync::Arc<crate::platform::HostShared>,
     ) -> Result<i32, Render2dError> {
         self.validate_open(width, height)?;
         // Refuse before creating anything, so a refusal leaves no window behind
@@ -269,7 +270,7 @@ impl Render2dState {
                 title: "Tension".to_string(),
                 ..Default::default()
             };
-            crate::platform::create_window(host_window, &config).map_err(|error| {
+            crate::platform::create_window(host_window, &config, shared).map_err(|error| {
                 self.release_swapchain(RendererId::Render2d);
                 Render2dError::NoDevice(format!("creating the host window: {error}"))
             })?;

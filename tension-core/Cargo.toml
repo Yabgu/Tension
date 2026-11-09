@@ -133,6 +133,14 @@ harness = false
 name = "platform_create"
 harness = false
 
+# The event dispatcher: layer registration, mask filtering, the cap, the
+# re-entrancy guard, clear-on-teardown, and the pump's translation of a real
+# resize. `harness = false` for `platform_surface`'s reason — one SDL main
+# thread per process.
+[[test]]
+name = "platform_events"
+harness = false
+
 # The end-to-end proof: SDL3's window and surface handed to Ogre-Next.
 [[test]]
 name = "ogre_host_surface"

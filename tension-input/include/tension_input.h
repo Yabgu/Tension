@@ -21,6 +21,12 @@
 
 #include <stdint.h>
 
+/* `tension_pad_record` and the event wire (ABI v7) live in the boundary header:
+ * the host serves both now, so a second definition here would be a second
+ * meaning for one layout. The `TENSION_INPUT_PAD_*` names below stay, because
+ * they are what this capability's adapter and guest SDK already spell. */
+#include "tension_adapter.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -164,7 +170,10 @@ int32_t input_close(int32_t handle);
 #define TENSION_INPUT_STATE_POINTER_OVER (1u << 3)
 
 /*
- * `input_pad`, 48 bytes, 4-byte alignment.
+ * `input_pad`, 48 bytes, 4-byte alignment — `tension_pad_record` in
+ * `tension_adapter.h`, which is where the layout is now stated. The names here
+ * are this header's spelling of the same three constants; the assertion below
+ * is what keeps the two from drifting.
  *
  *   off  size  field
  *   ---  ----  -----------------------------------------------------------
@@ -175,12 +184,17 @@ int32_t input_close(int32_t handle);
  *   16    24   axes[6] f32: left x/y, right x/y in [-1, 1]; triggers [0, 1]
  *   40     8   reserved (zero)
  */
-#define TENSION_INPUT_PAD_SIZE 48u
-#define TENSION_INPUT_PAD_VERSION 1u
-#define TENSION_INPUT_PAD_ATTACHED (1u << 0)
+#define TENSION_INPUT_PAD_SIZE TENSION_PAD_RECORD_SIZE
+#define TENSION_INPUT_PAD_VERSION TENSION_PAD_RECORD_VERSION
+#define TENSION_INPUT_PAD_ATTACHED TENSION_PAD_RECORD_ATTACHED
 
-/** How many gamepad slots this chunk serves. */
-#define TENSION_INPUT_PAD_SLOTS 8u
+/* How many gamepad slots this chunk serves. */
+#define TENSION_INPUT_PAD_SLOTS TENSION_PAD_SLOTS
+
+#if defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
+_Static_assert(sizeof(tension_pad_record) == TENSION_INPUT_PAD_SIZE,
+               "tension_input's pad size and the boundary's record disagree");
+#endif
 
 /* ── the event records ───────────────────────────────────────────────── */
 

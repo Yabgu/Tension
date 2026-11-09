@@ -779,8 +779,8 @@ function build() {
   if (assertedLast && assertedLast !== last.name) {
     throw new Error(`the header pins ${assertedLast} as last, this parse ends at ${last.name}`);
   }
-  if (postSlots === 21 && core.size !== 184) {
-    throw new Error(`computed sizeof(tension_core_api) = ${core.size}, the header pins 184`);
+  if (postSlots === 25 && core.size !== 216) {
+    throw new Error(`computed sizeof(tension_core_api) = ${core.size}, the header pins 216`);
   }
 
   annotate(coreMembers);

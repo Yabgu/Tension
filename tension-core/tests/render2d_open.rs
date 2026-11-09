@@ -142,6 +142,8 @@ fn main() {
     {
         let mut state = Render2dState::default();
         let mut window: Option<HostWindow> = None;
+    let shared = tension_core::platform::HostShared::new();
+        let shared = tension_core::platform::HostShared::new();
         let zero = state.open_offscreen(0, 180);
         probe.equal("a zero-width canvas is EINVAL", zero.err().map(|e| e.errno()), Some(-22));
         probe.check("and it created nothing", state.canvas().is_none() && !state.has_device());
@@ -149,7 +151,7 @@ fn main() {
             "the swapchain is still unclaimed",
             state.owner().is_none(),
         );
-        let windowed_zero = state.open_windowed(&mut window, 320, 0);
+        let windowed_zero = state.open_windowed(&mut window, 320, 0, &shared);
         probe.equal(
             "a zero-height windowed canvas is EINVAL",
             windowed_zero.err().map(|e| e.errno()),
@@ -200,6 +202,7 @@ fn main() {
 
     let mut state = Render2dState::default();
     let mut window: Option<HostWindow> = None;
+    let shared = tension_core::platform::HostShared::new();
 
     println!("offscreen open");
     match state.open_offscreen(320, 180) {
@@ -243,7 +246,7 @@ fn main() {
     }
 
     println!("windowed open creates the window on demand");
-    match state.open_windowed(&mut window, 320, 180) {
+    match state.open_windowed(&mut window, 320, 180, &shared) {
         Ok(handle) => {
             probe.equal("open returns handle 1", handle, 1);
             probe.check("a window was created", window.is_some());
@@ -260,7 +263,7 @@ fn main() {
 
             println!("a second windowed open");
             let mut other_window: Option<HostWindow> = None;
-            let again = state.open_windowed(&mut other_window, 320, 180);
+            let again = state.open_windowed(&mut other_window, 320, 180, &shared);
             probe.equal(
                 "a second canvas is EBUSY",
                 again.err().map(|e| e.errno()),
@@ -281,7 +284,7 @@ fn main() {
             );
 
             println!("reopen reuses the window");
-            match state.open_windowed(&mut window, 320, 180) {
+            match state.open_windowed(&mut window, 320, 180, &shared) {
                 Ok(handle) => {
                     probe.equal("reopen returns handle 1", handle, 1);
                     probe.equal(

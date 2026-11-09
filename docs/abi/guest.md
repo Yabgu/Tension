@@ -29,7 +29,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:950` |
+| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:960` |
 
 ## `ogre` — capability
 
@@ -71,7 +71,7 @@ says how in its own shim; the shared codes are in
 | `pending` | `(void) → i32` | `tension-core/src/session/mod.rs:1536` |
 
 The `session` module is reserved: these verbs are the host's own. An
-adapter that tries to register here is refused at load (`tension-core/src/adapter/mod.rs:1167`).
+adapter that tries to register here is refused at load (`tension-core/src/adapter/mod.rs:1189`).
 
 ## `tension::2d` — core, and a capability on the bisect path
 
@@ -127,36 +127,36 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/main.rs:965` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:991` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1006` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1021` |
-| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1074` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1080` |
+| `print` | `(i32, i32)` | `tension-core/src/main.rs:975` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1001` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1016` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1031` |
+| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1084` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1090` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1321` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1344` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1349` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1367` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1524` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1561` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1331` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1354` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1359` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1377` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1534` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1571` |
 
 ## `tension::res`
 
 | import | signature | registered at |
 |---|---|---|
-| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1115` |
-| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1129` |
-| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1146` |
-| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1187` |
-| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1204` |
-| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1221` |
-| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1241` |
-| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1265` |
+| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1125` |
+| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1139` |
+| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1156` |
+| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1197` |
+| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1214` |
+| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1231` |
+| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1251` |
+| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1275` |
 
 ## `tension::solver`
 

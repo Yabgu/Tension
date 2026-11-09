@@ -147,6 +147,15 @@ struct HostState {
     /// what the guest posts through `tension::platform.control`, and what the
     /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
     control: std::sync::Arc<platform::ControlBus>,
+    /// The event dispatcher and the published window record (ABI v7). Shared
+    /// with `AdapterHost` by `Arc`, and with the window, which dispatches from
+    /// inside `pump` — the one place events are drained, reached from both the
+    /// host loop and the 2D renderer's present.
+    ///
+    /// Built before anything can register a layer, because a capability's
+    /// `link` is where registration happens and `link` runs before the guest
+    /// can create a window.
+    shared: std::sync::Arc<platform::HostShared>,
     /// The in-core 2D renderer: GPU device, the one canvas, and who holds the
     /// swapchain.
     ///
@@ -907,6 +916,7 @@ fn main() -> anyhow::Result<()> {
             depth: 0,
             pending: session::apply::PendingQueue::new(),
             control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
+            shared: tension_core::platform::HostShared::new(),
                 host_window: None,
             host_surface: None,
             // The in-core 2D renderer's device, canvas and swapchain guard. Default
@@ -1441,7 +1451,7 @@ fn main() -> anyhow::Result<()> {
                 // errno is the guest's `-EBUSY` and not a generic `-EIO`.
                 return EBUSY;
             }
-            match platform::create_window(&mut data.host_window, &config) {
+            match platform::create_window(&mut data.host_window, &config, &data.shared) {
                 Ok(id) => {
                     crate::logging::log(
                         Level::Info,
@@ -1703,6 +1713,7 @@ fn main() -> anyhow::Result<()> {
     let adapter_host = adapter::AdapterHost::with_control(
         std::sync::Arc::clone(&store.data().posting),
         std::sync::Arc::clone(&store.data().control),
+        std::sync::Arc::clone(&store.data().shared),
     );
     // Hand the surface cell to the store, so `create_window` can publish into
     // it later.
@@ -2023,6 +2034,12 @@ fn main() -> anyhow::Result<()> {
 /// ordering requirement — after `teardown_adapters`, before the store drops —
 /// applies to both and is the kind of thing a third exit path would forget.
 fn drop_host_window(store: &mut Store<HostState>) {
+    // The event layers go first, and only ever here. Both exit paths call this
+    // after `teardown_adapters`, so a layer's `shutdown` is a call into code
+    // that is still loaded; clearing before the window drops also means no
+    // pump can dispatch into a layer whose adapter has already been destroyed.
+    // Idempotent: a second call finds no layers.
+    store.data().shared.clear();
     // The 2D canvas goes first. Its GPU device holds a claim on the window
     // below, and destroying a claimed window under a live device is the ordering
     // that faults — so this mirrors the field order in `HostState` (where
@@ -2211,12 +2228,13 @@ fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let HostState {
                 render2d,
                 host_window,
+                shared,
                 ..
             } = state;
 
             let windowed = flags & OPEN_WINDOWED != 0;
             let result = if windowed {
-                render2d.open_windowed(host_window, width as u32, height as u32)
+                render2d.open_windowed(host_window, width as u32, height as u32, shared)
             } else {
                 render2d.open_offscreen(width as u32, height as u32)
             };
