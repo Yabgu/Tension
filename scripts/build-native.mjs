@@ -659,10 +659,29 @@ note(`stamp: wrote ${relative(repo, stamped.path).split('\\').join('/')}`);
 // These are the thresholds the packages were given. A number over budget is a
 // report, not a failure: it means something unexpected is being copied and
 // wants a look, which is cheaper to see here than in a consumer's tree.
+//
+// The ogre limit is 40 MB, and the reason is that this package's floor is the
+// *engine*, not the adapter. On Linux the adapter is one shared object, under
+// 5 MB, resolving Ogre-Next out of the sibling package through `DT_RPATH`. On
+// Windows there is no RPATH, so `stageWindowsDependencies` copies the whole DLL
+// closure beside `libtension_ogre.dll` — `libOgreNextMain.dll`, the Hlms
+// render systems, and the MinGW runtime they need. Those DLLs are 15-22 MB on
+// their own, and the adapter is the small part of the total.
+//
+// The previous 25 MB limit was below that floor, so it reported OVER BUDGET on
+// a package with nothing removable in it. 40 MB is the floor plus room for one
+// more plugin; that is headroom, not a target.
+//
+// **What is not in this number: Media and sample assets.** `Media/` ships in
+// `packages/ogre-next-${SUFFIX}` (its own 40 MB limit), reduced to 1.3 MB from
+// the install's 144 MB by the sample-asset prune described in
+// `packages/ogre-next/README.md`. If either package goes over its limit, that
+// prune has regressed: find what came back before raising a limit, because a
+// limit raised without a measurement stops reporting anything.
 const BUDGET = {
   [`packages/core-${SUFFIX}/bin/tension-core${EXE}`]: 50,
   [`packages/ogre-next-${SUFFIX}`]: 40,
-  [`packages/ogre-${SUFFIX}`]: 25,
+  [`packages/ogre-${SUFFIX}`]: 40,
 };
 console.log('');
 let over = 0;

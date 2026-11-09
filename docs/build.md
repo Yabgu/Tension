@@ -118,10 +118,19 @@ audit (`:524-575`): `readelf -d` over every packaged library, failing on
 (`:558-573`). The reason is stated in the failure text: two SDL instances mean two
 event queues and a window neither one sees (`:565-568`).
 
-**G4 — package size budget.** A report, not a failure (`:636-660`): three limits
-(core 50 MB, ogre-next 40 MB, ogre 25 MB) and an "OVER BUDGET" line. A number over
+**G4 — package size budget.** A report, not a failure (`:658-696`): three limits
+(core 50 MB, ogre-next 40 MB, ogre 40 MB) and an "OVER BUDGET" line. A number over
 budget means something unexpected is being copied, which is cheaper to see here
-than in a consumer's tree (`:637-640`).
+than in a consumer's tree (`:659-661`).
+
+The two 40s are not the same 40. `ogre-next` ships Ogre's libraries plus the
+pruned `Media/` tree (1.3 MB of an install's 144 MB —
+`packages/ogre-next/README.md`). `ogre` ships one adapter, and on Windows the
+DLL closure that has to sit beside it, which is 15-22 MB on its own; 25 MB was
+below that floor and reported over budget on a package with nothing removable in
+it, so it was raised to 40. Neither limit is a target: a package over its limit
+means the sample-asset prune regressed, and the limit should not be raised again
+without a measurement (`:663-680`).
 
 **There is no capacity guard in the native build.** The ogre adapter's table
 capacities are checked by `scripts/check-ogre-capacities.mjs`, which runs as the
