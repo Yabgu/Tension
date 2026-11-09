@@ -992,13 +992,21 @@ impl HostShared {
     }
 
     /// The dispatcher's own teardown: every layer still registered gets its
-    /// `shutdown`, once, with no lock held.
+    /// `shutdown`, once, with no lock held, and the published window record is
+    /// cleared — a teardown that left it standing would let a late reader
+    /// believe in a window that is about to be destroyed.
     ///
     /// Called on both of `main`'s exit paths, after the adapters have been torn
     /// down — a layer whose adapter is already gone would be a call into
     /// unloaded code, so the ordering is adapters first, then this. It is
     /// idempotent: a second call finds no layers.
     pub fn clear(&self) {
+        // The record first: `host_window_info` must stop answering about a
+        // window that the teardown after this is about to destroy.
+        match self.window.lock() {
+            Ok(mut cell) => *cell = None,
+            Err(poisoned) => *poisoned.into_inner() = None,
+        }
         let snapshot = match self.events.lock() {
             Ok(mut bus) => bus.take_layers(),
             Err(poisoned) => poisoned.into_inner().take_layers(),

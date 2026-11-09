@@ -525,6 +525,11 @@ fn window_contract(probe: &mut Probe) -> bool {
     // Teardown in the order `main` uses: the dispatcher first, then the window.
     shared.clear();
     probe.equal("clear shut the window layer down once", SHUTDOWNS.load(Ordering::Relaxed), 1);
+    probe.equal(
+        "and stopped answering host_window_info about a window it is tearing down",
+        shared.window.lock().expect("unpoisoned").is_some(),
+        false,
+    );
     true
 }
 

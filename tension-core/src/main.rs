@@ -1565,6 +1565,13 @@ fn main() -> anyhow::Result<()> {
             if let Some(cell) = data.host_surface.as_ref() {
                 *cell.lock().expect("the surface mutex is never poisoned") = None;
             }
+            // The published record goes with it: `host_window_info` answers a
+            // zeroed record for "no window", and a stale one would let a layer
+            // believe the window it is reading about still exists.
+            match data.shared.window.lock() {
+                Ok(mut cell) => *cell = None,
+                Err(poisoned) => *poisoned.into_inner() = None,
+            }
             0
         },
     )?;
