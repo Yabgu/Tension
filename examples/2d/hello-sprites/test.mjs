@@ -121,6 +121,13 @@ if (!core) {
   );
 }
 
+// The bisect path. A `--no-default-features` binary has no `tension::2d` imports
+// at all, so the guest cannot instantiate against it; the only thing that can
+// answer them is the DSO built from `tension-2d/reference/`. Pass it only when
+// one exists — an in-core run must not be handed a capability it would skip.
+const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
+
 // ── 4. run it headless ──────────────────────────────────────────────────────
 //
 // Headless is not a lesser mode here, it is the mode the assertion needs: a
@@ -128,9 +135,9 @@ if (!core) {
 // machine. `offscreen` is a real video backend with a GPU, so the frame is the
 // same one a window would show (`docs/modules/2d.md` §6 — `dummy` would not be).
 //
-// No `--capability`: the renderer is in core. No `--window`: the guest asks for
-// one itself when `--windowed` is passed, which this run does not pass.
-const result = run(core, [join(here, 'build', 'game.wasm')], {
+// No `--window`: the guest asks for one itself when `--windowed` (or `--window`)
+// is passed, which this run does not pass — the assertion needs `offscreen`.
+const result = run(core, [...capabilityArgs, join(here, 'build', 'game.wasm')], {
   stdio: ['ignore', 'pipe', 'pipe'],
   cwd: here,
   env: { ...process.env, SDL_VIDEODRIVER: 'offscreen' },
@@ -222,7 +229,7 @@ if (!hasDisplay) {
 }
 
 console.log(`${RUNNER}: showing the frame — close the window to exit`);
-const shown = spawnSync(core, [join(here, 'build', 'game.wasm'), '--windowed'], {
+const shown = spawnSync(core, [...capabilityArgs, join(here, 'build', 'game.wasm'), '--windowed'], {
   stdio: 'inherit',
   cwd: here,
 });
