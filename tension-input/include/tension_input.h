@@ -10,9 +10,13 @@
  * The design is INPUT.md at the repo root; this header is its wire, in C, and
  * where the two disagree INPUT.md is the argument and this is the shape.
  *
- * This header includes no SDL header, on purpose. The adapter's SDL-facing
- * includes live in src/input.cpp, where they cannot leak into the wire
- * contract; the platform lives in the DSO (INPUT.md §3 Q6).
+ * **There is no platform here any more (v7).** Before v7 the DSO owned SDL — its
+ * own thread, its own `SDL_Init`, its own window and poll loop — and the kinds
+ * below named which surface it should attach to. The host owns the window, the
+ * video subsystem and the event queue now; this capability subscribes a layer
+ * (thread rule 13, tension_adapter.h) and joins whatever window the host has.
+ * The four-argument `attach` wire is unchanged so a guest compiled against v6
+ * still links; `kind`, `lo` and `hi` are ignored.
  *
  * SPDX-License-Identifier: MIT
  */
@@ -51,9 +55,11 @@ extern "C" {
  * Opens the capability's one session (capacity 1) and returns its handle, or:
  *   -EINVAL  `flags` is not 0 (none are defined yet)
  *   -EBUSY   a handle is already open
- *   -ENODEV  the SDL subsystem is not up on this machine (no display, no
- *            driver). The subsystem is retried here, so a later `input_open`
- *            may succeed where an earlier one was refused.
+ *
+ * **Nothing device-shaped happens here, so nothing device-shaped can fail.** In
+ * particular this does *not* answer -ENODEV: no window may exist yet, and the
+ * ordering a guest follows is `platform.createWindow`, then `input.open`, then
+ * `input.attach`. "No window" is `attach`'s answer.
  */
 int32_t input_open(int32_t flags);
 
@@ -61,37 +67,40 @@ int32_t input_open(int32_t flags);
  * `input_attach(i32 handle, i32 kind, i32 lo, i32 hi) -> i32`  — verb_id 2,
  * flags 0.
  *
- * Attaches the session to a device surface. `kind` names what the token is;
- * `lo`/`hi` are its low and high 32 bits (ignored for kind 0):
+ * Attaches the session to the host's window.
  *
- *   0  input's own surface — input creates and owns a window, so a text game
- *      needs no renderer
- *   1  an X11 window id (lo), the token `ogre::window_handle` hands the guest
- *   2  a Wayland `wl_surface` pointer (lo/hi)   — -ENOSYS on this build
- *   3  a Win32 `HWND`                           — -ENOSYS on this build
- *   4  a Cocoa `NSView`/`NSWindow` pointer      — -ENOSYS on this build
+ * **`kind`, `lo` and `hi` are ignored, and a guest should pass
+ * `Kind.OwnSurface` (0) with zeros.** There is one surface in a v7 host — the
+ * window it owns — and a capability joins it by subscribing to its events, not
+ * by naming it. The parameter survives because a guest calls four words and
+ * this capability still takes four words: a caller recompiled against no header
+ * keeps working, and its `kind` stops meaning anything rather than becoming a
+ * different kind of failure.
  *
- * The DSO forces the SDL video driver that matches the kind and then verifies
- * the attach (a wrong driver returns a live window that is not the target,
- * with no error — measured). Returns 0, or:
+ * Returns 0, or:
  *   -EINVAL  bad handle, or a kind above 4
- *   -ENODEV  no display, or no window could be made
- *   -ENOENT  the token does not name a window
- *   -ENOSYS  a kind this build does not serve
+ *   -ENODEV  the host owns no window yet — create one first
  *   -EBUSY   already attached
- *   -EIO     SDL refused, or the attach did not verify
  *
- * The first ~500 ms of motion events after a successful attach are discarded:
- * they are the window settling under the pointer, not input (INPUT.md Q5).
+ * The first ~500 ms of motion after a successful attach are discarded: they are
+ * the pointer-confinement warp and the window settling, not input (INPUT.md Q5).
  */
 int32_t input_attach(int32_t handle, int32_t kind, int32_t lo, int32_t hi);
 
 /*
  * `input_set_relative(i32 handle, i32 on) -> i32`  — verb_id 3, flags 0.
  *
- * Turns SDL's relative mouse mode on (grab + raw deltas) or off (absolute
- * window coordinates). Off at attach; a game that wants mouse-look asks.
- * Returns 0, -EINVAL for a bad handle, -ENODEV when nothing is attached.
+ * Turns the window's relative mouse mode on (grab + raw deltas) or off
+ * (absolute window coordinates). Off at attach; a game that wants mouse-look
+ * asks.
+ *
+ * **Queued, not applied.** This posts `TENSION_CTRL_RELATIVE_MOUSE` to the
+ * host's executor, which runs on the window's thread inside the host loop; the
+ * capability never calls `SDL_SetWindowRelativeMouseMode` and never holds a
+ * window. The RELATIVE bit in `input_state` therefore reports the request the
+ * host accepted into its queue, and the host logs the refusal if it cannot
+ * apply it. Returns 0, -EINVAL for a bad handle, -ENODEV when nothing is
+ * attached, -EBUSY when the host's control queue is full (retry next frame).
  */
 int32_t input_set_relative(int32_t handle, int32_t on);
 
@@ -117,19 +126,20 @@ int32_t input_state(int32_t handle, int32_t ptr, int32_t cap);
  * with no pad is -ENOENT — which is what every slot answers while zero pads
  * are attached, a normal state and not a failure (INPUT.md §3 Q2). -ENODEV
  * when nothing is attached, -EINVAL for a bad handle or slot, -ENOSPC for a
- * short buffer.
+ * short buffer, -ENOSYS from a host that does not serve pad state.
  *
- * Gamepad edges need a class the session does not have; this verb is the
- * gamepad's state half only (INPUT.md §3 Q5).
+ * Reads the host's `pad_state` slot: the host opens the pads, on the thread that
+ * initialised SDL, and samples them once per pump. Gamepad edges still need a
+ * class the session does not have; this verb is the state half only (INPUT.md
+ * §3 Q5).
  */
 int32_t input_pad(int32_t handle, int32_t slot, int32_t ptr, int32_t cap);
 
 /*
  * `input_close(i32 handle) -> i32`  — verb_id 6, flags 0.
  *
- * Detaches (destroying input's own window, if it made one), releases the
- * handle, and leaves the SDL subsystem up for a later `input_open`. 0, or
- * -EINVAL for a bad handle.
+ * Detaches and releases the handle. There is no window to destroy — it was
+ * never input's — and no subsystem to leave up. 0, or -EINVAL for a bad handle.
  */
 int32_t input_close(int32_t handle);
 
@@ -236,19 +246,19 @@ _Static_assert(sizeof(tension_pad_record) == TENSION_INPUT_PAD_SIZE,
 /*
  * The vocabulary is tension_adapter.h's, with the same one recorded
  * exception the renderer carries: -ENODEV is not in the boundary's closed
- * list, and it is what "no display, no window, nothing attached yet" answers
- * with, because none of the listed codes names that state. The amendment
- * tension-core owes is one line in that list; until it lands, this header and
- * tension_ogre.h are where the deviation is recorded.
+ * list, and it is what "no window, nothing attached yet" answers with, because
+ * none of the listed codes names that state. The amendment tension-core owes is
+ * one line in that list; until it lands, this header and tension_ogre.h are
+ * where the deviation is recorded.
  *
  *   -EINVAL  a bad handle, a kind above 4, a slot outside 0..7, a non-zero
  *            `flags`, or a refused guest destination
- *   -ENODEV  no display, no window, or nothing attached
- *   -ENOENT  no such window token, or an empty gamepad slot
- *   -ENOSYS  a token kind this build does not serve
- *   -EBUSY   the capacity is taken, or already attached
+ *   -ENODEV  the host owns no window, or nothing is attached
+ *   -ENOENT  an empty gamepad slot
+ *   -ENOSYS  a host that does not serve pad state
+ *   -EBUSY   the capacity is taken, already attached, or the control queue is
+ *            full (retry next frame)
  *   -ENOSPC  a short buffer (`0 < cap < size`)
- *   -EIO     SDL refused, or an attach that did not verify
  */
 
 #ifdef __cplusplus

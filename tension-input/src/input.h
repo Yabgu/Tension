@@ -1,29 +1,34 @@
-// The input capability's internal types: the two wire records as C++ sees
-// them, and the thread that owns SDL.
+// The input capability's internal types: the two wire records as C++ sees them,
+// and the mirror it keeps of what the host dispatches.
 //
-// Nothing here includes an SDL header. The thread's SDL objects are `void *`
-// at this boundary; src/input.cpp is the only file that knows what they are.
-// That keeps the capability's SDL coupling in one translation unit, and it is
-// what lets the adapter (src/adapter.cpp) stay a pure ABI file.
+// **There is no SDL here any more, and no thread.** Before v7 this file declared
+// an `InputThread` that owned `SDL_Init`, a window, and a 2 ms poll loop; the
+// whole of it is gone. The host initialises the video subsystem, owns the
+// window, and pumps the queue on the thread that did so — and this capability
+// subscribes a *layer* and is handed a batch of events, synchronously, once per
+// pump (thread rule 13 in tension_adapter.h).
+//
+// What that costs: events arrive once per pump instead of once per 2 ms poll, so
+// the fidelity of a fast flick depends on the host draining the queue and on
+// nothing in this file dropping a sample. What it buys: one SDL, one event
+// queue, one thread allowed to touch either.
 
 #ifndef TENSION_INPUT_INTERNAL_H
 #define TENSION_INPUT_INTERNAL_H
 
 #include <atomic>
-#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
 #include <string>
-#include <thread>
 
-#include "tension_adapter.h" /* the core API type the thread posts through */
+#include "tension_adapter.h" /* the core API type the layer posts through */
 #include "tension_input.h"
 
 namespace tension_input {
 
 /// One line on the `input` logger, implemented by the adapter, which owns the
-/// API table. The thread formats diagnostics; it does not own the log.
+/// API table.
 void input_log(const std::string &message);
 
 /// `class_info`'s flags word, bit 0: the class has a subscriber, so a producer
@@ -34,6 +39,10 @@ constexpr uint32_t kClassFlagSubscribed = 1u << 0;
 /// How long after a successful attach motion events are discarded: they are the
 /// window settling under the pointer and the confinement warp, not input.
 /// Measured at 137 ms and 343 ms, so half a second covers both (INPUT.md §3 Q5).
+///
+/// Unchanged by v7, and still needed: attaching is immediately followed by a
+/// relative-mode request in every real use, and the warp that produces is one
+/// enormous delta no consumer wants.
 constexpr uint32_t kAttachSettleMs = 500;
 
 /// The state record, INPUT.md §3 Q5. Offsets are the wire; the static_assert
@@ -65,130 +74,64 @@ static_assert(offsetof(StateRecord, mouse_dxf) == 56,
 /// An alias, not a definition: the layout moved to `tension_adapter.h` at ABI v7
 /// when `pad_state` made the record the boundary's instead of this capability's
 /// private wire. Keeping one definition is what stops the two drifting; the
-/// assertions below still pin the size and the field offset either way.
+/// assertion below still pins the size either way.
 using PadRecord = tension_pad_record;
 static_assert(sizeof(PadRecord) == TENSION_INPUT_PAD_SIZE,
               "the pad record is the size the wire declares");
 
-/// The SDL-owning thread. One per process — SDL's subsystem state is, and the
-/// aspect table says so (INPUT.md §3 Q2).
+/// Monotonic milliseconds, for the attach-settle window.
+uint64_t now_ms();
+
+/// The capability's state, updated from dispatcher batches and read by the
+/// verbs.
 ///
-/// The contract, from INPUT.md §3 Q4: the thread is created in `init` and its
-/// first act is `SDL_Init`; every other call here is a *request* to that thread
-/// that waits, bounded, for its answer, because SDL's window functions must run
-/// on the thread that initialised SDL.
-class InputThread {
+/// One mutex, held for the length of a batch and for the length of a snapshot.
+/// Both run on the same thread — the host dispatches on the window's thread and
+/// the guest calls verbs on it — so the lock is never contended; it exists
+/// because "same thread today" is not a property the type can check.
+///
+/// **Motion is accumulated, never posted.** A 1 kHz device against a 64-slot
+/// ring is a statistic, not a stream: the state record carries one delta per
+/// snapshot, and a snapshot consumes it (INPUT.md §3 Q3, measured at 989 events
+/// in one second).
+class Mirror {
   public:
-    InputThread() = default;
-    ~InputThread();
-    InputThread(const InputThread &) = delete;
-    InputThread &operator=(const InputThread &) = delete;
+    Mirror() = default;
+    Mirror(const Mirror &) = delete;
+    Mirror &operator=(const Mirror &) = delete;
 
-    /// Spawn the thread and wait for its `SDL_Init` result. Returns 0 when the
-    /// thread is running — `sdl_up()` says whether SDL came up — and -EIO when
-    /// the thread itself could not be created.
-    int32_t start();
-
-    /// Ask the thread to stop and join. Idempotent.
-    ///
-    /// `quit_sdl` says whether the thread tears SDL down on its way out. It is
-    /// true for `input_close` and the vtable's `shutdown` — a host that unloads
-    /// the DSO later must not find threads in it — and false from the
-    /// destructor, where the process is already ending and asking SDL to quit
-    /// from inside the loader's unload callback is the deadlock that was
-    /// measured (`SDL_Quit` never returned; see `tension-input/DESIGN.md` §7).
-    void stop(bool quit_sdl = true);
-
-    /// Whether the thread is running (it stops on `input_close`).
-    bool running() const;
-
-    bool sdl_up() const { return sdl_up_.load(std::memory_order_acquire); }
-
-    /// The video driver the subsystem came up with, or "(none)".
-    std::string driver() const;
-
-    /// Attach to a surface (inputs: the token kind and its two halves). Runs on
-    /// the SDL thread. Also arms the attach-settle discard window.
-    int32_t attach(uint32_t kind, uint64_t token);
-
-    /// Destroy the window (input's own, or the attachment to someone else's).
-    int32_t detach();
-
-    /// SDL relative mouse mode on/off.
-    int32_t set_relative(bool on);
-
-    /// Re-attempt `SDL_Init` on the SDL thread. `input_open` is where the
-    /// subsystem is retried, so a machine whose display appeared late is not
-    /// refused forever (INPUT.md §4's failure contract).
-    int32_t retry_sdl();
-
-    /// Compose one state record and consume the motion it carries.
-    void snapshot(StateRecord *out);
-
-    /// One gamepad slot's record; false when the slot has no pad.
-    bool pad(uint32_t slot, PadRecord *out);
-
-    /// The subsystem's gamepad slots, refreshed on a timer and on hotplug.
-    void note_pad_change() { refresh_pads(); }
-
-    /// Where events are posted from; set once at `link`.
+    /// Where edges are posted from; set once at `link`.
     void set_poster(const tension_core_api *api, uint32_t source_id);
 
+    /// The guest attached: clear the held state and arm the settle window.
+    void attach(uint64_t now_ms);
+
+    /// The guest detached, or closed: forget what was held.
+    void detach();
+
+    /// What the capability last asked the host for.
+    void set_relative(bool on) { relative_.store(on, std::memory_order_release); }
+
+    /// One batch from the dispatcher. Edges are posted; motion accumulates.
+    void ingest(const tension_event *events, uint32_t count, uint64_t now_ms);
+
+    /// Compose one state record and consume the motion it carries.
+    void snapshot(StateRecord *out, uint32_t pads_present);
+
+    /// The state record's `flags`, from what the mirror has seen.
+    uint32_t flags() const;
+
+    bool attached() const { return attached_.load(std::memory_order_acquire); }
+
   private:
-    enum class Request { None, Attach, Detach, SetRelative, RetrySdl };
-
-    void thread_main();
-    int32_t sdl_start();     // on the SDL thread: SDL_Init(VIDEO|GAMEPAD)
-    void sdl_stop(bool quit_sdl);  // on the SDL thread: window, SDL_Quit
-    int32_t sdl_attach(uint32_t kind, uint64_t token);
-    void sdl_detach();
-    void pump_events();
-    void refresh_pads();
-    int32_t sdl_set_relative(bool on);
-
-    /// Queue a request and wait, bounded, for its answer. -EIO on timeout.
-    int32_t request_attach(uint32_t kind, uint64_t token);
-    int32_t request_detach();
-    int32_t request_set_relative(bool on);
-    int32_t request_retry_sdl();
-
     void post(uint32_t class_id, uint32_t flags, uint32_t a, uint32_t b, float f0, float f1);
     bool subscribed(uint32_t class_id) const;
 
-    void push_motion(float dx, float dy, float x, float y);
-
-    std::thread thread_;
     mutable std::mutex mu_;
-    std::condition_variable work_cv_;     // thread <- request
-    std::condition_variable done_cv_;     // requester <- answer
-    std::condition_variable startup_cv_;  // start() <- the SDL_Init result
-    bool started_ = false;
-    bool stop_requested_ = false;
-    bool startup_done_ = false;
 
-    // ── set by the SDL thread, read anywhere ─────────────────────────────
-    std::atomic<bool> sdl_up_{false};
-    std::atomic<bool> attached_{false};
-    std::atomic<bool> relative_{false};
-    std::atomic<bool> focused_{false};
-    std::atomic<bool> pointer_over_{false};
-    char driver_[32] = {0};
-    /// TENSION_INPUT_DRIVER, when one was requested: SDL_Init's failure text
-    /// names it, and its presence decides whether to retry without a hint.
-    char forced_[32] = {0};
-
-    // ── the request slot, guarded by mu_ ────────────────────────────────
-    Request request_ = Request::None;
-    uint32_t req_kind_ = 0;
-    uint64_t req_token_ = 0;
-    bool req_relative_ = false;
-    bool req_done_ = false;
-    int32_t req_result_ = 0;
-
-    // ── the mirror, guarded by mu_ (the thread writes, snapshot reads) ──
+    // ── guarded by mu_ ──────────────────────────────────────────────────
     uint32_t keys_held_[8] = {0};
     uint32_t mouse_buttons_ = 0;
-    uint32_t pads_present_ = 0;
     int32_t mouse_x_ = 0;
     int32_t mouse_y_ = 0;
     float accum_dx_ = 0.0f;
@@ -196,24 +139,23 @@ class InputThread {
     float accum_wheel_x_ = 0.0f;
     float accum_wheel_y_ = 0.0f;
     uint64_t last_seq_ = 0;
-    PadRecord pad_records_[TENSION_INPUT_PAD_SLOTS] = {};
-    bool pad_live_[TENSION_INPUT_PAD_SLOTS] = {false};
+    /// Edges the host's ring refused, per class. Counted rather than dropped
+    /// silently: `post_event` answering -ENOSPC is the one failure a producer
+    /// cannot retry, so it is the one worth counting.
+    uint32_t dropped_keys_ = 0;
+    uint32_t dropped_mouse_ = 0;
+    /// Motion arriving before this instant is the attach settling, not input.
+    uint64_t discard_motion_until_ms_ = 0;
 
-    // ── owned by the SDL thread, read there only ────────────────────────
-    void *window_ = nullptr; /* SDL_Window * */
-    void *pads_[TENSION_INPUT_PAD_SLOTS] = {nullptr};  /* SDL_Gamepad * */
-    uint32_t pad_ids_[TENSION_INPUT_PAD_SLOTS] = {0};  /* SDL_JoystickID */
-    uint64_t discard_motion_until_ms_ = 0;             /* the attach-settle rule */
+    // ── written by the dispatcher, read by a snapshot ───────────────────
+    std::atomic<bool> attached_{false};
+    std::atomic<bool> relative_{false};
+    std::atomic<bool> focused_{false};
+    std::atomic<bool> pointer_over_{false};
 
-    // ── posting; `link` fills these after `init` started the thread ─────
-    /// Whether the thread tears SDL down on its way out; set by `stop`.
-    bool quitting_sdl_ = true;
     std::atomic<const tension_core_api *> api_{nullptr};
     std::atomic<uint32_t> source_id_{0};
 };
-
-/// Monotonic milliseconds, the clock every timeout here uses.
-uint64_t now_ms();
 
 } // namespace tension_input
 

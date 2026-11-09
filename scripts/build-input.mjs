@@ -5,18 +5,14 @@
 // object tension-core dlopens for `--capability`.
 //
 // The capability's design is INPUT.md at the repo root; its wire is
-// include/tension_input.h. It links SDL3 — and only SDL3: the host never names
-// it, and this DSO is where the platform lives (INPUT.md §3 Q6).
-//
-// SDL3 comes from `pkg-config sdl3`. On Windows there is no pkg-config in a
-// default MSYS2 UCRT64 install unless SDL3 is a package there, so the search also
-// accepts the conventional `<prefix>/include/SDL3` and `-lSDL3` layout: this is
-// the one capability with an external dependency, and failing to find it should
-// name what to install rather than a pkg-config error.
+// include/tension_input.h. **It links nothing but libstdc++.** Until v7 it linked
+// SDL3, because the capability owned the platform (INPUT.md §3 Q6): its own
+// thread, its own `SDL_Init`, its own window and poll loop. The host owns all of
+// that now, and the capability is an event-layer subscriber, so the one external
+// dependency is gone and the DT_NEEDED list below is the evidence.
 //
 // Environment:
 //   CXX=<compiler>
-//   TENSION_SDL3_PREFIX=<prefix>   an SDL3 install pkg-config does not know
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
@@ -33,68 +29,21 @@ function die(message) {
   process.exit(1);
 }
 
-// The capability's window-geometry probe is X11-specific: it `dlopen`s
-// `libX11.so.6` and calls `XOpenDisplay`/`XGetGeometry` to size the surface SDL
-// created (src/input.cpp:24-111). That is a real port to Windows (load
-// `user32.dll` and use `GetClientRect`), not a build-system difference, so the
-// build says so instead of failing on a missing `dlfcn.h`.
+// The source is portable now — every SDL call, the X11 `dlopen` probe and the
+// thread that used them are gone (v7b), so `src/` has nothing Windows-specific
+// left in it and this gate is the *last* thing that would stop a Windows build.
+//
+// It stays until V7c, deliberately. The change that makes it true is "input is
+// portable and needs no window of its own", and that disclosure belongs with the
+// documents that explain it (INPUT.md, docs/modules/input.md, the X11-only note
+// in the edge probe) rather than with the line of shell that happens to come
+// first. Removing the gate here would ship a claim nobody has verified on
+// Windows.
 if (WIN) {
-  die('this capability is POSIX/X11-only today: src/input.cpp loads libX11 to size\n' +
-      '  the window SDL created, which has no Windows equivalent in the source yet.\n' +
-      '  The rest of the tree builds and runs on Windows; only the input capability\n' +
-      '  (and therefore examples/ogre/input-camera) does not.');
-}
-
-function pkgConfig(args) {
-  const pkg = which('pkg-config');
-  if (!pkg) return null;
-  try {
-    return spawnSync(pkg, args, { encoding: 'utf8', env: process.env });
-  } catch {
-    return null;
-  }
-}
-
-/// Where SDL3 is, as `{ cflags, libs }`. `pkg-config` first; then an explicit
-/// prefix; then the MSYS2 layout, which is where `pacman -S mingw-w64-ucrt-x86_64-sdl3`
-/// puts it.
-function findSdl3() {
-  const probe = pkgConfig(['--exists', 'sdl3']);
-  if (probe && probe.status === 0) {
-    const cflags = pkgConfig(['--cflags', 'sdl3']);
-    const libs = pkgConfig(['--libs', 'sdl3']);
-    if (cflags?.status === 0 && libs?.status === 0) {
-      const version = pkgConfig(['--modversion', 'sdl3']);
-      console.log(`${RUNNER}: SDL3 ${version?.stdout.trim() ?? ''} via pkg-config`);
-      return { cflags: cflags.stdout.trim().split(/\s+/).filter(Boolean),
-               libs: libs.stdout.trim().split(/\s+/).filter(Boolean) };
-    }
-  }
-
-  const prefixes = [
-    process.env.TENSION_SDL3_PREFIX,
-    ...(WIN ? ['C:/msys64/ucrt64'] : []),
-    '/usr/local',
-    '/usr',
-  ].filter(Boolean);
-
-  for (const prefix of prefixes) {
-    const header = join(prefix, 'include', 'SDL3', 'SDL.h');
-    if (!existsSync(header)) continue;
-    console.log(`${RUNNER}: SDL3 at ${prefix} (headers, no pkg-config)`);
-    return {
-      cflags: [`-I${join(prefix, 'include')}`],
-      libs: [`-L${join(prefix, 'lib')}`, '-lSDL3'],
-    };
-  }
-  return null;
-}
-
-const sdl = findSdl3();
-if (!sdl) {
-  die('SDL3 not found.\n' +
-      '  Install it (Arch: pacman -S sdl3 · Debian: apt install libsdl3-dev ·\n' +
-      '  MSYS2: pacman -S mingw-w64-ucrt-x86_64-sdl3), or set TENSION_SDL3_PREFIX.');
+  die('this capability is gated to POSIX until V7c: the source is portable as of\n' +
+      '  v7b (no SDL, no libX11, no thread), but the docs that say so and the\n' +
+      '  Windows verification have not landed. The rest of the tree builds and runs\n' +
+      '  on Windows.');
 }
 
 const cxx = process.env.CXX ?? (WIN ? 'g++' : 'c++');
@@ -102,22 +51,17 @@ if (!which(cxx)) die(`${cxx} not found on PATH.`);
 
 mkdirSync(out, { recursive: true });
 
-// -std=c++17: the adapter uses <thread>, <condition_variable> and the standard
-//   library's types, like tension-ogre's.
+// -std=c++17: <mutex>, <atomic> and the standard library's types.
 // -fPIC: the object is dlopen'd, not linked into a PIE.
 // -Wall -Wextra: warnings are the point of a build recipe a reviewer reads.
-// -lpthread is not optional: the SDL thread and its condvars need it.
 const args = [
   '-std=c++17', '-O2', '-fPIC', '-Wall', '-Wextra',
   `-I${join(here, 'include')}`,
   `-I${join(repo, 'tension-core', 'include')}`,
-  ...sdl.cflags,
   join(here, 'src', 'adapter.cpp'),
   join(here, 'src', 'input.cpp'),
   '-shared',
   '-o', join(out, WIN ? 'libtension_input.dll' : 'libtension_input.so'),
-  ...sdl.libs,
-  ...(WIN ? [] : ['-lpthread']),
 ];
 run(cxx, args);
 
@@ -125,8 +69,8 @@ const artifact = join(out, WIN ? 'libtension_input.dll' : 'libtension_input.so')
 console.log(`${RUNNER}: ${artifact}`);
 
 // The DSO's own DT_NEEDED is worth printing: it is how a reader checks that the
-// host is not the one naming SDL (INPUT.md §3 Q6). `objdump` is a Unix habit and
-// is not in a default Windows PATH unless MSYS2 is, so this is best-effort.
+// host is the one naming SDL, and from v7b that this capability names it at all
+// — it should not appear. `objdump` is best-effort.
 const objdump = which('objdump');
 if (objdump) {
   try {
@@ -135,6 +79,9 @@ if (objdump) {
       .filter((line) => line.includes('DLL Name:') || line.includes('NEEDED'))
       .map((line) => `  ${line.trim().split(/\s+/).pop()}`);
     if (needed.length) console.log(`${RUNNER}: DT_NEEDED:\n${needed.join('\n')}`);
+    if (needed.some((line) => /sdl/i.test(line))) {
+      die('the DSO still links SDL; v7 removed every SDL call from this capability');
+    }
   } catch {
     // Diagnostics only.
   }
