@@ -216,8 +216,9 @@ pub type UnregisterEventLayerFn = unsafe extern "C" fn(*mut c_void, *mut c_void)
 pub type HostWindowInfoFn =
     unsafe extern "C" fn(*mut c_void, *mut crate::platform::TensionWindowInfo) -> i32;
 
-/// `pad_state`: one gamepad slot into the caller's record. This build answers
-/// `-ENOSYS`; see the slot's doc in `tension_adapter.h`.
+/// `pad_state`: one gamepad slot into the caller's record. `-ENODEV` for a slot
+/// with no pad; the host samples every live slot once per pump, so this is an
+/// any-thread read of a mirror rather than an SDL call.
 pub type PadStateFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut crate::platform::TensionPadRecord) -> i32;
 
@@ -276,8 +277,8 @@ pub struct TensionCoreApi {
     /// ABI v7: the host's window state, for a capability that no longer owns a
     /// window handle and still has to answer "is there a window, and how big".
     pub host_window_info: Option<HostWindowInfoFn>,
-    /// ABI v7: one gamepad slot. `-ENOSYS` in this build; the slot and the
-    /// record arrive together so the capability can be written against both.
+    /// ABI v7: one gamepad slot, read from the mirror the pump fills. `-ENODEV`
+    /// for a slot with no pad.
     pub pad_state: Option<PadStateFn>,
 }
 
@@ -1717,36 +1718,59 @@ pub(crate) unsafe extern "C" fn host_window_info(
     }
     // SAFETY: `user` is the AdapterHost this table was built with.
     let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
-    let record = match host.shared().window.lock() {
-        Ok(cell) => cell.as_ref().map(TensionWindowInfo::from_info),
-        Err(poisoned) => poisoned
-            .into_inner()
-            .as_ref()
-            .map(TensionWindowInfo::from_info),
-    }
-    .unwrap_or(TensionWindowInfo::EMPTY);
+    let info = match host.shared().window.lock() {
+        Ok(cell) => *cell,
+        Err(poisoned) => *poisoned.into_inner(),
+    };
+    // One encoder for both destinations: the guest import
+    // (`tension::platform.window_info`) writes these same bytes into wasm
+    // memory, and this writes them into a capability's record. Two copies of
+    // the layout had already started to drift; this is the fold.
+    let bytes = crate::platform::encode_window_info(info.as_ref());
     // SAFETY: the destination is a caller-owned record of at least this build's
-    // size, established above.
-    unsafe { *out = record };
+    // size, established above, and `bytes` is exactly that many bytes.
+    unsafe {
+        std::ptr::copy_nonoverlapping(bytes.as_ptr(), out as *mut u8, bytes.len());
+    }
     0
 }
 
 /// `pad_state` (ABI v7) — one gamepad slot.
 ///
-/// **`-ENOSYS` for every slot in this build.** The host does not own the pads
-/// yet: the input capability still opens them itself, and will hand that over in
-/// the pass that moves it onto the dispatcher. Answering `-ENODEV` ("no pad")
-/// would be a claim this build cannot make — there may well be a pad, and it
-/// would be a pad the host is not looking at.
+/// Reads the host's mirror as of the last pump, never SDL: this slot is
+/// documented any-thread (rule 7), and SDL's gamepad getters are not. The
+/// window's thread samples every live slot at the end of each pump, so the
+/// freshest state any thread can honestly report is the one that thread just
+/// took. A caller that wants every sample subscribes to `TENSION_EVENT_PAD`.
+///
+/// `-ENODEV` for a slot with no pad, which is every slot on a machine with
+/// none: a state, not an error. `-EINVAL` for a slot outside
+/// `0..TENSION_PAD_SLOTS`.
 pub(crate) unsafe extern "C" fn pad_state(
     user: *mut c_void,
     slot: u32,
     out: *mut TensionPadRecord,
 ) -> i32 {
+    const ENODEV: i32 = -19;
     if user.is_null() || out.is_null() || slot >= crate::platform::PAD_SLOTS {
         return EINVAL;
     }
-    ENOSYS
+    // SAFETY: `user` is the AdapterHost this table was built with.
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let mirror = match host.shared().pads.lock() {
+        Ok(mirror) => mirror,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if mirror.present & (1u32 << slot) == 0 {
+        return ENODEV;
+    }
+    let record = mirror.records[slot as usize];
+    drop(mirror);
+    // SAFETY: `out` is checked non-null and the caller owns a writable record;
+    // a pad record has no struct_size word to negotiate against, so the size is
+    // the header's and not the call's.
+    unsafe { *out = record };
+    0
 }
 
 /// The core API table, fully populated: every slot is a real function pointer, so

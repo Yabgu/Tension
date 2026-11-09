@@ -94,10 +94,29 @@ extern "C" {
  *     An adapter's `apply` receives bytes; it never receives a guest address.
  * 13. A registered event layer's `dispatch` runs on the thread that owns the
  *     window — the same one that initialised SDL — synchronously after each
- *     pump, outside any guest call. It may call `post_event` and `post_control`
- *     (both are any-thread safe and neither blocks). It must not touch guest
- *     memory, must not block, and must not register or unregister a layer —
- *     that is refused with -EBUSY rather than deadlocking the pump.
+ *     pump, outside any adapter callback (a `publish` hook or a deferred
+ *     `apply`), and never nested inside another dispatch. It may call
+ *     `post_event` and `post_control` (both are any-thread safe and neither
+ *     blocks). It must not touch guest memory, must not block, and must not
+ *     register or unregister a layer — that is refused with -EBUSY rather than
+ *     deadlocking the pump.
+ *
+ *     A pump happens (a) once per iteration of the host-owned loop, and (b) at
+ *     the start of every blocking `session::wait` / `session::drain`, before
+ *     that epoch runs. (b) is what serves a guest that drives its own loop:
+ *     such a guest only yields to the host inside those two verbs, so a pump
+ *     anywhere else would never run while it is alive.
+ *
+ *     **Overflow contract.** One pump translates at most
+ *     `TENSION_EVENT_BATCH_CAPACITY` (256) events. A drain that produces more
+ *     drops the excess, counts it, and logs one line; the 256 that fit are
+ *     delivered normally and `dispatch` is called exactly once for them. A
+ *     layer therefore cannot lose its place in a batch — there is no partial
+ *     batch, no second call — but it *can* miss the newest events of a stall
+ *     big enough to overflow. A layer whose correctness depends on every
+ *     sample should coalesce what it needs from the state it keeps (the input
+ *     capability accumulates motion rather than posting it per sample) rather
+ *     than assume the batch is the whole drain.
  * ===================================================================== */
 
 /* ── constants ───────────────────────────────────────────────────────── */
@@ -138,7 +157,16 @@ typedef enum tension_ctrl_kind {
     /** a0 = width in pixels, a1 = height. Clamping is the executor's job: a
      *  layer sends what it wants, the host decides what the window system
      *  allows, and the guest learns the result by polling. */
-    TENSION_CTRL_RESIZE = 1u
+    TENSION_CTRL_RESIZE = 1u,
+    /** a0 = 0 disables, non-zero enables. Relative mouse mode: the pointer is
+     *  grabbed and motion arrives as raw deltas rather than window
+     *  coordinates. The input capability is the only caller, and it no longer
+     *  holds a window to call `SDL_SetWindowRelativeMouseMode` on -- the
+     *  executor is the one place that does.
+     *
+     *  Declared `CORE_ONLY` by its caller: the resulting state is reported by
+     *  the capability's own `input_state` record, not by `host_surface`. */
+    TENSION_CTRL_RELATIVE_MOUSE = 2u
 } tension_ctrl_kind;
 
 /*
@@ -333,6 +361,9 @@ typedef struct tension_window_info {
  * thread, and the ordering is mechanical: the pump translates, then dispatches,
  * in the same call. A layer cannot miss a frame's events by being slow, because
  * it is called synchronously and the next pump cannot start until it returns.
+ * The pump itself runs wherever the host has control — the host loop's own
+ * iteration, or the start of a blocking `session::wait` — and a guest cannot
+ * cause a dispatch from inside its own code.
  */
 
 /* Event families. A layer's `event_mask` is a bitwise OR of these, and an
@@ -375,6 +406,11 @@ typedef struct tension_window_info {
 #define TENSION_WINDOW_EVENT_ENTER_FULLSCREEN 7u
 #define TENSION_WINDOW_EVENT_LEAVE_FULLSCREEN 8u
 #define TENSION_WINDOW_EVENT_CLOSE_REQUESTED 9u
+/* Added in v7b, when the input capability stopped polling SDL for itself. Its
+ * state record carries POINTER_OVER, and the nine subtypes above cannot say
+ * it. Additive: no struct changed, nothing was renumbered. */
+#define TENSION_WINDOW_EVENT_MOUSE_ENTER 10u
+#define TENSION_WINDOW_EVENT_MOUSE_LEAVE 11u
 
 /* `TENSION_EVENT_KEY`'s `flags` bits. `a0` = scancode, `a1` = keycode,
  * `a2` = the modifier state, `a3` = 1 when this is an auto-repeat. */
@@ -1041,18 +1077,18 @@ typedef struct tension_core_api {
     /*
      * One gamepad slot's state (ABI v7, slot 26).
      *
-     * `tension_pad_record` into the caller's storage, or -ENODEV when the slot
-     * has no pad — which is the answer for every slot on a machine with none, and
-     * a state rather than an error, exactly as `input_pad` documents it.
-     * `slot` counts from 0 to TENSION_PAD_SLOTS-1; anything else is -EINVAL.
+     * Records the host's mirror as of the last pump. `-ENODEV` when the slot has
+     * no pad — which is the answer for every slot on a machine with none, and a
+     * state rather than an error, exactly as `input_pad` documents it. `slot`
+     * counts from 0 to TENSION_PAD_SLOTS-1; anything else is -EINVAL.
      *
-     * **This build answers -ENOSYS for every slot.** The slot exists so the wire
-     * record and the slot arrive together (they are one contract), and so an
-     * adapter can be written against it; the host does not track gamepads until
-     * the input capability moves onto the dispatcher, which is when the devices
-     * become the host's to open. A caller must treat -ENOSYS as "this host does
-     * not serve pad state" and not as "no pad", because the two mean different
-     * things to a guest.
+     * **A mirror, not a live read.** The host opens each pad once, on the
+     * thread that initialised SDL, and samples every live slot at the end of
+     * each pump; this slot copies the sample out. That is what makes it
+     * honestly any-thread: SDL's gamepad getters are not thread-safe, and a
+     * direct read from an arbitrary thread would be the same class of mistake
+     * that two event pollers were. A caller that wants every sample rather than
+     * the state subscribes to `TENSION_EVENT_PAD`.
      *
      * Any thread (rule 7): it reads the host's own mirror.
      */
@@ -1062,6 +1098,10 @@ typedef struct tension_core_api {
 
 /* The most event layers one host serves; `register_event_layer`'s -ENOSPC. */
 #define TENSION_MAX_EVENT_LAYERS 8u
+
+/* The most events one pump translates into a dispatch batch. A drain that
+ * produces more drops the excess and counts it (rule 13, overflow contract). */
+#define TENSION_EVENT_BATCH_CAPACITY 256u
 
 /* The smallest `capacity` `host_surface_extension` accepts; see that slot. */
 #define TENSION_EXTENSION_NAME_CAPACITY 256u

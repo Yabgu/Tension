@@ -447,6 +447,12 @@ pub const WINDOW_EVENT_RESTORED: u32 = 6;
 pub const WINDOW_EVENT_ENTER_FULLSCREEN: u32 = 7;
 pub const WINDOW_EVENT_LEAVE_FULLSCREEN: u32 = 8;
 pub const WINDOW_EVENT_CLOSE_REQUESTED: u32 = 9;
+/// The pointer entered or left the window. Added in v7b, when the input
+/// capability moved onto the dispatcher: it keeps `POINTER_OVER` in its state
+/// record, and the four original subtypes could not say this. Additive — no
+/// struct changed and nothing was renumbered.
+pub const WINDOW_EVENT_MOUSE_ENTER: u32 = 10;
+pub const WINDOW_EVENT_MOUSE_LEAVE: u32 = 11;
 
 /// `TENSION_EVENT_KEY`'s `flags` bits. The direction is a flag rather than a
 /// second subtype so a consumer tests one word for "is this a press".
@@ -469,8 +475,13 @@ pub const EVENT_BATCH_CAPACITY: usize = 256;
 pub const TENSION_MAX_EVENT_LAYERS: usize = 8;
 
 /// `TENSION_PAD_SLOTS`: how many gamepad slots the host serves. The record and
-/// the slot arrived with ABI v7; this build's `pad_state` answers `-ENOSYS`.
+/// the slot arrived with ABI v7; the host opens pads from v7b's pump.
 pub const PAD_SLOTS: u32 = 8;
+
+/// `TENSION_PAD_RECORD_VERSION` / `TENSION_PAD_RECORD_ATTACHED`, the two words
+/// of a slot record the host writes.
+pub const PAD_RECORD_VERSION: u32 = 1;
+pub const PAD_RECORD_ATTACHED: u32 = 1;
 
 /// Mirrors `tension_event`: one event, 40 bytes, 8-byte alignment.
 #[repr(C)]
@@ -557,6 +568,37 @@ pub struct TensionPadRecord {
 const _: () = assert!(std::mem::size_of::<TensionPadRecord>() == 48);
 const _: () = assert!(std::mem::offset_of!(TensionPadRecord, axes) == 16);
 
+/// Every gamepad slot the host serves, as of the last pump.
+///
+/// `present` is a bitmask rather than a `bool` per slot so a reader takes one
+/// lock for the whole answer: a slot's record and its liveness can then never
+/// disagree, which a per-slot cell could be caught in the middle of.
+#[derive(Clone, Debug)]
+pub struct PadMirror {
+    pub present: u32,
+    pub records: [TensionPadRecord; PAD_SLOTS as usize],
+}
+
+impl PadMirror {
+    pub const EMPTY: Self = Self {
+        present: 0,
+        records: [TensionPadRecord {
+            version: 0,
+            flags: 0,
+            buttons: 0,
+            reserved0: 0,
+            axes: [0.0; 6],
+            reserved1: 0,
+        }; PAD_SLOTS as usize],
+    };
+}
+
+impl Default for PadMirror {
+    fn default() -> Self {
+        Self::EMPTY
+    }
+}
+
 /// Mirrors `tension_window_info`: what `host_window_info` writes, 40 bytes.
 ///
 /// The guest's `tension::platform.window_info` writes this same record to guest
@@ -612,6 +654,51 @@ impl TensionWindowInfo {
             close_requested: u32::from(info.close_requested),
         }
     }
+
+    /// The record as the wire spells it: ten `u32`s, little-endian, in
+    /// declaration order.
+    ///
+    /// **This is the only encoder.** The guest import
+    /// (`tension::platform.window_info`) and the adapter slot
+    /// (`host_window_info`) both write through this function, so a field added
+    /// here cannot land in one destination and miss the other — which is what
+    /// had happened: the guest shim hand-built a `[u32; 9]` plus a separate
+    /// word while this struct was the adapter's copy of the same layout.
+    ///
+    /// Byte order is fixed rather than `repr(C)`-memcpy'd: the guest is wasm
+    /// and reads little-endian by definition, and an explicit table is a place
+    /// where a field's position is visible in one screen rather than inferred
+    /// from a struct declaration plus padding rules.
+    pub fn to_wire_bytes(&self) -> [u8; 40] {
+        let fields = [
+            self.struct_size,
+            self.width,
+            self.height,
+            self.pixel_width,
+            self.pixel_height,
+            self.dpi_scale_milli,
+            self.mode,
+            self.focused,
+            self.minimized,
+            self.close_requested,
+        ];
+        let mut out = [0u8; 40];
+        for (index, value) in fields.iter().enumerate() {
+            out[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        out
+    }
+}
+
+/// One `tension_window_info`, on the wire, for "this window" or "no window".
+///
+/// `None` is the zeroed record — **including** `struct_size`, which is the
+/// convention that makes `width > 0` the whole headless test for a guest and a
+/// capability alike.
+pub fn encode_window_info(info: Option<&WindowInfo>) -> [u8; 40] {
+    info.map(TensionWindowInfo::from_info)
+        .unwrap_or(TensionWindowInfo::EMPTY)
+        .to_wire_bytes()
 }
 
 /// One registered layer, as the bus keeps it.
@@ -959,6 +1046,11 @@ pub struct HostShared {
     pub events: Mutex<EventBus>,
     /// The window's state as of the last pump; `None` when no window exists.
     pub window: Mutex<Option<WindowInfo>>,
+    /// Every gamepad slot as of the last pump. A *mirror*, not a live SDL read:
+    /// `pad_state` is documented any-thread, and SDL's gamepad getters are not
+    /// thread-safe, so the only honest any-thread answer is the one the window's
+    /// thread sampled last.
+    pub pads: Mutex<PadMirror>,
 }
 
 impl HostShared {
@@ -966,6 +1058,7 @@ impl HostShared {
         std::sync::Arc::new(Self {
             events: Mutex::new(EventBus::new()),
             window: Mutex::new(None),
+            pads: Mutex::new(PadMirror::EMPTY),
         })
     }
 
@@ -1007,6 +1100,12 @@ impl HostShared {
             Ok(mut cell) => *cell = None,
             Err(poisoned) => *poisoned.into_inner() = None,
         }
+        // Pads go with it. A slot left standing would let `pad_state` answer for
+        // a handle the window's teardown is about to close.
+        match self.pads.lock() {
+            Ok(mut mirror) => *mirror = PadMirror::EMPTY,
+            Err(poisoned) => *poisoned.into_inner() = PadMirror::EMPTY,
+        }
         let snapshot = match self.events.lock() {
             Ok(mut bus) => bus.take_layers(),
             Err(poisoned) => poisoned.into_inner().take_layers(),
@@ -1028,6 +1127,7 @@ impl Default for HostShared {
         Self {
             events: Mutex::new(EventBus::new()),
             window: Mutex::new(None),
+            pads: Mutex::new(PadMirror::EMPTY),
         }
     }
 }
@@ -1093,6 +1193,147 @@ impl std::error::Error for PlatformError {}
 /// The cost of that choice is that "there is a window" and "there is a surface"
 /// are different questions. `has_surface()` answers the second; the presence of
 /// `HostWindow` answers the first.
+/// The pads the host has opened, in the slots it assigned.
+///
+/// Owned by the window's thread and never shared: `pad_state` reads the mirror
+/// in `HostShared`, and this struct is what fills it — once per pump, on the
+/// thread SDL permits. The split is the whole of the thread rule: SDL's gamepad
+/// getters are not thread-safe, so the only any-thread answer is a sampled one.
+struct PadDevices {
+    /// `None` when `SDL_InitSubSystem(GAMEPAD)` was refused. Pads are then
+    /// simply not served, which is `-ENODEV` per slot and not an error: a
+    /// machine with no gamepad support is a machine with no pads.
+    subsystem: Option<sdl3::GamepadSubsystem>,
+    slots: [Option<sdl3::gamepad::Gamepad>; PAD_SLOTS as usize],
+    /// The joystick instance id each slot holds, so a removal can be matched to
+    /// its slot without reopening anything.
+    ids: [u32; PAD_SLOTS as usize],
+}
+
+impl PadDevices {
+    fn new(subsystem: Option<sdl3::GamepadSubsystem>) -> Self {
+        Self {
+            subsystem,
+            slots: [const { None }; PAD_SLOTS as usize],
+            ids: [0; PAD_SLOTS as usize],
+        }
+    }
+
+    /// Open `instance` into the first free slot and return the slot.
+    ///
+    /// Idempotent: an instance already held returns its slot rather than
+    /// opening a second handle. `None` when every slot is taken or SDL refused
+    /// the open — a pad that will not open is a pad the host cannot report, and
+    /// the log line is the honest answer.
+    fn open(&mut self, instance: u32) -> Option<u32> {
+        let slots = PAD_SLOTS as usize;
+        for slot in 0..slots {
+            if self.slots[slot].is_some() && self.ids[slot] == instance {
+                return Some(slot as u32);
+            }
+        }
+        let subsystem = self.subsystem.as_ref()?;
+        let free = (0..slots).find(|slot| self.slots[*slot].is_none())?;
+        let id = sdl3::joystick::JoystickId::from(instance);
+        match subsystem.open(id) {
+            Ok(pad) => {
+                let name = pad.name().unwrap_or_else(|| "(unnamed)".to_string());
+                crate::logging::log(
+                    crate::logging::Level::Info,
+                    "core",
+                    &format!("pad: slot {free} '{name}' (instance {instance})"),
+                );
+                self.slots[free] = Some(pad);
+                self.ids[free] = instance;
+                Some(free as u32)
+            }
+            Err(error) => {
+                crate::logging::log(
+                    crate::logging::Level::Warn,
+                    "core",
+                    &format!("pad: instance {instance} could not be opened: {error}"),
+                );
+                None
+            }
+        }
+    }
+
+    /// Release the slot holding `instance`, if any.
+    fn close(&mut self, instance: u32) {
+        for slot in 0..PAD_SLOTS as usize {
+            if self.ids[slot] == instance && self.slots[slot].is_some() {
+                self.slots[slot] = None;
+                self.ids[slot] = 0;
+                crate::logging::log(
+                    crate::logging::Level::Info,
+                    "core",
+                    &format!("pad: slot {slot} released (instance {instance})"),
+                );
+            }
+        }
+    }
+
+    fn any_live(&self) -> bool {
+        self.slots.iter().any(|slot| slot.is_some())
+    }
+
+    /// Write every live slot's record into `out` and return how many are live.
+    ///
+    /// Buttons and axes are read here, not by the reader: `pad_state` is
+    /// any-thread and these getters are not. The normalisation is the same one
+    /// the capability did for itself — sticks in `[-1, 1]`, triggers in
+    /// `[0, 1]` — so the wire did not move when the pads did.
+    fn sample(&self, out: &mut PadMirror) -> u32 {
+        out.present = 0;
+        let mut live = 0u32;
+        for slot in 0..PAD_SLOTS as usize {
+            let Some(pad) = self.slots[slot].as_ref() else {
+                continue;
+            };
+            let mut record = TensionPadRecord {
+                version: crate::platform::PAD_RECORD_VERSION,
+                flags: crate::platform::PAD_RECORD_ATTACHED,
+                ..TensionPadRecord::default()
+            };
+            let raw = pad.raw();
+            let buttons = sdl3::sys::gamepad::SDL_GAMEPAD_BUTTON_COUNT.0;
+            for button in 0..buttons {
+                // SAFETY: `raw` is a gamepad this process opened and has not
+                // closed, and the index is inside SDL's own button range.
+                if unsafe {
+                    sdl3::sys::gamepad::SDL_GetGamepadButton(
+                        raw,
+                        sdl3::sys::gamepad::SDL_GamepadButton(button),
+                    )
+                } {
+                    record.buttons |= 1u32 << button;
+                }
+            }
+            let axes = sdl3::sys::gamepad::SDL_GAMEPAD_AXIS_COUNT.0;
+            for axis in 0..axes.min(6) {
+                // SAFETY: as above; the raw value is Sint16 by SDL's contract.
+                let raw_value = unsafe {
+                    sdl3::sys::gamepad::SDL_GetGamepadAxis(
+                        raw,
+                        sdl3::sys::gamepad::SDL_GamepadAxis(axis),
+                    )
+                };
+                let mut value = raw_value as f32 / 32767.0;
+                if axis == sdl3::sys::gamepad::SDL_GAMEPAD_AXIS_LEFT_TRIGGER.0
+                    || axis == sdl3::sys::gamepad::SDL_GAMEPAD_AXIS_RIGHT_TRIGGER.0
+                {
+                    value = value.max(0.0);
+                }
+                record.axes[axis as usize] = value.clamp(-1.0, 1.0);
+            }
+            out.records[slot] = record;
+            out.present |= 1u32 << slot;
+            live += 1;
+        }
+        live
+    }
+}
+
 pub struct HostWindow {
     /// Dropped first of the SDL handles: a window must not outlive the video
     /// subsystem, and field order is drop order in Rust.
@@ -1141,6 +1382,10 @@ pub struct HostWindow {
     /// `WindowInfo` (the guest's record is about the window, not the pointer),
     /// but a layer asks for it and the host must remember what it granted.
     relative_mouse: AtomicBool,
+    /// The pads the host opened, and the only place a gamepad handle lives.
+    /// Filled from hotplug events in `pump`, read into `HostShared::pads` at the
+    /// end of the same pump so an any-thread `pad_state` never touches SDL.
+    pads: PadDevices,
     title: String,
     /// The dispatcher and the published window record, shared with the API
     /// table so an adapter can register a layer and read `host_window_info`.
@@ -1193,6 +1438,23 @@ impl HostWindow {
             .event_pump()
             .map_err(|e| PlatformError::Sdl(e.to_string()))?;
 
+        // Gamepads belong to the host from v7b. A capability cannot open one:
+        // SDL's gamepad calls belong to the thread that initialised the
+        // subsystem, and that thread is this one. A refusal here is not fatal —
+        // a machine with no gamepad support is a machine with no pads, and
+        // `pad_state` answers -ENODEV per slot either way.
+        let gamepad = match sdl.gamepad() {
+            Ok(subsystem) => Some(subsystem),
+            Err(error) => {
+                crate::logging::log(
+                    crate::logging::Level::Info,
+                    "core",
+                    &format!("pad: the gamepad subsystem is not available: {error}"),
+                );
+                None
+            }
+        };
+
         let mut flags = sdl3::video::WindowFlags::RESIZABLE
             | sdl3::video::WindowFlags::HIGH_PIXEL_DENSITY;
         if target == WindowTarget::Vulkan {
@@ -1204,7 +1466,7 @@ impl HostWindow {
             .build()
             .map_err(|e| PlatformError::Sdl(e.to_string()))?;
 
-        Ok(HostWindow {
+        let window = HostWindow {
             window,
             event_pump,
             video,
@@ -1222,10 +1484,26 @@ impl HostWindow {
             minimized: AtomicBool::new(false),
             close_requested: AtomicBool::new(false),
             relative_mouse: AtomicBool::new(false),
+            pads: PadDevices::new(gamepad),
             title: title.to_string(),
             shared,
             _sdl: sdl,
-        })
+        };
+        // Publish the window record at *creation*, not at the first pump.
+        //
+        // A guest may create a window and immediately ask `window_info` (or, as
+        // the input capability does, attach to the host's window), and both would
+        // otherwise be told "no window" until something happened to pump. That is
+        // a real ordering the fixtures exercise: `createWindow`, `input.open`,
+        // `input.attach`, no wait in between.
+        //
+        // Writing it here rather than at the call sites is what makes it true for
+        // every creator.
+        match window.shared.window.lock() {
+            Ok(mut cell) => *cell = Some(window.info()),
+            Err(poisoned) => *poisoned.into_inner() = Some(window.info()),
+        }
+        Ok(window)
     }
 
     /// The window's title, as created.
@@ -1384,6 +1662,14 @@ impl HostWindow {
         let mut batch = [TensionEvent::EMPTY; EVENT_BATCH_CAPACITY];
         let mut count = 0usize;
         let mut overflow = 0u32;
+        // Hotplug, applied after the drain. Opening or closing a pad in the
+        // middle of the loop would re-enter SDL's joystick state while an event
+        // from it is still in hand, and the two are cheap to batch: at most
+        // `PAD_SLOTS` of each can matter in one pump.
+        let mut pads_added = [0u32; PAD_SLOTS as usize];
+        let mut pads_removed = [0u32; PAD_SLOTS as usize];
+        let mut added = 0usize;
+        let mut removed = 0usize;
 
         self.event_pump.pump_events();
         let window_id = self.window.id();
@@ -1536,6 +1822,10 @@ impl HostWindow {
                 // button or axis index, `a3` the value. Slots are the host's to
                 // assign; this family is how a capability learns a pad exists.
                 sdl3::event::Event::GamepadAdded { which, .. } => {
+                    if added < pads_added.len() && !pads_added[..added].contains(&(which.raw() as u32)) {
+                        pads_added[added] = which.raw() as u32;
+                        added += 1;
+                    }
                     push_event(
                         &mut batch,
                         &mut count,
@@ -1544,6 +1834,12 @@ impl HostWindow {
                     );
                 }
                 sdl3::event::Event::GamepadRemoved { which, .. } => {
+                    if removed < pads_removed.len()
+                        && !pads_removed[..removed].contains(&(which.raw() as u32))
+                    {
+                        pads_removed[removed] = which.raw() as u32;
+                        removed += 1;
+                    }
                     push_event(
                         &mut batch,
                         &mut count,
@@ -1602,6 +1898,27 @@ impl HostWindow {
                     );
                 }
                 _ => {}
+            }
+        }
+
+        // Pads change before the record is published and the batch dispatched,
+        // for the same reason the window record does: a layer that answers
+        // `pad_state` from inside its dispatch must see the slot the PAD event
+        // in that same batch was about.
+        if added > 0 || removed > 0 || self.pads.any_live() {
+            for instance in &pads_added[..added] {
+                self.pads.open(*instance);
+            }
+            for instance in &pads_removed[..removed] {
+                self.pads.close(*instance);
+            }
+            match self.shared.pads.lock() {
+                Ok(mut mirror) => {
+                    self.pads.sample(&mut mirror);
+                }
+                Err(poisoned) => {
+                    self.pads.sample(&mut poisoned.into_inner());
+                }
             }
         }
 
@@ -1702,6 +2019,12 @@ impl HostWindow {
                 self.focused.store(false, Ordering::Relaxed);
                 Some(window_state_event(WINDOW_EVENT_FOCUS_LOST))
             }
+            // Not window state (nothing in `WindowInfo` distinguishes them),
+            // but a layer's state record does: the input capability reports
+            // `POINTER_OVER`, and these two events are the only place that can
+            // come from once it stopped polling SDL itself.
+            WindowEvent::MouseEnter => Some(window_state_event(WINDOW_EVENT_MOUSE_ENTER)),
+            WindowEvent::MouseLeave => Some(window_state_event(WINDOW_EVENT_MOUSE_LEAVE)),
             WindowEvent::Minimized => {
                 self.minimized.store(true, Ordering::Relaxed);
                 Some(window_state_event(WINDOW_EVENT_MINIMIZED))

@@ -1579,37 +1579,23 @@ fn main() -> anyhow::Result<()> {
         "tension::platform",
         "window_info",
         |mut caller: Caller<'_, HostState>, id: u32, out_ptr: u32| -> i32 {
-            const INFO_BYTES: usize = 40;
             const EINVAL: i32 = -22;
             // One window per process, so an unknown id is a caller bug rather
             // than a lookup miss. **No window is not an error**: it writes a
             // zeroed record and returns 0, which is what makes `width > 0` the
             // whole headless guard in a guest's update loop.
+            //
+            // The record is encoded by `platform::encode_window_info`, the same
+            // function the adapter slot `host_window_info` writes through. It
+            // used to be a hand-built `[u32; 9]` here plus a separate last word,
+            // while the adapter had this struct -- one layout, two encoders, and
+            // a field added to either would have drifted silently.
             let info = if id == platform::WINDOW_ID {
                 caller.data().host_window.as_ref().map(|window| window.info())
             } else {
                 return EINVAL;
-            }
-            .unwrap_or_default();
-
-            let mut rec = [0u8; INFO_BYTES];
-            let fields: [u32; 9] = [
-                INFO_BYTES as u32,
-                info.width,
-                info.height,
-                info.pixel_width,
-                info.pixel_height,
-                info.dpi_scale_milli,
-                info.mode.as_u32(),
-                u32::from(info.focused),
-                u32::from(info.minimized),
-            ];
-            for (index, value) in fields.iter().enumerate() {
-                rec[index * 4..index * 4 + 4].copy_from_slice(&value.to_le_bytes());
-            }
-            // The last word is the close latch, written separately so the array
-            // above stays a table of the nine leading fields the header lists.
-            rec[36..40].copy_from_slice(&u32::from(info.close_requested).to_le_bytes());
+            };
+            let rec = platform::encode_window_info(info.as_ref());
             if !write_guest(&mut caller, out_ptr as i32, &rec) {
                 return EINVAL;
             }
@@ -2668,13 +2654,132 @@ fn take_drop_victims(store: &mut Store<HostState>) -> Vec<(u64, i32)> {
     victims
 }
 
+/// Drain the host's event queue and dispatch the batch to the registered
+/// layers, if a window exists.
+///
+/// **Main thread only.** This is the same thread that ran `HostWindow::new`,
+/// which is the only thread SDL allows to touch a window's events.
+///
+/// Two callers, and both of them are "the host has nothing else to do":
+///
+///   * `host_loop`, once per iteration, before the epoch — a 0.7.0a guest that
+///     exports an executor is driven from here;
+///   * `session::wait` / `session::drain`, before the epoch blocks — a guest
+///     that drives its own loop only ever yields to the host inside those two
+///     verbs, and if the pump were not here a renderer-less guest would never
+///     see an event at all. That is the case the input capability *is*: a text
+///     game with no renderer and no host loop.
+///
+/// The 2D renderer's present is the third pump site and it calls
+/// `HostWindow::pump` directly, because it already holds the window. Pumping
+/// twice in one frame is harmless: a drain is a drain, and a layer is handed a
+/// batch only for the events that were actually there.
+pub(crate) fn pump_host_window(data: &mut HostState) {
+    let pumped = data.host_window.as_mut().map(|window| window.pump());
+    let Some(events) = pumped else {
+        return;
+    };
+    if let Some((width, height)) = events.resized {
+        logging::log(
+            Level::Debug,
+            "core",
+            &format!("window: resized to {width}x{height}"),
+        );
+    }
+    if events.overflow > 0 {
+        // Said out loud rather than silently truncated: the layer (or layers)
+        // missed exactly this many events, and a burst this large is a frame
+        // that stalled, not a device misbehaving.
+        logging::log(
+            Level::Warn,
+            "core",
+            &format!(
+                "window: {} event(s) did not fit this pump's batch of {} and were dropped",
+                events.overflow,
+                platform::EVENT_BATCH_CAPACITY
+            ),
+        );
+    }
+    if events.close_requested {
+        // The same effect as the guest closing its session: stop driving it and
+        // let `main` tear down in order. Not an error, and not a teardown here —
+        // the adapters still need `shutdown` on their own threads, which `main`
+        // arranges.
+        data.window_closed = true;
+    }
+}
+
+/// Execute every queued window control, if a window exists.
+///
+/// One drain, one thread, one place that calls `SDL_SetWindow*`. The swap inside
+/// `drain` is what makes this safe against a producer on another thread: the
+/// queue is replaced, so a layer posting while this runs never blocks and is
+/// never blocked, and this holds no lock while it touches the window.
+///
+/// Reserving part of the queue for CORE is what stops a guest spamming
+/// `control()` from starving the host's own timers, DPI and focus traffic. A
+/// core message that finds the queue genuinely full comes back as `ApplyNow`
+/// rather than being dropped: it is the one source whose loss would be
+/// undetectable.
+///
+/// **Two callers, for the same reason `pump_host_window` has two**: the host
+/// loop, and the blocking `session::wait`/`drain` path. Without the second, a
+/// guest that drives its own loop would have its control messages queued and
+/// never executed — measured: `input.set_relative(true)` posted
+/// `TENSION_CTRL_RELATIVE_MOUSE`, the request sat in the queue, and the pointer
+/// was never grabbed.
+pub(crate) fn apply_pending_controls(data: &mut HostState) {
+    let pending = {
+        let bus = std::sync::Arc::clone(&data.control);
+        bus.drain()
+    };
+    if pending.is_empty() {
+        return;
+    }
+    let mut applied = 0u32;
+    let mut failed = 0u32;
+    if let Some(window) = data.host_window.as_mut() {
+        for msg in &pending {
+            match window.apply_control(msg) {
+                Ok(()) => applied += 1,
+                Err(error) => {
+                    failed += 1;
+                    logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!(
+                            "window: control kind {} from source {} refused: {error}",
+                            msg.kind, msg.source
+                        ),
+                    );
+                }
+            }
+        }
+    } else {
+        // No window: nothing to apply to. Not an error — a guest may post
+        // control without having created a window, and the queue is drained so
+        // it cannot grow. Said once at debug, not per message.
+        logging::log(
+            Level::Debug,
+            "core",
+            &format!("window: {} control message(s) with no host window", pending.len()),
+        );
+        applied = pending.len() as u32;
+    }
+    if applied > 0 {
+        logging::log(
+            Level::Trace,
+            "core",
+            &format!("window: applied {applied} control message(s), {failed} failed"),
+        );
+    }
+}
+
 fn host_loop(
     store: &mut Store<HostState>,
     wake: &wasmtime::TypedFunc<(i32, i32), ()>,
     fail: Option<&wasmtime::TypedFunc<(i32, i32, i32), ()>>,
 ) -> anyhow::Result<()> {
-    use wasmtime::AsContextMut;
-
     loop {
         // Exit condition, in the order that cannot lose the last completion:
         // the guest's say-so first, then whether anything is still outstanding.
@@ -2700,91 +2805,13 @@ fn host_loop(
         //
         // Thread rule: this is the same thread that ran `HostWindow::new`, which
         // is the only thread SDL allows to touch a window's events.
-        {
-            let pumped = store
-                .data_mut()
-                .host_window
-                .as_mut()
-                .map(|window| window.pump());
-            if let Some(events) = pumped {
-                if let Some((width, height)) = events.resized {
-                    logging::log(
-                        Level::Debug,
-                        "core",
-                        &format!("window: resized to {width}x{height}"),
-                    );
-                }
-                if events.close_requested {
-                    // The same effect as the guest closing its session: stop
-                    // driving it and let `main` tear down in order. Not an
-                    // error, and not a teardown here — the adapters still need
-                    // `shutdown` on their own threads, which `main` arranges.
-                    store.data_mut().window_closed = true;
-                }
-            }
-        }
+        pump_host_window(store.data_mut());
         if store.data().window_closed {
             logging::log(Level::Info, "core", "window: closed; stopping the host loop");
             break;
         }
 
-        // ── the control executor ────────────────────────────────────────
-        //
-        // One drain, one thread, one place that calls SDL_SetWindow*. The swap
-        // inside `drain` is what makes this safe against a producer on another
-        // thread: the queue is replaced, so a layer posting while this runs
-        // never blocks and is never blocked, and this loop holds no lock while
-        // it touches the window.
-        //
-        // Reserving part of the queue for CORE is what stops a guest spamming
-        // `control()` from starving the host's own timers, DPI and focus
-        // traffic. A core message that finds the queue genuinely full comes
-        // back as `ApplyNow` rather than being dropped: it is the one source
-        // whose loss would be undetectable.
-        let pending = {
-            let bus = std::sync::Arc::clone(&store.data().control);
-            bus.drain()
-        };
-        if !pending.is_empty() {
-            let mut applied = 0u32;
-            let mut failed = 0u32;
-            if let Some(window) = store.data_mut().host_window.as_mut() {
-                for msg in &pending {
-                    match window.apply_control(msg) {
-                        Ok(()) => applied += 1,
-                        Err(error) => {
-                            failed += 1;
-                            logging::log(
-                                Level::Warn,
-                                "core",
-                                &format!(
-                                    "window: control kind {} from source {} refused: {error}",
-                                    msg.kind, msg.source
-                                ),
-                            );
-                        }
-                    }
-                }
-            } else if store.data().host_window.is_none() {
-                // No window: nothing to apply to. Not an error — a guest may
-                // post control without having created a window, and the queue is
-                // drained so it cannot grow. Say so once at debug, not per
-                // message.
-                logging::log(
-                    Level::Debug,
-                    "core",
-                    &format!("window: {} control message(s) with no host window", pending.len()),
-                );
-                applied = pending.len() as u32;
-            }
-            if applied > 0 {
-                logging::log(
-                    Level::Trace,
-                    "core",
-                    &format!("window: applied {applied} control message(s), {failed} failed"),
-                );
-            }
-        }
+        apply_pending_controls(store.data_mut());
 
         // Block on the session's condition variable. A completion, a fault or a
         // shutdown returns it early; the timeout is the loop's safety net for a
