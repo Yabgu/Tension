@@ -328,6 +328,24 @@ const SUITES = {
     ], { env: suiteEnv() }),
   },
 
+  // The guest's window API: create, -EBUSY on a second, info() on nothing,
+  // close, and a Vulkan window's surface. Its own step for the same reason as
+  // the others — and because `cargo test` stops at the first failing target, so
+  // a probe that only ran there would be invisible whenever an earlier target
+  // is red.
+  'platform-create': {
+    title: 'platform create',
+    needs: [],
+    holds: [],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai']
+        : ['--no-default-features', '--features', 'audio']),
+      '--test', 'platform_create',
+    ], { env: suiteEnv() }),
+  },
+
   // The control bus: a message from any source reaches the window.
   'platform-control': {
     title: 'platform control',
