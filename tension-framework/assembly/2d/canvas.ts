@@ -46,6 +46,9 @@
 // `Canvas.open()` (`tension_2d.h:59-61`).
 
 import { resReadFile } from "../res";
+// The host's window API: `windowedOrOffscreen` creates the window the canvas
+// presents to, and `displaysToWindow` reports whether it ended up with one.
+import * as platform from "../platform";
 import {
   ERR_INVAL,
   ERR_NOENT,
@@ -84,6 +87,8 @@ export class Canvas {
   private err: i32 = 0;
   /** Set by `close()`, so a second `close` does not call the verb. */
   private closed: bool = false;
+  /** Whether this canvas presents to a window (opened with `OPEN_WINDOWED`). */
+  private shows: bool = false;
 
   private constructor(handle: i32, width: i32, height: i32) {
     this.handle = handle;
@@ -113,27 +118,92 @@ export class Canvas {
    * build with no GPU backend, `-EIO`, `-ENOMEM` (`tension_2d.h:44-58`).
    */
   static open(width: i32, height: i32, flags: i32 = OPEN_OFFSCREEN): Canvas {
-    return new Canvas(openRaw(width, height, flags), width, height);
+    const canvas = new Canvas(openRaw(width, height, flags), width, height);
+    // Recorded here rather than in `windowedOrOffscreen`: every construction
+    // route ends at `open`, and the flags are the only thing that decides it.
+    canvas.shows = (flags & OPEN_WINDOWED) != 0;
+    return canvas;
   }
 
   /**
-   * Open a canvas that also owns a window of its canvas size.
+   * Open a canvas that presents to a window of its canvas size.
    *
-   * **Two windows is two windows.** `TENSION_2D_OPEN_WINDOWED`
-   * (`tension_2d.h:71-85`) creates an SDL window and blits the target into its
-   * swapchain on every `present`. It is a presentation path, not a second
-   * renderer — the frame is the same frame, so `screenshot` still reads back
-   * what was shown. A run that also opens a window elsewhere (the core's own
-   * host window, another capability's) gets two, side by side, and nothing
-   * arbitrates between them. Contradiction 24 in the architecture notes is the
-   * open question about who owns a window; this method does not settle it.
+   * `TENSION_2D_OPEN_WINDOWED` (`tension_2d.h:71-85`) creates the host window
+   * **if there is not one already**, claims it for the GPU device, and blits the
+   * target into a swapchain on every `present`. This method therefore works
+   * either way: a guest that wants a window and does not care how it is made
+   * calls this directly; a guest that wants control over DPI, position or a
+   * non-default title calls `platform.createWindow` first and then this, and
+   * the canvas claims the window already there. (When the guest's window and
+   * the canvas disagree on size the swapchain scales — the frame is not
+   * cropped; core logs the mismatch at `render2d/device.rs`.)
+   *
+   * One window, one swapchain: a run that opens a window elsewhere and also
+   * opens a canvas windowed claims *that* window rather than making a second
+   * one, which is what `platform.hasSurface()` is checked for inside the core's
+   * `open_windowed`. The renderer is a presentation path, not a second renderer
+   * — the frame is the same frame, so `screenshot` still reads back what was
+   * shown.
    *
    * A windowed canvas pumps SDL events during `present`. When the user closes
    * the window, `present` answers `-ECANCELED` once and then draws nothing
    * more; treat that as "stop", not as an error to retry.
    */
-  static windowed(width: i32, height: i32): Canvas {
+  static windowed(width: i32, height: i32, title: string = "Tension"): Canvas {
+    // The title only matters when this call is what creates the window; a
+    // window the caller already made keeps the title it was created with.
+    if (!platform.hasSurface()) {
+      Canvas.createGpuWindow(width, height, title);
+    }
     return Canvas.open(width, height, OPEN_WINDOWED);
+  }
+
+  /**
+   * Open a canvas in a window if a window can be had, offscreen if not.
+   *
+   * The demo/CI shape: "show me the frame, and keep working on a machine with
+   * no display". A refused window is **not** a failure here — the canvas falls
+   * back to offscreen, `present` writes the target, and `screenshot` still
+   * reads the identical frame. Ask `displaysToWindow()` afterwards to say which
+   * happened (the examples print "drawing offscreen" for the reader).
+   *
+   * Only a refused *canvas* is a failure, and the returned `Canvas` carries it
+   * as an invalid handle with `lastError()` set, like every other route into
+   * `open`.
+   */
+  static windowedOrOffscreen(width: i32, height: i32, title: string = "Tension"): Canvas {
+    if (!platform.hasSurface()) {
+      // The refusal is deliberately ignored: the fallback below is the point of
+      // this helper, and `Canvas.open` decides from the host's post-attempt
+      // state, not from this call's rc.
+      Canvas.createGpuWindow(width, height, title);
+    }
+    const flags: i32 = platform.hasSurface() ? OPEN_WINDOWED : OPEN_OFFSCREEN;
+    return Canvas.open(width, height, flags);
+  }
+
+  /**
+   * Whether this canvas presents to a window.
+   *
+   * True for a canvas opened with `OPEN_WINDOWED`, false for the offscreen
+   * fallback — the answer `windowedOrOffscreen` leaves for a caller that wants
+   * to tell the user why no window appeared.
+   */
+  displaysToWindow(): bool {
+    return this.shows;
+  }
+
+  /// Create the SDL_GPU window a canvas presents to. `Gpu` and not `Vulkan`:
+  /// SDL_GPU claims the window and builds its own surface, so the
+  /// `SDL_WINDOW_VULKAN` flag is not needed — and on Windows it would demand a
+  /// Vulkan loader this renderer does not use.
+  private static createGpuWindow(width: i32, height: i32, title: string): void {
+    const config = new platform.WindowConfig();
+    config.target = platform.WindowTarget.Gpu;
+    config.width = <u32>width;
+    config.height = <u32>height;
+    config.title = title;
+    platform.createWindow(config);
   }
 
   /** Whether `open` produced a usable handle. */

@@ -7,6 +7,10 @@
 //
 //   ./run.sh                             a window, and a bouncing ball
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
+//
+// The window is created by `ogre.initWindowed` and adopted by Ogre's Vulkan
+// renderer. Pre-E1a this was Gl3Plus with Ogre creating its own window; that
+// path is gone.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import {
@@ -47,8 +51,6 @@ export function _derivative(yPtr: usize, len: i32, t: f64, dyPtr: usize, dyCap: 
   return 0;
 }
 
-const WINDOWED_RENDERER = "gl3plus";
-
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
   print("bouncing-ball: " + what);
@@ -64,7 +66,17 @@ class Options {
   tns: string = "";
   renderer: string = "null";
 
-  get windowed(): bool { return this.renderer == WINDOWED_RENDERER; }
+  /// The launcher sends `--renderer=gl3plus` for a windowed run; `vulkan` is
+  /// the explicit choice. Any other word is refused: silently treating a typo
+  /// as "headless" would report a NULL renderer and no pixels, which is harder
+  /// to diagnose than a loud failure.
+  get windowed(): bool {
+    const r = this.renderer;
+    if (r == "null") return false;
+    if (r == "vulkan" || r == "gl3plus") return true;
+    fail("unknown --renderer value: " + r);
+    return false;
+  }
 }
 
 /// The launcher names the renderer and hands in the packed volume; null needs
@@ -150,12 +162,14 @@ class Game {
 
   /// Bring up the renderer the launcher asked for.
   private openRenderer(): void {
-    const windowed = this.options.windowed;
-    const config = new ogre.ConfigBuilder()
-      .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
-      .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
-    const started = ogre.init(config);
-    if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+    // `initWindowed` creates the host's window and brings up the Vulkan
+    // renderer on it; `initHeadless` is the NULL render system. The window
+    // creation is not repeated here because the helper owns it — and it cannot
+    // be given the wrong renderer, which is the bug it exists to prevent.
+    const rc = this.options.windowed
+      ? ogre.initWindowed(640, 480)
+      : ogre.initHeadless();
+    if (rc != 0) fail("ogre::init refused: " + rc.toString());
   }
 
   /// Mount the packed volume the assets were shipped in.

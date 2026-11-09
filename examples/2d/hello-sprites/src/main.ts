@@ -28,7 +28,6 @@ import {
   Canvas,
   ConfigBuilder,
   Frame,
-  OPEN_WINDOWED,
   PIPE_PRESET_MIN,
   print,
   RECORD_SIZE,
@@ -36,7 +35,6 @@ import {
   RuntimeSession,
   SpriteRecord,
 } from "tension-framework";
-import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 /// Whether the guest was started with `flag`. `--windowed` is the one this
@@ -56,22 +54,6 @@ function hasArg(flag: string): bool {
 /// `--windowed` predates the merge and the suites still pass it.
 function wantsWindow(): bool {
   return hasArg("--windowed") || hasArg("--window");
-}
-
-/// Open a window for the 2D renderer to claim.
-///
-/// `target: Gpu` and not `Vulkan`: SDL_GPU claims the window and builds its own
-/// surface, so the `SDL_WINDOW_VULKAN` flag a `Vulkan` window would set is not
-/// needed here — and on Windows it would demand a Vulkan loader the renderer
-/// does not use. Returns the handle, or 0 when the host refused (no display,
-/// or a window already exists).
-function openWindow(): platform.Window {
-  const config = new platform.WindowConfig();
-  config.target = platform.WindowTarget.Gpu;
-  config.width = <u32>CANVAS_WIDTH;
-  config.height = <u32>CANVAS_HEIGHT;
-  config.title = "hello-sprites";
-  return platform.createWindow(config);
 }
 
 // --- the frame's numbers ---------------------------------------------------
@@ -235,16 +217,16 @@ export function _start_game(): void {
   // for it. A refusal is not fatal: `wantsWindow()` is a request, and a
   // headless machine that was asked anyway still draws — offscreen — rather
   // than failing a test job.
-  const window = wantsWindow() ? openWindow() : new platform.Window(0, 0);
-  const shown = window.isValid();
-  if (wantsWindow() && !shown) {
-    print("hello-sprites: no window (" + window.error.toString() + "); drawing offscreen");
-  }
-  const flags: i32 = shown ? OPEN_WINDOWED : 0;
-  const canvas = Canvas.open(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, flags);
+  const window = wantsWindow();
+  const canvas = window
+    ? Canvas.windowedOrOffscreen(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, "hello-sprites")
+    : Canvas.open(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT);
   if (!canvas.isValid()) {
     fail("open -> " + canvas.lastError().toString());
     return;
+  }
+  if (window && !canvas.displaysToWindow()) {
+    print("hello-sprites: no window; drawing offscreen");
   }
   print("open -> handle " + canvas.handle.toString());
 

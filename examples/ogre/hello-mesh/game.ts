@@ -11,6 +11,10 @@
 //
 //   ./run.sh                             a window, a screenshot, a summary
 //   TENSION_OGRE_HEADLESS=1 ./run.sh     structural only: no display needed
+//
+// The window is created by `ogre.initWindowed` and adopted by Ogre's Vulkan
+// renderer. Pre-E1a this was Gl3Plus with Ogre creating its own window; that
+// path is gone.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import { ConfigBuilder, arg, argCount, print, RuntimeSession, rt } from "tension-framework";
@@ -23,8 +27,6 @@ import { Task } from "~lib/task";
 // The host's wake entry. Re-exported because the linker drops an export the
 // guest never names, and the host resolves `__taskWake` by name at load.
 export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
-
-const WINDOWED_RENDERER = "gl3plus";
 
 /// A failure the reader can act on: a guest exits non-zero by trapping.
 function fail(what: string): void {
@@ -57,7 +59,17 @@ class Options {
   tns: string = "";
   renderer: string = "null";
 
-  get windowed(): bool { return this.renderer == WINDOWED_RENDERER; }
+  /// The launcher sends `--renderer=gl3plus` for a windowed run; `vulkan` is
+  /// the explicit choice. Any other word is refused: silently treating a typo
+  /// as "headless" would report a NULL renderer and no pixels, which is harder
+  /// to diagnose than a loud failure.
+  get windowed(): bool {
+    const r = this.renderer;
+    if (r == "null") return false;
+    if (r == "vulkan" || r == "gl3plus") return true;
+    fail("unknown --renderer value: " + r);
+    return false;
+  }
 }
 
 /// The launcher names the renderer; null needs no display, so it is the default.
@@ -96,14 +108,14 @@ class Game {
       fail("session_open refused");
     }
 
-    const windowed = this.options.windowed;
-    const config = new ogre.ConfigBuilder()
-      .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
-      // 640x480 rather than something smaller: a window a human is looking at
-      // should be readable at a glance.
-      .headless(!windowed).vsync(false).frameHz(60).windowSize(640, 480);
-    const started = ogre.init(config);
-    if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+    // `initWindowed` creates the host's window and brings up the Vulkan
+    // renderer on it; `initHeadless` is the NULL render system. 640x480 rather
+    // than something smaller: a window a human is looking at should be readable
+    // at a glance.
+    const rc = this.options.windowed
+      ? ogre.initWindowed(640, 480)
+      : ogre.initHeadless();
+    if (rc != 0) fail("ogre::init refused: " + rc.toString());
 
     // Everything this example loads comes out of one packed volume (chunk 11):
     // the assets live in `resources/`, `pack.sh` packs them, and the run script

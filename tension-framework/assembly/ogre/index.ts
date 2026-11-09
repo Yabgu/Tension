@@ -67,6 +67,10 @@ import {
 import { regionOffset, regionSize } from "../runtime/arena";
 import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
 import { rt } from "../runtime/rt";
+// The host's window API. This module only *reads* it here (`hasSurface`) and
+// creates a window in `initWindowed`; a guest that never calls that helper uses
+// none of it, and the linker drops the import (verified on `guest-ogre.wasm`).
+import * as platform from "../platform";
 
 // The records live in the generated module now. `wire` re-exports them, and a
 // *named* import from `wire` resolves — but `export *` does not carry a
@@ -248,6 +252,87 @@ export function init(cfg: ConfigBuilder): i32 {
 /** Shut the adapter down. Idempotent; the guest's last adapter call. */
 export function shutdown(): i32 {
   return shutdownRaw();
+}
+
+/**
+ * What the two `init` helpers take. Construct with `initOptions()`, which is
+ * the only way to get the defaults without writing them out again.
+ */
+export class InitOptions {
+  /** The host window's title. Ignored by `initHeadless`, which makes no window. */
+  title: string = "Tension";
+  vsync: bool = false;
+  frameHz: u32 = 60;
+}
+
+/** The defaults, for a caller that wants to change one field. */
+export function initOptions(): InitOptions {
+  return new InitOptions();
+}
+
+/**
+ * Create the host's window if it does not have one, then bring up Ogre's
+ * **Vulkan** renderer on it, and return `init`'s rc.
+ *
+ * The renderer is not a parameter on purpose. The host publishes a
+ * `VkSurfaceKHR`, and only the Vulkan render system can adopt one; a caller
+ * that built its own config could ask for GL3+ and get a second native window
+ * beside the host's. This helper cannot express that mistake, which is why it
+ * returns the rc rather than a `ConfigBuilder`.
+ *
+ * `target` is left unset: omitted means `Target.Auto`, and since E1a `auto`
+ * means "the host's surface is required", which the window above satisfies.
+ *
+ * A refused `createWindow` returns *its* errno, so one rc covers both steps.
+ * `Window.error` is negative for every refusal, and `init` returns negative
+ * errnos too, so a caller checking `rc != 0` catches either.
+ */
+export function initWindowed(width: i32, height: i32, opts: InitOptions | null = null): i32 {
+  let o: InitOptions;
+  if (opts == null) o = new InitOptions();
+  else o = opts;
+
+  // One window per process: `createWindow` answers -EBUSY for a second, so ask
+  // the host first rather than courting a refusal that means "already done".
+  if (!platform.hasSurface()) {
+    const cfg = new platform.WindowConfig();
+    cfg.target = platform.WindowTarget.Vulkan;
+    cfg.width = <u32>width;
+    cfg.height = <u32>height;
+    cfg.title = o.title;
+    const win = platform.createWindow(cfg);
+    if (!win.isValid()) return win.error;
+  }
+
+  const config = new ConfigBuilder()
+    .renderer(Renderer.Vulkan)
+    .headless(false)
+    .vsync(o.vsync)
+    .frameHz(o.frameHz)
+    .windowSize(<u32>width, <u32>height);
+  return init(config);
+}
+
+/**
+ * The NULL render system: no window, no GPU, no display needed.
+ *
+ * **No `windowSize` key at all.** The adapter validates it as `1..16384`
+ * (`config.cpp:191-200`), so there is no "zero" to send, and a size would name
+ * a window the guest explicitly asked not to have. Omitting the key leaves the
+ * adapter's defaults (1280x720), which the NULL render system uses for its
+ * bookkeeping window — the object that touches no platform API.
+ */
+export function initHeadless(opts: InitOptions | null = null): i32 {
+  let o: InitOptions;
+  if (opts == null) o = new InitOptions();
+  else o = opts;
+
+  const config = new ConfigBuilder()
+    .renderer(Renderer.Null)
+    .headless(true)
+    .vsync(o.vsync)
+    .frameHz(o.frameHz);
+  return init(config);
 }
 
 /**

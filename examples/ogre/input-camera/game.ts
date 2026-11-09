@@ -13,6 +13,15 @@
 //
 //   ./run.sh                            a window: WASD + mouse, escape quits
 //   TENSION_OGRE_HEADLESS=1 ./run.sh    refuses: no window means no input
+//
+// The window is created by `ogre.initWindowed` and adopted by Ogre's Vulkan
+// renderer. Pre-E1a this was Gl3Plus with Ogre creating its own window; that
+// path is gone.
+//
+// Input attach is deferred to input v7: under a host-owned window the renderer
+// creates no native window of its own, so `ogre::windowHandle()` answers
+// -ENODEV and there is no handle to hand to `input.attachToken`. Re-pointing
+// that verb is the input pass's job; until then this example says so and stops.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
@@ -27,7 +36,6 @@ import { __taskBindTable } from "~lib/task-rt";
 // guest never names, and the host resolves `__taskWake` by name at load.
 export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
 
-const WINDOWED_RENDERER = "gl3plus";
 const WIDTH = 960;
 const HEIGHT = 600;
 
@@ -53,7 +61,17 @@ function fail(what: string): void {
 
 class Options {
   renderer: string = "null";
-  get windowed(): bool { return this.renderer == WINDOWED_RENDERER; }
+  /// The launcher sends `--renderer=gl3plus` for a windowed run; `vulkan` is
+  /// the explicit choice. Any other word is refused: silently treating a typo
+  /// as "headless" would report a NULL renderer and no pixels, which is harder
+  /// to diagnose than a loud failure.
+  get windowed(): bool {
+    const r = this.renderer;
+    if (r == "null") return false;
+    if (r == "vulkan" || r == "gl3plus") return true;
+    fail("unknown --renderer value: " + r);
+    return false;
+  }
 }
 
 function parseArgs(): Options {
@@ -149,14 +167,18 @@ class Game {
 
   private openRenderer(): void {
     const windowed = this.options.windowed;
-    const config = new ogre.ConfigBuilder()
-      .renderer(windowed ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
-      .headless(!windowed)
-      .vsync(false)
-      .frameHz(60)
-      .windowSize(WIDTH, HEIGHT);
-    const started = ogre.init(config);
-    if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
+    // A host-owned window has no native handle to hand over: under the external
+    // surface the renderer creates no window of its own, so `ogre::windowHandle()`
+    // answers -ENODEV. `initWindowed` owns creation now, so this is checked
+    // before the call, against the *intent* — not after it, against a result
+    // that may have failed for an unrelated reason.
+    if (windowed) {
+      fail("input-camera requires input v7: ogre::windowHandle() returns -ENODEV under host-owned windows");
+    }
+    const rc = windowed
+      ? ogre.initWindowed(<i32>WIDTH, <i32>HEIGHT)
+      : ogre.initHeadless();
+    if (rc != 0) fail("ogre::init refused the config (" + rc.toString() + ")");
   }
 
   /// A grid of coloured markers to fly through. One triangle mesh (built from

@@ -74,13 +74,10 @@ export function _start(): void {
     fail("session_open refused");
   }
 
-  const config = new ogre.ConfigBuilder()
-    .renderer(ogre.Renderer.Null)
-    .headless(true)
-    .vsync(false)
-    .frameHz(60)
-    .windowSize(320, 240);
-  const started = ogre.init(config);
+  // Headless: the NULL render system, no window. `ozz-load` decodes archives and
+  // compares poses; it never draws, so a window would be a display dependency
+  // for nothing.
+  const started = ogre.initHeadless();
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
 
   if (tns.length == 0) fail("no --tns=<volume> argument (run via ./test-ozz.sh)");

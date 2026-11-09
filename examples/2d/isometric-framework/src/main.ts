@@ -20,8 +20,7 @@
 // come from `scene.generated.ts`, emitted by the synthetic fixture. A game would
 // get them from its own data.
 
-import { arg, argCount, Canvas, ConfigBuilder, OPEN_WINDOWED, print, RuntimeSession } from "tension-framework";
-import * as platform from "tension-framework/assembly/platform";
+import { arg, argCount, Canvas, ConfigBuilder, print, RuntimeSession } from "tension-framework";
 import {
   Composite,
   IsometricWorld,
@@ -58,20 +57,6 @@ function hasArg(flag: string): bool {
 /// pass it.
 function wantsWindow(): bool {
   return hasArg("--windowed") || hasArg("--window");
-}
-
-/// Open a window for the 2D renderer to claim.
-///
-/// `target: Gpu` and not `Vulkan`: SDL_GPU claims the window and builds its own
-/// surface, so the flag a `Vulkan` window sets is not needed — and on Windows it
-/// would demand a Vulkan loader this renderer does not use.
-function openWindow(width: i32, height: i32): platform.Window {
-  const config = new platform.WindowConfig();
-  config.target = platform.WindowTarget.Gpu;
-  config.width = <u32>width;
-  config.height = <u32>height;
-  config.title = "isometric";
-  return platform.createWindow(config);
 }
 
 function fail(what: string): void {
@@ -214,17 +199,17 @@ export function _start_game(): void {
   // The window is the guest's to create now: the runtime has no flag for it.
   // A refusal is not fatal — an offscreen draw still produces the same frame,
   // and a test job must not fail because a machine has no display.
-  const window = wantsWindow() ? openWindow(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT) : new platform.Window(0, 0);
-  const shown = window.isValid();
-  if (wantsWindow() && !shown) {
-    print("  no window (" + window.error.toString() + "); drawing offscreen");
-  }
-  const flags: i32 = shown ? OPEN_WINDOWED : 0;
-  const canvas = Canvas.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
+  const window = wantsWindow();
+  const canvas = window
+    ? Canvas.windowedOrOffscreen(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, "isometric")
+    : Canvas.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT);
   if (!canvas.isValid()) {
     print("FAIL: open -> " + canvas.lastError().toString());
     RuntimeSession.close();
     return;
+  }
+  if (window && !canvas.displaysToWindow()) {
+    print("  no window; drawing offscreen");
   }
 
   const pipe = canvas.pipeline(1);
