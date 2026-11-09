@@ -36,6 +36,7 @@ import { arg, argCount, print } from "../../tension-framework/assembly/io";
 import { ConfigBuilder, RuntimeSession, makeCallbacks } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { JOB_DONE, JOB_FAILED, MAT_HLMS_UNLIT, Material, Renderable } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
 
 /// -ENOENT / -EIO / -EINVAL, as the guest reads them back out of `jobError`.
 const ENOENT: i32 = -2;
@@ -130,6 +131,9 @@ export function _start_game(): void {
     .vsync(false)
     .frameHz(60)
     .windowSize(320, 240);
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(320, 240), "the host refused to create the window the renderer needs");
   assert(ogre.init(ogre_config) == 0, "ogre::init refused the config");
 
   assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");

@@ -268,6 +268,12 @@ int32_t apply_headless_policy(Config &config) {
 int32_t apply_target_policy(Config &config) {
     switch (config.target) {
         case TENSION_OGRE_TARGET_AUTO:
+            // Auto means "the host's window if there is one, and there had
+            // better be": since the programmatic window API this backend has no
+            // path that creates a window of its own, so AUTO and SWAPCHAIN name
+            // the same requirement. Whether a surface exists is not visible
+            // here — the host's handles are merged after this policy — so the
+            // refusal is raised in `init`, where both facts are in hand.
             return 0;
 
         case TENSION_OGRE_TARGET_SWAPCHAIN:

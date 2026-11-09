@@ -33,6 +33,7 @@ import {
   JOB_FAILED,
   assertOgreWireOffsets,
 } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
 
 const WIDTH = 320;
 const HEIGHT = 240;
@@ -121,6 +122,9 @@ export function _start_game(): void {
     .vsync(false)
     .frameHz(60)
     .windowSize(WIDTH, HEIGHT);
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(WIDTH, HEIGHT), "the host refused to create the window the renderer needs");
   const started = ogre.init(config);
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
   // Everything this fixture loads comes out of one packed volume (chunk 11):

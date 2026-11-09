@@ -587,15 +587,28 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         }
     }
 
-    // target=swapchain is a request the host either satisfies or does not, and
-    // it is answered here, synchronously, before a thread exists. The
-    // alternative — let the backend make its own window because the host
-    // published nothing — is exactly the silent downgrade this key exists to
-    // prevent, and it is indistinguishable from success to the guest.
-    if (config.target == TENSION_OGRE_TARGET_SWAPCHAIN && config.external_surface == 0) {
+    // `auto` and `swapchain` are one requirement now, and it is answered here,
+    // synchronously, before a thread exists.
+    //
+    // This backend has **no path that creates a window of its own**. Before the
+    // programmatic window API, `auto` fell back to one when the host published
+    // nothing; that fallback is gone, because the window is the guest's to
+    // create and the host's to own. A renderer that opens its own window behind
+    // the host's back is the thing this whole design exists to stop, and the
+    // silent version of it — "it rendered, so something worked" — is worse than
+    // a refusal. So: no host surface, no renderer.
+    //
+    // `headless` is exempt because it was resolved to the NULL render system
+    // above, and that system has no window to adopt.
+    const bool wants_host_window = config.target == TENSION_OGRE_TARGET_AUTO ||
+                                   config.target == TENSION_OGRE_TARGET_SWAPCHAIN;
+    if (wants_host_window && !config.headless && config.external_surface == 0) {
         const std::string line =
-            "ogre: init refused: target=swapchain requires the host's surface, and the host "
-            "published none";
+            config.target == TENSION_OGRE_TARGET_AUTO
+                ? "ogre: init refused: target=auto requires a host window; call "
+                  "tension::platform.create_window with target=vulkan before ogre::init"
+                : "ogre: init refused: target=swapchain requires the host's surface, and the "
+                  "host published none";
         s.status.note_message(line);
         log_line(3, line);
         return refuse(ret, -ENODEV);

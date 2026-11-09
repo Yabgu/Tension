@@ -234,9 +234,10 @@ caseRun('target-unknown-refused', 'guest-window.wasm', '^OK init-refused -22$',
 
 // ── target=swapchain against a real host window ───────────────────────────
 //
-// The case above proves the refusal; this one proves the adoption: core opens
-// the window (`--window 640x360`) and publishes the VkInstance / VkSurfaceKHR,
-// and the renderer takes them instead of making a window of its own. It needs a
+// The case above proves the refusal; this one proves the adoption: the *guest*
+// creates the window (`--create-window`, target=vulkan) and the host publishes
+// the VkInstance / VkSurfaceKHR inside that call, so the renderer that inits
+// next adopts them instead of making a window of its own. It needs a
 // display and a Vulkan stack that can make a surface and a swapchain; pipeline
 // creation is *not* required, because guest-window draws nothing.
 //
@@ -251,12 +252,16 @@ caseRun('target-unknown-refused', 'guest-window.wasm', '^OK init-refused -22$',
     console.log('== target-swapchain-window: SKIP — ' +
                 (!hasDisplay ? 'no DISPLAY or WAYLAND_DISPLAY: a host window cannot be opened'
                              : 'TENSION_TEST_ALLOW_SKIP=1') +
-                '; would run: core --window 640x360 with guest --renderer=vulkan ' +
+                '; would run: guest --create-window with --renderer=vulkan ' +
                 '--target=swapchain, asserting OK and that the renderer adopted the host surface');
   } else {
-    const result = spawn(core, ['--window', '640x360', '--capability', dso,
+    // The guest creates the window itself (`--create-window`, target=vulkan)
+    // and the renderer adopts it: no host flag, which is the point of E1a.
+    const result = spawn(core, ['--capability', dso,
                                 join(out, 'guest-window.wasm'),
-                                '--renderer=vulkan', '--target=swapchain', '--frames=3'],
+                                '--renderer=vulkan', '--target=swapchain',
+                                '--create-window', '--frames=3', '--window-width=640',
+                                '--window-height=360'],
                          { env: guestEnv });
     if (result.status !== 0) {
       fail(RUNNER, `target-swapchain-window: the interpreter exited ${result.status} ` +
@@ -286,16 +291,22 @@ if (WIN) {
   console.log('== vulkan: SKIP — the no-display path this case exercises is X11-only');
 } else {
   {
+    // With no display, the *window* is what fails first now: the guest asks for
+    // one, the host refuses, and no renderer is ever initialised. Before E1a
+    // this case reached the GL3+ plugin and caught it throwing on the X
+    // connection; that path still exists, but the reachable no-display scenario
+    // is the earlier, cleaner refusal — and asserting it is what says a
+    // display-less machine gets a named error rather than a crash.
     const result = runGuest('guest-window.wasm',
-                            ['--renderer=gl3plus', '--expect-fail'],
+                            ['--renderer=gl3plus', '--create-window', '--expect-no-display'],
                             { env: { DISPLAY: undefined, WAYLAND_DISPLAY: undefined } });
     if (result.status !== 0) {
       fail(RUNNER, `no-display: the interpreter exited ${result.status} (stderr: ${result.stderr.trim()})`);
     }
-    if (!/^FAIL 0 -5/m.test(result.stdout)) {
-      fail(RUNNER, `no-display: expected 'FAIL 0 -5' (plugin stage: GLX init runs at plugin install), got: ${result.stdout.trim()}`);
+    if (!/^OK no-window$/m.test(result.stdout)) {
+      fail(RUNNER, `no-display: expected 'OK no-window', got: ${result.stdout.trim()}`);
     }
-    if (!/Couldn.t open X display|window|VulkanXcbSupport|resolution/.test(result.stderr)) {
+    if (!/No available video device|Couldn.t open X display|window/i.test(result.stderr)) {
       fail(RUNNER, 'no-display: the diagnostic does not name the failure');
     }
     console.log(`== no-display: ok — ${result.stdout.trim()}`);

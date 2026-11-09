@@ -20,6 +20,13 @@
 //   --headless                ask for no window whatever the renderer is; with
 //                             an explicit GPU renderer this is a contradiction
 //                             the adapter refuses synchronously
+//   --expect-no-display       with --create-window: a refused window is the
+//                             expected answer. Print "OK no-window" and stop —
+//                             the case for a machine with no display at all.
+//   --create-window           create the host's window here, target=vulkan,
+//                             before ogre.init. What a game does; the fixture
+//                             does it on request so a case can prove the
+//                             renderer adopts a window the guest made.
 //   --target=auto|swapchain|offscreen|N
 //                             where the frame goes. `swapchain` requires the
 //                             host's surface: with none, init refuses -ENODEV.
@@ -49,6 +56,8 @@ import {
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { RES_STATE_READY } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
+import * as platform from "../../tension-framework/assembly/platform";
 
 /// The Resource record's fields this fixture reads (`assembly/ogre/wire.ts`).
 const RESOURCE_STATE_OFFSET: u32 = 8;
@@ -114,6 +123,28 @@ export function _start_game(): void {
   const wanted_frames = u32(I32.parseInt(flag("frames", "3")));
   const width = u32(I32.parseInt(flag("window-width", "1280")));
   const height = u32(I32.parseInt(flag("window-height", "720")));
+  // The guest's own window, before the renderer asks for it. This is the whole
+  // new ordering: createWindow, then ogre.init. Nothing in the adapter creates a
+  // window any more, so a case that wants a renderer with pixels must do this.
+  if (has("create-window")) {
+    const win_config = new platform.WindowConfig();
+    win_config.target = platform.WindowTarget.Vulkan;
+    win_config.width = width;
+    win_config.height = height;
+    win_config.title = "tension-ogre test";
+    const created = platform.createWindow(win_config);
+    if (!created.isValid()) {
+      // On a machine with no display at all, the window is what fails first —
+      // before any renderer exists. That is a clean refusal to report, not an
+      // assertion: there is no adapter to blame and no window to render into.
+      if (has("expect-no-display")) {
+        print("OK no-window");
+        return;
+      }
+      assert(false, "platform.createWindow refused (" + created.error.toString() + ")");
+    }
+  }
+
   const expect_fail = has("expect-fail");
   const force_headless = has("headless");
   const target_name = flag("target", "");
@@ -168,6 +199,9 @@ export function _start_game(): void {
   // Accepted here; the window comes up on the render thread, which is what the
   // event below is for. A synchronous refusal is its own case: the adapter says
   // no before any thread exists, so there is nothing to wait for.
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(width, height), "the host refused to create the window the renderer needs");
   const init_rc = ogre.init(ogre_config);
   if (expect_init_refusal != 0) {
     assert(init_rc == expect_init_refusal,

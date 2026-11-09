@@ -108,33 +108,40 @@ fn test_ogre_null_window_headless() {
 }
 
 #[test]
-// The scenario this pins is X11-only. The test clears DISPLAY so the GL3+ plugin
-// throws on the X connection and the backend has to catch it; on Windows there is
-// no DISPLAY to clear and GL3+ opens a WGL window instead, so the guest reaches
-// the frame loop and reports success. That is the correct behaviour there, not a
-// regression, so the test is skipped on Windows with the reason attached rather
-// than deleted or made to accept both outcomes.
-#[cfg_attr(windows, ignore = "no DISPLAY on Windows; GL3+ uses WGL and opens a window")]
-fn test_ogre_gl3plus_no_display_refused() {
+// **What this pins changed with the programmatic window API.** It used to clear
+// DISPLAY and expect the GL3+ plugin to throw on the X connection, caught by the
+// backend and reported as a plugin-stage `-EIO`. That path is no longer the
+// reachable one: a renderer has no window of its own any more, so on a machine
+// with no display the *window* is what fails first — before any adapter is
+// initialised. The assertion follows the architecture: a display-less run is
+// refused once, cleanly, by the call that asked for the window.
+//
+// X11-only for the same reason as before: on Windows there is no DISPLAY to
+// clear and a window opens through WGL, so the scenario does not reproduce and
+// the test is skipped with the reason attached rather than deleted or loosened.
+#[cfg_attr(windows, ignore = "no DISPLAY on Windows, and a window opens through WGL")]
+fn test_ogre_no_display_refuses_the_window() {
     let (Some(fixture), Some(adapter)) = (fixture(), adapter()) else { return };
     let run = run(
         &fixture,
         &adapter,
-        &["--renderer=gl3plus", "--expect-fail"],
+        &["--renderer=gl3plus", "--create-window", "--expect-no-display"],
         true,
     );
 
-    // The guest handles the failure and exits cleanly: a non-zero exit here
-    // would mean the exception escaped, which is what the catch prevents.
+    // The guest handles the refusal and exits cleanly: a non-zero exit here
+    // would mean the failure escaped as a panic.
     assert_eq!(run.code, Some(0), "stderr: {}", run.stderr);
     assert!(
-        run.stdout.trim_start().starts_with("FAIL 0 -5"),
-        "expected the plugin-stage refusal (-EIO): {}",
+        run.stdout.trim_start().starts_with("OK no-window"),
+        "expected the window refusal to be reported: {}",
         run.stdout
     );
     assert!(
-        run.stderr.contains("X display") || run.stderr.contains("GLX"),
-        "the diagnostic does not name the X failure: {}",
+        run.stderr.contains("No available video device")
+            || run.stderr.contains("X display")
+            || run.stderr.contains("GLX"),
+        "the diagnostic does not name the failure: {}",
         run.stderr
     );
 }

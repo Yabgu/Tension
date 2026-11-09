@@ -31,6 +31,7 @@ import {
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { JOB_DONE, JOB_FAILED, JOB_RELEASED } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
 
 let clause = 0;
 
@@ -74,6 +75,9 @@ export function _start_game(): void {
     .vsync(false)
     .frameHz(60)
     .windowSize(640, 480);
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(640, 480), "the host refused to create the window the renderer needs");
   assert(ogre.init(ogre_config) == 0, "ogre::init refused the config");
   // Everything this fixture loads comes out of one packed volume (chunk 11):
   // tests/resources is packed into build/fixtures.tns and the runner hands the

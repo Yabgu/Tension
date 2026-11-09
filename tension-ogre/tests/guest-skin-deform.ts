@@ -37,6 +37,7 @@ import {
   Material,
   Renderable,
 } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
 
 const WINDOW_WIDTH: i32 = 320;
 const WINDOW_HEIGHT: i32 = 240;
@@ -273,6 +274,9 @@ export function _start(): void {
       .vsync(false)
       .frameHz(60)
       .windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(WINDOW_WIDTH, WINDOW_HEIGHT), "the host refused to create the window the renderer needs");
   assert(ogre.init(config) == 0, "ogre::init refused the config");
   assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
   assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");

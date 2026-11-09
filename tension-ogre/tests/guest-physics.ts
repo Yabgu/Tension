@@ -54,6 +54,7 @@ import { Solver, SolverConfig } from "../../tension-framework/assembly/solver";
 import { World, WorldConfig, physics_buf_in, physics_buf_out } from "../../tension-framework/assembly/physics";
 import * as ogre from "../../tension-framework/assembly/ogre";
 import { CameraRecord, Material, Renderable } from "../../tension-framework/assembly/ogre/wire";
+import { ensureHostWindow } from "./host-window";
 
 const WINDOW_WIDTH: i32 = 320;
 const WINDOW_HEIGHT: i32 = 240;
@@ -326,6 +327,9 @@ export function _start_game(): void {
   const config = new ogre.ConfigBuilder()
     .renderer(gl3plus ? ogre.Renderer.Gl3Plus : ogre.Renderer.Null)
     .headless(!gl3plus).vsync(false).frameHz(60).windowSize(WINDOW_WIDTH, WINDOW_HEIGHT);
+  // No window of the renderer's own any more: create the host's, which the
+  // renderer then adopts. Does nothing under `renderer=null`.
+  assert(ensureHostWindow(WINDOW_WIDTH, WINDOW_HEIGHT), "the host refused to create the window the renderer needs");
   assert(ogre.init(config) == 0, "ogre::init refused");
   // Everything this fixture loads comes out of one packed volume (chunk 11):
   // tests/resources is packed into build/fixtures.tns and the runner hands the
