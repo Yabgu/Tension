@@ -306,8 +306,27 @@ extern "system" {
 
 fn load(path: &Path) -> Option<*const Vtable> {
     if !path.exists() {
+        // Since Pass B of the merge the renderer is in core and the default
+        // build links no DSO, so "absent" is the normal state rather than a
+        // missing fixture. The surface it pins has not stopped mattering — it
+        // has moved: `link_2d` registers the same ten verbs at the same
+        // arities, and a guest that imports them instantiates or the wasm
+        // linker refuses it. `tests/render2d_open.rs` and the 2D examples'
+        // suites cover that side.
+        //
+        // The DSO path is still worth pinning when a DSO exists, because the
+        // bisect escape hatch is only honest if its surface is the same one.
+        if cfg!(feature = "render2d-core") {
+            println!(
+                "2d_surface: {} is not built, and the in-core backend is compiled — \
+                 nothing to pin here. `node scripts/build-2d.mjs --cpp` builds the bisect DSO \
+                 this test then checks.",
+                path.display()
+            );
+            return None;
+        }
         support_ci::skip_or_fail(format_args!(
-            "2d_surface: {} is not built — run `node scripts/build-2d.mjs`; skipping the surface test",
+            "2d_surface: {} is not built — run `node scripts/build-2d.mjs --cpp`; skipping the surface test",
             path.display()
         ));
         return None;

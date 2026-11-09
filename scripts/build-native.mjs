@@ -578,23 +578,32 @@ function auditSdlLinkage() {
 
 function buildCore() {
   const ai = process.env.TENSION_AI === '1';
-  // Which backend the ten `tension::2d` imports resolve to (Pass A of the 2D
-  // merge). Default is the capability DSO — the tree exactly as it was.
-  // `TENSION_RENDER2D=rust` compiles the in-core renderer in, and the loader then
-  // skips a 2D DSO named on the command line instead of registering the same
-  // imports twice.
+  // Which backend the ten `tension::2d` imports resolve to.
+  //
+  //   (unset)                 in core — the default since Pass B
+  //   TENSION_RENDER2D=rust   in core, stated explicitly
+  //   TENSION_RENDER2D=cpp    the C++ DSO, for a bisect
   //
   // The flag is deliberately a build switch and not a runtime one: it decides
-  // which code exists. Pass B flips the default and the flag goes away with the
-  // C++ adapter.
-  const render2d = process.env.TENSION_RENDER2D === 'rust';
+  // which code exists. `cpp` turns the feature off, which leaves the DSO the
+  // only thing that can answer `tension::2d` — so a run on that path still
+  // needs `--capability`. Pass C removes both the flag and the DSO.
+  const backend = process.env.TENSION_RENDER2D ?? 'rust';
+  if (backend !== 'rust' && backend !== 'cpp') {
+    fail(`TENSION_RENDER2D=${backend} is not a backend; use \`rust\` (in core) or \`cpp\` (the DSO, for a bisect)`);
+  }
+  const render2d = backend === 'rust';
   const enabled = [ai ? 'ai' : 'audio'];
   if (render2d) enabled.push('render2d-core');
   const features = ai
     ? ['--features', enabled.join(',')]
     : ['--no-default-features', '--features', enabled.join(',')];
   note(`core: cargo build --release ${features.join(' ')}`);
-  if (render2d) note('core: 2D renderer is in core (TENSION_RENDER2D=rust)');
+  note(
+    render2d
+      ? 'core: 2D renderer is in core'
+      : 'core: 2D renderer is the C++ DSO (TENSION_RENDER2D=cpp) — pass --capability at run time',
+  );
   run('cargo', ['build', '--release', ...features], {
     cwd: join(repo, 'tension-core'),
   });

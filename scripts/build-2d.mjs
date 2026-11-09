@@ -1,28 +1,35 @@
 #!/usr/bin/env node
-// scripts/build-2d.mjs — build libtension_2d.so.
 //
-// Four steps, in order, because each one's output is the next one's input:
+// The renderer lives in `tension-core/src/render2d/` as of Pass B of the merge,
+// so nothing here compiles C++ any more. What this script still does is produce
+// the artifacts both the build and the parity test read:
 //
 //   1. `tension-shadergen`'s `emit` binary writes the preset's GLSL. The shaders
 //      are generated, never checked in: a hand-written .vert beside a generator
 //      is the drift this whole crate exists to prevent.
 //   2. `compile_spirv` (tension-shadergen) compiles them to Vulkan SPIR-V with
-//      Naga. Naga, not glslangValidator: a capability's build should not depend
-//      on a system binary, and it is the same library the runtime compiler uses.
-//   3. The modules are embedded as a C header, because the adapter compiles its
-//      pipeline once and must not shell out to a compiler at run time.
-//   4. The DSO is linked against SDL3 and nothing else.
+//      Naga. Naga, not glslangValidator: a renderer's build should not depend on
+//      a system binary, and it is the same library the runtime compiler uses.
+//   2b. `tension-core graph emit-default` lowers the graph, writes its GLSL, and
+//      the GLSL is compiled the same way. The build **fails** if the graph's
+//      modules differ from the preset's, which is the claim the whole
+//      preset-versus-graph exercise rests on.
 //
-// Mirrors scripts/build-input.mjs, including the DT_NEEDED print at the end: a
-// reviewer should be able to see the dependency surface without asking.
+// The .spv files are what `tension-core/tests/render2d_parity.rs` compares the
+// in-core compiler's output against, byte for byte. That is why this script
+// still runs even though no binary links its output: it is the C++ build's
+// record of what the shaders are, and the port is held to it.
+//
+// The blobs (`tension-2d/tests/*.t2dg`) are written here too, so a stale blob
+// cannot make `set_pipeline` answer `-ENOSYS` for a graph the build just
+// compiled.
 
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, copyFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { REPO, WIN, EXE, baseEnv, which, ucrt64Bin } from './lib/toolchain.mjs';
-import { missingSystemFilter, stageWindowsDependencies } from './lib/dll.mjs';
+import { EXE, WIN, baseEnv, which } from './lib/toolchain.mjs';
 
 const RUNNER = 'build-2d';
 const here = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -49,53 +56,6 @@ function run(cmd, args, opts = {}) {
   if (result.error) return null;
   return result;
 }
-
-function pkgConfig(args) {
-  const pkg = which('pkg-config');
-  if (!pkg) return null;
-  return run(pkg, args);
-}
-
-function findSdl3() {
-  const probe = pkgConfig(['--exists', 'sdl3']);
-  if (probe && probe.status === 0) {
-    const cflags = pkgConfig(['--cflags', 'sdl3']);
-    const libs = pkgConfig(['--libs', 'sdl3']);
-    if (cflags?.status === 0 && libs?.status === 0) {
-      const version = pkgConfig(['--modversion', 'sdl3']);
-      console.log(`${RUNNER}: SDL3 ${version?.stdout.trim() ?? ''} via pkg-config`);
-      return {
-        cflags: cflags.stdout.trim().split(/\s+/).filter(Boolean),
-        libs: libs.stdout.trim().split(/\s+/).filter(Boolean),
-      };
-    }
-  }
-  const ucrt = ucrt64Bin();
-  const prefixes = [
-    process.env.TENSION_SDL3_PREFIX,
-    ...(ucrt ? [join(ucrt, '..')] : []),
-    ...(WIN ? ['C:/msys64/ucrt64'] : []),
-    '/usr/local',
-    '/usr',
-  ].filter(Boolean);
-
-  for (const prefix of prefixes) {
-    if (!existsSync(join(prefix, 'include', 'SDL3', 'SDL.h'))) continue;
-    console.log(`${RUNNER}: SDL3 at ${prefix} (headers, no pkg-config)`);
-    return { cflags: [`-I${join(prefix, 'include')}`], libs: [`-L${join(prefix, 'lib')}`, '-lSDL3'] };
-  }
-  return null;
-}
-
-const sdl = findSdl3();
-if (!sdl) {
-  die('SDL3 not found. Install it (Arch: pacman -S sdl3 · Debian: apt install libsdl3-dev ·\n' +
-      '  MSYS2: pacman -S mingw-w64-ucrt-x86_64-sdl3), or set TENSION_SDL3_PREFIX.');
-}
-
-const cxx = process.env.CXX ?? (WIN ? 'g++' : 'c++');
-const cxxProbe = run(cxx, ['--version']);
-if (!cxxProbe || cxxProbe.status !== 0) die(`${cxx} not found on PATH.`);
 
 // The shader compiler: tension-shadergen's `compile_spirv`, built once here and
 // reused for every stage. It is Rust and pure, so there is no version probe and
@@ -215,15 +175,69 @@ for (const name of GRAPHS) {
 }
 console.log(`${RUNNER}: wrote ${GRAPHS.length} blobs to ${testDir}`);
 
-// ── 3. embed ─────────────────────────────────────────────────────────────────
+console.log(`${RUNNER}: shader modules written to ${shaders} and ${graphDir}`);
+
+// ── 3. the C++ adapter, only when asked ──────────────────────────────────────
+//
+// The renderer is in core, so the default build links nothing. The DSO survives
+// for exactly one purpose: `--no-default-features` produces a binary with no
+// `tension::2d` imports at all, and the only way to give that binary a working
+// 2D path is to load one. Without this branch the bisect escape hatch would be
+// a flag that builds a binary nothing can use.
+//
+// Sources are `tension-2d/reference/` — the pre-port C++ — plus the embedded
+// `shaders_spv.h` this script used to write. That header is regenerated here,
+// in this branch only, because nothing else reads it.
+const buildCpp = process.argv.includes('--cpp') || process.env.TENSION_RENDER2D === 'cpp';
+if (!buildCpp) {
+  console.log(`${RUNNER}: in-core build — no C++ adapter linked (pass --cpp for the bisect DSO)`);
+  process.exit(0);
+}
+
+function findSdl3() {
+  const pkg = which('pkg-config');
+  if (pkg) {
+    const exists = run(pkg, ['--exists', 'sdl3']);
+    if (exists && exists.status === 0) {
+      const cflags = run(pkg, ['--cflags', 'sdl3']);
+      const libs = run(pkg, ['--libs', 'sdl3']);
+      if (cflags?.status === 0 && libs?.status === 0) {
+        return {
+          cflags: cflags.stdout.trim().split(/\s+/).filter(Boolean),
+          libs: libs.stdout.trim().split(/\s+/).filter(Boolean),
+        };
+      }
+    }
+  }
+  for (const prefix of [process.env.TENSION_SDL3_PREFIX, '/usr/local', '/usr'].filter(Boolean)) {
+    if (existsSync(join(prefix, 'include', 'SDL3', 'SDL.h'))) {
+      return {
+        cflags: [`-I${join(prefix, 'include')}`],
+        libs: [`-L${join(prefix, 'lib')}`, '-lSDL3'],
+      };
+    }
+  }
+  return null;
+}
+
+const sdl = findSdl3();
+if (!sdl) {
+  die('SDL3 not found. Install it (Arch: pacman -S sdl3 · Debian: apt install libsdl3-dev ·\n' +
+      '  MSYS2: pacman -S mingw-w64-ucrt-x86_64-sdl3), or set TENSION_SDL3_PREFIX.');
+}
+const cxx = process.env.CXX ?? (WIN ? 'g++' : 'c++');
+const cxxProbe = run(cxx, ['--version']);
+if (!cxxProbe || cxxProbe.status !== 0) die(`${cxx} not found on PATH.`);
+
+// The embedded modules, regenerated for this branch only.
 function emitArray(name, path) {
   const bytes = readFileSync(path);
-  const lines = [];
+  const rows = [];
   for (let i = 0; i < bytes.length; i += 16) {
     const slice = [...bytes.subarray(i, i + 16)].map((b) => `0x${b.toString(16).padStart(2, '0')}`);
-    lines.push(`    ${slice.join(', ')},`);
+    rows.push(`    ${slice.join(', ')},`);
   }
-  return `static const unsigned char ${name}[] = {\n${lines.join('\n')}\n};\n` +
+  return `static const unsigned char ${name}[] = {\n${rows.join('\n')}\n};\n` +
          `static const unsigned long ${name}Len = ${bytes.length}ul;\n`;
 }
 
@@ -239,43 +253,25 @@ function fnv1a(bytes) {
   return hash;
 }
 
-function emitKeyTable(path) {
-  const lines = readFileSync(path, 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => line.split(/\s+/));
-  const rows = lines
-    .map(([offset, dtype, scale]) => `    {${offset}, ${dtype}, ${Number(scale).toFixed(1)}f},`)
-    .join('\n');
-  return (
-    `// The comparator's key list, read from the graph's make_tuple(...) and\n` +
-    `// emitted by tension-core graph emit-default. The third column is the\n` +
-    `// factor a mul key applies, 1.0 for a plain load_field.\n` +
-        `#define TENSION_2D_SORT_KEY_COUNT ${lines.length}\n` +
-    `static const struct { unsigned short offset; unsigned char dtype; float scale; } kSortKeys[] = {\n` +
-    `${rows}\n};\n`
-  );
-}
+const keyRows = readFileSync(join(graphDir, 'default_2d.keys.txt'), 'utf8')
+  .split('\n')
+  .map((line) => line.trim())
+  .filter(Boolean)
+  .map((line) => line.split(/\s+/))
+  .map(([offset, dtype, scale]) => `    {${offset}, ${dtype}, ${Number(scale).toFixed(1)}f},`)
+  .join('\n');
 
-const header =
-  `// Generated by scripts/build-2d.mjs — do not edit.\n` +
-  `// Source: tension-shadergen's emit binary and tension-core's graph lowering,\n` +
-  `// compiled by Naga (tension-shadergen/src/bin/compile_spirv.rs).\n` +
+writeFileSync(
+  join(out, 'shaders_spv.h'),
+  `// Generated by scripts/build-2d.mjs --cpp — do not edit.\n` +
   `#ifndef TENSION_2D_SHADERS_SPV_H\n#define TENSION_2D_SHADERS_SPV_H\n\n` +
-  emitArray('kSpriteVertSpv', join(shaders, 'default_2d.vert.spv')) +
-  `\n` +
-  emitArray('kSpriteFragSpv', join(shaders, 'default_2d.frag.spv')) +
-  `\n` +
+  emitArray('kSpriteVertSpv', join(shaders, 'default_2d.vert.spv')) + `\n` +
+  emitArray('kSpriteFragSpv', join(shaders, 'default_2d.frag.spv')) + `\n` +
   GRAPHS.map((name) => {
     const id = name.replace(/-/g, '_');
-    return emitArray(`kGraph_${id}_Vert`, join(graphDir, `${name}.graph.vert.spv`)) +
-      `\n` +
+    return emitArray(`kGraph_${id}_Vert`, join(graphDir, `${name}.graph.vert.spv`)) + `\n` +
       emitArray(`kGraph_${id}_Frag`, join(graphDir, `${name}.graph.frag.spv`));
-  }).join('\n') +
-  `\n` +
-  `// The graphs this DSO can draw, identified by the FNV-1a hash of their blob.\n` +
-  `// A blob whose hash is not here is -ENOSYS: there is no runtime compiler.\n` +
+  }).join('\n') + `\n` +
   `struct Tension2dGraphPipe {\n` +
   `    unsigned long long hash;\n` +
   `    unsigned int pipe_id;\n` +
@@ -293,60 +289,30 @@ const header =
       `kGraph_${id}_Vert, kGraph_${id}_VertLen, kGraph_${id}_Frag, kGraph_${id}_FragLen},`;
   }).join('\n') +
   `\n};\n` +
-  emitKeyTable(join(graphDir, 'default_2d.keys.txt')) +
-  `\n#endif\n`;
-writeFileSync(join(out, 'shaders_spv.h'), header);
+  `#define TENSION_2D_SORT_KEY_COUNT ${keyRows.split('\n').length}\n` +
+  `static const struct { unsigned short offset; unsigned char dtype; float scale; } kSortKeys[] = {\n` +
+  `${keyRows}\n};\n\n#endif\n`,
+);
 console.log(`${RUNNER}: embedded ${join(out, 'shaders_spv.h')}`);
 
-// ── 4. link the DSO ──────────────────────────────────────────────────────────
-// -std=c++17 matches the other adapters. No SDL_shadercross: v1 targets Linux
-// with SPIR-V produced at build time (`docs/modules/2d.md` §4).
+const reference = join(src, 'reference');
 const artifact = join(out, WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
-const args = [
+const link = run(cxx, [
   '-std=c++17', '-O2', '-g', '-fPIC', '-Wall', '-Wextra',
   `-I${join(src, 'include')}`,
-  `-I${join(src, 'src')}`,
+  `-I${reference}`,
   `-I${out}`,
   `-I${join(repo, 'tension-core', 'include')}`,
   ...sdl.cflags,
-  join(src, 'src', 'adapter.cpp'),
-  join(src, 'src', 'render.cpp'),
-  join(src, 'src', 'texture.cpp'),
+  join(reference, 'adapter.cpp'),
+  join(reference, 'render.cpp'),
+  join(reference, 'texture.cpp'),
   '-shared',
   '-o', artifact,
   ...sdl.libs,
   ...(WIN ? [] : ['-lpthread']),
-];
-
-const link = run(cxx, args);
+]);
 if (link.stdout.trim()) console.log(link.stdout.trim());
 if (link.stderr.trim()) process.stderr.write(link.stderr);
 if (link.status !== 0) die('link failed');
-
-if (WIN) {
-  copyFileSync(artifact, join(out, 'libtension_2d.so'));
-  const gxx = which('g++');
-  const search = [
-    ...(gxx ? [join(gxx, '..')] : []),
-  ];
-  const unresolved = missingSystemFilter(stageWindowsDependencies(out, search.map(String)));
-  if (unresolved.length) {
-    die(`the adapter's DLL closure is incomplete: ${unresolved.join(', ')}`);
-  }
-}
-
-console.log(`${RUNNER}: built ${artifact}`);
-
-// The dependency surface, printed so nobody has to ask.
-const objdump = which('objdump');
-if (objdump) {
-  try {
-    const listing = spawnSync(objdump, ['-p', artifact], { encoding: 'utf8' }).stdout ?? '';
-    const needed = listing.split(/\r?\n/)
-      .filter((line) => line.includes('DLL Name:') || line.includes('NEEDED'))
-      .map((line) => `  ${line.trim().split(/\s+/).pop()}`);
-    if (needed.length) console.log(`${RUNNER}: DT_NEEDED:\n${needed.join('\n')}`);
-  } catch {
-    // Diagnostics only.
-  }
-}
+console.log(`${RUNNER}: built ${artifact} (bisect DSO, from tension-2d/reference/)`);

@@ -67,13 +67,14 @@ const EXE = WIN ? '.exe' : '';
 step = run('node', [join(repo, 'scripts', 'build-2d-guest.mjs')], { stdio: 'inherit' });
 if (!step || step.status !== 0) die('the guest did not build');
 
-const dso = existsSync(join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
-  ? join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
-  : join(repo, 'tension-2d', 'build', 'libtension_2d.so');
-if (!existsSync(dso)) {
+// The renderer is in core since Pass B; this build produces shader modules only.
+// A `--capability` is passed only when a DSO exists, which is the bisect path.
+const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+if (!existsSync(join(repo, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv'))) {
   step = run('node', [join(repo, 'scripts', 'build-2d.mjs')], { stdio: 'inherit', cwd: repo });
-  if (!step || step.status !== 0) die('the adapter did not build');
+  if (!step || step.status !== 0) die('the shader modules did not build');
 }
+const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
 
 function findCore() {
   if (process.env.TENSION_CORE && existsSync(process.env.TENSION_CORE)) {
@@ -103,7 +104,7 @@ const scene = JSON.parse(readFileSync(join(here, 'scene.json'), 'utf8'));
 
 function runScene(guestArgs) {
   const result = run(core, [
-    '--capability', dso,
+    ...capabilityArgs,
     '--res', pak,
     join(here, 'build', 'game.wasm'),
     ...guestArgs,
@@ -325,7 +326,7 @@ if (!askedForHeadless && hasDisplay &&
     !process.env.TENSION_2D_CHILD) {
   console.log(`${RUNNER}: showing the scene — close the window to exit`);
   const shown = spawnSync(core, [
-    '--capability', dso,
+    ...capabilityArgs,
     '--res', pak,
     join(here, 'build', 'game.wasm'),
     '--windowed',

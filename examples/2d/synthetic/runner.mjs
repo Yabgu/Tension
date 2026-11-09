@@ -54,13 +54,14 @@ export function prepare(exampleDir, { log = console.log } = {}) {
   let step = run('node', [join(REPO, 'scripts', 'build-2d-guest.mjs')], { cwd: exampleDir, stdio: 'inherit' });
   if (!step || step.status !== 0) throw new Error('the guest did not build');
 
-  const dso = existsSync(join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
-    ? join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
-    : join(REPO, 'tension-2d', 'build', 'libtension_2d.so');
-  if (!existsSync(dso)) {
+  // The renderer is in core since Pass B; the build produces shader modules
+  // only. A `--capability` is passed only when a DSO exists (the bisect path).
+  const dso = join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+  if (!existsSync(join(REPO, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv'))) {
     step = run('node', [join(REPO, 'scripts', 'build-2d.mjs')], { cwd: REPO, stdio: 'inherit' });
-    if (!step || step.status !== 0) throw new Error('the adapter did not build');
+    if (!step || step.status !== 0) throw new Error('the shader modules did not build');
   }
+  const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
   const core = findCore();
   if (!core) {
     throw new Error(`no tension-core found\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
@@ -73,13 +74,13 @@ export function prepare(exampleDir, { log = console.log } = {}) {
   const pak = join(exampleDir, pkg.tension?.pack?.output ?? 'build/assets.tns');
   if (!existsSync(pak)) throw new Error(`expected ${pak} after packing`);
 
-  return { scene: s, dso, core, pak, guest: join(exampleDir, 'build', 'game.wasm') };
+  return { scene: s, capabilityArgs, core, pak, guest: join(exampleDir, 'build', 'game.wasm') };
 }
 
 /** Run the guest in `ctx` with `guestArgs`; returns its frames and output. */
 export function runGuest(ctx, guestArgs = [], { cwd } = {}) {
   const result = run(ctx.core, [
-    '--capability', ctx.dso,
+    ...ctx.capabilityArgs,
     '--res', ctx.pak,
     ctx.guest,
     ...guestArgs,

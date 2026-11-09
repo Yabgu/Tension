@@ -50,15 +50,19 @@ function findCore() {
   return null;
 }
 
-// ── 1. the adapter ──────────────────────────────────────────────────────────
-const dso = existsSync(join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so'))
-  ? join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so')
-  : join(repo, 'tension-2d', 'build', 'libtension_2d.so');
-if (!existsSync(dso)) {
-  console.log(`${RUNNER}: no adapter, building it...`);
+// ── 1. the shader modules ───────────────────────────────────────────────────
+//
+// Pass B moved the 2D renderer into core, so this build produces the shader
+// modules and the graph blobs and no C++ adapter. A `--capability` is passed
+// only when a DSO is actually there — which is the bisect path, where the core
+// was built `--no-default-features` and still needs one.
+const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+if (!existsSync(join(repo, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv'))) {
+  console.log(`${RUNNER}: no shader modules, building them...`);
   const built = run('node', [join(repo, 'scripts', 'build-2d.mjs')], { stdio: 'inherit' });
-  if (!built || built.status !== 0) die('the adapter did not build');
+  if (!built || built.status !== 0) die('the shader modules did not build');
 }
+const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
 
 // ── 2. the guest ────────────────────────────────────────────────────────────
 const guest = run('node', [join(repo, 'scripts', 'build-2d-guest.mjs')], { stdio: 'inherit' });
@@ -112,7 +116,7 @@ const hasDisplay =
   Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 const windowed = !askedForHeadless && hasDisplay;
 
-const guestArgs = ['--capability', dso, join(exampleDir, 'build', 'game.wasm')];
+const guestArgs = [...capabilityArgs, join(exampleDir, 'build', 'game.wasm')];
 if (windowed) guestArgs.push('--windowed');
 
 console.log(
