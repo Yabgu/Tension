@@ -28,8 +28,8 @@ the loader.
     session: arena · epoch · event ring · job table
              open close wait drain subscribe unsubscribe pending
                  │  tension_adapter_v1
-    DSO capabilities: ogre · tension::2d · tension::input
-    in the host:      io · audio · ai · res · solver
+    DSO capabilities: ogre · tension::input
+    in the host:      io · audio · ai · res · solver · 2d
 ```
 
 The full ownership table, the teardown order, the host loop and the two channels
@@ -45,18 +45,21 @@ into a layer are [`docs/architecture.md`](docs/architecture.md).
 | Resources | `tension::res` | host, Zig core statically linked | `tension-res/` |
 | Solver | `tension::solver` | host, Fortran core statically linked | `tension-solver/` |
 | Renderer | `ogre` | DSO adapter | `tension-ogre/` |
-| 2D | `tension::2d` | DSO adapter | `tension-2d/` |
+| 2D | `tension::2d` | **host**, SDL_GPU in-process | `tension-core/src/render2d/` |
 | Input | `tension::input` | DSO adapter | `tension-input/` |
 
 `--capability <path-or-name>` loads an adapter; a name resolves as
-`<dir>/libtension_<name>.so` through `TENSION_CAPABILITY_PATH`. Every import a
+`<dir>/libtension_<name>.so` through `TENSION_CAPABILITY_PATH`. One capability
+is no longer an adapter: the 2D renderer moved into the host, because SDL_GPU has
+no way to present to a window the DSO does not own. A `tension::2d` DSO named on
+the command line is skipped, not loaded. Every import a
 guest can make, with signatures, is the generated
 [`docs/abi/guest.md`](docs/abi/guest.md); the vtable a DSO implements is
 [`docs/abi/adapter.md`](docs/abi/adapter.md). The adapter ABI is core wasm
 imports, not the Component Model: an adapter registers imports by name, and a
 WIT layer could sit on top later without changing that shape.
 
-`tension-ogre` and `tension-2d` are documented in
+`tension-ogre` and the 2D renderer are documented in
 [`docs/modules/`](docs/modules/). `tension-input/DESIGN.md`,
 `tension-solver/DESIGN.md`, `tension-res/DESIGN.md` and
 `tension-world/DESIGN.md` are the only design notes left; none has a successor
@@ -76,8 +79,33 @@ npm run build
 ../../tension-core/target/debug/tension-core build/game.wasm
 ```
 
-The Ogre examples need the adapter and the generated layout, so they go through
-the shared runner:
+The 2D examples have no launcher. The renderer is in core, so there is nothing
+to resolve, stage or load — the binary runs the guest:
+
+```sh
+cd examples/2d/hello-sprites
+npm run build
+tension-core build/game.wasm --window       # or: npm start
+npm test                                    # the frame assertion
+```
+
+`tension-core` there is the `bin` entry of `packages/core`, so the example's own
+`node_modules/.bin` provides it after `npm install`. From anywhere else:
+
+```sh
+tension-core examples/2d/hello-sprites/build/game.wasm --window
+```
+
+Options go **before** the wasm path; everything after it is the guest's own
+`arg()` stream. That is why `--window` is a guest word in the lines above and
+`--res` would come first:
+
+```sh
+tension-core --res build/isometric.tns build/game.wasm --window
+```
+
+The Ogre examples still need the adapter and the generated layout, so they go
+through the shared runner until Pass D retires it:
 
 ```sh
 cd examples/ogre/hello-triangle && npm start          # a real window
@@ -144,7 +172,7 @@ until they get a hand-written home:
 | Every guest import, generated from the registration sites | [`docs/abi/guest.md`](docs/abi/guest.md) |
 | The DSO vtable and its error codes, generated | [`docs/abi/adapter.md`](docs/abi/adapter.md) |
 | The OGRE renderer: records, regions, render thread, host surface | [`docs/modules/ogre.md`](docs/modules/ogre.md) |
-| The 2D capability: SDL_GPU path, graph compiler, its own window | [`docs/modules/2d.md`](docs/modules/2d.md) |
+| The 2D renderer: SDL_GPU path, graph compiler, the host's window | [`docs/modules/2d.md`](docs/modules/2d.md) |
 | Build products, bootstrap, guards, test suites, CI | [`docs/build.md`](docs/build.md) |
 | Guest debugging: DWARF, lldb, launch configs, env vars | [`docs/debugging.md`](docs/debugging.md) |
 | How a guard fails silently, and the two halves of the discipline | [`docs/guard-discipline.md`](docs/guard-discipline.md) |

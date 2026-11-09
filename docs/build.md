@@ -198,6 +198,25 @@ example were blamed on the source for two weeks (`:45-60`). This is
 (`build-examples.mjs:106-110`): the examples compile with the framework's flags,
 and a fallback set would produce guests that do not match the session.
 
+### How to run a 2D example
+
+```sh
+cd examples/2d/hello-sprites
+npm run build
+tension-core build/game.wasm --window
+```
+
+From another directory:
+
+```sh
+tension-core examples/2d/hello-sprites/build/game.wasm --window
+```
+
+That is the whole invocation. There is no launcher, no DSO to find, no
+environment to set: the renderer is in the binary, and the guest asks for a
+window by name on its own `arg()` stream. `npm start` in the example's directory
+is that same line, and `npm test` runs it headless and asserts the frame.
+
 ### Running one, and the flags that are still there
 
 ```
@@ -206,9 +225,23 @@ tension-core [--debug] [--symbol-path <dir>] [--res <pak>] [--capability <path|n
              [--window <W>x<H>] <game.wasm> [game args...]
 ```
 
-Options go **before** the guest path; everything after it is the guest's own
-`tension::io arg()` stream. That ordering is the whole contract, and it is why
-`--windowed` is a *guest* flag while `--window` is a *host* one.
+**Options go before the guest path; everything after it is the guest's own
+`tension::io arg()` stream.** That ordering is the whole contract, and it is why
+`--windowed`/`--window` is a *guest* word while `--res` is a *host* flag. A run
+that puts `--res` after the wasm path passes the string to the game and loads no
+resources; the log will say so, which is the only warning you get.
+
+**`--window <W>x<H>` and the guest's `--window`.**
+Since the 2D merge a renderer creates its own window on demand, so `--window` is
+no longer how a 2D game gets a window — it is how an **operator** gets one: a
+test that wants a specific size before a guest starts, the tooling path, and
+`examples/platform-control`, which resizes a window and draws nothing. When a
+host `--window` exists, a windowed canvas claims it; when it does not, one is
+created at the canvas size.
+
+The guest-side word is `--windowed` (originally) and `--window` (since Pass C,
+when `npm start` made that the word a person types). The host never sees it: it
+is after the wasm path. The 2D examples accept both.
 
 **`--window` is not going away.** Since the 2D merge a renderer creates its own
 window on demand (`Canvas.windowed()`), so `--window` is no longer how a 2D game
@@ -228,6 +261,8 @@ forgotten:
 | `--session-open`, `--session-callbacks`, `--post-test-events` | the A1/A2 fixtures retire; all three are marked "test-only" in `USAGE` | when those fixtures go |
 | `--debug`, `--symbol-path` | never — they are the debugger's interface, and a guest has no business setting them | — |
 | `--window` | never — see above | — |
+| the 2D example launcher | **retired by Pass C** — replaced by the invocation at the top of this section, and its pixel assertion by each 2D example's `test.mjs` | done |
+| `scripts/test-2d.mjs` | **retired by Pass B** — it drove a stub core against the C++ adapter, and both are gone | done |
 
 ### The two 2D backends, and the one command that compares them
 
@@ -243,6 +278,23 @@ TENSION_RENDER2D=cpp npm run build:native
 each, and compares them — shader modules byte for byte, the ordering table
 against the graph, and stdout line for line. See
 [`modules/2d.md`](modules/2d.md) §7 for what each part asserts and what it skips.
+
+### Skipping a test whose fixture is absent — one flag
+
+`TENSION_TEST_ALLOW_SKIP=1` is the tree's **only** skip flag. Without it a test
+that cannot find its fixture (a guest `.wasm`, an Ogre payload, a GPU that can
+create a graphics pipeline) **fails**, in every environment; with it the test
+prints `skipped: <reason>` and returns. The policy lives in one place,
+`tension-core/tests/support/ci.rs`, and the `harness = false` 2D probes read the
+same `skip_allowed()` helper.
+
+New tests do not introduce a second flag. A GPU-less rig is a missing fixture
+like any other: it names the reason in the skip message (`Vulkan:
+vkCreateGraphicsPipelines → VK_ERROR_OUT_OF_HOST_MEMORY under Mesa dzn`) rather
+than spelling the opt-out differently. Two spellings of "may I skip?" is how a
+tree ends up with a suite that skips under one flag and fails under the other —
+which is exactly what happened for one pass, when a second, GPU-only flag
+coexisted with this one.
 
 ## 6. Tests
 
@@ -270,8 +322,10 @@ scheduled by needs and resource holds; `npm test -- --<name>` runs a subset
   through real guests (`scripts/test-ogre.mjs`).
 - `input` — the input capability.
 - `res` — the Zig resource library (`zig build test`).
-- `isometric`, `isometric-art`, `isometric-framework` — the 2D pixel suites
-  (`docs/modules/2d.md` §7).
+- `hello-sprites`, `isometric`, `isometric-art`, `isometric-framework` — the 2D
+  pixel suites (`docs/modules/2d.md` §7). `hello-sprites` is the one that
+  asserts an absolute count (10240 = 10 × 32×32); the other three assert colours
+  at named probes.
 
 **Native suites:**
 

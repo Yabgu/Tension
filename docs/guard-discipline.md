@@ -89,14 +89,16 @@ the current sources", and `scripts/run-example.mjs:35` is the one caller of
 - `scripts/test-input-edge.mjs:47-48` (compiler — no guard at all: it spawns
   whatever `npmBin()` returned, so an absent compiler is a spawn error rather
   than a clear message)
-- `scripts/test-framework.mjs`, `scripts/run-2d-example.mjs`
+- `scripts/test-framework.mjs`
 
 > `scripts/test-2d.mjs` was deleted in Pass B of the 2D merge along with the stub
-> core it drove and the C++ adapter under test. The instances below that cite it
-> are kept as written: they are the record of what that harness taught, and the
-> lesson outlives the file. What replaced it is
-> `tension-core/tests/render2d_open.rs` (behaviour) and
-> `scripts/parity-2d.mjs` (the two backends against each other).
+> core it drove and the C++ adapter under test, and
+> the 2D example launcher went in Pass C with the launcher layer itself. The
+> instances below that cite either are kept as written: they are the record of
+> what those harnesses taught, and the lesson outlives the files. What replaced
+> them is `tension-core/tests/render2d_open.rs` (behaviour),
+> `scripts/parity-2d.mjs` (the two backends against each other), and each 2D
+> example's own `test.mjs` (the pixel assertion the launcher used to own).
   (same shape)
 
 A stale binary passes every one of them. That is how an adapter built against

@@ -156,6 +156,33 @@ windowed and headless:
 breakpoints in guest logic when no display or GPU is available; it cannot stop
 inside a draw.
 
+**The 2D examples carry one configuration each**, added when the launcher was
+retired: `examples/2d/{hello-sprites,isometric,isometric-framework}/.vscode/`.
+They are the shortest configs in the tree, because there is nothing to resolve —
+no `--capability`, no DSO, no environment. `isometric` and
+`isometric-framework` also pass `--res`, which is a host option and therefore
+comes **before** the wasm path; `--window` comes after it, because it is the
+guest's own word.
+
+Each has a `build:debug` task and a `build:debug` npm script, and the launch
+configuration runs it — so `--debug` and `--sourceMap` reach the compiler. **It
+still produces no DWARF**, and the script says so on every debug build rather
+than leaving you to discover it at a breakpoint:
+
+```
+build-2d-guest: asked for --debug --sourceMap, but the wasm carries no DWARF; a
+  breakpoint will land in wasm rather than in src/main.ts.
+```
+
+Measured with `tensionscript` 0.13.2: the *same* flag set
+(`--runtime incremental --debug --sourceMap`) emits `.debug_info` for
+`examples/io`, and emits none for any of the three 2D guests, with or without
+`--config`, with `--target debug`, and with the config's `target`/`optimizeLevel`
+removed. So it is a compiler gap for these guests rather than a missing flag, and
+the cause is not isolated. Until it is, a 2D breakpoint resolves to wasm; the
+host side (`--debug` on `tension-core`) is unaffected and still reports what a
+debugger can see.
+
 The extension is `vadimcn.vscode-lldb` (`.vscode/extensions.json` recommends
 it) or a system `lldb`; the commands are §3's.
 
