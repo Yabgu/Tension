@@ -82,8 +82,12 @@ pub fn graph_hash(bytes: &[u8]) -> u64 {
 /// `tension-2d/tests/*.t2dg` — rather than transcribed, so a change to the graph
 /// changes the hash and the two implementations disagree loudly instead of
 /// silently routing to different pipelines.
-fn builtin_graphs() -> &'static [(u64, u32)] {
-    static BUILTINS: OnceLock<Vec<(u64, u32)>> = OnceLock::new();
+/// A shipped graph's blob hash and the pipe id `scripts/build-2d.mjs` pins for
+/// it.
+type ShippedGraph = (u64, u32);
+
+fn builtin_graphs() -> &'static [ShippedGraph] {
+    static BUILTINS: OnceLock<Vec<ShippedGraph>> = OnceLock::new();
     BUILTINS.get_or_init(|| {
         vec![
             (
@@ -106,12 +110,15 @@ pub fn builtin_pipe_id(hash: u64) -> Option<u32> {
         .map(|(_, id)| *id)
 }
 
+/// A compiled module pair: vertex SPIR-V, fragment SPIR-V.
+pub type Modules = (Vec<u8>, Vec<u8>);
+
 /// Preset 1's SPIR-V, compiled once per process.
 ///
 /// `scripts/build-2d.mjs` asserts these bytes equal the preset the C++ build
 /// embedded, so this is a substitution and not a second shader.
-fn preset_spirv() -> Result<&'static (Vec<u8>, Vec<u8>), Render2dError> {
-    static PRESET: OnceLock<Result<(Vec<u8>, Vec<u8>), String>> = OnceLock::new();
+fn preset_spirv() -> Result<&'static Modules, Render2dError> {
+    static PRESET: OnceLock<Result<Modules, String>> = OnceLock::new();
     let compiled = PRESET.get_or_init(|| {
         let graph = crate::pipeline_default::default_graph();
         crate::pipeline::naga_backend::compile_graph(&graph)
@@ -132,7 +139,7 @@ fn preset_spirv() -> Result<&'static (Vec<u8>, Vec<u8>), Render2dError> {
 /// Compile a guest's graph blob to a module pair, in one call.
 ///
 /// This is the whole of what used to be `-ENOSYS` + two `compile_graph` calls.
-pub fn compile_blob(blob: &[u8]) -> Result<(Vec<u8>, Vec<u8>), Render2dError> {
+pub fn compile_blob(blob: &[u8]) -> Result<Modules, Render2dError> {
     let compiled = crate::pipeline::naga_backend::compile(blob).map_err(|error| {
         // The compiler's own errno, so a guest that could tell a malformed
         // blob from an unsupported graph over the ABI can still tell them
@@ -254,6 +261,13 @@ impl PipelineCache {
     /// How many pipelines are built.
     pub fn len(&self) -> usize {
         self.pipelines.len()
+    }
+
+    /// Whether no pipeline is built. Paired with [`Self::len`] because clippy
+    /// asks for it and because "no pipelines yet" is a state `open` leaves
+    /// behind.
+    pub fn is_empty(&self) -> bool {
+        self.pipelines.is_empty()
     }
 
     /// The pipeline for an id, if it is built.

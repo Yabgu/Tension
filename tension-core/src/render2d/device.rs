@@ -41,7 +41,7 @@ use sdl3::gpu::{
 use sdl3::pixels::Color;
 
 use crate::platform::HostWindow;
-use crate::render2d::error::{Render2dError, EIO, ENODEV, ENOMEM, ENOSPC, EINVAL};
+use crate::render2d::error::Render2dError;
 use crate::render2d::iwi::decode_iwi;
 use crate::render2d::pipeline::PipelineCache;
 use crate::render2d::record::{self, InfoRecord, RECORD_SIZE};
@@ -566,7 +566,7 @@ impl Render2dState {
         }
         let mut frame: Vec<[u8; RECORD_SIZE as usize]> = Vec::new();
         let mut spans: Vec<Span> = Vec::new();
-        for (_, bucket) in buckets.iter_mut() {
+        for bucket in buckets.values_mut() {
             // Ordered by the graph's key list, so the built-in preset and a
             // compiled graph sort identically. `sort_by` is stable, which is
             // what makes a frame reproducible: equal keys keep submission order.
@@ -896,22 +896,19 @@ impl Render2dState {
         let (texture_width, texture_height) = (texture.width, texture.height);
         let texture_handle = texture.texture.clone();
 
-        if !self.atlases.contains_key(&pipe_id) {
+        if let std::collections::btree_map::Entry::Vacant(slot) = self.atlases.entry(pipe_id) {
             // An array texture has one size for every page. The first page
             // bound to a pipeline fixes it; a page of another size is refused
             // rather than resampled, because resampling moves pixels inside a
             // cell and the record's src rect is in pixels.
             let array = create_array(&device, texture_width, texture_height)?;
-            self.atlases.insert(
-                pipe_id,
-                Atlas {
-                    array,
-                    width: texture_width,
-                    height: texture_height,
-                    pages: 0,
-                    bound: [0; MAX_ATLAS_PAGES],
-                },
-            );
+            slot.insert(Atlas {
+                array,
+                width: texture_width,
+                height: texture_height,
+                pages: 0,
+                bound: [0; MAX_ATLAS_PAGES],
+            });
         }
 
         let atlas = self
@@ -1276,8 +1273,7 @@ fn copy_into_layer(
                 false,
             );
             sysgpu::SDL_EndGPUCopyPass(pass);
-            let ok = command.submit().is_ok();
-            ok
+            command.submit().is_ok()
         }
     };
 
@@ -1400,17 +1396,7 @@ fn ensure_video() -> Result<sdl3::VideoSubsystem, Render2dError> {
     Ok(video)
 }
 
-/// The errnos the verb bodies map a [`Render2dError`] to. Re-exported for the
-/// tests that assert on them.
-pub mod errnos {
-    pub use crate::render2d::error::{EIO, ENODEV, ENOMEM, ENOSPC, EINVAL};
-}
-
 /// Kept so a caller that only has a `PlatformError` can name its errno.
 pub fn platform_errno(error: &crate::platform::PlatformError) -> i32 {
     Render2dError::NoDevice(error.to_string()).errno()
 }
-
-// Silences the "unused" warning for the errno re-exports above when only some
-// are used by a build configuration.
-const _: [i32; 5] = [EIO, ENODEV, ENOMEM, ENOSPC, EINVAL];
