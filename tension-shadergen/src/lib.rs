@@ -40,6 +40,7 @@
 //! guessed at — a wrong shader that compiles is worse than no shader, because
 //! the failure moves from the host's return code to the user's screen.
 
+pub mod combined_sampler;
 pub mod vocab;
 
 use std::fmt::Write as _;
@@ -433,18 +434,28 @@ pub fn generate_fragment(layout: &LayoutDesc, opts: &FragmentOptions) -> Result<
     // Matches the vertex stage's `flat` qualifier: interpolation qualifiers
     // must agree across the stage boundary or the pair does not link.
     let _ = writeln!(out, "layout(location = 2) flat in uint out_tex;");
-    // Separate texture and sampler, not a combined `uniform sampler2D`.
+    // Separate texture and sampler in the GLSL, for one reason only: Naga's
+    // GLSL frontend refuses a combined opaque uniform outright —
+    // `NotImplemented("variable qualifier")` on `sampler2D`, `sampler2DArray`
+    // and every other spelling — so a combined declaration cannot reach Naga at
+    // all, and Naga is what turns this into SPIR-V.
     //
-    // That is not a style preference. Naga's GLSL frontend refuses a combined
-    // opaque uniform outright — `NotImplemented("variable qualifier")` on the
-    // `sampler2D` token, in every layout form — so a combined declaration
-    // cannot reach Naga at all, and Naga is what turns this into SPIR-V.
+    // **That is a limitation of the frontend, not of SPIR-V, and the difference
+    // matters.** SPIR-V does have a combined type — `OpTypeSampledImage`, one
+    // variable — and SDL_GPU's Vulkan backend requires exactly that. It builds a
+    // fixed descriptor set layout with one
+    // `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER` binding per sampler slot
+    // (`SDL_gpu.h:2716-2724`, `SDL_gpu_vulkan.c`,
+    // `VULKAN_INTERNAL_FetchDescriptorSetLayout`), so a shader that declares a
+    // texture at binding 0 and a sampler at binding 1 uses a binding the layout
+    // does not have, and `vkCreateGraphicsPipelines` fails.
     //
-    // The two spellings describe the same resource: SPIR-V has no combined
-    // sampler type, so `sampler2D` lowers to a sampled image plus a sampler
-    // either way. The explicit form just says what SPIR-V was going to do, and
-    // it matches SDL_GPU's `SDL_GPUTextureSamplerBinding`, which binds the pair
-    // as one slot.
+    // The two spellings are the same *resource* but not the same *binding
+    // count*, and the binding count is what the layout checks. So the pair
+    // declared here is folded into one `OpTypeSampledImage` variable by
+    // `combined_sampler::fold_combined_samplers`, which both this crate's
+    // `compile_spirv` and the runtime compiler run on Naga's output. The GLSL
+    // stays split because it has to; the SPIR-V does not.
     // An **array** texture, not a 2D one: multi-atlas is `tex` selecting a
     // layer. The adapter binds one 16-layer array per pipeline and copies each
     // `texture_load`ed page into the layer `set_texture` names, so a single
@@ -690,8 +701,10 @@ mod tests {
     fn the_fragment_samples_at_set_two() {
         let source = generate_fragment(&sprite(), &FragmentOptions::default()).unwrap();
         // SDL_GPU's Vulkan backend binds fragment samplers at set 2
-        // (`SDL_gpu.h:2705–2715`); anything else binds nothing. The texture and
-        // its sampler are adjacent bindings because SPIR-V has no combined type.
+        // (`SDL_gpu.h:2716-2724`); anything else binds nothing. The GLSL declares
+        // the texture and its sampler as adjacent bindings because Naga's GLSL
+        // frontend has no combined-sampler type; `combined_sampler` folds them
+        // into one binding before anything sees the SPIR-V.
         assert!(
             source.contains("layout(set = 2, binding = 0) uniform texture2DArray u_tex;"),
             "{source}"

@@ -146,5 +146,14 @@ pub fn compile(source: &str, stage: ShaderStage) -> Result<Vec<u32>, String> {
         .map_err(|e| format!("naga SPIR-V writer: {e:?}"))?
         .write(&module, &info, None, &None, &mut words)
         .map_err(|e| format!("naga emit: {e:?}"))?;
+
+    // The same fold the runtime compiler applies, from the same code: naga
+    // cannot declare a combined sampler, SDL_GPU's Vulkan backend declares one
+    // combined binding per sampler slot, and a module with two bindings where
+    // the layout has one is refused at pipeline creation. See
+    // `tension_shadergen::combined_sampler`.
+    tension_shadergen::combined_sampler::fold_combined_samplers(&mut words)
+        .map_err(|e| format!("combined sampler fold: {e}"))?;
+
     Ok(words)
 }

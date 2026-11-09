@@ -144,6 +144,15 @@ pub fn compile_glsl(source: &str, stage: ShaderStage) -> std::result::Result<Vec
         .map_err(|error| format!("naga writer: {error:?}"))?
         .write(&module, &info, None, &None, &mut words)
         .map_err(|error| format!("naga emit: {error:?}"))?;
+
+    // Naga cannot declare a combined sampler — its GLSL frontend refuses the
+    // token and its IR has no such type — so a texture and its sampler always
+    // come out as two bindings. SDL_GPU's Vulkan backend declares one
+    // combined binding per sampler slot and refuses the pipeline otherwise.
+    // Fold the pair here, where every module the renderer uses passes through.
+    tension_shadergen::combined_sampler::fold_combined_samplers(&mut words)
+        .map_err(|error| format!("combined sampler fold: {error}"))?;
+
     Ok(words)
 }
 

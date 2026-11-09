@@ -445,27 +445,87 @@ fn part_c_binaries(report: &mut Report) {
         );
     }
 
+    // **The guest's own output**, not the whole stream.
+    //
+    // The two binaries necessarily differ in one place: both are handed the 2D
+    // DSO on the command line, the DSO-backed binary loads it, and the in-core
+    // binary logs that it skipped the load because the renderer is already
+    // inside it. That line is host diagnostics, not a claim about the frame —
+    // and it is the direct consequence of the migration, so comparing it would
+    // make this part unsatisfiable by construction rather than by a defect.
+    //
+    // Everything the guest printed is still compared exactly: the verb
+    // transcript, `screenshot -> N bytes, M non-black pixels`, and the ten
+    // sampled colours.
+    let cpp_guest = guest_lines(&cpp_run.stdout);
+    let rust_guest = guest_lines(&rust_run.stdout);
     report.check(
-        "stdout is identical line for line",
-        cpp_run.stdout == rust_run.stdout,
+        "the guest's output is identical line for line",
+        cpp_guest == rust_guest,
     );
 
-    if cpp_run.stdout != rust_run.stdout {
+    if cpp_guest != rust_guest {
         // Print the first difference: a wall of two logs is not readable.
-        for (index, (a, b)) in cpp_run
-            .stdout
-            .lines()
-            .zip(rust_run.stdout.lines())
-            .enumerate()
-        {
+        for (index, (a, b)) in cpp_guest.iter().zip(rust_guest.iter()).enumerate() {
             if a != b {
-                println!("       first difference at line {index}:");
+                println!("       first difference at guest line {index}:");
                 println!("         cpp: {a}");
                 println!("         rst: {b}");
                 break;
             }
         }
+        if cpp_guest.len() != rust_guest.len() {
+            println!(
+                "       the guest printed {} line(s) on the C++ backend and {} in core",
+                cpp_guest.len(),
+                rust_guest.len()
+            );
+        }
     }
+}
+
+/// The lines the *guest* printed, with the host's log lines removed.
+///
+/// A host log line carries an ISO-8601 timestamp and a level; a guest line does
+/// not. That is the whole discriminator, and it is exact rather than a guess at
+/// message shapes.
+fn guest_lines(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter(|line| !is_host_log_line(line))
+        .collect()
+}
+
+/// Whether a line came from the host logger rather than the guest.
+///
+/// Two shapes reach here, depending on the run's log configuration: with a
+/// timestamp (`2026-11-09T19:05:16.736Z INFO  session: …`) and without
+/// (`INFO  core: …`). Either way a logger line is a level token followed by a
+/// module name and a colon, which is not a shape a guest's own `print` produces.
+fn is_host_log_line(line: &str) -> bool {
+    let mut rest = line.trim_start();
+
+    // An optional ISO-8601 prefix.
+    if rest.len() > 11 && rest.as_bytes()[10] == b'T' {
+        if let Some(space) = rest.find(' ') {
+            rest = rest[space + 1..].trim_start();
+        }
+    }
+
+    for level in ["TRACE", "DEBUG", "INFO", "WARN", "ERROR", "FATAL"] {
+        if let Some(after) = rest.strip_prefix(level) {
+            let after = after.trim_start();
+            // `LEVEL module: message` — a colon before any space ends the module
+            // name. `INFO` as a guest's first word would not be followed by one.
+            if let Some(colon) = after.find(':') {
+                let module = &after[..colon];
+                if !module.is_empty() && !module.contains(' ') {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
 
 struct Run {
