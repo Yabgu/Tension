@@ -49,8 +49,9 @@
 //! C++ oracle, so it is the environment and not this port), both backends fail
 //! at `set_pipeline` with the same errno. That is still a parity signal and this
 //! part reports it as one, but it cannot compare frames. Set
-//! `TENSION_SKIP_GPU_TESTS=1` to skip Part C deliberately, or run it on a
-//! machine with a real Vulkan device.
+//! `TENSION_TEST_ALLOW_SKIP=1` to skip Part C deliberately — the tree's one skip
+//! flag (`tests/support/ci.rs`) — or run it on a machine with a real Vulkan
+//! device.
 //!
 //! # Running it
 //!
@@ -80,6 +81,9 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+#[path = "support/ci.rs"]
+mod support_ci;
 
 use tension_core::pipeline::DType;
 use tension_core::render2d::pipeline::{graph_hash, PIPE_GUEST_MIN};
@@ -331,12 +335,13 @@ fn part_b_ordering(report: &mut Report) {
 fn part_c_binaries(report: &mut Report) {
     println!("C. the same guest through both binaries");
 
-    if std::env::var("TENSION_SKIP_GPU_TESTS").is_ok() {
+    if support_ci::skip_allowed() {
         report.skip(
-            "both binaries on hello-sprites: skipped by TENSION_SKIP_GPU_TESTS. \
+            "both binaries on hello-sprites: TENSION_TEST_ALLOW_SKIP=1. \
              The assertion that would run: identical stdout (including \
-             `screenshot -> N bytes, M non-black pixels`, which is a full-frame \
-             count plus ten sampled colours) and identical exit status",
+             `screenshot -> N bytes, M non-black pixels`, a full-frame count, plus \
+             ten sampled colours) and identical exit status. Skipped here because \
+             this rig cannot create a graphics pipeline.",
         );
         return;
     }

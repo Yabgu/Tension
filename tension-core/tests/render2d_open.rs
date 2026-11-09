@@ -31,12 +31,16 @@
 //! failure exits 1, so a skip cannot hide a broken claim, a broken guard or a
 //! canvas that did not close.
 //!
-//! `TENSION_SKIP_GPU_TESTS=1` skips the GPU half explicitly, for a rig known to
-//! have neither (the WSL2/Mesa `dzn` case, where pipeline creation fails with
-//! `VK_ERROR_OUT_OF_HOST_MEMORY` — the same failure the untouched C++ oracle
-//! reproduces, so it is the environment, not this code).
+//! `TENSION_TEST_ALLOW_SKIP=1` skips the GPU half explicitly, for a rig known to
+//! have neither. That is **the tree's one skip flag** (`tests/support/ci.rs`,
+//! the same variable every other suite honours) — there is deliberately no
+//! GPU-specific second flag, because two spellings of "may I skip?" is how a
+//! tree ends up with a suite that skips under one and fails under the other.
 //!
 //! Run: `cargo test --test render2d_open --features render2d-core`.
+
+#[path = "support/ci.rs"]
+mod support_ci;
 
 use tension_core::platform::HostWindow;
 use tension_core::render2d::{Render2dError, Render2dState, RendererId};
@@ -182,8 +186,14 @@ fn main() {
     }
 
     // ── the GPU half ───────────────────────────────────────────────────────
-    if std::env::var("TENSION_SKIP_GPU_TESTS").is_ok() {
-        println!("gpu: skipped by TENSION_SKIP_GPU_TESTS (would run on a machine with a GPU)");
+    if support_ci::skip_allowed() {
+        println!("gpu: SKIP — TENSION_TEST_ALLOW_SKIP=1");
+        println!("       reason a rig needs it: no GPU (Mesa dzn cannot create graphics");
+        println!("       pipelines; the pre-port C++ renderer fails the same way)");
+        println!("       what would run: offscreen open, windowed open on demand, the");
+        println!("       swapchain claim and its refusal, close and reopen, and every");
+        println!("       verb's refusals. Arbitration and validation already ran above —");
+        println!("       they need no device.");
         finish(&probe);
         return;
     }

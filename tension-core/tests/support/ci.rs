@@ -22,7 +22,12 @@
 /// `0`, `true`, an empty string) leaves the strict default. It mirrors
 /// `TENSION_ALLOW_UNPINNED=1` in `build.rs`: one escape hatch per strict
 /// default, spelled out at the call site that needs it.
-fn skip_allowed() -> bool {
+///
+/// `pub` because the two `harness = false` 2D probes (`render2d_open`,
+/// `render2d_parity`) have their own reporting instead of `skip_or_fail`, and a
+/// second spelling of "may I skip?" is how a tree grows two skip flags. **There
+/// is one flag.** A test that wants to skip reads this.
+pub fn skip_allowed() -> bool {
     matches!(std::env::var("TENSION_TEST_ALLOW_SKIP").as_deref(), Ok("1"))
 }
 
