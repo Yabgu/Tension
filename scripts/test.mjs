@@ -231,6 +231,22 @@ const SUITES = {
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
   },
 
+  // Ten sprites, one atlas, one frame — the smallest end-to-end 2D guest, and
+  // the only suite that asserts an absolute pixel count (10240 = 10 x 32x32)
+  // rather than a colour at a probe. The count is the check that catches a
+  // renderer which draws every rect at the same place: ten probes can agree
+  // while the tenth sprite sits on top of the first.
+  'hello-sprites': {
+    title: 'hello-sprites',
+    needs: [],
+    // Writes the shader modules and the guest, in directories the other 2D
+    // suites also use.
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'hello-sprites', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
   // The same scene from generated flat-colour pages: same canvas, same
   // positions, same sort keys, same probes. Its assertions are cheap and its
   // expectations are palette constants, so it catches a renderer bug without

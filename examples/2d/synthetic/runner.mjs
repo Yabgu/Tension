@@ -92,6 +92,26 @@ export function runGuest(ctx, guestArgs = [], { cwd } = {}) {
   if (!result) throw new Error('could not start tension-core');
 
   const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
+
+  // A GPU that cannot create a pipeline stops every 2D guest at `set_pipeline`,
+  // so the caller would report "no frames" and send a reader hunting for a
+  // renderer bug that is not there. Name the environmental cause here, once,
+  // for every caller of this runner.
+  const gpu = output.match(/vkCreateGraphicsPipeline[s]?\s+(VK_\w+)/);
+  if (gpu) {
+    const why =
+      `this machine could not create a graphics pipeline (${gpu[1]}).\n` +
+      `  That is the driver, not the guest: the pre-port C++ renderer fails the ` +
+      `same way on the same rig.\n` +
+      `  Run this on a conformant Vulkan ICD (CI's lavapipe); see ` +
+      `docs/known-limitations.md.`;
+    if (process.env.TENSION_TEST_ALLOW_SKIP === '1') {
+      console.log(`SKIP — ${why}`);
+      return { status: 0, output, frames: new Map(), skipped: true };
+    }
+    throw new Error(why);
+  }
+
   const frames = new Map();
   for (const line of (result.stdout ?? '').split('\n')) {
     const m = line.match(/^FRAME (\w+) (\d+) ([0-9a-f]*)$/);

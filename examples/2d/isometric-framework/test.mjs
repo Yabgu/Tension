@@ -68,6 +68,18 @@ if (fwRun.status !== 0) {
   console.error(fwRun.output);
   die(`the framework guest exited ${fwRun.status}`);
 }
+
+// `runGuest` reports a machine that cannot create a graphics pipeline as a
+// skip rather than as a guest failure — it is the driver, and the pre-port C++
+// renderer fails identically here. There is nothing left to assert: the frames
+// this suite compares byte for byte are the thing that cannot be produced.
+if (fwRun.skipped || handRun.skipped) {
+  console.log(`${RUNNER}: SKIP — both scenes built, but no frame can be drawn here`);
+  console.log(`       what would run: the framework guest's two frames compared byte for`);
+  console.log(`       byte against the hand-written scene's, then seven probe colours`);
+  console.log(`       and the revert levers. CI's lavapipe provides a GPU that can.`);
+  process.exit(0);
+}
 for (const line of fwRun.output.split('\n')) {
   if (line.startsWith('  ') || line.startsWith('===') || line.startsWith('sort keys') ||
       line.startsWith('set_pipeline') || line.startsWith('pages bound')) {

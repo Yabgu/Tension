@@ -6,14 +6,15 @@
   "description": "TensionCore example: ten sprites rendered by tension-2d from a TensionScript guest",
   "scripts": {
     "build": "node ../../../scripts/build-2d-guest.mjs",
-    "start": "node ../../../scripts/run-2d-example.mjs",
-    "run": "node ../../../scripts/run-2d-example.mjs"
+    "build:debug": "node ../../../scripts/build-2d-guest.mjs --debug",
+    "test": "node test.mjs",
+    "start": "tension-core build/game.wasm --window"
   },
   "tension": {
-    "kind": "2d",
-    "capability": "../../../tension-2d/build/libtension_2d.so"
+    "kind": "2d"
   },
   "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../../packages/core",
     "tension-framework": "file:../../../tension-framework"
   },
   "devDependencies": {

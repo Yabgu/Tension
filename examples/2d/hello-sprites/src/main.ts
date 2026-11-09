@@ -47,6 +47,18 @@ function hasArg(flag: string): bool {
   return false;
 }
 
+/// Whether the guest was asked to show a window.
+///
+/// `--windowed` is the guest's own flag and predates the host's `--window`. Since
+/// Pass C of the 2D merge the launch line is `tension-core game.wasm --window`,
+/// so this accepts both spellings: one word for an operator to type, and the
+/// original kept because the examples, the suites and the screenshots all pass
+/// it. The host's `--window` is a different thing (a size, before the wasm path);
+/// a guest that receives `--window` never sees that flag, only this word.
+function wantsWindow(): bool {
+  return hasArg("--windowed") || hasArg("--window");
+}
+
 // --- the frame's numbers ---------------------------------------------------
 
 /// The example's canvas. The adapter takes it from `open`, so this is a
@@ -203,7 +215,7 @@ export function _start_game(): void {
   // 2. the capability
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = hasArg("--windowed") ? OPEN_WINDOWED : 0;
+  const flags: i32 = wantsWindow() ? OPEN_WINDOWED : 0;
   const canvas = Canvas.open(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, flags);
   if (!canvas.isValid()) {
     fail("open -> " + canvas.lastError().toString());
@@ -357,7 +369,7 @@ export function _start_game(): void {
   //
   // Capped at ~3000 iterations (a minute at vsync) so a headless machine asked
   // for `--windowed` by mistake cannot hang a CI job.
-  if (hasArg("--windowed") && ok) {
+  if (wantsWindow() && ok) {
     print("windowed: close the window to exit");
     // `wait` inside the loop, not after it: a tight present-loop on a software
     // driver spins as fast as the CPU allows and finishes before anyone can

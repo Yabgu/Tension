@@ -55,6 +55,18 @@ function hasArg(flag: string): bool {
   return false;
 }
 
+/// Whether the guest was asked to show a window.
+///
+/// `--windowed` is the guest's own flag and predates the host's `--window`. Since
+/// Pass C of the 2D merge the launch line is `tension-core game.wasm --window`,
+/// so this accepts both spellings: one word for an operator to type, and the
+/// original kept because the examples, the suites and the screenshots all pass
+/// it. The host's `--window` is a different thing (a size, before the wasm path);
+/// a guest that receives `--window` never sees that flag, only this word.
+function wantsWindow(): bool {
+  return hasArg("--windowed") || hasArg("--window");
+}
+
 function fail(what: string): void {
   print("  FAIL: " + what);
   failures++;
@@ -232,7 +244,7 @@ export function _start_game(): void {
 
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = hasArg("--windowed") ? gfx.OPEN_WINDOWED : 0;
+  const flags: i32 = wantsWindow() ? gfx.OPEN_WINDOWED : 0;
   const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
   if (handle <= 0) {
     print("FAIL: open -> " + handle.toString());
@@ -346,7 +358,7 @@ export function _start_game(): void {
   // submitted already, so the target holds `front`; repainting it is the whole
   // loop. `tension::2d` re-presents without clearing when nothing is submitted,
   // and answers `-ECANCELED` once the window is gone.
-  if (hasArg("--windowed") && failures == 0) {
+  if (wantsWindow() && failures == 0) {
     print("windowed: close the window to exit");
     let keep: i32 = 0;
     while (keep < 18000) {

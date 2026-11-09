@@ -56,6 +56,15 @@ if (normal.status !== 0) {
   console.error(normal.output);
   die(`tension-core exited ${normal.status}`);
 }
+if (normal.skipped) {
+  // `runGuest` reports a machine that cannot create a graphics pipeline as a
+  // skip, not a guest failure: the driver is the reason, and the pre-port C++
+  // renderer fails identically. Nothing here can be asserted without frames.
+  console.log(`${RUNNER}: SKIP — the pages built, but no frame can be drawn here`);
+  console.log(`       what would run: the same four claims the art suite makes, from`);
+  console.log(`       palette-generated pages rather than the tileset. CI's lavapipe can.`);
+  process.exit(0);
+}
 for (const line of normal.output.split('\n')) {
   if (line.startsWith('  ') || line.startsWith('===') || line.startsWith('sort keys') ||
       line.startsWith('set_pipeline') || line.startsWith('page ')) {

@@ -136,6 +136,26 @@ if (normal.status !== 0) {
   console.error(normal.output);
   die(`tension-core exited ${normal.status}`);
 }
+
+// A GPU that cannot create a pipeline stops the guest at `set_pipeline`, before
+// any frame exists — so the "no frames" check below would blame the guest for a
+// driver. Name the environmental cause instead, and honour the tree's one skip
+// flag (`tests/support/ci.rs`) rather than inventing a second.
+const gpu = normal.output.match(/vkCreateGraphicsPipeline[s]?\s+(VK_\w+)/);
+if (gpu) {
+  const why =
+    `this machine could not create a graphics pipeline (${gpu[1]}).\n` +
+    `  That is the driver, not the scene: the pre-port C++ renderer fails the same ` +
+    `way on the same rig.\n` +
+    `  What would run on a conformant Vulkan ICD: four probes with the colours ` +
+    `scene.json names, both revert tests, and three screenshots.\n` +
+    `  CI's lavapipe provides one; see docs/known-limitations.md.`;
+  if (process.env.TENSION_TEST_ALLOW_SKIP === '1') {
+    console.log(`${RUNNER}: SKIP — ${why}`);
+    process.exit(0);
+  }
+  die(why);
+}
 for (const line of normal.output.split('\n')) {
   if (line.startsWith('  ') || line.startsWith('===') || line.startsWith('sort keys') ||
       line.startsWith('set_pipeline') || line.startsWith('page ')) {

@@ -5,20 +5,21 @@
   "type": "module",
   "description": "TensionCore example: a worked isometric scene \u2014 oversized tileset, depth sort, modular character",
   "scripts": {
-    "build": "node build.mjs && node ../../../scripts/build-2d-guest.mjs",
-    "start": "node test.mjs",
-    "run": "node test.mjs",
-    "test:ci": "node test-synthetic.mjs"
+    "build": "node build.mjs && node ../../../scripts/build-2d-guest.mjs && node ../../../scripts/pack-example.mjs .",
+    "build:debug": "node build.mjs && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
+    "test": "node test.mjs",
+    "test:synthetic": "node test-synthetic.mjs",
+    "start": "tension-core --res build/isometric.tns build/game.wasm --window"
   },
   "tension": {
     "kind": "res",
-    "capability": "../../../tension-2d/build/libtension_2d.so",
     "pack": {
       "input": "assets",
       "output": "build/isometric.tns"
     }
   },
   "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../../packages/core",
     "tension-framework": "file:../../../tension-framework"
   },
   "devDependencies": {

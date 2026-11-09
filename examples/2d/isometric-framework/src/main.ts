@@ -49,6 +49,18 @@ function hasArg(flag: string): bool {
   return false;
 }
 
+/// Whether the guest was asked to show a window.
+///
+/// `--windowed` is the guest's own flag and predates the host's `--window`. Since
+/// Pass C of the 2D merge the launch line is `tension-core game.wasm --window`,
+/// so this accepts both spellings: one word for an operator to type, and the
+/// original kept because the examples, the suites and the screenshots all pass
+/// it. The host's `--window` is a different thing (a size, before the wasm path);
+/// a guest that receives `--window` never sees that flag, only this word.
+function wantsWindow(): bool {
+  return hasArg("--windowed") || hasArg("--window");
+}
+
 function fail(what: string): void {
   print("  FAIL: " + what);
   failures++;
@@ -186,7 +198,7 @@ export function _start_game(): void {
 
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = hasArg("--windowed") ? OPEN_WINDOWED : 0;
+  const flags: i32 = wantsWindow() ? OPEN_WINDOWED : 0;
   const canvas = Canvas.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
   if (!canvas.isValid()) {
     print("FAIL: open -> " + canvas.lastError().toString());
@@ -326,7 +338,7 @@ export function _start_game(): void {
   // Windowed: hold the last frame until the window is closed. See
   // `examples/2d/isometric/src/main.ts` for the reasoning — same loop, same
   // `-ECANCELED` signal, same iteration cap so a headless run cannot hang.
-  if (hasArg("--windowed") && failures == 0) {
+  if (wantsWindow() && failures == 0) {
     print("windowed: close the window to exit");
     let keep: i32 = 0;
     while (keep < 18000) {
