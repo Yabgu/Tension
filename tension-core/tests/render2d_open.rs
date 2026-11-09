@@ -62,6 +62,15 @@ impl Probe {
         }
     }
 
+    fn pass(&mut self, what: &str) {
+        println!("  ok   {what}");
+    }
+
+    fn fail(&mut self, what: &str) {
+        println!("  FAIL {what}");
+        self.failures.push(what.to_string());
+    }
+
     fn equal<T: PartialEq + std::fmt::Debug>(&mut self, what: &str, got: T, want: T) {
         if got == want {
             println!("  ok   {what}");
@@ -146,6 +155,30 @@ fn main() {
             "and it created no window",
             window.is_none(),
         );
+    }
+
+    // ── the `dummy` video driver is refused by name ───────────────────────
+    //
+    // The one case that runs before any device exists, and the one the C++
+    // renderer had (`render.cpp:491-505`): a driver with no GPU backend must be
+    // named, because SDL's own failure message reads like "this machine has no
+    // GPU". It is set for this check and unset immediately, so the rest of the
+    // probe is unaffected.
+    if std::env::var("SDL_VIDEODRIVER").as_deref() == Ok("dummy") {
+        println!("dummy driver (this process was started with SDL_VIDEODRIVER=dummy)");
+        let mut state = Render2dState::default();
+        match state.open_offscreen(8, 8) {
+            Err(Render2dError::NoDevice(message)) => {
+                probe.check(
+                    "the refusal names the driver and the one that works",
+                    message.contains("dummy") && message.contains("offscreen"),
+                );
+            }
+            Err(other) => probe.fail(&format!("the dummy driver refused with {other:?}")),
+            Ok(_) => probe.fail("the dummy driver was allowed to open a canvas"),
+        }
+        finish(&probe);
+        return;
     }
 
     // ── the GPU half ───────────────────────────────────────────────────────
@@ -258,6 +291,10 @@ fn main() {
         Err(error) => skip_or_fail(&mut probe, "windowed open", &error),
     }
 
+    // A fresh state: the windowed block above leaves its canvas open, and the
+    // verb probe opens its own at a size a clear frame can be checked against.
+    verbs(&mut probe);
+
     finish(&probe);
 }
 
@@ -274,6 +311,193 @@ fn skip_or_fail(probe: &mut Probe, what: &str, error: &Render2dError) {
             probe.failures.push(what.to_string());
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// the ten verbs
+// ---------------------------------------------------------------------------
+
+/// Every verb's contract, called through the renderer rather than through the
+/// wasm shims.
+///
+/// The shims (`main.rs`) only translate — guest memory in, a `Result` out — so
+/// what is worth testing is the layer under them: does `submit` refuse a bucket
+/// that belongs to another pipeline, does `texture_load` say `-ENOSYS` for a
+/// PNG, does an empty `present` produce the clear colour. Each assertion names
+/// the errno the C++ path returned for the same input, because a guest that
+/// handled `-ENOENT` before the merge must still get `-ENOENT`.
+fn verbs(probe: &mut Probe) {
+    use tension_core::render2d::error::{EINVAL, ENOENT, ENOSYS};
+
+    println!("verbs");
+    let mut state = Render2dState::default();
+
+    match state.open_offscreen(8, 8) {
+        Ok(_) => {}
+        Err(error) => {
+            skip_or_fail(probe, "open for the verb probe", &error);
+            return;
+        }
+    }
+
+    // ── info ──────────────────────────────────────────────────────────────
+    match state.info() {
+        Ok(info) => {
+            probe.equal("info version is 2", info.version, 2);
+            probe.equal("info reports the canvas width", info.canvas_width, 8);
+            probe.equal("info reports the canvas height", info.canvas_height, 8);
+            probe.equal("info reports 4096 records", info.max_records, 4096);
+            probe.equal("info reports 8 buckets", info.max_buckets, 8);
+            probe.equal("info reports 64 textures", info.max_textures, 64);
+            probe.equal("info flags are zero", info.flags, 0);
+        }
+        Err(error) => {
+            println!("  FAIL info: {error}");
+            probe.failures.push("info".to_string());
+        }
+    }
+
+    // ── set_pipeline: the preset id ranges ────────────────────────────────
+    probe.equal(
+        "preset 0 is ENOENT",
+        state.set_preset(0).err().map(|e| e.errno()),
+        Some(ENOENT),
+    );
+    probe.equal(
+        "preset 100 is ENOENT",
+        state.set_preset(100).err().map(|e| e.errno()),
+        Some(ENOENT),
+    );
+    probe.equal(
+        "preset 2 is ENOSYS (a preset this build does not carry)",
+        state.set_preset(2).err().map(|e| e.errno()),
+        Some(ENOSYS),
+    );
+    probe.equal(
+        "an empty graph blob is EINVAL",
+        state.set_pipeline_blob(&[]).err().map(|e| e.errno()),
+        Some(EINVAL),
+    );
+
+    // ── texture_load ──────────────────────────────────────────────────────
+    // A 1x1 RGBA IWI, built here rather than loaded: the point is the decode
+    // and the upload, and a fixture file would hide which byte was wrong.
+    let mut iwi = vec![0u8; 78];
+    iwi[0..4].copy_from_slice(b"IWI1");
+    iwi[4..8].copy_from_slice(&1u32.to_le_bytes());
+    iwi[8..12].copy_from_slice(&1u32.to_le_bytes());
+    iwi[13..15].copy_from_slice(&4u16.to_le_bytes());
+    iwi[15..17].copy_from_slice(&32u16.to_le_bytes());
+    for component in 0..4u16 {
+        let at = 18 + component as usize * 6;
+        iwi[at] = component as u8;
+        iwi[at + 2..at + 4].copy_from_slice(&(component * 8).to_le_bytes());
+        iwi[at + 4..at + 6].copy_from_slice(&8u16.to_le_bytes());
+    }
+    iwi[66..74].copy_from_slice(&4u64.to_le_bytes());
+    iwi[74..78].copy_from_slice(&[10, 20, 30, 255]);
+
+    match state.texture_load(&iwi, 1) {
+        Ok(id) => probe.equal("texture_load returns texture 1", id, 1),
+        Err(error) => {
+            skip_or_fail(probe, "texture_load", &error);
+        }
+    }
+    probe.equal(
+        "a second texture takes the next id",
+        state.texture_load(&iwi, 1).ok(),
+        Some(2),
+    );
+    // 80 bytes, so the length check passes and the magic check is what
+    // decides. The C++ reader checks length first (`texture.cpp:71-74`), and a
+    // short buffer is `-EINVAL` there too — refusing a truncated *container*
+    // before refusing an unknown *format* is the ordering the DSO had.
+    let mut png = vec![0u8; 80];
+    png[0..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    probe.equal(
+        "a PNG is ENOSYS, not EINVAL",
+        state.texture_load(&png, 1).err().map(|e| e.errno()),
+        Some(ENOSYS),
+    );
+    probe.equal(
+        "an 8-byte stub is EINVAL (shorter than the container header)",
+        state
+            .texture_load(b"\x89PNG\r\n\x1a\n", 1)
+            .err()
+            .map(|e| e.errno()),
+        Some(EINVAL),
+    );
+    probe.equal(
+        "a non-RGBA8 target is ENOSYS",
+        state.texture_load(&iwi, 4).err().map(|e| e.errno()),
+        Some(ENOSYS),
+    );
+
+    // ── submit / set_texture: unknown handles ─────────────────────────────
+    let record = [0u8; 28];
+    probe.equal(
+        "submit to an unknown pipe is ENOENT",
+        state
+            .submit(7, &record, 1, 28, 0)
+            .err()
+            .map(|e| e.errno()),
+        Some(ENOENT),
+    );
+    probe.equal(
+        "set_texture on an unknown pipe is ENOENT",
+        state
+            .set_texture(7, 0, 1)
+            .err()
+            .map(|e| e.errno()),
+        Some(ENOENT),
+    );
+
+    // ── present with nothing staged, then screenshot ──────────────────────
+    //
+    // This is the one frame the rig can produce without a graphics pipeline:
+    // an empty present opens a render pass, clears to black, draws nothing and
+    // reads back. If the two backends disagree about the clear colour, the
+    // target format or the readback layout, it shows up here — and it is the
+    // only assertion in this file that inspects pixels.
+    println!("present + screenshot (clear frame)");
+    match state.present(&mut None) {
+        Ok(0) => {
+            probe.pass("present with nothing staged answers 0");
+            match state.screenshot() {
+                Ok(frame) => {
+                    probe.equal("the frame is 8x8x4 bytes", frame.len(), 8 * 8 * 4);
+                    // The clear colour is `{0,0,0,1}` in the C++ renderer.
+                    let all_black = frame.chunks_exact(4).all(|px| px == [0, 0, 0, 255]);
+                    probe.check("every pixel is the clear colour (0,0,0,255)", all_black);
+                    if !all_black {
+                        if let Some(first) = frame.chunks_exact(4).position(|px| px != [0, 0, 0, 255])
+                        {
+                            println!(
+                                "       first differing pixel {first} is {:?}",
+                                &frame[first * 4..first * 4 + 4]
+                            );
+                        }
+                    }
+                }
+                Err(error) => skip_or_fail(probe, "screenshot", &error),
+            }
+        }
+        Ok(other) => probe.fail(&format!("present answered {other}, not 0")),
+        Err(error) => skip_or_fail(probe, "present", &error),
+    }
+
+    // ── close ─────────────────────────────────────────────────────────────
+    probe.equal("close answers 0", state.close(1).unwrap_or(-1), 0);
+    probe.equal(
+        "info after close is ENODEV",
+        state.info().err().map(|e| e.errno()),
+        Some(-19),
+    );
+    probe.equal(
+        "screenshot after close is ENODEV",
+        state.screenshot().err().map(|e| e.errno()),
+        Some(-19),
+    );
 }
 
 fn finish(probe: &Probe) -> () {

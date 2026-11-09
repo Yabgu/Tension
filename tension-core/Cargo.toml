@@ -5,22 +5,28 @@ edition = "2021"
 description = "TensionCore interpreter: loads a guest game.wasm and supplies the tension::io host ABI"
 
 [features]
-default = ["audio", "ai"]
+# `render2d-core` is on by default since Pass B: `cargo build` produces a binary
+# with the 2D renderer in core, full stop. The feature survives as a bisect
+# escape hatch (`--no-default-features`, or `TENSION_RENDER2D=cpp` in
+# `scripts/build-native.mjs`), which loads the C++ DSO instead. Pass C removes
+# the flag and the DSO together.
+default = ["audio", "ai", "render2d-core"]
 audio = ["dep:cpal"]
 # In-process llama.cpp. Default: it turns on a ~2 min vendored C++ build
 # (needs cmake + g++). Build with `--no-default-features --features audio`
 # and `ai` falls back to the deterministic stub.
 ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
-# The 2D renderer in core instead of in a capability DSO (Pass A of the merge).
+# The 2D renderer in core instead of in a capability DSO.
 #
-# Off is the tree as it was: the ten `tension::2d` imports come from
-# `tension-2d/build/libtension_2d.so`, and a run that names no `--capability`
-# simply does not have them. On, this binary registers the imports itself and a
-# `tension::2d` DSO named on the command line is skipped rather than loaded.
+# On (the default) this binary registers the ten `tension::2d` imports itself,
+# and a `tension::2d` DSO named on the command line is skipped rather than
+# loaded. Off, the imports come from `tension-2d/build/libtension_2d.so` and a
+# run that names no `--capability` simply does not have them — which is the
+# pre-merge behaviour, kept reachable so a bisect can answer "is this the port?"
+# without a rebuild of anything else.
 #
 # A feature rather than a runtime flag because it decides which code exists, not
-# which code runs: `link_2d` is compiled in or out. Pass B flips the default and
-# then deletes the C++ adapter, at which point the feature goes too.
+# which code runs: `link_2d` is compiled in or out.
 render2d-core = []
 
 [[bin]]
@@ -132,4 +138,12 @@ harness = false
 # when none is usable — see the file's header.
 [[test]]
 name = "render2d_open"
+harness = false
+
+# The parity proof: the Rust compile's SPIR-V against the C++ build's modules,
+# the ordering table against the graph, and (when both binaries exist) the same
+# guest through both backends. `harness = false` because Part C runs child
+# processes and wants one ordered narrative rather than a per-test summary.
+[[test]]
+name = "render2d_parity"
 harness = false

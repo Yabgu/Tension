@@ -1913,31 +1913,116 @@ fn drop_host_window(store: &mut Store<HostState>) {
 // tension::2d — the in-core renderer (feature `render2d-core`)
 // ---------------------------------------------------------------------------
 
+/// Copy a span out of guest memory.
+///
+/// The in-core equivalent of the DSO's `read_guest` (`adapter.cpp:98`), with the
+/// same refusals in the same order: no exported memory is `-EBADF`, a span that
+/// runs past the end is `-ENOSPC` (which every caller maps to `-EINVAL`, because
+/// "your span is wrong" is an argument error at the verb), and a pointer
+/// arithmetic overflow is `-EINVAL`.
+///
+/// The copy is the point, not an implementation detail: the guest pointer is not
+/// kept past the call (`tension_adapter.h` rule 6), and the renderer sorts and
+/// re-reads records after the verb has returned.
+#[cfg(feature = "render2d-core")]
+fn guest_bytes(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> Result<Vec<u8>, i32> {
+    use render2d::error::{EINVAL, ENOSPC};
+    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        return Err(render2d::error::EBADF);
+    };
+    let data = mem.data(&*caller);
+    let start = ptr as usize;
+    let end = start.checked_add(len as usize).ok_or(EINVAL)?;
+    if end > data.len() {
+        return Err(ENOSPC);
+    }
+    Ok(data[start..end].to_vec())
+}
+
+/// Write a span into guest memory, refusing a buffer shorter than the write.
+///
+/// The DSO's `write_guest` (`adapter.cpp:108`): `-ENOSPC` when the caller's
+/// capacity cannot hold the bytes, `-EBADF` when there is no memory to write to.
+#[cfg(feature = "render2d-core")]
+fn put_guest_bytes(
+    caller: &mut Caller<'_, HostState>,
+    ptr: u32,
+    cap: u32,
+    src: &[u8],
+) -> Result<(), i32> {
+    use render2d::error::{ENOSPC, EINVAL};
+    if src.len() > cap as usize {
+        return Err(ENOSPC);
+    }
+    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
+        return Err(render2d::error::EBADF);
+    };
+    let data = mem.data_mut(&mut *caller);
+    let start = ptr as usize;
+    let end = start.checked_add(src.len()).ok_or(EINVAL)?;
+    if end > data.len() {
+        return Err(ENOSPC);
+    }
+    data[start..end].copy_from_slice(src);
+    Ok(())
+}
+
+/// Refuse a verb whose handle is not the open canvas.
+///
+/// One helper because the rule is one rule: the DSO's handle is 1 or 0
+/// (`adapter.cpp:44-46`), and a verb that names anything else is `-EINVAL`.
+/// `info` is the exception — it answers `-ENODEV` for a missing canvas, which is
+/// the DSO's own split (`adapter.cpp:359-363`) and information a guest uses: "no
+/// canvas" and "wrong handle" are different mistakes.
+#[cfg(feature = "render2d-core")]
+fn check_handle(state: &HostState, handle: i32) -> Option<i32> {
+    if handle == 1 && state.render2d.canvas().is_some() {
+        None
+    } else {
+        Some(render2d::error::EINVAL)
+    }
+}
+
+/// Log a refusal at the level the DSO used, so a reader comparing the two
+/// backends sees the same lines.
+#[cfg(feature = "render2d-core")]
+fn log_refusal(verb: &str, error: &render2d::Render2dError) {
+    logging::log(
+        Level::Error,
+        "2d",
+        &format!("{verb} refused ({})", error.message()),
+    );
+}
+
 /// Register the ten `tension::2d` verbs as `func_wrap`s.
 ///
 /// # Why these live in the binary
 ///
 /// A `func_wrap` closure takes `Caller<'_, HostState>`, and `HostState` is the
 /// binary's. The library owns the mechanism ([`render2d::Render2dState`]: the
-/// device, the window claim, the swapchain guard); this owns the guest-facing
-/// names. That is the split `platform` already makes, and it is what lets
-/// `tests/render2d_open.rs` drive the mechanism with no wasm in sight.
+/// device, the window claim, the frame stager, the tables, the swapchain guard);
+/// this owns the guest-facing names. That is the split `platform` already makes,
+/// and it is what lets the tests drive the mechanism with no wasm in sight.
 ///
-/// # Why all ten are registered when eight are `-ENOSYS`
+/// # The signatures
 ///
-/// A guest that imports `tension::2d` imports all of the verbs it calls, and a
-/// missing definition fails **instantiation**, not the call. Registering the
-/// eight keeps every existing 2D guest loadable against the in-core backend, so
-/// the dual path can be exercised end to end: `open` and `close` really work,
-/// and a guest that gets as far as `submit` is told plainly that the port is
-/// half done. Pass B replaces each body and this comment goes.
+/// `adapter.cpp:440-486`'s registration table, verb for verb. The arity and the
+/// parameter count are part of the contract: a guest built against the DSO must
+/// not see a different shape, so `submit` still takes
+/// `(handle, pipe_id, hdr_ptr, bucket)` even though an in-core call could pass a
+/// slice.
 ///
-/// The signatures are `adapter.cpp:440-486`'s registration table, verb for verb:
-/// the arity and the parameter count are part of the contract, and a guest built
-/// against the DSO must not see a different shape.
+/// # The one verb that is still `-ENOSYS`
+///
+/// `shader_compile_raw` never had a body in the DSO either
+/// (`adapter.cpp:248-253`): the wire has the door, and no build has a GLSL to
+/// SPIR-V translator behind it. The in-core path *could* serve it —
+/// [`render2d::pipeline`] reaches Naga — but that would be a new capability, not
+/// a port, and Pass B is a port. It stays `-ENOSYS` and says so.
 #[cfg(feature = "render2d-core")]
 fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
-    use render2d::error::{ENOSYS, EINVAL};
+    use render2d::error::{ENOSPC, ENOSYS, EINVAL};
+    use render2d::record::{SubmitHeader, RECORD_SIZE};
 
     linker.func_wrap(
         "tension::2d",
@@ -2017,55 +2102,280 @@ fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         },
     )?;
 
-    // The eight that Pass B ports. Arity is the DSO's, so a guest instantiates
-    // and is refused at the call rather than at load. Written out rather than
-    // generated by a macro: `IntoFunc` is implemented per closure shape, and a
-    // `macro_rules!` that repeats `$arg` produces a tuple pattern wasmtime does
-    // not accept.
+    // set_pipeline(handle, blob_ptr, blob_len).
+    //
+    // The DSO's `blob_len < 100` convention for "this is a preset id" is kept:
+    // it is the wire's encoding, not an implementation detail, and a guest that
+    // passes a 1..99 length is naming a preset (`adapter.cpp:243-246`).
     linker.func_wrap(
         "tension::2d",
         "set_pipeline",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
+        |mut caller: Caller<'_, HostState>, handle: i32, blob_ptr: i32, blob_len: i32| -> i32 {
+            {
+                let state = caller.data();
+                if let Some(errno) = check_handle(state, handle) {
+                    return errno;
+                }
+            }
+
+            let result = if blob_ptr != 0 {
+                if blob_len <= 0 {
+                    return EINVAL;
+                }
+                match guest_bytes(&mut caller, blob_ptr as u32, blob_len as u32) {
+                    Ok(blob) => caller.data_mut().render2d.set_pipeline_blob(&blob),
+                    Err(errno) => {
+                        return if errno == ENOSPC { EINVAL } else { errno };
+                    }
+                }
+            } else {
+                if !(render2d::pipeline::PIPE_PRESET_MIN as i32
+                    ..=render2d::pipeline::PIPE_PRESET_MAX as i32)
+                    .contains(&blob_len)
+                {
+                    return render2d::error::ENOENT;
+                }
+                caller.data_mut().render2d.set_preset(blob_len as u16)
+            };
+
+            match result {
+                Ok(pipe_id) => {
+                    logging::log(
+                        Level::Debug,
+                        "2d",
+                        &format!("set_pipeline -> pipe {pipe_id}"),
+                    );
+                    pipe_id as i32
+                }
+                Err(error) => {
+                    log_refusal("set_pipeline", &error);
+                    error.errno()
+                }
+            }
+        },
     )?;
+
+    // shader_compile_raw(handle, src_ptr, src_len, fmt, out_ptr): still -ENOSYS.
     linker.func_wrap(
         "tension::2d",
         "shader_compile_raw",
         |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32, _e: i32| -> i32 {
+            // The wire has the door; this build has no GLSL -> SPIR-V verb
+            // behind it (`docs/modules/2d.md` §4). An honest -ENOSYS beats a
+            // half-door, and the module comment says why the port did not open
+            // this one.
+            logging::log(
+                Level::Debug,
+                "2d",
+                "shader_compile_raw: no shader translator in this build",
+            );
             ENOSYS
         },
     )?;
+
+    // submit(handle, pipe_id, hdr_ptr, bucket).
     linker.func_wrap(
         "tension::2d",
         "submit",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+        |mut caller: Caller<'_, HostState>, handle: i32, pipe_id: i32, hdr_ptr: i32, bucket: i32| -> i32 {
+            {
+                let state = caller.data();
+                if let Some(errno) = check_handle(state, handle) {
+                    return errno;
+                }
+            }
+
+            // One read for the header, one for the array: the guest pointer is
+            // not kept past this call.
+            let header_bytes = match guest_bytes(&mut caller, hdr_ptr as u32, 12) {
+                Ok(bytes) => bytes,
+                Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
+            };
+            let Some(header) = SubmitHeader::parse(&header_bytes) else {
+                return EINVAL;
+            };
+
+            if header.flags != 0 || header.records_count == 0 {
+                return EINVAL;
+            }
+            if u32::from(header.record_stride) != RECORD_SIZE {
+                return EINVAL;
+            }
+            if bucket < 0 {
+                return EINVAL;
+            }
+            let bytes = u64::from(header.records_count) * u64::from(header.record_stride);
+            if bytes > u64::from(u32::MAX) {
+                return EINVAL;
+            }
+
+            let records =
+                match guest_bytes(&mut caller, header.records_ptr, bytes as u32) {
+                    Ok(bytes) => bytes,
+                    Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
+                };
+
+            let state = caller.data_mut();
+            match state.render2d.submit(
+                pipe_id as u32,
+                &records,
+                header.records_count,
+                u32::from(header.record_stride),
+                bucket as u32,
+            ) {
+                Ok(accepted) => accepted as i32,
+                Err(error) => {
+                    log_refusal("submit", &error);
+                    error.errno()
+                }
+            }
+        },
     )?;
+
     linker.func_wrap(
         "tension::2d",
         "present",
-        |_: Caller<'_, HostState>, _a: i32| -> i32 { ENOSYS },
+        |mut caller: Caller<'_, HostState>, handle: i32| -> i32 {
+            let state = caller.data_mut();
+            let HostState {
+                render2d,
+                host_window,
+                ..
+            } = state;
+            if handle != 1 || render2d.canvas().is_none() {
+                return EINVAL;
+            }
+            match render2d.present(host_window) {
+                Ok(value) => value,
+                Err(error) => {
+                    // A cancelled present is not a failure: it is the one
+                    // message that the user closed the window, and the DSO
+                    // logged it at error level too so an example's output shows
+                    // why the frame stopped.
+                    log_refusal("present", &error);
+                    error.errno()
+                }
+            }
+        },
     )?;
+
+    // texture_load(handle, src_ptr, src_len, target_format).
     linker.func_wrap(
         "tension::2d",
         "texture_load",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+        |mut caller: Caller<'_, HostState>, handle: i32, src_ptr: i32, src_len: i32, format: i32| -> i32 {
+            {
+                let state = caller.data();
+                if let Some(errno) = check_handle(state, handle) {
+                    return errno;
+                }
+            }
+            let source = match guest_bytes(&mut caller, src_ptr as u32, src_len as u32) {
+                Ok(bytes) => bytes,
+                Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
+            };
+            match caller.data_mut().render2d.texture_load(&source, format) {
+                Ok(texture_id) => texture_id as i32,
+                Err(error) => {
+                    log_refusal("texture_load", &error);
+                    error.errno()
+                }
+            }
+        },
     )?;
-    linker.func_wrap(
-        "tension::2d",
-        "info",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
-    )?;
-    linker.func_wrap(
-        "tension::2d",
-        "screenshot",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32| -> i32 { ENOSYS },
-    )?;
+
+    // set_texture(handle, pipe_id, slot, texture_id).
     linker.func_wrap(
         "tension::2d",
         "set_texture",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32| -> i32 { ENOSYS },
+        |mut caller: Caller<'_, HostState>, handle: i32, pipe_id: i32, slot: i32, texture_id: i32| -> i32 {
+            {
+                let state = caller.data();
+                if let Some(errno) = check_handle(state, handle) {
+                    return errno;
+                }
+            }
+            if pipe_id <= 0 || slot < 0 || texture_id <= 0 {
+                return EINVAL;
+            }
+            let state = caller.data_mut();
+            match state
+                .render2d
+                .set_texture(pipe_id as u32, slot as u32, texture_id as u32)
+            {
+                Ok(value) => value,
+                Err(error) => {
+                    log_refusal("set_texture", &error);
+                    error.errno()
+                }
+            }
+        },
     )?;
 
-    logging::log(Level::Debug, "2d", "link: ten verbs registered in core (open/close live)");
+    // info(handle, out_ptr, cap).
+    linker.func_wrap(
+        "tension::2d",
+        "info",
+        |mut caller: Caller<'_, HostState>, handle: i32, out_ptr: i32, cap: i32| -> i32 {
+            {
+                let state = caller.data();
+                if handle != 1 || state.render2d.canvas().is_none() {
+                    // `info` is the one verb that distinguishes this: a guest
+                    // probing whether it has a canvas wants `-ENODEV`, not
+                    // `-EINVAL` (`adapter.cpp:359-363`).
+                    return render2d::error::ENODEV;
+                }
+            }
+            let info = match caller.data().render2d.info() {
+                Ok(info) => info,
+                Err(error) => return error.errno(),
+            };
+            let bytes = info.to_bytes();
+            if (cap as usize) < bytes.len() {
+                return ENOSPC;
+            }
+            match put_guest_bytes(&mut caller, out_ptr as u32, cap as u32, &bytes) {
+                Ok(()) => bytes.len() as i32,
+                Err(errno) => errno,
+            }
+        },
+    )?;
+
+    // screenshot(handle, ptr, cap).
+    linker.func_wrap(
+        "tension::2d",
+        "screenshot",
+        |mut caller: Caller<'_, HostState>, handle: i32, ptr: i32, cap: i32| -> i32 {
+            {
+                let state = caller.data();
+                if let Some(errno) = check_handle(state, handle) {
+                    return errno;
+                }
+                let needed = state.render2d.width() as usize * state.render2d.height() as usize * 4;
+                if (cap as usize) < needed {
+                    return ENOSPC;
+                }
+            }
+            let frame = match caller.data_mut().render2d.screenshot() {
+                Ok(frame) => frame,
+                Err(error) => {
+                    log_refusal("screenshot", &error);
+                    return error.errno();
+                }
+            };
+            let written = frame.len();
+            match put_guest_bytes(&mut caller, ptr as u32, cap as u32, &frame) {
+                Ok(()) => written as i32,
+                Err(errno) => errno,
+            }
+        },
+    )?;
+
+    logging::log(
+        Level::Debug,
+        "2d",
+        "link: ten verbs registered in core",
+    );
     Ok(())
 }
 
