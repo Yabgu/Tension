@@ -89,6 +89,27 @@ pub fn run_epoch(
     caller: &mut Caller<'_, HostState>,
     mode: EpochMode,
 ) -> Result<EpochResult, SessionError> {
+    // Drain the host's window before the epoch blocks.
+    //
+    // A guest that drives its own loop yields to the host only inside `wait` and
+    // `drain`, so this is the only place its events can be pumped from. Without
+    // it a guest with no renderer — a text game, which is exactly what the input
+    // capability exists to serve — would never receive an event at all: before
+    // v7 its capability polled SDL on its own thread and the question never
+    // arose.
+    //
+    // `depth == 0` is the guard that keeps thread rule 13's real invariant: a
+    // dispatch never *nests* inside an adapter callback (a publish hook or a
+    // deferred `apply`) where guest memory is held. A re-entrant wait would be
+    // refused two lines later anyway; this keeps it from pumping first.
+    if caller.data().depth == 0 {
+        crate::pump_host_window(caller.data_mut());
+        // ... and then execute what the batch asked for. A layer's dispatch may
+        // post a control (the input capability's `set_relative` does), and the
+        // executor is here for the same reason the pump is: this is the only
+        // place a guest that drives its own loop yields.
+        crate::apply_pending_controls(caller.data_mut());
+    }
     run_epoch_with_store(session, caller, mode)
 }
 
