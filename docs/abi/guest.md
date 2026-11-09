@@ -15,6 +15,12 @@ with `--capability`; the core modules are always present. Signatures are
 written in WebAssembly value types, which is what a guest sees: a Rust
 `u32` and a Rust `i32` are both `i32` here.
 
+A module marked *core, and a capability on the bisect path* (`tension::2d`) is registered by the host in the default build, so it is always
+present. The same ten imports are also the surface of a capability DSO,
+built from `tension-2d/reference/` for a `--no-default-features` bisect;
+the rows below carry that adapter's verb ids and flags, which the in-core
+registration does not spell out.
+
 This page states signatures, not errno contracts. An import that can refuse
 says how in its own shim; the shared codes are in
 [`adapter.md`](adapter.md#error-codes).
@@ -23,7 +29,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:950` |
+| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:976` |
 
 ## `ogre` — capability
 
@@ -67,20 +73,20 @@ says how in its own shim; the shared codes are in
 The `session` module is reserved: these verbs are the host's own. An
 adapter that tries to register here is refused at load (`tension-core/src/adapter/mod.rs:1155`).
 
-## `tension::2d` — capability
+## `tension::2d` — core, and a capability on the bisect path
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `open` | `(i32, i32, i32) → i32` | 1 | — | `tension-2d/src/adapter.cpp:457` |
-| `close` | `(i32) → i32` | 2 | — | `tension-2d/src/adapter.cpp:458` |
-| `set_pipeline` | `(i32, i32, i32) → i32` | 3 | — | `tension-2d/src/adapter.cpp:459` |
-| `shader_compile_raw` | `(i32, i32, i32, i32, i32) → i32` | 4 | — | `tension-2d/src/adapter.cpp:460` |
-| `submit` | `(i32, i32, i32, i32) → i32` | 5 | — | `tension-2d/src/adapter.cpp:461` |
-| `present` | `(i32) → i32` | 6 | — | `tension-2d/src/adapter.cpp:462` |
-| `texture_load` | `(i32, i32, i32, i32) → i32` | 7 | — | `tension-2d/src/adapter.cpp:463` |
-| `info` | `(i32, i32, i32) → i32` | 8 | REENTRANT_READONLY | `tension-2d/src/adapter.cpp:465` |
-| `screenshot` | `(i32, i32, i32) → i32` | 9 | — | `tension-2d/src/adapter.cpp:466` |
-| `set_texture` | `(i32, i32, i32, i32) → i32` | 10 | — | `tension-2d/src/adapter.cpp:469` |
+| `open` | `(i32, i32, i32) → i32` | 1 | — | `tension-2d/reference/adapter.cpp:457` |
+| `close` | `(i32) → i32` | 2 | — | `tension-2d/reference/adapter.cpp:458` |
+| `set_pipeline` | `(i32, i32, i32) → i32` | 3 | — | `tension-2d/reference/adapter.cpp:459` |
+| `shader_compile_raw` | `(i32, i32, i32, i32, i32) → i32` | 4 | — | `tension-2d/reference/adapter.cpp:460` |
+| `submit` | `(i32, i32, i32, i32) → i32` | 5 | — | `tension-2d/reference/adapter.cpp:461` |
+| `present` | `(i32) → i32` | 6 | — | `tension-2d/reference/adapter.cpp:462` |
+| `texture_load` | `(i32, i32, i32, i32) → i32` | 7 | — | `tension-2d/reference/adapter.cpp:463` |
+| `info` | `(i32, i32, i32) → i32` | 8 | REENTRANT_READONLY | `tension-2d/reference/adapter.cpp:465` |
+| `screenshot` | `(i32, i32, i32) → i32` | 9 | — | `tension-2d/reference/adapter.cpp:466` |
+| `set_texture` | `(i32, i32, i32, i32) → i32` | 10 | — | `tension-2d/reference/adapter.cpp:469` |
 
 ## `tension::ai`
 
@@ -121,33 +127,33 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/main.rs:965` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:991` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1006` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1021` |
-| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1074` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1080` |
+| `print` | `(i32, i32)` | `tension-core/src/main.rs:991` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1017` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1032` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1047` |
+| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1100` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1106` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1321` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1344` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1349` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1347` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1370` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1375` |
 
 ## `tension::res`
 
 | import | signature | registered at |
 |---|---|---|
-| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1115` |
-| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1129` |
-| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1146` |
-| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1187` |
-| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1204` |
-| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1221` |
-| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1241` |
-| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1265` |
+| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1141` |
+| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1155` |
+| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1172` |
+| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1213` |
+| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1230` |
+| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1247` |
+| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1267` |
+| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1291` |
 
 ## `tension::solver`
 

@@ -15,9 +15,8 @@ yet.
 | The canary lattice detects guest overlap, it does not prevent it | arena layout | one wasm memory | a second memory in the guest ABI | — |
 | The region layout is fixed at twelve kinds | arena layout | `kind == index` and `layout_hash` | schema bump, or a dynamic allocation verb | — |
 | `RING` delivery behaves like `POLLED` | epoch v1 | only `BATCHED` and `DIRECT` are special-cased | a ring delivery path | — |
-| `tension-2d` owns and creates its own window | the module | SDL_GPU has no external-surface handoff | upstream support, or a Vulkan renderer | vision §5.2 |
-| The 2d windowed path is never exercised | the module | every scenario uses `SDL_VIDEODRIVER=offscreen` | a windowed fixture that can run headless | — |
-| The 2D pixel scenarios do not run on this rig | pre-dates `272309e` | NVIDIA ICD SIGSEGV in `present` | a conformant ICD (CI's lavapipe) | CI |
+| The 2D *pixels* are never checked on this rig | the module | every scenario uses `SDL_VIDEODRIVER=offscreen`, and no pipeline can be created here | a conformant ICD (CI's lavapipe) | CI |
+| The 2D scenarios do not run on this rig | pre-dates `272309e` | `vkCreateGraphicsPipelines` → `VK_ERROR_OUT_OF_HOST_MEMORY` under Mesa `dzn` | a conformant ICD (CI's lavapipe) | CI |
 | No offscreen GPU render path | `f1c57af` | the adapter has no offscreen target | an offscreen `VkImage` path | — |
 | Swapchain destroyed with the queue still holding its images (#17) | Ogre pin `475f783` | upstream `destroySwapchain` does not stall | a patch hunk, at a per-rebuild cost | — |
 | Draw against a rebuild's previous image layout (#18) | Ogre pin `475f783` | upstream rebinds no Hlms descriptors | the same patch area | — |
@@ -28,7 +27,7 @@ yet.
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
 | Input dispatcher still in the DSO | — | scheduled as its own pass | that pass opens | vision §5.5 |
 | Win32 header path is a checked-in overlay | `ci/linsys2.md` | Ogre's tree has no `WIN32` platform define for the Vulkan window | upstream, or the overlay grows | — |
-| The isometric suites fail on this rig | — | NVIDIA GL driver crash | the same ICD | CI |
+| The isometric suites fail on this rig | — | `vkCreateGraphicsPipelines` fails under `dzn` | the same ICD | CI |
 
 ## The canary lattice detects, it does not prevent
 
@@ -68,31 +67,47 @@ publishes into the class sub-ring with no callback and waits for the guest to
 drain it (`tension-core/src/session/epoch.rs:292-318`). A guest that subscribes
 `RING` gets `POLLED` behaviour and no diagnostic says so.
 
-## `tension-2d` owns its own window
+## `tension-2d` owns its own window — **closed**
 
-With `TENSION_2D_OPEN_WINDOWED`, the 2d capability creates and claims its own
-`SDL_Window` (`tension-2d/src/render.cpp:522-539`). The host owns a window too
-(`tension-core/src/platform.rs:352`), so a run with `--window` and the 2d
-capability has two windows and the guest's frame is not drawn into the host's.
-This contradicts the ownership model in [`architecture.md`](architecture.md) §2
-and is unfixed: SDL_GPU has no external-surface handoff, so the fix is a new
-capability path rather than a parameter. [`modules/2d.md`](modules/2d.md) §3;
-deferral recorded in [`vision.md`](vision.md) §5.2.
+**Closed in the 2D merge.** `tension-2d` no longer creates a window; it claims the
+host's. There is no `SDL_CreateWindow` in the 2D path — the renderer lives in
+`tension-core/src/render2d/device.rs` and presents by calling
+`SDL_ClaimWindowForGPUDevice` on the `SDL_Window` the host already owns. The
+window itself is created on demand, at the size the canvas declares, so a guest
+calling `Canvas.windowed()` needs no `--window` beside it.
 
-**Every 2d scenario runs `SDL_VIDEODRIVER=offscreen`**, so `SDL_CreateWindow`,
-`SDL_ClaimWindowForGPUDevice` and the swapchain blit in `present` are compiled and
-never executed by a test. That is why the two-window problem has never been
-observed in a run rather than merely unrecorded.
+A second claim is refused by SDL with `"Window already claimed"`
+(`SDL_gpu_vulkan.c:9940-10012` at release-3.4.18) and by core first, with the
+owning renderer's name, as `-EBUSY`. The proof that the refusal path is real is
+`tension-core/tests/render2d_open.rs`, which opens a windowed canvas, asserts the
+claim, and asserts that a second claimant is refused without disturbing it.
 
-## The 2D pixel scenarios do not run on this rig
+What the merge did **not** fix is the pixels: every 2D test runs
+`SDL_VIDEODRIVER=offscreen`, so the windowed claim is exercised but what a user
+would see is not. See the next entry.
 
-`scripts/test-2d.mjs` fixes a real harness defect — its stub core never set
-`abi_version`, so every run failed at `init` since ABI v6.
-With that fixed, the scenarios reach `present` and die from SIGSEGV inside
-`libnvidia-glcore` under `SDL_VIDEODRIVER=offscreen`. The driver-guard case runs
-before any device exists and passes here; the pixel scenarios need a conformant
-Vulkan ICD, which is what the CI image's lavapipe provides. The `isometric` and
-`isometric-framework` suites fail the same way.
+## The 2D pixel scenarios need a conformant Vulkan ICD
+
+Every 2D scenario that draws needs a working graphics pipeline, and a machine
+where `vkCreateGraphicsPipelines` fails cannot run any of them. On the
+development rig (Mesa `dzn` under WSL2) it fails with
+`VK_ERROR_OUT_OF_HOST_MEMORY`, which the *untouched* C++ renderer reproduces
+identically — so it is the driver, not the port.
+
+Two things follow, and the merge handled both:
+
+- `tension-core/tests/render2d_open.rs` asserts the one frame that needs no
+  pipeline: an empty `present` clears to `(0,0,0,255)` and `screenshot` reads it
+  back, pixel by pixel. That pins the clear colour, the target format and the
+  readback layout on a rig where nothing else can draw.
+- `scripts/parity-2d.mjs` compares the two backends' shader modules byte for byte
+  on any machine, and skips the same-guest comparison with the assertion it would
+  have run stated. It also asserts that both backends fail at the same verb with
+  the same errno, which is the only cross-backend signal this rig can give.
+
+The `isometric` and `isometric-framework` suites fail rather than skip when no
+pipeline can be created, which is the policy in `tests/support/ci.rs`. CI's
+image provides lavapipe, which is what makes them run there.
 
 ## No offscreen GPU render path
 

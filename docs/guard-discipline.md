@@ -89,7 +89,14 @@ the current sources", and `scripts/run-example.mjs:35` is the one caller of
 - `scripts/test-input-edge.mjs:47-48` (compiler — no guard at all: it spawns
   whatever `npmBin()` returned, so an absent compiler is a spawn error rather
   than a clear message)
-- `scripts/test-framework.mjs`, `scripts/test-2d.mjs`, `scripts/run-2d-example.mjs`
+- `scripts/test-framework.mjs`, `scripts/run-2d-example.mjs`
+
+> `scripts/test-2d.mjs` was deleted in Pass B of the 2D merge along with the stub
+> core it drove and the C++ adapter under test. The instances below that cite it
+> are kept as written: they are the record of what that harness taught, and the
+> lesson outlives the file. What replaced it is
+> `tension-core/tests/render2d_open.rs` (behaviour) and
+> `scripts/parity-2d.mjs` (the two backends against each other).
   (same shape)
 
 A stale binary passes every one of them. That is how an adapter built against
@@ -177,7 +184,7 @@ Worth naming so the shape is copyable:
 - `scripts/build-native.mjs` `auditSdlSourceReferences()` / `auditSdlLinkage()` —
   scan the actual tree and the actual ELF `NEEDED` lists.
 - `framework_layout.rs` — parses the layout hash from the header.
-- `tension-2d/src/adapter.cpp:412` — checks `core->abi_version` at load. It did
+- `tension-2d/reference/adapter.cpp:412` (then `tension-2d/src/adapter.cpp`) — checks `core->abi_version` at load. It did
   not, until ABI v6; the omission is what made a stale 2D DSO undetectable.
 
 ## Applying the rule

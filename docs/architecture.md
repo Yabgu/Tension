@@ -38,12 +38,14 @@ handles it is given cross the boundary as `u64`
 
 | Resource | Owner | Created | Destroyed |
 |---|---|---|---|
-| `SDL_Window` | host | `platform.rs:352` (from `main.rs:1404`) | `platform.rs:650` |
+| `SDL_Window` | host | `platform.rs:351`, on demand (`--window`, or a renderer's first windowed `open`) | `platform.rs:650`, or `main`'s teardown |
 | SDL video + event pump | host | `platform.rs:353-362` | field order, `platform.rs:336-340` |
 | `VkInstance` | host | `platform.rs:452` | `platform.rs:664` |
 | `VkSurfaceKHR` | host | `platform.rs:457` | `platform.rs:663` |
 | `VkDevice` | renderer (Ogre) | inside `root_->init`, from the host's instance | `OgreVulkanDevice.cpp:525` |
-| Swapchain | renderer | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:698` |
+| Ogre swapchain | renderer (Ogre) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:698` |
+| GPU device + swapchain | renderer (2D, in core) | `render2d/device.rs`, first windowed `open` | `Render2dState::close`, or the store's drop |
+| Which renderer owns the swapchain | core | `Render2dState::claim_swapchain` | released by the holder |
 | Render thread | renderer | `tension-ogre/src/adapter.cpp:539` | joined `adapter.cpp:1532` |
 | SDL event queue | host, `platform.rs:536` | with the window | with the window |
 | Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
@@ -76,8 +78,13 @@ truth (`platform.rs:519`, `main.rs:1498-1499`).
 `VkSurfaceKHR`. The handles are borrowed: the adapter must not destroy either
 of them (`platform.rs:246-251`).
 
-**`tension-2d` still owns a window of its own** (`tension-2d/src/render.cpp:485,504`).
-It does not consume the host surface today; see §8.
+**2D does not create a window and does not consume the host `VkSurfaceKHR`
+either.** `SDL_GPU` has no external-surface handoff, so a 2D renderer presents by
+claiming the host's `SDL_Window` for its own device
+(`render2d/device.rs`, `SDL_ClaimWindowForGPUDevice`) rather than by borrowing a
+surface. One window, one owner, two different handoffs — the difference is
+SDL_GPU's, not the architecture's. See §8 for what that costs, and
+[`modules/2d.md`](modules/2d.md) §3 for the mechanism.
 
 ## 3. Lifetime and teardown order
 
@@ -293,11 +300,13 @@ workspace, render thread" as Ogre's: the window is the host's
 ## 8. Risks and open contracts
 
 - **A non-yielding guest freezes the window** (§4). No preemption, no watchdog.
-- **Two SDL subsystems can exist in one process.** The core loads SDL3 for the
-  host window (`platform.rs:352`); `tension-2d` loads its own and creates its
-  own window (`tension-2d/src/render.cpp:485,504`). With `--window` and the 2d
-  adapter, the guest's renderer is not drawing into the host's window. Not
-  fixed; the 2d host-surface path is future work.
+- **A window is claimed, not shared.** Since the 2D merge the renderer runs in
+  core and claims the host's `SDL_Window` for its own `SDL_GPUDevice`
+  (`render2d/device.rs`), so there is one window and no second one. What is not
+  fixed is the *combination*: a 2D renderer and Ogre in one run would be two GPU
+  devices presenting to one window — legal, incoherent, and refused in advance by
+  `Render2dState::claim_swapchain` (`-EBUSY`, naming the holder). Wiring Ogre's
+  own claim through the same guard is Pass D.
 - **Two validation findings remain open, both upstream.** Ogre's
   `destroySwapchain` calls `vkDestroySwapchainKHR` without stalling the device
   (`OgreVulkanWindow.cpp:562-575`), so `VUID-vkDestroySwapchainKHR-swapchain-01282`
@@ -351,4 +360,6 @@ numbers) is a future project.
 | `tension-core/include/tension_adapter.h` | the C vtable, append-only rule, thread rules |
 | `tension-ogre/src/adapter.cpp` | the render thread's life |
 | `tension-ogre/src/backend_ogre.cpp` | Ogre object order, the per-frame size check |
-| `tension-2d/src/render.cpp` | the 2d adapter's own window |
+| `tension-core/src/render2d/device.rs` | the 2D renderer: device, window claim, present |
+| `tension-core/src/render2d/pipeline.rs` | the graph compiler, called in-process |
+| `tension-2d/reference/` | the pre-port C++, unbuilt (Pass C deletes it) |

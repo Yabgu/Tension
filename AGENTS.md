@@ -99,10 +99,13 @@ through the adapter ABI; a session must be given the DSO with `--capability`):
   animation. Design: `docs/modules/ogre.md`.
 - **`tension::input`** — 6 verbs — `tension-input/build/libtension_input.so`.
   Keyboard/pointer state and edge events. Design: `tension-input/DESIGN.md`.
-- **`tension::2d`** — 10 verbs — `tension-2d/build/libtension_2d.so`. Sprite
-  batching over SDL_GPU: `open`, `close`, `set_pipeline`, `shader_compile_raw`,
-  `submit`, `present`, `texture_load`, `info`, `screenshot`, `set_texture`.
-  Design: `docs/modules/2d.md`.
+- **`tension::2d`** — 10 verbs — **in core**, in
+  `tension-core/src/render2d/`, registered by `link_2d` in `main.rs` (Cargo
+  feature `render2d-core`, on by default since the 2D merge). Sprite batching
+  over SDL_GPU: `open`, `close`, `set_pipeline`, `shader_compile_raw`, `submit`,
+  `present`, `texture_load`, `info`, `screenshot`, `set_texture`. A DSO built
+  from `tension-2d/reference/` still answers the same ten imports on a
+  `--no-default-features` bisect. Design: `docs/modules/2d.md`.
 
 ### Guest SDK
 
@@ -144,8 +147,14 @@ wrappers landed and re-verified after the migration.
 file is that file; anything else is a capability *name*, resolved as
 `<dir>/libtension_<name>.so` across `TENSION_CAPABILITY_PATH` (colon-separated).
 The explicit path is checked first, so an operator pointing at a file is never
-overridden by the environment. `--capability 2d` is therefore
-`libtension_2d.so` somewhere on that path.
+overridden by the environment. `--capability ogre` is therefore
+`libtension_ogre.so` somewhere on that path.
+
+**`--capability 2d` is a special case since the 2D merge**: the ten imports are
+registered in core by default, and a `tension::2d` DSO named on the command line
+is *skipped* rather than loaded — the log says so. It matters only on the bisect
+path, where the core was built `--no-default-features` and the DSO is the only
+thing that can answer.
 
 An adapter DSO exports the shared ABI in `tension_adapter.h`: an import table,
 `publish`, `apply`, `layout_hash`. At load the host compares `layout_hash`

@@ -198,6 +198,52 @@ example were blamed on the source for two weeks (`:45-60`). This is
 (`build-examples.mjs:106-110`): the examples compile with the framework's flags,
 and a fallback set would produce guests that do not match the session.
 
+### Running one, and the flags that are still there
+
+```
+tension-core [--debug] [--symbol-path <dir>] [--res <pak>] [--capability <path|name>]
+             [--log-level <spec>] [--log-format <text|json>] [--log-file <path>]
+             [--window <W>x<H>] <game.wasm> [game args...]
+```
+
+Options go **before** the guest path; everything after it is the guest's own
+`tension::io arg()` stream. That ordering is the whole contract, and it is why
+`--windowed` is a *guest* flag while `--window` is a *host* one.
+
+**`--window` is not going away.** Since the 2D merge a renderer creates its own
+window on demand (`Canvas.windowed()`), so `--window` is no longer how a 2D game
+gets a window — it is how an **operator** gets one: a test that wants a specific
+size before a guest starts, the tooling path, and `examples/platform-control`,
+which resizes a window and draws nothing. When a `--window` exists, a windowed
+canvas claims it; when it does not, one is created at the canvas size.
+
+The rest are transitional, and their retirement is scheduled rather than
+forgotten:
+
+| flag | retires when | owner |
+|---|---|---|
+| `--capability` | Ogre's own discovery lands — the sibling-payload lookup that lets `tension-core game.wasm` find the adapter without being told | Pass D |
+| `--res` | the same pass, for the same reason: a pak named on the command line is a path the runtime should resolve | Pass D |
+| `--log-level`, `--log-format`, `--log-file` | a guest can declare its own log destination and level through an import (`tension::log.set_level`) | future |
+| `--session-open`, `--session-callbacks`, `--post-test-events` | the A1/A2 fixtures retire; all three are marked "test-only" in `USAGE` | when those fixtures go |
+| `--debug`, `--symbol-path` | never — they are the debugger's interface, and a guest has no business setting them | — |
+| `--window` | never — see above | — |
+
+### The two 2D backends, and the one command that compares them
+
+`cargo build` produces a binary with the 2D renderer in core; that is the
+default and the shipped path. The C++ DSO survives as a bisect escape hatch:
+
+```sh
+node scripts/build-2d.mjs --cpp        # build the DSO from tension-2d/reference/
+TENSION_RENDER2D=cpp npm run build:native
+```
+
+`node scripts/parity-2d.mjs` builds both binaries, runs the same guest through
+each, and compares them — shader modules byte for byte, the ordering table
+against the graph, and stdout line for line. See
+[`modules/2d.md`](modules/2d.md) §7 for what each part asserts and what it skips.
+
 ## 6. Tests
 
 `node scripts/test.mjs` is the runner. Eighteen suites (`scripts/test.mjs:126-341`),
@@ -234,7 +280,8 @@ scheduled by needs and resource holds; `npm test -- --<name>` runs a subset
 - `platform-surface`, `platform-window`, `platform-control` — the host's SDL3
   surface, window and control bus.
 - `core` — the Rust integration tests, including `ogre_host_surface`,
-  `ogre_hierarchy`, `session_smoke`, `ogre_surface`.
+  `ogre_hierarchy`, `session_smoke`, `ogre_surface`, `render2d_open` and
+  `render2d_parity`.
 
 **Which suites are load-bearing for which guard:** `ogre-capacities` for the
 cross-language capacity agreement; `codegen` for the record shapes; `abi-docs` for
@@ -244,9 +291,12 @@ this list because they run in `build-native.mjs` — `npm test` does not re-run 
 
 The suite list is **[V]** (`scripts/test.mjs:126-341`). Which suite *runs* on this
 rig was not re-executed for this page; the last full run recorded before it was
-the pass-4 ogre suite (36 cases, exit 0) plus the unit suites, and the 2D suites
-need a GPU device the CI image supplies through lavapipe (`test-2d.mjs:101-105`
-returns exit 77 and the suite skips when none is present).
+the pass-4 ogre suite (36 cases, exit 0) plus the unit suites. The 2D pixel
+suites need a GPU device the CI image supplies through lavapipe; on a machine
+that cannot create a graphics pipeline they fail rather than skip, by the policy
+in `tension-core/tests/support/ci.rs`. `render2d_open` and part of
+`render2d_parity` run anywhere. `node scripts/parity-2d.mjs` is the separate
+command that compares the two 2D backends.
 
 ## 7. The ABI doc generator
 
@@ -403,7 +453,9 @@ numbers) is a future project.
 - `scripts/ensure-ogre.mjs` — the auto-bootstrap for a missing install.
 - `scripts/build-native.mjs` — payload copy, Zig archive, adapter link, core
   build, stamp, budget; guards G1–G4.
-- `scripts/build-2d.mjs` — GLSL → SPIR-V → embedded header → DSO.
+- `scripts/build-2d.mjs` — GLSL → SPIR-V → the modules the parity test compares
+  against. `--cpp` also links the bisect DSO.
+- `scripts/parity-2d.mjs` — both 2D backends, then the comparison.
 - `scripts/build-ogre.mjs` — the adapter build and the pin check.
 - `scripts/build-input.mjs`, `scripts/build-hlms-skin.mjs` — the other two DSOs.
 - `scripts/build-framework.mjs` — the guest toolchain, its version guard, and the

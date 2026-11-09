@@ -44,7 +44,11 @@ const HEADER = join(REPO, 'tension-core', 'include', 'tension_adapter.h');
 const CORE_SRC = join(REPO, 'tension-core', 'src');
 const ADAPTERS = [
   'tension-ogre/src/adapter.cpp',
-  'tension-2d/src/adapter.cpp',
+  // The 2D adapter moved into core in Pass B of the merge; the C++ it came from
+  // is kept at `tension-2d/reference/` for the bisect DSO, and that is still the
+  // file that declares the ten verb registrations `docs/abi/guest.md` documents.
+  // Pass C deletes both, and this entry with them.
+  'tension-2d/reference/adapter.cpp',
   'tension-input/src/adapter.cpp',
 ];
 const OUT = join(REPO, 'docs', 'abi');
@@ -619,7 +623,36 @@ function valueCell(params, ret) {
   return ret === 'void' ? `(${join})` : `(${join}) → ${ret}`;
 }
 
-function renderGuestDoc(core, capability, memory, reserved) {
+/// One row per (module, import).
+///
+/// Since the 2D merge a module can be registered twice: `tension::2d` is ten
+/// `func_wrap`s in core *and* the ten rows of the pre-port adapter kept at
+/// `tension-2d/reference/` for the bisect DSO. Both are real, and a table that
+/// lists each verb twice is a table a reader cannot trust. The capability row
+/// wins because it carries the verb id and the import flags — the wire contract,
+/// which the in-core registration does not spell out — and the module's heading
+/// says it lives in both places.
+///
+/// The counts in the page's own header are computed from this, not from the raw
+/// lists, so the number matches the rows a reader can count.
+function mergeImports(rawCore, rawCapability) {
+  const byKey = new Map();
+  for (const entry of rawCore) byKey.set(`${entry.module}:${entry.name}`, entry);
+  for (const entry of rawCapability) byKey.set(`${entry.module}:${entry.name}`, entry);
+  const merged = [...byKey.values()];
+  const core = merged.filter((entry) => entry.verb === undefined);
+  const capability = merged.filter((entry) => entry.verb !== undefined);
+  // Read from the *raw* lists: after the merge the duplicated rows are gone, so
+  // asking the split lists whether a module appears twice cannot answer.
+  const coreModules = new Set(rawCore.map((entry) => entry.module));
+  const capabilityModules = new Set(rawCapability.map((entry) => entry.module));
+  const dualModules = new Set(
+    [...coreModules].filter((module) => capabilityModules.has(module)),
+  );
+  return { core, capability, dualModules };
+}
+
+function renderGuestDoc(core, capability, memory, reserved, dualModules) {
   const lines = [];
   lines.push('# Guest ABI');
   lines.push('');
@@ -643,6 +676,17 @@ function renderGuestDoc(core, capability, memory, reserved) {
   lines.push('with `--capability`; the core modules are always present. Signatures are');
   lines.push('written in WebAssembly value types, which is what a guest sees: a Rust');
   lines.push('`u32` and a Rust `i32` are both `i32` here.');
+  if (dualModules.size > 0) {
+    lines.push('');
+    lines.push(
+      `A module marked *core, and a capability on the bisect path* (${[...dualModules]
+        .map((m) => `\`${m}\``)
+        .join(', ')}) is registered by the host in the default build, so it is always`);
+    lines.push('present. The same ten imports are also the surface of a capability DSO,');
+    lines.push('built from `tension-2d/reference/` for a `--no-default-features` bisect;');
+    lines.push('the rows below carry that adapter\'s verb ids and flags, which the in-core');
+    lines.push('registration does not spell out.');
+  }
   lines.push('');
   lines.push('This page states signatures, not errno contracts. An import that can refuse');
   lines.push('says how in its own shim; the shared codes are in');
@@ -657,7 +701,11 @@ function renderGuestDoc(core, capability, memory, reserved) {
   const order = [...byModule.keys()].sort((a, b) => a.localeCompare(b));
 
   for (const module of order) {
-    lines.push(capabilityModules.has(module) ? `## \`${module}\` — capability` : `## \`${module}\``);
+    if (dualModules.has(module)) {
+      lines.push(`## \`${module}\` — core, and a capability on the bisect path`);
+    } else {
+      lines.push(capabilityModules.has(module) ? `## \`${module}\` — capability` : `## \`${module}\``);
+    }
     lines.push('');
     const capabilityEntries = byModule.get(module).filter((e) => e.verb !== undefined);
     const hasVerb = capabilityEntries.length > 0;
@@ -741,13 +789,15 @@ function build() {
   const rules = numberedRules(header);
   const errnos = errnoTable(header);
 
-  const coreImportsList = coreImports();
-  const capabilityImports = ADAPTERS.flatMap((path) => cppImports(path));
+  const rawCore = coreImports();
+  const rawCapability = ADAPTERS.flatMap((path) => cppImports(path));
+  const { core: coreImportsList, capability: capabilityImports, dualModules } =
+    mergeImports(rawCore, rawCapability);
   const memory = memoryImports();
 
   return {
     adapterDoc: renderAdapterDoc(header, coreMembers, core.size, adapterMembers, adapter.size, rules, errnos, assertions),
-    guestDoc: renderGuestDoc(coreImportsList, capabilityImports, memory, reservedModule()),
+    guestDoc: renderGuestDoc(coreImportsList, capabilityImports, memory, reservedModule(), dualModules),
     fields: {
       tension_core_api: coreMembers.map((m) => ({ name: m.name, offset: m.offset })),
       tension_adapter: adapterMembers.map((m) => ({ name: m.name, offset: m.offset })),

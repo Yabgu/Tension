@@ -267,17 +267,20 @@ submodule we do not own.
 pipeline something to target, and makes the swapchain work testable against a
 known expectation instead of a guess.
 
-### 5.2 2D window ownership
+### 5.2 2D window ownership — **done**
 
 **What:** `tension-2d` creating its own `SDL_Window` rather than rendering into
-the host's surface (`docs/modules/2d.md` §3; `docs/known-limitations.md`,
-"`tension-2d` owns its own window").
-**Why not now:** SDL_GPU offers no external-surface handoff. Unifying means the
-2d path either gains a renderer that consumes a `VkSurfaceKHR` the way
-`tension-ogre` does, or SDL_GPU grows the capability upstream. It is a separate
-capability path, not a parameter.
-**Unlocks when:** either upstream support exists, or the 2d renderer is rewritten
-onto the host's Vulkan surface.
+the host's window (`docs/modules/2d.md` §3).
+
+**How it was settled:** the 2D renderer moved into `tension-core`
+(`render2d/`). `SDL_GPU` still has no external-surface handoff, so the fix was
+not the one this section expected — the renderer claims the host's `SDL_Window`
+with `SDL_ClaimWindowForGPUDevice` instead of borrowing a `VkSurfaceKHR`. In
+core, "claim the window" is a call it can make; as a DSO it had no way to reach
+one. The window is created on demand at the canvas size, and
+`Render2dState::claim_swapchain` refuses a second claimant with `-EBUSY`.
+**Residual:** the *pixels* are unverified on any machine that cannot create a
+graphics pipeline — see `docs/known-limitations.md`.
 
 ### 5.3 Win32 runtime testing
 
