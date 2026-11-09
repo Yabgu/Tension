@@ -24,7 +24,7 @@
         "--res",
         "${workspaceFolder}/build/isometric-framework.tns",
         "${workspaceFolder}/build/game.wasm",
-        "--window"
+        "--windowed"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",

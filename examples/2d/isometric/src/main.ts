@@ -32,6 +32,7 @@ import {
   ResFile,
   RuntimeSession,
 } from "tension-framework";
+import * as platform from "tension-framework/assembly/platform";
 import * as gfx from "./bindings";
 import * as scene from "./scene.generated";
 
@@ -57,14 +58,26 @@ function hasArg(flag: string): bool {
 
 /// Whether the guest was asked to show a window.
 ///
-/// `--windowed` is the guest's own flag and predates the host's `--window`. Since
-/// Pass C of the 2D merge the launch line is `tension-core game.wasm --window`,
-/// so this accepts both spellings: one word for an operator to type, and the
-/// original kept because the examples, the suites and the screenshots all pass
-/// it. The host's `--window` is a different thing (a size, before the wasm path);
-/// a guest that receives `--window` never sees that flag, only this word.
+/// Purely the application's word: the runtime has no window flag, so `--window`
+/// is an ordinary argument and the guest decides what it means. Two spellings
+/// for one request, because `--windowed` predates the merge and the suites still
+/// pass it.
 function wantsWindow(): bool {
   return hasArg("--windowed") || hasArg("--window");
+}
+
+/// Open a window for the 2D renderer to claim.
+///
+/// `target: Gpu` and not `Vulkan`: SDL_GPU claims the window and builds its own
+/// surface, so the flag a `Vulkan` window sets is not needed — and on Windows it
+/// would demand a Vulkan loader this renderer does not use.
+function openWindow(width: i32, height: i32): platform.Window {
+  const config = new platform.WindowConfig();
+  config.target = platform.WindowTarget.Gpu;
+  config.width = <u32>width;
+  config.height = <u32>height;
+  config.title = "isometric";
+  return platform.createWindow(config);
 }
 
 function fail(what: string): void {
@@ -244,7 +257,15 @@ export function _start_game(): void {
 
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = wantsWindow() ? gfx.OPEN_WINDOWED : 0;
+  // The window is the guest's to create now: the runtime has no flag for it.
+  // A refusal is not fatal — an offscreen draw still produces the same frame,
+  // and a test job must not fail because a machine has no display.
+  const window = wantsWindow() ? openWindow(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT) : new platform.Window(0, 0);
+  const shown = window.isValid();
+  if (wantsWindow() && !shown) {
+    print("  no window (" + window.error.toString() + "); drawing offscreen");
+  }
+  const flags: i32 = shown ? gfx.OPEN_WINDOWED : 0;
   const handle = gfx.open(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT, flags);
   if (handle <= 0) {
     print("FAIL: open -> " + handle.toString());

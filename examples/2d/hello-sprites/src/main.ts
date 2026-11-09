@@ -36,6 +36,7 @@ import {
   RuntimeSession,
   SpriteRecord,
 } from "tension-framework";
+import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 /// Whether the guest was started with `flag`. `--windowed` is the one this
@@ -49,14 +50,28 @@ function hasArg(flag: string): bool {
 
 /// Whether the guest was asked to show a window.
 ///
-/// `--windowed` is the guest's own flag and predates the host's `--window`. Since
-/// Pass C of the 2D merge the launch line is `tension-core game.wasm --window`,
-/// so this accepts both spellings: one word for an operator to type, and the
-/// original kept because the examples, the suites and the screenshots all pass
-/// it. The host's `--window` is a different thing (a size, before the wasm path);
-/// a guest that receives `--window` never sees that flag, only this word.
+/// This is purely the application's word now: the runtime has no window flag,
+/// so `--window` is an ordinary argument like any other, and the guest is the
+/// one that decides what it means. Two spellings for the same request, because
+/// `--windowed` predates the merge and the suites still pass it.
 function wantsWindow(): bool {
   return hasArg("--windowed") || hasArg("--window");
+}
+
+/// Open a window for the 2D renderer to claim.
+///
+/// `target: Gpu` and not `Vulkan`: SDL_GPU claims the window and builds its own
+/// surface, so the `SDL_WINDOW_VULKAN` flag a `Vulkan` window would set is not
+/// needed here — and on Windows it would demand a Vulkan loader the renderer
+/// does not use. Returns the handle, or 0 when the host refused (no display,
+/// or a window already exists).
+function openWindow(): platform.Window {
+  const config = new platform.WindowConfig();
+  config.target = platform.WindowTarget.Gpu;
+  config.width = <u32>CANVAS_WIDTH;
+  config.height = <u32>CANVAS_HEIGHT;
+  config.title = "hello-sprites";
+  return platform.createWindow(config);
 }
 
 // --- the frame's numbers ---------------------------------------------------
@@ -212,10 +227,20 @@ export function _start_game(): void {
     return;
   }
 
-  // 2. the capability
+  // 2. the window, if the user asked for one.
   // `--windowed` shows the frame; the default is offscreen, which is what the
   // test harness runs and what makes its pixel assertions reproducible.
-  const flags: i32 = wantsWindow() ? OPEN_WINDOWED : 0;
+  //
+  // The window is created here, by the guest, because the runtime has no flag
+  // for it. A refusal is not fatal: `wantsWindow()` is a request, and a
+  // headless machine that was asked anyway still draws — offscreen — rather
+  // than failing a test job.
+  const window = wantsWindow() ? openWindow() : new platform.Window(0, 0);
+  const shown = window.isValid();
+  if (wantsWindow() && !shown) {
+    print("hello-sprites: no window (" + window.error.toString() + "); drawing offscreen");
+  }
+  const flags: i32 = shown ? OPEN_WINDOWED : 0;
   const canvas = Canvas.open(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, flags);
   if (!canvas.isValid()) {
     fail("open -> " + canvas.lastError().toString());

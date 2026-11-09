@@ -9,7 +9,7 @@
     "build:debug": "node build.mjs && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
     "test": "node test.mjs",
     "test:synthetic": "node test-synthetic.mjs",
-    "start": "tension-core --res build/isometric.tns build/game.wasm --window"
+    "start": "tension-core --res build/isometric.tns build/game.wasm --windowed"
   },
   "tension": {
     "kind": "res",

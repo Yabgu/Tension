@@ -8,7 +8,7 @@
     "build": "node ../../../scripts/build-2d-guest.mjs",
     "build:debug": "node ../../../scripts/build-2d-guest.mjs --debug",
     "test": "node test.mjs",
-    "start": "tension-core build/game.wasm --window"
+    "start": "tension-core build/game.wasm --windowed"
   },
   "tension": {
     "kind": "2d"

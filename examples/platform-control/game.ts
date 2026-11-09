@@ -80,14 +80,36 @@ async function gameLoop(): void {
   done = true;
 }
 
+/// The window this example asks for: 320x240, plain, resizable.
+function makeWindowConfig(): platform.WindowConfig {
+  const config = new platform.WindowConfig();
+  config.target = platform.WindowTarget.Plain;
+  config.width = 320;
+  config.height = 240;
+  config.title = "platform-control";
+  return config;
+}
+
 export function _start_game(): void {
   rt.start();
   __taskBindTable(16);
 
+  // The window is the guest's to create: the runtime has no flag for it, and a
+  // runtime that opened one unasked would be application configuration in the
+  // wrong place. `Plain` because nothing renders into it — this example only
+  // resizes it and watches the size come back.
+  const window = platform.createWindow(makeWindowConfig());
+  if (!window.isValid()) {
+    fail("createWindow -> " + window.error.toString());
+    return;
+  }
+
   // No window: nothing to resize. A refusal, not a skip — a run that passed
-  // here would pass on a host that never opened a window at all.
+  // here would pass on a host that never opened a window at all. Kept even
+  // though `createWindow` just succeeded: it is the assertion that the two
+  // answers agree.
   if (!platform.hasSurface()) {
-    fail("no host surface; run this with --window 320x240");
+    fail("createWindow succeeded but the host reports no surface");
     return;
   }
 

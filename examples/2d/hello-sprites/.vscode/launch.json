@@ -28,7 +28,7 @@
         "--symbol-path",
         "${workspaceFolder}",
         "${workspaceFolder}/build/game.wasm",
-        "--window"
+        "--windowed"
       ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",

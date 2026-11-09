@@ -7,15 +7,11 @@
   "scripts": {
     "build": "tensionscript game.ts -o build/game.wasm --config asconfig.json",
     "build:debug": "tensionscript game.ts -o build/game.wasm --config asconfig.json --debug --sourceMap",
-    "run": "node ../../scripts/run-example.mjs --no-build --window 320x240",
-    "start": "node ../../scripts/run-example.mjs --window 320x240"
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
   },
   "tension": {
-    "kind": "plain",
-    "hostArgs": [
-      "--window",
-      "320x240"
-    ]
+    "kind": "plain"
   },
   "dependencies": {
     "tension-framework": "file:../../tension-framework",

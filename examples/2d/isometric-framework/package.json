@@ -8,7 +8,7 @@
     "build": "node ../synthetic/emit.mjs . && node ../../../scripts/build-2d-guest.mjs && node ../../../scripts/pack-example.mjs .",
     "build:debug": "node ../synthetic/emit.mjs . && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
     "test": "node test.mjs",
-    "start": "tension-core --res build/isometric-framework.tns build/game.wasm --window"
+    "start": "tension-core --res build/isometric-framework.tns build/game.wasm --windowed"
   },
   "tension": {
     "kind": "res",
