@@ -22,7 +22,16 @@
  * catchable; it is not a compatibility promise during alpha, only a courtesy
  * that keeps the codebase coherent. Version 2 appended `guest_read_checked` and
  * `layout_hash`; version 3 `signal_frame`; version 4 `shader_generate`; version
- * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`.
+ * 5 `compile_graph` (a graph blob, not a layout); version 6 `post_control`,
+ * `host_surface` and `host_surface_extension`.
+ *
+ * The window structs below (`tension_window_config`, `tension_window_info`)
+ * arrived with the *guest* programmatic window API, which is what let
+ * `--window` leave the command line. They add no slot to this table: the guest
+ * reaches them through `tension::platform.create_window`, on the interpreter
+ * thread, which is the only thread SDL will let create a window. An adapter
+ * cannot create one — casting a slot for it would be a contract nothing could
+ * honour. They live here because this header is where the wire's structs live.
  * A version-1 adapter is refused at load, so the host never reads past its end.
  *
  * Design note: `docs/abi/adapter.md`.
@@ -179,6 +188,109 @@ typedef struct tension_host_surface {
     uint64_t instance; /* VkInstance, 0 = none */
     uint64_t surface;  /* VkSurfaceKHR, 0 = none */
 } tension_host_surface;
+
+/*
+ * A window the guest asks the host to create (ABI v7). See the `create_window`
+ * slot.
+ *
+ * `struct_size` is `sizeof(tension_window_config)` at the caller's build, and
+ * the host reads no field past it — the same additive-growth rule
+ * `tension_host_surface` uses. A host that does not know a field the caller
+ * sent cannot misread it.
+ *
+ * `title_ptr` / `title_len` are a guest address and a byte length: UTF-8, no
+ * NUL terminator, read with `guest_read` inside the creating call. Zero length
+ * means "no title", not "read address zero".
+ *
+ * `x` and `y` are `TENSION_WINDOW_POS_CENTERED` for "let the window system
+ * place it", otherwise an absolute desktop position. A caller that means the
+ * origin says 0, which is why "centered" needs a sentinel rather than being
+ * spelled 0.
+ *
+ * `min_*` and `max_*` are 0 for "no bound". A maximum of 0 with a non-zero
+ * minimum means "at least this"; both zero means the window system's own
+ * limits.
+ */
+typedef struct tension_window_config {
+    uint32_t struct_size;
+    uint32_t target; /* TENSION_WINDOW_TARGET_* */
+    uint32_t width;
+    uint32_t height;
+    uint32_t mode;  /* TENSION_WINDOW_MODE_* */
+    uint32_t flags; /* TENSION_WINDOW_FLAG_* */
+    int32_t x;
+    int32_t y;
+    uint32_t min_width;
+    uint32_t min_height;
+    uint32_t max_width;
+    uint32_t max_height;
+    uint32_t title_ptr;
+    uint32_t title_len;
+} tension_window_config;
+
+/*
+ * What the guest can learn about its window (ABI v7). See the `window_info`
+ * slot.
+ *
+ * Two sizes, and they are different questions: `width`/`height` are logical
+ * units (what a UI lays out in), `pixel_width`/`pixel_height` are what a render
+ * target is allocated at. On a 1x display they are equal; on a high-DPI one
+ * they are not, and a renderer that conflates them draws a blurry frame.
+ *
+ * **A run with no window answers 0, not an error.** `width == 0` is the whole
+ * headless guard: a guest's update loop should not need per-frame error
+ * handling for a window it never asked for.
+ */
+typedef struct tension_window_info {
+    uint32_t struct_size;
+    uint32_t width;  /* logical units */
+    uint32_t height;
+    uint32_t pixel_width; /* drawable pixels */
+    uint32_t pixel_height;
+    uint32_t dpi_scale_milli; /* display scale x 1000; 1000 = 1.0 */
+    uint32_t mode;            /* TENSION_WINDOW_MODE_* */
+    uint32_t focused;         /* 0/1 */
+    uint32_t minimized;       /* 0/1 */
+    uint32_t close_requested; /* 0/1: the user asked to close it */
+} tension_window_info;
+
+/*
+ * Where a created window's pixels are meant to go. The value decides the flags
+ * the window is created with, and the difference is load-bearing on Windows:
+ *
+ *   PLAIN   an ordinary window. No graphics API is promised anything.
+ *   GPU     the window will be handed to `SDL_GPU`. On Linux that means SDL
+ *           builds a Vulkan surface from an ordinary window, so no `VULKAN`
+ *           flag is needed; on Windows and macOS it uses D3D12/Metal natively,
+ *           and asking for a Vulkan window there would demand a Vulkan loader
+ *           a D3D12-only machine need not have.
+ *   VULKAN  the window will be handed to `SDL_Vulkan_CreateSurface`
+ *           (`host_surface`), which *requires* that the window was created with
+ *           `SDL_WINDOW_VULKAN`. A renderer that wants the host's
+ *           `VkSurfaceKHR` — Ogre-Next's external-surface path — needs this.
+ */
+#define TENSION_WINDOW_TARGET_PLAIN 0u
+#define TENSION_WINDOW_TARGET_GPU 1u
+#define TENSION_WINDOW_TARGET_VULKAN 2u
+
+#define TENSION_WINDOW_MODE_WINDOWED 0u
+#define TENSION_WINDOW_MODE_FULLSCREEN 1u
+#define TENSION_WINDOW_MODE_BORDERLESS_FULLSCREEN 2u
+
+#define TENSION_WINDOW_FLAG_RESIZABLE (1u << 0)
+#define TENSION_WINDOW_FLAG_DECORATED (1u << 1)
+#define TENSION_WINDOW_FLAG_ALWAYS_ON_TOP (1u << 2)
+#define TENSION_WINDOW_FLAG_HIDDEN (1u << 3)
+#define TENSION_WINDOW_FLAG_HIGH_DPI (1u << 4)
+
+/** `x`/`y`: let the window system place the window. */
+#define TENSION_WINDOW_POS_CENTERED INT32_MIN
+
+/* Every flag this build defines; anything outside is refused with -EINVAL. */
+#define TENSION_WINDOW_FLAGS_KNOWN                                      \
+    (TENSION_WINDOW_FLAG_RESIZABLE | TENSION_WINDOW_FLAG_DECORATED |    \
+     TENSION_WINDOW_FLAG_ALWAYS_ON_TOP | TENSION_WINDOW_FLAG_HIDDEN |   \
+     TENSION_WINDOW_FLAG_HIGH_DPI)
 
 /** The source stamps. Not caller-supplied; see `tension_ctrl_msg`. */
 #define TENSION_CTRL_SRC_LAYER 0u
@@ -659,6 +771,7 @@ typedef struct tension_core_api {
      */
     int32_t (*host_surface_extension)(void *user, uint32_t index, char *out_name,
                                       uint32_t capacity, uint32_t *out_len);
+
 } tension_core_api;
 
 /* The smallest `capacity` `host_surface_extension` accepts; see that slot. */
