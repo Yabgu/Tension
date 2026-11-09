@@ -42,11 +42,11 @@ handles it is given cross the boundary as `u64`
 | SDL video + event pump | host | `platform.rs:353-362` | field order, `platform.rs:336-340` |
 | `VkInstance` | host | `platform.rs:452` | `platform.rs:664` |
 | `VkSurfaceKHR` | host | `platform.rs:457` | `platform.rs:663` |
-| `VkDevice` | renderer (Ogre) | inside `root_->init`, from the host's instance | `OgreVulkanDevice.cpp:525` |
-| Ogre swapchain | renderer (Ogre) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:698` |
+| `VkDevice` | renderer (Ogre-Next — current, not settled) | inside `root_->init`, from the host's instance | `OgreVulkanDevice.cpp:525` |
+| Ogre swapchain | renderer (Ogre-Next — current, not settled) | `OgreVulkanWindow` | `destroyRenderWindow`, `backend_ogre.cpp:711` |
 | GPU device + swapchain | renderer (2D, in core) | `render2d/device.rs`, first windowed `open` | `Render2dState::close`, or the store's drop |
 | Which renderer owns the swapchain | core | `Render2dState::claim_swapchain` | released by the holder |
-| Render thread | renderer | `tension-ogre/src/adapter.cpp:539` | joined `adapter.cpp:1532` |
+| Render thread | renderer | `tension-ogre/src/adapter.cpp:616` | joined `adapter.cpp:1624` |
 | SDL event queue | host, `platform.rs:536` | with the window | with the window |
 | Guest input attach | the `tension-input` DSO | `input_attach` | replaced in the v7 input pass |
 | Audio device (cpal) | host, `tension-core/src/audio/mod.rs:55` | `audio_init` | `audio_shutdown`, `audio/mod.rs:146` |
@@ -78,6 +78,13 @@ truth (`platform.rs:519`, `main.rs:1498-1499`).
 `VkSurfaceKHR`. The handles are borrowed: the adapter must not destroy either
 of them (`platform.rs:246-251`).
 
+Where the frame goes is the renderer's declaration, not the host's guess: the
+config's `target` key names `auto`, `swapchain` or `offscreen`, and `swapchain`
+is a requirement — with no published surface `init` refuses `-ENODEV` rather
+than opening a window of its own (`tension-ogre/src/adapter.cpp:590-602`). The
+three values are the contract a replacement 3D backend implements; the Ogre
+implementation is current, not settled.
+
 **2D does not create a window and does not consume the host `VkSurfaceKHR`
 either.** `SDL_GPU` has no external-surface handoff, so a 2D renderer presents by
 claiming the host's `SDL_Window` for its own device
@@ -108,18 +115,18 @@ background threads; `destroy` frees the adapter's own storage. Nothing is still
 inside the adapter when `destroy` runs (`adapter/mod.rs:974-983`).
 
 For the Ogre adapter, `shutdown` sets `shutting_down`, then
-`stop_render_thread()` (`tension-ogre/src/adapter.cpp:1467-1477`), which
-signals the thread and joins it (`adapter.cpp:1538-1542`, `:1532`). The backend's
+`stop_render_thread()` (`tension-ogre/src/adapter.cpp:1559-1572`), which
+signals the thread and joins it (`adapter.cpp:1600-1627`, `:1624`). The backend's
 `stop()` runs *on the render thread* — the thread that created every Ogre object
-— and unmakes things in this order (`tension-ogre/src/backend_ogre.cpp:681-722`):
+— and unmakes things in this order (`tension-ogre/src/backend_ogre.cpp:694-735`):
 
 1. scene, then resources (an `Item` holds its mesh's vertex buffers),
 2. `native_window_ = 0` before the window is destroyed, so a concurrent
    `window_handle` sees "no window" rather than a dying handle,
-3. `destroyRenderWindow` (`:698`),
-4. `root_->shutdown()` (`:708`) — this is where `vkDestroyDevice` runs
+3. `destroyRenderWindow` (`:711`),
+4. `root_->shutdown()` (`:721`) — this is where `vkDestroyDevice` runs
    (`third_party/ogre-next/RenderSystems/Vulkan/src/OgreVulkanDevice.cpp:525`),
-5. `external_instance_.reset()` (`:713`) — **after** the root, because the
+5. `external_instance_.reset()` (`:726`) — **after** the root, because the
    plugin holds that pointer while shutting down.
 
 **Step 2 — `drop_host_window`.** `HostWindow::drop` destroys the
@@ -136,10 +143,10 @@ and the `Sdl` handle is the last field so `SDL_Quit` runs after everything
   is the path that would otherwise forget.
 - *`external_instance_` freed before `root_->shutdown()`* — the render system
   reads the struct it was handed during shutdown, so the reset has to come after
-  (`backend_ogre.cpp:710-713`).
+  (`backend_ogre.cpp:723-726`).
 - *Backend freed while the render thread is drawing* — SIGSEGV windowed, SIGABRT
   headless; this is why `AdapterState::~AdapterState` calls
-  `stop_render_thread()` on the trap path (`adapter.cpp:1544-1565`).
+  `stop_render_thread()` on the trap path (`adapter.cpp:1648-1660`).
 
 **Status of the `VkDevice`-before-`VkInstance` claim.** *Inferred*, not directly
 asserted. The device is destroyed inside `root_->shutdown()`
