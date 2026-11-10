@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-80 imports across 12 modules: 48 registered by the host in 9 modules, 32 by 3 capability adapters.
+83 imports across 12 modules: 51 registered by the host in 9 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -35,22 +35,22 @@ says how in its own shim; the shared codes are in
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1419` |
-| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1420` |
-| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1421` |
-| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1423` |
-| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1424` |
-| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1426` |
-| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1428` |
-| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1429` |
-| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1430` |
-| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1433` |
-| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1435` |
-| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1438` |
-| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1439` |
-| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1440` |
-| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1436` |
-| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1443` |
+| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1444` |
+| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1445` |
+| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1446` |
+| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1448` |
+| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1449` |
+| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1451` |
+| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1453` |
+| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1454` |
+| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1455` |
+| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1458` |
+| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1460` |
+| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1463` |
+| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1464` |
+| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1465` |
+| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1461` |
+| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1468` |
 
 ## `scheduler`
 
@@ -144,6 +144,9 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1377` |
 | `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1534` |
 | `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1578` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1624` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1654` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1684` |
 
 ## `tension::res`
 

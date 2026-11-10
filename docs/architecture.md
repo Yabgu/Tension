@@ -68,6 +68,16 @@ error. The guest asks; the host creates. A renderer never creates one — the
 Ogre backend has no own-window path at all — so "the window the frame goes to"
 and "the window the host owns" are the same object by construction.
 
+**The guest can change the window after creating it.** Three imports —
+`set_fullscreen`, `set_window_size`, `set_window_title` — are synchronous, like
+`create_window`: they run on the interpreter thread, which is where SDL's window
+API lives, and each records the request before returning, so `window_info`
+answers with what the guest asked for rather than with whatever the compositor
+has got round to. A renderer learns about a mode change the same way it learns
+about a resize — by polling `host_window_info` once per frame — so an Ogre
+swapchain on the host's surface rebuilds at the new extent without the guest
+telling it.
+
 **The surface is created, and published, inside that call.** `HostWindow::new`
 sets `SDL_WINDOW_VULKAN` only for `target: Vulkan` (`platform.rs`, `HostWindow::new`),
 and `create_window` calls `surface()` and publishes the handles into the cell that

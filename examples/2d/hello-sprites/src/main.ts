@@ -35,6 +35,7 @@ import {
   RuntimeSession,
   SpriteRecord,
 } from "tension-framework";
+import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 /// Whether the guest was started with `flag`. `--windowed` is the one this
@@ -229,6 +230,18 @@ export function _start_game(): void {
     print("hello-sprites: no window; drawing offscreen");
   }
   print("open -> handle " + canvas.handle.toString());
+
+  // Name the window before the first frame is presented. `setWindowTitle` is
+  // the E1b mutator and the example's proof that the guest can own the window
+  // after creating it: the call reaches SDL on this thread and returns once the
+  // window system has taken the change, so the title is in place rather than
+  // queued for some later frame. A refusal is reported and not fatal — a
+  // headless driver has no title to set, and the pixels are the example's
+  // assertion, not the caption.
+  if (canvas.displaysToWindow()) {
+    const renamed = platform.setWindowTitle("Hello Sprites");
+    print("setWindowTitle -> " + renamed.toString());
+  }
 
   // `readInfo` is the one Canvas method that cannot return an errno, because
   // the record is the return value. A refusal arrives as a zeroed record --
