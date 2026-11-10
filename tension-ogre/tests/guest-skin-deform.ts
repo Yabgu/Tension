@@ -95,12 +95,22 @@ function settle(job: i32): void {
   }
 }
 
-/// A frame, waited for the way guest-skin-matrices.ts waits: the screenshot verb
-/// is probe/consume over the last frame, so reading twice in a row returns the
-/// first one's pixels.
-function grab(): ArrayBuffer | null {
-  const armed_at = ogre.frameCount();
+/// One capture attempt: raise the readback request, let the renderer finish a
+/// few frames, then read whatever it last downloaded. `null` when nothing has
+/// ever been downloaded.
+///
+/// The request goes first and the frame counter is sampled after it, so the
+/// three frames this waits for are three the request was already pending for.
+/// Sampling the counter first (which this used to do) lets a descheduled guest
+/// raise the request two frames later and then wait for only one.
+///
+/// This does **not** prove the bytes are newer than the previous capture: the
+/// verb re-reads its stored bitmap and does not consume it, so a download that
+/// lands after these three frames returns the previous frame unchanged. The
+/// freshness proof is `grab_after`'s, by content.
+function capture_once(): ArrayBuffer | null {
   ogre.screenshot(0, 0);
+  const armed_at = ogre.frameCount();
   for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed_at + 3; guard++) {
     RuntimeSession.wait(5);
   }
@@ -109,6 +119,42 @@ function grab(): ArrayBuffer | null {
   const frame = new ArrayBuffer(length);
   if (ogre.screenshot(changetype<usize>(frame), length) != length) return null;
   return frame;
+}
+
+/// Byte equality of two downloaded frames. The length is compared first so a
+/// frame that came back a different size is never read as "the same".
+function same_frame(a: ArrayBuffer, b: ArrayBuffer): bool {
+  if (a.byteLength != b.byteLength) return false;
+  const pa = Uint8Array.wrap(a);
+  const pb = Uint8Array.wrap(b);
+  for (let i: i32 = 0; i < pa.length; i++) {
+    if (pa[i] != pb[i]) return false;
+  }
+  return true;
+}
+
+/// A capture that is provably **not** the frame in hand: the renderer replaces
+/// its stored frame only with a completed download, so a capture that differs
+/// from `previous` is one the render thread drew after the commit that produced
+/// `previous`.
+///
+/// A fixed frame count is a guess about when the download lands, not a proof;
+/// this is the synchronisation point (KS-4, guest-skin-matrices.ts).
+/// `previous === null` asks only that some frame exists, which is what the
+/// capture before the first commit needs: the scene is still and has never had
+/// matrices, so every frame it has drawn is the one that capture wants.
+function grab_after(previous: ArrayBuffer | null): ArrayBuffer {
+  for (let attempt: u32 = 0; attempt < 24; attempt++) {
+    const frame = capture_once();
+    if (frame === null) continue;
+    if (previous === null) return <ArrayBuffer>frame;
+    if (!same_frame(<ArrayBuffer>frame, <ArrayBuffer>previous)) return <ArrayBuffer>frame;
+  }
+  if (previous === null) {
+    fail("the renderer never delivered a frame");
+  }
+  fail("the renderer delivered no frame that differs from the one before the commit");
+  return <ArrayBuffer>previous;
 }
 
 /// Foreground is "differs from the frame's own corner", the rule the fixtures
@@ -239,16 +285,18 @@ function submit_matrices(renderable_id: u32, matrices: Float32Array): i32 {
   return batch.commit();
 }
 
-/// Submit a rig, let the frame settle, grab it, and measure it.
-function run_case(renderable_id: u32, matrices: Float32Array, label: string): Stats {
+/// Submit a rig, wait for a frame that provably carries it, and return it.
+///
+/// `previous` is the frame in hand before the commit; the returned frame is
+/// byte-different from it, which is what proves the render thread drew after
+/// the commit rather than the readback handing back the old bitmap.
+function run_case(renderable_id: u32, matrices: Float32Array, label: string,
+                  previous: ArrayBuffer | null): ArrayBuffer {
   check(submit_matrices(renderable_id, matrices) == 1,
         "submit_skin_matrices refused the " + label + " rig");
-  // One batch per frame: the fill copies the record every frame, so the new
-  // matrices need a frame to land before the grab.
-  for (let settleFrames: u32 = 0; settleFrames < 3; settleFrames++) RuntimeSession.wait(16);
-  const frame = grab();
-  check(frame !== null, "no frame was delivered for the " + label + " run");
-  return measure(<ArrayBuffer>frame);
+  // No fixed settle loop: `grab_after` waits for the frame the commit
+  // produced, which is the condition the loop was guessing at.
+  return grab_after(previous);
 }
 
 export function _start(): void {
@@ -310,15 +358,22 @@ export function _start(): void {
   for (let warmup: u32 = 0; warmup < 12; warmup++) RuntimeSession.wait(16);
 
   // ── the three runs ───────────────────────────────────────────────────
-  const a = run_case(1, identity_rig(), "A");
+  // The frame before any matrices: what run A has to differ from, and the
+  // same starting point guest-skin-matrices.ts uses for its first clause.
+  const unrigged_frame = grab_after(null);
+
+  const a_frame = run_case(1, identity_rig(), "A", unrigged_frame);
+  const a = measure(a_frame);
   print("MATRICES-A count=" + a.count.toString() + " cx=" + a.cx.toString() +
         " cy=" + a.cy.toString() + " var=" + a.variance.toString());
 
-  const b = run_case(1, rigid_rig(RIGID_SHIFT, 0.0, 0.0), "B");
+  const b_frame = run_case(1, rigid_rig(RIGID_SHIFT, 0.0, 0.0), "B", a_frame);
+  const b = measure(b_frame);
   print("MATRICES-B count=" + b.count.toString() + " cx=" + b.cx.toString() +
         " cy=" + b.cy.toString() + " var=" + b.variance.toString());
 
-  const c = run_case(1, deform_rig(DEFORM_JOINTS, DEFORM_SCALE), "C");
+  const c_frame = run_case(1, deform_rig(DEFORM_JOINTS, DEFORM_SCALE), "C", b_frame);
+  const c = measure(c_frame);
   print("MATRICES-C count=" + c.count.toString() + " cx=" + c.cx.toString() +
         " cy=" + c.cy.toString() + " var=" + c.variance.toString());
 
