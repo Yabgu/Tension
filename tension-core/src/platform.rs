@@ -2130,6 +2130,45 @@ impl HostWindow {
             .map_err(|e| PlatformError::Sdl(e.to_string()))
     }
 
+    /// Resize the window and publish the request.
+    ///
+    /// The guest-facing mutator (`tension::platform.set_window_size`). Unlike
+    /// [`set_size`], which only asks, this records the size it asked for, for
+    /// the same reason `CTRL_RESIZE` does: a guest that resizes and reads
+    /// `windowInfo` on its next line should see the size it requested rather
+    /// than the one from before. A window system that clamps corrects the
+    /// record with the resize event the pump latches.
+    ///
+    /// A dimension below 1 is clamped rather than refused: the host has the
+    /// only say in what a window can be, and SDL on some drivers answers a
+    /// zero-sized resize by doing nothing at all.
+    ///
+    /// Main thread only.
+    pub fn set_window_size(&mut self, width: u32, height: u32) -> Result<(), PlatformError> {
+        let width = width.max(1);
+        let height = height.max(1);
+        self.set_size(width, height)?;
+        self.width.store(width, Ordering::Relaxed);
+        self.height.store(height, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// Change the window's title.
+    ///
+    /// The host keeps the title it created the window with, so this updates
+    /// both the window system and that copy: [`title`](Self::title) must not
+    /// go on answering the old name after the guest renamed the window.
+    ///
+    /// Main thread only.
+    pub fn set_window_title(&mut self, title: &str) -> Result<(), PlatformError> {
+        self.window
+            .set_title(title)
+            .map_err(|e| PlatformError::Sdl(e.to_string()))?;
+        self.title.clear();
+        self.title.push_str(title);
+        Ok(())
+    }
+
     /// Apply one control message.
     ///
     /// **The executor.** This is the only path by which a layer or a guest can
@@ -2184,13 +2223,49 @@ impl HostWindow {
         }
     }
 
-    /// Put the window into or out of fullscreen.
+    /// Put the window into the requested mode.
     ///
-    /// **Main thread only.** Where `apply_control` is the path a *layer* takes,
-    /// this is the path the host itself takes at creation, on the thread that
-    /// made the window. The pump keeps `info().mode` true from the events SDL
-    /// emits when the switch completes.
-    pub fn set_fullscreen(&mut self, on: bool) -> Result<(), PlatformError> {
+    /// **Main thread only.** This is the one place a [`WindowMode`] becomes SDL
+    /// calls and a move of the window's own record, and both the creating call
+    /// ([`create_window`]) and the guest verb
+    /// (`tension::platform.set_fullscreen`) go through it. A second copy of
+    /// this match is exactly how creation and later mutation drift apart: before
+    /// E1b the creation path had its own, so `BorderlessFullscreen` was decided
+    /// in one place and would have had to be remembered in another.
+    ///
+    /// The record moves from the *request*, on success, because a driver may
+    /// take a round trip through the compositor to emit `ENTER_FULLSCREEN` — a
+    /// guest that sets the mode and reads it back must not see the old one. The
+    /// pump still owns the truth afterwards: a window the *user* takes
+    /// fullscreen, or leaves, updates the record from the event.
+    ///
+    /// `BorderlessFullscreen` reads back as `Fullscreen`: `WindowInfo::mode`
+    /// derives from one boolean, and "fullscreen with no chrome" is a
+    /// decoration, not a third state a reader can distinguish.
+    pub fn set_fullscreen(&mut self, mode: WindowMode) -> Result<(), PlatformError> {
+        match mode {
+            WindowMode::Windowed => {
+                self.switch_fullscreen(false)?;
+                // Leaving borderless fullscreen has to restore the decoration
+                // it removed, or the window returns chromeless with nothing to
+                // drag it by.
+                self.set_bordered(true);
+            }
+            WindowMode::Fullscreen => self.switch_fullscreen(true)?,
+            WindowMode::BorderlessFullscreen => {
+                self.switch_fullscreen(true)?;
+                self.set_bordered(false);
+            }
+        }
+        self.fullscreen
+            .store(mode != WindowMode::Windowed, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The SDL half of [`set_fullscreen`]. Private on purpose: the mode is the
+    /// interface, and a caller that could ask for a bare `bool` would be able
+    /// to skip the bookkeeping that keeps `info().mode` true.
+    fn switch_fullscreen(&mut self, on: bool) -> Result<(), PlatformError> {
         self.window
             .set_fullscreen(on)
             .map_err(|e| PlatformError::Sdl(e.to_string()))
@@ -2342,20 +2417,11 @@ pub fn create_window(
     // ENTER_FULLSCREEN — the event the pump latches. Doing it here keeps the
     // window's own record true from the first frame, even on a driver that never
     // emits the event for a window born fullscreen.
-    match config.mode {
-        WindowMode::Windowed => {}
-        WindowMode::Fullscreen => {
-            window.set_fullscreen(true)?;
-            window.fullscreen.store(true, Ordering::Relaxed);
-        }
-        WindowMode::BorderlessFullscreen => {
-            window.set_fullscreen(true)?;
-            window.fullscreen.store(true, Ordering::Relaxed);
-            // Borderless is the window system's decoration, not the mode: the
-            // request is "fullscreen with no chrome".
-            window.set_bordered(false);
-        }
-    }
+    //
+    // Through the same mutator a guest's `set_fullscreen` calls, so that
+    // "borderless" and "move the record" have one definition rather than a
+    // second, silently-divergent copy at creation.
+    window.set_fullscreen(config.mode)?;
 
     if config.min_width > 0 && config.min_height > 0 {
         window.set_min_size(config.min_width, config.min_height)?;

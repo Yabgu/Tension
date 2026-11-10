@@ -1603,6 +1603,130 @@ fn main() -> anyhow::Result<()> {
         },
     )?;
 
+    // ── the window mutators (E1b) ─────────────────────────────────────────
+    //
+    // Three imports beside `window_info`, and imports rather than adapter
+    // slots for the same reason it is one: this is the guest's own window, and
+    // no second party has to agree about the shape of the call. An adapter that
+    // needs to know the result reads `host_window_info`, which the pump
+    // republishes every frame — so a renderer still learns about a toggle
+    // without a second path to the window.
+    //
+    // **Synchronous, like `create_window`.** They run on the interpreter
+    // thread, which is the thread the host pumps on and the only one SDL's
+    // window API permits. The alternative — a control message — would defer the
+    // change by a frame and turn "did the driver accept it" into something the
+    // guest could only poll for.
+    //
+    // Names are snake_case to match every neighbour (`create_window`,
+    // `window_info`); the SDK's camelCase surface is `platform.setFullscreen`
+    // and friends, which is a wrapper and not the wire.
+    linker.func_wrap(
+        "tension::platform",
+        "set_fullscreen",
+        |mut caller: Caller<'_, HostState>, mode: u32| -> i32 {
+            const EINVAL: i32 = -22;
+            const ENODEV: i32 = -19;
+            const EIO: i32 = -5;
+            // The three modes this ABI defines. A fourth number is a caller
+            // built against a newer header, and guessing at it would give it a
+            // window it did not ask for.
+            let Some(mode) = platform::WindowMode::from_u32(mode) else {
+                return EINVAL;
+            };
+            let data = caller.data_mut();
+            let Some(window) = data.host_window.as_mut() else {
+                return ENODEV;
+            };
+            match window.set_fullscreen(mode) {
+                Ok(()) => 0,
+                Err(error) => {
+                    crate::logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("set_fullscreen({mode:?}) refused: {error}"),
+                    );
+                    EIO
+                }
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "set_window_size",
+        |mut caller: Caller<'_, HostState>, width: u32, height: u32| -> i32 {
+            const EINVAL: i32 = -22;
+            const ENODEV: i32 = -19;
+            const EIO: i32 = -5;
+            // A zero dimension is refused rather than clamped here: the host
+            // floors it too, so that a core module cannot ask SDL for nothing,
+            // but a guest sending 0 has a caller bug and should be told.
+            if width == 0 || height == 0 {
+                return EINVAL;
+            }
+            let data = caller.data_mut();
+            let Some(window) = data.host_window.as_mut() else {
+                return ENODEV;
+            };
+            match window.set_window_size(width, height) {
+                Ok(()) => 0,
+                Err(error) => {
+                    crate::logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("set_window_size({width}x{height}) refused: {error}"),
+                    );
+                    EIO
+                }
+            }
+        },
+    )?;
+    linker.func_wrap(
+        "tension::platform",
+        "set_window_title",
+        |mut caller: Caller<'_, HostState>, title_ptr: u32, title_len: u32| -> i32 {
+            const EINVAL: i32 = -22;
+            const ENODEV: i32 = -19;
+            const EIO: i32 = -5;
+            const MAX_TITLE: u32 = 4096;
+            // The bound `create_window` uses, for the same reason: the title is
+            // copied into the window, and an unbounded length is an allocation
+            // a guest chooses.
+            if title_len > MAX_TITLE {
+                return EINVAL;
+            }
+            let title = if title_len == 0 {
+                String::new()
+            } else {
+                let Some(raw) = read_guest_span(&mut caller, title_ptr, title_len) else {
+                    return EINVAL;
+                };
+                match String::from_utf8(raw) {
+                    Ok(text) => text,
+                    // A title is UTF-8 on the wire, like every other string
+                    // this host accepts; bytes that are not are a caller bug,
+                    // not something to lossily repair.
+                    Err(_) => return EINVAL,
+                }
+            };
+            let data = caller.data_mut();
+            let Some(window) = data.host_window.as_mut() else {
+                return ENODEV;
+            };
+            match window.set_window_title(&title) {
+                Ok(()) => 0,
+                Err(error) => {
+                    crate::logging::log(
+                        Level::Warn,
+                        "core",
+                        &format!("set_window_title refused: {error}"),
+                    );
+                    EIO
+                }
+            }
+        },
+    )?;
+
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
 
