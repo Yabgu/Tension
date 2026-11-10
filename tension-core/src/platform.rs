@@ -401,6 +401,15 @@ pub struct HostSurface {
     /// `VkSurfaceKHR`, likewise borrowed. The adapter builds a swapchain on it
     /// and must not destroy it.
     pub surface: u64,
+    /// The window system's own handle for the window — an X11 `Window` (XID) on
+    /// X11, an `HWND` on Win32 — or 0 where there is no such handle (Wayland,
+    /// macOS, headless drivers).
+    ///
+    /// This is what a renderer that cannot adopt a `VkSurfaceKHR` adopts
+    /// instead: Ogre's GL3+ plugin takes it as `parentWindowHandle` and draws
+    /// inside the host's window. Two renderers, one window, and the second one
+    /// never gets to create a window of its own.
+    pub native_handle: u64,
     /// Current drawable size in pixels.
     pub width: u32,
     pub height: u32,
@@ -1588,6 +1597,7 @@ impl HostWindow {
         let published = HostSurface {
             instance: instance.handle().as_raw(),
             surface: surface.as_raw(),
+            native_handle: self.native_handle(),
             width,
             height,
         };
@@ -2221,6 +2231,75 @@ impl HostWindow {
     /// test can assert *which* WSI it exercised.
     pub fn driver(&self) -> &'static str {
         self.video.current_video_driver()
+    }
+
+    /// The window system's own handle for this window, or 0 where the platform
+    /// or the driver has none.
+    ///
+    /// Read through SDL's window properties rather than `SDL_GetWindowWMInfo`:
+    /// the property query answers 0 for "this build or driver has no such
+    /// handle" instead of needing a struct layout that changes per SDL version,
+    /// and it is the same source the `raw-window-handle` implementations use.
+    ///
+    /// **Main thread only**, like every other `SDL_GetWindowProperties` call: it
+    /// takes the window's lock, and SDL's window functions belong to the thread
+    /// that made the window.
+    ///
+    /// Which driver is in play matters. On X11 the handle is a number (the
+    /// XID) and on Win32 it is a pointer (the `HWND`); both fit a `u64`.
+    /// Wayland's `wl_surface` is not a handle any Ogre render system here
+    /// accepts, and macOS has its own spelling — those answer 0, which callers
+    /// must read as "no adoptable handle" rather than as a handle with the
+    /// value zero.
+    pub fn native_handle(&self) -> u64 {
+        let driver = self.video.current_video_driver();
+
+        // SAFETY: `SDL_GetWindowProperties` returns the window's property set,
+        // borrowed from the window, which this `HostWindow` keeps alive for the
+        // duration of the call. The property reads are typed by SDL: a number
+        // property through `SDL_GetNumberProperty`, a pointer property through
+        // `SDL_GetPointerProperty`.
+        unsafe {
+            let properties = sdl3::sys::video::SDL_GetWindowProperties(self.window.raw());
+            if properties.0 == 0 {
+                return 0;
+            }
+
+            #[cfg(target_os = "windows")]
+            {
+                if driver == "windows" {
+                    let hwnd = sdl3::sys::properties::SDL_GetPointerProperty(
+                        properties,
+                        sdl3::sys::video::SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                        std::ptr::null_mut(),
+                    );
+                    return hwnd as usize as u64;
+                }
+                return 0;
+            }
+
+            #[cfg(all(unix, not(target_os = "macos")))]
+            {
+                if driver == "x11" {
+                    // An XID is 32 bits today and `XID` widens without warning,
+                    // so a negative answer is impossible — but the property API
+                    // is signed, and a negative would be a driver bug rather
+                    // than a handle.
+                    let xid = sdl3::sys::properties::SDL_GetNumberProperty(
+                        properties,
+                        sdl3::sys::video::SDL_PROP_WINDOW_X11_WINDOW_NUMBER,
+                        0,
+                    );
+                    return if xid > 0 { xid as u64 } else { 0 };
+                }
+                // Wayland: `wl_surface` is not a handle Ogre's GLX window takes
+                // on this build, so there is nothing to hand over.
+                return 0;
+            }
+
+            #[allow(unreachable_code)]
+            0
+        }
     }
 }
 

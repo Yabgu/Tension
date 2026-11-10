@@ -518,21 +518,21 @@ if (!windowed) {
   // The pixel-clause fixtures: they print OK and a marker line rather than an
   // ACID summary.
   //
-  // **These `*-gl3plus` cases open two windows, and only the second is used.**
-  // The guest creates the host's Vulkan window (host-window.ts) and GL3+ creates
-  // its own GLX window, because the GL3+ plugin cannot consume a
-  // `VkSurfaceKHR`; the pixel clauses screenshot GL3+'s. What that means for
-  // what these cases prove: they test GL3+'s own-window rendering, not the
-  // host-surface path. The one-window proof for the external-surface path is
-  // `target-swapchain-window` (Vulkan, `--create-window`), not these.
+  // **These `*-gl3plus` cases run on one window.** The guest creates the
+  // host's window and GL3+ draws inside it: the adapter hands Ogre the window's
+  // native handle as `parentWindowHandle`, so Ogre makes its GL drawable a
+  // child rather than a second top-level window. `xwininfo -root -tree` during a
+  // run shows one `tension-ogre test` window with one child. The one-window
+  // proof for the Vulkan path is still `target-swapchain-window`, which asserts
+  // the renderer adopted the host's surface; these assert GL3+ draws into the
+  // same window without one.
   //
-  // Removing the unused host window needs two changes, and the second is
-  // blocked: skipping it in `ensureHostWindow` makes `ogre::init` refuse
-  // `-ENODEV` (the adapter's `target=auto` check is renderer-agnostic), and
-  // narrowing that check to Vulkan re-exposes a SIGSEGV in GL3+ teardown — the
-  // WSL D3D12 driver (`libd3d12core`/`amdxc64`) being unmapped while a thread it
-  // spawned is still running. Both are measured, with the run counts and the
-  // experiment that localises the fault, in `tension-ogre/tests/host-window.ts`.
+  // The pixel clauses are the proof that the child drawable is real: they were
+  // byte-identical to the two-window era (`72 non-background, mean 229/51/51`
+  // on `triangle-gl3plus`), and `angular-gl3plus` is what caught the one config
+  // that was wrong on the way there — `externalWindowHandle` picks a
+  // `depth=0` GLX config on this rig, where `parentWindowHandle` picks
+  // `depth=24`. `docs/modules/ogre.md` §6.1 has the measurement.
   for (const [name, wasm, marker, args] of [
     ['skin-matrices', 'guest-skin-matrices.wasm', '^MATRICES ', [tns, '--renderer=gl3plus']],
     ['skin-deform', 'guest-skin-deform.wasm', '^DEFORM ', [tns, '--renderer=gl3plus']],

@@ -186,5 +186,7 @@ the one part of this contract the toolchain checks on every build.
 - `sizeof(tension_event_layer) == 32`
 - `offsetof(tension_event_layer, dispatch) == 16`
 - `sizeof(tension_pad_record) == TENSION_PAD_RECORD_SIZE`
+- `sizeof(tension_host_surface) == 40`
+- `offsetof(tension_host_surface, native_handle) == 32`
 - `offsetof(tension_adapter, layout_hash) == 9 * sizeof(void *)`
 - `sizeof(tension_adapter) == 10 * sizeof(void *)`

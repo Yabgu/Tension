@@ -57,6 +57,9 @@ struct TensionHostSurface {
     reserved: u32,
     instance: u64,
     surface: u64,
+    /// Appended after ABI v7; a pre-existing adapter passes 32 and never sees
+    /// it. The mirror carries it so the test can assert what the host writes.
+    native_handle: u64,
 }
 
 /// The ABI's `tension_ctrl_msg`, spelled out rather than imported: this file
@@ -130,7 +133,10 @@ struct ApiTable {
 const _: () = assert!(std::mem::size_of::<ApiTable>() == 216);
 const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface) == 168);
 const _: () = assert!(std::mem::offset_of!(ApiTable, host_surface_extension) == 176);
-const _: () = assert!(std::mem::size_of::<TensionHostSurface>() == 32);
+// Four u32 then three u64. The first 32 bytes are what a pre-`native_handle`
+// adapter reads; 40 is what this header declares.
+const _: () = assert!(std::mem::size_of::<TensionHostSurface>() == 40);
+const _: () = assert!(std::mem::offset_of!(TensionHostSurface, native_handle) == 32);
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -565,6 +571,7 @@ fn main() {
         reserved: 0,
         instance: surface.instance,
         surface: surface.surface,
+        native_handle: surface.native_handle,
     });
     // The adapter asks for these during `init`; Ogre's external-instance path
     // treats them as the record of what the instance enabled. Handing over the
@@ -752,6 +759,7 @@ fn main() {
         reserved: 0,
         instance: 0,
         surface: 0,
+        native_handle: 0,
     };
     // SAFETY: `host_surface` above, routed through the table the adapter holds.
     let rc = unsafe { host_surface(state_ptr, &mut observed) };
@@ -759,6 +767,20 @@ fn main() {
     check(
         (observed.width, observed.height) == (640, 480),
         "e. the renderer would see 640x480 and ask for a swapchain rebuild",
+    );
+    // The second currency travels with the first. A render system that cannot
+    // adopt the `VkSurfaceKHR` — GL3+, D3D11 — adopts this instead, and the two
+    // are published from one record so they cannot disagree about which window
+    // they name.
+    if cfg!(any(target_os = "linux", target_os = "windows")) {
+        check(
+            observed.native_handle != 0,
+            "e. the host published a native window handle alongside the surface",
+        );
+    }
+    check(
+        observed.native_handle == state.collected.surface.unwrap().native_handle,
+        "e. the native handle is the window's, not a second one",
     );
 
     // ── (e) frame 2, after the resize ────────────────────────────────────

@@ -550,38 +550,56 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
         }
     }
 
-    // The host's window surface, if it owns one. A v6 host publishes it before
-    // any adapter loads, so it is there by the time a guest calls `init`.
+    // The host's window, if it owns one. A v6 host publishes it before any
+    // adapter loads, so it is there by the time a guest calls `init`.
     //
-    // -ENOSYS or a zero instance means "no host surface": the backend then does
-    // what it always did and creates its own window. That is not a degraded
-    // path, it is the headless and pre-v6 path.
+    // -ENOSYS means "the host owns no window": the backend then does what it
+    // always did and creates its own, which is the headless and pre-v6 path.
+    //
+    // Two facts arrive together and are kept separate, because the render
+    // systems want different ones. `instance`/`surface` are Vulkan's currency;
+    // `native_handle` is everyone else's (GL3+'s `parentWindowHandle`). A
+    // host that has only the native handle — a window created without the
+    // Vulkan flag — is still a host window, and a renderer that can adopt it
+    // must not be told otherwise.
     if (!config.headless && s.api != nullptr && s.api->host_surface != nullptr) {
         tension_host_surface published{};
         published.struct_size = sizeof(published);
-        if (s.api->host_surface(s.api->user, &published) == 0 && published.instance != 0 &&
-            published.surface != 0) {
-            // Both handles, and the reader the backend fills Ogre's
-            // `VulkanExternalInstance` from. The instance is the host's: the
-            // backend never creates one on this path, so a null `instance` here
-            // would leave the renderer with nothing to build a device on.
-            config.external_instance = published.instance;
-            config.external_surface = published.surface;
-            config.host_extension = &host_extension_from_core;
-            config.host_extension_ctx = nullptr;
-            config.host_size = &host_size_from_core;
-            config.host_size_ctx = nullptr;
+        if (s.api->host_surface(s.api->user, &published) == 0) {
+            config.native_window_handle = published.native_handle;
             // The host's window is the size that matters; the guest's config
             // asked for a size for a window it will not get.
             if (published.width != 0 && published.height != 0) {
                 config.window_width = published.width;
                 config.window_height = published.height;
+                // The renderer reconciles against the size the host has now,
+                // not against the one it saw at start. Set for either currency:
+                // a GL3+ window resizes exactly like a Vulkan one.
+                config.host_size = &host_size_from_core;
+                config.host_size_ctx = nullptr;
             }
-            {
-                char line[128];
+            if (published.instance != 0 && published.surface != 0) {
+                // Both Vulkan handles, and the reader the backend fills Ogre's
+                // `VulkanExternalInstance` from. The instance is the host's: the
+                // backend never creates one on this path, so a null `instance`
+                // here would leave the renderer with nothing to build a device
+                // on.
+                config.external_instance = published.instance;
+                config.external_surface = published.surface;
+                config.host_extension = &host_extension_from_core;
+                config.host_extension_ctx = nullptr;
+                {
+                    char line[128];
+                    std::snprintf(line, sizeof(line),
+                                  "ogre: rendering into the host's surface (instance 0x%llx)",
+                                  static_cast<unsigned long long>(published.instance));
+                    log_line(1, line);
+                }
+            } else if (published.native_handle != 0) {
+                char line[160];
                 std::snprintf(line, sizeof(line),
-                              "ogre: rendering into the host's surface (instance 0x%llx)",
-                              static_cast<unsigned long long>(published.instance));
+                              "ogre: adopting the host's window (native handle 0x%llx)",
+                              static_cast<unsigned long long>(published.native_handle));
                 log_line(1, line);
             }
         }
@@ -602,7 +620,17 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
     // above, and that system has no window to adopt.
     const bool wants_host_window = config.target == TENSION_OGRE_TARGET_AUTO ||
                                    config.target == TENSION_OGRE_TARGET_SWAPCHAIN;
-    if (wants_host_window && !config.headless && config.external_surface == 0) {
+    // A host window is adoptable in either of two currencies: the Vulkan
+    // surface (what Vulkan builds a swapchain on) or the window system's own
+    // handle (what GL3+'s `parentWindowHandle` takes). Either one means the
+    // host owns a window and this renderer may draw into it; neither means
+    // there is no window, and *that* is what this refusal is for. Requiring
+    // the Vulkan one specifically was the two-window bug: a GL3+ case with a
+    // perfectly good host window was refused, so the fixture had to keep
+    // opening one that GL3+ then ignored.
+    const bool host_window_adoptable =
+        config.external_surface != 0 || config.native_window_handle != 0;
+    if (wants_host_window && !config.headless && !host_window_adoptable) {
         const std::string line =
             config.target == TENSION_OGRE_TARGET_AUTO
                 ? "ogre: init refused: target=auto requires a host window; call "

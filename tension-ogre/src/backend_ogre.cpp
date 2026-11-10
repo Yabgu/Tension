@@ -430,14 +430,66 @@ class BackendOgre final : public Backend {
             params["width"] = std::to_string(config.window_width);
             params["height"] = std::to_string(config.window_height);
             if (config.external_surface != 0) {
-                // The host's surface, borrowed. Ogre adopts it instead of
-                // creating one, and creates no native window at all
-                // (third_party/patches/ogre-external-surface.patch).
+                // Vulkan's currency: the host's surface, borrowed. Ogre adopts
+                // it instead of creating one, and creates no native window at
+                // all (third_party/patches/ogre-external-surface.patch).
+                //
+                // Only the Vulkan render system understands this key — the
+                // patch touches `RenderSystems/Vulkan/*` and nothing else — so
+                // it is set only when Vulkan is the renderer actually running.
+                // Handing it to GL3+ would be handing it a key it ignores, and
+                // an ignored key is how the second window happened.
+                if (vulkan_rs) {
+                    char value[32];
+                    std::snprintf(value, sizeof(value), "%llu",
+                                  static_cast<unsigned long long>(config.external_surface));
+                    params["external_surface"] = value;
+                }
+            }
+
+            if (config.native_window_handle != 0 && !null_rs && !vulkan_rs) {
+                // Everyone else's currency: the window system's own handle.
+                //
+                // **`parentWindowHandle`, not `externalWindowHandle`.** Both name
+                // the host's window and both stop Ogre from opening a top-level
+                // window of its own, but on GLX they are not interchangeable and
+                // the difference is measured on this rig:
+                //
+                //   * `externalWindowHandle` makes Ogre draw *into* the host's
+                //     X window. A plain SDL window is not a GLX drawable, so
+                //     `glXQueryDrawable(GLX_FBCONFIG_ID)` answers 0 and Ogre
+                //     falls back to matching by visual — which lands on FBConfig
+                //     163, `depth=0 stencil=0`. Rendering works and depth does
+                //     not: the floor drew and every sphere behind it vanished.
+                //     `guest-angular` caught it (`9/11`, "nothing was drawn").
+                //   * `parentWindowHandle` makes Ogre create its GL drawable as
+                //     a *child* of the host's window and choose the config
+                //     itself — FBConfig 170, `depth=24`, the same one it picks
+                //     when it owns the window. One top-level window, no second
+                //     SDL window, and the depth buffer a renderer expects.
+                //
+                // Ogre's own log calls `externalWindowHandle` deprecated and
+                // names `parentWindowHandle` as its replacement for exactly this
+                // reason (`OgreGLXWindow.cpp`).
+                //
+                // The value is decimal: Ogre parses it with
+                // `StringConverter::parseUnsignedLong`, and a `0x` form would
+                // parse as 0, which is the "no handle" branch.
                 char value[32];
                 std::snprintf(value, sizeof(value), "%llu",
-                              static_cast<unsigned long long>(config.external_surface));
-                params["external_surface"] = value;
-            } else if (!null_rs) {
+                              static_cast<unsigned long long>(config.native_window_handle));
+                params["parentWindowHandle"] = value;
+                log_line("ogre: parentWindowHandle=" + std::string(value) +
+                         " (the host's window; " + render_system_name_ + " draws inside it)");
+            } else if (config.external_surface != 0 && !vulkan_rs) {
+                // A host surface with a render system that cannot consume it
+                // and no native handle to adopt instead: this is the case the
+                // second window used to hide. Refuse rather than let the
+                // render system open a window the host does not own.
+                return refuse(status, TENSION_OGRE_STAGE_WINDOW, -ENODEV,
+                              "the host published a Vulkan surface but no native window handle, "
+                              "and this render system cannot adopt a VkSurfaceKHR");
+            } else if (config.external_surface == 0 && config.native_window_handle == 0 && !null_rs) {
                 // **There is no own-window path any more.** A GPU render
                 // system here renders into the host's surface or it does not
                 // render: `createRenderWindow` without one would produce a
@@ -482,7 +534,15 @@ class BackendOgre final : public Backend {
             // threads is exactly what backend.h's note on that virtual forbids.
             // A render system that does not publish the attribute leaves the
             // cache at 0, which the verb reports as -ENODEV.
-            {
+            //
+            // **Not under a host window.** When the host owns the window the
+            // drawable here is a child of it (GL3+) or there is no native window
+            // at all (Vulkan), and the host's own handle is what any consumer
+            // already has — `tension_host_surface::native_handle`. Publishing
+            // this one would answer the guest with a drawable it did not create
+            // and the host does not own, so the cache stays 0 and the verb keeps
+            // answering -ENODEV until V7c decides what it should say instead.
+            if (config.native_window_handle == 0) {
                 uint64_t native = 0;
 #if defined(_WIN32)
                 HWND hwnd = nullptr;

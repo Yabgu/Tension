@@ -11,68 +11,32 @@
 // with `SDL_WINDOW_VULKAN`. The host publishes the surface inside
 // `createWindow`, so the `ogre.init` that follows finds it.
 //
-// ── the two-window defect, recorded rather than fixed ────────────────────
+// ── one window, two render systems ───────────────────────────────────────
 //
-// Under `--renderer=gl3plus` this helper still creates the host's window, and
-// **GL3+ creates a second one**. Only the second is used: the GL3+ plugin
-// cannot consume a `VkSurfaceKHR` — `third_party/patches/ogre-external-surface.patch`
-// touches `RenderSystems/Vulkan/*` only — so it ignores the parameter and calls
-// `createRenderWindow`, which opens its own GLX window. The pixel clauses
-// screenshot that one, which is why the cases pass and prove "GL3+ renders"
-// rather than "one window".
+// The window is created once, here, and both render systems adopt it — each in
+// the currency it understands:
 //
-// It is left as-is because the fix is measured-correct up to teardown and then
-// the process crashes, here, deterministically:
+//   - Vulkan takes the `VkSurfaceKHR` that `createWindow` publishes (the
+//     `Vulkan` target is what makes `SDL_WINDOW_VULKAN` possible), and builds
+//     its swapchain on it.
+//   - GL3+ takes the window system's own handle — the X11 XID here — which the
+//     host publishes in the same record as `native_handle`, and passes it to
+//     Ogre as `parentWindowHandle`. Ogre creates its GL drawable as a child of
+//     this window and picks a depth-24 config for it.
 //
-//   1. **Skipping the host window is not enough.** `ogre::init` refuses
-//      `-ENODEV` when `target=auto` has no host surface
-//      (`tension-ogre/src/adapter.cpp`, "target=auto requires a host window"),
-//      and it does so without looking at which render system was asked for. A
-//      GL3+ case that creates no window fails at init.
-//   2. **Narrowing that refusal to the render systems that can adopt a surface
-//      works, and then teardown crashes.** With the check narrowed to Vulkan
-//      (GL3+ may open its own window under `auto`; `swapchain` and Vulkan stay
-//      strict) one window opens and every pixel clause still passes —
-//      `ACID 8/8 passed`, same pixels — and the process dies with SIGSEGV at
-//      exit. 20 of 20 runs on the previous pass, 3 of 3 re-measured.
+// Before that second path existed, `--renderer=gl3plus` opened a **second**,
+// top-level window: the GL3+ plugin cannot read a `VkSurfaceKHR` (the
+// external-surface hunk covers `RenderSystems/Vulkan/*` only), ignored it, and
+// called `createRenderWindow`. The pixel clauses screenshot GL3+'s window, so
+// the cases passed while proving "GL3+ renders", not "one window". They now
+// prove the stronger claim: `xwininfo -root -tree` during a run shows one
+// `tension-ogre test` window with one child, the drawable Ogre renders into.
 //
-// ── which code dies, and why it is not ours ──────────────────────────────
-//
-// The first version of this note blamed llvmpipe's JIT. That was wrong, and the
-// correction is what makes the next attempt cheap:
-//
-//   * The faulting thread is **fresh**, not the render thread's stack: its
-//     backtrace ends at libc's `start_thread` and `rax == rip` — an indirect
-//     jump into an address with no mapping. A thread spawned during teardown
-//     runs code that has already been unmapped.
-//   * `LD_DEBUG=files` ends the unload cascade at the **WSL D3D12 driver**:
-//     `RenderSystem_GL3Plus` → `libGLX_mesa` → `libgallium-26.2.6` →
-//     `libd3d12` → `libd3d12core` → the AMD shader compiler (`amdxc64.so`).
-//   * Not llvmpipe: under `LIBGL_ALWAYS_SOFTWARE=1` or `GALLIUM_DRIVER=llvmpipe`
-//     the same own-window path exits 0.
-//   * Not a race with compile threads: 800 ms of sleep before
-//     `root_->shutdown()` changes nothing (3 of 3 still crash).
-//   * It **is** that driver: preloading `libd3d12core.so`, `libd3d12.so` and
-//     `amdxc64.so` with `RTLD_NODELETE`, so teardown cannot unmap them, makes
-//     the own-window path exit 0 — 3 of 3, one window. Preloading
-//     `libgallium`/`libGLX_mesa`/`libGL` the same way does not help.
-//
-// The driver spawns a thread into code it is in the middle of unloading, after
-// `destroyRenderWindow`, inside the DSO's own teardown. No Ogre toggle reaches
-// it: the D3D12 chain is dropped by the GL context's destruction, not by Ogre's
-// plugin unload.
-//
-// Two ways out, both larger than this fixture:
-//
-//   a. Keep the driver resident for the process lifetime once a GPU renderer is
-//      up (Linux: `RTLD_NODELETE` on the loader's driver DSOs). Removes the
-//      hazard for every driver, and adds engine policy for a driver bug.
-//   b. Remove the own-window path instead of making it quiet: publish a surface
-//      GL3+ can adopt, so the GL3+ cases use the host's window as Vulkan's do.
-//      That is the GL-surface publication pass, not a fixture change.
-//
-// Until one lands the second window stays, and the cases keep testing what they
-// were built to test.
+// The target stays `Vulkan` for every renderer, and that is measured rather
+// than assumed: `SDL_WINDOW_OPENGL` is *not* needed. Ogre resolves the child's
+// visual from the parent handle and gets the same `depth=24` config either way,
+// so a second window flag would buy nothing and would take the Vulkan surface
+// away from the renderer that needs it.
 //
 // Reads `--renderer=` itself rather than taking a parameter: every fixture parses
 // its own arguments slightly differently, and a helper that answers one question

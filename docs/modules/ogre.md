@@ -514,6 +514,39 @@ discard every resource, clear the cached native handle, `destroyRenderWindow`
 render system holds a pointer to that struct while shutting down. Freeing it
 first would leave Ogre reading freed memory.
 
+### 6.1 The other currency: a native handle for render systems that cannot adopt a surface
+
+The external-surface hunk is Vulkan-only (`third_party/patches/ogre-external-surface.patch`
+touches `RenderSystems/Vulkan/*`). GL3+ and D3D11 cannot consume a
+`VkSurfaceKHR`, and before this path they ignored it and called
+`createRenderWindow`, which opened a **second** window nobody used.
+
+`tension_host_surface` now also carries `native_handle` — the X11 XID on X11,
+the `HWND` on Win32, 0 where the platform has none — published from the same
+record as the Vulkan pair, so the two cannot disagree about which window they
+name (`platform.rs`, `HostWindow::native_handle`; `ffi.rs`, the `host_surface`
+slot). `init` copies it into `Config::native_window_handle` and treats it as a
+second proof that the host owns a window: the `target=auto` refusal fires only
+when *neither* currency is present (`adapter.cpp`).
+
+The backend then passes it to `createRenderWindow` as `parentWindowHandle` for
+every non-Vulkan GPU render system (`backend_ogre.cpp`). **Not
+`externalWindowHandle`, which is the parameter Ogre's own log calls deprecated
+here — and measured to be wrong for this job.** On GLX the two differ in what
+they do with the host's X window:
+
+- `externalWindowHandle` makes Ogre draw *into* the host's window. A plain SDL
+  window is not a GLX drawable, so `glXQueryDrawable(GLX_FBCONFIG_ID)` answers 0
+  and Ogre's fallback matches by visual, landing on a config with
+  `depth=0 stencil=0`. Rendering works and depth does not — the floor drew and
+  every sphere behind it vanished (`guest-angular`, `9/11`, "nothing was
+  drawn").
+- `parentWindowHandle` makes Ogre create its GL drawable as a *child* of the
+  host's window and pick the config itself: `depth=24`, the same one it chooses
+  when it owns the window. One top-level window, no second SDL window, and a
+  depth buffer. `xwininfo -root -tree` during a run shows exactly that: one
+  `tension-ogre test` window with one 320×240 child.
+
 Without a host surface the module is unchanged from the pre-v6 path: the plugin
 is named in `plugins.cfg`, Ogre creates its own window, and the native handle is
 cached for `window_handle` (`backend_ogre.cpp:478-503`). On this rig that

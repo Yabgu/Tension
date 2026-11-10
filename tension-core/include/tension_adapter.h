@@ -217,19 +217,39 @@ typedef struct tension_ctrl_msg {
 } tension_ctrl_msg;
 
 /*
- * The host's window surface (ABI v6). See the `host_surface` slot.
+ * The host's window, borrowed by a renderer (ABI v6; `native_handle` appended
+ * after v7 without a new slot).
  *
  * `struct_size` is `sizeof(tension_host_surface)` and exists so a later ABI can
  * grow this without a new slot: an adapter passes the size it was compiled
- * against in, and the host writes no more than that.
+ * against in, and the host writes no more than that. An adapter built before
+ * `native_handle` passed 32 and is still written correctly — the field simply
+ * is not there for it.
+ *
+ * Two ways to adopt the same window, because the two render systems take
+ * different currency:
+ *
+ *   - `instance` + `surface` are the Vulkan ones. Ogre's Vulkan render system
+ *     builds its swapchain on the host's `VkSurfaceKHR` and creates nothing.
+ *   - `native_handle` is the window system's own handle: an X11 XID
+ *     (`unsigned long`) on X11, an `HWND` on Win32. It is what a render system
+ *     that cannot consume a `VkSurfaceKHR` adopts instead — Ogre's GL3+
+ *     `parentWindowHandle` parameter — so that it, too, renders into the
+ *     host's window rather than opening a second one.
+ *
+ *   - `native_handle` is 0 where the platform has no such handle to give:
+ *     Wayland (`wl_surface` is not a handle Ogre's GLX window takes on this
+ *     build), macOS, and the headless video drivers. It does not mean "handle
+ *     zero"; it means "ask for the Vulkan surface, or make your own window".
  */
 typedef struct tension_host_surface {
     uint32_t struct_size;
     uint32_t width;   /* current drawable size, pixels */
     uint32_t height;
     uint32_t reserved;
-    uint64_t instance; /* VkInstance, 0 = none */
-    uint64_t surface;  /* VkSurfaceKHR, 0 = none */
+    uint64_t instance;      /* VkInstance, 0 = none */
+    uint64_t surface;       /* VkSurfaceKHR, 0 = none */
+    uint64_t native_handle; /* X11 XID / Win32 HWND, 0 = none */
 } tension_host_surface;
 
 /*
@@ -1359,6 +1379,10 @@ static_assert(offsetof(tension_event_layer, dispatch) == 16,
               "tension_event_layer: dispatch after the four u32");
 static_assert(sizeof(tension_pad_record) == TENSION_PAD_RECORD_SIZE,
               "tension_pad_record must be the size the wire declares");
+static_assert(sizeof(tension_host_surface) == 40,
+              "tension_host_surface: four u32 then three u64");
+static_assert(offsetof(tension_host_surface, native_handle) == 32,
+              "tension_host_surface: native_handle appended after surface");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
 _Static_assert(sizeof(tension_event) == 40, "tension_event is 40 bytes");
 _Static_assert(offsetof(tension_event, a0) == 8, "tension_event: a0 at 8");
@@ -1368,6 +1392,10 @@ _Static_assert(offsetof(tension_event_layer, dispatch) == 16,
                "tension_event_layer: dispatch after the four u32");
 _Static_assert(sizeof(tension_pad_record) == TENSION_PAD_RECORD_SIZE,
                "tension_pad_record must be the size the wire declares");
+_Static_assert(sizeof(tension_host_surface) == 40,
+               "tension_host_surface: four u32 then three u64");
+_Static_assert(offsetof(tension_host_surface, native_handle) == 32,
+               "tension_host_surface: native_handle appended after surface");
 #endif
 
 /*

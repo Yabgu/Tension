@@ -178,6 +178,11 @@ pub struct TensionHostSurface {
     pub reserved: u32,
     pub instance: u64,
     pub surface: u64,
+    /// The window system's handle (X11 XID / Win32 HWND), 0 where there is
+    /// none. Grown in place, past `struct_size` for any adapter built before
+    /// this field existed: such an adapter passes 32, and
+    /// [`host_surface`] then writes only the fields it knows.
+    pub native_handle: u64,
 }
 
 pub type HostSurfaceFn =
@@ -378,10 +383,13 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, unregister_event_layer) == 192);
     assert!(std::mem::offset_of!(TensionCoreApi, host_window_info) == 200);
     assert!(std::mem::offset_of!(TensionCoreApi, pad_state) == 208);
-    // The struct itself: four u32 then two u64, so `instance` lands on 16.
-    assert!(std::mem::size_of::<TensionHostSurface>() == 32);
+    // The struct itself: four u32 then three u64, so `instance` lands on 16.
+    // `native_handle` was appended, so the first 32 bytes a pre-existing
+    // adapter reads are byte-identical to what it was compiled against.
+    assert!(std::mem::size_of::<TensionHostSurface>() == 40);
     assert!(std::mem::offset_of!(TensionHostSurface, instance) == 16);
     assert!(std::mem::offset_of!(TensionHostSurface, surface) == 24);
+    assert!(std::mem::offset_of!(TensionHostSurface, native_handle) == 32);
     assert!(std::mem::offset_of!(TensionAdapter, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionAdapter, name) == 8);
     assert!(std::mem::offset_of!(TensionAdapter, flags) == 16);
@@ -1574,20 +1582,39 @@ pub(crate) unsafe extern "C" fn host_surface(
     };
 
     // SAFETY: checked non-null above. `struct_size` is the caller's, so a
-    // shorter struct from an older adapter is written only as far as it goes.
-    let caller_size = unsafe { (*out).struct_size };
-    if caller_size != 0 && (caller_size as usize) < std::mem::size_of::<TensionHostSurface>() {
+    // shorter struct from an older adapter is written only as far as it goes —
+    // that is the whole reason the field exists. Zero is the pre-v6 convention
+    // for "the whole struct I was compiled against"; anything below the v6
+    // shape is malformed and is refused rather than written blind.
+    let declared = unsafe { (*out).struct_size } as usize;
+    const V6_SIZE: usize = 32;
+    if declared != 0 && declared < V6_SIZE {
         return EINVAL;
     }
+    let full = std::mem::size_of::<TensionHostSurface>();
+    // What this call covers, and what it reports having covered: a caller that
+    // named 32 is told 32, not 40.
+    let covered = if declared == 0 { full } else { declared };
     unsafe {
-        *out = TensionHostSurface {
-            struct_size: std::mem::size_of::<TensionHostSurface>() as u32,
-            width: published.width,
-            height: published.height,
-            reserved: 0,
-            instance: published.instance,
-            surface: published.surface,
+        // Field by field, at the offsets the C header fixes, so a caller that
+        // named only the v6 shape is written exactly that far and no further.
+        // A single struct assignment cannot express "stop here", and copying a
+        // truncated struct would need a second declaration to keep in step.
+        let base = out as *mut u8;
+        let put = |offset: usize, bytes: &[u8]| {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), base.add(offset), bytes.len());
         };
+        put(0, &(covered.min(full) as u32).to_ne_bytes());
+        put(4, &published.width.to_ne_bytes());
+        put(8, &published.height.to_ne_bytes());
+        put(12, &0u32.to_ne_bytes());
+        put(16, &published.instance.to_ne_bytes());
+        put(24, &published.surface.to_ne_bytes());
+        // Past what a pre-`native_handle` adapter declared: leave it alone,
+        // because its allocation ends there.
+        if covered >= full {
+            put(32, &published.native_handle.to_ne_bytes());
+        }
     }
     0
 }
@@ -1936,6 +1963,88 @@ mod tests {
             unsafe { info(api.user, 4, std::ptr::null_mut(), &mut capacity, &mut flags) },
             EINVAL
         );
+    }
+
+    // ── `host_surface` growth (native_handle, appended after ABI v7) ──────
+
+    /// A `tension_host_surface` as an adapter compiled before `native_handle`
+    /// declared it: 32 bytes, ending after `surface`. Spelled as a byte buffer
+    /// rather than a struct so the test can see what lands *past* the end.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct HostSurfaceV6 {
+        struct_size: u32,
+        width: u32,
+        height: u32,
+        reserved: u32,
+        instance: u64,
+        surface: u64,
+    }
+
+    #[test]
+    fn host_surface_writes_only_what_the_caller_declared() {
+        let host = AdapterHost::new(test_posting());
+        host.publish_host_surface(
+            crate::platform::HostSurface {
+                instance: 0x1122_3344_5566_7788,
+                surface: 0x99aa_bbcc_ddee_ff00,
+                native_handle: 0x1234_5678,
+                width: 320,
+                height: 240,
+            },
+            Vec::new(),
+        );
+        let api = *host.api();
+        let read = api.host_surface.expect("the shim is installed");
+
+        // The caller's allocation, with a sentinel behind it: an old adapter's
+        // struct is 32 bytes, and a host that wrote 40 would trample whatever
+        // follows.
+        #[repr(C)]
+        struct OldCaller {
+            v6: HostSurfaceV6,
+            sentinel: u64,
+        }
+        let mut caller = OldCaller {
+            v6: HostSurfaceV6 {
+                struct_size: std::mem::size_of::<HostSurfaceV6>() as u32,
+                ..Default::default()
+            },
+            sentinel: 0xdead_beef_dead_beef,
+        };
+        let rc = unsafe {
+            read(
+                api.user,
+                &mut caller as *mut OldCaller as *mut TensionHostSurface,
+            )
+        };
+        assert_eq!(rc, 0, "a pre-native_handle caller is still answered");
+        assert_eq!(caller.v6.width, 320);
+        assert_eq!(caller.v6.height, 240);
+        assert_eq!(caller.v6.instance, 0x1122_3344_5566_7788);
+        assert_eq!(caller.v6.surface, 0x99aa_bbcc_ddee_ff00);
+        // It is told what it got, not what a newer header declares.
+        assert_eq!(caller.v6.struct_size, std::mem::size_of::<HostSurfaceV6>() as u32);
+        assert_eq!(
+            caller.sentinel, 0xdead_beef_dead_beef,
+            "the host wrote past the struct the caller named"
+        );
+
+        // Today's struct, from the same window: the handle is there.
+        let mut current = TensionHostSurface {
+            struct_size: std::mem::size_of::<TensionHostSurface>() as u32,
+            ..Default::default()
+        };
+        let rc = unsafe { read(api.user, &mut current) };
+        assert_eq!(rc, 0);
+        assert_eq!(current.native_handle, 0x1234_5678);
+
+        // Zero means "the whole struct I was compiled against" — the pre-v6
+        // convention, and it still fills everything.
+        let mut unstated = TensionHostSurface::default();
+        let rc = unsafe { read(api.user, &mut unstated) };
+        assert_eq!(rc, 0);
+        assert_eq!(unstated.native_handle, 0x1234_5678);
     }
 
     // ── the logging slots (appended under rule 11) ────────────────────────

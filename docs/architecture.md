@@ -283,12 +283,20 @@ in the scheduler pass, not here.
 A capability gets exactly two things from the host, one read and one write.
 
 **Read — `host_surface`** (`tension_adapter.h:628`). Fills a
-`tension_host_surface` (instance, surface, width, height) from the published
-state (`ffi.rs:1517` → `adapter/mod.rs:449`), which `main` sets before any
-adapter loads (`main.rs:1499`). Any thread (rule 7), no guest memory, no side
+`tension_host_surface` (instance, surface, native handle, width, height) from the
+published state (`ffi.rs:1517` → `adapter/mod.rs:449`), which `main` sets before
+any adapter loads (`main.rs:1499`). Any thread (rule 7), no guest memory, no side
 effects — the render thread calls it every frame. Answers `-ENOSYS` when the host
-owns no surface, which a layer must treat as "make your own window", not as an
+owns no window, which a layer must treat as "make your own window", not as an
 error.
+
+The record carries **two currencies for one window**: the Vulkan pair
+(`instance`, `surface`) and the window system's own handle (`native_handle` —
+X11 XID / Win32 HWND, 0 on Wayland and macOS). A render system that cannot adopt
+a `VkSurfaceKHR` adopts the native handle instead, so no renderer ever opens a
+second window behind the host's back. `native_handle` was appended after ABI v7;
+the host writes only as many bytes as the caller's `struct_size` names, so an
+adapter built before it still reads the old 32-byte shape.
 
 **Read — `host_surface_extension`** (`tension_adapter.h:660`). Enumerates the
 names the host passed to `vkCreateInstance`, one index at a time; `-ENOENT` past

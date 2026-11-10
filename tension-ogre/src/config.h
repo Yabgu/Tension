@@ -64,6 +64,12 @@ struct Config {
     /// they arrive from the host's table, and they are set after decoding.
     uint64_t external_instance = 0;
     uint64_t external_surface = 0;
+    /// The window system's handle for the host's window (X11 XID / Win32
+    /// HWND), or 0 where the host has none to give. A render system that
+    /// cannot adopt a `VkSurfaceKHR` adopts this instead — GL3+'s
+    /// `parentWindowHandle` — so it renders inside the host's window rather
+    /// than opening a second one. Vulkan ignores it.
+    uint64_t native_window_handle = 0;
     /// Reads the host's *current* surface size, called once per frame by the
     /// render thread. A function pointer rather than a value because the size
     /// changes; a pointer rather than a `std::function` because `Config` is
