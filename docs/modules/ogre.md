@@ -559,6 +559,19 @@ than naming a surface, so there is no consumer for a drawable the guest did not
 create (`INPUT.md` §3, `docs/vision.md` §5.5). A future backend that needs a
 native handle gets a new verb; this one is not re-pointed.
 
+**GL3+ is a fallback, not a co-equal target.** Vulkan is the primary 3D renderer
+and the one the SDK's windowed path asks for
+(`tension-framework/assembly/ogre/index.ts:310`); GL3+ exists for hardware with
+no Vulkan, and it is the last 3D candidate in the `auto` chain on both platforms
+(`adapter.cpp:172-190`). The child window above is therefore **permanent rather
+than a stepping stone**: a native `WindowTarget::OpenGL`, with the host owning
+an `SDL_GLContext`, was evaluated and is a deliberate non-build
+(`docs/vision.md` §6), so nothing on this path is scheduled for replacement. The
+wire default for `renderer` is `1 (GL3PLUS)` (`config.cpp:162-172`), which
+governs only a guest that names no renderer at all — `auto` starts at Vulkan (or
+the Windows Direct3D 11 candidate, which this build compiles `OFF`) and reaches
+GL3+ only when the earlier candidates fail.
+
 ## 7. Failure modes
 
 Refusals come back as negative errno in `ret`; the shim's own return is a

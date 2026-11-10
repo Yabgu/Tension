@@ -24,7 +24,7 @@ yet.
 | Hardware floor: a Vulkan, D3D12 or Metal GPU (~2017 or newer) | the renderer split | there is no software-rendering path; `SDL_GPU` needs one of those three, and Ogre's Vulkan backend needs Vulkan | a software backend (lavapipe covers CI, not users) | vision §5.1 |
 | Win32 is cross-compiled, never run | — | needs a Windows machine and a Win32 host-surface variant | both exist | vision §5.3 |
 | `tension-input` builds on Windows, has never been run there | v7 | needs a Windows machine to run the input suites | one exists | vision §5.3 |
-| The GL3+ windowed suite needs an X11 display | — | Ogre-Next 3.0's GL3+ is GLX; a Wayland window has no adoptable handle | an EGL backend, or `SDL_VIDEODRIVER=x11` on XWayland | vision §5.3 |
+| The GL3+ fallback needs an X11 display | — | GL3+ is the non-Vulkan fallback and it is GLX-only; a Wayland window has no adoptable handle | an EGL backend, or `SDL_VIDEODRIVER=x11` on XWayland | vision §6 |
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
 | Win32 header path is a checked-in overlay | `ci/linsys2.md` | Ogre's tree has no `WIN32` platform define for the Vulkan window | upstream, or the overlay grows | — |
 | The isometric suites fail on this rig | — | `vkCreateGraphicsPipelines` fails under `dzn` | the same ICD | CI |
@@ -196,15 +196,21 @@ Vulkan window configuration, so a checked-in overlay supplies it
 fails if the overlay drifts from the pinned submodule. Runtime testing is
 [`vision.md`](vision.md) §5.3.
 
-## GL3+ needs an X11 display on a Wayland session
+## The GL3+ fallback needs an X11 display on a Wayland session
+
+This is a limitation of the **GL3+ fallback**, not a bug and not a regression in
+a primary path: Vulkan is the primary 3D renderer and runs under the native
+Wayland driver. GL3+ is retained for hardware with no Vulkan and is a
+deliberate non-build as a host-owned path (`docs/vision.md` §6, `docs/modules/ogre.md`
+§6.1), and on Linux it is GLX-only — Ogre-Next 3.0 has no EGL windowing in this
+build. So it needs an X11 display and a window with an adoptable native handle;
+a Wayland window has neither (`HostWindow::native_handle` documents 0 for it),
+and the adapter refuses rather than opening a window of its own.
 
 `TENSION_OGRE_WINDOW_TEST=1 node scripts/test-ogre.mjs` opens a real window for
 every opt-in case, and the GL3+ ones fail on a native Wayland session with
-`DEVICE_LOST` at the first frame. It is not a renderer bug: Ogre-Next 3.0's GL3+
-render system on Linux is GLX, so it needs an X11 display and a window with an
-adoptable native handle. A Wayland window has neither (`HostWindow::native_handle`
-documents 0 for it), and the adapter refuses rather than opening a window of its
-own.
+`DEVICE_LOST` at the first frame. That is the adapter's refusal reaching the
+guest, not a crash in the renderer.
 
 On a Wayland host with XWayland available — the common case — run the windowed
 suite with the driver pinned:
