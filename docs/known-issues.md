@@ -1,7 +1,8 @@
 # Known issues
 
-Three entries. Two are resolved and kept for the record — each one blocked the
-OGRE flip and each fix came from TensionScript. One is open and worked around.
+Four entries. Two are resolved and kept for the record — each one blocked the
+OGRE flip and each fix came from TensionScript. Two are open: one worked around,
+one unfixed.
 
 ---
 
@@ -182,6 +183,46 @@ is gone from the helper chain. `makeSretGuard` and the global's initial value
 were correct and are unchanged. Measured after: `guest-resource-errors` reaches
 `RESERR 4 control-done 0`, and `--ogre-guest` is green at `-O2` apart from the
 `vulkan` case below.
+
+---
+
+## KS-4 — `skin-matrices` is flaky: the pose sometimes never reaches the shader
+
+**Status:** open, not fixed. Recorded so a red suite is not mistaken for a new
+failure.
+
+**Symptom.** `TENSION_OGRE_WINDOW_TEST=1 node scripts/test-ogre.mjs` fails at
+`skin-matrices` in roughly a third of runs:
+
+```
+MATRICES shifted=7217.0 unshifted=7217.0 delta=0.0
+MATRICES 4/4 failed: the two frames differ by 0.0 px, under the floor of 30.0 — the matrices did not reach the shader
+```
+
+The foreground count is identical in both frames and the delta is 0: the second
+capture saw the same pose as the first, so the clause-4 `SkinMatrixBatch.commit()`
+never reached the shader. Passing runs report deltas of 1815, 4046 and 5861 — the
+*same* rigid two-unit translation producing three different pixel counts, which
+reads as a commit landing partway through a frame rather than between two.
+
+**Reproduction** (this rig, `--renderer=gl3plus`, the two-window path). Ten
+consecutive runs of the fixture at `36bb4be` → 7 pass, 3 fail. The same ten runs
+against an interpreter built at `0ac61fe` → 8 pass, 2 fail: it is **not** new in
+this session's reclaim work and predates it.
+
+**Interaction with the environmental SIGSEGV.** Every failing run above also
+exited 139: the guest traps on the failed clause, and the process then dies
+during teardown. That is the post-abort teardown fault described in the notes
+below (`dzn`, software-Vulkan worker during teardown); it was not re-localised
+for this fixture.
+
+**Not known.** Whether the dropped commit is a session/epoch delivery race (the
+commit is queued, the renderer copies the batch into the constant buffer) or an
+adapter-side frame-atomicity defect. The measured delta variance fits the second;
+neither is proven.
+
+**Impact.** `node scripts/test-ogre.mjs` cannot be used as a pass/fail gate until
+this is fixed or quieted — a green run is luck. No other fixture depends on it.
 
 ---
 
