@@ -6,9 +6,19 @@
   "description": "The offline documentation engine: a Tension guest that renders the repository's docs, with search and recorded runnable examples.",
   "scripts": {
     "assets": "node tools/bundle.mjs && node tools/search.mjs && node tools/make-font.mjs && node tools/run-examples.mjs",
+    "dev": "tension dev",
+    "start": "tension dev",
+    "build": "tension build",
+    "doctor": "tension doctor",
     "verify": "node tools/verify.mjs"
   },
   "devDependencies": {
+    "@yabgu_gm/tension": "file:../../packages/cli",
+    "@yabgu_gm/tensionscript": "^0.14.1",
     "marked": "^18.2.0"
+  },
+  "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../packages/core",
+    "tension-framework": "file:../../tension-framework"
   }
 }

@@ -1,0 +1,14 @@
+{
+  "name": "@yabgu_gm/tension-input",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The input capability adapter that tension-core dlopens for --capability. Resolves the platform build.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "files": [
+    "index.js"
+  ]
+}
