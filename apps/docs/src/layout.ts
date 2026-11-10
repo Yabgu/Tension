@@ -306,6 +306,25 @@ export class PageLayout {
     return 0;
   }
 
+  /**
+   * Where a block's transcript panel hangs, in page space.
+   *
+   * The same expression the draw uses for its anchor (`lineY + LINE_STEP + 10`
+   * on the block's last line), in page coordinates so a caller can decide how far
+   * to scroll before the frame that draws it. `-1` when the block is not on this
+   * page.
+   */
+  anchorForBlock(block: i32): i32 {
+    for (let i: i32 = 0; i < this.blockIndex.length; i++) {
+      if (this.blockIndex[i] == block) {
+        const last: i32 = this.blockFirstLine[i] + this.blockLineCount[i] - 1;
+        if (last >= 0 && last < this.lineY.length) return this.lineY[last] + LINE_STEP + 10;
+        return -1;
+      }
+    }
+    return -1;
+  }
+
   /** The first line at or below `y` — a linear scan, bounded by ~40 lines. */
   firstLineAt(y: i32): i32 {
     for (let i: i32 = 0; i < this.lineStart.length; i++) {

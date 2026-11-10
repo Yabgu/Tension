@@ -240,23 +240,8 @@ export class Window {
   /** This window's state. On `!isValid()` every field is zero, `width`
    *  included — not an error code, so an update loop needs no branch. */
   info(): WindowInfo {
-    const out = new WindowInfo();
-    if (!this.isValid()) return out;
-    const staging: u32 = <u32>heap.alloc(WINDOW_INFO_BYTES);
-    const rc = windowInfoRaw(this.handle, staging);
-    if (rc == 0) {
-      out.width = load<u32>(staging + 4);
-      out.height = load<u32>(staging + 8);
-      out.pixelWidth = load<u32>(staging + 12);
-      out.pixelHeight = load<u32>(staging + 16);
-      out.dpiScaleMilli = load<u32>(staging + 20);
-      out.mode = load<u32>(staging + 24) as WindowMode;
-      out.focused = load<u32>(staging + 28) != 0;
-      out.minimized = load<u32>(staging + 32) != 0;
-      out.closeRequested = load<u32>(staging + 36) != 0;
-    }
-    heap.free(staging);
-    return out;
+    if (!this.isValid()) return new WindowInfo();
+    return decodeWindowInfo(this.handle);
   }
 
   /** Destroy the window. Refused with -EBUSY while a renderer holds its
@@ -265,6 +250,54 @@ export class Window {
     if (!this.isValid()) return 0;
     return closeWindowRaw(this.handle);
   }
+}
+
+/**
+ * The record for one window id, decoded.
+ *
+ * One decoder for both readers: a `Window` handle, and the process's one host
+ * window. A refused call leaves every field zero — the same shape as "no
+ * window", which is exactly what a guest should conclude from a failed query.
+ */
+function decodeWindowInfo(id: u32): WindowInfo {
+  const out = new WindowInfo();
+  const staging: u32 = <u32>heap.alloc(WINDOW_INFO_BYTES);
+  if (windowInfoRaw(id, staging) == 0) {
+    out.width = load<u32>(staging + 4);
+    out.height = load<u32>(staging + 8);
+    out.pixelWidth = load<u32>(staging + 12);
+    out.pixelHeight = load<u32>(staging + 16);
+    out.dpiScaleMilli = load<u32>(staging + 20);
+    out.mode = load<u32>(staging + 24) as WindowMode;
+    out.focused = load<u32>(staging + 28) != 0;
+    out.minimized = load<u32>(staging + 32) != 0;
+    out.closeRequested = load<u32>(staging + 36) != 0;
+  }
+  heap.free(staging);
+  return out;
+}
+
+/** The host's one window (`platform::WINDOW_ID` in `platform.rs`). */
+const HOST_WINDOW_ID: u32 = 1;
+
+/**
+ * The host window's state, whoever created it.
+ *
+ * `Window.info()` answers for a handle `createWindow` returned, and a guest that
+ * let `Canvas.windowedOrOffscreen` create its window never had one — which is
+ * every hand-written frame loop in this repository, and every template. Those
+ * loops still have to stop when the user closes the window, and `present`'s
+ * `-ECANCELED` does not get there on its own: the renderer learns of a close
+ * from its own pump, and the host pumps the same queue in `RuntimeSession.wait`
+ * and in the host loop, so whichever pump drains SDL's quit event is the only
+ * one that sees it. Measured (apps/docs, 2D): with the `present` check alone the
+ * X did nothing and the process ran until it was killed; with this read at the
+ * top of the loop it exits 350-450 ms after the click.
+ *
+ * All zero when there is no window (headless), `width` included.
+ */
+export function windowInfo(): WindowInfo {
+  return decodeWindowInfo(HOST_WINDOW_ID);
 }
 
 /**

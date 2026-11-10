@@ -48,7 +48,7 @@ import {
   open as inputOpen,
   state as inputState,
 } from "tension-framework/assembly/input";
-import { windowRequest } from "tension-framework/assembly/platform";
+import { windowInfo, windowRequest } from "tension-framework/assembly/platform";
 
 import {
   Docs, SearchIndex, Transcripts,
@@ -159,6 +159,17 @@ class App {
   /** The block whose transcript is showing, or -1. */
   showingBlock: i32 = -1;
   showingEntry: i32 = -1;
+  /**
+   * How much page height the open transcript adds.
+   *
+   * The panel is drawn anchored under its code block, which does not move — so
+   * without this the page has no room to scroll into and a Run button near the
+   * bottom of a page answers by changing its own label and nothing else.
+   */
+  transcriptH: i32 = 0;
+
+  /** Why the frame loop stopped, for the line `teardown` prints. */
+  private exitReason: string = "the frame bound was reached";
 
   // --- input ---------------------------------------------------------------
   inputHandle: i32 = 0;
@@ -264,18 +275,6 @@ class App {
     this.page = 0;
     this.layout.build(this.docs, 0);
 
-    // TEMP DIAGNOSTIC
-    {
-      let nl: i32 = 0;
-      let spaces: i32 = 0;
-      for (let i: i32 = 0; i < this.layout.chars.length; i++) {
-        if (this.layout.chars[i] == 10) nl++;
-        if (this.layout.chars[i] == 32) spaces++;
-      }
-      print("diag: page0 chars=" + this.layout.chars.length.toString() +
-        " newlines=" + nl.toString() + " spaces=" + spaces.toString());
-    }
-
     this.setupInput();
 
     print("tension-docs: " + this.docs.pageCount.toString() + " pages, " +
@@ -319,6 +318,22 @@ class App {
     }
 
     while (true) {
+      // The close button, asked directly — and it has to be asked here.
+      //
+      // Measured, by removing this check and clicking the X: the process never
+      // exits. `present`'s `-ECANCELED` is not a fallback, because the renderer
+      // learns of the close from its *own* pump, and the host pumps too — in
+      // `RuntimeSession.wait` and in the host loop. Whichever pump drains SDL's
+      // quit event is the only one that sees it, and it is normally the host's,
+      // which sets `window_closed` on a host that has nothing left to drive. So
+      // a guest loop that owns its lifetime must stop on the request itself; the
+      // host does not stop it for you in the 2D path, whatever `_game_running`
+      // does in the Ogre one.
+      if (windowInfo().closeRequested) {
+        this.exitReason = "the window was closed";
+        break;
+      }
+
       this.pollAttach();
       this.handleInput();
       this.draw();
@@ -326,6 +341,7 @@ class App {
       const presented = this.canvas!.present();
       if (presented != 0) {
         // `-ECANCELED` once the window is closed: stop, do not retry.
+        this.exitReason = "present answered " + presented.toString();
         break;
       }
       this.frames++;
@@ -347,6 +363,11 @@ class App {
     if (this.inputHandle > 0) inputClose(this.inputHandle);
     if (this.canvas!.isValid()) this.canvas!.close();
     RuntimeSession.close();
+    // Said out loud, because "the window closed" and "the process died" look
+    // identical from the launcher otherwise, and the difference is the whole
+    // point of exiting through this path.
+    print("tension-docs: closed after " + this.frames.toString() + " frame(s) (" +
+      this.exitReason + ")");
   }
 
   // ── input ───────────────────────────────────────────────────────────────
@@ -478,7 +499,7 @@ class App {
   private maxScroll(): i32 {
     const total: i32 = this.searchFocused || this.queryLen > 0
       ? this.results.length * (LINE_STEP + 12) + 40
-      : this.layout.height;
+      : this.layout.height + this.transcriptH;
     const max: i32 = total - this.pageHeight();
     return max > 0 ? max : 0;
   }
@@ -557,10 +578,37 @@ class App {
     if (this.showingBlock == block) {
       this.showingBlock = -1;
       this.showingEntry = -1;
+      this.transcriptH = 0;
+      this.clampScroll();
       return;
     }
     this.showingBlock = block;
     this.showingEntry = this.transcripts.ok ? this.transcripts.find(block) : -1;
+
+    // The panel becomes part of the page's height, and opening it scrolls to it
+    // when it would not otherwise be visible. A code block near the bottom of a
+    // page is the common case, and "the button answered but nothing appeared"
+    // is indistinguishable from a dead button.
+    this.transcriptH = this.showingEntry >= 0
+      ? this.transcriptLines(this.showingEntry) * LINE_STEP + 26 + 12
+      : LINE_STEP + 18;
+    const anchor: i32 = this.layout.anchorForBlock(block);
+    if (anchor >= 0) {
+      const want: i32 = anchor + this.transcriptH - this.pageHeight();
+      if (want > this.scroll) this.scroll = want;
+    }
+    this.clampScroll();
+  }
+
+  /** How many lines a recorded transcript has, header excluded. */
+  private transcriptLines(entry: i32): i32 {
+    const ptr: usize = this.transcripts.textPtr(<u32>entry);
+    const len: i32 = <i32>this.transcripts.textLen(<u32>entry);
+    let lines: i32 = 1;
+    for (let i: i32 = 0; i < len; i++) {
+      if (load<u8>(ptr + <usize>i) == 10) lines++;
+    }
+    return lines;
   }
 
   /** The page's first runnable code block, or -1. */
@@ -620,6 +668,7 @@ class App {
     this.scroll = 0;
     this.showingBlock = -1;
     this.showingEntry = -1;
+    this.transcriptH = 0;
   }
 
   // ── search ──────────────────────────────────────────────────────────────
@@ -1032,12 +1081,7 @@ class App {
 
     const ptr: usize = this.transcripts.textPtr(<u32>this.showingEntry);
     const len: i32 = <i32>this.transcripts.textLen(<u32>this.showingEntry);
-
-    // Total lines in the transcript, then however many fit.
-    let lines: i32 = 1;
-    for (let i: i32 = 0; i < len; i++) {
-      if (load<u8>(ptr + <usize>i) == 10) lines++;
-    }
+    const lines: i32 = this.transcriptLines(this.showingEntry);
 
     const avail: i32 = bottom - y;
     // 26px for the header line; whatever is left is body lines.

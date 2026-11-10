@@ -4,12 +4,15 @@
 // `tension_event` batch into the two things a guest reads — the state record and
 // the two edge classes — and it contains no SDL call, no thread, and no window.
 //
-// Three measured rules came across from the thread model unchanged, because they
-// are about SDL's data, not about who polls it:
-//   * motion with `which == 0` is position-derived, not device motion, and is
-//     dropped before the accumulator;
-//   * the first `kAttachSettleMs` of motion after an attach is the window and
-//     the pointer-confinement settling, and is dropped too;
+// Two measured rules came across from the thread model unchanged, because they
+// are about SDL's data, not about who polls it. A third did not survive
+// measurement and is stated here as what the code does now:
+//   * the device id is carried on the wire for producers that want it, and this
+//     mirror does **not** gate on it: SDL 3's X11 backend sends ordinary motion
+//     with `which == 0`, so gating froze the pointer at 0,0 (v7b, measured);
+//   * the first `kAttachSettleMs` of *motion deltas* after an attach is the
+//     window and the pointer-confinement settling, and is dropped too — the
+//     position is still updated, because it is a fact about the pointer;
 //   * motion is accumulated, never posted — one delta per snapshot, because a
 //     1 kHz device against a 64-slot ring is a statistic, not a stream.
 //
@@ -107,17 +110,28 @@ void Mirror::ingest(const tension_event *events, uint32_t count, uint64_t now) {
                 break;
             }
             case TENSION_EVENT_MOUSE_MOTION: {
-                // `flags` is the device id. Zero is position-derived (the window
-                // moved under the pointer), never the accumulator's.
-                if (event.flags == 0) break;
-                if (now < discard_motion_until_ms_) break;
-                const float dx = float_from_bits(event.a2);
-                const float dy = float_from_bits(event.a3);
+                // The pointer's position is the pointer's, whatever device id
+                // the event carries. SDL 3's X11 backend reports ordinary device
+                // motion with `which == 0`: measured on this rig, every event
+                // from an injected move carried device id 0 *and* a real
+                // position *and* a real delta, so gating on the device id froze
+                // `mouse_x`/`mouse_y` at 0,0 and made every guest's hit-testing
+                // impossible. That is what the filter this replaces was doing.
+                //
+                // What the filter was *for* survives: motion that is not the
+                // device's is the position shifting under a stationary pointer
+                // (a window moved, or a warp), and SDL reports that with a zero
+                // delta — which the accumulator absorbs by adding nothing. The
+                // one genuinely enormous delta, the relative-mode warp that
+                // follows an attach, is `kAttachSettleMs`'s job below.
+                const int32_t x = static_cast<int32_t>(event.a0);
+                const int32_t y = static_cast<int32_t>(event.a1);
                 std::lock_guard<std::mutex> lock(mu_);
-                accum_dx_ += dx;
-                accum_dy_ += dy;
-                mouse_x_ = static_cast<int32_t>(event.a0);
-                mouse_y_ = static_cast<int32_t>(event.a1);
+                mouse_x_ = x;
+                mouse_y_ = y;
+                if (now < discard_motion_until_ms_) break;
+                accum_dx_ += float_from_bits(event.a2);
+                accum_dy_ += float_from_bits(event.a3);
                 break;
             }
             case TENSION_EVENT_MOUSE_BUTTON: {

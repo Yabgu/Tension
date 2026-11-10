@@ -133,16 +133,24 @@ same two places the pump runs.
 
 Four rules, and each one is a measurement rather than a preference:
 
-1. **`which == 0` is not a device.** Motion whose device id is 0 is the pointer's
-   position changing because a window moved under it; it is dropped before the
-   accumulator (`input.cpp:108-112`).
-2. **The attach settles.** The first 500 ms of motion after a successful attach
-   is discarded (`input.h:41`, `kAttachSettleMs`): measured at 137 ms (347 px,
-   absolute mode) and 343 ms (112 px, relative mode) of motion with the pointer
-   provably stationary before and after.
+1. **The device id is carried, not gated on.** `flags` on a motion event is the
+   device id, and the mirror ignores it: SDL 3's X11 backend reports ordinary
+   device motion with `which == 0`, so the filter that used to drop those events
+   froze `mouse_x`/`mouse_y` at 0,0 on every X11 guest (measured on the dev rig —
+   every XTest move carried id 0 *and* a real position *and* a real delta, and a
+   viewer could not hit-test anything). The case it was written for survives
+   without it: position-derived motion (a window moving under a stationary
+   pointer, a warp) arrives with a zero delta, which the accumulator absorbs by
+   adding nothing (`input.cpp`, `TENSION_EVENT_MOUSE_MOTION`).
+2. **The attach settles.** The first 500 ms of *motion deltas* after a successful
+   attach is discarded (`input.h:41`, `kAttachSettleMs`): measured at 137 ms
+   (347 px, absolute mode) and 343 ms (112 px, relative mode) of motion with the
+   pointer provably stationary before and after. The settle is the delta's, not
+   the position's: where the pointer is stays true across it, and a guest that
+   read 0,0 for the first half second could not draw a cursor.
 3. **Motion is not an event.** It accumulates; the float fields are authoritative
    and the integers are their truncation, with the remainder carried into the
-   next snapshot (`input.cpp:189-219`).
+   next snapshot (`input.cpp:202-233`).
 4. **Every sample the host hands over is accumulated before anything reads it**,
    so a guest's total depends on the device's displacement and not on its frame
    rate.

@@ -22,7 +22,7 @@ import {
 // `platform` is imported by path because the barrel does not re-export it: it is
 // the host's window bus, not a capability, and a guest that only wants a canvas
 // should not have its import list grow by one.
-import { windowRequest } from "tension-framework/assembly/platform";
+import { windowInfo, windowRequest } from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 // ── the numbers worth changing ──────────────────────────────────────────────
@@ -170,6 +170,12 @@ export function _start_game(): void {
     if (accepted != SPRITES) {
       fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
     }
+
+    // The close button, asked directly. `present` answers -ECANCELED only when
+    // its own pump is the one that drained SDL's quit event, and the host pumps
+    // during `RuntimeSession.wait` too — so a loop that owns its lifetime and
+    // relies on `present` alone leaves the X doing nothing.
+    if (windowInfo().closeRequested) break;
 
     // `present` answers -ECANCELED once the window is gone: that is the signal
     // to stop, not an error to report.
