@@ -11,6 +11,38 @@
 // with `SDL_WINDOW_VULKAN`. The host publishes the surface inside
 // `createWindow`, so the `ogre.init` that follows finds it.
 //
+// ── the two-window defect, recorded rather than fixed ────────────────────
+//
+// Under `--renderer=gl3plus` this helper still creates the host's window, and
+// **GL3+ creates a second one**. Only the second is used: the GL3+ plugin
+// cannot consume a `VkSurfaceKHR` — `third_party/patches/ogre-external-surface.patch`
+// touches `RenderSystems/Vulkan/*` only — so it ignores the parameter and calls
+// `createRenderWindow`, which opens its own GLX window. The pixel clauses
+// screenshot that one, which is why the cases pass and prove "GL3+ renders"
+// rather than "one window".
+//
+// It is left as-is because the obvious fix does not work yet, and both halves
+// were measured on this rig before this note was written:
+//
+//   1. **Skipping the host window here is not enough.** `ogre::init` refuses
+//      `-ENODEV` when `target=auto` has no host surface
+//      (`tension-ogre/src/adapter.cpp`, "target=auto requires a host window"),
+//      and it does so without looking at which render system was asked for. So
+//      a GL3+ case that creates no window fails at init.
+//   2. **Narrowing that refusal to the render systems that can actually adopt
+//      a surface works, and then teardown crashes.** With the check narrowed to
+//      Vulkan (so GL3+ is allowed an own window under `auto`, while `swapchain`
+//      and Vulkan stay strict) one window opens, every pixel clause still
+//      passes — and the process then dies with SIGSEGV while the render thread
+//      exits: `BackendOgre::stop` runs to completion, the thread sets
+//      `thread_exited`, and the fault lands in Mesa's llvmpipe JIT region. 20 of
+//      20 runs on this rig, 0 of 12 on the two-window path.
+//
+// Fixing that teardown fault is its own pass. When it lands, this helper should
+// skip the host window for `gl3plus` and the adapter should keep the narrowed
+// check; until then the second window stays and the cases keep testing what
+// they were built to test.
+//
 // Reads `--renderer=` itself rather than taking a parameter: every fixture parses
 // its own arguments slightly differently, and a helper that answers one question
 // should not need to be threaded through fourteen of them.

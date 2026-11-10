@@ -517,6 +517,21 @@ if (!windowed) {
 
   // The pixel-clause fixtures: they print OK and a marker line rather than an
   // ACID summary.
+  //
+  // **These `*-gl3plus` cases open two windows, and only the second is used.**
+  // The guest creates the host's Vulkan window (host-window.ts) and GL3+ creates
+  // its own GLX window, because the GL3+ plugin cannot consume a
+  // `VkSurfaceKHR`; the pixel clauses screenshot GL3+'s. What that means for
+  // what these cases prove: they test GL3+'s own-window rendering, not the
+  // host-surface path. The one-window proof for the external-surface path is
+  // `target-swapchain-window` (Vulkan, `--create-window`), not these.
+  //
+  // Removing the unused host window needs two changes, and the second is
+  // blocked: skipping it in `ensureHostWindow` makes `ogre::init` refuse
+  // `-ENODEV` (the adapter's `target=auto` check is renderer-agnostic), and
+  // narrowing that check to Vulkan re-exposes a SIGSEGV in GL3+ teardown.
+  // Both are measured; `tension-ogre/tests/host-window.ts` records the details
+  // and the run counts.
   for (const [name, wasm, marker, args] of [
     ['skin-matrices', 'guest-skin-matrices.wasm', '^MATRICES ', [tns, '--renderer=gl3plus']],
     ['skin-deform', 'guest-skin-deform.wasm', '^DEFORM ', [tns, '--renderer=gl3plus']],
