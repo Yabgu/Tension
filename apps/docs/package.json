@@ -1,0 +1,14 @@
+{
+  "name": "@yabgu_gm/tension-docs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The offline documentation engine: a Tension guest that renders the repository's docs, with search and recorded runnable examples.",
+  "scripts": {
+    "assets": "node tools/bundle.mjs && node tools/search.mjs && node tools/make-font.mjs && node tools/run-examples.mjs",
+    "verify": "node tools/verify.mjs"
+  },
+  "devDependencies": {
+    "marked": "^18.2.0"
+  }
+}

@@ -1,0 +1,7 @@
+# Build output: the bundle, the index, the atlas and the recorded transcripts.
+# They are products of tools/, and a committed copy would be a second source of
+# truth for the documentation — the failure `docs/known-issues.md` exists to
+# catalogue.
+assets/
+
+node_modules/

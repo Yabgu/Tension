@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "title": "Tension",
+  "description": "Offline documentation for the Tension runtime, its renderers, and the guest SDK.",
+  "chapters": [
+    { "title": "Getting started", "page": "getting-started.md" },
+    { "title": "Vision", "page": "vision.md" },
+    { "title": "Architecture", "page": "architecture.md" },
+    { "title": "The session", "page": "session.md" },
+
+    {
+      "title": "Modules",
+      "children": [
+        { "title": "tension-2d — the 2D renderer", "page": "modules/2d.md" },
+        { "title": "tension-input — the input capability", "page": "modules/input.md" },
+        { "title": "tension-ogre — the OGRE capability", "page": "modules/ogre.md" }
+      ]
+    },
+
+    {
+      "title": "Reference",
+      "children": [
+        { "title": "Guest ABI", "page": "abi/guest.md" },
+        { "title": "Adapter ABI", "page": "abi/adapter.md" },
+        { "title": "The guest SDK", "pages": "sdk" }
+      ]
+    },
+
+    {
+      "title": "Building and running",
+      "children": [
+        { "title": "Build", "page": "build.md" },
+        { "title": "Debugging a guest", "page": "debugging.md" },
+        { "title": "Logging", "page": "logging.md" }
+      ]
+    },
+
+    {
+      "title": "Notes and history",
+      "children": [
+        { "title": "Guard discipline", "page": "guard-discipline.md" },
+        { "title": "Pipeline notes", "page": "pipeline-notes.md" },
+        { "title": "Session findings", "page": "session-findings.md" },
+        { "title": "Known issues", "page": "known-issues.md" },
+        { "title": "Known limitations", "page": "known-limitations.md" }
+      ]
+    }
+  ]
+}

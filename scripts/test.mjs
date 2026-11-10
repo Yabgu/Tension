@@ -210,6 +210,22 @@ const SUITES = {
     run: () => execute(node, ['--test', join(repo, 'packages', 'cli', 'test')]),
   },
 
+  // The documentation build: Markdown and the SDK's doc comments into a binary
+  // bundle, a search index over it, the font atlas the viewer draws with, and a
+  // recorded transcript for every `runnable` block. The suite fails when a
+  // runnable example does not compile or run, which is what stops a docs page
+  // from claiming a program prints something it does not.
+  //
+  // It installs `marked` on first run (see apps/docs/tools/check.mjs) rather
+  // than requiring a manual step, the same way `build-framework` installs
+  // `tensionscript`.
+  docs: {
+    title: 'docs assets',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'apps', 'docs', 'tools', 'check.mjs')]),
+  },
+
   'ogre-guest': {
     title: 'tension-ogre (guest)',
     needs: [],
