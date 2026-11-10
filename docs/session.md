@@ -215,9 +215,19 @@ Two counters, and the split between them is the contract:
 - **`head`** — records the session has written and not yet compacted away. The
   buffer is kept dense from slot 0, which is what lets `onBatch` hand the guest
   one contiguous run (`subring.rs:8-11`).
-- **`tail`** — records the guest has consumed. The guest writes it; it is space
-  reclaim, not an acknowledgement, and only `compact_subring` writes it
-  (`subring.rs:12-14`, `arena.rs:677`).
+- **`tail`** — records the guest has consumed. It is space reclaim, not an
+  acknowledgement (`subring.rs:12-14`, `arena.rs:677`). Three writers, one
+  meaning: `compact_subring` rewinds it after sliding the live records down
+  (`subring.rs:200-248`); a host-loop guest writes it through `rt.deliver`
+  (`header.n = header.head`); and the host writes it on a callback's behalf when
+  a delivery returns — `subring::reclaim_through`, called from the epoch's
+  batch and per-record arms (`epoch.rs`). The third exists because a guest
+  driven by its own loop has no other writer, and without it every class's ring
+  filled at its capacity once and stopped, permanently. A callback that
+  **trapped** does not advance the tail: it did not consume what it was handed.
+  That cannot resurface, because a trap also disables the callback slot and
+  faults the session, so no later epoch runs — and `open` re-prepares the arena,
+  so a reopened session starts with `head == tail == 0`.
 
 **Full is a drop, never an overwrite.** When the ring is full and the guest has
 reclaimed, `compact_subring` slides the live records to the front, zeroes the

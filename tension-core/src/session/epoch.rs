@@ -332,25 +332,7 @@ where
                 match outcome {
                     Ok(_status) => {
                         delivered += delivery.count;
-                        // The callback returning is the guest saying it consumed
-                        // the batch, so the host makes the reclaim write on its
-                        // behalf — the same write `rt.deliver` makes for a
-                        // host-loop guest. Without it the sub-ring fills at its
-                        // capacity once and every later record is dropped: 256
-                        // INPUT_KEY edges was the measured end of a session's
-                        // key input.
-                        if let Some(memory) = cx.as_context().data().arena {
-                            let end = delivery.first_slot + delivery.count;
-                            let arena_bytes = memory.data_mut(&mut *cx);
-                            if let Err(error) =
-                                subring::reclaim_through(arena_bytes, &capacities, delivery.class, end)
-                            {
-                                // The geometry was validated by the flush that
-                                // produced this delivery, so a refusal here is a
-                                // bug worth a line, not a failed frame.
-                                log(&format!("reclaim: {error:?}"));
-                            }
-                        }
+                        reclaim_through(cx, &capacities, delivery.class, delivery.first_slot + delivery.count);
                     }
                     Err(trap) => {
                         return Err(fault_from_trap(session, cx, 0, "onBatch", delivery, &trap));
@@ -377,7 +359,17 @@ where
                     let outcome = callback.call(&mut *cx, (delivery.class as i32, ptr as i32));
                     cx.as_context_mut().data_mut().depth = 0;
                     match outcome {
-                        Ok(_status) => delivered += 1,
+                        Ok(_status) => {
+                            delivered += 1;
+                            // `DIRECT` hands one record per call, and a call that
+                            // returned has consumed exactly that record — so the
+                            // tail belongs one past the record, not at zero. This
+                            // branch had no reclaim at all before, so a `DIRECT`
+                            // subscriber stalled at its class's capacity exactly
+                            // as a `BATCHED` one did (measured: five delivered
+                            // records, `tail == 0`).
+                            reclaim_through(cx, &capacities, delivery.class, delivery.first_slot + index + 1);
+                        }
                         Err(trap) => {
                             // The batch is abandoned: the remaining records stay
                             // in the ring, where the guest can still read them.
@@ -412,6 +404,31 @@ where
         deliveries: delivered,
         faulted: false,
     })
+}
+
+/// Make the sub-ring's reclaim write for a delivery the guest has consumed.
+///
+/// Called on the two normal-return paths — the batch arm and the per-record
+/// `DIRECT` arm — and never on a trap: a trapped callback did *not* consume what
+/// it was handed, and a FAULTED session cannot run another epoch to re-offer it
+/// (`tests::test_a_trapping_batch_does_not_advance_the_tail` pins both halves).
+///
+/// The host writes the tail on the guest's behalf because a guest driven by its
+/// own loop has no other writer: `rt.deliver` is the host-loop path. See
+/// `subring::reclaim_through`.
+fn reclaim_through<C>(cx: &mut C, capacities: &[u32; CLASS_COUNT], class: u32, end: u32)
+where
+    C: AsContextMut<Data = HostState> + HookCtx,
+{
+    let Some(memory) = cx.as_context().data().arena else {
+        return;
+    };
+    let arena_bytes = memory.data_mut(&mut *cx);
+    if let Err(error) = subring::reclaim_through(arena_bytes, capacities, class, end) {
+        // The geometry was validated by the flush that produced this delivery, so
+        // a refusal here is a bug worth a line, not a failed frame.
+        log(&format!("reclaim: {error:?}"));
+    }
 }
 
 /// A callback trapped. Disable its slot for the session's lifetime, publish the
@@ -1292,6 +1309,131 @@ mod tests {
                 .as_ref()
                 .expect("session")
                 .slot_disabled(0)
+        );
+    }
+
+    // ── the reclaim contract, asserted ──────────────────────────────────────
+    //
+    // 845ebc1 made the host write the sub-ring's tail when a `BATCHED` callback
+    // returns, because a guest driven by its own loop had no other writer. These
+    // three tests pin what that contract is at each exit: a normal return, a
+    // trap, and the `DIRECT` path beside it.
+
+    #[test]
+    fn test_a_returned_batch_advances_the_tail() {
+        let mut h = Harness::new(GUEST, Some((1, 2)));
+        h.write_subscription(4, crate::session::arena::MODE_BATCHED);
+        h.write_script(&[open_op(), (SUBSCRIBE, SUBSCRIPTION, 0), (WAIT, 1000, 0)]);
+        for i in 0..5u32 {
+            h.post(4, i, 0);
+        }
+        h.run();
+
+        assert_eq!(h.scratch(BATCH_CALLS), 1, "one batch, not five events");
+        assert_eq!(h.scratch(BATCH_COUNT), 5);
+        let header = h.header(4);
+        assert_eq!(header.head, 5);
+        assert_eq!(
+            header.tail, 5,
+            "a callback that returned reclaims the run it was handed"
+        );
+    }
+
+    #[test]
+    fn test_a_trapping_batch_does_not_advance_the_tail() {
+        let mut h = Harness::new(GUEST_TRAPPING, Some((1, 0)));
+        h.write_subscription(4, crate::session::arena::MODE_BATCHED);
+        h.write_script(&[
+            open_op(),
+            (SUBSCRIBE, SUBSCRIPTION, 0),
+            (WAIT, 1000, 0),
+            (WAIT, 1000, 0),
+        ]);
+        for i in 0..3u32 {
+            h.post(4, i, 0);
+        }
+        h.run();
+
+        assert_eq!(h.results()[2], crate::session::EIO, "the trap is -EIO");
+        let header = h.header(4);
+        assert_eq!(header.head, 3, "the records were published");
+        assert_eq!(
+            header.tail, 0,
+            "a trap does not reclaim: the batch was not consumed"
+        );
+        // The next epoch is refused outright, which is what makes the stranded
+        // records unreachable rather than doubly delivered: the session is
+        // FAULTED and the slot is disabled, so no later epoch can enter the
+        // callback even if one were allowed to run.
+        assert_eq!(
+            h.results()[3],
+            crate::session::EBADF,
+            "a FAULTED session refuses the next wait instead of re-delivering"
+        );
+        assert_eq!(h.session_state(), crate::session::SessionState::Faulted);
+        assert!(
+            h.store
+                .data()
+                .session
+                .as_ref()
+                .expect("session")
+                .slot_disabled(0),
+            "and the slot is disabled"
+        );
+    }
+
+    #[test]
+    fn test_a_reopened_session_starts_from_an_empty_ring() {
+        // The tail left behind by a trap cannot resurface: `open` re-prepares
+        // the arena, so the stranded records are gone rather than pending.
+        // The deferring guest, because it is the fixture with both a `close`
+        // import and a trappable batch callback; the plan asks for a trap with
+        // no deferred submissions, so the only thing this test leaves behind is
+        // the ring.
+        let mut h = Harness::with_echo(GUEST_DEFERRING, Some((1, 2)));
+        h.write_subscription(4, crate::session::arena::MODE_BATCHED);
+        h.write_script(&[
+            open_op(),
+            (SUBSCRIBE, SUBSCRIPTION, 0),
+            (WAIT, 1000, 0),
+            (CLOSE, 0, 0),
+            open_op(),
+            (WAIT, 1000, 0),
+        ]);
+        h.set_callback_plan(0, 0, true);
+        for i in 0..3u32 {
+            h.post(4, i, 0);
+        }
+        h.run();
+
+        assert_eq!(h.results()[2], crate::session::EIO);
+        assert_eq!(h.results()[3], 0, "the close from FAULTED succeeded");
+        assert_eq!(h.results()[4], 0, "the re-open succeeded");
+        let header = h.header(4);
+        assert_eq!(header.head, 0, "the ring was re-prepared empty");
+        assert_eq!(header.tail, 0);
+        assert_eq!(h.results()[5], 0, "and nothing was waiting to be redelivered");
+    }
+
+    #[test]
+    fn test_delivered_direct_events_advance_the_tail() {
+        // The sibling path. `DIRECT` hands one record per call, and each call
+        // that returns has consumed exactly that record — so the tail belongs at
+        // the end of the run, not at zero.
+        let mut h = Harness::new(GUEST, Some((1, 2)));
+        h.write_subscription(4, crate::session::arena::MODE_DIRECT);
+        h.write_script(&[open_op(), (SUBSCRIBE, SUBSCRIPTION, 0), (WAIT, 1000, 0)]);
+        for i in 0..5u32 {
+            h.post(4, i, 0);
+        }
+        h.run();
+
+        assert_eq!(h.scratch(EVENT_CALLS), 5, "one call per record");
+        let header = h.header(4);
+        assert_eq!(header.head, 5);
+        assert_eq!(
+            header.tail, 5,
+            "each returned `onEvent` reclaims its own record"
         );
     }
 
