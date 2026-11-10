@@ -114,7 +114,16 @@ export const SUFFIX = `${process.platform}-${process.arch}`;
  */
 export function findBin(projectDir, name) {
   const bin = join(projectDir, 'node_modules', '.bin', name);
-  for (const candidate of [bin, `${bin}.cmd`, `${bin}.exe`]) {
+  // npm writes three shims for one bin on Windows: `<name>.cmd`, `<name>.ps1`,
+  // and an **extensionless POSIX shell script**. All three exist, and the
+  // extensionless one is not an executable image — `spawnSync` answers ENOENT
+  // for it, which reads like "the package is not installed" and is not. So the
+  // platform's own spelling is tried first; the POSIX shim stays as a fallback
+  // for a project installed by pnpm, or copied from another OS than it runs on.
+  const candidates = process.platform === 'win32'
+    ? [`${bin}.cmd`, `${bin}.exe`, bin]
+    : [bin, `${bin}.cmd`, `${bin}.exe`];
+  for (const candidate of candidates) {
     if (exists(candidate)) return candidate;
   }
   return null;

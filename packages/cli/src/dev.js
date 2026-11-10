@@ -31,7 +31,10 @@ const KILL_GRACE_MS = 2000;
 /** The exact invocation, for `--build-only` and for the log. */
 export function commandLine(ctx, options) {
   const { before, after } = hostArgs(ctx.config, ctx.paths, ctx.rt, options);
-  return [ctx.rt.host, ...before, ctx.paths.wasm, ...after].join(' ');
+  // Quoted through the same helper the restart loop uses: this line is printed
+  // for a human to paste back into a shell, and an unquoted `--title=My Game`
+  // is two argv elements on every platform, not one.
+  return [ctx.rt.host, ...before, ctx.paths.wasm, ...after].map(quote).join(' ');
 }
 
 /**
@@ -63,6 +66,20 @@ async function stopHost(child) {
     // children too, which matters because a game may have spawned none today
     // and will once audio and physics use helper threads.
     spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+    // `taskkill` returns once the signal is delivered, which is not the same as
+    // the process being gone — and the caller's next act is to spawn the next
+    // host. Waiting for the exit is what keeps two windows from overlapping,
+    // and it is the same bound the POSIX path uses below.
+    await Promise.race([
+      new Promise((resolve) => {
+        // Checked *inside* the promise: an exit between `taskkill` and this
+        // line has already fired the event, and a listener added afterwards
+        // would never hear it — costing the full grace period on every save.
+        if (child.exitCode !== null || child.signalCode !== null) return resolve();
+        child.once('exit', resolve);
+      }),
+      sleep(KILL_GRACE_MS),
+    ]);
     return;
   }
 
@@ -276,5 +293,11 @@ export async function dev(ctx, options = {}) {
 
 /** Quote an argv element for the printed command line, when it needs it. */
 function quote(value) {
-  return /^[\w\-./=:+@]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
+  if (/^[\w\-./=:+@]+$/.test(value)) return value;
+  // The line is printed for a human to paste back into a shell, so it has to be
+  // spelled in *this* platform's shell. Single quotes are a POSIX escape that
+  // cmd.exe passes through literally; a Windows path also carries backslashes,
+  // which is why the shared test above does not include them.
+  if (process.platform === 'win32') return `"${value.replace(/"/g, '""')}"`;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
 }

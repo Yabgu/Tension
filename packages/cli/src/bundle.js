@@ -138,7 +138,12 @@ export function bundle(ctx, options = {}) {
   step(`tension: dist/ written (${bytes(total)})`);
   step(`tension:   ${manifest.guest}${hasVolume ? ` + ${manifest.assets}` : ''}, ` +
     `${manifest.host}${libraries.length ? `, ${libraries.length} libraries` : ''}`);
-  step(`tension:   run it: ${join(distDir, 'run.sh')}`);
+  // Name the launcher this platform will actually run. Both are written — a
+  // `dist/` is portable only within a platform, but its two launchers are
+  // cheap and one of them is always the right spelling for whoever unzips it.
+  // Printing `run.sh` on Windows sends the user to a file cmd.exe cannot run.
+  const launcher = process.platform === 'win32' ? 'run.bat' : 'run.sh';
+  step(`tension:   run it: ${join(distDir, launcher)}`);
   return manifest;
 }
 

@@ -150,12 +150,12 @@ export function compiler(projectDir) {
   const repo = repoRoot();
   const candidates = [];
 
-  const shim = findBin(projectDir, 'tensionscript');
-  if (shim) candidates.push({ command: shim, prefix: [] });
-
-  // The package's own `bin` field, run through this Node. This is what a
-  // project installed by pnpm (which does not use `.bin` symlinks the same way)
-  // resolves through, and it needs no shim at all.
+  // The package's own `bin` field, run through this Node, comes **first**: it is
+  // the one candidate that needs no shim at all. That matters on Windows, where
+  // neither shim npm writes can be spawned bare — a `.cmd` needs a shell, and
+  // the extensionless POSIX script is not an executable image — and it is worth
+  // having on every platform because it removes a dependency on how a package
+  // manager chose to link the bin.
   for (const base of [projectDir, repo && join(repo, 'tension-framework')].filter(Boolean)) {
     const pkg = packageJson(base, '@yabgu_gm/tensionscript');
     if (!pkg) continue;
@@ -165,6 +165,11 @@ export function compiler(projectDir) {
     const js = join(dirname(pkg.path), rel);
     if (exists(js)) candidates.push({ command: process.execPath, prefix: [js] });
   }
+
+  // The `.bin` shim, for an install whose package layout carries no resolvable
+  // `bin` field — a wrapper the project chose, or a manager that links its own.
+  const shim = findBin(projectDir, 'tensionscript');
+  if (shim) candidates.push({ command: shim, prefix: [] });
 
   const chosen = candidates[0];
   if (!chosen) {

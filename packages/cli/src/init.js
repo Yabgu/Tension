@@ -180,10 +180,15 @@ export function init(options = {}) {
   if (options.install) {
     step('');
     step('tension: installing dependencies…');
-    const status = run(npmCommand(), ['install'], {
-      cwd: targetDir,
-      shell: process.platform === 'win32',
-    });
+    // `npm` is a `.cmd` shim on Windows and cannot be spawned without a shell.
+    // Node deprecates passing `shell: true` together with an argv array
+    // (DEP0190 — the array is concatenated, not escaped), so on that platform
+    // the arguments are folded into the one string the shell receives. Nothing
+    // folded here comes from the user: the command is a constant and `cwd`
+    // carries the path.
+    const status = process.platform === 'win32'
+      ? run(`${npmCommand()} install`, [], { cwd: targetDir, shell: true })
+      : run(npmCommand(), ['install'], { cwd: targetDir });
     if (status !== 0) die('npm install failed', 'fix the error above, then run npm run dev');
   }
 
