@@ -1,8 +1,8 @@
 # Known issues
 
-Four entries. Two are resolved and kept for the record — each one blocked the
-OGRE flip and each fix came from TensionScript. Two are open: one worked around,
-one unfixed.
+Four entries. Three are resolved and kept for the record — each one blocked
+the OGRE flip and each fix came from TensionScript, except KS-4, which was the
+fixture's own capture and not an engine defect. One is open: worked around.
 
 ---
 
@@ -186,43 +186,58 @@ were correct and are unchanged. Measured after: `guest-resource-errors` reaches
 
 ---
 
-## KS-4 — `skin-matrices` is flaky: the pose sometimes never reaches the shader
+## KS-4 — `skin-matrices` was flaky: the fixture re-read a stale frame
 
-**Status:** open, not fixed. Recorded so a red suite is not mistaken for a new
-failure.
+**Status:** **resolved** 2026-11-10 in `tension-ogre/tests/guest-skin-matrices.ts`
+(the fixture, not the engine). Before the fix: 9 failures in 50 runs (18%).
 
-**Symptom.** `TENSION_OGRE_WINDOW_TEST=1 node scripts/test-ogre.mjs` fails at
-`skin-matrices` in roughly a third of runs:
+**Symptom.** `TENSION_OGRE_WINDOW_TEST=1 node scripts/test-ogre.mjs` failed at
+`skin-matrices` in roughly a sixth to a third of runs:
 
 ```
 MATRICES shifted=7217.0 unshifted=7217.0 delta=0.0
 MATRICES 4/4 failed: the two frames differ by 0.0 px, under the floor of 30.0 — the matrices did not reach the shader
 ```
 
-The foreground count is identical in both frames and the delta is 0: the second
-capture saw the same pose as the first, so the clause-4 `SkinMatrixBatch.commit()`
-never reached the shader. Passing runs report deltas of 1815, 4046 and 5861 — the
-*same* rigid two-unit translation producing three different pixel counts, which
-reads as a commit landing partway through a frame rather than between two.
+Passing runs reported 1815, 4046 or 5861; failing runs always reported 0.0 with
+both counts equal.
 
-**Reproduction** (this rig, `--renderer=gl3plus`, the two-window path). Ten
-consecutive runs of the fixture at `36bb4be` → 7 pass, 3 fail. The same ten runs
-against an interpreter built at `0ac61fe` → 8 pass, 2 fail: it is **not** new in
-this session's reclaim work and predates it.
+**Cause.** Not the engine, and not a dropped commit. `ogre::screenshot` is
+probe/consume over `last_frame_` — it re-reads the same bitmap until a *new*
+download replaces it — and the fixture's `grab()` proved freshness with a frame
+count (`frameCount() >= armed_at + 3`), which is a guess about when the
+download lands, not a proof. Worse, it sampled `armed_at` **before** raising
+the readback request, so a descheduled guest could raise the request two frames
+later and then wait for one.
 
-**Interaction with the environmental SIGSEGV.** Every failing run above also
-exited 139: the guest traps on the failed clause, and the process then dies
-during teardown. That is the post-abort teardown fault described in the notes
-below (`dzn`, software-Vulkan worker during teardown); it was not re-localised
-for this fixture.
+When the guess was wrong the capture returned the bitmap from *before* the
+commit, and the next clause then compared that same capture against itself. The
+commit had landed: in every failing run, an extra grab one call later returned
+the correct pose (`5402` instead of `7217`), and the two frames the fixture did
+compare were byte-identical (FNV-1a hash equal). The old delta variance was the
+same defect at a smaller scale — `1356` (the no-matrices pose) is what a stale
+capture of the first pose returns.
 
-**Not known.** Whether the dropped commit is a session/epoch delivery race (the
-commit is queued, the renderer copies the batch into the constant buffer) or an
-adapter-side frame-atomicity defect. The measured delta variance fits the second;
-neither is proven.
+**Resolution.** `grab_after(previous)` now synchronises on the frame's
+*content*: it re-captures until the bytes differ from `previous`, which is
+precisely "the render thread finished a frame drawn after the commit that
+produced `previous`". Clause 3 captures the unrigged frame first and requires
+the shifted frame to differ from it; clause 4 requires the zero-translation
+frame to differ from the shifted one. `capture_once` also arms the readback
+request before sampling the counter.
 
-**Impact.** `node scripts/test-ogre.mjs` cannot be used as a pass/fail gate until
-this is fixed or quieted — a green run is luck. No other fixture depends on it.
+**Measured after.** 50/50 runs pass, and every run reports the same pair —
+`shifted=7217 unshifted=5402 delta=1815` — where before the counts drifted
+between 1356/5402/7217. Two full `TENSION_OGRE_WINDOW_TEST=1 node
+scripts/test-ogre.mjs` runs are green.
+
+**What the test asserts is unchanged.** The floor is still `MIN_DELTA = 30` and
+the delta is still read from two independently captured frames; only *when* each
+capture is accepted changed.
+
+**Left for another pass.** `guest-skin-deform.ts` and `guest-skin-noskel.ts`
+carry the same `grab()` shape (counter before request, fixed 3-frame wait); they
+have not flaked in this session's runs, but they are the same latent defect.
 
 ---
 
