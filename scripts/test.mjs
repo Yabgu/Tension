@@ -197,6 +197,19 @@ const SUITES = {
                        { env: suiteEnv({ TENSION_SESSION_READY: '1' }) }),
   },
 
+  // The CLI's config contract: `schema/tension.config.json` is what an editor
+  // reads and `packages/cli/src/config.js` is what the CLI enforces, and
+  // nothing generates one from the other (the CLI has to run before
+  // `npm install` has produced a validator). A key, default or enum that moves
+  // on one side and not the other is a project that validates in an editor and
+  // fails on the command line; the test compares the pair mechanically.
+  cli: {
+    title: 'tension CLI',
+    needs: [],
+    holds: [],
+    run: () => execute(node, ['--test', join(repo, 'packages', 'cli', 'test')]),
+  },
+
   'ogre-guest': {
     title: 'tension-ogre (guest)',
     needs: [],

@@ -1,0 +1,65 @@
+# __TITLE__
+
+A triangle spinning in a window, written in TensionScript and drawn by the OGRE
+capability, packed as a Tension project.
+
+```sh
+npm install
+npm run dev
+```
+
+Change `SPIN` in `src/main.ts`, save, and the game restarts on its own — the
+triangle turns faster.
+
+## The two shapes of a 3D run
+
+- **A window** needs a display, the OGRE adapter, and the Ogre-Next libraries,
+  plugins and Hlms media beside it. `npm run dev` sets all of that up; on a
+  machine without a display it says so and you should pass `--headless`.
+- **Headless** (`npm run dev -- --headless`) uses the NULL render system: no
+  window, no GPU, and a bounded run of 240 frames.
+
+`npm run doctor` prints the adapter path, the three Ogre directories, and any
+library the loader cannot find. That command is the first place to look when a
+window does not open.
+
+## What the commands do
+
+- **`npm run dev`** compiles the guest and runs it, and on a save it rebuilds and
+  restarts. A build that fails leaves the running game alone.
+- **`npm run build`** writes `dist/`: the wasm, the runtime binary, the adapter
+  and Ogre libraries, the Hlms media, and a `run.sh` / `run.bat` launcher that
+  sets the environment and execs the runtime.
+
+## The files
+
+```
+tension.config.json   the only project file that belongs to Tension
+src/main.ts           the game
+build/                scratch: game.wasm and asconfig.json
+dist/                 `npm run build` output
+```
+
+## What the code does
+
+There is no mesh file. `MeshBuilder.triangle` writes three vertices into the
+guest's own memory and hands the renderer a resource id, and every other verb
+treats it exactly as it treats a mesh loaded off disk — which is what
+`examples/ogre/hello-mesh` does, from a packed volume.
+
+The loop is the interesting part. The renderer draws on its own thread, so the
+guest never draws: it submits records and waits. `await rt.frame()` is the wait,
+and the host drives it — the same host that owns the window, the event pump and
+the frame clock. When you close the window, the host stops the loop, and the
+guest's `_game_running()` is what told it there was anything to drive.
+
+A renderable is a mesh, a material, and an inline transform, so moving one is an
+upsert of the same record with a different rotation. That is `spin()` — a
+quaternion about Z, re-submitted once per frame.
+
+## The renderer is not a parameter
+
+`ogre.initWindowed` creates the host's window and brings up Ogre's Vulkan render
+system on it. It cannot be given a different renderer, and that is on purpose: a
+caller that built its own config could ask for GL3+ and get a second native
+window beside the host's.

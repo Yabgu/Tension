@@ -1,0 +1,92 @@
+# __TITLE__
+
+Four sprites bouncing inside a window, written in TensionScript and drawn by the
+in-core 2D renderer, packed as a Tension project.
+
+```sh
+npm install
+npm run dev
+```
+
+A window opens. Change `SPEED` in `src/main.ts`, save, and the game restarts on
+its own — the sprites move further per frame.
+
+## What the commands do
+
+- **`npm run dev`** builds the guest, packs the assets, runs it, and watches
+  `src/`, `assets/` and `tension.config.json`. On a change it rebuilds and
+  restarts. A build that fails leaves the running game alone, so a typo does not
+  cost you the window.
+- **`npm run build`** writes `dist/`: the wasm, the volume, the runtime binary,
+  and a `run.sh` / `run.bat` launcher. That directory runs on its own — no Node,
+  no compiler, no project.
+- **`npm run doctor`** prints what resolves on this machine and what is missing.
+
+Flags that matter: `npm run dev -- --headless` runs with no window (useful over
+SSH), `--no-watch` runs once, `--build-only` builds and prints the command line
+it would have run.
+
+## The restart is a restart
+
+`tension dev` kills the process and starts a new one; it does not reload the
+guest inside the running one. **State is lost on every save.** There is no
+snapshot format yet — when there is, this paragraph changes.
+
+## The files
+
+```
+tension.config.json     the only project file that belongs to Tension
+src/main.ts             the game
+src/graph.generated.ts  the 2D pipeline blob (generated; do not edit)
+assets/sprites.iwi      a four-cell sprite sheet, packed into build/assets.tns
+tools/make-atlas.mjs    regenerates the sheet after you edit its palette
+build/                  scratch: game.wasm, assets.tns, asconfig.json
+dist/                   `npm run build` output
+```
+
+`tension.config.json` is read by the CLI and by nothing else. The runtime takes a
+`.wasm` and no app configuration, so the CLI is what turns your window size, your
+renderer and your assets into the runtime's arguments and environment. That is
+also why the window size in the config reaches the guest as `--window=WxH` and is
+read there by `windowRequest()`.
+
+## Where the renderer lives
+
+`renderer: "2d"` is built into the runtime. There is no adapter to install, no
+library to find, and no environment variable to set — which is why this is the
+default template.
+
+If you want 3D, scaffold with `--template ogre` instead: that project loads the
+OGRE adapter and needs the Ogre-Next libraries beside it, which `tension doctor`
+reports on.
+
+## The shape of the code
+
+`src/main.ts` has five steps and they are always in this order:
+
+1. **Open the session.** Nothing that touches guest memory works before it;
+   without it the canvas opens and the first verb answers `-EBADF`.
+2. **Ask for a window.** The window is the guest's to create, and
+   `windowedOrOffscreen` falls back to an offscreen target when there is no
+   display.
+3. **Set the pipeline.** The blob is compiled into the guest and must be one the
+   adapter was built with; `tension dev` emits it from the runtime, so it always
+   is.
+4. **Load the atlas** out of the volume. `assets/` is mounted at `/`, so
+   `assets/sprites.iwi` is `/sprites.iwi`.
+5. **Present frames** until `present` answers `-ECANCELED`, which is what a
+   closed window looks like.
+
+Records are `struct` declarations that fill themselves — `records[i].set(...)` —
+and the buffer is sized with `sizeof<SpriteRecord>()`. There are no byte offsets
+in this file, and adding one would be a second, unchecked copy of a layout the
+compiler already knows.
+
+## If the window does not open
+
+Run `npm run doctor`. The two failures worth knowing:
+
+- **No display.** `doctor` says so, and `npm run dev -- --headless` runs the
+  game offscreen for a bounded number of frames.
+- **A missing library.** The runtime links the system's SDL3; on a distribution
+  that ships only SDL2, `doctor` names the library the loader could not find.

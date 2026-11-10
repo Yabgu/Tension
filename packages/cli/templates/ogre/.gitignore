@@ -1,0 +1,7 @@
+# Build output: the wasm and the resolved asconfig.
+build/
+
+# The self-contained game `tension build` writes.
+dist/
+
+node_modules/

@@ -1,0 +1,24 @@
+{
+  "name": "@yabgu_gm/tension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The Tension CLI: project scaffolding, the dev loop, and a self-contained game build.",
+  "type": "module",
+  "bin": {
+    "tension": "./bin/tension.js"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "schema/",
+    "templates/"
+  ],
+  "engines": {
+    "node": ">=20.13"
+  },
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test test/",
+    "doctor": "node bin/tension.js doctor"
+  }
+}

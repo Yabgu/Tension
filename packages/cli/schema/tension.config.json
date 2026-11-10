@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tension.dev/schema/v1/tension.config.json",
+  "title": "Tension project configuration",
+  "description": "The one project file that belongs to Tension. Every key here is read by the `tension` CLI and by nothing else; the runtime takes a .wasm and no app configuration. A key no code reads is a lie with a schema, so the set is closed: unknown keys are refused rather than ignored.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint. Not read by the CLI."
+    },
+    "entry": {
+      "type": "string",
+      "minLength": 1,
+      "default": "src/main.ts",
+      "description": "The guest's entry file, relative to the project root. Passed to `tensionscript`."
+    },
+    "renderer": {
+      "type": "string",
+      "enum": ["2d", "ogre"],
+      "default": "2d",
+      "description": "Which renderer the project uses. `2d` is built into the host, so it needs no adapter and no environment. `ogre` loads `libtension_ogre.so` and needs the Ogre-Next libraries, plugins and Hlms media."
+    },
+    "window": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The window the guest asks the host for. The runtime has no window flag: the CLI turns these three values into `--window=WxH`, `--title=...` and (for a headless run) `--headless`, and the guest reads them with `windowRequest()`.",
+      "properties": {
+        "width": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "default": 1280,
+          "description": "Logical width in pixels. The 2D canvas is opened at exactly this size."
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16384,
+          "default": 720,
+          "description": "Logical height in pixels."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The window title. Defaults to the project's package.json `name`."
+        }
+      }
+    },
+    "memory": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The guest's wasm memory. Only the initial page count is a project decision: the arena geometry (memoryBase = max_arena_size) is the framework's, and a guest compiled against a different geometry is refused at session open.",
+      "properties": {
+        "initialPages": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 200,
+          "description": "Initial memory in 64 KiB pages. Must be at least the framework's own initial_pages and at most its maximum_pages; see `tension doctor` for both numbers. 200 is the default because a guest that holds a 1280x720 frame (3.5 MB) does not fit in the framework's 133."
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "A directory packed into one .tns volume and mounted read-only as `/`. Omit this key entirely and no volume is built — a project with no assets is a project with no volume, not an empty one.",
+      "properties": {
+        "dir": {
+          "type": "string",
+          "minLength": 1,
+          "default": "assets",
+          "description": "The tree to pack, relative to the project root."
+        },
+        "volume": {
+          "type": "string",
+          "minLength": 1,
+          "default": "build/assets.tns",
+          "description": "Where the packed volume is written, relative to the project root."
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "default": [],
+      "description": "Capability adapters to load besides the renderer. Each entry is resolved as a platform payload package and passed to the host as `--capability`.",
+      "items": {
+        "type": "string",
+        "enum": ["input"]
+      },
+      "uniqueItems": true
+    }
+  }
+}
