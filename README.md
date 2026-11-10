@@ -59,11 +59,12 @@ guest can make, with signatures, is the generated
 imports, not the Component Model: an adapter registers imports by name, and a
 WIT layer could sit on top later without changing that shape.
 
-`tension-ogre` and the 2D renderer are documented in
-[`docs/modules/`](docs/modules/). `tension-input/DESIGN.md`,
-`tension-solver/DESIGN.md`, `tension-res/DESIGN.md` and
-`tension-world/DESIGN.md` are the only design notes left; none has a successor
-doc yet.
+`tension-ogre`, the 2D renderer and input are documented in
+[`docs/modules/`](docs/modules/). `tension-solver/DESIGN.md`,
+`tension-res/DESIGN.md` and `tension-world/DESIGN.md` are the only design notes
+left; none has a successor doc yet. Input's design statement is
+[`INPUT.md`](INPUT.md) and its module page is
+[`docs/modules/input.md`](docs/modules/input.md).
 
 ## Run an example
 

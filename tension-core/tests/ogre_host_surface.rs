@@ -772,10 +772,24 @@ fn main() {
     // adopt the `VkSurfaceKHR` — GL3+, D3D11 — adopts this instead, and the two
     // are published from one record so they cannot disagree about which window
     // they name.
-    if cfg!(any(target_os = "linux", target_os = "windows")) {
+    //
+    // **Zero is a legal answer on some drivers.** `HostWindow::native_handle`
+    // documents 0 for a platform with no adoptable handle — Wayland's
+    // `wl_surface` is not one any render system here accepts — so the assertion
+    // is "either there is no handle, or it is the window's own", never "there is
+    // always a handle". Requiring non-zero on all of Linux made this test pass
+    // on X11 and fail on a native Wayland session, which is a property of the
+    // driver, not of the host surface path it is testing.
+    let publishes_handle = !matches!(window.driver(), "wayland" | "offscreen" | "dummy");
+    if publishes_handle {
         check(
             observed.native_handle != 0,
             "e. the host published a native window handle alongside the surface",
+        );
+    } else {
+        check(
+            observed.native_handle == 0,
+            "e. the driver publishes no native handle, and the record says 0 rather than a stale one",
         );
     }
     check(
@@ -872,8 +886,9 @@ fn main() {
 
     // ── (f) window_handle ────────────────────────────────────────────────
     //
-    // Under Q2 this must be -ENODEV: the host owns the window, so Ogre has no
-    // native handle to report, and re-pointing the verb is the input pass's job.
+    // This must be -ENODEV: the host owns the window, so Ogre has no native
+    // handle to report. The verb is a deprecated stub — v7 retired the exchange
+    // rather than re-pointing it (`docs/vision.md` §5.5, `INPUT.md` §3).
     let window_handle = state
         .collected
         .imports

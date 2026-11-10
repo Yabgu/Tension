@@ -79,7 +79,15 @@ fn run(fixture: &Path, adapter: &Path, args: &[&str], clear_display: bool) -> Ru
     if clear_display {
         // GL3+ on this install goes through GLX: no display is no X
         // connection, which is the failure this test is about.
-        command.env_remove("DISPLAY").env_remove("WAYLAND_DISPLAY");
+        //
+        // `SDL_VIDEODRIVER` goes too. Removing the two display variables is not
+        // enough when the caller exported a driver: SDL then reports
+        // `x11 not available` instead of `No available video device`, and the
+        // test's own diagnostic check fails even though the refusal was right.
+        command
+            .env_remove("DISPLAY")
+            .env_remove("WAYLAND_DISPLAY")
+            .env_remove("SDL_VIDEODRIVER");
     }
     let output = command.output().expect("the interpreter runs");
     Run {

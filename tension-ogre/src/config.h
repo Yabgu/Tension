@@ -79,6 +79,18 @@ struct Config {
     /// check cost nothing on the pre-v6 path.
     void (*host_size)(void *ctx, uint32_t *out_w, uint32_t *out_h) = nullptr;
     void *host_size_ctx = nullptr;
+    /// Reads the host's *current* fullscreen state, called once per frame by the
+    /// render thread beside `host_size`. The value is a `tension_window_mode`:
+    /// 0 windowed, 1 fullscreen, 2 borderless fullscreen.
+    ///
+    /// A callback for the same reason `host_size` is one: the host owns the
+    /// window, so when the user (or the guest, through
+    /// `tension::platform.set_fullscreen`) changes the mode, no Ogre event will
+    /// say so — there is no native window for Ogre to observe. Polled once per
+    /// frame, and null when there is no host window, which is what makes the
+    /// check cost nothing on the pre-v6 path.
+    void (*host_fullscreen)(void *ctx, uint32_t *out_mode) = nullptr;
+    void *host_fullscreen_ctx = nullptr;
     /// One of the Vulkan instance extensions the host enabled, read by index
     /// until `-ENOENT`. The render thread fills a `VulkanExternalInstance` from
     /// this before loading the Vulkan plugin, because Ogre's external-instance

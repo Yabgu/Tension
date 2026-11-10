@@ -76,11 +76,22 @@ function settle(job: i32): void {
   }
 }
 
-/// Ask for a frame and wait until a **new** one has been downloaded
-/// (guest-skinning.ts's sequence: the verb is probe/consume over the last frame).
-function grab(): ArrayBuffer | null {
-  const armed_at = ogre.frameCount();
+/// One capture attempt: raise the readback request, let the renderer finish a
+/// few frames, then read whatever it last downloaded. `null` when nothing has
+/// ever been downloaded.
+///
+/// The request goes first and the frame counter is sampled after it, so the
+/// three frames this waits for are three the request was already pending for.
+/// Sampling the counter first (which this used to do) lets a descheduled guest
+/// raise the request two frames later and then wait for only one.
+///
+/// This does **not** prove the bytes are newer than the previous capture: the
+/// verb re-reads `last_frame_` and does not consume it, so a download that
+/// lands after these three frames returns the previous frame unchanged. The
+/// freshness proof is `grab_after`'s, by content.
+function capture_once(): ArrayBuffer | null {
   ogre.screenshot(0, 0);
+  const armed_at = ogre.frameCount();
   for (let guard: u32 = 0; guard < 300 && ogre.frameCount() < armed_at + 3; guard++) {
     RuntimeSession.wait(5);
   }
@@ -89,6 +100,46 @@ function grab(): ArrayBuffer | null {
   const frame = new ArrayBuffer(length);
   if (ogre.screenshot(changetype<usize>(frame), length) != length) return null;
   return frame;
+}
+
+/// Byte equality of two downloaded frames. The length is compared first so a
+/// frame that came back a different size is never read as "the same".
+function same_frame(a: ArrayBuffer, b: ArrayBuffer): bool {
+  if (a.byteLength != b.byteLength) return false;
+  const pa = Uint8Array.wrap(a);
+  const pb = Uint8Array.wrap(b);
+  for (let i: i32 = 0; i < pa.length; i++) {
+    if (pa[i] != pb[i]) return false;
+  }
+  return true;
+}
+
+/// A capture that is provably **not** the frame in hand: the renderer replaces
+/// `last_frame_` only with a completed download, so a capture that differs from
+/// `previous` is one the render thread drew after the commit that produced
+/// `previous`.
+///
+/// This is the synchronisation point KS-4 needed. A fixed frame count is a
+/// guess — the download for the frame a request asked for can land after any
+/// count the guest picks — and the failure was silent: `screenshot` hands back
+/// the previous bitmap, so both clauses compared the *same* capture twice
+/// (measured: 9 of 50 runs, both frames byte-identical, the next grab correct).
+///
+/// `previous === null` asks only that some frame exists, which is what the
+/// capture before the first commit needs: the scene is still and has never had
+/// matrices, so every frame it has drawn is the one that capture wants.
+function grab_after(previous: ArrayBuffer | null): ArrayBuffer {
+  for (let attempt: u32 = 0; attempt < 24; attempt++) {
+    const frame = capture_once();
+    if (frame === null) continue;
+    if (previous === null) return <ArrayBuffer>frame;
+    if (!same_frame(<ArrayBuffer>frame, <ArrayBuffer>previous)) return <ArrayBuffer>frame;
+  }
+  if (previous === null) {
+    fail("the renderer never delivered a frame");
+  }
+  fail("the renderer delivered no frame that differs from the one before the commit");
+  return <ArrayBuffer>previous;
 }
 
 /// Foreground is "differs from the frame's own corner", the rule that tells a
@@ -221,13 +272,13 @@ export function _start(): void {
 
   // ── clause 3: the verb accepts the batch ─────────────────────────────
   clause = 3;
+  // The frame the shift has to differ from: the same scene, no matrices yet.
+  const unrigged_frame = grab_after(null);
   const accepted = submit_matrices(1, rig_with_translation(SHIFT, 0.0, 0.0));
   check(accepted == 1,
         "submit_skin_matrices returned " + accepted.toString() + ", not the entry count");
-  const shifted_frame = grab();
-  check(shifted_frame !== null, "no frame was delivered with the matrices submitted");
-  const shifted = foreground_count(<ArrayBuffer>shifted_frame);
-  RuntimeSession.wait(32);
+  const shifted_frame = grab_after(unrigged_frame);
+  const shifted = foreground_count(shifted_frame);
   print("3 ok");
 
   // ── clause 4: the matrices changed the frame ─────────────────────────
@@ -235,9 +286,8 @@ export function _start(): void {
   clause = 4;
   check(submit_matrices(1, rig_with_translation(0.0, 0.0, 0.0)) == 1,
         "the zero-translation batch was refused");
-  const still_frame = grab();
-  check(still_frame !== null, "no frame was delivered for the zero-translation run");
-  const still = foreground_count(<ArrayBuffer>still_frame);
+  const still_frame = grab_after(shifted_frame);
+  const still = foreground_count(still_frame);
 
   print("MATRICES shifted=" + shifted.toString() + " unshifted=" + still.toString() +
         " delta=" + abs(shifted - still).toString());

@@ -217,3 +217,9 @@ makes the first `g++.exe` invocation fast; a cold one pays prefix creation once.
   is not attempted: it needs a Win32 Vulkan SDK, shaderc and glslang, which
   `scripts/bootstrap.mjs` only assembles on a native Windows host. The overlay
   above is what makes configure unnecessary for validating one translation unit.
+- **`tension-input`.** Not compiled here. As of v7 the capability has no platform
+  in it — no SDL, no `libX11`, no thread — and `scripts/build-input.mjs` has no
+  Windows gate, so it is expected to build with the MSYS2 `g++` this prefix
+  provides. That expectation is untested: the build and its suites have not been
+  run on Windows (or in this prefix), and `docs/known-limitations.md` §
+  "`tension-input` on Windows" is the honest statement of where it stands.

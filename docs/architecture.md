@@ -68,6 +68,16 @@ error. The guest asks; the host creates. A renderer never creates one — the
 Ogre backend has no own-window path at all — so "the window the frame goes to"
 and "the window the host owns" are the same object by construction.
 
+**The guest can change the window after creating it.** Three imports —
+`set_fullscreen`, `set_window_size`, `set_window_title` — are synchronous, like
+`create_window`: they run on the interpreter thread, which is where SDL's window
+API lives, and each records the request before returning, so `window_info`
+answers with what the guest asked for rather than with whatever the compositor
+has got round to. A renderer learns about a mode change the same way it learns
+about a resize — by polling `host_window_info` once per frame — so an Ogre
+swapchain on the host's surface rebuilds at the new extent without the guest
+telling it.
+
 **The surface is created, and published, inside that call.** `HostWindow::new`
 sets `SDL_WINDOW_VULKAN` only for `target: Vulkan` (`platform.rs`, `HostWindow::new`),
 and `create_window` calls `surface()` and publishes the handles into the cell that
@@ -443,9 +453,11 @@ This document deliberately does not cover:
 - **The ABI slot table** — [`docs/abi/adapter.md`](abi/adapter.md), generated
   from the header.
 - **Build and CI** — `docs/build.md`.
-- **Input** — `tension-input/DESIGN.md` until V7c rewrites `INPUT.md` and adds
-  `docs/modules/input.md`. The capability is an event layer as of v7b: it owns no
-  SDL, no thread and no window, and the pump runs in the epoch.
+- **Input** — [`INPUT.md`](../INPUT.md) is the design statement and
+  [`docs/modules/input.md`](modules/input.md) is the module page: six verbs, the
+  event flow, the threading model and the suites. The capability is an event
+  layer as of v7: it owns no SDL, no thread and no window, and the pump runs in
+  the epoch.
 - **`tension-res`, `tension-solver`, `tension-world`** — their schemas and
   headers are the contract; no prose doc is planned.
 

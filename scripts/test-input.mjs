@@ -14,6 +14,11 @@
 //                 manages, the guest answers, and the answer is asserted to be
 //                 one of the two legal ones.
 //
+// There is no platform gate: the capability has no window system in it, so the
+// DSO builds wherever the host does. The cases run the host for real, which is
+// why this suite is still a Linux gate — Windows compiles the DSO and nothing
+// here has executed it (`docs/known-limitations.md`, "`tension-input` on Windows").
+//
 // **The window is the guest's now (v7).** Before this pass the capability made
 // one, which is why every case here used to start with "input's probe window
 // appears". Nothing in the DSO touches a window, so a case that creates none is
@@ -40,17 +45,12 @@ const framework = join(repo, 'tension-framework');
 const out = join(suite, 'build');
 const RUNNER = 'tension-input tests';
 
-// The build recipe still refuses Windows until V7c lands the docs that explain
-// why the gate can go. A skip with the reason, never a pass.
-if (WIN) {
-  console.log(`${RUNNER}: SKIPPED — the capability is gated to POSIX until V7c\n` +
-              '  (the source is portable as of v7b; the docs are not written yet)');
-  process.exit(0);
-}
-
 const core = process.env.TENSION_CORE ??
   join(repo, 'tension-core', 'target', 'debug', `tension-core${WIN ? '.exe' : ''}`);
-const dso = join(out, 'libtension_input.so');
+/// The same name `scripts/build-input.mjs` writes. Windows builds the DSO but
+/// the suite has never been run there: the cases below start a real host, and a
+/// green line from an untested platform would be a claim this runner cannot make.
+const dso = join(out, WIN ? 'libtension_input.dll' : 'libtension_input.so');
 
 if (!existsSync(core)) {
   fail(RUNNER, 'the interpreter is not built. Run:\n' +

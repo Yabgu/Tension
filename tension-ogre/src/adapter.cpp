@@ -475,6 +475,26 @@ void host_size_from_core(void *, uint32_t *out_w, uint32_t *out_h) {
     }
 }
 
+/// Reported to the backend once per frame: whether the host's window is
+/// fullscreen, as a `tension_window_mode`.
+///
+/// Read from `host_window_info` rather than a new slot: the record the pump
+/// republishes already carries `mode`, so the adapter learns about a toggle
+/// through the same reader it uses for the window's size and focus — one
+/// published record, one truth, no second path to the window. Zero (windowed)
+/// also means "no host window", which the backend treats as nothing to
+/// compare.
+void host_fullscreen_from_core(void *, uint32_t *out_mode) {
+    *out_mode = 0;
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->host_window_info == nullptr) return;
+    tension_window_info published{};
+    published.struct_size = sizeof(published);
+    if (s.api->host_window_info(s.api->user, &published) == 0) {
+        *out_mode = published.mode;
+    }
+}
+
 int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 2) return refuse(ret, -EINVAL);
@@ -577,6 +597,11 @@ int32_t shim_init(void *, const tension_value *args, uint32_t nargs, tension_val
                 // a GL3+ window resizes exactly like a Vulkan one.
                 config.host_size = &host_size_from_core;
                 config.host_size_ctx = nullptr;
+                // The same frame loop needs the mode: a fullscreen toggle
+                // changes the surface's extent, and nothing in Ogre's own
+                // window sees it happen when the host owns the window.
+                config.host_fullscreen = &host_fullscreen_from_core;
+                config.host_fullscreen_ctx = nullptr;
             }
             if (published.instance != 0 && published.surface != 0) {
                 // Both Vulkan handles, and the reader the backend fills Ogre's

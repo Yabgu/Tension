@@ -33,7 +33,7 @@
 
 use std::time::{Duration, Instant};
 
-use tension_core::platform::{HostShared, HostWindow, WindowTarget};
+use tension_core::platform::{HostShared, HostWindow, WindowMode, WindowTarget};
 
 /// How long to keep pumping for the compositor to answer.
 ///
@@ -117,6 +117,69 @@ fn run() -> Result<(), String> {
             ));
         }
     }
+
+    // ── the mutators (E1b) ──────────────────────────────────────────────
+    //
+    // Each is asserted against the window's own record rather than against what
+    // the window system later reports. That is the contract a guest depends on:
+    // a guest that calls `setWindowSize` and reads `windowInfo` on its next line
+    // is entitled to the size it asked for, not to whatever the compositor has
+    // got round to. A driver that clamps corrects the record with an event, so
+    // the assertions here are about the *write*, and nothing below waits for a
+    // driver to agree.
+    println!("mutator: set_window_size(800, 600)");
+    window
+        .set_window_size(800, 600)
+        .map_err(|e| format!("set_window_size: {e}"))?;
+    let info = window.info();
+    if (info.width, info.height) != (800, 600) {
+        return Err(format!(
+            "windowInfo after set_window_size is {}x{}, not 800x600",
+            info.width, info.height
+        ));
+    }
+    println!("mutator: windowInfo is {}x{}", info.width, info.height);
+
+    println!("mutator: set_fullscreen(Fullscreen)");
+    window
+        .set_fullscreen(WindowMode::Fullscreen)
+        .map_err(|e| format!("set_fullscreen(Fullscreen): {e}"))?;
+    let info = window.info();
+    if info.mode != WindowMode::Fullscreen {
+        return Err(format!(
+            "windowInfo.mode after set_fullscreen(Fullscreen) is {:?}",
+            info.mode
+        ));
+    }
+    println!("mutator: windowInfo.mode is {:?}", info.mode);
+
+    println!("mutator: set_fullscreen(Windowed)");
+    window
+        .set_fullscreen(WindowMode::Windowed)
+        .map_err(|e| format!("set_fullscreen(Windowed): {e}"))?;
+    let info = window.info();
+    if info.mode != WindowMode::Windowed {
+        return Err(format!(
+            "windowInfo.mode after set_fullscreen(Windowed) is {:?}",
+            info.mode
+        ));
+    }
+    println!("mutator: windowInfo.mode is {:?}", info.mode);
+
+    // The title is not in `windowInfo` — the record is about geometry and
+    // state — so the assertion is that the request succeeded and that the
+    // host's own copy moved with it. `title()` is what a later reader sees.
+    println!("mutator: set_window_title(\"New Title\")");
+    window
+        .set_window_title("New Title")
+        .map_err(|e| format!("set_window_title: {e}"))?;
+    if window.title() != "New Title" {
+        return Err(format!(
+            "title() is {:?} after set_window_title(\"New Title\")",
+            window.title()
+        ));
+    }
+    println!("mutator: title is {:?}", window.title());
 
     drop(window);
     println!("PASS: pump delivered a resize and updated the published size");

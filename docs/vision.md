@@ -318,14 +318,30 @@ feature.
 **Unlocks when:** the ABI gains a surface set, or the editor settles for one
 window and a docked panel layout.
 
-### 5.5 Input v7 rework
+### 5.5 Input v7 rework — **done**
 
 **What:** the input capability's dispatcher moves into the core; the DSO becomes
-a subscriber; `register_event_layer` and the `window_handle` re-point land.
-**Why not now:** it is scheduled as its own pass, and it owns `INPUT.md` and
-`tension-input/DESIGN.md` — both of which still describe an X11 premise the
-architecture has left behind.
-**Unlocks when:** that pass opens. Nothing blocks it.
+a subscriber; `register_event_layer` lands.
+
+**How it was settled:** the host initialises SDL, owns the window and pumps the
+queue; the capability registers an event layer and is handed a batch once per
+pump (`INPUT.md` §1, `docs/modules/input.md` §3-4). The DSO kept its six verbs
+and its wire unchanged, and lost its thread, its `SDL_Init` and its window.
+
+**`window_handle` was not re-pointed, and that is the decision.** The verb stays
+registered as a deprecated stub: under a host-owned window the renderer
+publishes no handle of its own, so `ogre.window_handle` answers `-ENODEV`
+(`tension-ogre/src/backend_ogre.cpp:545-568`) and nothing in the tree calls it.
+A handle is only meaningful to a consumer that will draw into it, and input is
+no longer that consumer — handing out a drawable the guest did not create and
+the host does not own is exactly the coupling this pass removed. A future
+backend that genuinely needs a native handle (GL3+ on a host window already gets
+one through `parentWindowHandle`, without the guest) introduces a **new** verb
+whose name says what it is for, rather than re-pointing this one and changing
+what an existing guest's call means.
+
+**Residual:** the DSO compiles on Windows and has not been run there
+(`docs/known-limitations.md`).
 
 ### 5.6 Rollback netcode
 
@@ -374,6 +390,37 @@ opened a window because a program mentioned one would be owning application
 configuration — the same reason `node` has no `--title`. The one flag this
 replaced, `--window`, is gone; a word like `--windowed` in a guest's `arg()`
 stream is the application's own and the runtime does not know it exists.
+
+**No native OpenGL host path.** `WindowTarget` is `plain`, `gpu` or `vulkan`;
+a fourth value that made the host create a GL context was evaluated and is not
+built. Two independent reasons, and either alone would be enough.
+
+*SDL_GPU cannot use it.* The 2D renderer presents through `SDL_GPU`, which
+supports Vulkan, Direct3D 12 and Metal and never OpenGL. A GL context on the
+host's window could therefore carry no `tension::2d` canvas — it would be a
+3D-only window — and the swapchain belongs to one presenter at a time
+(`Render2dState::claim_swapchain`; `RendererId` is `Render2d` or `RenderOgre`).
+
+*Ogre already owns that job.* GL3+ is retained as a **legacy fallback for
+hardware with no Vulkan**, embedded through `parentWindowHandle`: Ogre creates
+its GL drawable as a child of the host's window and negotiates its own context
+(4.5 core down to 3.3, depth/stencil, sRGB, MSAA, vsync). A host-owned context
+would duplicate that negotiation outside Ogre, where the two could disagree
+silently. And on GLX — the only GL3+ windowing this build has — the one route
+that avoids the child window resolves the FBConfig from the drawable's visual,
+which this tree measured landing on `depth=0 stencil=0`: the floor drew and
+every sphere behind it vanished (`backend_ogre.cpp:446-478`, `guest-angular`
+`9/11` **[V]**). **The child window is the correct answer to a GLX limitation,
+not a workaround to be removed**, so nothing here is scheduled to replace it.
+
+**Vulkan is the primary 3D renderer.** GL3+ is the last 3D candidate in the
+`auto` chain on both platforms (`adapter.cpp:172-190` **[V]**), and no other 3D
+render system ships: Direct3D 11 is declared in the capability's header and
+leads the Windows `auto` chain, but this build configures it `OFF`
+(`tension_ogre.h:187`, `scripts/bootstrap.mjs:302`) and no plugin ships, so the
+candidate fails and the chain falls through to Vulkan; Metal is declared
+`not in this chunk` (`tension_ogre.h:185`) and is refused `-ENOSYS`
+(`backend_ogre.cpp:2435-2437` **[V]**).
 
 **No frozen ABI during alpha.** The ABI is alpha and may break between releases.
 Append-only within a version is the discipline we keep because it makes version

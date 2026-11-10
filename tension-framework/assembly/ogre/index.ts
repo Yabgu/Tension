@@ -213,10 +213,12 @@ export class ConfigBuilder {
  * The platform window handle as one `u64`, or 0 when the renderer has no window
  * yet (no handle any platform hands out is 0, so it doubles as "not yet").
  *
- * One call per session, not per frame: this is the token the guest carries from
- * the renderer to the input capability — the guest is the mediator, and neither
- * capability learns the other exists. A guest that needs the errno calls
- * `windowHandleRaw` itself; `input.attach` takes the two halves.
+ * **Deprecated.** Under a host-owned window the renderer publishes no handle of
+ * its own and this answers 0 for the whole run; it was the v6 mediator between
+ * the renderer and the input capability, and input no longer names a surface
+ * (`INPUT.md` §3). Kept because the verb is kept: a v6 guest links and gets the
+ * documented "no handle" answer instead of a missing import. A guest that needs
+ * the errno calls `windowHandleRaw` itself.
  */
 export function windowHandle(): u64 {
   const staging = heap.alloc(8);

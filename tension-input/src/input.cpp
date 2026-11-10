@@ -171,7 +171,7 @@ void Mirror::ingest(const tension_event *events, uint32_t count, uint64_t now) {
             default:
                 // TEXT, QUIT and PAD carry nothing this capability's state
                 // keeps. Pads are read from `pad_state`; a pad *edge* has no
-                // class in the session yet (INPUT.md §3 Q5).
+                // class in the session yet (`docs/modules/input.md` §2).
                 break;
         }
     }

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TensionCore example: a WASD camera driven by tension::input, the guest-mediated window-handle exchange from INPUT.md Q1",
+  "description": "TensionCore example: a WASD camera driven by tension::input, the host-owned-window layer",
   "scripts": {
     "build": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
     "build:debug": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",

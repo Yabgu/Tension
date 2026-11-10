@@ -20,13 +20,12 @@ yet.
 | No offscreen GPU render path — `target=offscreen` names it, it does not supply it | `f1c57af` | the adapter has no offscreen target; the value resolves to the NULL render system, which produces no image | an offscreen `VkImage` path | — |
 | Swapchain destroyed with the queue still holding its images (#17) | Ogre pin `475f783` | upstream `destroySwapchain` does not stall | a patch hunk, at a per-rebuild cost | — |
 | Draw against a rebuild's previous image layout (#18) | Ogre pin `475f783` | upstream rebinds no Hlms descriptors | the same patch area | — |
-| Two input sources still assert the old teardown rule (#28) | `9d3af39` | the file belongs to the v7 pass | v7 input pass | v7 |
-| Source comments cite design notes that no longer exist (#29) | `2c74bbe` | none — mechanical | a sweep of ~166 sites | pass 7d |
 | HDR output | — | Ogre-Next has no output-HDR path | the colour-management API | vision §5.1 |
 | Hardware floor: a Vulkan, D3D12 or Metal GPU (~2017 or newer) | the renderer split | there is no software-rendering path; `SDL_GPU` needs one of those three, and Ogre's Vulkan backend needs Vulkan | a software backend (lavapipe covers CI, not users) | vision §5.1 |
 | Win32 is cross-compiled, never run | — | needs a Windows machine and a Win32 host-surface variant | both exist | vision §5.3 |
+| `tension-input` builds on Windows, has never been run there | v7 | needs a Windows machine to run the input suites | one exists | vision §5.3 |
+| The GL3+ fallback needs an X11 display | — | GL3+ is the non-Vulkan fallback and it is GLX-only; a Wayland window has no adoptable handle | an EGL backend, or `SDL_VIDEODRIVER=x11` on XWayland | vision §6 |
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
-| Input dispatcher still in the DSO | — | scheduled as its own pass | that pass opens | vision §5.5 |
 | Win32 header path is a checked-in overlay | `ci/linsys2.md` | Ogre's tree has no `WIN32` platform define for the Vulkan window | upstream, or the overlay grows | — |
 | The isometric suites fail on this rig | — | `vkCreateGraphicsPipelines` fails under `dzn` | the same ICD | CI |
 
@@ -150,12 +149,23 @@ Two VUIDs fire and are deliberately not patched around:
 Both are validation-layer only on this rig: frames present and read back
 correctly. Fixing either is a patch hunk with a cost on every rebuild.
 
-## Two input sources assert the old teardown rule
+## The old input teardown rule — **closed**
 
-The host calls the vtable's `shutdown` then `destroy` on both exit paths
-(`tension-core/src/adapter/mod.rs:987-1011`); `tension-input/DESIGN.md:60` and
-`tension-input/src/adapter.cpp:226` still say it never does. Both belong to the
-v7 input pass.
+The claim was "the host never calls the vtable's `shutdown`/`destroy`". It has
+been false since `9d3af39`: the host calls both, reverse of link order, once
+each, on a clean return and on a guest trap
+(`tension-core/src/adapter/mod.rs:1021-1049`).
+
+`tension-input/DESIGN.md` was rewritten in v7b and then deleted in v7c — its
+contents are [`modules/input.md`](modules/input.md) now — and the
+`adapter.cpp` comment the contradiction named was removed with it. The teardown
+site states the true contract instead: `adapter_shutdown` unregisters the event
+layer, has no thread to join, and never calls `SDL_Quit`
+(`tension-input/src/adapter.cpp:397-409`, `INPUT.md` §5).
+
+Contradiction 28 (in the workspace's own `docs-contradictions.md`, outside this
+repository) is closed; `SESSION.md:332`'s instance belongs to that doc's
+declared-historical section.
 
 ## Citations to the deleted design notes
 
@@ -169,8 +179,9 @@ pointer where no page carries it. Bare `DESIGN.md` references in
 
 What remains, deliberately:
 
-- **`INPUT.md`** — seven citations, quoted by the v7 input pass, which owns
-  that file.
+- **`INPUT.md`** — **done in v7c.** The page was rewritten around the layer
+  model and no longer quotes a deleted note; the seven citations went with the
+  thread model they described.
 - **`SESSION.md`** — four citations inside its own argument, declared
   historical in the header. Rewriting the argument is not a citation fix.
 - **`docs/`** — the pages that preserve a deleted note's claims cite it as
@@ -184,3 +195,49 @@ Vulkan window configuration, so a checked-in overlay supplies it
 (`third_party/patches/win32-headers/`), and `scripts/check-win32-headers.mjs`
 fails if the overlay drifts from the pinned submodule. Runtime testing is
 [`vision.md`](vision.md) §5.3.
+
+## The GL3+ fallback needs an X11 display on a Wayland session
+
+This is a limitation of the **GL3+ fallback**, not a bug and not a regression in
+a primary path: Vulkan is the primary 3D renderer and runs under the native
+Wayland driver. GL3+ is retained for hardware with no Vulkan and is a
+deliberate non-build as a host-owned path (`docs/vision.md` §6, `docs/modules/ogre.md`
+§6.1), and on Linux it is GLX-only — Ogre-Next 3.0 has no EGL windowing in this
+build. So it needs an X11 display and a window with an adoptable native handle;
+a Wayland window has neither (`HostWindow::native_handle` documents 0 for it),
+and the adapter refuses rather than opening a window of its own.
+
+`TENSION_OGRE_WINDOW_TEST=1 node scripts/test-ogre.mjs` opens a real window for
+every opt-in case, and the GL3+ ones fail on a native Wayland session with
+`DEVICE_LOST` at the first frame. That is the adapter's refusal reaching the
+guest, not a crash in the renderer.
+
+On a Wayland host with XWayland available — the common case — run the windowed
+suite with the driver pinned:
+
+```sh
+TENSION_OGRE_WINDOW_TEST=1 SDL_VIDEODRIVER=x11 node scripts/test-ogre.mjs
+```
+
+The Vulkan path does not need this: `input-camera` runs under the native Wayland
+driver (`create_window … target=Vulkan on 'wayland'`), which is what the
+surfaces above are for. The same pin makes `hello-sprites`' windowed run work.
+The default suite (`npm test`) sets no driver and passes on either session.
+
+## `tension-input` on Windows: builds, not run
+
+**`tension-input` builds on Windows as of v7.** The capability has no X11 and no
+SDL dependency left — no `libX11`, no `SDL_Init`, no thread — so
+`scripts/build-input.mjs` has no platform gate and produces
+`libtension_input.dll` with the same recipe it uses for `.so` (`CXX`,
+`-std=c++17 -O2 -fPIC -Wall -Wextra -shared`). On Linux the DSO's `DT_NEEDED`
+is `libstdc++`, `libm`, `libgcc_s`, `libc`, and the build fails if `SDL`
+appears; the Windows import list is the same runtime minus nothing platform
+shaped, because nothing in `src/` names one.
+
+**It has not been run there.** Compiling is the whole claim: the input suites
+start a real host and create a real window, and none of that has been executed
+on Windows. `scripts/test-input.mjs` no longer skips Windows, so the claim will
+be tested the first time someone runs it there; until then, "builds" is the
+limit of what this repository knows, and [`vision.md`](vision.md) §5.3 is the
+condition that changes it.

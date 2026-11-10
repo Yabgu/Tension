@@ -65,6 +65,18 @@ declare function closeWindowRaw(id: u32): i32;
 @external("tension::platform", "window_info")
 declare function windowInfoRaw(id: u32, outPtr: u32): i32;
 
+/** `tension::platform.set_fullscreen(mode) -> i32`. */
+@external("tension::platform", "set_fullscreen")
+declare function setFullscreenRaw(mode: u32): i32;
+
+/** `tension::platform.set_window_size(width, height) -> i32`. */
+@external("tension::platform", "set_window_size")
+declare function setWindowSizeRaw(width: u32, height: u32): i32;
+
+/** `tension::platform.set_window_title(ptr, len) -> i32`. */
+@external("tension::platform", "set_window_title")
+declare function setWindowTitleRaw(ptr: u32, len: u32): i32;
+
 /** The control kinds this ABI defines (`tension_ctrl_kind`). */
 export enum ControlKind {
   /** `a0` = width, `a1` = height. Clamping is the host's call. */
@@ -381,4 +393,89 @@ export function windowRequest(): WindowRequest {
     }
   }
   return out;
+}
+
+// ── the window mutators (E1b) ───────────────────────────────────────────────
+//
+// A created window used to be read-only from the guest: `info()` said how big
+// it was, and the only way to change it was `resize()`, which posts a control
+// message the host drains a frame later. These three are synchronous, like
+// `createWindow`, because `SDL_SetWindow*` belongs to the interpreter thread and
+// the guest is already on it — the call takes effect before it returns, and the
+// return value says whether the window system agreed.
+//
+// **They act on "the window", not on a handle.** One window per process is this
+// ABI's limit, so there is no id to pass and none to get wrong. -ENODEV means
+// there is no window: create one first.
+
+/** What a window mutation can answer. 0 is success. */
+export enum WindowError {
+  /** The window system refused the request. */
+  Refused = -5,
+  /** A zero dimension, or a mode this ABI does not define. */
+  Invalid = -22,
+  /** There is no window to mutate. */
+  NoWindow = -19,
+}
+
+/**
+ * Switch the host's window between windowed, fullscreen and borderless.
+ *
+ * Returns 0 when the window system accepted the request, or a negative
+ * [`WindowError`]; -ENODEV where no window exists.
+ *
+ * **`info().mode` moves with the request**, on success, rather than waiting for
+ * the window system: a driver may take a round trip to emit the
+ * enter-fullscreen event, and a guest that switches and reads back in the same
+ * frame should see what it asked for. The pump corrects the record afterwards if
+ * the user changes it.
+ *
+ * `BorderlessFullscreen` reads back as `Fullscreen` — the record carries one
+ * boolean, and borderless is a decoration rather than a third state.
+ *
+ * Under an `ogre` renderer drawing into the host's surface, the adapter notices
+ * the change on its next frame and rebuilds the swapchain at the new extent; a
+ * guest does not have to tell it, and nothing about this call is Ogre-specific.
+ */
+export function setFullscreen(mode: WindowMode): i32 {
+  if (mode != WindowMode.Windowed && mode != WindowMode.Fullscreen &&
+      mode != WindowMode.BorderlessFullscreen) {
+    return WindowError.Invalid;
+  }
+  return setFullscreenRaw(<u32>mode);
+}
+
+/**
+ * Ask the window system to make the window `width` x `height` pixels.
+ *
+ * Returns 0 when the request was made, or a negative [`WindowError`]. A zero
+ * dimension is refused here rather than sent: the host floors it too, but a zero
+ * is a caller bug and this is the last place it costs nothing to say so.
+ *
+ * **Not `resize()`.** That posts a control message the host drains on its next
+ * frame, which is the path a *layer* takes to a window it does not own. This
+ * calls the host directly and records the size before returning, which is what a
+ * guest configuring its own window wants; a window system that clamps corrects
+ * the record with the resize event.
+ */
+export function setWindowSize(width: u32, height: u32): i32 {
+  if (width < 1 || height < 1) return WindowError.Invalid;
+  return setWindowSizeRaw(width, height);
+}
+
+/**
+ * Rename the window. The title is UTF-8, copied into guest memory for the call
+ * and into the window by the host, which keeps nothing of the guest's buffer.
+ *
+ * Returns 0, or a negative [`WindowError`]. An empty title is legal and is not
+ * the same request as "leave it alone".
+ */
+export function setWindowTitle(title: string): i32 {
+  const bytes = String.UTF8.encode(title, false);
+  if (bytes.byteLength == 0) return setWindowTitleRaw(0, 0);
+  const ptr: u32 = <u32>heap.alloc(bytes.byteLength);
+  memory.copy(<usize>ptr, changetype<usize>(bytes), bytes.byteLength);
+  const rc = setWindowTitleRaw(ptr, bytes.byteLength);
+  heap.free(ptr);
+  return rc;
 }

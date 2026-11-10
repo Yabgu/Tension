@@ -523,17 +523,28 @@ class BackendOgre final : public Backend {
             // never fires.
             applied_width_ = window_->getWidth();
             applied_height_ = window_->getHeight();
+            // The mode comes from the host rather than `window_->isFullscreen()`:
+            // the host owns the window and its record is the authority, and a
+            // window Ogre did not create reports whatever its own bookkeeping
+            // says. Taking the host's answer here means the first frame compares
+            // against where the window actually is, so no toggle is invented.
+            if (config_.host_fullscreen != nullptr) {
+                uint32_t host_mode = 0;
+                config_.host_fullscreen(config_.host_fullscreen_ctx, &host_mode);
+                applied_fullscreen_ = host_mode != 0;
+            }
             log_line("ogre: window \"Tension\" " + std::to_string(applied_width_) + "x" +
                      std::to_string(applied_height_) + " created (" + render_system_name_ + ")");
 
-            // The native handle the guest can hand to another capability
-            // (INPUT.md Q1: the renderer learns the token, the guest relays it,
-            // input attaches). It is read here, on the thread that made the
-            // window, and cached — `ogre::window_handle` answers from the cache
-            // on the interpreter thread, and reading a renderer object across
-            // threads is exactly what backend.h's note on that virtual forbids.
-            // A render system that does not publish the attribute leaves the
-            // cache at 0, which the verb reports as -ENODEV.
+            // The native handle this renderer made for itself, cached so
+            // `ogre::window_handle` can answer it from the interpreter thread —
+            // reading a renderer object across threads is exactly what
+            // backend.h's note on that virtual forbids. The verb is deprecated
+            // and has no consumer since v7 retired the guest-mediated exchange
+            // (`INPUT.md` §3); the cache is kept because a no-host-surface
+            // renderer still makes a window and the verb still answers it. A
+            // render system that does not publish the attribute leaves the cache
+            // at 0, which the verb reports as -ENODEV.
             //
             // **Not under a host window.** When the host owns the window the
             // drawable here is a child of it (GL3+) or there is no native window
@@ -541,7 +552,9 @@ class BackendOgre final : public Backend {
             // already has — `tension_host_surface::native_handle`. Publishing
             // this one would answer the guest with a drawable it did not create
             // and the host does not own, so the cache stays 0 and the verb keeps
-            // answering -ENODEV until V7c decides what it should say instead.
+            // answering -ENODEV. That is settled behaviour now, not a deferral:
+            // the verb is deprecated and has no consumer (`INPUT.md` §3,
+            // docs/vision.md §5.5).
             if (config.native_window_handle == 0) {
                 uint64_t native = 0;
 #if defined(_WIN32)
@@ -724,13 +737,44 @@ class BackendOgre final : public Backend {
                 window_->setWantsToDownload(true);
                 download_armed_ = true;
             }
-            // The host owns the window, so its size is whatever SDL last
-            // reported — not what Ogre last saw. Compare once per frame and ask
-            // Ogre to rebuild its swapchain when they differ. This is the only
-            // consumer of the resize hunk
-            // (`third_party/patches/ogre-external-surface.patch`): with an
-            // external surface there is no native window for Ogre to measure,
-            // so nothing else would ever notice.
+            // The host owns the window, so its size *and its mode* are whatever
+            // SDL last reported — not what Ogre last saw. Both are compared once
+            // per frame, for the same reason: with an external surface there is
+            // no native window for Ogre to measure or to observe, so nothing
+            // else would ever notice a change.
+            //
+            // The mode comes first: a toggle changes the surface's extent, and
+            // the size check below should then rebuild the swapchain at the new
+            // extent rather than at the one that is about to go away.
+            if (config_.external_surface != 0 && config_.host_fullscreen != nullptr) {
+                uint32_t host_mode = 0;
+                config_.host_fullscreen(config_.host_fullscreen_ctx, &host_mode);
+                const bool want_fullscreen = host_mode != 0;
+                if (want_fullscreen != applied_fullscreen_) {
+                    log_line(std::string("ogre: host window is ") +
+                             (want_fullscreen ? "fullscreen" : "windowed") +
+                             ", requesting a fullscreen switch");
+                    // Ogre applies the request on its next window event pump and
+                    // rebuilds the swapchain at the new extent. `borderless` is
+                    // false: the host decided the decoration, and asking Ogre to
+                    // strip chrome from a window it does not own would be a
+                    // no-op at best. The four trailing zeroes are monitor index,
+                    // width, height and frequency - "you choose", which is what
+                    // the host's own choice already answered.
+                    window_->requestFullscreenSwitch(want_fullscreen, false, 0, 0,
+                                                     0, 0, 0);
+                    applied_fullscreen_ = want_fullscreen;
+                    // Forget the size the swapchain was built at so the check
+                    // below fires this same frame. A driver that completes the
+                    // toggle without emitting a resize would otherwise leave the
+                    // swapchain at the old extent until something else resized
+                    // the window.
+                    applied_width_ = 0;
+                    applied_height_ = 0;
+                }
+            }
+            // The size. This is the only consumer of the resize hunk
+            // (`third_party/patches/ogre-external-surface.patch`).
             if (config_.external_surface != 0 && config_.host_size != nullptr) {
                 uint32_t host_w = 0, host_h = 0;
                 config_.host_size(config_.host_size_ctx, &host_w, &host_h);
@@ -2367,6 +2411,11 @@ class BackendOgre final : public Backend {
     /// surface once the swapchain has been rebuilt (see where it is set).
     uint32_t applied_width_ = 0;
     uint32_t applied_height_ = 0;
+    /// Whether the swapchain was last built for a fullscreen window, tracked the
+    /// same way and for the same reason as the size: the host owns the window,
+    /// so the mode it reports is the only comparison worth making. Initialised
+    /// from the host at init, so the first frame is not a spurious edge.
+    bool applied_fullscreen_ = false;
     /// The window's native handle, cached by the render thread the moment the
     /// window exists and cleared before it is destroyed. 0 is "no window yet"
     /// (no platform Tension builds for hands out 0 as a real handle).

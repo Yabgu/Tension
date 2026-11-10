@@ -106,6 +106,23 @@ function nativePackage(name) {
   return import(pathToFileURL(file).href);
 }
 
+/// Resolve a declared capability path for this platform.
+///
+/// `package.json` names one spelling, and the build recipe writes the platform's:
+/// `scripts/build-input.mjs` emits `libtension_input.so` or `.dll` from one
+/// command. A declaration of `….so` therefore means "this capability", not "this
+/// exact file", and the `.dll` beside it is the same artifact built for Windows.
+/// Without this a Windows `npm start` builds the DSO and then fails looking for
+/// the Linux name.
+function resolveCapability(declared) {
+  const path = resolve(exampleDir, declared);
+  if (existsSync(path) || !WIN) return path;
+  const swapped = path.endsWith('.so') ? `${path.slice(0, -3)}.dll`
+                : path.endsWith('.dll') ? path
+                : `${path}.dll`;
+  return existsSync(swapped) ? swapped : path;
+}
+
 function findBash() {
   if (process.env.TENSION_BASH) return process.env.TENSION_BASH;
   // Prefer a real MSYS2 or Git Bash. `C:\Windows\System32\bash.exe` is the WSL
@@ -309,12 +326,13 @@ if (kind === 'ogre') {
     }
   }
   if (cfg.extraCapability) {
-    extraCapability = resolve(exampleDir, cfg.extraCapability);
+    extraCapability = resolveCapability(cfg.extraCapability);
     if (!existsSync(extraCapability)) {
       // The repo's convention is <cap>/build beside <cap>/src; the capability's
       // own npm script builds it, so nothing here needs a shell.
       console.log('building the extra capability...');
       run(process.execPath, [join(repo, 'scripts', 'build-input.mjs')]);
+      extraCapability = resolveCapability(cfg.extraCapability);
       if (!existsSync(extraCapability)) {
         die(`still no capability at ${extraCapability} after its build`);
       }

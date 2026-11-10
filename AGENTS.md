@@ -98,7 +98,8 @@ through the adapter ABI; a session must be given the DSO with `--capability`):
   renderer: scene nodes, cameras, lights, materials, meshes, jobs, bones,
   animation. Design: `docs/modules/ogre.md`.
 - **`tension::input`** — 6 verbs — `tension-input/build/libtension_input.so`.
-  Keyboard/pointer state and edge events. Design: `tension-input/DESIGN.md`.
+  Keyboard/pointer state and edge events. An event-layer subscriber: the host
+  owns SDL and the window. Design: `INPUT.md`; module: `docs/modules/input.md`.
 - **`tension::2d`** — 10 verbs — **in core**, in
   `tension-core/src/render2d/`, registered by `link_2d` in `main.rs` (Cargo
   feature `render2d-core`, on by default since the 2D merge). Sprite batching

@@ -33,6 +33,7 @@
 import { spawn as spawnAsync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { REPO, WIN, which } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
@@ -257,7 +258,11 @@ async function overflow(cadence, count, core, dso, guest, injector) {
 
 export async function run() {
   if (WIN) {
-    console.log(`${RUNNER}: SKIPPED — the measurement needs XTEST and xdotool`);
+    // Not a build gate: the DSO builds on Windows. This suite injects real
+    // server events through XTEST and reads window geometry with xdotool, and
+    // neither exists there, so the measurement stays a Linux one.
+    console.log(`${RUNNER}: SKIPPED — the measurement injects XTEST events and reads ` +
+                'xdotool geometry; the capability itself builds on Windows');
     return;
   }
   if (!process.env.DISPLAY) {
@@ -320,7 +325,8 @@ export async function run() {
     // would silently regress every mouse-look game, and the pass that deleted
     // the polling thread must not land on that.
     fail(RUNNER, 'MOTION FIDELITY GATE FAILED — the dispatcher loses motion at low ' +
-                 'frame rates; a raw-motion buffer is needed before InputThread can go');
+                 'frame rates; a raw-motion buffer is needed before the layer can ' +
+                 'replace a poller');
   }
   console.log('  PASS: every cadence reproduced the injected displacement within 1 px');
 
@@ -356,4 +362,11 @@ export async function run() {
 
 function fmt(value) {
   return Number.isFinite(value) ? value.toFixed(1) : 'n/a';
+}
+
+// `node scripts/test-input.mjs --edge` imports this module and calls `run()`
+// itself. A direct `node scripts/test-input-edge.mjs` used to define `run` and
+// exit 0 having measured nothing — which reads as a pass. Run it here too.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await run();
 }

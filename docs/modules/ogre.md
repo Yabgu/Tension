@@ -103,7 +103,7 @@ slot at 0 and answer the guest "success".
 | 13 | `mount_tns` | 13 | `(i32 prefix, i32 prefix_len, i32 path, i32 path_len) -> i32` | read a Tension Volume once and mount it under a prefix | `adapter.cpp:1306`, `:674` |
 | 14 | `submit_animation` | 14 | `(i32 renderable, i32 clip, i32 clip_len, i32 time_ms) -> i32` | queue a clip and an absolute time within it | `adapter.cpp:1307`, `:634` |
 | 15 | `submit_skin_matrices` | 15 | `(i32 count) -> i32` | read a table of `(id, offset, bytes, flags)` plus the matrix blocks they name | `adapter.cpp:1303`, `:993` |
-| 16 | `window_handle` | 16 | `(i32 lo_ptr, i32 hi_ptr) -> i32` | write the cached native window handle as two halves | `adapter.cpp:1310-1311`, `:1230` |
+| 16 | `window_handle` | 16 | `(i32 lo_ptr, i32 hi_ptr) -> i32` | **deprecated:** write the cached native window handle as two halves; `-ENODEV` under a host window | `adapter.cpp:1363-1384`, `:1443` |
 
 Two properties of the table are load-bearing and easy to miss:
 
@@ -549,10 +549,28 @@ they do with the host's X window:
 
 Without a host surface the module is unchanged from the pre-v6 path: the plugin
 is named in `plugins.cfg`, Ogre creates its own window, and the native handle is
-cached for `window_handle` (`backend_ogre.cpp:478-503`). On this rig that
+cached for `window_handle` (`backend_ogre.cpp:538-568`). On this rig that
 handle is non-zero; under a host surface it stays 0 and `window_handle` answers
-`-ENODEV` — deliberately, until the v7 input pass re-points it
-(`tension-core/tests/ogre_host_surface.rs`, assertion f).
+`-ENODEV` (`tension-core/tests/ogre_host_surface.rs`, assertion f).
+
+**That is now the verb's settled behaviour, not a deferral.** It is deprecated
+and nothing in the tree calls it: input joins the host's event stream rather
+than naming a surface, so there is no consumer for a drawable the guest did not
+create (`INPUT.md` §3, `docs/vision.md` §5.5). A future backend that needs a
+native handle gets a new verb; this one is not re-pointed.
+
+**GL3+ is a fallback, not a co-equal target.** Vulkan is the primary 3D renderer
+and the one the SDK's windowed path asks for
+(`tension-framework/assembly/ogre/index.ts:310`); GL3+ exists for hardware with
+no Vulkan, and it is the last 3D candidate in the `auto` chain on both platforms
+(`adapter.cpp:172-190`). The child window above is therefore **permanent rather
+than a stepping stone**: a native `WindowTarget::OpenGL`, with the host owning
+an `SDL_GLContext`, was evaluated and is a deliberate non-build
+(`docs/vision.md` §6), so nothing on this path is scheduled for replacement. The
+wire default for `renderer` is `1 (GL3PLUS)` (`config.cpp:162-172`), which
+governs only a guest that names no renderer at all — `auto` starts at Vulkan (or
+the Windows Direct3D 11 candidate, which this build compiles `OFF`) and reaches
+GL3+ only when the earlier candidates fail.
 
 ## 7. Failure modes
 
@@ -677,7 +695,10 @@ Everything else this page asserts has a test or a gate behind it.
   registration sites.
 - Ownership and teardown of the host's window, instance and surface:
   `docs/architecture.md` §2-3.
-- Input attach and `window_handle`'s re-point: deferred to the v7 input pass.
+- Input: [`INPUT.md`](../../INPUT.md) (the design statement) and
+  [`docs/modules/input.md`](input.md) (the module). `window_handle` is a
+  deprecated stub there too — v7 retired the exchange rather than re-pointing
+  it.
 - The 2D capability: `docs/modules/2d.md`.
 - Build and CI: `docs/build.md`.
 

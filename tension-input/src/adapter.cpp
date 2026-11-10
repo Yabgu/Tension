@@ -45,8 +45,9 @@ struct AdapterState {
     uint32_t source_id = 0;
     Mirror mirror;
     /// v0's declared capacity is one, so the handle is 1 or 0. The handle
-    /// exists in the first version anyway: retrofitting one is the change the
-    /// design's aspect table (INPUT.md §3 Q2) exists to avoid.
+    /// exists in the first version anyway: a guest that holds one cannot be
+    /// retrofitted into a guest that does not, and the six-verb wire is fixed
+    /// (`docs/modules/input.md` §2).
     int32_t handle = 0;
     /// The token `register_event_layer` handed back, or nullptr. One layer per
     /// process: a second registration would double every edge this capability
@@ -394,11 +395,24 @@ int32_t adapter_link(void *, const tension_core_api *core) {
     return 0;
 }
 
+/// The host's one teardown call.
+///
+/// `shutdown` then `destroy`, reverse of link order, once each, on both exit
+/// paths — a clean return and a guest trap (`tension-core/src/adapter/mod.rs`,
+/// `LoadedAdapter::teardown`, and `main.rs`'s two calls). It runs on the
+/// interpreter thread, outside any guest call, and the library is `dlclose`d
+/// after it.
+///
+/// There is no thread here to join and no SDL state to release: the only
+/// host-side object this capability owns is its event layer, and unregistering
+/// it is the whole job. `SDL_Quit` belongs to the host's `Sdl` and is never
+/// called from an adapter (`INPUT.md` §5). Idempotent — a second call finds no
+/// layer and a detached mirror.
 int32_t adapter_shutdown(void *) {
     AdapterState &s = adapter_state();
     // Unsubscribe *before* anything else: the host tears its layers down after
     // the adapters (main.rs's teardown order), and a layer left registered would
-    // be a call into code the loader is about to unmap. Idempotent.
+    // be a call into code the loader is about to unmap.
     if (s.layer_user != nullptr && s.api != nullptr && s.api->unregister_event_layer != nullptr) {
         const int32_t rc = s.api->unregister_event_layer(s.api->user, s.layer_user);
         if (rc != 0) {
