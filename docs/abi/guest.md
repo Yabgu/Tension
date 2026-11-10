@@ -116,12 +116,12 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `open` | `(i32) → i32` | 1 | — | `tension-input/src/adapter.cpp:360` |
-| `attach` | `(i32, i32, i32, i32) → i32` | 2 | — | `tension-input/src/adapter.cpp:361` |
-| `set_relative` | `(i32, i32) → i32` | 3 | — | `tension-input/src/adapter.cpp:362` |
-| `state` | `(i32, i32, i32) → i32` | 4 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:365` |
-| `pad` | `(i32, i32, i32, i32) → i32` | 5 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:366` |
-| `close` | `(i32) → i32` | 6 | — | `tension-input/src/adapter.cpp:367` |
+| `open` | `(i32) → i32` | 1 | — | `tension-input/src/adapter.cpp:361` |
+| `attach` | `(i32, i32, i32, i32) → i32` | 2 | — | `tension-input/src/adapter.cpp:362` |
+| `set_relative` | `(i32, i32) → i32` | 3 | — | `tension-input/src/adapter.cpp:363` |
+| `state` | `(i32, i32, i32) → i32` | 4 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:366` |
+| `pad` | `(i32, i32, i32, i32) → i32` | 5 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:367` |
+| `close` | `(i32) → i32` | 6 | — | `tension-input/src/adapter.cpp:368` |
 
 ## `tension::io`
 

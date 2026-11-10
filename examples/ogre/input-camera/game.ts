@@ -2,26 +2,25 @@
 //
 // WASD moves in the facing plane, the mouse turns (yaw and pitch, clamped so
 // the camera cannot roll over), escape quits. The whole input path is Tension's
-// own: SDL -> tension-input (a DSO) -> the session -> this file ->
-// ogre::submitCamera -> the screen. Nothing here uses OGRE's input handling or
-// its tutorial framework — the renderer is given a camera record per frame and
-// knows nothing else.
+// own: the host's SDL pump -> the session's EventBus -> tension-input's layer (a
+// DSO) -> this file -> ogre::submitCamera -> the screen. Nothing here uses
+// OGRE's input handling or its tutorial framework — the renderer is given a
+// camera record per frame and knows nothing else.
 //
-// The window handle is the guest-mediated exchange INPUT.md §3 Q1 describes:
-// `ogre.windowHandle()` answers the XID, and the guest hands it to
-// `input.attachToken`, so neither capability learns the other exists.
+// **There is no window handle to exchange any more (v7).** The host owns the
+// window and pumps its events; input joins that stream by subscribing, so
+// `attach` ignores `kind`/`lo`/`hi` and checks only that the host owns a window
+// at all (`docs/modules/input.md` §3). `ogre.windowHandle()` remains a stub that
+// answers -ENODEV under a host window, and nothing in this file calls it.
 //
 //   ./run.sh                            a window: WASD + mouse, escape quits
 //   TENSION_OGRE_HEADLESS=1 ./run.sh    refuses: no window means no input
+//   ... --frames=30                     run thirty frames, print the summary, exit
+//                                       (what `scripts/test-ogre.mjs` runs)
 //
-// The window is created by `ogre.initWindowed` and adopted by Ogre's Vulkan
-// renderer. Pre-E1a this was Gl3Plus with Ogre creating its own window; that
-// path is gone.
-//
-// Input attach is deferred to input v7: under a host-owned window the renderer
-// creates no native window of its own, so `ogre::windowHandle()` answers
-// -ENODEV and there is no handle to hand to `input.attachToken`. Re-pointing
-// that verb is the input pass's job; until then this example says so and stops.
+// The window is created by `ogre.initWindowed` — `platform.createWindow`
+// synchronously, then `ogre.init` — and adopted by the renderer as a surface.
+// The renderer creates no window of its own on this path.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
 import { ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt } from "tension-framework";
@@ -50,6 +49,9 @@ const SCANCODE_D = 7;
 const MOVE_SPEED: f32 = 5.0;
 const TURN_SENSITIVITY: f32 = 0.0022;
 const PITCH_LIMIT: f32 = 1.35; // ~77 degrees, so the camera never flips
+/// The one attach refusal that means "not yet" rather than "no": the host
+/// owned no window when the verb ran. `run` retries this one, bounded.
+const ENODEV: i32 = -19;
 /// The loop waits 16 ms per epoch, so this is the frame's clock — the guest
 /// has none of its own (there is no wall clock in the arena).
 const FRAME_DT: f32 = 0.016;
@@ -61,6 +63,11 @@ function fail(what: string): void {
 
 class Options {
   renderer: string = "null";
+  /// 0 means "until escape". A positive count is the test harness's shape: it
+  /// lets the example run a fixed number of frames, print its summary and exit
+  /// cleanly, so `scripts/test-ogre.mjs` can gate the attach without injecting a
+  /// keystroke into somebody's desktop.
+  frames: i32 = 0;
   /// The launcher sends `--renderer=gl3plus` for a windowed run; `vulkan` is
   /// the explicit choice. Any other word is refused: silently treating a typo
   /// as "headless" would report a NULL renderer and no pixels, which is harder
@@ -79,6 +86,12 @@ function parseArgs(): Options {
   for (let i: i32 = 0; i < argCount(); i++) {
     const value = arg(i);
     if (value.startsWith("--renderer=")) options.renderer = value.slice(11);
+    else if (value.startsWith("--frames=")) {
+      const raw = value.slice(9);
+      const parsed = i32.parse(raw);
+      if (parsed <= 0) fail("--frames must be positive: " + raw);
+      options.frames = parsed;
+    }
   }
   return options;
 }
@@ -107,7 +120,10 @@ class Game {
     // Declared before the first await: the transform scopes a local declared
     // after one to its own resume guard.
     let mesh: i32 = 0;
-    let token: u64 = 0;
+    let opened: i32 = 0;
+    let attached: i32 = 0;
+    let relative: i32 = 0;
+    let waited: i32 = 0;
 
     this.openSession();
     this.openRenderer();
@@ -122,9 +138,10 @@ class Game {
       return;
     }
 
-    // Both waits are the frame clock: the render thread is what builds the mesh
-    // and what brings the window up, so its frame is the signal that either has
-    // happened. No `RuntimeSession.wait`, no `rt.runReady()`.
+    // The wait is the frame clock: the render thread is what builds the mesh,
+    // so its frame is the signal that it happened. No `RuntimeSession.wait`,
+    // no `rt.runReady()`. (The window is *not* waited for: `initWindowed`
+    // created it synchronously, before `ogre.init` adopted it.)
     mesh = this.buildMesh();
     while (ogre.resourceState(mesh) != ogre.RES_STATE_READY) {
       if (ogre.resourceState(mesh) == ogre.RES_STATE_FAILED) fail("the marker mesh was never built");
@@ -132,18 +149,26 @@ class Game {
     }
     this.submitScene(mesh);
 
-    // The window comes up on the render thread, so the handle is awaited rather
-    // than assumed.
-    let waited: i32 = 0;
-    while (token == 0 && waited < 600) {
-      token = ogre.windowHandle();
-      if (token == 0) {
-        await rt.frame();
-        waited++;
-      }
+    // The window exists by now: `initWindowed` created it synchronously before
+    // `ogre.init` was called. What can still lag is the host's own record of
+    // it, which is what `input_attach` checks — so its `-ENODEV` is retried for
+    // a bounded time rather than read as a refusal.
+    opened = input.open(0);
+    if (opened <= 0) fail("input_open refused (" + opened.toString() + ")");
+    this.handle = opened;
+
+    attached = input.attach(opened, input.Kind.OwnSurface, 0, 0);
+    while (attached == ENODEV && waited < 600) {
+      await rt.frame();
+      attached = input.attach(opened, input.Kind.OwnSurface, 0, 0);
+      waited++;
     }
-    if (token == 0) fail("no window handle arrived within ~10 s");
-    this.attachInput(token);
+    if (attached != 0) fail("input_attach refused (" + attached.toString() + ")");
+
+    relative = input.setRelative(opened, true);
+    if (relative != 0) fail("input_set_relative refused (" + relative.toString() + ")");
+    this.stateBuffer = heap.alloc(input.STATE_SIZE);
+    print("input-camera: flying. WASD moves, the mouse turns, escape quits.");
 
     this.beginLoop();
     // The frame loop: one input read and one camera submit per presented frame.
@@ -166,16 +191,10 @@ class Game {
   }
 
   private openRenderer(): void {
-    const windowed = this.options.windowed;
-    // A host-owned window has no native handle to hand over: under the external
-    // surface the renderer creates no window of its own, so `ogre::windowHandle()`
-    // answers -ENODEV. `initWindowed` owns creation now, so this is checked
-    // before the call, against the *intent* — not after it, against a result
-    // that may have failed for an unrelated reason.
-    if (windowed) {
-      fail("input-camera requires input v7: ogre::windowHandle() returns -ENODEV under host-owned windows");
-    }
-    const rc = windowed
+    // `initWindowed` is two steps in the SDK — `platform.createWindow`, which the
+    // host performs synchronously, then `ogre.init`, which adopts that window as
+    // its surface. Neither needs a token from the guest.
+    const rc = this.options.windowed
       ? ogre.initWindowed(<i32>WIDTH, <i32>HEIGHT)
       : ogre.initHeadless();
     if (rc != 0) fail("ogre::init refused the config (" + rc.toString() + ")");
@@ -212,23 +231,6 @@ class Game {
         if (ogre.submitRenderable(marker) != 0) fail("submitRenderable refused");
       }
     }
-  }
-
-  /// The guest-mediated handoff: the renderer's XID from `ogre.windowHandle()`,
-  /// handed to the input capability. The window comes up on the render thread,
-  /// so the handle is polled for a bounded time rather than assumed.
-  private attachInput(token: u64): void {
-    const handle = input.open(0);
-    if (handle <= 0) fail("input_open refused (" + handle.toString() + ")");
-    this.handle = handle;
-
-    const attached = input.attachToken(handle, input.Kind.X11Window, token);
-    if (attached != 0) fail("input_attach refused (" + attached.toString() + ")");
-    const relative = input.setRelative(handle, true);
-    if (relative != 0) fail("input_set_relative refused (" + relative.toString() + ")");
-
-    this.stateBuffer = heap.alloc(input.STATE_SIZE);
-    print("input-camera: flying. WASD moves, the mouse turns, escape quits.");
   }
 
   /// The loop's starting point.
@@ -275,6 +277,11 @@ class Game {
 
       if (state.keyHeld(SCANCODE_ESCAPE)) {
         this.running = false;   // the loop's exit; `break` is refused in an async body
+      }
+      // The bounded shape: a test asks for N frames and the loop stops itself.
+      // Escape still wins, because it is checked first.
+      if (this.options.frames > 0 && this.frames >= <u32>this.options.frames) {
+        this.running = false;
       }
 
       // The camera record: yaw about Y, then pitch about the camera's own X,

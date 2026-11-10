@@ -2,8 +2,8 @@
 // and the mirror it keeps of what the host dispatches.
 //
 // **There is no SDL here any more, and no thread.** Before v7 this file declared
-// an `InputThread` that owned `SDL_Init`, a window, and a 2 ms poll loop; the
-// whole of it is gone. The host initialises the video subsystem, owns the
+// a thread that owned `SDL_Init`, a window, and a 2 ms poll loop; the whole of it
+// is gone. The host initialises the video subsystem, owns the
 // window, and pumps the queue on the thread that did so — and this capability
 // subscribes a *layer* and is handed a batch of events, synchronously, once per
 // pump (thread rule 13 in tension_adapter.h).
@@ -38,15 +38,17 @@ constexpr uint32_t kClassFlagSubscribed = 1u << 0;
 
 /// How long after a successful attach motion events are discarded: they are the
 /// window settling under the pointer and the confinement warp, not input.
-/// Measured at 137 ms and 343 ms, so half a second covers both (INPUT.md §3 Q5).
+/// Measured at 137 ms and 343 ms, so half a second covers both
+/// (`docs/modules/input.md` §5).
 ///
 /// Unchanged by v7, and still needed: attaching is immediately followed by a
 /// relative-mode request in every real use, and the warp that produces is one
 /// enormous delta no consumer wants.
 constexpr uint32_t kAttachSettleMs = 500;
 
-/// The state record, INPUT.md §3 Q5. Offsets are the wire; the static_assert
-/// below is what keeps this struct and the header's table from drifting apart.
+/// The state record (`docs/modules/input.md` §2). Offsets are the wire; the
+/// static_assert below is what keeps this struct and the header's table from
+/// drifting apart.
 struct StateRecord {
     uint32_t version;
     uint32_t flags;
@@ -69,7 +71,7 @@ static_assert(sizeof(StateRecord) == TENSION_INPUT_STATE_SIZE,
 static_assert(offsetof(StateRecord, mouse_dxf) == 56,
               "the float delta is where the guest reads it");
 
-/// The gamepad slot record, INPUT.md §3 Q5 (v1's state half).
+/// The gamepad slot record (`docs/modules/input.md` §2; v1's state half).
 ///
 /// An alias, not a definition: the layout moved to `tension_adapter.h` at ABI v7
 /// when `pad_state` made the record the boundary's instead of this capability's
@@ -92,8 +94,8 @@ uint64_t now_ms();
 ///
 /// **Motion is accumulated, never posted.** A 1 kHz device against a 64-slot
 /// ring is a statistic, not a stream: the state record carries one delta per
-/// snapshot, and a snapshot consumes it (INPUT.md §3 Q3, measured at 989 events
-/// in one second).
+/// snapshot, and a snapshot consumes it (`docs/modules/input.md` §5, measured at
+/// 989 events in one second).
 class Mirror {
   public:
     Mirror() = default;

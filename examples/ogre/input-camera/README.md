@@ -8,17 +8,20 @@ the **mouse** turns (yaw and pitch, clamped), **escape** quits.
 The whole input path, end to end:
 
 ```
-SDL  ->  tension-input (a DSO)  ->  the session  ->  the guest  ->  ogre  ->  screen
+SDL  ->  the host's pump  ->  the session's event bus  ->  tension-input (a DSO)
+     ->  the guest's input.state()  ->  ogre.submitCamera  ->  the screen
 ```
 
 Nothing in it uses OGRE's input handling or its tutorial framework. The renderer
 is handed one camera record per frame; where that camera is comes entirely from
 `tension::input`.
 
-The window handle is the guest-mediated exchange `INPUT.md` §3 Q1 describes:
-`ogre.windowHandle()` answers the XID of the renderer's window, and the guest
-hands it to `input.attachToken(handle, Kind.X11Window, token)`. Neither
-capability learns the other exists — the guest is the mediator.
+**There is no window handle to exchange.** The host owns the window and pumps its
+events, and input joins that stream by subscribing (`INPUT.md` §3,
+`docs/modules/input.md` §3). `input.attach` still takes the four v6 arguments but
+reads only the handle: `kind`/`lo`/`hi` are ignored, and
+`ogre.windowHandle()` — a deprecated stub that answers `-ENODEV` under a host
+window — is not called here at all.
 
 It is also the only example that loads **two** capabilities: `npm start` exports
 `TENSION_EXTRA_CAPABILITY` (the input DSO), which `scripts/run-example.mjs` turns
@@ -39,8 +42,10 @@ TENSION_OGRE_HEADLESS=1 npm start    # refuses: no window means no input to atta
 ```
 
 `npm start` builds whatever is missing first: the interpreter, the OGRE adapter,
-the input capability (via `node scripts/build-input.mjs`), the framework's generated
-session config, and this example's own dependencies (`npm install`, `asc`).
+the input capability (via `node scripts/build-input.mjs`), the framework's
+generated session config, and this example's own dependencies (`npm install`,
+`asc`). It refuses to start if the packaged binaries are older than their
+sources — that is `npm run build` at the repository root, not a stale checkout.
 
 ## What to look for
 
@@ -57,12 +62,12 @@ session config, and this example's own dependencies (`npm install`, `asc`).
 
 ## If something is wrong
 
-- **Keys do nothing** — the input window must hold focus. On Wayland the
-  compositor decides; the capability asks for focus when it attaches, and on an
-  X11/XWayland session (what OGRE-Next 3.0 uses) the ask is granted. If it was
-  not, click the window once.
+- **Keys do nothing** — the window must hold keyboard focus, and the compositor
+  decides that, not the capability. Click the window once. (Motion needs only
+  the pointer over the window; keys go to whatever holds focus.)
 - **The camera turns but does not move** — check that the terminal running
   `npm start` is not eating the keys; WASD are read from the state record, which
   is global to the window, not from the event ring.
-- **It refuses immediately with "no window handle arrived"** — the renderer
-  never brought a window up; check the adapter's log lines above it.
+- **It refuses with "input_attach refused (-19)"** — `-ENODEV`: the host owned no
+  window when `attach` ran. The example retries for ~10 s of frames; past that,
+  the window never came up, so check the adapter's log lines above it.

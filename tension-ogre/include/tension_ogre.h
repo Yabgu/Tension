@@ -94,6 +94,17 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
  * `ogre::window_handle(i32 lo_ptr, i32 hi_ptr) -> i32`  — verb_id 16,
  * flags TENSION_IMPORT_REENTRANT_READONLY.
  *
+ * **DEPRECATED.** Registered and answered for compatibility, never useful under
+ * a v7 host. The host owns the window; the drawable this adapter renders into is
+ * a child of it (GL3+) or there is no native window at all (Vulkan), so the
+ * cached handle stays 0 and this verb answers `-ENODEV`
+ * (`tension-ogre/src/backend_ogre.cpp:538-568`). It stays in the table so a v6
+ * guest links and gets a documented refusal instead of an unresolved import.
+ * Nothing in the tree calls it: input joins the host's event stream instead of
+ * naming a surface (`INPUT.md` §3). A backend that genuinely needs a native
+ * handle for some future consumer gets a **new** verb with a name that says what
+ * it is for; this one is not re-pointed (`docs/vision.md` §5.5).
+ *
  * Writes the platform window handle as two 32-bit halves: the low 32 bits of
  * the native handle to `lo_ptr` and the high 32 bits (0 on a 32-bit platform)
  * to `hi_ptr`. Both destinations are 4-byte guest addresses. 0 on success.
@@ -108,10 +119,11 @@ int32_t ogre_last_error(uint32_t ptr, int32_t cap);
  * cached by the render thread when the window was made, so this reads an
  * atomic and writes guest memory — no pump, no lock, no block.
  *
- * This is the renderer half of INPUT.md Q1: the guest learns the token here
- * and hands it to the input capability, which is the only other party that
- * needs it. Nothing in this adapter reads another capability's records, and
- * this verb is how the rule is honoured rather than worked around.
+ * This was the renderer half of the v6 guest-mediated window exchange: the guest
+ * learned the token here and handed it to the input capability. That exchange is
+ * retired — input no longer names a surface (`INPUT.md` §3) — and the verb is
+ * kept only so a v6 guest links. Nothing in this adapter reads another
+ * capability's records, before or after.
  */
 int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
 
@@ -278,7 +290,8 @@ int32_t ogre_window_handle(uint32_t lo_ptr, uint32_t hi_ptr);
  * none of the closed list's codes names "no window or device *yet*": -EINVAL is
  * a malformed argument, -ENOENT an unknown region or class, -EIO a fault. The
  * absent-window case is none of those, it is the normal state of a renderer
- * that is still starting. `window_handle` answers it, and `init` answers it when
+ * that is still starting. `window_handle` answers it (a deprecated verb, above),
+ * and `init` answers it when
  * the guest asked for `target=swapchain` and the host published no surface.
  * The amendment tension-core owes is one line in tension_adapter.h's list
  * (`-ENODEV  no window or device yet`); until it lands, this header is where

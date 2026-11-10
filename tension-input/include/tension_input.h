@@ -42,7 +42,7 @@ extern "C" {
  * these with `@external("tension::input", ...)`; the adapter registers them
  * through `tension_core_api.register_import`, in `link`. Every parameter and
  * return is `i32`: a 64-bit window token crosses as two halves, because that
- * is the only shape the adapter path exercises today (INPUT.md §3 Q5).
+ * is the only shape the adapter path exercises today (`docs/modules/input.md` §2).
  *
  * Guest pointers are `u32` offsets into the guest's own memory — the adapter
  * reaches that memory only through `guest_read` / `guest_write`, inside a
@@ -83,7 +83,8 @@ int32_t input_open(int32_t flags);
  *   -EBUSY   already attached
  *
  * The first ~500 ms of motion after a successful attach are discarded: they are
- * the pointer-confinement warp and the window settling, not input (INPUT.md Q5).
+ * the pointer-confinement warp and the window settling, not input
+ * (`docs/modules/input.md` §5).
  */
 int32_t input_attach(int32_t handle, int32_t kind, int32_t lo, int32_t hi);
 
@@ -124,14 +125,14 @@ int32_t input_state(int32_t handle, int32_t ptr, int32_t cap);
  *
  * Writes one `input_pad` record for a gamepad slot. `cap <= 0` probes; a slot
  * with no pad is -ENOENT — which is what every slot answers while zero pads
- * are attached, a normal state and not a failure (INPUT.md §3 Q2). -ENODEV
+ * are attached, a normal state and not a failure (`docs/modules/input.md` §6). -ENODEV
  * when nothing is attached, -EINVAL for a bad handle or slot, -ENOSPC for a
  * short buffer, -ENOSYS from a host that does not serve pad state.
  *
  * Reads the host's `pad_state` slot: the host opens the pads, on the thread that
  * initialised SDL, and samples them once per pump. Gamepad edges still need a
- * class the session does not have; this verb is the state half only (INPUT.md
- * §3 Q5).
+ * class the session does not have; this verb is the state half only
+ * (`docs/modules/input.md` §2).
  */
 int32_t input_pad(int32_t handle, int32_t slot, int32_t ptr, int32_t cap);
 
@@ -213,7 +214,7 @@ _Static_assert(sizeof(tension_pad_record) == TENSION_INPUT_PAD_SIZE,
  * catalogue (tension-core/src/session/arena.rs): INPUT_KEY is 6, INPUT_MOUSE
  * is 7, both BATCHED. The `EventRecord` is 32 bytes — {seq u64, class u32,
  * flags u32, a u32, b u32, f0 f32, f1 f32} — and has no room for a device id,
- * so a record identifies its own shape in `flags` (INPUT.md §3 Q5):
+ * so a record identifies its own shape in `flags` (`docs/modules/input.md` §2):
  *
  *   CLASS_INPUT_KEY    flags bit0 DOWN, bit1 REPEAT, bit2 SYNTHETIC
  *                      a = SDL keycode, b = SDL scancode
@@ -225,8 +226,8 @@ _Static_assert(sizeof(tension_pad_record) == TENSION_INPUT_PAD_SIZE,
  *
  * Motion is *not* posted per device sample: it coalesces into the state
  * record, one delta per snapshot (measured 989 events in one second against
- * a 64-slot ring — INPUT.md §3 Q3). Keys, buttons and wheel are edges and are
- * posted.
+ * a 64-slot ring — `docs/modules/input.md` §5). Keys, buttons and wheel are
+ * edges and are posted.
  */
 #define TENSION_INPUT_CLASS_INPUT_KEY 6u
 #define TENSION_INPUT_CLASS_INPUT_MOUSE 7u

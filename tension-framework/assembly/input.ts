@@ -51,7 +51,8 @@ declare function closeRaw(handle: i32): i32;
  * kind of failure.
  */
 export enum Kind {
-  /** input's own surface: input makes and owns a window. No renderer needed. */
+  /** No token. The honest spelling of "ignore the rest" in v7 — pass this and
+   * zeros. (In v6 it meant "make your own window"; input no longer owns one.) */
   OwnSurface = 0,
   /** An X11 window id in `lo` — what `ogre::window_handle` used to hand over. */
   X11Window = 1,
@@ -115,15 +116,19 @@ export function open(flags: i32 = 0): i32 {
   return openRaw(flags);
 }
 
-/** Attach to a surface whose token is two halves. */
-/** Send the handle's four attach words. `kind` is ignored since v7: the host
- * owns the window and this capability joins it by subscribing. */
+/** Send the handle's four attach words. `kind`/`lo`/`hi` are ignored since v7:
+ * the host owns the window and this capability joins it by subscribing. The
+ * verb takes four arguments because a v6 guest must keep linking, and `kind` is
+ * still range-checked (0..4) so a nonsense value is refused rather than
+ * silently dropped. */
 export function attach(handle: i32, kind: Kind, lo: i32, hi: i32): i32 {
   return attachRaw(handle, kind, lo, hi);
 }
 
-/** Attach to a surface whose token is one 64-bit value — the shape
- * `ogre.windowHandle()` answers with. */
+/** The 64-bit-token spelling of `attach`, kept for the same reason: the two
+ * halves are the same two arguments. The token it used to carry —
+ * `ogre.windowHandle()`'s answer — is itself deprecated and answers 0 under a
+ * v7 host, which is why passing it here is now the same as passing zeros. */
 export function attachToken(handle: i32, kind: Kind, token: u64): i32 {
   return attachRaw(handle, kind, <i32>(token & 0xFFFFFFFF), <i32>(token >>> 32));
 }

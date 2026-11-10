@@ -12,6 +12,11 @@
 //   shutdown-only ogre::shutdown before any init
 //   windowed      renderer=gl3plus  opt-in, opens a real window:
 //                                   TENSION_OGRE_WINDOW_TEST=1 npm test
+//   input-camera  renderer=gl3plus  opt-in with the same flag: the example that
+//                                   loads the input DSO, bounded to 30 frames.
+//                                   It is the only case with two capabilities,
+//                                   and the only end-to-end proof that
+//                                   `input.attach` finds a host window.
 //
 // Every case must exit 0: the guest is expected to handle its own failures
 // (`--expect-fail`) and say so on stdout, so a non-zero exit here is the bug.
@@ -549,6 +554,57 @@ if (!windowed) {
     }
     const line = result.stdout.split(/\r?\n/).filter((l) => new RegExp(marker).test(l)).pop();
     console.log(`== ${name}: ok — ${line ?? ''}`);
+  }
+
+  // ── input-camera: two capabilities, one host window ─────────────────────
+  //
+  // The example from `examples/ogre/input-camera`, built here rather than run
+  // through npm so the suite gets its own bounded shape: `--frames=30` stops the
+  // guest's loop and it exits cleanly with a summary line. What this proves is
+  // the whole v7 attach path — the host owns the window, `input.attach` finds it
+  // by asking `host_window_info` (its four wire arguments are ignored), and
+  // `input.state` answers live data every frame. What it cannot prove without an
+  // injection tool is that a *device* keystroke moves the camera; the input
+  // suites own that (`scripts/test-input-edge.mjs`).
+  {
+    const example = join(repo, 'examples', 'ogre', 'input-camera');
+    const inputDso = join(repo, 'tension-input', 'build',
+                          WIN ? 'libtension_input.dll' : 'libtension_input.so');
+    const built = inherit(process.execPath, [join(repo, 'scripts', 'build-input.mjs')]);
+    if (built.status !== 0) fail(RUNNER, 'input-camera: the input DSO did not build');
+    if (!existsSync(inputDso)) fail(RUNNER, `input-camera: ${inputDso} is missing`);
+
+    const guest = join(out, 'input-camera.wasm');
+    // Compiled from the example's own directory: `tension-framework` and the
+    // two capability SDKs resolve through its `node_modules`, and the `~lib`
+    // prefix asc rewrites them to is relative to the working directory.
+    const compiled = spawn(asc, ['game.ts',
+                                 '--config', asconfig,
+                                 '-o', guest],
+                           { cwd: example });
+    if (compiled.status !== 0) {
+      process.stderr.write(compiled.stdout + compiled.stderr);
+      fail(RUNNER, 'input-camera: game.ts did not compile');
+    }
+
+    const result = spawn(core, ['--capability', dso, '--capability', inputDso, guest,
+                                '--renderer=gl3plus', '--frames=30'],
+                         { env: guestEnv, timeout: 120_000 });
+    if (result.status !== 0) {
+      console.log(indent(result.stdout));
+      fail(RUNNER, `input-camera: the interpreter exited ${result.status} ` +
+                   `(stderr: ${result.stderr.trim().split('\n').slice(-2).join(' ')})`);
+    }
+    if (!/^input-camera: flying\./m.test(result.stdout)) {
+      console.log(indent(result.stdout));
+      fail(RUNNER, 'input-camera: attach never reached the flying line');
+    }
+    const summary = result.stdout.split(/\r?\n/).filter((l) => /^input-camera: \d+ frames/.test(l)).pop();
+    if (!summary) fail(RUNNER, 'input-camera: no frame summary; the loop did not finish');
+    console.log(`== input-camera: ok — ${summary}`);
+    const attached = result.stderr.split(/\r?\n/)
+      .filter((l) => l.includes("attached to the host's window")).pop();
+    if (attached) console.log(`== input-camera: ${attached.trim()}`);
   }
 }
 

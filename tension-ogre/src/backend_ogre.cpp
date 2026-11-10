@@ -526,14 +526,15 @@ class BackendOgre final : public Backend {
             log_line("ogre: window \"Tension\" " + std::to_string(applied_width_) + "x" +
                      std::to_string(applied_height_) + " created (" + render_system_name_ + ")");
 
-            // The native handle the guest can hand to another capability
-            // (INPUT.md Q1: the renderer learns the token, the guest relays it,
-            // input attaches). It is read here, on the thread that made the
-            // window, and cached — `ogre::window_handle` answers from the cache
-            // on the interpreter thread, and reading a renderer object across
-            // threads is exactly what backend.h's note on that virtual forbids.
-            // A render system that does not publish the attribute leaves the
-            // cache at 0, which the verb reports as -ENODEV.
+            // The native handle this renderer made for itself, cached so
+            // `ogre::window_handle` can answer it from the interpreter thread —
+            // reading a renderer object across threads is exactly what
+            // backend.h's note on that virtual forbids. The verb is deprecated
+            // and has no consumer since v7 retired the guest-mediated exchange
+            // (`INPUT.md` §3); the cache is kept because a no-host-surface
+            // renderer still makes a window and the verb still answers it. A
+            // render system that does not publish the attribute leaves the cache
+            // at 0, which the verb reports as -ENODEV.
             //
             // **Not under a host window.** When the host owns the window the
             // drawable here is a child of it (GL3+) or there is no native window
@@ -541,7 +542,9 @@ class BackendOgre final : public Backend {
             // already has — `tension_host_surface::native_handle`. Publishing
             // this one would answer the guest with a drawable it did not create
             // and the host does not own, so the cache stays 0 and the verb keeps
-            // answering -ENODEV until V7c decides what it should say instead.
+            // answering -ENODEV. That is settled behaviour now, not a deferral:
+            // the verb is deprecated and has no consumer (`INPUT.md` §3,
+            // docs/vision.md §5.5).
             if (config.native_window_handle == 0) {
                 uint64_t native = 0;
 #if defined(_WIN32)

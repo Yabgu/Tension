@@ -443,9 +443,11 @@ This document deliberately does not cover:
 - **The ABI slot table** — [`docs/abi/adapter.md`](abi/adapter.md), generated
   from the header.
 - **Build and CI** — `docs/build.md`.
-- **Input** — `tension-input/DESIGN.md` until V7c rewrites `INPUT.md` and adds
-  `docs/modules/input.md`. The capability is an event layer as of v7b: it owns no
-  SDL, no thread and no window, and the pump runs in the epoch.
+- **Input** — [`INPUT.md`](../INPUT.md) is the design statement and
+  [`docs/modules/input.md`](modules/input.md) is the module page: six verbs, the
+  event flow, the threading model and the suites. The capability is an event
+  layer as of v7: it owns no SDL, no thread and no window, and the pump runs in
+  the epoch.
 - **`tension-res`, `tension-solver`, `tension-world`** — their schemas and
   headers are the contract; no prose doc is planned.
 
