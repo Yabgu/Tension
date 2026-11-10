@@ -529,9 +529,10 @@ if (!windowed) {
   // Removing the unused host window needs two changes, and the second is
   // blocked: skipping it in `ensureHostWindow` makes `ogre::init` refuse
   // `-ENODEV` (the adapter's `target=auto` check is renderer-agnostic), and
-  // narrowing that check to Vulkan re-exposes a SIGSEGV in GL3+ teardown.
-  // Both are measured; `tension-ogre/tests/host-window.ts` records the details
-  // and the run counts.
+  // narrowing that check to Vulkan re-exposes a SIGSEGV in GL3+ teardown — the
+  // WSL D3D12 driver (`libd3d12core`/`amdxc64`) being unmapped while a thread it
+  // spawned is still running. Both are measured, with the run counts and the
+  // experiment that localises the fault, in `tension-ogre/tests/host-window.ts`.
   for (const [name, wasm, marker, args] of [
     ['skin-matrices', 'guest-skin-matrices.wasm', '^MATRICES ', [tns, '--renderer=gl3plus']],
     ['skin-deform', 'guest-skin-deform.wasm', '^DEFORM ', [tns, '--renderer=gl3plus']],

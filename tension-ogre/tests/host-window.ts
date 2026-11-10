@@ -21,27 +21,58 @@
 // screenshot that one, which is why the cases pass and prove "GL3+ renders"
 // rather than "one window".
 //
-// It is left as-is because the obvious fix does not work yet, and both halves
-// were measured on this rig before this note was written:
+// It is left as-is because the fix is measured-correct up to teardown and then
+// the process crashes, here, deterministically:
 //
-//   1. **Skipping the host window here is not enough.** `ogre::init` refuses
+//   1. **Skipping the host window is not enough.** `ogre::init` refuses
 //      `-ENODEV` when `target=auto` has no host surface
 //      (`tension-ogre/src/adapter.cpp`, "target=auto requires a host window"),
-//      and it does so without looking at which render system was asked for. So
-//      a GL3+ case that creates no window fails at init.
-//   2. **Narrowing that refusal to the render systems that can actually adopt
-//      a surface works, and then teardown crashes.** With the check narrowed to
-//      Vulkan (so GL3+ is allowed an own window under `auto`, while `swapchain`
-//      and Vulkan stay strict) one window opens, every pixel clause still
-//      passes — and the process then dies with SIGSEGV while the render thread
-//      exits: `BackendOgre::stop` runs to completion, the thread sets
-//      `thread_exited`, and the fault lands in Mesa's llvmpipe JIT region. 20 of
-//      20 runs on this rig, 0 of 12 on the two-window path.
+//      and it does so without looking at which render system was asked for. A
+//      GL3+ case that creates no window fails at init.
+//   2. **Narrowing that refusal to the render systems that can adopt a surface
+//      works, and then teardown crashes.** With the check narrowed to Vulkan
+//      (GL3+ may open its own window under `auto`; `swapchain` and Vulkan stay
+//      strict) one window opens and every pixel clause still passes —
+//      `ACID 8/8 passed`, same pixels — and the process dies with SIGSEGV at
+//      exit. 20 of 20 runs on the previous pass, 3 of 3 re-measured.
 //
-// Fixing that teardown fault is its own pass. When it lands, this helper should
-// skip the host window for `gl3plus` and the adapter should keep the narrowed
-// check; until then the second window stays and the cases keep testing what
-// they were built to test.
+// ── which code dies, and why it is not ours ──────────────────────────────
+//
+// The first version of this note blamed llvmpipe's JIT. That was wrong, and the
+// correction is what makes the next attempt cheap:
+//
+//   * The faulting thread is **fresh**, not the render thread's stack: its
+//     backtrace ends at libc's `start_thread` and `rax == rip` — an indirect
+//     jump into an address with no mapping. A thread spawned during teardown
+//     runs code that has already been unmapped.
+//   * `LD_DEBUG=files` ends the unload cascade at the **WSL D3D12 driver**:
+//     `RenderSystem_GL3Plus` → `libGLX_mesa` → `libgallium-26.2.6` →
+//     `libd3d12` → `libd3d12core` → the AMD shader compiler (`amdxc64.so`).
+//   * Not llvmpipe: under `LIBGL_ALWAYS_SOFTWARE=1` or `GALLIUM_DRIVER=llvmpipe`
+//     the same own-window path exits 0.
+//   * Not a race with compile threads: 800 ms of sleep before
+//     `root_->shutdown()` changes nothing (3 of 3 still crash).
+//   * It **is** that driver: preloading `libd3d12core.so`, `libd3d12.so` and
+//     `amdxc64.so` with `RTLD_NODELETE`, so teardown cannot unmap them, makes
+//     the own-window path exit 0 — 3 of 3, one window. Preloading
+//     `libgallium`/`libGLX_mesa`/`libGL` the same way does not help.
+//
+// The driver spawns a thread into code it is in the middle of unloading, after
+// `destroyRenderWindow`, inside the DSO's own teardown. No Ogre toggle reaches
+// it: the D3D12 chain is dropped by the GL context's destruction, not by Ogre's
+// plugin unload.
+//
+// Two ways out, both larger than this fixture:
+//
+//   a. Keep the driver resident for the process lifetime once a GPU renderer is
+//      up (Linux: `RTLD_NODELETE` on the loader's driver DSOs). Removes the
+//      hazard for every driver, and adds engine policy for a driver bug.
+//   b. Remove the own-window path instead of making it quiet: publish a surface
+//      GL3+ can adopt, so the GL3+ cases use the host's window as Vulkan's do.
+//      That is the GL-surface publication pass, not a fixture change.
+//
+// Until one lands the second window stays, and the cases keep testing what they
+// were built to test.
 //
 // Reads `--renderer=` itself rather than taking a parameter: every fixture parses
 // its own arguments slightly differently, and a helper that answers one question
