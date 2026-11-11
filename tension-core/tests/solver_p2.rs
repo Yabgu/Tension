@@ -658,7 +658,7 @@ fn t20_compiled_rules_match_schema() {
 
     // ── backends: names and bundles_rhs ──
     let backends = schema_backends(&text);
-    assert_eq!(backends.len(), 7, "schema declares seven backends");
+    assert_eq!(backends.len(), 8, "schema declares eight backends");
     for (name, declares_false) in &backends {
         assert!(
             *declares_false,

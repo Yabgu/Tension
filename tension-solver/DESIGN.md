@@ -424,7 +424,8 @@ should follow this pattern rather than `tension_log`.
 **What phase 5 does not deliver:** the YAML world compiler (P8; `source:
 "world"` answered `-ENOSYS` until P8e wired it); verlet, implicit_euler and
 spook (P6 — of which P6 has since delivered the first two: `verlet` and
-`implicit_euler` create and step, measured from a guest in chunk 6a's P0;
+`implicit_euler` create and step, measured from a guest in chunk 6a's P0,
+and `bdf2` followed as the Newton-capable implicit member, §10;
 `spook` still answers `-ENOSYS`, §10);
 async stepping or cancellation; guest-visible diagnostics beyond errno; and
 the plugin lifecycle through the vtable (only `step` is dispatched).
@@ -448,6 +449,9 @@ the loop, with t at 0.9999999999999999 for the same reason.
 
 Phase 6 adds verlet and implicit_euler, each as its own family module per
 §3: `tension_solver_symplectic.f90` and `tension_solver_implicit.f90`.
+A later change added `bdf2` to the implicit module — same family, same
+module, per the §3 rule — as the Newton-capable member the fixed-point
+method's convergence window left room for; it is described below.
 The rule applies as it did for the ERK module — whatever a family's
 members share lives once in that family's file — and the two new modules
 import the params struct from the ERK module rather than copying it (the
@@ -507,6 +511,53 @@ v1 as the demonstration of the implicit family's shape and as the
 target for a Newton-capable variant when (and if) a Jacobian channel is
 added.
 
+**BDF2 by Newton-Raphson.** The ``bdf2`` backend exists because the
+paragraph above is a boundary of the *method*, not of the ABI: a Newton
+solve recovers the stiff robustness the fixed-point rule cannot reach.
+It advances
+`y_{n+1} = y_star + alpha·f(t_{n+1}, y_{n+1})` with `alpha = 2h/3`,
+`y_star = (4·y_n − y_{n−1})/3` — and, having no `y_{n−1}` yet, takes the
+first-order backward-Euler rule (`alpha = h`, `y_star = y_n`) on the
+first step. `has_prev`, a single workspace slot, is what selects the two:
+it is 1 once a step has succeeded and is cleared by `set_state`, so a
+restored trajectory starts a fresh history instead of interpolating one
+from another run.
+
+The equation is solved by Newton-Raphson on `F(y) = y − y_star − alpha·f(t+h, y)`,
+not by fixed-point iteration, and that is the whole point: there is no
+`h·L < 1` window, so `h·L = 10` converges where the fixed-point method
+returns `-EIO`. The Jacobian crosses the derivative-only ABI as a
+forward difference, one extra RHS evaluation per unknown, with
+`delta_j = 1e-8·max(|y_j|, 1)`; the Newton matrix is `M = I − alpha·J`,
+solved by Gaussian elimination with partial pivoting. A pivot below
+`1e-14` means the matrix is singular for that step: `-EIO`, state and
+history untouched. A Newton step that does not reduce the residual is
+halved up to five times, and the accept-anyway last try keeps the
+iteration from stalling on a flat residual. `iterations` caps the Newton
+steps, `convergenceTol` is the residual acceptance threshold, and
+`status` counts the RHS evaluations on success (0 on failure) — the same
+out-parameter contract every other member has.
+
+**The workspace, and one measurement behind its shape.** BDF2's
+workspace is `7·dim + 1 + dim²` doubles: `y_prev`, the `has_prev` slot,
+`y_iter`, `rhs_val`, `f_pert` (the perturbation / trial-point output),
+`residual`, `b_vec` (the linear solve's right-hand side, then the trial
+iterate during the line search), `delta`, and `M` (`dim×dim`). In the
+Fortran these are the components of a `bdf2_workspace` derived type, and
+the flat C buffer is cut into it by `bdf2_workspace_bind` — the only
+place the layout is stated. `bdf2_workspace_slots(dim)` is the one
+formula; both the exported size function and the bind's own consistency
+check read it, so a drift between the documented layout and the walk is
+refused (`-EINVAL`) rather than read past the end of the buffer.
+The components are pointer views rather than arrays because the C
+buffer's length is runtime data and Fortran shapes a component only from
+a constant expression. The textbook fix — a `bind(C)` type with a `len`
+parameter — was measured and refused: gfortran 16.2 compiles
+`c_f_pointer(cptr, w)` onto `type(ws(dim))`, returns from the call,
+reports a `storage_size` that does not match the payload, and faults on
+the first component write. The pointer views cost one association per
+step and no copy.
+
 **Spook is deferred, with its reason.** SPOOK is constraint-based
 position-based dynamics: constraints (distance, angle, joint, contact)
 are what the method integrates, and the frozen ABI has a derivative
@@ -536,10 +587,22 @@ for. Implicit Euler order on y′ = −y over [0, 1]: e(64) = 2.86e−3,
 e(128) = 1.43e−3, observed 0.995. Evaluation counts: tolerance 1e−6 →
 7 evals, 1e−9 → 9 evals; `iterations = 2` at tol 1e−12 → `-EIO` with 0
 reported, `iterations = 32` → 12 evals. At `h·L = 0.5` the decay over
-200 steps reaches 7.1e−28, monotone, first-step cost 27 evals. Two
-forward guards from earlier phases were updated to match the delivery:
+200 steps reaches 7.1e−28, monotone, first-step cost 27 evals.
+**BDF2's numbers.** On y′ = −100·y at dt = 0.1 (`h·λ = 10`), where the
+fixed-point method returns `-EIO`: the first step lands on 0.09090909090909097
+against backward Euler's exact 1/11 in 7 evaluations, and the second on
+−0.02766798418972331 against BDF2's exact −7/253 in 5. The 2×2 companion
+(`i9`) is the overdamped oscillator `q'' + 201·q' + 10⁴·q = 0` in state
+form — eigenvalues −90.488 and −110.512, so `h·λ ≈ −9.05` and `−11.05`,
+both far outside every explicit bound. Its two steps match Cramer's rule
+for the corresponding linear systems to the tested 1e−6 (the Newton
+matrix has real off-diagonal entries, so the elimination is not two 1×1
+solves), and 200 further steps decay to 1.0e−12 / 1.1e−10 without
+diverging. The shim's `set_state` reset is pinned separately: with it
+removed, a restored trajectory reads a stale `y_prev` and the test fails.
+Two forward guards from earlier phases were updated to match the delivery:
 P2's T20 probe now uses dim 2 (verlet's `dim >= 2` floor) and P3's T12
-narrows to spook, asserting the two delivered methods create handles.
+narrows to spook, asserting the delivered methods create handles.
 
 ---
 

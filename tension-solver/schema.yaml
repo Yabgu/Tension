@@ -187,6 +187,14 @@ backends:
     adaptive: false
     parameters: [iterations, convergenceTol]
 
+  - name: bdf2
+    kind: implicit
+    bundles_rhs: false
+    order: 2
+    stages: null
+    adaptive: false
+    parameters: [iterations, convergenceTol]
+
   - name: spook
     kind: variational_constraint
     bundles_rhs: false

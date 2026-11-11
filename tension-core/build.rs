@@ -163,12 +163,16 @@ fn main() {
     }
     // MSVC's linker resolves `static=tension_solver` to `tension_solver.lib`. The
     // archive is GNU `ar` format, which link.exe reads (verified with `dumpbin`),
-    // so the copy below is only the name MSVC looks for.
+    // so the copy below is only the name MSVC looks for. It is copied on every
+    // build rather than only when absent: the recipe above always rebuilds the
+    // archive, so an `exists()` guard would leave this name holding a previous
+    // revision's objects while the link still succeeds — a stale-archive failure
+    // no compile or unit test would show. On Unix the file is inert (the linker
+    // reads `libtension_solver.a`), so doing it unconditionally costs a copy and
+    // keeps one code path.
     let solver_msvc = solver_lib.join("tension_solver.lib");
-    if !solver_msvc.exists() {
-        std::fs::copy(&solver_archive, &solver_msvc)
-            .expect("copy the solver archive to the name MSVC's linker expects");
-    }
+    std::fs::copy(&solver_archive, &solver_msvc)
+        .expect("copy the solver archive to the name MSVC's linker expects");
     println!("cargo:rustc-link-search=native={}", solver_lib.display());
     println!("cargo:rustc-link-lib=static=tension_solver");
 

@@ -457,7 +457,7 @@ list is for the guest reader):
   `source: "wasm"` solver before its callbacks are bound.
 - `-24 EMFILE` — solver-id table full (create only).
 - `-38 ENOSYS` — `method` named in the config but not available in this
-  build (verlet / implicit_euler / spook — §7).
+  build (spook, and `bdf2` in a build that predates it — §7).
 
 ## 6. Threading and interleaving
 
@@ -498,7 +498,10 @@ beyond that is implied.
   shim's dispatch (`tension_solver.c`'s `TS_VERLET_INDEX` case) was the
   truthful half of the disagreement. Corrected here rather than in a
   changelog, because this is the document a guest author reads to decide what
-  they may ask for.
+  they may ask for. `bdf2` joined the delivered set beside `implicit_euler`
+  as the same family's Newton-capable member (solver/DESIGN.md §10); it is
+  created and stepped through the same shim dispatch
+  (`TS_BDF2_INDEX`), and `set_state` clears its one-step history.
 - **No plugin lifecycle through the vtable.** A registered native
   backend's `state` / `set_state` / `destroy` slots are not dispatched
   by the runtime yet; only `step` is.

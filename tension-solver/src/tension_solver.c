@@ -58,7 +58,7 @@
 
 /* backends[*].name, in registry order. Only euler is compiled in. */
 static const char *const TS_BUILTINS[] = {
-    "euler", "heun", "rk23", "rk45", "verlet", "implicit_euler", "spook",
+    "euler", "heun", "rk23", "rk45", "verlet", "implicit_euler", "bdf2", "spook",
 };
 #define TS_BUILTIN_COUNT ((int)(sizeof TS_BUILTINS / sizeof TS_BUILTINS[0]))
 #define TS_EULER_INDEX 0
@@ -67,7 +67,9 @@ static const char *const TS_BUILTINS[] = {
 #define TS_RK45_INDEX 3
 #define TS_VERLET_INDEX 4
 #define TS_IMPLICIT_INDEX 5
-/* TS_BUILTINS[6] is "spook": registered, not compiled — its method is
+#define TS_BDF2_INDEX 6
+#define TS_SPOOK_INDEX 7
+/* TS_BUILTINS[7] is "spook": registered, not compiled — its method is
  * constraint-based position-based dynamics, and the ABI has no constraint
  * channel (tension-solver/DESIGN.md §10). */
 
@@ -105,6 +107,7 @@ static const uint32_t TS_METHOD_PARAMETERS[] = {
     0x00Fu, /* rk45           relTol, absTol, minStep, maxStep */
     0x010u, /* verlet         fixedStep */
     0x060u, /* implicit_euler iterations, convergenceTol */
+    0x060u, /* bdf2           iterations, convergenceTol */
     0x1A0u, /* spook          iterations, compliance, relaxation */
 };
 
@@ -152,6 +155,11 @@ extern int32_t tension_solver_implicit_euler_step(
     double *state, int32_t dim, double t, double dt, double *workspace,
     tension_solver_derivative_fn rhs_fn, void *rhs_ctx, const void *params,
     int32_t *status);
+extern int32_t tension_solver_bdf2_workspace_size(int32_t dim);
+extern int32_t tension_solver_bdf2_step(
+    double *state, int32_t dim, double t, double dt, double *workspace,
+    tension_solver_derivative_fn rhs_fn, void *rhs_ctx, const void *params,
+    int32_t *status);
 
 /* The method's workspace requirement, asked of the Fortran side rather
  * than hard-coded: the workspace formula lives with the numerics. -1 for
@@ -166,6 +174,7 @@ static int32_t builtin_workspace_size(int builtin, int32_t dim)
     case TS_RK45_INDEX: return tension_solver_rk45_workspace_size(dim);
     case TS_VERLET_INDEX: return tension_solver_verlet_workspace_size(dim);
     case TS_IMPLICIT_INDEX: return tension_solver_implicit_euler_workspace_size(dim);
+    case TS_BDF2_INDEX: return tension_solver_bdf2_workspace_size(dim);
     default: return -1;
     }
 }
@@ -543,7 +552,7 @@ int32_t tension_solver_create(const tension_solver_config *config)
         return TS_EINVAL;
     }
 
-    if (builtin >= 0 && builtin > TS_IMPLICIT_INDEX)
+    if (builtin >= 0 && builtin > TS_BDF2_INDEX)
         return TS_ENOSYS; /* spook: constraint channel pending (tension-solver/DESIGN.md §10) */
 
     if (plugin != NULL && src == TS_SRC_NATIVE && plugin->vt->derivative == NULL)
@@ -675,6 +684,11 @@ int32_t tension_solver_step(int32_t id, double dt)
                                                 h->bound_derivative, NULL,
                                                 &h->params, &status);
         break;
+    case TS_BDF2_INDEX:
+        rc = tension_solver_bdf2_step(h->y, h->dim, h->t, dt, h->ws,
+                                      h->bound_derivative, NULL,
+                                      &h->params, &status);
+        break;
     default:
         return TS_ENOSYS; /* spook: constraint channel pending (tension-solver/DESIGN.md §10) */
     }
@@ -722,6 +736,8 @@ int32_t tension_solver_set_state(int32_t id, double t, const double *y,
     /* Default handling (and every built-in): the shim's own y and t. */
     memcpy(h->y, y, (size_t)h->dim * sizeof(double));
     h->t = t;
+    if (h->builtin == TS_BDF2_INDEX && h->ws != NULL && h->ws_slots > h->dim)
+        h->ws[h->dim] = 0.0; /* reset has_prev flag on state restore */
     return 0;
 }
 

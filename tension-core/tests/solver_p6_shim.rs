@@ -1,6 +1,7 @@
-//! P6 shim tests: the two new families through the C ABI end to end
+//! P6 shim tests: the new families through the C ABI end to end
 //! (create -> bind_callbacks -> step -> state), the same shape as the
-//! phase-3 through-shim tests.
+//! phase-3 through-shim tests. `bdf2` rides the same dispatch, plus the
+//! one thing it adds: `set_state` must clear the step history.
 //!
 //! S4 of the phase brief is the T20 cross-check, which already lives in
 //! `solver_p2.rs` and runs in this suite; nothing new is needed for it.
@@ -151,6 +152,72 @@ fn s2_implicit_euler_through_shim() {
         );
     }
     println!("S2 implicit_euler dim=2 through the shim: y = {y:?}");
+    unsafe { tension_solver_destroy(id) };
+}
+
+// ── S2b: bdf2 through the shim, and the set_state history reset ───────────
+
+#[test]
+fn s2b_bdf2_through_shim_resets_history_on_set_state() {
+    let _g = lock();
+    let dt = 0.1f64;
+    let id = create(&Config::new("bdf2", "wasm").dim(2));
+    assert!(id >= 1, "create returned {id}");
+    assert_eq!(
+        unsafe { tension_solver_bind_callbacks(id, Some(rhs_decay), None) },
+        0
+    );
+
+    let y0 = [1.0f64, 2.0];
+    assert_eq!(unsafe { tension_solver_set_state(id, 0.0, y0.as_ptr(), 2) }, 0);
+
+    // Step 1 is backward Euler: y1 = y0 / (1 + dt).
+    assert_eq!(unsafe { tension_solver_step(id, dt) }, 0);
+    let mut y1 = [0.0f64; 2];
+    let (t, n) = read_state(id, &mut y1);
+    assert_eq!((t, n), (dt, 2));
+    for i in 0..2 {
+        let expected = y0[i] / (1.0 + dt);
+        assert!(
+            (y1[i] - expected).abs() <= 1.0e-6,
+            "step 1 component {i}: {} vs {expected}",
+            y1[i]
+        );
+    }
+
+    // Step 2 is BDF2: with y_star = (4·y1 − y0)/3 and alpha = 2·dt/3,
+    // y2 = y_star / (1 + alpha) for y' = −y.
+    assert_eq!(unsafe { tension_solver_step(id, dt) }, 0);
+    let mut y2 = [0.0f64; 2];
+    let (t, _) = read_state(id, &mut y2);
+    assert!((t - 2.0 * dt).abs() < 1.0e-12, "t = {t}");
+    let alpha = 2.0 * dt / 3.0;
+    for i in 0..2 {
+        let y_star = (4.0 * y1[i] - y0[i]) / 3.0;
+        let expected = y_star / (1.0 + alpha);
+        assert!(
+            (y2[i] - expected).abs() <= 1.0e-6,
+            "step 2 component {i}: {} vs {expected}",
+            y2[i]
+        );
+    }
+    println!("S2b bdf2 dim=2 through the shim: y1 = {y1:?}, y2 = {y2:?}");
+
+    // A restored state must not inherit the previous run's history: after
+    // set_state the next step has to be backward Euler again, not BDF2 over
+    // a y_prev that belongs to a different trajectory.
+    assert_eq!(unsafe { tension_solver_set_state(id, 0.0, y0.as_ptr(), 2) }, 0);
+    assert_eq!(unsafe { tension_solver_step(id, dt) }, 0);
+    let mut fresh = [0.0f64; 2];
+    let _ = read_state(id, &mut fresh);
+    for i in 0..2 {
+        let expected = y0[i] / (1.0 + dt);
+        assert!(
+            (fresh[i] - expected).abs() <= 1.0e-6,
+            "after set_state, component {i}: {} vs {expected} (stale history)",
+            fresh[i]
+        );
+    }
     unsafe { tension_solver_destroy(id) };
 }
 

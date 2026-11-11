@@ -656,8 +656,8 @@ fn t12_unimplemented_methods_still_say_so() {
     // position-based dynamics and the ABI has no constraint channel
     // (`tension-solver/DESIGN.md` §10).
     assert_eq!(create(&Config::new("spook", "wasm").dim(1)), -38);
-    // The two delivered methods create a handle now.
-    for method in ["verlet", "implicit_euler"] {
+    // The delivered methods create a handle now.
+    for method in ["verlet", "implicit_euler", "bdf2"] {
         let id = create(&Config::new(method, "wasm").dim(2));
         assert!(id >= 1, "{method}: must create after P6");
         unsafe { tension_solver_destroy(id) };
