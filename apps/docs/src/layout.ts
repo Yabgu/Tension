@@ -37,7 +37,7 @@
 // keeps the page looking the same rather than merely redrawing it bigger —
 // a 30px gap that was 1.25 lines at 24px/line is still 1.25 lines at 40px/line.
 
-import { CELL_H, CELL_W, SCALE, columnsFor } from "./text";
+import { CELL_H, CELL_W, SCALE } from "./text";
 import {
   Docs, F_RUNNABLE,
   K_CODE, K_HEADING, K_LIST_ITEM, K_PARAGRAPH, K_QUOTE, K_RULE, K_TABLE,
@@ -48,15 +48,31 @@ import {
 export const LINE_STEP: i32 = CELL_H + 8;
 
 /**
- * The content column, in characters.
+ * The widest the text column is ever allowed to get, in characters.
  *
- * A character is `CELL_W` wide (18 at `SCALE = 2`, because the VGA cell carries
- * its own spacing column), so this is the pane's usable width divided by the
- * cell: 51 x 18 = 918px inside the 923px the pane affords to the right of
- * `CONTENT_X`. The number moves whenever either the cell or the sidebar does,
- * and when it was left at the 8-pixel cell's 56 the text ran off the window.
+ * A cap rather than a computed value, and it exists for two independent reasons:
+ *
+ *   * **Readability.** Prose wider than about 80 characters is hard to track —
+ *     the eye loses the line return. This is the one place the layout is allowed
+ *     to waste window width, and on a 2560px display it does.
+ *   * **The record budget.** A glyph is one sprite record, so a line's cost is
+ *     its column count. 80 columns against a 1080px-tall window is roughly
+ *     80 x 24 = 1,920 records of text, which fits the 4096 the renderer stages
+ *     per frame with room for the shell and an open transcript panel.
+ *
+ * The actual column count is per-window (`PageLayout.cols`) and comes from
+ * `main.ts`, which is the only side that knows how wide the window is.
  */
-export const CONTENT_COLS: i32 = 51;
+export const MAX_COLS: i32 = 80;
+
+/**
+ * The narrowest column the layout will draw.
+ *
+ * A window dragged almost shut would otherwise compute a column of zero or
+ * fewer characters; every wrap loop in this file assumes `cols > 0` and would
+ * divide by it or emit a zero-length line forever.
+ */
+export const MIN_COLS: i32 = 8;
 
 /** The code block's left inset, in pixels. `main.ts` draws the accent here. */
 export const CODE_INSET: i32 = 16 * SCALE;
@@ -93,6 +109,14 @@ function spaceBefore(kind: u8, level: u8): i32 {
 export class PageLayout {
   /** The page this layout describes; -1 when empty. */
   page: i32 = -1;
+  /**
+   * The column this layout was wrapped at, in characters.
+   *
+   * Stored because the layout is a *cache*: `main.ts` reads it back to size
+   * rules and panels to the same width the text was wrapped to, and a stale
+   * value there is a rule that stops at the wrong place after a resize.
+   */
+  cols: i32 = MIN_COLS;
   /** Total laid-out height, for clamping the scroll. */
   height: i32 = 0;
 
@@ -131,8 +155,9 @@ export class PageLayout {
    * are allocated once at their final size, the second fills them. A growable
    * array would double the allocations for the same result.
    */
-  build(docs: Docs, page: u32): void {
+  build(docs: Docs, page: u32, cols: i32): void {
     this.page = page;
+    this.cols = cols < MIN_COLS ? MIN_COLS : cols;
     this.lineStart = [];
     this.lineLen = [];
     this.lineY = [];
@@ -199,15 +224,16 @@ export class PageLayout {
       const indent: i32 = indentFor(kind, level);
       // **The width every line of this block may use, in characters.**
       //
-      // The column is a *pixel* budget, not a character count: it is the content
-      // width less this block's indent, divided by how far one character of this
-      // block advances. A heading advances wider than body text (`advanceFor`),
-      // so wrapping it at `CONTENT_COLS` characters would let it run past the
-      // pane — at the 2x cell a level-1 heading is 22px per character against
-      // 16px for prose, and 56 of those is 1232px in a 923px pane. Dividing by
-      // the block's own advance is what keeps the widest line inside.
+      // `this.cols` is how many *body* cells fit across the pane. A block that
+      // is indented gets fewer, and a block whose characters advance further
+      // gets fewer again — so the character count is the column's pixel width
+      // less the indent, divided by this block's own advance. Wrapping a heading
+      // at `this.cols` would let it run past the pane: at the 2x cell a level-1
+      // heading advances 22px per character against 18px for prose, so 80 of
+      // those is 1760px in a 1440px column. Dividing by the block's advance is
+      // what keeps the widest line inside.
       const advance: i32 = advanceFor(kind, level);
-      const cols: i32 = (CONTENT_COLS * CELL_W - indent) / advance;
+      const cols: i32 = (this.cols * CELL_W - indent) / advance;
 
       y += spaceBefore(kind, level);
 

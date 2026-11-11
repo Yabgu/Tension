@@ -36,6 +36,7 @@
 import {
   Canvas,
   ConfigBuilder,
+  OPEN_WINDOWED,
   print,
   resReadFile,
   RuntimeSession,
@@ -56,7 +57,7 @@ import {
   S_CODE, S_LINK, compareTermToQuery, jsonNumber, termHasPrefix,
 } from "./format";
 import {
-  advanceFor, CODE_INSET, colourFor, CONTENT_COLS, LINE_STEP, PageLayout, weightFor,
+  advanceFor, CODE_INSET, colourFor, LINE_STEP, MAX_COLS, MIN_COLS, PageLayout, weightFor,
 } from "./layout";
 import {
   CELL_H, CELL_W, CHROME_CARET, CHROME_DIVIDER, CHROME_PANEL, CHROME_SELECTION,
@@ -81,7 +82,14 @@ const DIVIDER_X: i32 = SIDEBAR_W;
 const MAIN_X: i32 = SIDEBAR_W + 1;
 const SEARCH_H: i32 = CELL_H + px(12);
 const STATUS_H: i32 = CELL_H + px(8);
-const CONTENT_X: i32 = MAIN_X + px(12);
+/**
+ * The horizontal padding inside the main pane, on each side of the text column.
+ *
+ * The column itself is **not** a constant: it is derived from the window width
+ * every time the window changes size (`App.applyGeometry`), capped at
+ * `MAX_COLS` and centred in whatever space is left over.
+ */
+const CONTENT_PAD: i32 = px(12);
 const CONTENT_TOP: i32 = SEARCH_H + px(4);
 
 /** One table-of-contents row: the text, plus a little air under it. */
@@ -154,6 +162,22 @@ class App {
   height: i32 = 720;
   /** True when the launcher asked for no window; the loop is then bounded. */
   headless: bool = false;
+
+  // --- the text column, which depends on the window ------------------------
+  /**
+   * How many characters a line may hold, after `applyGeometry` has run.
+   *
+   * Not a constant: the window can be dragged, and the whole point of this pass
+   * is that a wider window shows *more words per line* rather than the same
+   * frame enlarged. Capped at `MAX_COLS` so the measure stays readable and the
+   * per-frame record count stays inside the renderer's budget.
+   */
+  cols: i32 = MIN_COLS;
+  /** Where the text column starts. Centre it when the pane is wider than the cap. */
+  contentX: i32 = 0;
+  /** The size the current canvas was opened at, so a resize is one comparison. */
+  private canvasW: i32 = 0;
+  private canvasH: i32 = 0;
 
   /** The page being read, or -1 while search results are showing. */
   page: i32 = 0;
@@ -249,40 +273,10 @@ class App {
     }
 
     const request = windowRequest();
-    this.width = request.width;
-    this.height = request.height;
     this.headless = request.headless;
+    this.applyGeometry(request.width, request.height);
 
-    // A local first, so the checks below read without an assertion on every
-    // line; the field keeps it for the frame loop.
-    const canvas: Canvas = request.headless
-      ? Canvas.open(this.width, this.height)
-      : Canvas.windowedOrOffscreen(this.width, this.height, request.title);
-    this.canvas = canvas;
-    if (!canvas.isValid()) {
-      print("tension-docs: canvas refused: " + canvas.lastError().toString());
-      return false;
-    }
-
-    // Preset 1 — the built-in `default_2d` pipeline, addressed by id with no
-    // graph blob. The viewer needs nothing a custom graph would give it: one
-    // texture, alpha blend, and the sprite record's own geometry.
-    this.pipe = canvas.pipeline();
-    if (this.pipe < 0) {
-      print("tension-docs: set_pipeline refused: " + this.pipe.toString());
-      return false;
-    }
-
-    const atlas = canvas.loadTextureFromRes("/ui.iwi");
-    if (atlas <= 0) {
-      print("tension-docs: /ui.iwi did not load: " + atlas.toString() +
-        " (run `npm run assets` in apps/docs)");
-      return false;
-    }
-    if (canvas.bindTexture(this.pipe, 0, atlas) != 0) {
-      print("tension-docs: set_texture refused");
-      return false;
-    }
+    if (!this.openCanvas(this.width, this.height, request.title)) return false;
 
     // The three data files. Each is read whole into guest memory once; the
     // readers keep offsets into those buffers rather than copying.
@@ -304,13 +298,151 @@ class App {
 
     // Start on the first page — the book's opening chapter.
     this.page = 0;
-    this.layout.build(this.docs, 0);
+    this.layout.build(this.docs, 0, this.cols);
 
     this.setupInput();
 
     print("tension-docs: " + this.docs.pageCount.toString() + " pages, " +
       this.search.termCount.toString() + " search terms, " +
       this.transcripts.count.toString() + " recorded example(s)");
+    return true;
+  }
+
+  /**
+   * Derive the text column from the window, and remember where it starts.
+   *
+   * This is the whole of the responsive layout. The sidebar is a fixed width and
+   * the main pane takes the rest; the column is the pane's width less its
+   * padding, capped at `MAX_COLS` so a very wide window does not produce a line
+   * the eye cannot track (and a frame the record budget cannot afford); and what
+   * is left over is split evenly to centre the column, because a text block
+   * pinned to the left of a 2560px window reads as a bug.
+   *
+   * Pure arithmetic on purpose — no canvas, no layout, no drawing — so it can be
+   * called from `start()` before either exists, and from the resize path where
+   * both are about to be rebuilt.
+   */
+  applyGeometry(width: i32, height: i32): void {
+    this.width = width > 0 ? width : 1;
+    this.height = height > 0 ? height : 1;
+
+    const pane: i32 = this.width - MAIN_X;
+    const available: i32 = pane - CONTENT_PAD * 2;
+    const capped: i32 = MAX_COLS * CELL_W;
+    let textPx: i32 = available < capped ? available : capped;
+    if (textPx < MIN_COLS * CELL_W) textPx = MIN_COLS * CELL_W;
+
+    this.cols = textPx / CELL_W;
+    const used: i32 = this.cols * CELL_W;
+
+    // Centred in the pane; never nearer the divider than a quarter of the pad,
+    // which is what keeps a narrow window from putting text against the line.
+    let x: i32 = MAIN_X + (pane - used) / 2;
+    const least: i32 = MAIN_X + px(4);
+    if (x < least) x = least;
+    this.contentX = x;
+  }
+
+  /**
+   * Create the canvas and everything the frame loop draws through it.
+   *
+   * Extracted because it happens **twice** in a normal session: once at startup
+   * and once per resize. A canvas is fixed for its lifetime (`text.ts`), so a
+   * resize is a `close()` and a new `open()` — which also destroys every texture
+   * and the pipeline cache with it, so the atlas has to be loaded and bound
+   * again. Doing that in one place is what keeps the two paths from disagreeing.
+   *
+   * The **host window is not recreated**: `2d:close` releases the swapchain and
+   * the GPU device and deliberately leaves the window up, so reopening claims
+   * the same window at its new size. That is what makes a resize invisible to
+   * the user's drag — a window torn down and remade would snap back.
+   */
+  openCanvas(width: i32, height: i32, title: string, reopen: bool = false): bool {
+    // On a **reopen** the window already exists, so the canvas claims it with
+    // `OPEN_WINDOWED` and nothing creates a second one. `windowedOrOffscreen`
+    // would be wrong here: its fallback tests `platform.hasSurface()`, which is
+    // false for a window SDL_GPU owns (there is no Vulkan surface), so it would
+    // try to create a window that already exists and then quietly open
+    // *offscreen* — a resize that stops presenting. Measured, not assumed: the
+    // helper's own comment says the fallback is for the first open.
+    const canvas: Canvas = this.headless
+      ? Canvas.open(width, height)
+      : (reopen ? Canvas.open(width, height, OPEN_WINDOWED)
+                : Canvas.windowedOrOffscreen(width, height, title));
+    this.canvas = canvas;
+    if (!canvas.isValid()) {
+      print("tension-docs: canvas refused at " + width.toString() + "x" +
+        height.toString() + ": " + canvas.lastError().toString());
+      return false;
+    }
+    this.canvasW = width;
+    this.canvasH = height;
+
+    // Preset 1 — the built-in `default_2d` pipeline, addressed by id with no
+    // graph blob. The viewer needs nothing a custom graph would give it: one
+    // texture, alpha blend, and the sprite record's own geometry.
+    this.pipe = canvas.pipeline();
+    if (this.pipe < 0) {
+      print("tension-docs: set_pipeline refused: " + this.pipe.toString());
+      return false;
+    }
+
+    const atlas = canvas.loadTextureFromRes("/ui.iwi");
+    if (atlas <= 0) {
+      print("tension-docs: /ui.iwi did not load: " + atlas.toString() +
+        " (run `npm run assets` in apps/docs)");
+      return false;
+    }
+    if (canvas.bindTexture(this.pipe, 0, atlas) != 0) {
+      print("tension-docs: set_texture refused");
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Rebuild the canvas and the wrap when the user resizes the window.
+   *
+   * Polled once per frame rather than driven by an event: the guest has no
+   * event queue of its own, and `windowInfo()` is one call that answers the
+   * question outright. The cost of polling is a compare against two ints.
+   *
+   * Returns whether it did work. The loop ignores it — the frame after a resize
+   * has to be drawn either way — but a caller that wanted to count resizes, or
+   * to assert on one in a test, has the answer without a second poll.
+   */
+  syncWindowSize(): bool {
+    if (this.headless) return false;
+    const info = windowInfo();
+    // A closing window reports zero, and "0x0" is not a size to lay out for.
+    if (info.width <= 0 || info.height <= 0) return false;
+    if (info.width == this.canvasW && info.height == this.canvasH) return false;
+
+    // `canvas.close()` releases the swapchain and the GPU device and leaves the
+    // window standing, so this is a rebuild rather than a re-create.
+    //
+    // A refused close is **not** recovered from by opening anyway: `open` would
+    // answer `-EBUSY` ("a canvas is already open"), leaving the viewer with no
+    // drawable canvas at all and a loop that exits on the next `present`. So a
+    // refusal abandons this resize and lets the next frame try again, with the
+    // old canvas still valid and still presenting.
+    if (this.canvas != null && this.canvas!.isValid()) {
+      const closed: i32 = this.canvas!.close();
+      if (closed != 0) {
+        print("tension-docs: canvas would not close for a resize (" + closed.toString() +
+          "); keeping the old size");
+        return false;
+      }
+    }
+
+    this.applyGeometry(info.width, info.height);
+    if (!this.openCanvas(this.width, this.height, windowRequest().title, true)) return false;
+
+    // The text was wrapped for the old width, so the page has to be laid out
+    // again — and the scroll clamped, or a window dragged wider would leave the
+    // reader past the end of a page that just got shorter.
+    this.layout.build(this.docs, <u32>this.page, this.cols);
+    this.clampScroll();
     return true;
   }
 
@@ -364,6 +496,11 @@ class App {
         this.exitReason = "the window was closed";
         break;
       }
+
+      // A resize rebuilds the canvas and re-wraps the page, so it runs before
+      // anything reads `this.cols` — and before `present`, because the canvas
+      // that would present is the one being replaced.
+      this.syncWindowSize();
 
       this.pollAttach();
       this.handleInput();
@@ -703,7 +840,7 @@ class App {
   private openPage(page: i32): void {
     if (page < 0 || page >= <i32>this.docs.pageCount) return;
     this.page = page;
-    this.layout.build(this.docs, <u32>page);
+    this.layout.build(this.docs, <u32>page, this.cols);
     this.scroll = 0;
     this.showingBlock = -1;
     this.showingEntry = -1;
@@ -939,7 +1076,7 @@ class App {
   /** Search results: a section title, its page, and the score. */
   private drawResults(clipTop: i32, clipBottom: i32): void {
     const p = this.painter;
-    const x: i32 = CONTENT_X;
+    const x: i32 = this.contentX;
     const top: i32 = CONTENT_TOP + px(4);
 
     this.drawBytesAt("Results for", 11, x, top, MUTED, REGULAR, CELL_W);
@@ -965,7 +1102,7 @@ class App {
       // The section title, with the matched prefix picked out in the link
       // colour — the highlight is what tells the reader *why* the row matched.
       this.drawHighlighted(this.docs.sectionTitlePtr(<u32>section),
-        <i32>this.docs.sectionTitleLen(<u32>section), x, y, CONTENT_COLS);
+        <i32>this.docs.sectionTitleLen(<u32>section), x, y, this.cols);
 
       // The page it belongs to, indented and muted.
       const page: i32 = <i32>this.docs.sectionPage(<u32>section);
@@ -975,7 +1112,7 @@ class App {
       if (subY + CELL_H <= clipBottom) {
         // The subtitle is indented, so it gets the column less its indent.
         this.drawTruncated(titlePtr, titleLen, x + px(8), subY, MUTED, REGULAR,
-          CONTENT_COLS - 1);
+          this.cols - 1);
       }
     }
   }
@@ -1011,13 +1148,13 @@ class App {
       const kind: u8 = layout.blockKind[blockSlot];
       const level: u8 = layout.blockLevel[blockSlot];
       const indent: i32 = kind == K_CODE ? CODE_INSET : (kind == K_LIST_ITEM ? CODE_INSET : 0);
-      const x: i32 = CONTENT_X + indent;
+      const x: i32 = this.contentX + indent;
       const start: i32 = layout.lineStart[li];
       const len: i32 = layout.lineLen[li];
 
       // A rule is a bar where a line of text would be.
       if (kind == K_RULE) {
-        p.fill(CONTENT_X, lineY + CELL_H / 2, CONTENT_COLS * CELL_W, 1, CHROME_DIVIDER);
+        p.fill(this.contentX, lineY + CELL_H / 2, this.cols * CELL_W, 1, CHROME_DIVIDER);
         continue;
       }
 
@@ -1032,7 +1169,7 @@ class App {
       // line*, which ten visible code lines would spend a quarter of the frame
       // on.
       if (kind == K_CODE) {
-        p.fill(CONTENT_X, lineY - px(1), px(1), LINE_STEP, CHROME_SELECTION);
+        p.fill(this.contentX, lineY - px(1), px(1), LINE_STEP, CHROME_SELECTION);
       }
 
       // A heading's rule, sized to its text, is what gives the hierarchy its
@@ -1110,7 +1247,7 @@ class App {
     // pixels and the button is twice as wide, so "outside the column" is
     // off-screen — and reserving a gutter inside the column cost a third of the
     // width and broke code tokens. A row of its own solves both.
-    const x: i32 = CONTENT_X + CONTENT_COLS * CELL_W - w;
+    const x: i32 = this.contentX + this.cols * CELL_W - w;
 
     p.fill(x, y, w, RUN_BTN_H, CHROME_SELECTION);
     p.fill(x, y, w, px(1), CHROME_WHITE);
@@ -1136,10 +1273,10 @@ class App {
 
     if (this.showingEntry < 0) {
       if (y + PANEL_HEAD <= bottom) {
-        p.fill(CONTENT_X, y, CONTENT_COLS * CELL_W, PANEL_HEAD, CHROME_PANEL);
-        p.hline(CONTENT_X, y, CONTENT_COLS * CELL_W, CHROME_SELECTION);
+        p.fill(this.contentX, y, this.cols * CELL_W, PANEL_HEAD, CHROME_PANEL);
+        p.hline(this.contentX, y, this.cols * CELL_W, CHROME_SELECTION);
         this.drawString("no transcript recorded for this block",
-          CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
+          this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
       }
       return;
     }
@@ -1154,7 +1291,7 @@ class App {
     if (fit < 1) {
       if (y + PANEL_HEAD <= bottom) {
         this.drawString("scroll down to see the output",
-          CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
+          this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
       }
       return;
     }
@@ -1162,26 +1299,26 @@ class App {
     const panelH: i32 = shown * LINE_STEP + PANEL_HEAD;
 
     // **Opaque**, because this is an overlay: without the backing the paragraph
-    // below shows through the transcript and neither is readable. At the 2x cell
-    // a 896x230 panel is 56x8 = 448 records — *fewer* than the 1x panel cost,
-    // because tiling steps by the cell size. The status bar reports the running
-    // total.
-    p.fill(CONTENT_X, y, CONTENT_COLS * CELL_W, panelH, CHROME_PANEL);
-    p.hline(CONTENT_X, y, CONTENT_COLS * CELL_W, CHROME_SELECTION);
-    p.fill(CONTENT_X, y, px(1), panelH, CHROME_SELECTION);
+    // below shows through the transcript and neither is readable. The cost is
+    // `tileCost(width, panelH)`, which falls as the cell grows — a panel is
+    // ceil(w / CELL_W) x ceil(h / CELL_H) tiles, so the 2x cell made it
+    // *cheaper* than the 1x one. The status bar reports the running total.
+    p.fill(this.contentX, y, this.cols * CELL_W, panelH, CHROME_PANEL);
+    p.hline(this.contentX, y, this.cols * CELL_W, CHROME_SELECTION);
+    p.fill(this.contentX, y, px(1), panelH, CHROME_SELECTION);
 
     const ms: string = this.transcripts.durationMs(<u32>this.showingEntry).toString();
     this.drawString("output - recorded at build time, " + ms + " ms",
-      CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
+      this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
 
     let lineY: i32 = y + PANEL_HEAD;
     let s: i32 = 0;
     for (let n: i32 = 0; n < shown; n++) {
       let e: i32 = s;
       while (e < len && load<u8>(ptr + <usize>e) != 10) e++;
-      const lineLen: i32 = e - s < CONTENT_COLS - 2 ? e - s : CONTENT_COLS - 2;
+      const lineLen: i32 = e - s < this.cols - 2 ? e - s : this.cols - 2;
       if (lineLen > 0) {
-        p.text(ptr + <usize>s, lineLen, CONTENT_X + px(4), lineY, CODE, REGULAR,
+        p.text(ptr + <usize>s, lineLen, this.contentX + px(4), lineY, CODE, REGULAR,
           CELL_W, 0, this.height);
       }
       lineY += LINE_STEP;
@@ -1191,7 +1328,7 @@ class App {
 
     if (shown < lines) {
       this.drawString("... " + (lines - shown).toString() + " more line(s)",
-        CONTENT_X + px(4), lineY, MUTED, REGULAR, CELL_W);
+        this.contentX + px(4), lineY, MUTED, REGULAR, CELL_W);
     }
   }
 
@@ -1205,25 +1342,37 @@ class App {
 
     const textY: i32 = y + (STATUS_H - CELL_H) / 2;
 
-    // **The bar holds two things now, not three.** At 1x it also carried the
-    // page title, and at 2x that plus the shortcuts plus the counters do not fit
-    // in 959px — they overlapped. The title is redundant with the page's own H1,
-    // so it went; `titlePtr`/`titleLen` above stay because the page number needs
-    // the page and a future reader may want the title back somewhere with room.
-    const hintX: i32 = MAIN_X + px(8);
-    if (!this.inputReady) {
-      this.drawString("input unavailable", hintX, textY, HEADING, REGULAR, CELL_W);
-    } else {
-      this.drawString(this.searchFocused
-        ? "type to search   Esc to clear"
-        : "/ search   n/p keys   Enter output",
-        hintX, textY, MUTED, REGULAR, CELL_W);
-    }
-
+    // **The bar holds two things, and they take turns.** At 1x it also carried
+    // the page title; at 2x that plus the shortcuts plus the counters do not fit
+    // in 959px. The title went (it is the page's own H1), and now the two
+    // survivors are laid out against each other rather than at fixed offsets:
+    // the counters are measured first, and the shortcuts are only drawn when
+    // they fit in the space that is left. A window dragged narrow used to
+    // overprint them — `n/p key53  En526  opt`.
     const right: string = pageNo + "   " + this.lastRecords.toString() + " sp" +
       (this.lastDropped > 0 ? "  " + this.lastDropped.toString() + " dropped" : "");
-    const w: i32 = right.length * CELL_W;
-    this.drawString(right, this.width - px(12) - w, textY,
+    const rightW: i32 = right.length * CELL_W;
+    const rightX: i32 = this.width - px(12) - rightW;
+
+    const hintX: i32 = MAIN_X + px(8);
+    const room: i32 = rightX - CELL_W - hintX;
+    // Longest first, then a short form, then silence. Dropping the shortcuts
+    // entirely the moment the window narrows is a worse trade than showing the
+    // two that matter: a reader who cannot see "/ search" has no way to discover
+    // search at all.
+    const full: string = !this.inputReady
+      ? "input unavailable"
+      : (this.searchFocused ? "type to search   Esc to clear"
+                            : "/ search   n/p keys   Enter output");
+    const brief: string = this.searchFocused ? "Esc to clear" : "/ search   n/p";
+    const hint: string = full.length * CELL_W <= room ? full
+                       : (brief.length * CELL_W <= room ? brief : "");
+    if (hint.length > 0) {
+      this.drawString(hint, hintX, textY,
+        this.inputReady ? MUTED : HEADING, REGULAR, CELL_W);
+    }
+
+    this.drawString(right, rightX, textY,
       this.lastDropped > 0 ? HEADING : MUTED, REGULAR, CELL_W);
   }
 
