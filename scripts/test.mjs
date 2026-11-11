@@ -14,6 +14,9 @@
 //   9. dependency pins    one naga version, not two
 //  10. isometric (CI)    the three 2D problems, from synthetic pages
 //  11. isometric frame   the framework library reproduces the scene byte for byte
+//  12. starter           a scaffolded project builds and runs: template drift
+//  13. box-physics       the rigid-body example's own pixel and solver asserts
+//  14. stiff-boxes       the BDF2 example's own asserts, from packed textures
 //
 // ## What "parallel" may and may not do here
 //
@@ -336,6 +339,52 @@ const SUITES = {
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
     ], { env: suiteEnv() }),
+  },
+
+  // The physics examples' own assertions, which existed as `test.mjs` and ran
+  // only by hand until now: a solver regression had no gate. Both build the
+  // guest and the adapter, so they take the same exclusive hold as the other 2D
+  // suites rather than racing them for `build/`.
+  //
+  // Their assertions are the interesting part and stay in the examples: the
+  // contact count and the rotation count for box-physics, the BDF2 frame count
+  // and the packed-volume texture for stiff-boxes. This table only makes them
+  // run.
+  'box-physics': {
+    title: 'box-physics',
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'box-physics', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  'stiff-boxes': {
+    title: 'stiff-boxes',
+    needs: [],
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [
+      join(repo, 'examples', '2d', 'stiff-boxes', 'test.mjs'),
+    ], { env: suiteEnv() }),
+  },
+
+  // The template every `tension init` writes, built the way a user builds it:
+  // scaffold with the CLI, `npm install`, `npm run build`, then run the
+  // *packaged* binary out of `dist/` headless. It covers all three directions the
+  // template can drift in at once — the framework's API, the CLI's scaffolding,
+  // and the build pipeline — which is why one suite is worth more here than the
+  // three narrower ones it looks like.
+  //
+  // It holds nothing, because it works entirely in a temp directory: the scaffold
+  // gets `file:` links into this tree and writes only inside itself, so it shares
+  // no build directory with any other suite. `scripts/test-starter.mjs` removes
+  // the project on the way out.
+  'starter': {
+    title: 'starter template',
+    needs: [],
+    holds: [],
+    run: () => execute(node, [join(repo, 'scripts', 'test-starter.mjs')],
+                       { env: suiteEnv() }),
   },
 
   // The host's window and surface, in its own suite so a failure is

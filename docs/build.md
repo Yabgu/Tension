@@ -442,7 +442,7 @@ coexisted with this one.
 
 ## 6. Tests
 
-`node scripts/test.mjs` is the runner. Twenty-three suites (the `SUITES` table in
+`node scripts/test.mjs` is the runner. Twenty-six suites (the `SUITES` table in
 `scripts/test.mjs`), scheduled by needs and resource holds; `npm test -- --<name>`
 runs a subset (`-- --list` prints the names).
 
@@ -478,6 +478,17 @@ runs a subset (`-- --list` prints the names).
   pixel suites (`docs/modules/2d.md` §7). `hello-sprites` is the one that
   asserts an absolute count (10240 = 10 × 32×32); the other three assert colours
   at named probes.
+- `box-physics`, `stiff-boxes` — the two physics examples' own `test.mjs`. Each
+  builds its guest and asserts its own numbers: the contact and rotation counts
+  for the impulse solver, the BDF2 frame count and the packed-volume texture for
+  the stiff one. They were written with the examples and sat outside this table
+  for a pass, so a solver regression had no gate.
+- `starter` — the template every `tension init` writes, built the way a user
+  builds it: scaffold with the CLI, `npm install`, `npm run build`, then the
+  *packaged* `dist/bin/tension-core` headless. It is the only suite that covers
+  template, CLI and build pipeline at once, and the only one that would notice a
+  template that stopped compiling (`scripts/test-starter.mjs`). It works in a
+  temp directory, so it holds no resource tag.
 
 **Content and tooling suites** — no guest, but they build shipped things:
 
