@@ -20,6 +20,13 @@
 // host hands over is added to the accumulator before anything else can look at
 // it, so the total a guest sees depends on the device's displacement and not on
 // the guest's frame rate.
+//
+// Two things arrived with the editor that need a shape this mirror did not have:
+// **modifiers** are a level (the set held after the last key transition, so the
+// record carries it) and **typed text** is a flow (UTF-8, consumed by reading,
+// so it is a verb and not a field). Neither needs SDL here: the host translates
+// its own `SDL_Keymod` word into the wire's bits, and the bytes it forwards are
+// already UTF-8.
 
 #include "input.h"
 
@@ -63,6 +70,8 @@ void Mirror::attach(uint64_t now) {
         std::lock_guard<std::mutex> lock(mu_);
         std::memset(keys_held_, 0, sizeof(keys_held_));
         mouse_buttons_ = 0;
+        modifiers_ = 0;
+        text_len_ = 0;
         accum_dx_ = accum_dy_ = accum_wheel_x_ = accum_wheel_y_ = 0.0f;
         discard_motion_until_ms_ = now + kAttachSettleMs;
     }
@@ -79,6 +88,8 @@ void Mirror::detach() {
     pointer_over_.store(false, std::memory_order_release);
     std::lock_guard<std::mutex> lock(mu_);
     mouse_buttons_ = 0;
+    modifiers_ = 0;
+    text_len_ = 0;
     std::memset(keys_held_, 0, sizeof(keys_held_));
     accum_dx_ = accum_dy_ = accum_wheel_x_ = accum_wheel_y_ = 0.0f;
     discard_motion_until_ms_ = 0;
@@ -103,6 +114,12 @@ void Mirror::ingest(const tension_event *events, uint32_t count, uint64_t now) {
                         if (down) keys_held_[scancode >> 5] |= (1u << (scancode & 31));
                         else keys_held_[scancode >> 5] &= ~(1u << (scancode & 31));
                     }
+                    // `a2` is the modifier set *after* this transition, so the
+                    // last key event this mirror sees is the current set — both
+                    // halves of a pair carry it, which is what makes "the
+                    // modifiers held now" a matter of copying rather than of
+                    // tracking which key owns which bit.
+                    modifiers_ = static_cast<uint32_t>(event.a2) & TENSION_INPUT_MOD_KNOWN;
                 }
                 // The wire is `a` = keycode, `b` = scancode — the order v1's
                 // records already had, kept so a guest's decoder does not move.
@@ -166,9 +183,18 @@ void Mirror::ingest(const tension_event *events, uint32_t count, uint64_t now) {
                     case TENSION_WINDOW_EVENT_FOCUS_GAINED:
                         focused_.store(true, std::memory_order_release);
                         break;
-                    case TENSION_WINDOW_EVENT_FOCUS_LOST:
+                    case TENSION_WINDOW_EVENT_FOCUS_LOST: {
                         focused_.store(false, std::memory_order_release);
+                        // **A modifier held across a focus change never gets a
+                        // key-up.** The user holds Ctrl, alt-tabs, releases it
+                        // in the other window; this mirror would keep CTRL set
+                        // forever and turn every later click into Ctrl+click.
+                        // So losing focus forgets the modifier set — the one
+                        // place it is not simply what the last key event said.
+                        std::lock_guard<std::mutex> lock(mu_);
+                        modifiers_ = 0;
                         break;
+                    }
                     case TENSION_WINDOW_EVENT_MOUSE_ENTER:
                         pointer_over_.store(true, std::memory_order_release);
                         break;
@@ -182,10 +208,40 @@ void Mirror::ingest(const tension_event *events, uint32_t count, uint64_t now) {
                 }
                 break;
             }
+            case TENSION_EVENT_TEXT: {
+                // The payload is `flags` UTF-8 bytes inline in `a0..a3`
+                // (`TENSION_EVENT_TEXT_BYTES`, little-endian within each word).
+                // Nothing is interpreted here: the bytes are appended exactly as
+                // the host encoded them, because a text field wants what the
+                // keyboard produced and a mirror is not the place to re-encode
+                // it.
+                const size_t count = static_cast<size_t>(event.flags);
+                if (count == 0 || count > TENSION_EVENT_TEXT_BYTES) break;
+                const int64_t words[4] = {event.a0, event.a1, event.a2, event.a3};
+                std::lock_guard<std::mutex> lock(mu_);
+                for (size_t index = 0; index < count; ++index) {
+                    const int64_t word = words[index / 8];
+                    const char byte = static_cast<char>((static_cast<uint64_t>(word) >>
+                                                         ((index % 8) * 8)) &
+                                                        0xFFu);
+                    if (text_len_ >= kTextCapacity) {
+                        // Counted, and said once per 256 refusals: a guest that
+                        // stopped reading is a fact the log should carry, and a
+                        // line per keystroke is the same fact 60 times a second.
+                        if (dropped_text_++ % 256 == 0) {
+                            input_log("input: text buffer full; " +
+                                      std::to_string(dropped_text_) + " byte(s) dropped");
+                        }
+                        break;
+                    }
+                    text_[text_len_++] = byte;
+                }
+                break;
+            }
             default:
-                // TEXT, QUIT and PAD carry nothing this capability's state
-                // keeps. Pads are read from `pad_state`; a pad *edge* has no
-                // class in the session yet (`docs/modules/input.md` §2).
+                // QUIT and PAD carry nothing this capability's state keeps. Pads
+                // are read from `pad_state`; a pad *edge* has no class in the
+                // session yet (`docs/modules/input.md` §2).
                 break;
         }
     }
@@ -223,6 +279,7 @@ void Mirror::snapshot(StateRecord *out, uint32_t pads_present) {
 
     out->mouse_x = mouse_x_;
     out->mouse_y = mouse_y_;
+    out->modifiers = modifiers_;
     out->wheel_x = accum_wheel_x_;
     out->wheel_y = accum_wheel_y_;
     accum_wheel_x_ = 0.0f;
@@ -230,6 +287,18 @@ void Mirror::snapshot(StateRecord *out, uint32_t pads_present) {
     // The highest sequence an edge this mirror posted came back with. Motion
     // never posts, so this is the last edge's — which is what it always was.
     out->seq = last_seq_;
+}
+
+int32_t Mirror::take_text(char *out, int32_t cap) {
+    std::lock_guard<std::mutex> lock(mu_);
+    const int32_t pending = static_cast<int32_t>(text_len_);
+    if (cap <= 0) return pending; /* the probe: the size, nothing consumed */
+    if (cap < pending) return kTextShort; /* short buffer: nothing consumed */
+    if (pending > 0 && out != nullptr) {
+        std::memcpy(out, text_, static_cast<size_t>(pending));
+        text_len_ = 0;
+    }
+    return pending;
 }
 
 bool Mirror::subscribed(uint32_t class_id) const {

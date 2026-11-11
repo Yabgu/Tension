@@ -59,7 +59,12 @@ if (!existsSync(marked)) {
 
 step('bundle      (Markdown + TSDoc -> docs.bin)', ['tools/bundle.mjs']);
 step('search      (inverted index -> search.bin)', ['tools/search.mjs']);
-step('make-font   (glyph table -> ui.iwi)', ['tools/make-font.mjs']);
+// The baker lives in the framework, because the atlas's geometry and the
+// toolkit's cell constants are one contract (`assembly/ui/theme.ts`): a second
+// copy here is how the `m` and `w` glyphs went wrong twice. It writes into the
+// *current* directory's `assets/`, which is this one.
+step('make-font   (glyph table -> ui.iwi)',
+     ['../../tension-framework/tools/font/make-font.mjs']);
 step('run-examples(compile + run -> transcripts.bin)', ['tools/run-examples.mjs']);
 
 process.stdout.write('==> docs: verify\n');

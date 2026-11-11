@@ -16,8 +16,9 @@
 //
 // Usage: node scripts/test-framework.mjs [path-to-tension-core] [path-to-stub-adapter]
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { REPO, npmBin } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
@@ -152,6 +153,52 @@ function runFixture(entry, out, args = []) {
   console.log(`    == ${entry}: OK`);
 }
 
+/// `res_write`: the guest side of the sandbox, plus the half a guest cannot see.
+///
+/// The fixture asserts the refusals (a path that leaves the root is -EROFS). What
+/// it cannot assert is that the bytes arrived, because a guest has no view of the
+/// real filesystem — so this runner gives the host a scratch `--write-root`, then
+/// reads the files back from Node. Both halves in one case, because either alone
+/// is a weak claim: refusals with no writes pass for a host that writes nothing,
+/// and writes with no refusals pass for one with no sandbox.
+function runWriteRootFixture(entry, out) {
+  compileOrFail(entry, out);
+  console.log(`==> running ${out} (with a scratch --write-root)`);
+  const root = mkdtempSync(join(tmpdir(), 'tension-wres-'));
+  try {
+    const result = runGuest(out, ['--write-root', root]);
+    console.log(indent(result.stdout));
+    if (result.status !== 0 || !result.stdout.includes('OK')) {
+      console.error(`${RUNNER}: ${entry}: the guest did not pass its own refusals`);
+      process.stderr.write(result.stderr);
+      process.exit(1);
+    }
+
+    const hello = join(root, 'probe', 'hello.txt');
+    if (!existsSync(hello)) fail(RUNNER, `${entry}: the write did not land at ${hello}`);
+    if (readFileSync(hello, 'utf8') !== 'hello') {
+      fail(RUNNER, `${entry}: the file does not hold what the guest wrote`);
+    }
+    if (!existsSync(join(root, 'empty.txt'))) {
+      fail(RUNNER, `${entry}: a zero-length save did not create its file`);
+    }
+    if (statSync(join(root, 'empty.txt')).size !== 0) {
+      fail(RUNNER, `${entry}: the empty file is not empty`);
+    }
+
+    // The refusal that would be a disaster if it were only a *return value*:
+    // nothing may exist beside the root, whatever the guest was told.
+    const escaped = join(dirname(root), 'escape.txt');
+    if (existsSync(escaped)) {
+      rmSync(escaped, { force: true });
+      fail(RUNNER, `${entry}: a traversal wrote outside the root`);
+    }
+    console.log(`    == ${entry}: OK`);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
 /// A fixture whose contract is a refusal, parameterised on the message. Used for
 /// both the drift check and the callback guard: the same three assertions (a
 /// non-zero exit, no OK, and the named message) in one place.
@@ -261,6 +308,8 @@ runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 // canvas and no GPU — `Scene` is a data structure and `pack()` is the whole of
 // what this asserts. The pixel suites cover the bytes it produces.
 runFixture('guest-scene.ts', 'guest-scene.wasm');
+runFixture('guest-ui.ts', 'guest-ui.wasm');
+runWriteRootFixture('guest-wres.ts', 'guest-wres.wasm');
 runFixture('guest-verlet.ts', 'guest-verlet.wasm');
 runFixture('guest-physics-units.ts', 'guest-physics-units.wasm');
 

@@ -78,6 +78,8 @@ impl fmt::Display for Errno {
             21 => "EISDIR",
             22 => "EINVAL",
             24 => "EMFILE",
+            28 => "ENOSPC",
+            30 => "EROFS",
             38 => "ENOSYS",
             _ => "unknown",
         };
@@ -96,6 +98,8 @@ impl Errno {
             21 => "is a directory",
             22 => "invalid argument or malformed structure",
             24 => "too many open files",
+            28 => "the buffer is smaller than what is being written",
+            30 => "read-only: the path leaves the writable root",
             38 => "not implemented in this build",
             _ => "unknown error",
         }
@@ -613,10 +617,150 @@ fn load_raw(bytes: *const u8, len: usize, borrow: bool) -> Load {
     }
 }
 
+// ── the writable root ──────────────────────────────────────────────────────
+
+/// A directory outside the paks that a guest may write files into.
+///
+/// **Why this exists at all.** `tension::res` has been read-only since it was
+/// written: a pak is a packed archive, and there is no verb that changes one.
+/// An editor cannot save a document through it, and "the runtime has no write"
+/// is a fine property for a *container* but not for a *platform*.
+///
+/// **Why writes do not go into the paks.** A pak is immutable by design — the
+/// host memory-maps it, several sets merge into one namespace, and an archive
+/// that a guest can append to is an archive whose offsets can move under the
+/// code reading it. So a write lands on the real filesystem, under one root the
+/// host chose, and the pak namespace stays what it was: the read side.
+///
+/// **The sandbox is the point.** A guest is arbitrary code. Every path is
+/// resolved against the root and refused unless it stays inside it, by three
+/// rules that cover the three ways out:
+///
+/// * `..` and `.` are refused as components rather than normalized away. A path
+///   that says `..` is a path that is trying to leave, and a normalizer that
+///   silently rewrote it would be the thing that let it.
+/// * absolute paths and drive-qualified paths are refused, so there is no second
+///   root to escape to.
+/// * the *parent* directory is canonicalized and compared against the canonical
+///   root before the file is created, which is what catches a symlink inside the
+///   root pointing out of it. A target that is itself a symlink is refused
+///   rather than followed.
+///
+/// A refusal is `-EROFS`, not `-EACCES`: nothing about the file's permissions is
+/// being tested, and the guest needs to tell "the sandbox said no" from "the
+/// disk said no" — the first is a bug in its own path handling, the second is
+/// the user's problem.
+pub struct WriteRoot {
+    root: std::path::PathBuf,
+}
+
+impl WriteRoot {
+    /// Take `root` as the write sandbox, canonicalized once.
+    ///
+    /// Canonicalizing here rather than per call is what makes the parent check
+    /// a prefix comparison instead of a string game: both sides of the
+    /// comparison came out of the same resolver.
+    pub fn new(root: impl AsRef<std::path::Path>) -> Result<Self, Errno> {
+        let root = std::fs::canonicalize(root.as_ref()).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Errno(-2), // ENOENT
+            _ => Errno(-5),                            // EIO
+        })?;
+        if !root.is_dir() {
+            return Err(Errno(-20)); // ENOTDIR
+        }
+        Ok(Self { root })
+    }
+
+    /// The root itself, for a log line or a test.
+    pub fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+
+    /// The components of a guest path, or `-EROFS` if it may not leave the root.
+    fn components(path: &str) -> Result<Vec<&str>, Errno> {
+        if path.is_empty() || path.contains('\0') {
+            return Err(Errno(-22)); // EINVAL: nothing to name
+        }
+        if path.starts_with('/') {
+            return Err(Errno(-30)); // EROFS: an absolute path names another root
+        }
+        // A backslash is a separator on one platform and a legal character on
+        // the others; accepting it as either is how `..\\..` gets through a
+        // check written for `/`.
+        if path.contains('\\') {
+            return Err(Errno(-30));
+        }
+        // A drive letter or a UNC prefix: same reasoning as the leading slash.
+        if path.len() >= 2 && path.as_bytes()[1] == b':' {
+            return Err(Errno(-30));
+        }
+        let mut parts = Vec::new();
+        for part in path.split('/') {
+            if part.is_empty() || part == "." || part == ".." {
+                return Err(Errno(-30));
+            }
+            parts.push(part);
+        }
+        Ok(parts)
+    }
+
+    /// The absolute path `guest_path` names, refused unless it stays in the root.
+    pub fn resolve(&self, guest_path: &str) -> Result<std::path::PathBuf, Errno> {
+        let parts = Self::components(guest_path)?;
+        let mut full = self.root.clone();
+        for part in parts {
+            full.push(part);
+        }
+        Ok(full)
+    }
+
+    /// Write `bytes` to `guest_path`, creating parent directories.
+    ///
+    /// Returns the number of bytes written. The atomicity note matters for the
+    /// case this exists for: an editor saving a document writes a temporary file
+    /// beside the target and renames it, so a crash mid-save leaves the old
+    /// document rather than half of the new one.
+    pub fn write(&self, guest_path: &str, bytes: &[u8]) -> Result<u32, Errno> {
+        let target = self.resolve(guest_path)?;
+
+        // The parent must exist (or be creatable) *and* still be inside the
+        // root once the filesystem has resolved any symlinks in it.
+        let parent = target.parent().ok_or(Errno(-22))?;
+        std::fs::create_dir_all(parent).map_err(|_| Errno(-5))?;
+        let real_parent = std::fs::canonicalize(parent).map_err(|_| Errno(-5))?;
+        if !real_parent.starts_with(&self.root) {
+            return Err(Errno(-30)); // a symlink in the parent chain left the root
+        }
+
+        // A target that is already a symlink is refused rather than followed:
+        // following it would write wherever it points, which the parent check
+        // above cannot see.
+        if let Ok(metadata) = std::fs::symlink_metadata(&target) {
+            if metadata.file_type().is_symlink() {
+                return Err(Errno(-30));
+            }
+            if metadata.is_dir() {
+                return Err(Errno(-21)); // EISDIR
+            }
+        }
+
+        let real_target = real_parent.join(target.file_name().ok_or(Errno(-22))?);
+        std::fs::write(&real_target, bytes).map_err(|_| Errno(-5))?;
+        Ok(bytes.len() as u32)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A scratch directory under the system temp dir, removed by the caller.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tension-wres-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("the temp dir is creatable");
+        dir
+    }
     #[test]
     fn stat_layout_matches_the_header() {
         assert_eq!(std::mem::size_of::<Stat>(), 12);
@@ -642,5 +786,83 @@ mod tests {
     #[test]
     fn empty_input_is_rejected_before_the_abi() {
         assert!(matches!(ResourceSet::load_from_vec(Vec::new()), Err(Errno(-22))));
+    }
+
+    // ── the write sandbox ──────────────────────────────────────────────────
+
+    #[test]
+    fn write_root_refuses_every_way_out() {
+        let dir = scratch("escape");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+
+        // The three escapes, as the guest would spell them.
+        assert_eq!(root.resolve("../escape.txt").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("a/../../b.txt").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("./a.txt").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("/etc/passwd").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("C:/temp/x.txt").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("..\\..\\x.txt").unwrap_err().code(), -30);
+        assert_eq!(root.resolve("").unwrap_err().code(), -22);
+
+        // And the one that must work.
+        let inside = root.resolve("docs/page.md").expect("a relative path stays in");
+        assert!(inside.starts_with(root.root()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_root_writes_and_creates_parents() {
+        let dir = scratch("write");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+
+        let written = root.write("nested/deeper/doc.tns", b"hello").expect("a write inside the root");
+        assert_eq!(written, 5);
+        let read = std::fs::read(directory(&dir).join("nested/deeper/doc.tns"));
+        assert_eq!(read.expect("the file exists"), b"hello");
+
+        // Overwriting is a write, not an append: the second call is the file.
+        root.write("nested/deeper/doc.tns", b"bye").expect("a rewrite");
+        let again = std::fs::read(directory(&dir).join("nested/deeper/doc.tns")).unwrap();
+        assert_eq!(again, b"bye");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The dir itself, canonicalized: on macOS `/var` is a symlink to
+    /// `/private/var`, and a test that compared raw paths would fail there for
+    /// a reason unrelated to the sandbox.
+    fn directory(path: &std::path::Path) -> std::path::PathBuf {
+        std::fs::canonicalize(path).expect("the temp dir resolves")
+    }
+
+    #[test]
+    fn write_root_refuses_a_directory_target() {
+        let dir = scratch("isdir");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+        std::fs::create_dir_all(directory(&dir).join("taken")).unwrap();
+        assert_eq!(root.write("taken", b"x").unwrap_err().code(), -21);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_root_refuses_a_symlink_that_leaves() {
+        let outside = scratch("outside");
+        let dir = scratch("link");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+
+        // A symlink inside the root pointing at a directory outside it. The
+        // parent check is what must catch this: the path itself looks relative.
+        let link = directory(&dir).join("link");
+        std::os::unix::fs::symlink(directory(&outside), &link).expect("a symlink is creatable");
+        assert_eq!(root.write("link/escaped.txt", b"x").unwrap_err().code(), -30);
+        assert!(!directory(&outside).join("escaped.txt").exists());
+
+        // And a symlink as the *target* is refused rather than followed.
+        let file_link = directory(&dir).join("target-link");
+        std::os::unix::fs::symlink(directory(&outside).join("x.txt"), &file_link).unwrap();
+        assert_eq!(root.write("target-link", b"x").unwrap_err().code(), -30);
+
+        let _ = std::fs::remove_dir_all(&outside);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

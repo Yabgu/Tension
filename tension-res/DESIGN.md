@@ -798,6 +798,34 @@ translates: `-ENOENT` → `null` for `resStat`/`ResFile.open`, → `[]` for
 `resEntries`/`resList`. Strict VFS, lenient framework; the two layers never
 disagree.
 
+### 7.8 `res_write` — the one verb that is not this VFS
+
+`res_open`, `res_read`, `res_seek`, `res_tell`, `res_stat` and `res_readdir` are
+all reads against a packed archive, and there is no verb that changes one: a pak
+is mapped by the host, several merge into one namespace, and an archive a guest
+can append to is one whose offsets can move under the code reading it.
+
+An editor still has to save. So `res_write(path, ptr, len)` exists and lands on
+the **real filesystem**, under one directory the host chose (`--write-root`,
+defaulting to the working directory), with `res::WriteRoot` enforcing the
+sandbox. The pak namespace stays exactly what it was: the read side.
+
+The rules, and why each is a refusal rather than something friendlier:
+
+| input | answer | why |
+| --- | --- | --- |
+| a relative, `/`-separated path inside the root | the byte count | the normal case; parent directories are created |
+| `..`, `.`, an empty component, a leading `/`, a drive letter, a `\` | `-EROFS` | a path that says `..` is trying to leave, and a normalizer that rewrote it would be the thing that let it through |
+| a symlink in the parent chain pointing out of the root | `-EROFS` | caught by canonicalizing the parent and comparing it to the canonical root |
+| the target itself is a symlink | `-EROFS` | following it would write wherever it points, which the parent check cannot see |
+| the target is a directory | `-21 EISDIR` | the file cannot be replaced by a write |
+| zero bytes | `0` — a real save | a cleared document is a save, and `0` is a count, not a failure |
+
+`-EROFS` rather than `-EACCES` on purpose: nothing about the file's permissions is
+being tested, and a guest needs to tell "the sandbox said no" (its own bug) from
+"the disk said no" (the user's problem). Pinned in `res::tests` — including the
+two symlink cases, which are the ones a path-only check misses.
+
 ## 8. Compression mapping (to be completed in phase 2)
 
 Deflate (8) first, ZSTD (93) target, Stored (0) automatic for incompressible

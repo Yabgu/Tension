@@ -17,6 +17,7 @@
   },
   "files": [
     "assembly",
+    "tools",
     "index.ts",
     "index.d.ts"
   ],

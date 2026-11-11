@@ -475,6 +475,55 @@ pub const PAD_EVENT_BUTTON_DOWN: u32 = 3;
 pub const PAD_EVENT_BUTTON_UP: u32 = 4;
 pub const PAD_EVENT_AXIS: u32 = 5;
 
+// ── the modifier bits (`TENSION_EVENT_KEY`'s `a2`) ──────────────────────────
+//
+// The wire's own numbering, not SDL's: a guest is not linked against SDL and
+// reading its `SDL_Keymod` constants would be a dependency it cannot see. The
+// translation is `key_mod_bits` below, and it is the only place the two
+// vocabularies meet.
+pub const KEY_MOD_SHIFT: u32 = 1 << 0;
+pub const KEY_MOD_CTRL: u32 = 1 << 1;
+pub const KEY_MOD_ALT: u32 = 1 << 2;
+pub const KEY_MOD_SUPER: u32 = 1 << 3;
+pub const KEY_MOD_CAPS: u32 = 1 << 4;
+pub const KEY_MOD_NUM: u32 = 1 << 5;
+pub const KEY_MOD_MODE: u32 = 1 << 6;
+
+/// How many UTF-8 bytes one `TENSION_EVENT_TEXT` carries inline.
+pub const EVENT_TEXT_BYTES: usize = 32;
+
+/// SDL's `SDL_Keymod` word as the wire's bits.
+///
+/// Both `L*` and `R*` halves collapse into one bit: a guest that asks "is shift
+/// held" is asking about the keyboard, not about a hand. Caps and Num stay
+/// distinct because they are latching states a text field may want to draw.
+pub fn key_mod_bits(keymod: sdl3::keyboard::Mod) -> u32 {
+    use sdl3::keyboard::Mod;
+    let mut bits = 0u32;
+    if keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) {
+        bits |= KEY_MOD_SHIFT;
+    }
+    if keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) {
+        bits |= KEY_MOD_CTRL;
+    }
+    if keymod.intersects(Mod::LALTMOD | Mod::RALTMOD) {
+        bits |= KEY_MOD_ALT;
+    }
+    if keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD) {
+        bits |= KEY_MOD_SUPER;
+    }
+    if keymod.contains(Mod::CAPSMOD) {
+        bits |= KEY_MOD_CAPS;
+    }
+    if keymod.contains(Mod::NUMMOD) {
+        bits |= KEY_MOD_NUM;
+    }
+    if keymod.contains(Mod::MODEMOD) {
+        bits |= KEY_MOD_MODE;
+    }
+    bits
+}
+
 /// How many events one pump may translate. A batch larger than this in a single
 /// drain is not a frame's input; the excess is counted and reported rather than
 /// silently allocating, because this runs inside the frame's own budget.
@@ -864,9 +913,23 @@ pub fn key_event(
         flags,
         scancode.map(|code| code as i32 as i64).unwrap_or(0),
         keycode.map(|code| code as u32 as i64).unwrap_or(0),
-        keymod.bits() as i64,
+        key_mod_bits(keymod) as i64,
         if repeat { 1 } else { 0 },
     )
+}
+
+/// One 8-byte word of a text payload, little-endian, zero-padded.
+///
+/// `TENSION_EVENT_TEXT` carries UTF-8 inline across four of these, so this is
+/// where a chunk of bytes becomes the wire's words. A short chunk pads with
+/// zeroes, which is unambiguous because `flags` — not a NUL — is the length.
+pub fn text_word(bytes: &[u8], offset: usize) -> i64 {
+    let mut word: u64 = 0;
+    for index in 0..8 {
+        let byte = bytes.get(offset + index).copied().unwrap_or(0);
+        word |= (byte as u64) << (index * 8);
+    }
+    word as i64
 }
 
 /// One mouse-button event: `a0` button, `a1` down, `a2` clicks, `a3` the mask
@@ -1746,21 +1809,42 @@ impl HostWindow {
                     push_event(&mut batch, &mut count, &mut overflow, wire);
                 }
                 sdl3::event::Event::TextInput { text, .. } => {
-                    // `a0` is the first codepoint, `a1` how many follow. SDL
-                    // delivers UTF-8; the wire carries scalars, and a consumer
-                    // that needs the whole string reads `text` from its own
-                    // SDL-free input path — which is why this family is an
-                    // edge signal ("text arrived, here is the first scalar")
-                    // rather than a text buffer.
-                    let mut scalars = text.chars();
-                    let first = scalars.next().map(|c| c as u32 as i64).unwrap_or(0);
-                    let length = text.chars().count() as i64;
-                    push_event(
-                        &mut batch,
-                        &mut count,
-                        &mut overflow,
-                        TensionEvent::new(EVENT_TEXT, 0, first, length, 0, 0),
-                    );
+                    // `flags` is the byte count; `a0..a3` carry the UTF-8 bytes
+                    // inline (`TENSION_EVENT_TEXT_BYTES` per event). Text a user
+                    // typed is not a scalar — a dead-key composition, an IME
+                    // commit and a paste each arrive as one event holding
+                    // several codepoints — and a consumer that had to go back to
+                    // SDL for the rest would need SDL.
+                    //
+                    // Anything longer than one event is split at a UTF-8
+                    // boundary into consecutive events, so a paste arrives
+                    // whole. Splitting on a boundary rather than at 32 bytes is
+                    // what keeps every event decodable on its own.
+                    let mut start = 0usize;
+                    while start < text.len() {
+                        let mut end = (start + EVENT_TEXT_BYTES).min(text.len());
+                        // Never split a multi-byte sequence: back up to the
+                        // first byte of a character (`10xxxxxx` is a
+                        // continuation).
+                        while end < text.len() && end > start && (text.as_bytes()[end] & 0xC0) == 0x80 {
+                            end -= 1;
+                        }
+                        let chunk = &text.as_bytes()[start..end];
+                        push_event(
+                            &mut batch,
+                            &mut count,
+                            &mut overflow,
+                            TensionEvent::new(
+                                EVENT_TEXT,
+                                chunk.len() as u32,
+                                text_word(chunk, 0),
+                                text_word(chunk, 8),
+                                text_word(chunk, 16),
+                                text_word(chunk, 24),
+                            ),
+                        );
+                        start = end;
+                    }
                 }
                 // Mouse motion: `a0`/`a1` are the integer position, and
                 // `a2`/`a3` hold the sub-pixel delta as an f32 bit pattern

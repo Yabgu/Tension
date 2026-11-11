@@ -33,16 +33,19 @@
 // decides to draw. `text.ts` and `layout.ts` carry the two expensive parts, and
 // both are cached across frames.
 
+// **The shell is the framework's now.** Session, window, canvas, resize,
+// texture reload, input attach, the close button, the headless bound and the
+// teardown line all live in `tension-framework/assembly/app/shell.ts`, because
+// every one of them was a bug found by running this viewer and the editor needs
+// the same answers. What is left in this file is the document: pages, search,
+// transcripts and the pixels they draw.
 import {
-  Canvas,
-  ConfigBuilder,
-  OPEN_WINDOWED,
-  print,
-  resReadFile,
-  RuntimeSession,
+  AppShell,
+  BOLD, CELL_H, CELL_W, Canvas,
+  CHROME_CARET, CHROME_DIVIDER, CHROME_PANEL, CHROME_SELECTION, CHROME_WHITE,
+  CODE, GLYPH_CELLS, HEADING, LINK, MUTED, NORMAL, Painter, REGULAR, SCALE,
+  centred, fitColumns, LINE_STEP, print, px, resReadFile, tileCost, DEFAULT_THEME,
 } from "tension-framework";
-import { close as inputClose, Snapshot } from "tension-framework/assembly/input";
-import { windowInfo, windowRequest } from "tension-framework/assembly/platform";
 
 import {
   Docs, SearchIndex, Transcripts,
@@ -50,25 +53,15 @@ import {
   S_CODE, S_LINK, compareTermToQuery, jsonNumber, termHasPrefix,
 } from "./format";
 import {
-  advanceFor, CODE_INSET, colourFor, LINE_STEP, MAX_COLS, MIN_COLS, PageLayout, weightFor,
+  advanceFor, CODE_INSET, colourFor, MAX_COLS, PageLayout, weightFor,
 } from "./layout";
-import {
-  CELL_H, CELL_W, CHROME_CARET, CHROME_DIVIDER, CHROME_PANEL, CHROME_SELECTION,
-  CHROME_WHITE,
-  CODE, GLYPH_CELLS, HEADING, LINK, MUTED, NORMAL, Painter, REGULAR, SCALE, BOLD,
-} from "./text";
 
 // ── the shell's geometry ────────────────────────────────────────────────────
 
-/**
- * A padding in source pixels, scaled with the font.
- *
- * Every gap in this shell was tuned against an 8x16 cell. Writing them as
- * `px(n)` rather than as the doubled literal keeps the relationship visible: the
- * shell's proportions are the same at any `SCALE`, and the numbers that changed
- * *deliberately* are the pane widths just below.
- */
-function px(n: i32): i32 { return n * SCALE; }
+// `px` — a padding in source pixels, scaled with the font — is the toolkit's now
+// (`tension-framework/assembly/ui/flow.ts`). Every gap in this shell was tuned
+// against an 8x16 cell, so writing them as `px(n)` rather than as the doubled
+// literal keeps the relationship visible at any `SCALE`.
 
 const SIDEBAR_W: i32 = 320;        // was 260 — TOC titles are half as many chars wide
 const DIVIDER_X: i32 = SIDEBAR_W;
@@ -139,38 +132,30 @@ const MAX_QUERY: i32 = 48;
  * A class rather than a bag of module-level globals because there is exactly one
  * of it and its state is what the frame loop reads: page, scroll, query, focus.
  */
-class App {
-  /** Null until `start()` — the constructor is private and there is no
-   *  invalid instance to hold a place with. */
-  canvas: Canvas | null = null;
-  pipe: i32 = -1;
-  painter: Painter = new Painter();
-
+class App extends AppShell {
   docs: Docs = Docs.open(new Uint8Array(0));
   search: SearchIndex = SearchIndex.open(new Uint8Array(0));
   transcripts: Transcripts = Transcripts.open(new Uint8Array(0));
   layout: PageLayout = new PageLayout();
 
-  width: i32 = 1280;
-  height: i32 = 720;
-  /** True when the launcher asked for no window; the loop is then bounded. */
-  headless: bool = false;
-
   // --- the text column, which depends on the window ------------------------
   /**
-   * How many characters a line may hold, after `applyGeometry` has run.
+   * How many characters a line may hold, after `onResize` has run.
    *
-   * Not a constant: the window can be dragged, and the whole point of this pass
-   * is that a wider window shows *more words per line* rather than the same
-   * frame enlarged. Capped at `MAX_COLS` so the measure stays readable and the
-   * per-frame record count stays inside the renderer's budget.
+   * Not a constant: the window can be dragged, and the whole point of the
+   * responsive pass is that a wider window shows *more words per line* rather
+   * than the same frame enlarged. Capped at `MAX_COLS` so the measure stays
+   * readable and the per-frame record count stays inside the renderer's budget.
    */
-  cols: i32 = MIN_COLS;
+  cols: i32 = 8;
   /** Where the text column starts. Centre it when the pane is wider than the cap. */
   contentX: i32 = 0;
-  /** The size the current canvas was opened at, so a resize is one comparison. */
-  private canvasW: i32 = 0;
-  private canvasH: i32 = 0;
+
+  constructor() {
+    // The name the shell's own lines carry: a launcher's log should say which
+    // app is talking, and this is the string the teardown line has always used.
+    super("tension-docs", DEFAULT_THEME, HEADLESS_FRAMES);
+  }
 
   /** The page being read, or -1 while search results are showing. */
   page: i32 = 0;
@@ -216,22 +201,14 @@ class App {
    */
   transcriptH: i32 = 0;
 
-  /** Why the frame loop stopped, for the line `teardown` prints. */
-  private exitReason: string = "the frame bound was reached";
-
   // --- input ---------------------------------------------------------------
   /**
    * The input record, its buffer and its edge latch, in one object.
    *
-   * What used to be here: a `memory.data(96, 8)` block, `load<u32>(ptr + 16 + …)`
-   * for the held-key set with the `16` written out in the app, a `Uint32Array`
-   * copy of that set for edge detection, and a latch call at the end of every
-   * frame that had to stay in step with the read at the start. Three of those
-   * four were places to be wrong in the same way, and none of them was this
-   * app's business.
+   * `input` and `inputReady` are the shell's: it opens the capability, retries
+   * the attach while the window comes up, and closes it at teardown. This app
+   * reads the record and nothing else.
    */
-  input: Snapshot = new Snapshot(0);
-  inputReady: bool = false;
   /** Accumulated wheel motion; the 2D adapter reports a float delta. */
   wheelCarry: f32 = 0.0;
   lastMouseX: i32 = -1;
@@ -251,34 +228,39 @@ class App {
   runHitY: i32[] = [];
   runHitBlock: i32[] = [];
 
-  /** Frames drawn, and the last frame's record count, for the status bar. */
-  frames: i32 = 0;
-  lastRecords: i32 = 0;
-  lastDropped: i32 = 0;
-
   // ── setup ───────────────────────────────────────────────────────────────
 
   /**
-   * Open the session, the canvas, the volume and the atlas.
-   *
-   * Every failure here is fatal and says why: a viewer that opens a blank window
-   * with no explanation is worse than one that refuses, because the user cannot
-   * tell "the assets are missing" from "it crashed".
+   * The atlas, and nothing else: the shell has already opened the session, the
+   * canvas and the pipeline, and calls this once at startup and again after every
+   * canvas rebuild (a canvas is fixed for its lifetime, so reopening one destroys
+   * its textures with it).
    */
-  start(): bool {
-    if (RuntimeSession.open(ConfigBuilder.forThisBuild()) != 0) {
-      print("tension-docs: the session did not open");
+  protected loadAssets(canvas: Canvas, pipe: i32): bool {
+    const atlas = canvas.loadTextureFromRes("/ui.iwi");
+    if (atlas <= 0) {
+      print("tension-docs: /ui.iwi did not load: " + atlas.toString() +
+        " (run `npm run assets` in apps/docs)");
       return false;
     }
+    if (canvas.bindTexture(pipe, 0, atlas) != 0) {
+      print("tension-docs: set_texture refused");
+      return false;
+    }
+    return true;
+  }
 
-    const request = windowRequest();
-    this.headless = request.headless;
-    this.applyGeometry(request.width, request.height);
+  /**
+   * The volume and the opening page, after the shell's startup.
+   *
+   * The three data files are read once, whole: the readers keep offsets into
+   * those buffers rather than copying. They are *not* in `loadAssets`, because
+   * that runs again on every resize and re-reading half a megabyte to rebuild a
+   * canvas is work nothing asked for.
+   */
+  start(): bool {
+    if (!super.start()) return false;
 
-    if (!this.openCanvas(this.width, this.height, request.title)) return false;
-
-    // The three data files. Each is read whole into guest memory once; the
-    // readers keep offsets into those buffers rather than copying.
     const docsBytes = resReadFile("/docs.bin");
     if (docsBytes == null) {
       print("tension-docs: /docs.bin is not in the volume (run `npm run assets`)");
@@ -299,8 +281,6 @@ class App {
     this.page = 0;
     this.layout.build(this.docs, 0, this.cols);
 
-    this.setupInput();
-
     print("tension-docs: " + this.docs.pageCount.toString() + " pages, " +
       this.search.termCount.toString() + " search terms, " +
       this.transcripts.count.toString() + " recorded example(s)");
@@ -310,224 +290,39 @@ class App {
   /**
    * Derive the text column from the window, and remember where it starts.
    *
-   * This is the whole of the responsive layout. The sidebar is a fixed width and
-   * the main pane takes the rest; the column is the pane's width less its
-   * padding, capped at `MAX_COLS` so a very wide window does not produce a line
-   * the eye cannot track (and a frame the record budget cannot afford); and what
-   * is left over is split evenly to centre the column, because a text block
-   * pinned to the left of a 2560px window reads as a bug.
+   * This is the whole of the responsive layout, and the arithmetic is the
+   * toolkit's (`fitColumns`/`centred`) because the editor lays out a column too.
+   * The sidebar is a fixed width and the main pane takes the rest; the column is
+   * the pane's width less its padding, capped at `MAX_COLS` so a very wide window
+   * does not produce a line the eye cannot track (and a frame the record budget
+   * cannot afford); and what is left over is split evenly to centre the column,
+   * because a text block pinned to the left of a 2560px window reads as a bug.
    *
-   * Pure arithmetic on purpose — no canvas, no layout, no drawing — so it can be
-   * called from `start()` before either exists, and from the resize path where
-   * both are about to be rebuilt.
+   * Called **before** the canvas comes back from a resize, so it touches no
+   * canvas: pure arithmetic on the window size and this app's data.
    */
-  applyGeometry(width: i32, height: i32): void {
-    this.width = width > 0 ? width : 1;
-    this.height = height > 0 ? height : 1;
+  protected onResize(width: i32, height: i32): void {
+    const pane: i32 = width - MAIN_X;
+    this.cols = fitColumns(pane, CONTENT_PAD, MAX_COLS);
+    this.contentX = centred(MAIN_X, pane, this.cols, px(4));
 
-    const pane: i32 = this.width - MAIN_X;
-    const available: i32 = pane - CONTENT_PAD * 2;
-    const capped: i32 = MAX_COLS * CELL_W;
-    let textPx: i32 = available < capped ? available : capped;
-    if (textPx < MIN_COLS * CELL_W) textPx = MIN_COLS * CELL_W;
-
-    this.cols = textPx / CELL_W;
-    const used: i32 = this.cols * CELL_W;
-
-    // Centred in the pane; never nearer the divider than a quarter of the pad,
-    // which is what keeps a narrow window from putting text against the line.
-    let x: i32 = MAIN_X + (pane - used) / 2;
-    const least: i32 = MAIN_X + px(4);
-    if (x < least) x = least;
-    this.contentX = x;
+    // The text was wrapped for the old width, so the page is laid out again —
+    // and the scroll clamped, or a window dragged wider leaves the reader past
+    // the end of a page that just got shorter.
+    if (this.docs.ok) {
+      this.layout.build(this.docs, <u32>this.page, this.cols);
+      this.clampScroll();
+    }
   }
+
+  // ── the frame ────────────────────────────────────────────────────────────
 
   /**
-   * Create the canvas and everything the frame loop draws through it.
-   *
-   * Extracted because it happens **twice** in a normal session: once at startup
-   * and once per resize. A canvas is fixed for its lifetime (`text.ts`), so a
-   * resize is a `close()` and a new `open()` — which also destroys every texture
-   * and the pipeline cache with it, so the atlas has to be loaded and bound
-   * again. Doing that in one place is what keeps the two paths from disagreeing.
-   *
-   * The **host window is not recreated**: `2d:close` releases the swapchain and
-   * the GPU device and deliberately leaves the window up, so reopening claims
-   * the same window at its new size. That is what makes a resize invisible to
-   * the user's drag — a window torn down and remade would snap back.
+   * Read this frame's input. The shell calls it once per frame, before `draw`,
+   * and owns the attach retry and the close button.
    */
-  openCanvas(width: i32, height: i32, title: string, reopen: bool = false): bool {
-    // On a **reopen** the window already exists, so the canvas claims it with
-    // `OPEN_WINDOWED` and nothing creates a second one. `windowedOrOffscreen`
-    // would be wrong here: its fallback tests `platform.hasSurface()`, which is
-    // false for a window SDL_GPU owns (there is no Vulkan surface), so it would
-    // try to create a window that already exists and then quietly open
-    // *offscreen* — a resize that stops presenting. Measured, not assumed: the
-    // helper's own comment says the fallback is for the first open.
-    const canvas: Canvas = this.headless
-      ? Canvas.open(width, height)
-      : (reopen ? Canvas.open(width, height, OPEN_WINDOWED)
-                : Canvas.windowedOrOffscreen(width, height, title));
-    this.canvas = canvas;
-    if (!canvas.isValid()) {
-      print("tension-docs: canvas refused at " + width.toString() + "x" +
-        height.toString() + ": " + canvas.lastError().toString());
-      return false;
-    }
-    this.canvasW = width;
-    this.canvasH = height;
-
-    // Preset 1 — the built-in `default_2d` pipeline, addressed by id with no
-    // graph blob. The viewer needs nothing a custom graph would give it: one
-    // texture, alpha blend, and the sprite record's own geometry.
-    this.pipe = canvas.pipeline();
-    if (this.pipe < 0) {
-      print("tension-docs: set_pipeline refused: " + this.pipe.toString());
-      return false;
-    }
-
-    const atlas = canvas.loadTextureFromRes("/ui.iwi");
-    if (atlas <= 0) {
-      print("tension-docs: /ui.iwi did not load: " + atlas.toString() +
-        " (run `npm run assets` in apps/docs)");
-      return false;
-    }
-    if (canvas.bindTexture(this.pipe, 0, atlas) != 0) {
-      print("tension-docs: set_texture refused");
-      return false;
-    }
-    return true;
-  }
-
-  /**
-   * Rebuild the canvas and the wrap when the user resizes the window.
-   *
-   * Polled once per frame rather than driven by an event: the guest has no
-   * event queue of its own, and `windowInfo()` is one call that answers the
-   * question outright. The cost of polling is a compare against two ints.
-   *
-   * Returns whether it did work. The loop ignores it — the frame after a resize
-   * has to be drawn either way — but a caller that wanted to count resizes, or
-   * to assert on one in a test, has the answer without a second poll.
-   */
-  syncWindowSize(): bool {
-    if (this.headless) return false;
-    const info = windowInfo();
-    // A closing window reports zero, and "0x0" is not a size to lay out for.
-    if (info.width <= 0 || info.height <= 0) return false;
-    if (info.width == this.canvasW && info.height == this.canvasH) return false;
-
-    // `canvas.close()` releases the swapchain and the GPU device and leaves the
-    // window standing, so this is a rebuild rather than a re-create.
-    //
-    // A refused close is **not** recovered from by opening anyway: `open` would
-    // answer `-EBUSY` ("a canvas is already open"), leaving the viewer with no
-    // drawable canvas at all and a loop that exits on the next `present`. So a
-    // refusal abandons this resize and lets the next frame try again, with the
-    // old canvas still valid and still presenting.
-    if (this.canvas != null && this.canvas!.isValid()) {
-      const closed: i32 = this.canvas!.close();
-      if (closed != 0) {
-        print("tension-docs: canvas would not close for a resize (" + closed.toString() +
-          "); keeping the old size");
-        return false;
-      }
-    }
-
-    this.applyGeometry(info.width, info.height);
-    if (!this.openCanvas(this.width, this.height, windowRequest().title, true)) return false;
-
-    // The text was wrapped for the old width, so the page has to be laid out
-    // again — and the scroll clamped, or a window dragged wider would leave the
-    // reader past the end of a page that just got shorter.
-    this.layout.build(this.docs, <u32>this.page, this.cols);
-    this.clampScroll();
-    return true;
-  }
-
-  /**
-   * Open the input capability.
-   *
-   * `attach` may answer `-ENODEV` for a few frames while the host's window comes
-   * up — the input layer joins the window rather than owning one — so a failure
-   * here is not fatal: the viewer still draws, and the status bar says whether
-   * the mouse and keyboard arrived.
-   */
-  setupInput(): void {
-    this.input = Snapshot.open();
-    if (this.input.handle > 0 && this.input.attach()) this.inputReady = true;
-  }
-
-  /** Retry the attach; called once per frame until it succeeds. */
-  pollAttach(): void {
-    if (this.inputReady) return;
-    if (this.input.attach()) this.inputReady = true;
-  }
-
-  // ── the loop ────────────────────────────────────────────────────────────
-
-  run(): void {
-    if (!this.start()) {
-      this.teardown();
-      return;
-    }
-
-    while (true) {
-      // The close button, asked directly — and it has to be asked here.
-      //
-      // Measured, by removing this check and clicking the X: the process never
-      // exits. `present`'s `-ECANCELED` is not a fallback, because the renderer
-      // learns of the close from its *own* pump, and the host pumps too — in
-      // `RuntimeSession.wait` and in the host loop. Whichever pump drains SDL's
-      // quit event is the only one that sees it, and it is normally the host's,
-      // which sets `window_closed` on a host that has nothing left to drive. So
-      // a guest loop that owns its lifetime must stop on the request itself; the
-      // host does not stop it for you in the 2D path, whatever `_game_running`
-      // does in the Ogre one.
-      if (windowInfo().closeRequested) {
-        this.exitReason = "the window was closed";
-        break;
-      }
-
-      // A resize rebuilds the canvas and re-wraps the page, so it runs before
-      // anything reads `this.cols` — and before `present`, because the canvas
-      // that would present is the one being replaced.
-      this.syncWindowSize();
-
-      this.pollAttach();
-      this.handleInput();
-      this.draw();
-
-      const presented = this.canvas!.present();
-      if (presented != 0) {
-        // `-ECANCELED` once the window is closed: stop, do not retry.
-        this.exitReason = "present answered " + presented.toString();
-        break;
-      }
-      this.frames++;
-
-      // One host-owned tick per frame. Without it a software driver spins as
-      // fast as the CPU allows and the scroll runs away from the wheel.
-      RuntimeSession.wait(16);
-
-      // An offscreen run has no window to close and would loop until something
-      // kills it. A bound makes `--headless` a job that finishes, which is what
-      // a CI check and a screenshot harness both need.
-      if (this.headless && this.frames >= HEADLESS_FRAMES) break;
-    }
-
-    this.teardown();
-  }
-
-  teardown(): void {
-    if (this.input.handle > 0) inputClose(this.input.handle);
-    if (this.canvas!.isValid()) this.canvas!.close();
-    RuntimeSession.close();
-    // Said out loud, because "the window closed" and "the process died" look
-    // identical from the launcher otherwise, and the difference is the whole
-    // point of exiting through this path.
-    print("tension-docs: closed after " + this.frames.toString() + " frame(s) (" +
-      this.exitReason + ")");
+  protected update(): void {
+    this.handleInput();
   }
 
   // ── input ───────────────────────────────────────────────────────────────
@@ -924,9 +719,7 @@ class App {
 
   // ── drawing ─────────────────────────────────────────────────────────────
 
-  draw(): void {
-    const p = this.painter;
-    p.reset();
+  protected draw(p: Painter): void {
     this.tocHitY = [];
     this.tocHitPage = [];
     this.runHitX = [];
@@ -953,16 +746,9 @@ class App {
     }
 
     this.drawStatusBar();
-
-    const accepted = p.submit(this.canvas!, this.pipe);
-    this.lastRecords = p.count;
-    this.lastDropped = p.dropped;
-    if (accepted < p.count) {
-      // The renderer staged fewer than we emitted; say so once rather than
-      // silently losing the tail of the frame.
-      print("tension-docs: the renderer accepted " + accepted.toString() +
-        " of " + p.count.toString() + " records");
-    }
+    // The shell resets the painter before this call and submits it after, so a
+    // frame cannot be built and never sent — and the record count it reports is
+    // the one that was actually handed over.
   }
 
   /** The table of contents, scrolled so the current page stays visible. */

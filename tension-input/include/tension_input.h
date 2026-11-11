@@ -36,7 +36,6 @@ extern "C" {
 #endif
 
 /* ── the imports this adapter registers ──────────────────────────────── */
-
 /*
  * The wasm-facing surface, module name "tension::input". The guest declares
  * these with `@external("tension::input", ...)`; the adapter registers them
@@ -137,6 +136,33 @@ int32_t input_state(int32_t handle, int32_t ptr, int32_t cap);
 int32_t input_pad(int32_t handle, int32_t slot, int32_t ptr, int32_t cap);
 
 /*
+ * `input_text(i32 handle, i32 ptr, i32 cap) -> i32`  — verb_id 7,
+ * flags TENSION_IMPORT_REENTRANT_READONLY.
+ *
+ * Copies the UTF-8 text typed since the previous call to `ptr` and returns how
+ * many bytes it wrote — **0 when nothing was typed**, which is the answer on
+ * almost every frame. `cap <= 0` probes: the pending byte count is returned and
+ * nothing is written or consumed. A `cap` smaller than the pending count is
+ * -ENOSPC *and the text is kept*, so a caller that measured with a probe always
+ * gets it, and a caller that guessed short can retry rather than lose a
+ * keystroke.
+ *
+ * Why this is a separate verb rather than a field in `input_state`: the state
+ * record is a fixed 96 bytes read once per frame and compared across frames;
+ * text is a variable-length stream that is consumed by reading. A field would
+ * have to be a fixed-size buffer, and the record is the wire — growing it to
+ * hold a paste would push every other field's offset.
+ *
+ * The text is UTF-8, exactly as the host received it. There is no
+ * normalization and no case folding: a text field wants what the user's
+ * keyboard produced, and a keybinding parser can lower-case it itself. This is
+ * the *typed* stream (`TENSION_EVENT_TEXT`), so it carries what a text editor
+ * needs and what a gamepad never produces; key *edges* still come through
+ * `input_state`'s held set and the event classes.
+ */
+int32_t input_text(int32_t handle, int32_t ptr, int32_t cap);
+
+/*
  * `input_close(i32 handle) -> i32`  — verb_id 6, flags 0.
  *
  * Detaches and releases the handle. There is no window to destroy — it was
@@ -169,7 +195,9 @@ int32_t input_close(int32_t handle);
  *   76     4   wheel_y    f32
  *   80     8   seq        u64 — the highest event sequence this snapshot
  *              reflects (0 when none); events are ordered by it
- *   88     8   reserved   (zero)
+ *   88     4   modifiers  u32 — TENSION_INPUT_MOD_*, the set held after the
+ *              last key transition this mirror saw
+ *   92     4   reserved   (zero)
  */
 #define TENSION_INPUT_STATE_SIZE 96u
 #define TENSION_INPUT_STATE_VERSION 1u
@@ -179,6 +207,25 @@ int32_t input_close(int32_t handle);
 #define TENSION_INPUT_STATE_RELATIVE (1u << 1)
 #define TENSION_INPUT_STATE_FOCUSED (1u << 2)
 #define TENSION_INPUT_STATE_POINTER_OVER (1u << 3)
+
+/*
+ * The state record's `modifiers` bits — the wire's numbering from
+ * `tension_adapter.h` (`TENSION_KEY_MOD_*`), which the host translates from
+ * SDL's word. Named again here because this is the record a guest reads.
+ *
+ * Cleared when the window loses focus: a Ctrl held while the user alt-tabs away
+ * never produces a key-up, and a guest that trusted the last value would treat
+ * the next click as Ctrl+click. That is the one place these bits are not simply
+ * "what the last key event said".
+ */
+#define TENSION_INPUT_MOD_SHIFT TENSION_KEY_MOD_SHIFT
+#define TENSION_INPUT_MOD_CTRL TENSION_KEY_MOD_CTRL
+#define TENSION_INPUT_MOD_ALT TENSION_KEY_MOD_ALT
+#define TENSION_INPUT_MOD_SUPER TENSION_KEY_MOD_SUPER
+#define TENSION_INPUT_MOD_CAPS TENSION_KEY_MOD_CAPS
+#define TENSION_INPUT_MOD_NUM TENSION_KEY_MOD_NUM
+#define TENSION_INPUT_MOD_MODE TENSION_KEY_MOD_MODE
+#define TENSION_INPUT_MOD_KNOWN TENSION_KEY_MOD_KNOWN
 
 /*
  * `input_pad`, 48 bytes, 4-byte alignment — `tension_pad_record` in
@@ -259,7 +306,8 @@ _Static_assert(sizeof(tension_pad_record) == TENSION_INPUT_PAD_SIZE,
  *   -ENOSYS  a host that does not serve pad state
  *   -EBUSY   the capacity is taken, already attached, or the control queue is
  *            full (retry next frame)
- *   -ENOSPC  a short buffer (`0 < cap < size`)
+ *   -ENOSPC  a short buffer (`0 < cap < size`) — for `input_text`, the text is
+ *            kept, so the caller can retry with the size a probe reported
  */
 
 #ifdef __cplusplus

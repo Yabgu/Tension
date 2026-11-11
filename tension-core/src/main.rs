@@ -121,6 +121,12 @@ struct HostState {
     /// The loaded resource paks, in load order: `--res` merges them into one
     /// namespace, first match wins (§7.2). Each owns its bytes (1x memory).
     res: Vec<ResourceSet<'static>>,
+    /// The one directory a guest may write into, or `None` when the root the
+    /// host tried to take could not be resolved (a `--write-root` that does not
+    /// exist). `None` makes `res_write` answer `-EROFS` for every path rather
+    /// than falling back to something writable: a save that landed somewhere
+    /// unexpected is worse than a save that failed and said so.
+    write_root: Option<res::WriteRoot>,
     audio: audio::AudioSession,
     ai: ai::AiSession,
     /// The `tension::solver` host side: wasm-source bindings keyed by the
@@ -301,6 +307,11 @@ options:
                          and sources; repeatable
   --res <PAK>            load an ECMA-208 resource pak; repeatable, and every
                          pak merges into one namespace rooted at "/"
+  --write-root <DIR>     the one directory `tension::res.res_write` may write
+                         into; the guest's paths resolve inside it and anything
+                         that would leave is -EROFS. Defaults to the working
+                         directory. Reads never see this root: paks stay the
+                         read side, and a save lands on the real filesystem.
   --capability <CAP>     load a capability adapter; repeatable. A value that
                          names an existing file is that file; anything else is
                          a name resolved as <dir>/libtension_<name>.so through
@@ -403,6 +414,9 @@ struct Cli {
     /// Capability adapters to load: a path, or a bare name resolved through
     /// `TENSION_CAPABILITY_PATH` (the CLI's `--capability` help states the rule).
     capability_paths: Vec<String>,
+    /// The directory `res_write` may write into; `None` means the working
+    /// directory, resolved once at startup.
+    write_root: Option<PathBuf>,
     /// `--log-level` values, in order. A later flag overrides an earlier one.
     log_levels: Vec<String>,
     /// `--log-format`.
@@ -462,6 +476,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut symbol_paths = Vec::new();
     let mut res_paths = Vec::new();
     let mut capability_paths = Vec::new();
+    let mut write_root: Option<PathBuf> = None;
     let mut log_levels = Vec::new();
     let mut log_format: Option<String> = None;
     let mut log_file: Option<PathBuf> = None;
@@ -518,6 +533,10 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 let value = rest.next().ok_or("`--res` needs a pak path")?;
                 res_paths.push(PathBuf::from(value));
             }
+            "--write-root" => {
+                let value = rest.next().ok_or("`--write-root` needs a directory")?;
+                write_root = Some(PathBuf::from(value));
+            }
             "--capability" => {
                 let value = rest.next().ok_or("`--capability` needs a path or a name")?;
                 capability_paths.push(value);
@@ -557,6 +576,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         symbol_paths,
         res_paths,
         capability_paths,
+        write_root,
         log_levels,
         log_format,
         log_file,
@@ -878,6 +898,43 @@ fn main() -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("--res {}: {e}", path.display()))?;
         resource_sets.push(set);
     }
+    // The writable root: a guest's only way to change anything on disk. Taken
+    // here so a bad `--write-root` is a startup error rather than a save that
+    // fails an hour later, and defaulted to the working directory so a run with
+    // no flag behaves the way `tension dev` already does.
+    //
+    // A failure is **not** fatal: the run still starts, and `res_write` answers
+    // -EROFS for every path. A game that never writes is unaffected, and a tool
+    // that does gets a refusal it can print rather than a process that would not
+    // boot.
+    let write_root: Option<res::WriteRoot> = {
+        let root = cli
+            .write_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok());
+        match root {
+            Some(path) => match res::WriteRoot::new(&path) {
+                Ok(root) => {
+                    crate::logging::log(
+                        crate::logging::Level::Info,
+                        "core",
+                        &format!("res: writing under {}", root.root().display()),
+                    );
+                    Some(root)
+                }
+                Err(error) => {
+                    crate::logging::log(
+                        crate::logging::Level::Warn,
+                        "core",
+                        &format!("res: no writable root at {} ({error}); writes will be -EROFS", path.display()),
+                    );
+                    None
+                }
+            },
+            None => None,
+        }
+    };
+
     // §7.2: the paks merge into one namespace, so two of them providing the
     // same path is a load-time error rather than a silent first-match. The
     // check costs one enumeration per pak, and nothing at lookup time.
@@ -901,6 +958,7 @@ fn main() -> anyhow::Result<()> {
             args: cli.args,
             pending_line: None,
             res: resource_sets,
+            write_root,
             audio: audio::AudioSession::new(default_adapter()),
             ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
             solver: solver::SolverHost::default(),
@@ -1122,6 +1180,45 @@ fn main() -> anyhow::Result<()> {
     // The read-only resource VFS (tension-res, ECMA-208 SIDF). Every call is
     // strict: a path that does not resolve in any loaded pak is -ENOENT, and
     // the framework layer is what turns that into null/[] for the guest (§7).
+    //
+    // `res_write` is the one verb that is not the VFS: it lands on the real
+    // filesystem under `--write-root`, because a pak is an immutable archive and
+    // an editor that cannot save is a viewer. The sandbox is `res::WriteRoot`'s,
+    // and every refusal there is -EROFS.
+    linker.func_wrap(
+        "tension::res",
+        "res_write",
+        |mut caller: Caller<'_, HostState>,
+         path_ptr: i32,
+         path_len: i32,
+         data_ptr: i32,
+         data_len: i32|
+         -> i32 {
+            if data_len < 0 {
+                return EINVAL;
+            }
+            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
+                return EINVAL;
+            };
+            if data_len == 0 {
+                // An empty file is a legitimate save (a cleared document), so the
+                // zero-length case is a real write rather than a refusal.
+            }
+            let Some(bytes) = read_guest_span(&mut caller, data_ptr as u32, data_len as u32) else {
+                return EINVAL;
+            };
+            match caller.data().write_root.as_ref() {
+                Some(root) => match root.write(&path, &bytes) {
+                    Ok(written) => written as i32,
+                    Err(error) => error.code(),
+                },
+                // No root: a host whose `--write-root` did not resolve. Refused
+                // rather than silently writing to the working directory, which
+                // is the flag's absence meaning something else.
+                None => -30, // EROFS
+            }
+        },
+    )?;
     linker.func_wrap(
         "tension::res",
         "res_open",

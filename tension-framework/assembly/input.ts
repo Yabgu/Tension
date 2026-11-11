@@ -1,4 +1,4 @@
-// The input capability's guest SDK: the six verbs and the two records.
+// The input capability's guest SDK: the seven verbs and the two records.
 //
 // The adapter is `libtension_input.so` (tension-input/), the design is
 // INPUT.md, and the wire is tension-input/include/tension_input.h. This module
@@ -35,6 +35,9 @@ declare function stateRaw(handle: i32, ptr: u32, cap: i32): i32;
 /** Write one gamepad slot's record; `-ENOENT` for an empty slot. */
 @external("tension::input", "pad")
 declare function padRaw(handle: i32, slot: i32, ptr: u32, cap: i32): i32;
+/** Copy out the UTF-8 typed since the last call; `cap <= 0` probes. */
+@external("tension::input", "text")
+declare function textRaw(handle: i32, ptr: u32, cap: i32): i32;
 /** Release the handle. The SDL subsystem stays up for the next open. */
 @external("tension::input", "close")
 declare function closeRaw(handle: i32): i32;
@@ -93,6 +96,35 @@ export const STATE_MOUSE_Y_OFFSET: u32 = 68;
 export const STATE_WHEEL_X_OFFSET: u32 = 72;
 export const STATE_WHEEL_Y_OFFSET: u32 = 76;
 export const STATE_SEQ_OFFSET: u32 = 80;
+/** The modifier set after the last key transition (`MOD_*` bits below). */
+export const STATE_MODIFIERS_OFFSET: u32 = 88;
+
+/**
+ * The state record's `modifiers` bits.
+ *
+ * The wire's own numbering (`tension_adapter.h`, `TENSION_KEY_MOD_*`), which the
+ * host translates from SDL's word — a guest is not linked against SDL and must
+ * not spell its constants. The left and right halves of a pair collapse into one
+ * bit: a caller asking "is shift held" is asking about the keyboard, not about a
+ * hand.
+ */
+export const MOD_SHIFT: u32 = 1 << 0;
+export const MOD_CTRL: u32 = 1 << 1;
+export const MOD_ALT: u32 = 1 << 2;
+export const MOD_SUPER: u32 = 1 << 3;
+export const MOD_CAPS: u32 = 1 << 4;
+export const MOD_NUM: u32 = 1 << 5;
+export const MOD_MODE: u32 = 1 << 6;
+
+/**
+ * The bytes of typed text one `text()` call may hand back.
+ *
+ * The mirror's own buffer is the limit (256 bytes, ~16 frames of fast typing at
+ * 60 Hz), and a caller reads once per frame, so this is a bound on a bound.
+ * Stated here because the buffer a caller passes must be at least this in the
+ * class's convenience path below.
+ */
+export const TEXT_CAPACITY: i32 = 256;
 
 /** The pad record's field offsets. */
 export const PAD_FLAGS_OFFSET: u32 = 4;
@@ -164,6 +196,25 @@ export function pad(handle: i32, slot: i32, out: usize): i32 {
   return padRaw(handle, slot, <u32>out, <i32>PAD_SIZE);
 }
 
+/**
+ * Copy the UTF-8 typed since the previous call into `out`, and return how many
+ * bytes were written — 0 on almost every frame.
+ *
+ * `cap <= 0` probes: the pending count is returned and nothing is consumed or
+ * written. A `cap` smaller than the pending count is `-ENOSPC` with the text
+ * **kept**, so a caller can retry with the size a probe reported rather than
+ * losing a keystroke. That is why the doc comment to the verb says a caller
+ * should probe first, and why `Snapshot.textInput()` does.
+ */
+export function text(handle: i32, out: usize, cap: i32): i32 {
+  return textRaw(handle, <u32>out, cap);
+}
+
+/** How many typed bytes are waiting, without consuming them. */
+export function textSize(handle: i32): i32 {
+  return textRaw(handle, 0, 0);
+}
+
 /** Release the handle. */
 export function close(handle: i32): i32 {
   return closeRaw(handle);
@@ -190,6 +241,8 @@ export class InputState {
   wheelX: f32 = 0;
   wheelY: f32 = 0;
   seq: u64 = 0;
+  /** The modifier set after the last key transition (`MOD_*`). */
+  modifiers: u32 = 0;
   private keysAt: usize = 0;
 
   static read(ptr: usize): InputState {
@@ -207,6 +260,7 @@ export class InputState {
     s.wheelX = load<f32>(ptr + STATE_WHEEL_X_OFFSET);
     s.wheelY = load<f32>(ptr + STATE_WHEEL_Y_OFFSET);
     s.seq = load<u64>(ptr + STATE_SEQ_OFFSET);
+    s.modifiers = load<u32>(ptr + STATE_MODIFIERS_OFFSET);
     s.keysAt = ptr + STATE_KEYS_OFFSET;
     return s;
   }
@@ -306,8 +360,19 @@ export class Snapshot {
   wheelX: f32 = 0;
   wheelY: f32 = 0;
   seq: u64 = 0;
+  /** The modifier set after the last key transition (`MOD_*`). */
+  modifiers: u32 = 0;
   /** False until a `read()` has succeeded. */
   valid: bool = false;
+
+  /**
+   * The scratch buffer `textInput()` decodes from.
+   *
+   * A field rather than a local so the address it takes is stable for the life
+   * of the object: the verb writes into guest memory through `guest_write`, and
+   * an address into a collected local is an address into freed memory.
+   */
+  private textBuffer: Uint8Array = new Uint8Array(TEXT_CAPACITY);
 
   constructor(handle: i32) {
     this.handle = handle;
@@ -389,8 +454,63 @@ export class Snapshot {
     this.wheelX = load<f32>(at + STATE_WHEEL_X_OFFSET);
     this.wheelY = load<f32>(at + STATE_WHEEL_Y_OFFSET);
     this.seq = load<u64>(at + STATE_SEQ_OFFSET);
+    this.modifiers = load<u32>(at + STATE_MODIFIERS_OFFSET);
     this.valid = true;
     return true;
+  }
+
+  // --- modifiers -----------------------------------------------------------
+
+  /** Whether `bits` are all in the modifier set this frame. */
+  mods(bits: u32): bool {
+    return this.valid && (this.modifiers & bits) == bits;
+  }
+
+  get shift(): bool { return this.mods(MOD_SHIFT); }
+  get ctrl(): bool { return this.mods(MOD_CTRL); }
+  get alt(): bool { return this.mods(MOD_ALT); }
+  /** The Super/Windows/Command key. `meta`, not `super`: the latter is a
+   *  keyword in this language, so a getter named for it does not parse. */
+  get meta(): bool { return this.mods(MOD_SUPER); }
+
+  /**
+   * The text typed since the previous call, as a string, consumed by reading.
+   *
+   * Empty on almost every frame, and it allocates only when it is not — a
+   * `String` cannot be avoided for a caller that wants to append to a field, and
+   * the allocation is proportional to what a human typed rather than to the
+   * frame rate.
+   *
+   * Probes first, so a `-ENOSPC` cannot happen: the mirror keeps the text until
+   * it is actually read out, and this reads with the size the probe reported.
+   */
+  textInput(): string {
+    if (this.handle <= 0) return "";
+    const pending: i32 = textSize(this.handle);
+    if (pending <= 0) return "";
+    if (pending > this.textBuffer.length) return "";  // larger than the mirror allows
+    const got: i32 = textRaw(this.handle, <u32>this.textBuffer.dataStart, <i32>this.textBuffer.length);
+    if (got <= 0) return "";
+    return String.UTF8.decodeUnsafe(changetype<usize>(this.textBuffer.dataStart), <usize>got, false);
+  }
+
+  /**
+   * The text typed since the previous call, as raw UTF-8 bytes, consumed.
+   *
+   * Returns the byte count, or `-ENOSPC` when `out` is smaller than what is
+   * pending — in which case nothing was consumed, so a caller that sizes `out`
+   * from `textSize()` never loses a keystroke. For a text field that edits
+   * bytes this is the cheaper path: no string, no decode.
+   */
+  readText(out: Uint8Array): i32 {
+    if (this.handle <= 0) return 0;
+    return textRaw(this.handle, <u32>out.dataStart, <i32>out.length);
+  }
+
+  /** How many typed bytes are waiting, without consuming them. */
+  textPending(): i32 {
+    if (this.handle <= 0) return 0;
+    return textSize(this.handle);
   }
 
   // --- queries -------------------------------------------------------------

@@ -1894,6 +1894,8 @@ mod lifecycle {
                 args: Vec::new(),
                 pending_line: None,
                 res: Vec::new(),
+                // No writable root in a unit test: every `res_write` is -EROFS.
+                write_root: None,
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
                 ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),
@@ -2324,6 +2326,8 @@ mod verbs {
                 args: Vec::new(),
                 pending_line: None,
                 res: Vec::new(),
+                // No writable root in a unit test: every `res_write` is -EROFS.
+                write_root: None,
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
                 ai: crate::ai::AiSession::new(crate::default_ai_adapter(crate::ai::AiSink::detached_posting())),
                 solver: crate::solver::SolverHost::default(),

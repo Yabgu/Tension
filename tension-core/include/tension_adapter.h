@@ -437,6 +437,48 @@ typedef struct tension_window_info {
 #define TENSION_KEY_FLAG_DOWN 1u
 #define TENSION_KEY_FLAG_REPEAT 2u
 
+/*
+ * `TENSION_EVENT_KEY`'s `a2`: the modifier bits held *after* the key transition
+ * this event reports. Both halves of a pair are reported (an unshifted letter
+ * that came down while Shift was already held carries SHIFT, and so does the
+ * Shift release), so a consumer that mirrors the last value it saw has the
+ * current set with no separate query.
+ *
+ * These are this wire's bits, not SDL's `SDL_Keymod` word — the host is the side
+ * that knows SDL, so it translates (platform.rs, `key_mod_bits`). A guest that
+ * read SDL's numbering would be reading a library it is not linked against.
+ */
+#define TENSION_KEY_MOD_SHIFT (1u << 0)
+#define TENSION_KEY_MOD_CTRL  (1u << 1)
+#define TENSION_KEY_MOD_ALT   (1u << 2)
+#define TENSION_KEY_MOD_SUPER (1u << 3)
+#define TENSION_KEY_MOD_CAPS  (1u << 4)
+#define TENSION_KEY_MOD_NUM   (1u << 5)
+#define TENSION_KEY_MOD_MODE  (1u << 6)
+
+/** Every modifier bit this build defines; anything outside is not a modifier. */
+#define TENSION_KEY_MOD_KNOWN                                                 \
+    (TENSION_KEY_MOD_SHIFT | TENSION_KEY_MOD_CTRL | TENSION_KEY_MOD_ALT |     \
+     TENSION_KEY_MOD_SUPER | TENSION_KEY_MOD_CAPS | TENSION_KEY_MOD_NUM |     \
+     TENSION_KEY_MOD_MODE)
+
+/*
+ * `TENSION_EVENT_TEXT`: `flags` is the byte count (1..TENSION_EVENT_TEXT_BYTES)
+ * and `a0..a3` carry that many UTF-8 bytes, little-endian within each word —
+ * `a0`'s lowest byte is the first byte of the text. A NUL byte is part of the
+ * payload like any other; `flags` is the only length.
+ *
+ * Why inline bytes rather than "the first codepoint and a count" (which is what
+ * this family carried when nothing consumed it): the text a user typed is not a
+ * scalar. A dead-key composition, an IME commit and a paste all arrive as one
+ * event holding several codepoints, and a consumer that has to go back to SDL
+ * for the rest is a consumer that needs SDL. The payload is 32 bytes, which is
+ * one word more than any single keystroke needs; the host splits anything longer
+ * at a UTF-8 boundary into consecutive events, so a paste is lossless rather
+ * than truncated.
+ */
+#define TENSION_EVENT_TEXT_BYTES 32u
+
 /* `TENSION_EVENT_PAD`'s subtype, in `a0`. `a1` = the device's joystick instance
  * id, `a2` = button or axis index, `a3` = value (a button's 0/1, or an axis's
  * raw -32768..32767). Slots are the host's to assign, not the wire's: an

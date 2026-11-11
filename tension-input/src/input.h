@@ -64,12 +64,15 @@ struct StateRecord {
     float wheel_x;
     float wheel_y;
     uint64_t seq;
-    uint64_t reserved;
+    uint32_t modifiers; /* TENSION_INPUT_MOD_*, offset 88 */
+    uint32_t reserved;
 };
 static_assert(sizeof(StateRecord) == TENSION_INPUT_STATE_SIZE,
               "the state record is the size the wire declares");
 static_assert(offsetof(StateRecord, mouse_dxf) == 56,
               "the float delta is where the guest reads it");
+static_assert(offsetof(StateRecord, modifiers) == 88,
+              "the modifier word is where the guest reads it");
 
 /// The gamepad slot record (`docs/modules/input.md` §2; v1's state half).
 ///
@@ -120,6 +123,24 @@ class Mirror {
     /// Compose one state record and consume the motion it carries.
     void snapshot(StateRecord *out, uint32_t pads_present);
 
+    /// The text typed since the previous call: copy up to `cap` bytes into
+    /// `out` and return how many, or the pending count when `cap <= 0`.
+    ///
+    /// A `cap` smaller than the pending count copies **nothing** and returns
+    /// `kTextShort`: the caller measured with a probe, so a short buffer is a
+    /// caller bug that must not silently eat a keystroke. The text stays
+    /// pending until it is actually read out.
+    int32_t take_text(char *out, int32_t cap);
+
+    /// A refusal from `take_text`: the buffer was too small, nothing consumed.
+    static constexpr int32_t kTextShort = -28; /* -ENOSPC */
+
+    /// The largest text one frame can hold before it is dropped and counted.
+    /// 256 bytes is ~16 frames of fast typing at 60 Hz, so a guest reading once
+    /// per frame never reaches it; a guest that stopped reading gets a counted
+    /// loss rather than a silent one (`dropped_text`).
+    static constexpr size_t kTextCapacity = 256;
+
     /// The state record's `flags`, from what the mirror has seen.
     uint32_t flags() const;
 
@@ -136,6 +157,14 @@ class Mirror {
     uint32_t mouse_buttons_ = 0;
     int32_t mouse_x_ = 0;
     int32_t mouse_y_ = 0;
+    /// The modifier set after the last key transition (TENSION_INPUT_MOD_*).
+    uint32_t modifiers_ = 0;
+    /// UTF-8 typed since the last `take_text`, and how much of it is used.
+    char text_[kTextCapacity] = {0};
+    size_t text_len_ = 0;
+    /// Text bytes refused because `text_` was full, and whether that has been
+    /// said out loud (one log line per period of saturation, not per keystroke).
+    uint32_t dropped_text_ = 0;
     float accum_dx_ = 0.0f;
     float accum_dy_ = 0.0f;
     float accum_wheel_x_ = 0.0f;

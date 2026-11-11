@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-83 imports across 12 modules: 51 registered by the host in 9 modules, 32 by 3 capability adapters.
+85 imports across 12 modules: 52 registered by the host in 9 modules, 33 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -29,7 +29,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:960` |
+| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:1018` |
 
 ## `ogre` — capability
 
@@ -116,50 +116,52 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `open` | `(i32) → i32` | 1 | — | `tension-input/src/adapter.cpp:361` |
-| `attach` | `(i32, i32, i32, i32) → i32` | 2 | — | `tension-input/src/adapter.cpp:362` |
-| `set_relative` | `(i32, i32) → i32` | 3 | — | `tension-input/src/adapter.cpp:363` |
-| `state` | `(i32, i32, i32) → i32` | 4 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:366` |
-| `pad` | `(i32, i32, i32, i32) → i32` | 5 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:367` |
-| `close` | `(i32) → i32` | 6 | — | `tension-input/src/adapter.cpp:368` |
+| `open` | `(i32) → i32` | 1 | — | `tension-input/src/adapter.cpp:400` |
+| `attach` | `(i32, i32, i32, i32) → i32` | 2 | — | `tension-input/src/adapter.cpp:401` |
+| `set_relative` | `(i32, i32) → i32` | 3 | — | `tension-input/src/adapter.cpp:402` |
+| `state` | `(i32, i32, i32) → i32` | 4 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:405` |
+| `pad` | `(i32, i32, i32, i32) → i32` | 5 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:406` |
+| `close` | `(i32) → i32` | 6 | — | `tension-input/src/adapter.cpp:408` |
+| `text` | `(i32, i32, i32) → i32` | 7 | REENTRANT_READONLY | `tension-input/src/adapter.cpp:407` |
 
 ## `tension::io`
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/main.rs:975` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1001` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1016` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1031` |
-| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1084` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1090` |
+| `print` | `(i32, i32)` | `tension-core/src/main.rs:1033` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1059` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1074` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1089` |
+| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1142` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1148` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1331` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1354` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1359` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1377` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1534` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1578` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1624` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1654` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1684` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1428` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1451` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1456` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1474` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1631` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1675` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1721` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1751` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1781` |
 
 ## `tension::res`
 
 | import | signature | registered at |
 |---|---|---|
-| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1125` |
-| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1139` |
-| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1156` |
-| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1197` |
-| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1214` |
-| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1231` |
-| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1251` |
-| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1275` |
+| `res_write` | `(i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1188` |
+| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1222` |
+| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1236` |
+| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1253` |
+| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1294` |
+| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1311` |
+| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1328` |
+| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1348` |
+| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1372` |
 
 ## `tension::solver`
 

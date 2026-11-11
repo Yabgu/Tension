@@ -28,15 +28,26 @@
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 import { GLYPHS, COLS, ROWS, ROM_COLS } from './font8x16.mjs';
-import { Surface } from './lib/iwi.mjs';
-import { encodePng, scaleNearest } from './lib/png.mjs';
+import { Surface } from '../lib/iwi.mjs';
+import { encodePng, scaleNearest } from '../lib/png.mjs';
 
-const here = dirname(fileURLToPath(import.meta.url));
-const appDir = resolve(here, '..');
-const repo = resolve(appDir, '..', '..');
+/**
+ * Where the outputs go, by default.
+ *
+ * **The current directory's `assets/`, not this file's.** This tool lives in the
+ * framework because the toolkit's cell geometry and the atlas are one contract —
+ * `assembly/ui/theme.ts` states the numbers, `font8x16.mjs` is where they come
+ * from — but it *runs* in whichever app bakes an atlas, so its defaults follow
+ * the caller. A project invokes it as
+ *
+ *     node ../../tension-framework/tools/font/make-font.mjs
+ *
+ * from its own directory and gets `assets/ui.iwi` beside its source, which is
+ * what every consumer of `loadTextureFromRes("/ui.iwi")` expects.
+ */
+const appDir = process.cwd();
 
 const argv = process.argv.slice(2);
 let outPath = join(appDir, 'assets', 'ui.iwi');
@@ -285,7 +296,9 @@ writeFileSync(outPath, iwi);
 
 writeFileSync(join(dirname(outPath), 'ui.json'), `${JSON.stringify({
   atlas: {
-    path: relative(repo, outPath).split('\\').join('/'),
+    // Relative to the project that owns the atlas, which is wherever this
+    // tool was run from — not to this file's own directory.
+    path: relative(appDir, outPath).split('\\').join('/'),
     width: ATLAS_W,
     height: ATLAS_H,
     scale: SCALE,
@@ -390,8 +403,8 @@ if (previewPath) {
 process.stdout.write(
   `make-font: ${drawn} glyph cells (${TEXT_COLOURS.length} colours x ${WEIGHTS.length} weights) ` +
   `+ ${CHROME.length} chrome cells, ${ATLAS_W}x${ATLAS_H}\n` +
-  `make-font: ${(iwi.length / 1024).toFixed(1)} KiB -> ${relative(repo, outPath).split('\\').join('/')}\n`,
+  `make-font: ${(iwi.length / 1024).toFixed(1)} KiB -> ${relative(appDir, outPath).split('\\').join('/')}\n`,
 );
 if (previewPath) {
-  process.stdout.write(`make-font: preview -> ${relative(repo, previewPath).split('\\').join('/')}\n`);
+  process.stdout.write(`make-font: preview -> ${relative(appDir, previewPath).split('\\').join('/')}\n`);
 }

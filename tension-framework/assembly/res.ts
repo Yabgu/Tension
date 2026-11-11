@@ -18,6 +18,8 @@
 // Nothing here throws: errors are null / -1 / false / empty, matching the rest
 // of the framework.
 
+import { Bytes } from "./bytes";
+
 @external("tension::res", "res_open")
 declare function hostResOpen(pathPtr: usize, pathLen: i32): i32;
 
@@ -49,6 +51,10 @@ declare function hostResReaddir(
   outPtr: usize,
 ): i32;
 
+/** Write a whole file under the host's writable root. Returns bytes or -errno. */
+@external("tension::res", "res_write")
+declare function hostResWrite(pathPtr: usize, pathLen: i32, dataPtr: usize, dataLen: i32): i32;
+
 /** `RES_SEEK_SET`: seek from the start of the file. */
 export const RES_SEEK_SET: i32 = 0;
 /** `RES_SEEK_CUR`: seek from the current position. */
@@ -65,6 +71,10 @@ export const RES_KIND_DIRECTORY: u32 = 1;
 export const RES_FLAG_COMPRESSED: u32 = 1;
 
 const ENOENT: i32 = -2;
+/** The write was refused because the path leaves the host's writable root. */
+export const EROFS: i32 = -30;
+/** The parent directory could not be created, or the write itself failed. */
+export const EIO: i32 = -5;
 
 /** One child of a listed directory, as the game sees it. */
 export class ResEntry {
@@ -257,6 +267,41 @@ export function resReadText(path: string): string | null {
   file.close();
   if (n < 0) return null;
   return String.UTF8.decodeUnsafe(changetype<usize>(buf), n);
+}
+
+/**
+ * Write a whole file. Returns the bytes written, or a negative errno.
+ *
+ * **This is the one res call that is not the pak reader.** The paks are
+ * immutable archives — the host maps them, several merge into one namespace, and
+ * an archive a guest can append to is one whose offsets can move under the code
+ * reading it. So a write lands on the real filesystem, under one directory the
+ * *host* chose (`--write-root`, defaulting to the working directory), and the
+ * guest's path resolves inside it.
+ *
+ * The contract, which is the host's `res::WriteRoot` and stated here because it
+ * is what a caller has to live with:
+ *
+ *   * the path is relative, `/`-separated, and names a file — parent
+ *     directories are created;
+ *   * `..`, `.`, a leading `/`, a drive letter and a backslash are **-EROFS**,
+ *     not normalized away: a path that says `..` is trying to leave;
+ *   * a symlink in the parent chain that leaves the root is -EROFS, and a target
+ *     that is itself a symlink is refused rather than followed;
+ *   * a target that is a directory is -EISDIR (-21).
+ *
+ * Returns a count, not a boolean, because "wrote 0 bytes" and "wrote nothing"
+ * are different answers to an editor: a cleared document is a real save.
+ */
+export function resWriteFile(path: string, bytes: Bytes): i32 {
+  const pathBytes = String.UTF8.encode(path);
+  return hostResWrite(changetype<usize>(pathBytes), i32(pathBytes.byteLength),
+                      i32(bytes.address()), i32(bytes.length));
+}
+
+/** Write a UTF-8 string. Returns the bytes written, or a negative errno. */
+export function resWriteText(path: string, text: string): i32 {
+  return resWriteFile(path, Bytes.ofString(text));
 }
 
 /** An open file inside a pak. Close it when done; `read`/`seek` return -1 after that. */

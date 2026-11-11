@@ -99,6 +99,39 @@ StateRecord snapshotOf(Mirror &mirror) {
     return record;
 }
 
+/// One key event: `a0` scancode, `a1` keycode, `a2` the modifier set after the
+/// transition, `flags` the direction and the repeat bit.
+tension_event key(uint32_t scancode, bool down, uint32_t modifiers) {
+    tension_event event{};
+    event.family = TENSION_EVENT_KEY;
+    event.flags = down ? TENSION_KEY_FLAG_DOWN : 0u;
+    event.a0 = scancode;
+    event.a1 = scancode; /* keycode, unused by the mirror */
+    event.a2 = modifiers;
+    return event;
+}
+
+/// One text event: `flags` bytes of UTF-8 inline in `a0..a3`.
+tension_event text(const std::string &typed) {
+    tension_event event{};
+    event.family = TENSION_EVENT_TEXT;
+    event.flags = static_cast<uint32_t>(typed.size());
+    int64_t *words[4] = {&event.a0, &event.a1, &event.a2, &event.a3};
+    for (size_t index = 0; index < typed.size(); ++index) {
+        *words[index / 8] |= static_cast<int64_t>(static_cast<uint8_t>(typed[index]))
+                             << ((index % 8) * 8);
+    }
+    return event;
+}
+
+/// A window event whose subtype is in `a0`.
+tension_event window(uint32_t subtype) {
+    tension_event event{};
+    event.family = TENSION_EVENT_WINDOW;
+    event.a0 = subtype;
+    return event;
+}
+
 // ── 1. device id 0 is the ordinary device ───────────────────────────────────
 //
 // The regression, in full: one motion event carrying device id 0 must move the
@@ -245,6 +278,123 @@ void caseRecordShape() {
              static_cast<long long>(sizeof(StateRecord)), "the record is the wire's size");
     expectEq(TENSION_INPUT_STATE_VERSION, state.version, "the snapshot carries the version");
     expectEq(0, state.mouse_x, "a fresh mirror's pointer is at the origin");
+    expectEq(88, static_cast<long long>(offsetof(StateRecord, modifiers)),
+             "the modifier word sits at the offset the header publishes");
+}
+
+// ── 9. modifiers are a level, taken from the key events ─────────────────────
+//
+// Both halves of a pair carry the set held *after* the transition, so the last
+// key event is the current state. That is what makes this a copy rather than a
+// bookkeeping of which key owns which bit.
+void caseModifiersFollowKeys() {
+    Mirror mirror;
+    mirror.attach(now_ms());
+    expectEq(0, snapshotOf(mirror).modifiers, "no modifiers before any key");
+
+    // Ctrl down (and nothing else), then the letter that completes Ctrl+S.
+    tension_event ctrl_down = key(224, true, TENSION_INPUT_MOD_CTRL);
+    mirror.ingest(&ctrl_down, 1, now_ms());
+    expectEq(TENSION_INPUT_MOD_CTRL, snapshotOf(mirror).modifiers,
+             "a Ctrl key-down sets CTRL");
+
+    tension_event s_down = key(22, true, TENSION_INPUT_MOD_CTRL);
+    mirror.ingest(&s_down, 1, now_ms());
+    expectEq(TENSION_INPUT_MOD_CTRL, snapshotOf(mirror).modifiers,
+             "a letter typed while Ctrl is held still reports CTRL");
+
+    tension_event ctrl_up = key(224, false, 0);
+    mirror.ingest(&ctrl_up, 1, now_ms());
+    expectEq(0, snapshotOf(mirror).modifiers, "releasing Ctrl clears it");
+
+    // Shift and Ctrl together, which is what a shortcut-with-a-capital needs.
+    tension_event both = key(225, true, TENSION_INPUT_MOD_SHIFT | TENSION_INPUT_MOD_CTRL);
+    mirror.ingest(&both, 1, now_ms());
+    expectEq(TENSION_INPUT_MOD_SHIFT | TENSION_INPUT_MOD_CTRL,
+             snapshotOf(mirror).modifiers, "Shift and Ctrl together are both reported");
+}
+
+// ── 10. losing focus forgets a held modifier ────────────────────────────────
+//
+// The case that made this a rule: Ctrl held, alt-tab, released in the other
+// window. No key-up is ever delivered here, so a mirror that trusted the last
+// key event would turn every later click into Ctrl+click.
+void caseFocusLossClearsModifiers() {
+    Mirror mirror;
+    mirror.attach(now_ms());
+    tension_event ctrl_down = key(224, true, TENSION_INPUT_MOD_ALT);
+    mirror.ingest(&ctrl_down, 1, now_ms());
+    expectEq(TENSION_INPUT_MOD_ALT, snapshotOf(mirror).modifiers, "Alt is held");
+
+    tension_event lost = window(TENSION_WINDOW_EVENT_FOCUS_LOST);
+    mirror.ingest(&lost, 1, now_ms());
+    expectEq(0, snapshotOf(mirror).modifiers, "losing focus clears the modifier set");
+}
+
+// ── 11. text accumulates and is consumed by reading ─────────────────────────
+//
+// A flow, not a level: the penance for not reading is losing it, and reading it
+// twice must not produce it twice.
+void caseTextAccumulates() {
+    Mirror mirror;
+    mirror.attach(now_ms());
+    expectEq(0, mirror.take_text(nullptr, 0), "no text before anything is typed");
+
+    tension_event a = text("a");
+    tension_event b = text("b");
+    mirror.ingest(&a, 1, now_ms());
+    mirror.ingest(&b, 1, now_ms());
+    expectEq(2, mirror.take_text(nullptr, 0), "two typed characters are pending");
+
+    char out[16] = {0};
+    expectEq(2, mirror.take_text(out, sizeof(out)), "reading returns both bytes");
+    expect(std::strncmp(out, "ab", 2) == 0, "in the order they were typed");
+    expectEq(0, mirror.take_text(nullptr, 0), "and consumes them");
+
+    // Multi-byte UTF-8 survives byte for byte: the mirror does not re-encode.
+    tension_event e_acute = text("\xC3\xA9");
+    mirror.ingest(&e_acute, 1, now_ms());
+    char wide[8] = {0};
+    expectEq(2, mirror.take_text(wide, sizeof(wide)), "é is two UTF-8 bytes");
+    expectEq(0xC3, static_cast<uint8_t>(wide[0]), "the first byte is the lead byte");
+    expectEq(0xA9, static_cast<uint8_t>(wide[1]), "the second is the continuation");
+}
+
+// ── 12. a short buffer loses nothing ────────────────────────────────────────
+//
+// The caller that measured with a probe gets its text; the caller that guessed
+// short gets -ENOSPC and another chance, rather than half a keystroke.
+void caseShortBufferKeepsText() {
+    Mirror mirror;
+    mirror.attach(now_ms());
+    tension_event typed = text("hello");
+    mirror.ingest(&typed, 1, now_ms());
+
+    char small[3] = {0};
+    expectEq(Mirror::kTextShort, mirror.take_text(small, sizeof(small)),
+             "a short buffer is refused");
+    expectEq(5, mirror.take_text(nullptr, 0), "and the text is still pending");
+
+    char enough[8] = {0};
+    expectEq(5, mirror.take_text(enough, sizeof(enough)), "a big enough buffer gets it all");
+    expect(std::strncmp(enough, "hello", 5) == 0, "and it is the same text");
+}
+
+// ── 13. the buffer is bounded, and the loss is counted ──────────────────────
+//
+// A guest that stopped reading must not grow this mirror without limit. 256
+// bytes is ~16 frames of fast typing, so a guest reading once per frame never
+// reaches it; one that does loses bytes and the log says so.
+void caseTextIsBounded() {
+    Mirror mirror;
+    mirror.attach(now_ms());
+    std::string chunk(32, 'x');
+    for (int index = 0; index < 12; ++index) {
+        tension_event typed = text(chunk);
+        mirror.ingest(&typed, 1, now_ms());
+    }
+    expectEq(static_cast<long long>(Mirror::kTextCapacity), mirror.take_text(nullptr, 0),
+             "the pending text stops at the capacity");
 }
 
 } // namespace
@@ -259,6 +409,11 @@ int main() {
     caseZeroDeltaAddsNothing();
     caseButtonsFromDeviceZero();
     caseRecordShape();
+    caseModifiersFollowKeys();
+    caseFocusLossClearsModifiers();
+    caseTextAccumulates();
+    caseShortBufferKeepsText();
+    caseTextIsBounded();
 
     if (failures != 0) {
         std::printf("mirror: %d of %d check(s) failed\n", failures, checks);

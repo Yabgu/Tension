@@ -225,6 +225,19 @@ function run_basic(create_window: bool): void {
   }
   assert(state.padsPresent == live_slots, "pads_present disagrees with the pad records");
 
+  // The editor's two additions, asserted where the verb surface is: modifiers
+  // are a field of the record at the offset the header publishes, and text is a
+  // verb that answers 0 when nothing was typed (which, on a machine nobody is
+  // typing on, is every frame).
+  assert(state.modifiers == 0, "the modifier word is not zero before any key");
+  const text_cap: i32 = 64;
+  const text_buf = heap.alloc(text_cap);
+  const pending = input.textSize(handle);
+  assert(pending >= 0, "input_text's probe answered " + pending.toString());
+  const typed = input.text(handle, text_buf, text_cap);
+  assert(typed >= 0, "input_text answered " + typed.toString());
+  assert(typed == pending, "input_text's read disagrees with its probe");
+
   // Relative mouse mode is a *request* to the host's executor now. The flag
   // reports the accepted request; the host logs the refusal if it cannot apply
   // it, which on a real window it can.

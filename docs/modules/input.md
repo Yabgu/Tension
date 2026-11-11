@@ -35,7 +35,7 @@ What it is **not**:
 - **Not a thread owner.** Before v7 it was; the layer replaced it
   (`INPUT.md` §1).
 
-## 2. The six verbs
+## 2. The seven verbs
 
 Module `tension::input`, every parameter and return `i32`, every registration
 `TENSION_VT_I32`. Signatures and guest wrappers are in `docs/abi/guest.md` and
@@ -50,10 +50,10 @@ refuses.
 | 4 | `state` | `(handle, ptr, cap) -> bytes` | fills a 96-byte snapshot; `cap <= 0` probes the size | `-EINVAL` handle/write, `-ENODEV` not attached, `-ENOSPC` short buffer |
 | 5 | `pad` | `(handle, slot, ptr, cap) -> bytes` | one 48-byte pad slot from the host's mirror | as `state`, plus `-ENOENT` for an empty slot |
 | 6 | `close` | `(handle) -> i32` | detach and release the handle | `-EINVAL` unknown handle |
+| 7 | `text` | `(handle, ptr, cap) -> bytes` | the UTF-8 typed since the previous call, consumed | as `state`; `-ENOSPC` on a short buffer, with the text **kept** |
 
-`state` and `pad` are the two `TENSION_IMPORT_REENTRANT_READONLY` verbs
-(`adapter.cpp:360-373`): they take a snapshot and write guest memory, and never
-pump or block. Nothing here is `DEFERRABLE`, so `apply` is NULL.
+`state`, `pad` and `text` are the three `TENSION_IMPORT_REENTRANT_READONLY`
+verbs: they take a snapshot and write guest memory, and never pump or block. Nothing here is `DEFERRABLE`, so `apply` is NULL.
 
 **The `ret` hazard.** The session puts the shim's `ret` into the wasm result slot
 and only logs the shim's own return value. A refusal that only did
@@ -61,6 +61,38 @@ and only logs the shim's own return value. A refusal that only did
 fixture, which saw `pad(0)` succeed while the session logged `adapter status -2`.
 Every refusal therefore writes both, through one function (`refuse()`,
 `adapter.cpp:72-76`).
+
+### Modifiers are a level, typed text is a flow
+
+The two things an editor needs that a gamepad never produces, and they are stored
+differently because they are different shapes.
+
+**Modifiers are state.** `a2` on every key event carries the set held *after*
+that transition, so both halves of a pair report it and the last event a mirror
+sees is the current set — copying is the whole of the tracking. The mirror writes
+it into the state record's `modifiers` word (offset 88, the first half of what
+used to be `reserved`; the record stays 96 bytes, so no other field moved). The
+host translates SDL's `SDL_Keymod` into the wire's own bits (`KEY_MOD_*`,
+`platform.rs::key_mod_bits`) because a guest is not linked against SDL and must
+not spell its constants.
+
+The one exception is focus. A modifier held while the user alt-tabs away never
+gets a key-up, so a mirror that trusted the last event would keep `CTRL` set and
+turn every later click into Ctrl+click; `FOCUS_LOST` therefore clears the set
+(`input.cpp`, `TENSION_EVENT_WINDOW`).
+
+**Typed text is a stream**, so it is a verb rather than a field: `flags` bytes of
+UTF-8 ride inline in `a0..a3` (32 bytes per event, split at UTF-8 boundaries when
+a paste is longer), accumulate in a 256-byte mirror buffer, and are consumed by
+`text`. Reading it twice does not produce it twice, and a short buffer is
+`-ENOSPC` with the text kept, so a caller that probed first never loses a
+keystroke. Overflow (a guest that stopped reading) is counted and logged once per
+256 bytes rather than silently dropped.
+
+Pinned in `tension-input/tests/mirror_test.cpp` cases 9–13: modifiers follow both
+halves of a pair, focus loss clears them, text accumulates and drains in order,
+multi-byte UTF-8 survives byte for byte, a short buffer consumes nothing, and the
+buffer is bounded.
 
 ## 3. The event flow
 
@@ -274,7 +306,7 @@ using.
 
 | File | What it settles |
 |---|---|
-| `include/tension_input.h` | the boundary: six verbs, two records with their offsets, the refusal vocabulary |
+| `include/tension_input.h` | the boundary: seven verbs, two records with their offsets, the refusal vocabulary |
 | `src/input.h` | the records as C++ sees them, and `Mirror` |
 | `src/input.cpp` | `tension_event` → state and edges; no SDL, no thread, no window |
 | `src/adapter.cpp` | the vtable, the layer subscription, the six shims |

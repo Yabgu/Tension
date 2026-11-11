@@ -262,7 +262,7 @@ process.stdout.write('\nui.iwi\n');
 const atlasPath = join(assets, 'ui.iwi');
 const uiPath = join(assets, 'ui.json');
 if (!existsSync(atlasPath) || !existsSync(uiPath)) {
-  fail('ui.iwi or ui.json does not exist — run tools/make-font.mjs');
+  fail('ui.iwi or ui.json does not exist — run the font baker (see docs/check.mjs)');
 } else {
   const atlas = readFileSync(atlasPath);
   const ui = JSON.parse(readFileSync(uiPath, 'utf8'));
@@ -311,17 +311,22 @@ if (!existsSync(atlasPath) || !existsSync(uiPath)) {
     if (sample >= glyphCells) fail(`the cell formula puts 'A' bold/heading at ${sample}, outside the stripe`);
     else ok(`'A' (heading, bold) is cell ${sample}`);
 
-    // **The guest's cell size must be the baked one.** The viewer emits one
+    // **The painter's cell size must be the baked one.** The toolkit emits one
     // sprite per glyph with `w = CELL_W, h = CELL_H`, and those are also the
-    // record's *source* texel rect — so if `src/text.ts` disagrees with
-    // `ui.json` the sampler reads the neighbouring cells and every character is
-    // drawn from the wrong place. It would look like damaged glyphs, not like a
+    // record's *source* texel rect — so if the theme disagrees with `ui.json`
+    // the sampler reads the neighbouring cells and every character is drawn from
+    // the wrong place. It would look like damaged glyphs, not like a
     // configuration error, which is why this is checked rather than trusted.
-    const textSource = readFileSync(join(appDir, 'src', 'text.ts'), 'utf8');
+    //
+    // The constants moved to the framework when the toolkit was extracted: the
+    // atlas and the cell geometry are one contract, and the app that bakes an
+    // atlas is not the only thing that reads it.
+    const textSource = readFileSync(
+      join(repo, 'tension-framework', 'assembly', 'ui', 'theme.ts'), 'utf8');
     const readConst = (name, pattern) => {
       const match = textSource.match(pattern);
       if (!match) {
-        fail(`src/text.ts no longer declares ${name} in the form this check reads`);
+        fail(`assembly/ui/theme.ts no longer declares ${name} in the form this check reads`);
         return 0;
       }
       return Number(match[1]);
@@ -334,7 +339,7 @@ if (!existsSync(atlasPath) || !existsSync(uiPath)) {
     if (guestCellW !== ui.atlas.cellWidth || guestCellH !== ui.atlas.cellHeight) {
       fail(`the atlas cell is ${ui.atlas.cellWidth}x${ui.atlas.cellHeight} but the guest draws ` +
         `${guestCellW}x${guestCellH} — rebuild the font at the guest's scale ` +
-        `(FONT_SCALE=${scale} node tools/make-font.mjs)`);
+        `(FONT_SCALE=${scale} node ../../tension-framework/tools/font/make-font.mjs)`);
     } else {
       ok(`the guest's ${guestCellW}x${guestCellH} cell matches the baked atlas (SCALE ${scale})`);
     }

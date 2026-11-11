@@ -37,15 +37,20 @@
 // keeps the page looking the same rather than merely redrawing it bigger —
 // a 30px gap that was 1.25 lines at 24px/line is still 1.25 lines at 40px/line.
 
-import { CELL_H, CELL_W, SCALE } from "./text";
+// The page's own layout: what a *document* looks like, on top of the toolkit's
+// line arithmetic. `PageLayout` knows about blocks, runs and code fences; the
+// wrapping, the cell geometry and the vertical rhythm come from `tension-ui`,
+// which is where they had to go the moment a second app needed them.
+import {
+  CELL_H, CELL_W, CODE, DEFAULT_THEME, HEADING, LINE_STEP, LINK, MIN_COLS, MUTED, NORMAL,
+  SCALE, breakLine, px,
+} from "tension-framework";
+
 import {
   Docs, F_RUNNABLE,
   K_CODE, K_HEADING, K_LIST_ITEM, K_PARAGRAPH, K_QUOTE, K_RULE, K_TABLE,
   S_CODE, S_EMPHASIS, S_LINK, S_PLAIN, S_STRONG,
 } from "./format";
-
-/** Vertical rhythm, in pixels. One line of body text is `LINE_STEP`. */
-export const LINE_STEP: i32 = CELL_H + 8;
 
 /**
  * The widest the text column is ever allowed to get, in characters.
@@ -64,15 +69,6 @@ export const LINE_STEP: i32 = CELL_H + 8;
  * `main.ts`, which is the only side that knows how wide the window is.
  */
 export const MAX_COLS: i32 = 80;
-
-/**
- * The narrowest column the layout will draw.
- *
- * A window dragged almost shut would otherwise compute a column of zero or
- * fewer characters; every wrap loop in this file assumes `cols > 0` and would
- * divide by it or emit a zero-length line forever.
- */
-export const MIN_COLS: i32 = 8;
 
 /** The code block's left inset, in pixels. `main.ts` draws the accent here. */
 export const CODE_INSET: i32 = 16 * SCALE;
@@ -404,41 +400,6 @@ function indentFor(kind: u8, level: u8): i32 {
 }
 
 /**
- * How many characters to put on this line.
- *
- * The rule is one comparison, and it is worth stating exactly, because the
- * obvious alternatives are both wrong:
- *
- *   * **The candidate line is `chars[start .. limit)`, where `limit = start +
- *     cols`.** So a line may hold exactly `cols` characters; index `limit` is
- *     the first one that does not fit.
- *   * **Breaking at a space returns `i - start`, which excludes the space.**
- *     The caller then skips the spaces it lands on, so a break never leaves a
- *     leading space on the next line and never counts the space twice.
- *   * **A space at `limit` itself is a valid break.** It yields `cols`, the
- *     widest line that fits, and the space moves to the next line to be
- *     skipped. Rejecting it — scanning from `limit - 1` — would shorten every
- *     line by up to one word for no reason.
- *
- * A word longer than the column is broken mid-word rather than allowed to
- * spill: spilling would paint over the sidebar or the pane's edge, and a long
- * token in a docs page is normal (`tension_adapter.h`, a URL).
- */
-function breakLine(chars: Uint8Array, start: i32, end: i32, cols: i32): i32 {
-  const limit: i32 = start + cols;
-  if (limit >= end) {
-    // Trim a trailing space so a single-line paragraph does not carry one.
-    let n: i32 = end - start;
-    while (n > 0 && chars[start + n - 1] == 32) n--;
-    return n;
-  }
-  for (let i: i32 = limit; i > start; i--) {
-    if (chars[i] == 32) return i - start;
-  }
-  return cols;
-}
-
-/**
  * Resolve a style and block kind to the atlas colour and weight.
  *
  * One function, so a paragraph's `strong` span and a code block's prose agree
@@ -477,10 +438,11 @@ export function advanceFor(kind: u8, level: u8): i32 {
   return CELL_W;
 }
 
-// The atlas colour indices, named here so `layout.ts` does not import `text.ts`
-// for four constants.
-const NORMAL_COLOUR: i32 = 0;
-const MUTED_COLOUR: i32 = 1;
-const LINK_COLOUR: i32 = 2;
-const CODE_COLOUR: i32 = 3;
-const HEADING_COLOUR: i32 = 4;
+// The atlas colour indices, straight from the theme: `layout.ts` used to keep
+// its own copies so it did not have to import the painter, and a copy is how a
+// palette drifts.
+const NORMAL_COLOUR: i32 = NORMAL;
+const MUTED_COLOUR: i32 = MUTED;
+const LINK_COLOUR: i32 = LINK;
+const CODE_COLOUR: i32 = CODE;
+const HEADING_COLOUR: i32 = HEADING;

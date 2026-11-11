@@ -39,6 +39,7 @@ constexpr uint32_t kVerbSetRelative = 3;
 constexpr uint32_t kVerbState = 4;
 constexpr uint32_t kVerbPad = 5;
 constexpr uint32_t kVerbClose = 6;
+constexpr uint32_t kVerbText = 7;
 
 struct AdapterState {
     const tension_core_api *api = nullptr;
@@ -289,6 +290,44 @@ int32_t shim_input_pad(void *, const tension_value *args, uint32_t nargs, tensio
     return 0;
 }
 
+/// `input_text(handle, ptr, cap) -> bytes`.
+///
+/// The typed-text stream: UTF-8 copied out and consumed, which is why it cannot
+/// be a field of `input_state`. `cap <= 0` probes the pending count (nothing
+/// consumed); a short buffer is -ENOSPC with the text kept, so a caller that
+/// probed first always gets its answer and a caller that guessed never loses a
+/// keystroke. 0 is "nothing was typed", the answer on almost every frame.
+int32_t shim_input_text(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
+    AdapterState &s = adapter_state();
+    if (ret == nullptr || args == nullptr || nargs != 3) return -EINVAL;
+    if (s.handle == 0 || args[0].i32 != s.handle) return refuse(ret, -EINVAL);
+    if (!s.mirror.attached()) return refuse(ret, kENODEV);
+    const uint32_t ptr = static_cast<uint32_t>(args[1].i32);
+    const int32_t cap = args[2].i32;
+    if (cap <= 0) {
+        ret->i32 = s.mirror.take_text(nullptr, 0);
+        return 0;
+    }
+    // The mirror answers how much it *would* take only when the buffer is big
+    // enough; a short one is refused before anything is copied, so the text is
+    // still there for the retry.
+    const int32_t pending = s.mirror.take_text(nullptr, 0);
+    if (pending > cap) return refuse(ret, kENOSPC);
+    if (pending == 0) {
+        ret->i32 = 0;
+        return 0;
+    }
+    if (s.api == nullptr || s.api->guest_write == nullptr) return refuse(ret, kEBUSY);
+    char buffer[256];
+    if (pending > static_cast<int32_t>(sizeof(buffer))) return refuse(ret, kENOSPC);
+    const int32_t copied = s.mirror.take_text(buffer, static_cast<int32_t>(sizeof(buffer)));
+    if (copied < 0) return refuse(ret, copied);
+    if (copied > 0 && s.api->guest_write(s.api->user, ptr, buffer, static_cast<size_t>(copied)) != 0)
+        return refuse(ret, -EINVAL);
+    ret->i32 = copied;
+    return 0;
+}
+
 int32_t shim_input_close(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 1) return -EINVAL;
@@ -365,6 +404,7 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         // guest memory, never pumping and never blocking (the `job_state` case).
         {"state", three, 3, shim_input_state, kVerbState, TENSION_IMPORT_REENTRANT_READONLY},
         {"pad", four, 4, shim_input_pad, kVerbPad, TENSION_IMPORT_REENTRANT_READONLY},
+        {"text", three, 3, shim_input_text, kVerbText, TENSION_IMPORT_REENTRANT_READONLY},
         {"close", one, 1, shim_input_close, kVerbClose, 0},
     };
 
