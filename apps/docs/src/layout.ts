@@ -24,14 +24,20 @@
 //     styles  000000011111111110000000000   (S_CODE for the code span)
 //     line 0  start=0 len=27 y=40
 //
-// ## No scaling, so no per-line size
+// ## One cell size, so no per-line size
 //
-// Every glyph is 8x16 (`text.ts` explains why the record cannot scale one). A
-// line therefore differs from another only by indent, spacing, colour and
-// weight. Headings get a wider advance and a rule beneath, which reads as a
-// heading without pretending to be a larger font.
+// Every glyph is `CELL_W x CELL_H` — 16x32, because `text.ts` explains that the
+// scale lives in the baked atlas and cannot live in the record. A line therefore
+// differs from another only by indent, spacing, colour and weight. Headings get
+// a wider advance and a rule beneath, which reads as a heading without
+// pretending to be a larger font.
+//
+// **The vertical rhythm is proportional to `LINE_STEP`, not fixed in pixels.**
+// The numbers below are written as fractions of a line so that raising `SCALE`
+// keeps the page looking the same rather than merely redrawing it bigger —
+// a 30px gap that was 1.25 lines at 24px/line is still 1.25 lines at 40px/line.
 
-import { CELL_H, CELL_W, columnsFor } from "./text";
+import { CELL_H, CELL_W, SCALE, columnsFor } from "./text";
 import {
   Docs, F_RUNNABLE,
   K_CODE, K_HEADING, K_LIST_ITEM, K_PARAGRAPH, K_QUOTE, K_RULE, K_TABLE,
@@ -39,39 +45,41 @@ import {
 } from "./format";
 
 /** Vertical rhythm, in pixels. One line of body text is `LINE_STEP`. */
-export const LINE_STEP: i32 = 24;
-/** The content column, in characters. 80 columns at 8px is 640px — the classic
- *  measure, and exactly what the 1019px main pane affords beside its margin. */
-export const CONTENT_COLS: i32 = 80;
-
-/** The code block's left inset, in pixels. `main.ts` draws the accent here. */
-export const CODE_INSET: i32 = 16;
+export const LINE_STEP: i32 = CELL_H + 8;
 
 /**
- * The gutter a runnable block reserves for its button, in characters.
+ * The content column, in characters.
  *
- * The "Run (recorded)" button sits to the right of a runnable block's first
- * line. Reserving its width here — rather than hoping no code line is long
- * enough — is what makes "the code never runs under the button" a property of
- * the layout instead of a property of today's examples. 20 columns is 160px,
- * which is the button plus a margin.
+ * A character is `CELL_W` wide, so this is the pane's width divided by the cell.
+ * With `SCALE = 2` the pane holds a little over half the columns it held at 1x —
+ * which is the whole cost of bigger text, and the reason this went from 80 to 56
+ * rather than staying put and overflowing. 56 x 16 = 896px inside a 911px pane.
  */
-export const RUN_GUTTER_COLS: i32 = 20;
+export const CONTENT_COLS: i32 = 56;
 
-/** Space before a block, by kind — what makes a page scannable. */
+/** The code block's left inset, in pixels. `main.ts` draws the accent here. */
+export const CODE_INSET: i32 = 16 * SCALE;
+
+/**
+ * Space before a block, by kind — what makes a page scannable.
+ *
+ * Written as fractions of `LINE_STEP` rather than as pixels: the ratios are what
+ * the page's rhythm is made of, and they have to survive a change of `SCALE`.
+ * The comment beside each number is the pixel value it had at the 1x cell size.
+ */
 function spaceBefore(kind: u8, level: u8): i32 {
   if (kind == K_HEADING) {
-    if (level <= 1) return 30;
-    if (level == 2) return 24;
-    if (level == 3) return 18;
-    return 14;
+    if (level <= 1) return LINE_STEP * 5 / 4;   // was 30 against LINE_STEP 24
+    if (level == 2) return LINE_STEP;           // was 24
+    if (level == 3) return LINE_STEP * 3 / 4;   // was 18
+    return LINE_STEP * 7 / 12;                  // was 14
   }
-  if (kind == K_PARAGRAPH) return 12;
-  if (kind == K_CODE) return 12;
-  if (kind == K_LIST_ITEM) return 2;
-  if (kind == K_QUOTE) return 10;
-  if (kind == K_RULE) return 14;
-  return 8;
+  if (kind == K_PARAGRAPH) return LINE_STEP / 2;  // was 12
+  if (kind == K_CODE) return LINE_STEP / 2;       // was 12
+  if (kind == K_LIST_ITEM) return LINE_STEP / 12; // was 2
+  if (kind == K_QUOTE) return LINE_STEP * 5 / 12; // was 10
+  if (kind == K_RULE) return LINE_STEP * 7 / 12;  // was 14
+  return LINE_STEP / 3;                           // was 8
 }
 
 /**
@@ -154,7 +162,7 @@ export class PageLayout {
 
     // ── pass 2: fill, then wrap ────────────────────────────────────────────
     let at: i32 = 0;
-    let y: i32 = 16; // top padding inside the content column
+    let y: i32 = 8 * SCALE; // top padding inside the content column
 
     for (let b: u32 = 0; b < count; b++) {
       const bi: u32 = first + b;
@@ -188,16 +196,17 @@ export class PageLayout {
       const len: i32 = at - start;
 
       const indent: i32 = indentFor(kind, level);
-      // **The width every line of this block may use.**
+      // **The width every line of this block may use, in characters.**
       //
-      // Prose gets the whole column less its indent. Code gets the whole column
-      // less the inset — and, when the block is runnable, less the button's
-      // gutter too, so a long listing is wrapped before it can reach the
-      // button sitting beside its first line.
-      let cols: i32 = CONTENT_COLS - indent / CELL_W;
-      if (kind == K_CODE && (flags & F_RUNNABLE) != 0) {
-        cols -= RUN_GUTTER_COLS;
-      }
+      // The column is a *pixel* budget, not a character count: it is the content
+      // width less this block's indent, divided by how far one character of this
+      // block advances. A heading advances wider than body text (`advanceFor`),
+      // so wrapping it at `CONTENT_COLS` characters would let it run past the
+      // pane — at the 2x cell a level-1 heading is 22px per character against
+      // 16px for prose, and 56 of those is 1232px in a 923px pane. Dividing by
+      // the block's own advance is what keeps the widest line inside.
+      const advance: i32 = advanceFor(kind, level);
+      const cols: i32 = (CONTENT_COLS * CELL_W - indent) / advance;
 
       y += spaceBefore(kind, level);
 
@@ -220,7 +229,7 @@ export class PageLayout {
         this.lineLen.push(0);
         this.lineY.push(y);
         this.lineBlock.push(blockSlot);
-        y += 8;
+        y += 4 * SCALE;
       } else if (kind == K_CODE) {
         // Code keeps its own line breaks and does not re-wrap at word
         // boundaries — a wrapped shell command is a broken shell command. A
@@ -259,6 +268,29 @@ export class PageLayout {
           }
           s = nl + 1;
         }
+
+        // **A runnable block's button gets its own row** — a line with no text,
+        // reserved here so the button has somewhere to sit that the layout
+        // knows about.
+        //
+        // It used to sit *beside* the block's first line, with the layout
+        // reserving a gutter of the column so no code could reach it. At the 2x
+        // cell that gutter was 18 of 56 columns — a third of the width, spent on
+        // every line of a code sample to make room for one button — and it began
+        // breaking tokens mid-word (`"tension-frame` / `work";`). A row of its
+        // own gives the code the whole column back.
+        //
+        // The row is a real line in the flow: it advances `LINE_STEP`, the
+        // transcript anchors under it, and the paragraph after the block cannot
+        // be drawn on top of it.
+        if ((flags & F_RUNNABLE) != 0) {
+          this.lineStart.push(start);
+          this.lineLen.push(0);
+          this.lineY.push(y);
+          this.lineBlock.push(blockSlot);
+          lines++;
+          y += LINE_STEP;
+        }
       } else {
         // Prose: wrap at word boundaries.
         let s: i32 = start;
@@ -291,17 +323,18 @@ export class PageLayout {
       this.blockLineCount.push(lines);
       // A code block is drawn inset in its own darker box, so it needs padding
       // at the bottom that plain prose does not.
-      this.blockH.push(y - this.blockY[blockSlot] + (kind == K_CODE ? 12 : 0));
-      if (kind == K_CODE) y += 12;
+      const codePad: i32 = kind == K_CODE ? 6 * SCALE : 0;
+      this.blockH.push(y - this.blockY[blockSlot] + codePad);
+      if (kind == K_CODE) y += codePad;
     }
 
-    this.height = y + 24; // bottom padding
+    this.height = y + 12 * SCALE; // bottom padding
   }
 
   /** The scroll offset that puts a block at the top of the pane. */
   scrollForBlock(block: i32): i32 {
     for (let i: i32 = 0; i < this.blockIndex.length; i++) {
-      if (this.blockIndex[i] == block) return this.blockY[i] - 16;
+      if (this.blockIndex[i] == block) return this.blockY[i] - 8 * SCALE;
     }
     return 0;
   }
@@ -318,7 +351,7 @@ export class PageLayout {
     for (let i: i32 = 0; i < this.blockIndex.length; i++) {
       if (this.blockIndex[i] == block) {
         const last: i32 = this.blockFirstLine[i] + this.blockLineCount[i] - 1;
-        if (last >= 0 && last < this.lineY.length) return this.lineY[last] + LINE_STEP + 10;
+        if (last >= 0 && last < this.lineY.length) return this.lineY[last] + LINE_STEP + 5 * SCALE;
         return -1;
       }
     }
@@ -334,11 +367,12 @@ export class PageLayout {
   }
 }
 
-/** Left indent in pixels, by block kind and heading level. */
+/** Left indent in pixels, by block kind. Two cells' worth, so indented blocks
+ *  read as inset at any `SCALE`. */
 function indentFor(kind: u8, level: u8): i32 {
-  if (kind == K_CODE) return 16;
-  if (kind == K_LIST_ITEM) return 16;
-  if (kind == K_QUOTE) return 16;
+  if (kind == K_CODE) return CODE_INSET;
+  if (kind == K_LIST_ITEM) return CODE_INSET;
+  if (kind == K_QUOTE) return CODE_INSET;
   return 0;
 }
 
@@ -407,11 +441,12 @@ export function weightFor(kind: u8, style: u8): i32 {
   return 0;
 }
 
-/** The per-character advance: headings get air, everything else is 8px. */
+/** The per-character advance: headings get air, everything else is one cell. */
 export function advanceFor(kind: u8, level: u8): i32 {
   if (kind != K_HEADING) return CELL_W;
-  if (level <= 1) return CELL_W + 3;
-  if (level == 2) return CELL_W + 1;
+  // Letter-spacing, in source pixels, scaled with everything else.
+  if (level <= 1) return CELL_W + 3 * SCALE;
+  if (level == 2) return CELL_W + 1 * SCALE;
   return CELL_W;
 }
 

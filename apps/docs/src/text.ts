@@ -6,7 +6,7 @@
 // sampling one cell of `ui.iwi`, and that is the whole mechanism — so this file
 // is an index computation with a clip, not a layout system.
 //
-// ## Why there is no scale parameter
+// ## Why the scale is in the atlas and not in the record
 //
 // The sprite record has **one** `w`/`h` pair, and the vertex shader uses it for
 // both the destination quad and the source texel rect:
@@ -16,14 +16,28 @@
 //     px  = position + corner * a_position_w
 //     uv  = (texcoord0 + corner * a_texcoord0_w) / u_tex_size
 //
-// So a glyph is drawn at exactly the size it occupies in the atlas. Enlarging
-// one would sample its neighbours, which is why the *scaled* pipeline exists as a
-// separate preset (`default_2d_scaled`, graph id 101) that multiplies position by
-// two in the vertex stage — a whole-pipeline choice, not a per-sprite one.
+// So a record **cannot be stretched**: emitting an 8x16 glyph with `w = 16` asks
+// the sampler for a 16x32 region of the atlas, which is the neighbouring cells —
+// not a bigger glyph. Measured during 2.2b: a stretched chrome cell drew
+// *nothing*, and the same cell at its natural size drew correctly; the panels in
+// the shell are tiled for exactly this reason.
 //
-// The viewer uses preset 1 and gives headings their hierarchy from colour,
-// weight, letter-spacing and rules instead. `assets/ui.json` carries two weights
-// precisely so that is possible without a second pipeline.
+// The engine does have a scaled variant in the graph compiler
+// (`pipeline_default::scaled_graph`, preset 101) that multiplies `w`/`h` by two
+// in the vertex stage and so genuinely upscales — but preset 101 is above
+// `PIPE_PRESET_MAX` (99) and `preset()` only ever compiles `default_graph()`, so
+// a guest cannot ask for it in this build (`-ENOENT`). Changing that is an
+// engine change.
+//
+// What is left, and what this build does: **bake the atlas at 2x**. `SCALE`
+// below is the factor `tools/make-font.mjs` duplicated every pixel by, so a cell
+// is 16x32 and a record that samples 16x32 texels paints a 16x32 quad. Nearest
+// filtering makes that exactly crisp — each source pixel becomes a 2x2 block,
+// with no interpolation to mud the edges.
+//
+// Records go **down**, not up: a glyph is still one record, and the tiled fills
+// (panel backgrounds, rules) step by the cell size, so half as many tiles cover
+// the same pixels. Measured on the opening page: 1,646 records at 1x, 801 at 2x.
 //
 // ## Why text is bytes
 //
@@ -41,8 +55,23 @@ import { Canvas, SpriteRecord } from "tension-framework";
 // size and because the formula below is the atlas's definition: a mismatch would
 // be a wrong glyph, not a slower frame.
 
-export const CELL_W: i32 = 8;
-export const CELL_H: i32 = 16;
+/**
+ * The integer factor the atlas is baked at.
+ *
+ * 2 makes 8x16 cells 16x32 — roughly twice the cap height of the 1x font, which
+ * is the difference between "I can read this" and "I have to lean in" on a
+ * modern display. It must match `SCALE` in `tools/make-font.mjs`; a mismatch
+ * would sample half a glyph rather than fail, so `tools/verify.mjs` checks the
+ * baked cell size against this constant's value through `assets/ui.json`.
+ *
+ * Integer only. A fractional factor would put glyph edges on half pixels, and
+ * with `Filter::Nearest` that is not a softer edge — it is a glyph with one row
+ * or column dropped, which looks like damage.
+ */
+export const SCALE: i32 = 2;
+
+export const CELL_W: i32 = 8 * SCALE;
+export const CELL_H: i32 = 16 * SCALE;
 
 const GRID_COLS: i32 = 32;
 const STRIPE: i32 = 95;          // glyphs per (colour, weight) stripe
@@ -261,7 +290,7 @@ export class Painter {
    * Draw `len` bytes at `ptr`, starting at `x`, on baseline-free top-left
    * coordinates.
    *
-   * `advance` is the per-character step in pixels: 8 for body text, more for a
+   * `advance` is the per-character step in pixels: `CELL_W` for body text, more for a
    * heading that wants air. It does not change the glyph's size — nothing can.
    *
    * Returns the x position after the last character, so a caller can append.
@@ -308,7 +337,7 @@ export class Painter {
 // ── measuring and wrapping ──────────────────────────────────────────────────
 //
 // Both are pure arithmetic over byte lengths: a glyph advances by `advance`
-// whatever it is, because the font is monospace (8 pixels, no kerning table, no
+// whatever it is, because the font is monospace (`CELL_W`, no kerning table, no
 // per-glyph widths). That is why wrapping is a character count and not a
 // measurement loop.
 

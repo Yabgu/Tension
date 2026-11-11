@@ -61,21 +61,52 @@ import {
 import {
   CELL_H, CELL_W, CHROME_CARET, CHROME_DIVIDER, CHROME_PANEL, CHROME_SELECTION,
   CHROME_WHITE,
-  CODE, GLYPH_CELLS, HEADING, LINK, MUTED, NORMAL, Painter, REGULAR, BOLD,
+  CODE, GLYPH_CELLS, HEADING, LINK, MUTED, NORMAL, Painter, REGULAR, SCALE, BOLD,
 } from "./text";
 
 // ── the shell's geometry ────────────────────────────────────────────────────
 
-const SIDEBAR_W: i32 = 260;
+/**
+ * A padding in source pixels, scaled with the font.
+ *
+ * Every gap in this shell was tuned against an 8x16 cell. Writing them as
+ * `px(n)` rather than as the doubled literal keeps the relationship visible: the
+ * shell's proportions are the same at any `SCALE`, and the numbers that changed
+ * *deliberately* are the pane widths just below.
+ */
+function px(n: i32): i32 { return n * SCALE; }
+
+const SIDEBAR_W: i32 = 320;        // was 260 — TOC titles are half as many chars wide
 const DIVIDER_X: i32 = SIDEBAR_W;
 const MAIN_X: i32 = SIDEBAR_W + 1;
-const SEARCH_H: i32 = 40;
-const STATUS_H: i32 = 30;
-const CONTENT_X: i32 = MAIN_X + 40;
-const CONTENT_TOP: i32 = SEARCH_H + 8;
+const SEARCH_H: i32 = CELL_H + px(12);
+const STATUS_H: i32 = CELL_H + px(8);
+const CONTENT_X: i32 = MAIN_X + px(12);
+const CONTENT_TOP: i32 = SEARCH_H + px(4);
 
-/** Rows of the table of contents that fit the sidebar. */
-const TOC_STEP: i32 = 22;
+/** One table-of-contents row: the text, plus a little air under it. */
+const TOC_STEP: i32 = CELL_H + px(3);
+
+/**
+ * Where the first search result sits, and the pitch between rows.
+ *
+ * Module-level because two places need them — the draw and the click hit test —
+ * and when those two disagreed the pane selected the row *below* the one under
+ * the pointer. One definition is the mechanism that stops that recurring.
+ *
+ * A row is **two** text lines: the section title and, under it, the page it
+ * belongs to. At the 2x cell that is 32 + 8 + 32 = 72px, so the pitch is 88.
+ * The 1x formula (`LINE_STEP + 6` = 30) was a single line's worth and the rows
+ * overlapped each other the moment the cell grew.
+ */
+const RESULT_TITLE_H: i32 = CELL_H;
+const RESULT_SUB_GAP: i32 = px(4);
+const RESULT_ROW_H: i32 = RESULT_TITLE_H + RESULT_SUB_GAP + CELL_H;
+const RESULT_TOP: i32 = CONTENT_TOP + px(4) + LINE_STEP + px(4);
+const RESULT_STEP: i32 = RESULT_ROW_H + px(8);
+
+/** A transcript panel's header row: one line of text plus its rule. */
+const PANEL_HEAD: i32 = LINE_STEP + px(1);
 
 /** Scancodes (SDL numbering) — `input.state`'s key set is this numbering. */
 const SC_UP: u32 = 82;
@@ -497,8 +528,13 @@ class App {
   }
 
   private maxScroll(): i32 {
-    const total: i32 = this.searchFocused || this.queryLen > 0
-      ? this.results.length * (LINE_STEP + 12) + 40
+    // **The pane shows the results only when there is a query**, so that is also
+    // the only case where the scroll range is the results list. Keying this on
+    // `searchFocused` (which it did) meant pressing Escape — clear the query,
+    // keep the focus — left the page un-scrollable, because the range had
+    // collapsed to an empty list while the pane was drawing the document.
+    const total: i32 = this.queryLen > 0
+      ? RESULT_TOP + this.results.length * RESULT_STEP + px(8)
       : this.layout.height + this.transcriptH;
     const max: i32 = total - this.pageHeight();
     return max > 0 ? max : 0;
@@ -551,8 +587,11 @@ class App {
     // A search result.
     if (this.queryLen > 0) {
       for (let i: i32 = 0; i < this.results.length; i++) {
-        const ry: i32 = CONTENT_TOP + 8 + i * (LINE_STEP + 12);
-        if (y >= ry && y < ry + LINE_STEP + 12) {
+        // `RESULT_TOP`/`RESULT_STEP` are the draw's own numbers: a hit test that
+        // recomputed them could drift, and it had — the old pair here were one
+        // row above the rows being drawn, so a click selected its neighbour.
+        const ry: i32 = RESULT_TOP + i * RESULT_STEP;
+        if (y >= ry && y < ry + RESULT_STEP) {
           const section: i32 = this.results[i];
           const page: i32 = <i32>this.docs.sectionPage(section);
           const block: i32 = <i32>this.docs.sectionBlockFirst(section);
@@ -590,7 +629,7 @@ class App {
     // page is the common case, and "the button answered but nothing appeared"
     // is indistinguishable from a dead button.
     this.transcriptH = this.showingEntry >= 0
-      ? this.transcriptLines(this.showingEntry) * LINE_STEP + 26 + 12
+      ? this.transcriptLines(this.showingEntry) * LINE_STEP + PANEL_HEAD + px(6)
       : LINE_STEP + 18;
     const anchor: i32 = this.layout.anchorForBlock(block);
     if (anchor >= 0) {
@@ -816,12 +855,12 @@ class App {
   /** The table of contents, scrolled so the current page stays visible. */
   private drawSidebar(): void {
     const p = this.painter;
-    const top: i32 = 16;
+    const top: i32 = px(8);
 
     // The book's title, in the heading colour.
-    this.drawBytesAt("Tension", 7, 16, top, HEADING, BOLD, CELL_W);
+    this.drawBytesAt("Tension", 7, px(8), top, HEADING, BOLD, CELL_W);
 
-    const rowsTop: i32 = top + 36;
+    const rowsTop: i32 = top + CELL_H + px(4);
     const rows: i32 = (this.height - rowsTop - 8) / TOC_STEP;
     const total: i32 = <i32>this.docs.tocCount;
 
@@ -844,22 +883,22 @@ class App {
       const y: i32 = rowsTop + r * TOC_STEP;
       const page: u32 = this.docs.tocPage(<u32>i);
       const depth: u32 = this.docs.tocDepth(<u32>i);
-      const indent: i32 = 12 + <i32>depth * 12;
+      const indent: i32 = px(6) + <i32>depth * px(6);
       const active: bool = page != 0xffffffff && <i32>page == this.page;
 
-      // 260x22 is 33x2 = 66 records, affordable once for the current row.
+      // One row is 40x2 = 80 records, affordable once for the current row.
       if (active) {
-        p.fill(0, y - 2, SIDEBAR_W, TOC_STEP, CHROME_SELECTION);
-        p.fill(SIDEBAR_W - 3, y - 2, 3, TOC_STEP, CHROME_WHITE);
+        p.fill(0, y - px(1), SIDEBAR_W, TOC_STEP, CHROME_SELECTION);
+        p.fill(SIDEBAR_W - px(2), y - px(1), px(2), TOC_STEP, CHROME_WHITE);
       }
 
       const colour: i32 = page == 0xffffffff ? MUTED : (active ? HEADING : NORMAL);
       const weight: i32 = page == 0xffffffff ? BOLD : REGULAR;
-      const maxChars: i32 = (SIDEBAR_W - indent - 8) / CELL_W;
+      const maxChars: i32 = (SIDEBAR_W - indent - px(4)) / CELL_W;
       this.drawTruncated(this.docs.tocTitlePtr(<u32>i), <i32>this.docs.tocTitleLen(<u32>i),
         indent, y, colour, weight, maxChars);
 
-      this.tocHitY.push(y - 2);
+      this.tocHitY.push(y - px(1));
       this.tocHitPage.push(page == 0xffffffff ? -1 : <i32>page);
     }
   }
@@ -870,8 +909,8 @@ class App {
     p.hline(MAIN_X, SEARCH_H - 1, this.width - MAIN_X, CHROME_DIVIDER);
 
     // A magnifier stand-in: the font has no icon, so the prompt is text.
-    const promptX: i32 = MAIN_X + 16;
-    const promptY: i32 = 12;
+    const promptX: i32 = MAIN_X + px(8);
+    const promptY: i32 = (SEARCH_H - CELL_H) / 2;
 
     if (this.queryLen == 0 && !this.searchFocused) {
       this.drawBytesAt("Press / to search", 17, promptX, promptY, MUTED, REGULAR, CELL_W);
@@ -886,14 +925,14 @@ class App {
     // The caret blinks on a two-second cycle: `frames` is the only clock the
     // guest has, and a caret that never blinks reads as a rendering artefact.
     if (this.searchFocused && (this.frames / 30) % 2 == 0) {
-      p.sprite(cursorX, promptY, CELL_W - 4, CELL_H, CHROME_CARET);
+      p.sprite(cursorX, promptY, CELL_W - px(4), CELL_H, CHROME_CARET);
     }
 
     // The result count, right-aligned in the bar.
     if (this.queryLen >= 2) {
       const label: string = this.results.length.toString() + " sections";
       const w: i32 = label.length * CELL_W;
-      this.drawString(label, this.width - 24 - w, promptY, MUTED, REGULAR, CELL_W);
+      this.drawString(label, this.width - px(12) - w, promptY, MUTED, REGULAR, CELL_W);
     }
   }
 
@@ -901,7 +940,7 @@ class App {
   private drawResults(clipTop: i32, clipBottom: i32): void {
     const p = this.painter;
     const x: i32 = CONTENT_X;
-    const top: i32 = CONTENT_TOP + 8;
+    const top: i32 = CONTENT_TOP + px(4);
 
     this.drawBytesAt("Results for", 11, x, top, MUTED, REGULAR, CELL_W);
     p.text(this.query.dataStart, this.queryLen,
@@ -913,11 +952,13 @@ class App {
       return;
     }
 
-    const rowStep: i32 = LINE_STEP + 12;
     for (let i: i32 = 0; i < this.results.length; i++) {
-      const y: i32 = top + 36 + i * rowStep;
-      if (y > clipBottom) break;
-      if (y + rowStep < clipTop) continue;
+      const y: i32 = RESULT_TOP + i * RESULT_STEP;
+      // Half a row visible at the bottom is normal and reads as "more below";
+      // the *subtitle* is only drawn when it fits, so nothing is ever painted
+      // under the status bar.
+      if (y + CELL_H > clipBottom) break;
+      if (y + RESULT_STEP < clipTop) continue;
 
       const section: i32 = this.results[i];
 
@@ -930,7 +971,10 @@ class App {
       const page: i32 = <i32>this.docs.sectionPage(<u32>section);
       const titlePtr: usize = this.docs.pageTitlePtr(<u32>page);
       const titleLen: i32 = <i32>this.docs.pageTitleLen(<u32>page);
-      this.drawTruncated(titlePtr, titleLen, x + 16, y + 16, MUTED, REGULAR, 60);
+      const subY: i32 = y + RESULT_TITLE_H + RESULT_SUB_GAP;
+      if (subY + CELL_H <= clipBottom) {
+        this.drawTruncated(titlePtr, titleLen, x + px(8), subY, MUTED, REGULAR, 60);
+      }
     }
   }
 
@@ -964,24 +1008,29 @@ class App {
       const blockSlot: i32 = layout.lineBlock[li];
       const kind: u8 = layout.blockKind[blockSlot];
       const level: u8 = layout.blockLevel[blockSlot];
-      const indent: i32 = kind == K_CODE ? CODE_INSET : (kind == K_LIST_ITEM ? 16 : 0);
+      const indent: i32 = kind == K_CODE ? CODE_INSET : (kind == K_LIST_ITEM ? CODE_INSET : 0);
       const x: i32 = CONTENT_X + indent;
       const start: i32 = layout.lineStart[li];
       const len: i32 = layout.lineLen[li];
 
       // A rule is a bar where a line of text would be.
       if (kind == K_RULE) {
-        p.fill(CONTENT_X, lineY + 8, CONTENT_COLS * CELL_W, 1, CHROME_DIVIDER);
+        p.fill(CONTENT_X, lineY + CELL_H / 2, CONTENT_COLS * CELL_W, 1, CHROME_DIVIDER);
         continue;
       }
 
-      // A code block's background: drawn per line so a scrolled block is
-      // inset at both ends rather than hanging out of its box.
-      // A code block's marker: a two-pixel accent on the left. A full
-      // background would be 82x2 = 164 records *per line*, which ten visible
-      // code lines would spend a third of the frame on.
+      // A code block's marker: a **one-source-pixel** accent on the left, drawn
+      // per line so a scrolled block has a continuous rule. It stays one source
+      // pixel — so two device pixels at SCALE 2 — rather than scaling with
+      // `px()`: a 2px-tall bar was a deliberate hairline, and tripling it would
+      // turn a rule into a stripe.
+      //
+      // A full background behind the block would be the other option and is
+      // unaffordable: tiled at the cell size that is 56 x 2 = 112 records *per
+      // line*, which ten visible code lines would spend a quarter of the frame
+      // on.
       if (kind == K_CODE) {
-        p.fill(CONTENT_X, lineY - 2, 2, LINE_STEP, CHROME_SELECTION);
+        p.fill(CONTENT_X, lineY - px(1), px(1), LINE_STEP, CHROME_SELECTION);
       }
 
       // A heading's rule, sized to its text, is what gives the hierarchy its
@@ -994,7 +1043,7 @@ class App {
       // A bullet for a list item: the font has `-`, which is what the Markdown
       // source uses too.
       if (kind == K_LIST_ITEM && len > 0) {
-        p.char(45, x - 12, lineY, NORMAL, REGULAR, clipTop, clipBottom);
+        p.char(45, x - px(6), lineY, NORMAL, REGULAR, clipTop, clipBottom);
       }
 
       // Emit the line: group consecutive characters by style so the colour and
@@ -1013,11 +1062,12 @@ class App {
         i = j;
       }
 
-      // The Run button, on the first line of a runnable code block.
+      // The Run button, on the row the layout reserved for it — the block's
+      // last line, which carries no text (`layout.ts`).
       if (kind == K_CODE && blockSlot >= 0 &&
           (layout.blockFlags[blockSlot] & F_RUNNABLE) != 0 &&
-          li == layout.blockFirstLine[blockSlot]) {
-        this.drawRunButton(layout.blockIndex[blockSlot], lineY + CELL_H + 6);
+          li == layout.blockFirstLine[blockSlot] + layout.blockLineCount[blockSlot] - 1) {
+        this.drawRunButton(layout.blockIndex[blockSlot], lineY);
       }
 
       // The transcript, anchored under its block. Only the anchor is decided
@@ -1041,15 +1091,21 @@ class App {
    */
   private drawRunButton(block: i32, y: i32): void {
     const p = this.painter;
-    const x: i32 = CONTENT_X + CONTENT_COLS * CELL_W + 24;
     if (y > this.height - STATUS_H) return;
 
     const label: string = this.showingBlock == block ? "Hide output" : "Run (recorded)";
-    const w: i32 = label.length * CELL_W + 20;
+    const w: i32 = label.length * CELL_W + px(10);
+
+    // **Right-aligned to the text column**, on its own row. At 1x the button sat
+    // in the right-hand margin beside the code; at 2x the margin is the same
+    // pixels and the button is twice as wide, so "outside the column" is
+    // off-screen — and reserving a gutter inside the column cost a third of the
+    // width and broke code tokens. A row of its own solves both.
+    const x: i32 = CONTENT_X + CONTENT_COLS * CELL_W - w;
 
     p.fill(x, y, w, RUN_BTN_H, CHROME_SELECTION);
-    p.fill(x, y, w, 1, CHROME_WHITE);
-    this.drawString(label, x + 10, y + 3, HEADING, REGULAR, CELL_W);
+    p.fill(x, y, w, px(1), CHROME_WHITE);
+    this.drawString(label, x + px(5), y + (RUN_BTN_H - CELL_H) / 2, HEADING, REGULAR, CELL_W);
 
     this.runHitX.push(x);
     this.runHitY.push(y);
@@ -1067,14 +1123,14 @@ class App {
    */
   private drawTranscript(y: i32): void {
     const p = this.painter;
-    const bottom: i32 = this.height - STATUS_H - 8;
+    const bottom: i32 = this.height - STATUS_H - px(4);
 
     if (this.showingEntry < 0) {
-      if (y + LINE_STEP <= bottom) {
-        p.fill(CONTENT_X, y, CONTENT_COLS * CELL_W, LINE_STEP + 6, CHROME_PANEL);
+      if (y + PANEL_HEAD <= bottom) {
+        p.fill(CONTENT_X, y, CONTENT_COLS * CELL_W, PANEL_HEAD, CHROME_PANEL);
         p.hline(CONTENT_X, y, CONTENT_COLS * CELL_W, CHROME_SELECTION);
         this.drawString("no transcript recorded for this block",
-          CONTENT_X + 8, y + 6, MUTED, REGULAR, CELL_W);
+          CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
       }
       return;
     }
@@ -1084,38 +1140,39 @@ class App {
     const lines: i32 = this.transcriptLines(this.showingEntry);
 
     const avail: i32 = bottom - y;
-    // 26px for the header line; whatever is left is body lines.
-    const fit: i32 = (avail - 26) / LINE_STEP;
+    // `PANEL_HEAD` for the header row; whatever is left is body lines.
+    const fit: i32 = (avail - PANEL_HEAD) / LINE_STEP;
     if (fit < 1) {
-      if (y + LINE_STEP <= bottom) {
+      if (y + PANEL_HEAD <= bottom) {
         this.drawString("scroll down to see the output",
-          CONTENT_X + 8, y + 6, MUTED, REGULAR, CELL_W);
+          CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
       }
       return;
     }
     const shown: i32 = lines < fit ? lines : fit;
-    const panelH: i32 = shown * LINE_STEP + 26;
+    const panelH: i32 = shown * LINE_STEP + PANEL_HEAD;
 
     // **Opaque**, because this is an overlay: without the backing the paragraph
-    // below shows through the transcript and neither is readable. 640x98 is
-    // 80x7 = 560 records, which the frame affords — the status bar reports the
-    // running total.
+    // below shows through the transcript and neither is readable. At the 2x cell
+    // a 896x230 panel is 56x8 = 448 records — *fewer* than the 1x panel cost,
+    // because tiling steps by the cell size. The status bar reports the running
+    // total.
     p.fill(CONTENT_X, y, CONTENT_COLS * CELL_W, panelH, CHROME_PANEL);
     p.hline(CONTENT_X, y, CONTENT_COLS * CELL_W, CHROME_SELECTION);
-    p.fill(CONTENT_X, y, 2, panelH, CHROME_SELECTION);
+    p.fill(CONTENT_X, y, px(1), panelH, CHROME_SELECTION);
 
     const ms: string = this.transcripts.durationMs(<u32>this.showingEntry).toString();
     this.drawString("output - recorded at build time, " + ms + " ms",
-      CONTENT_X + 8, y + 6, MUTED, REGULAR, CELL_W);
+      CONTENT_X + px(4), y + px(3), MUTED, REGULAR, CELL_W);
 
-    let lineY: i32 = y + 26;
+    let lineY: i32 = y + PANEL_HEAD;
     let s: i32 = 0;
     for (let n: i32 = 0; n < shown; n++) {
       let e: i32 = s;
       while (e < len && load<u8>(ptr + <usize>e) != 10) e++;
       const lineLen: i32 = e - s < CONTENT_COLS - 2 ? e - s : CONTENT_COLS - 2;
       if (lineLen > 0) {
-        p.text(ptr + <usize>s, lineLen, CONTENT_X + 8, lineY, CODE, REGULAR,
+        p.text(ptr + <usize>s, lineLen, CONTENT_X + px(4), lineY, CODE, REGULAR,
           CELL_W, 0, this.height);
       }
       lineY += LINE_STEP;
@@ -1125,7 +1182,7 @@ class App {
 
     if (shown < lines) {
       this.drawString("... " + (lines - shown).toString() + " more line(s)",
-        CONTENT_X + 8, lineY, MUTED, REGULAR, CELL_W);
+        CONTENT_X + px(4), lineY, MUTED, REGULAR, CELL_W);
     }
   }
 
@@ -1135,26 +1192,30 @@ class App {
     const y: i32 = this.height - STATUS_H;
     p.hline(MAIN_X, y, this.width - MAIN_X, CHROME_DIVIDER);
 
-    const titlePtr: usize = this.docs.pageTitlePtr(<u32>this.page);
-    const titleLen: i32 = <i32>this.docs.pageTitleLen(<u32>this.page);
     const pageNo: string = (this.page + 1).toString() + "/" + this.docs.pageCount.toString();
 
-    this.drawTruncated(titlePtr, titleLen, MAIN_X + 16, y + 7, MUTED, REGULAR, 40);
+    const textY: i32 = y + (STATUS_H - CELL_H) / 2;
 
-    const right: string = pageNo + "   " + this.lastRecords.toString() + " sprites" +
-      (this.lastDropped > 0 ? "  (" + this.lastDropped.toString() + " dropped)" : "");
-    const w: i32 = right.length * CELL_W;
-    this.drawString(right, this.width - 24 - w, y + 7,
-      this.lastDropped > 0 ? HEADING : MUTED, REGULAR, CELL_W);
-
+    // **The bar holds two things now, not three.** At 1x it also carried the
+    // page title, and at 2x that plus the shortcuts plus the counters do not fit
+    // in 959px — they overlapped. The title is redundant with the page's own H1,
+    // so it went; `titlePtr`/`titleLen` above stay because the page number needs
+    // the page and a future reader may want the title back somewhere with room.
+    const hintX: i32 = MAIN_X + px(8);
     if (!this.inputReady) {
-      this.drawString("input unavailable", MAIN_X + 16 + 44 * CELL_W, y + 7, HEADING, REGULAR, CELL_W);
+      this.drawString("input unavailable", hintX, textY, HEADING, REGULAR, CELL_W);
     } else {
       this.drawString(this.searchFocused
         ? "type to search   Esc to clear"
-        : "/ search   n/p page   Enter output   wheel/PgUp scroll",
-        MAIN_X + 16 + 44 * CELL_W, y + 7, MUTED, REGULAR, CELL_W);
+        : "/ search   n/p keys   Enter output",
+        hintX, textY, MUTED, REGULAR, CELL_W);
     }
+
+    const right: string = pageNo + "   " + this.lastRecords.toString() + " sp" +
+      (this.lastDropped > 0 ? "  " + this.lastDropped.toString() + " dropped" : "");
+    const w: i32 = right.length * CELL_W;
+    this.drawString(right, this.width - px(12) - w, textY,
+      this.lastDropped > 0 ? HEADING : MUTED, REGULAR, CELL_W);
   }
 
   // ── text helpers ────────────────────────────────────────────────────────
@@ -1217,8 +1278,8 @@ function lowerAscii(c: u8): i32 {
   return <i32>c;
 }
 
-const RUN_BTN_W: i32 = 15 * CELL_W + 20;
-const RUN_BTN_H: i32 = CELL_H + 6;
+const RUN_BTN_W: i32 = 15 * CELL_W + px(10);
+const RUN_BTN_H: i32 = CELL_H + px(3);
 
 /**
  * The character a pressed alphanumeric scancode stands for, or 0.
