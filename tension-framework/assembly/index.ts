@@ -13,4 +13,5 @@ export * from "./anim";
 export * from "./physics";
 export * from "./2d";
 export * from "./ui";
+export * from "./editor";
 export * from "./app/shell";

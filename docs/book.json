@@ -14,6 +14,7 @@
         { "title": "tension-2d — the 2D renderer", "page": "modules/2d.md" },
         { "title": "tension-input — the input capability", "page": "modules/input.md" },
         { "title": "tension-ui — the toolkit and the app shell", "page": "modules/ui.md" },
+        { "title": "tension-editor — the document and its commands", "page": "modules/editor.md" },
         { "title": "tension-ogre — the OGRE capability", "page": "modules/ogre.md" }
       ]
     },

@@ -351,6 +351,7 @@ runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 // what this asserts. The pixel suites cover the bytes it produces.
 runFixture('guest-scene.ts', 'guest-scene.wasm');
 runFixture('guest-ui.ts', 'guest-ui.wasm');
+runFixture('guest-editor.ts', 'guest-editor.wasm');
 runMountFixture('guest-resmount.ts', 'guest-resmount.wasm');
 runWriteRootFixture('guest-wres.ts', 'guest-wres.wasm');
 runFixture('guest-verlet.ts', 'guest-verlet.wasm');

@@ -597,10 +597,23 @@ const held = new Set();
 const running = new Map();
 const startedAt = new Map();
 
+/// Whether a `needs` entry is satisfied.
+///
+/// **A need outside the selected order counts as met.** `state` only holds the
+/// suites this run asked for, so `npm test -- --core` used to find its
+/// `framework` dependency absent, never consider it passed, and hang forever on
+/// an empty schedule — measured, and reported by Node as an unsettled top-level
+/// await. Selecting one suite is asking for that suite, not for its dependencies
+/// to be re-run.
+function needSatisfied(need) {
+  if (!state.has(need)) return true;
+  return state.get(need) === 'passed';
+}
+
 function readyToRun(name) {
   const suite = SUITES[name];
   if (state.get(name) !== 'waiting') return false;
-  if (suite.needs.some((need) => state.get(need) !== 'passed')) return false;
+  if (suite.needs.some((need) => !needSatisfied(need))) return false;
   if (suite.holds.some((tag) => held.has(tag))) return false;
   return true;
 }
