@@ -112,7 +112,15 @@ export class Surface {
         // `dilate` replicates the pixel rightward — the bold weight, baked here
         // rather than drawn twice at render time, because every extra draw is a
         // record and 4096 records is a hard per-frame cap.
-        for (let d = 0; d <= dilate; d++) {
+        //
+        // **Clamped to the mask's own width, not the surface.** A wide glyph
+        // (m, w, M, W reach column 7) dilated rightward would write column 8 —
+        // which is column 0 of the *next* atlas cell, i.e. the left edge of the
+        // following character. That is a real corruption and it was there:
+        // measured on the previous table, 44 bold cells carried stray pixels in
+        // column 0, each one a neighbour's overflow. Bold may thicken a glyph
+        // inside its cell and never outside it.
+        for (let d = 0; d <= dilate && px + d < w; d++) {
           const tx = x + px + d;
           const ty = y + py;
           if (tx < 0 || ty < 0 || tx >= this.width || ty >= this.height) continue;

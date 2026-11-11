@@ -158,6 +158,43 @@ for (let i = 0; i < CHROME.length; i++) {
   atlas.fillRect(x, y + CELL_H - 2, CELL_W, 1, 108, 182, 255, 255);
 }
 
+// ── the invariant the renderer depends on ───────────────────────────────────
+//
+// A glyph cell's **column 0 must be empty**. That single fact is what guarantees
+// two adjacent characters can never touch: cell N's ink ends at column 7 at the
+// latest, cell N+1's begins at column 1 at the earliest, so column 0 of the
+// second cell is always a clear pixel between them. It is also the invariant the
+// bold weight used to break — dilation replicated a column-7 pixel into column
+// 8, which *is* column 0 of the next cell, and the last character of one glyph
+// appeared as a stray dot at the left edge of the next.
+//
+// `blitMask` now clamps dilation to its own cell and `font8x16.mjs` refuses a
+// table with ink in column 0, so this check should never fire. It stays because
+// it is the one assertion that validates the *baked bytes* rather than the
+// source table, and a future chrome cell or geometry change could reintroduce
+// the overlap without touching either of those.
+function assertNoCrossCellInk() {
+  const offenders = [];
+  for (let index = 0; index < GLYPH_CELLS; index++) {
+    const { x, y } = cellOrigin(index);
+    let inked = 0;
+    for (let py = 0; py < CELL_H; py++) {
+      if (atlas.pixels[((y + py) * ATLAS_W + x) * 4 + 3]) inked++;
+    }
+    if (inked) {
+      const code = index % GLYPH_STRIPE;
+      const ch = String.fromCharCode(32 + code);
+      offenders.push(`cell ${index} ('${ch}') has ${inked} pixel(s) in column 0`);
+    }
+  }
+  if (offenders.length) {
+    throw new Error('make-font: the baked atlas lets glyphs cross their cells, so ' +
+      'characters can overlap — check the dilation clamp in blitMask and the ' +
+      'column-0 rule in font8x16.mjs:\n  ' + offenders.slice(0, 10).join('\n  '));
+  }
+}
+assertNoCrossCellInk();
+
 const iwi = atlas.toIwi();
 mkdirSync(dirname(outPath), { recursive: true });
 writeFileSync(outPath, iwi);
