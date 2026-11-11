@@ -142,8 +142,143 @@ means `npm run build:native` alone will not catch a capacity drift.
 that produced each binary — content, sorted by repo-relative POSIX path — into
 `packages/build-stamp.json`. `scripts/run-example.mjs` reads it back and refuses
 to run a stale adapter (`build-native.mjs:630-632`). This is the guard that turns
-"the guest loaded an adapter built from different source" from a mystery into a
-line.
+"the guest loaded an adapter from different source" from a mystery into a line.
+
+### Static SDL3, and why it is a feature rather than a default
+
+The payload host links SDL3 **statically**. `tension-core/Cargo.toml` declares
+
+```toml
+static-sdl3 = ["sdl3/build-from-source-static"]
+```
+
+which makes `sdl3-sys` build SDL from the vendored `sdl3-src` crate with CMake and
+link the archive into the binary. `scripts/build-native.mjs` turns it on for the
+one artifact that ships (`build-native.mjs:791-792`), and nothing else does: `cargo
+build`, `cargo test` and `npm test` stay on the system `libSDL3.so.0`, because a
+CMake build of SDL is a minute of a developer's life they get nothing back for.
+
+What it buys, measured: `ldd packages/core-linux-x64/bin/tension-core` lists
+`libasound`, `libm`, `libgcc_s`, `libc` and the loader, and **no** `libSDL3`. The
+binary grows 16.7 MB → 20.3 MB. A `dist/` built from it runs on a machine with no
+SDL3 installed, and even with a poisoned `libSDL3.so.0` first on
+`LD_LIBRARY_PATH` (`ldd` cannot be fooled by an unreadable library it never
+loads).
+
+The version is visible proof of which SDL you got: the packaged binary logs
+`SDL 3.4.20` — the crate's vendored source — while the system library on this rig
+is 3.4.18.
+
+**What static SDL does not statically link.** SDL3's *backends* are still resolved
+at run time: with it statically linked, a running game maps `libX11`, `libwayland-client`,
+`libdbus-1`, `libvulkan`, `libasound` and about forty more, because SDL dlopens
+its window systems and GPU drivers on demand. "No SDL3 dependency" is not "no
+dependencies" — it is that the one library the machine cannot be assumed to have
+is inside the binary. `libasound.so.2` is the remaining hard `DT_NEEDED` this
+build adds (from `cpal`, for the `audio` feature); a machine with no ALSA libraries
+at all cannot run the host, and nothing here has tested that shape.
+
+**What it costs to build.** CMake and a C compiler (both already required by the
+Ogre-Next bootstrap), and the `sdl3-src` crate on the first build of a checkout —
+5.7 MB from crates.io. An offline build needs it vendored or already in the cargo
+cache. `TENSION_STATIC_SDL=0 npm run build:native` produces the dynamic payload
+binary, which exists only to bisect this flag.
+
+### Relocation: `$ORIGIN`, and the audit that enforces it
+
+Every shared library in a payload must find its siblings through `$ORIGIN`, never
+through a path that names the machine it was built on. This was a real shipped
+defect: `bootstrap.mjs` passed `-DCMAKE_INSTALL_RPATH=<absolute install>/lib`, so
+every Ogre-Next library in the package carried
+`/home/<builder>/work/Tension/third_party/ogre-next-install/lib`. A `dist/` copied
+elsewhere still ran, but only because `run.sh` also exports `LD_LIBRARY_PATH` — and
+that masks the problem rather than fixing it: anything that dlopens the adapter
+without the launcher, any package used straight out of `node_modules`, and every
+Windows consumer, has no such variable.
+
+Two layers, doing different jobs:
+
+- **The fix at the source.** `bootstrap.mjs` now asks CMake for
+  `-DCMAKE_INSTALL_RPATH=$ORIGIN:$ORIGIN/..` (`bootstrap.mjs:395-408`). `$ORIGIN`
+  is expanded by the loader at run time to "the directory this object came from",
+  so it is the same directory as the install's and survives being copied. The
+  `$ORIGIN/..` half is **not optional**: the render system plugins install into
+  `lib/OGRE-Next/` while the libraries they depend on are their parent, `lib/`, so
+  `$ORIGIN` alone is relocatable *and wrong*. Measured when it was tried alone:
+  `ldd -r RenderSystem_Vulkan.so` reported **463 unresolved references**.
+
+  The follow-up measurement is the part worth keeping: a `dist/` built from that
+  install **still worked**, because the adapter had already pulled
+  `libOgreNextMain.so.4.0` into the process and glibc answers a `DT_NEEDED`
+  soname from what is already loaded before it searches any path. So the plugin
+  loaded fine in the app and could not load on its own. That is why the packaging
+  audit below asks `ldd` about each library **in isolation** rather than trusting
+  a working application.
+- **The guarantee at packaging.** `build-native.mjs:180-360`: `payloadLibraries`
+  walks a payload, `scripts/lib/elf.mjs` reads each library's `DT_RPATH`/
+  `DT_RUNPATH` out of the ELF **with no external tool**, `relocatePayload`
+  rewrites a library whose path cannot work, and `auditRelocatablePayloads`
+  re-checks every payload at the end of the build.
+
+  The check has two halves and the second is the one that earns its keep:
+
+  - every entry is `$ORIGIN`-relative (`exact` mode for the Ogre-Next payload,
+    where one specific string is the only correct answer; "no absolute entries"
+    for the adapter, whose CMake-computed path carries a harmless extra entry
+    naming the build tree);
+  - **every payload library resolves the payload's own libraries alone** —
+    `ldd -r` on each one with the environment stripped, failing on a `not found`
+    whose soname the payload itself provides. System libraries are deliberately
+    out of scope: a build machine without `libGL` must not fail a gate about
+    self-containment.
+
+The repair tool is `patchelf`. The *check* is not — that split is deliberate: a
+build machine without patchelf must still fail an unrelocatable payload, so the
+reader that decides is our own, and patchelf is only asked to fix what the reader
+reports. `PATCHELF=/path/to/patchelf` names one explicitly, which is how the
+static build from `github.com/NixOS/patchelf/releases` is used here (no distro
+package needed).
+
+### The symlinks, which the RUNPATH work does not cover
+
+A shared object travels as `libFoo.so -> libFoo.so.4.0` — a *relative* link to its
+soname. Node's `cpSync` resolves a symlink against the source and writes the
+result by default, so a bundle copied with `{ recursive: true }` alone carries
+`/home/<builder>/work/Tension/packages/ogre-next-linux-x64/lib/OGRE-Next/...` as
+every link's target. Measured: **14 of 14** links in an Ogre `dist/` were absolute,
+and the bundle still ran on the build machine because those paths exist there.
+
+This is invisible to every check that looks at a binary rather than at a tree, and
+it defeats the `$ORIGIN` work outright: the loader follows the link first. The
+fix is `verbatimSymlinks: true` in `packages/cli/src/bundle.js`'s copy (and
+`copyTree` in `build-native.mjs` already had it), and it is now a guarantee rather
+than a habit:
+
+- **at packaging** — `build-native.mjs`'s payload audit fails if any packaged
+  symlink is absolute (`rpath: ... links: every packaged symlink is relative`);
+- **at bundling** — `tension build` walks `dist/` and refuses to finish if a link
+  leaves it, naming the first five.
+
+Verified the way it should be: with the fix, `find dist -type l -lname '/*'`
+answers nothing, and a run of the copied bundle maps **zero** files under this
+checkout (`grep -c /home/<user>/work/Tension /proc/<pid>/maps`) — including the
+Vulkan render system, which is what an absolute plugin link would have hidden.
+
+### The launch checks
+
+Two details that are easy to get wrong and are pinned in the code:
+
+- **The tag is preserved, not just the value.** `tension-ogre/CMakeLists.txt` links
+  with `--disable-new-dtags` so the adapter emits `DT_RPATH`, which the loader
+  searches *before* `LD_LIBRARY_PATH` — that is what makes the payload's own
+  Ogre-Next win over a stale one in the environment. patchelf's `--set-rpath`
+  emits `DT_RUNPATH` by default, searched *after*. The repair passes
+  `--force-rpath` when the library is `DT_RPATH` so the precedence survives.
+- **A tree built before `$ORIGIN` still exists on disk**, and the packaging step
+  is what makes its copy correct. `bootstrap.mjs`'s idempotence gate (below) has
+  no opinion about the flag set, so `npm run bootstrap -- --force` is what makes
+  the *install* relocatable and stops the packaging step rewriting 14 libraries
+  on every build.
 
 ## 4. The Ogre-Next submodule and its patches
 

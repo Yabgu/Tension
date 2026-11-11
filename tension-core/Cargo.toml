@@ -28,6 +28,28 @@ ai = ["dep:llama-cpp-2", "dep:encoding_rs"]
 # A feature rather than a runtime flag because it decides which code exists, not
 # which code runs: `link_2d` is compiled in or out.
 render2d-core = []
+# SDL3 *inside* the binary, for the one artifact that ships.
+#
+# `sdl3-sys`'s `build-from-source-static` builds SDL from the vendored source
+# crate (`sdl3-src`, pinned by the sys crate to the SDL version its headers were
+# generated from, so the two cannot drift) with CMake and links the archive into
+# this binary. A packaged host then needs no `libSDL3.so.0` on the machine that
+# runs it — which is the difference between a `dist/` that runs anywhere and one
+# that runs on the machine it was built on.
+#
+# Off by default, because it costs a full SDL CMake build the first time and
+# `cargo build` for iteration should not. `scripts/build-native.mjs` turns it on
+# for the payload binary, which is the only artifact `tension build` copies.
+# Spelling the dynamic build by hand is the default:
+#
+#     cargo build                                  static SDL3?  no
+#     cargo build --features static-sdl3           yes
+#     npm run build:native                         yes (the payload binary)
+#
+# It needs CMake and a C compiler — both already required by the OGRE-Next
+# bootstrap — and the crate is fetched from crates.io on the first build of a
+# checkout (5.7 MB), so an offline build needs it vendored or in the cargo cache.
+static-sdl3 = ["sdl3/build-from-source-static"]
 
 [[bin]]
 name = "tension-core"

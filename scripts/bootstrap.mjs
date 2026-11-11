@@ -375,11 +375,37 @@ if (WIN) {
     `-DVulkan_SHADERC_INCLUDE_DIR=${glslangInclude}`,
     // The install sits outside the loader's default path, and the plugins
     // (RenderSystem_*.so) have a DT_NEEDED on libOgreNextMain.so themselves.
-    // Bake the install's own lib directory in as a RUNPATH so that resolution
-    // needs no environment help. Before FreeImage was removed this pointed at
-    // the FreeImage install instead, because OgreMain recorded a DT_NEEDED on
-    // libfreeimage.so.3; that dependency is gone and no longer needs one.
-    `-DCMAKE_INSTALL_RPATH=${join(INSTALL, 'lib')}`,
+    // Bake a RUNPATH into them so that resolution needs no environment help.
+    // Before FreeImage was removed this pointed at the FreeImage install
+    // instead, because OgreMain recorded a DT_NEEDED on libfreeimage.so.3; that
+    // dependency is gone and no longer needs one.
+    //
+    // **`$ORIGIN`, not the install path.** Every library in the install is a
+    // sibling under `<prefix>/lib`, so `$ORIGIN` spells exactly the same
+    // directory *and* survives being copied somewhere else — which is what
+    // `build-native.mjs` does to build the Ogre-Next payload, and what
+    // `tension build` does again to build `dist/lib`. The absolute spelling used
+    // to ship: a packaged `dist/` carried
+    // `/home/<builder>/work/Tension/third_party/ogre-next-install/lib` in every
+    // Ogre library, so the libraries found each other only as long as the
+    // builder's checkout existed, and `dist/run.sh` only worked because it also
+    // set `LD_LIBRARY_PATH`. `$ORIGIN` is expanded by the loader at run time and
+    // means "the directory this object was loaded from", so there is nothing to
+    // rewrite when the tree moves.
+    // `$ORIGIN/..` as well as `$ORIGIN`, because the install is two deep: the
+    // render system plugins land in `lib/OGRE-Next/` while the libraries they
+    // need are their parent, `lib/`. `$ORIGIN` alone made a plugin look for
+    // `libOgreNextMain.so.4.0` inside its own directory and the install check
+    // below caught it immediately — 463 unresolved references.
+    //
+    // Measured, and worth recording because it looked fine: a `dist/` copied
+    // elsewhere still loaded the plugins with `$ORIGIN` alone, because the
+    // adapter had already pulled OgreMain into the process and glibc answers a
+    // `DT_NEEDED` soname from the objects it has loaded before searching any
+    // path. That is a property of what happened to be loaded first, not of the
+    // library, and `ldd` on the plugin alone — which is what the check below
+    // does — is the honest question.
+    `-DCMAKE_INSTALL_RPATH=$ORIGIN:$ORIGIN/..`,
   );
   vulkanExpected = true;
 }

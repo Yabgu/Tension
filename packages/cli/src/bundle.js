@@ -12,8 +12,10 @@
 // produces a Linux directory. Cross-building is a release-pass problem and the
 // launcher is where its answer will land.
 
-import { chmodSync, cpSync, mkdirSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import {
+  chmodSync, cpSync, lstatSync, mkdirSync, readdirSync, readlinkSync, rmSync, statSync, writeFileSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join } from 'node:path';
 import { buildOnce } from './build.js';
 import { commandLine } from './dev.js';
 import { cliVersion } from './project.js';
@@ -46,7 +48,21 @@ export function bundle(ctx, options = {}) {
   const copy = (from, to) => {
     if (!exists(from)) return null;
     mkdirSync(dirname(to), { recursive: true });
-    cpSync(from, to, { recursive: true });
+    // `verbatimSymlinks: true` is not a detail, it is the difference between a
+    // `dist/` that runs anywhere and one that runs on the machine that built it.
+    // A shared library travels as `libFoo.so -> libFoo.so.4.0`, a *relative*
+    // link. Node's default resolves a symlink against the source and writes the
+    // result — an absolute path into this checkout — so every one of the fourteen
+    // links in an Ogre payload arrived in `dist/` pointing at
+    // `/home/<builder>/work/Tension/packages/...`. On the build machine nothing
+    // looks wrong, because those paths exist; on any other machine the plugins
+    // dangle and Ogre has no render system.
+    //
+    // The links are relative in the payload already (their target is a sibling),
+    // so copying them verbatim keeps them relative here, and `dist/` stays
+    // self-contained. Verified by `find dist -type l -lname '/*'` — it answers
+    // nothing, which is the only acceptable count.
+    cpSync(from, to, { recursive: true, verbatimSymlinks: true });
     files.push({ from, to });
     return to;
   };
@@ -96,6 +112,23 @@ export function bundle(ctx, options = {}) {
     }
     if (exists(ctx.rt.ogre.ogreNext.mediaDir)) {
       copy(ctx.rt.ogre.ogreNext.mediaDir, join(distDir, 'Media'));
+    }
+
+    // The bundle is only portable if its links are. A shared library travels as
+    // a relative symlink to its soname (`libFoo.so -> libFoo.so.4.0`); an
+    // absolute one is a path into the machine that ran the build, and it dangles
+    // everywhere else. The `verbatimSymlinks` above is what keeps them relative,
+    // and this is what stops that from being an honour system — measured before
+    // it existed: all 14 links in an Ogre `dist/` pointed back into the
+    // checkout, and the bundle still ran here because those paths exist.
+    const escaped = absoluteLinks(distDir);
+    if (escaped.length) {
+      die('dist/ carries symlinks that leave it:', [
+        ...escaped.slice(0, 5).map(({ link, target }) => `  ${link} -> ${target}`),
+        ...(escaped.length > 5 ? [`  ... and ${escaped.length - 5} more`] : []),
+        'those paths exist on this machine and nowhere else; the copy above must',
+        'preserve the payload\'s relative links (`verbatimSymlinks: true`).',
+      ]);
     }
   }
 
@@ -252,6 +285,37 @@ function shellArg(value) {
 function batchArg(value) {
   const text = value.replace(`${HERE}/`, '%here%').split('/').join('\\');
   return /^[\w\-=:+@%\\]+$/.test(text) ? text : `"${text}"`;
+}
+
+/**
+ * Every symlink under `dir` whose target is an absolute path.
+ *
+ * Absolute means "a path on the machine that built this". A bundle that carries
+ * one is not portable, whatever its RUNPATHs say — the loader follows the link,
+ * and the link is gone. Cheap (one walk, no file reads) and it runs on every
+ * bundle, because the failure it catches is silent on the build machine.
+ */
+function absoluteLinks(dir) {
+  const found = [];
+  const walk = (path) => {
+    for (const entry of safeList(path)) {
+      const full = join(path, entry);
+      let info;
+      try {
+        info = lstatSync(full);
+      } catch {
+        continue;
+      }
+      if (info.isSymbolicLink()) {
+        const target = readlinkSync(full);
+        if (isAbsolute(target)) found.push({ link: full.slice(dir.length + 1), target });
+      } else if (info.isDirectory()) {
+        walk(full);
+      }
+    }
+  };
+  walk(dir);
+  return found;
 }
 
 /** `readdirSync` that answers `[]` for a directory that is not there. */

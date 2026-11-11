@@ -29,12 +29,14 @@
 
 import { spawnSync } from 'node:child_process';
 import {
-  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync,
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync,
+  writeFileSync,
 } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
+import { readElfDynamic, runpathEntries } from './lib/elf.mjs';
 import { EXE, WIN, capture, run, toolchainReport, tryCapture, ucrt64Bin, which } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -146,6 +148,252 @@ function mb(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// ── payload relocation ───────────────────────────────────────────────────────
+//
+// A packaged library's search path has to mean "this directory" and nothing
+// else. The measurement that made this a build step: every Ogre-Next library in
+// the payload carried
+//
+//     RUNPATH /home/<builder>/work/Tension/third_party/ogre-next-install/lib
+//
+// — correct on the machine that built it and meaningless on every other. A
+// `dist/` copied to another machine still ran, because `run.sh` also exported
+// `LD_LIBRARY_PATH=$here/lib`, which *outranks* DT_RUNPATH... except for the two
+// places it does not: a consumer that dlopens the adapter itself, a package used
+// out of `node_modules` by an absolute path, and anything on Windows, where
+// there is no RUNPATH at all. The absolute path also leaked the builder's
+// directory into every published artifact.
+//
+// Two layers, and they are different jobs:
+//
+//   * `scripts/bootstrap.mjs` now asks CMake for `-DCMAKE_INSTALL_RPATH=$ORIGIN`,
+//     so a tree built today is relocatable when it is installed. That is the
+//     fix at the source.
+//   * this step *verifies* the payload and repairs it if it is not, because a
+//     tree built before that flag exists is still on disk, and because a flag
+//     that stops being honoured should fail the build rather than ship.
+//
+// The repair is `patchelf`; the check is not. `scripts/lib/elf.mjs` reads the
+// RUNPATH out of the file with no external tool, so an unrelocatable payload
+// fails the build even on a machine where patchelf was never installed.
+
+/// Only `$ORIGIN`-relative entries survive being moved. Absolute ones never do.
+function isRelocatable(entry) {
+  return entry.startsWith('$ORIGIN') || entry.startsWith('$LIB');
+}
+
+/// `patchelf`, if this machine has one. `PATCHELF` names it explicitly.
+function findPatchelf() {
+  const explicit = process.env.PATCHELF;
+  if (explicit) return existsSync(explicit) ? explicit : null;
+  return which('patchelf') ?? null;
+}
+
+/// Every shared object under `dir`, as regular files.
+///
+/// Symlinks are skipped deliberately: `libFoo.so -> libFoo.so.4.0` is a second
+/// name for one file, and patching both means patching the same inode twice.
+function payloadLibraries(dir) {
+  const libraries = [];
+  const walk = (from) => {
+    let entries;
+    try {
+      entries = readdirSync(from, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const full = join(from, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && /\.so(\.|$)/.test(entry.name)) libraries.push(full);
+    }
+  };
+  walk(dir);
+  return libraries;
+}
+
+/**
+ * Make every library in a payload find its siblings through `$ORIGIN`.
+ *
+ * Two modes, because the two payloads have different shapes:
+ *
+ *   `exact`   the RUNPATH must equal `wanted` character for character. The
+ *             Ogre-Next payload has libraries at two depths (`lib/` and
+ *             `lib/OGRE-Next/`), so one specific string is the only thing that
+ *             works for both, and `$ORIGIN` on its own is relocatable *and*
+ *             wrong. This is also the mode that keeps an install built before
+ *             the flag was corrected from shipping.
+ *   default   only absolute entries are a defect. The adapter's path is computed
+ *             by CMake from the real layout and gains one extra entry naming the
+ *             build tree; rewriting it every build to drop an entry that is
+ *             harmless and relative would be noise, and would make `patchelf`
+ *             mandatory for a build that does not need it.
+ */
+function relocatePayload(dir, wanted, label, { exact = false } = {}) {
+  const libraries = payloadLibraries(dir);
+  if (!libraries.length) return;
+
+  const stale = [];
+  for (const library of libraries) {
+    let dynamic;
+    try {
+      dynamic = readElfDynamic(library);
+    } catch (error) {
+      fail(`${label}: cannot read ${relative(repo, library)}: ${error.message}`);
+    }
+    const current = runpathEntries(dynamic).join(':');
+    const wrong = exact ? current !== wanted : !isRelocatable(current);
+    if (wrong) stale.push({ library, dynamic, current });
+  }
+
+  if (!stale.length) {
+    const found = runpathEntries(readElfDynamic(libraries[0])).join(':') || '(no RUNPATH)';
+    note(`${label}: ${libraries.length} librar(ies) already relocatable, e.g. ${found}`);
+    return;
+  }
+
+  const patchelf = findPatchelf();
+  if (!patchelf) {
+    fail(`${label}: ${stale.length} packaged librar(ies) carry a path the payload cannot use\n` +
+         stale.map(({ library, current }) =>
+           `  ${relative(repo, library).split('\\').join('/')}: ${current || '(no RUNPATH)'}`).join('\n') +
+         `\n  wanted: ${wanted}` +
+         '\n  They must use $ORIGIN so the package survives being copied. Fix either way:\n' +
+         '    - rebuild the Ogre-Next install with `npm run bootstrap -- --force` (it now\n' +
+         '      passes -DCMAKE_INSTALL_RPATH=$ORIGIN:$ORIGIN/..), or\n' +
+         '    - install patchelf (binutils-distro package, `python3 -m pip install patchelf`,\n' +
+         '      or the static build from https://github.com/NixOS/patchelf/releases)\n' +
+         '      and re-run this build.');
+  }
+
+  for (const { library, dynamic } of stale) {
+    const args = ['--set-rpath', wanted];
+    // Keep the *tag*, not just the value. `tension-ogre/CMakeLists.txt` links
+    // with `--disable-new-dtags` so the adapter's own Ogre-Next wins over an
+    // `LD_LIBRARY_PATH` the user's shell happens to carry (DT_RPATH is searched
+    // before that variable, DT_RUNPATH after). patchelf's `--set-rpath` emits
+    // DT_RUNPATH by default, which would silently reverse that precedence and
+    // reintroduce the stale-library bug the flag was added for.
+    if (dynamic.rpathKind === 'RPATH') args.push('--force-rpath');
+    args.push(library);
+    // `capture`, not `run`: patchelf is silent on success, and a failure should
+    // be reported as this step's diagnosis rather than as a thrown command line.
+    try {
+      capture(patchelf, args);
+    } catch (error) {
+      fail(`${label}: patchelf refused ${relative(repo, library)}\n${error.message}`);
+    }
+    // Verified by the reader that found it: a repair that is not re-read is a
+    // claim, not a fix.
+    const after = readElfDynamic(library);
+    if (runpathEntries(after).join(':') !== wanted) {
+      fail(`${label}: ${relative(repo, library)} still reads ` +
+           `"${runpathEntries(after).join(':')}" after patchelf`);
+    }
+  }
+  note(`${label}: rewrote the RUNPATH of ${stale.length} librar(ies) to ${wanted}`);
+}
+
+/// The last word: every payload library's search path is `$ORIGIN`-relative,
+/// and every payload library can resolve the payload's own libraries by itself.
+///
+/// Separate from the repair because it holds even when nothing needed repairing
+/// — the state being asserted is "this artifact is self-contained", and a build
+/// that only checks when it changed something does not assert that.
+///
+/// The resolution half is the one that catches a rpath that is *relative and
+/// still wrong*: `$ORIGIN` on its own is relocatable and useless for a plugin in
+/// `lib/OGRE-Next/`, whose dependencies are one directory up. Measured, the day
+/// this was added: 463 unresolved references, none of them named by the rpath
+/// audit. `ldd -r` asks the loader directly, and only payload-provided sonames
+/// are held to it — a build machine without `libGL` must not fail this gate,
+/// because the payload does not claim to ship libGL.
+function auditRelocatablePayloads(dirs) {
+  const offending = [];
+  let checked = 0;
+  for (const { dir, label } of dirs) {
+    for (const library of payloadLibraries(dir)) {
+      checked++;
+      const dynamic = readElfDynamic(library);
+      const entries = runpathEntries(dynamic);
+      const bad = entries.filter((entry) => !isRelocatable(entry));
+      if (bad.length) {
+        offending.push(`${label}: ${relative(repo, library).split('\\').join('/')} -> ${bad.join(':')}`);
+      }
+    }
+  }
+  if (offending.length) {
+    fail('a packaged library names a directory outside its payload:\n' +
+         offending.map((line) => `  ${line}`).join('\n') + '\n' +
+         '  A shipped package must resolve through $ORIGIN; an absolute path only\n' +
+         '  exists on the machine that built it.');
+  }
+  note(`rpath: ${checked} packaged librar(ies) checked, all $ORIGIN-relative`);
+
+  if (WIN || !which('ldd')) return;
+  const unresolved = [];
+  for (const { dir, label } of dirs) {
+    // What this payload promises to provide, by soname.
+    const provided = new Set(payloadLibraries(dir).map((library) => basename(library)));
+    for (const library of payloadLibraries(dir)) {
+      let report;
+      try {
+        // `LD_LIBRARY_PATH` deleted, and the environment cleared to what the
+        // loader would see from a launcher that set nothing: the question is
+        // what the library can do alone.
+        report = capture('ldd', ['-r', library], {
+          env: { PATH: process.env.PATH ?? '/usr/bin:/bin' },
+        });
+      } catch {
+        continue;  // ldd's own refusal; the rpath audit above already passed
+      }
+      for (const line of report.split('\n')) {
+        const missing = /^\s*(\S+) => not found/.exec(line);
+        if (missing && provided.has(missing[1])) {
+          unresolved.push(`${label}: ${relative(repo, library).split('\\').join('/')} cannot find ${missing[1]}`);
+        }
+      }
+    }
+  }
+  if (unresolved.length) {
+    fail('a packaged library cannot resolve the payload it belongs to:\n' +
+         unresolved.map((line) => `  ${line}`).join('\n') + '\n' +
+         '  Check the RUNPATH: a plugin in lib/OGRE-Next/ needs $ORIGIN/.. as well\n' +
+         '  as $ORIGIN, and bootstrap.mjs passes both.');
+  }
+  note(`rpath: every payload library resolves the payload alone, with no LD_LIBRARY_PATH`);
+
+  // Symlinks, for the same reason the RUNPATH is checked: a payload link that
+  // names an absolute path is a link into the build machine. `copyTree` asks for
+  // `verbatimSymlinks` and the Ogre-Next install writes relative ones, so this
+  // holds today — and it is exactly the property a later "just dereference it"
+  // fix would quietly break.
+  const escaping = [];
+  for (const { dir, label } of dirs) {
+    const walk = (from) => {
+      for (const entry of readdirSync(from, { withFileTypes: true })) {
+        const full = join(from, entry.name);
+        if (entry.isSymbolicLink()) {
+          const target = readlinkSync(full);
+          if (isAbsolute(target)) {
+            escaping.push(`${label}: ${relative(repo, full).split('\\').join('/')} -> ${target}`);
+          }
+        } else if (entry.isDirectory()) {
+          walk(full);
+        }
+      }
+    };
+    walk(dir);
+  }
+  if (escaping.length) {
+    fail('a packaged symlink points outside its payload:\n' +
+         escaping.map((line) => `  ${line}`).join('\n') + '\n' +
+         '  A relative link survives being copied; an absolute one is a path on\n' +
+         '  this machine. `cpSync` needs `verbatimSymlinks: true` somewhere.');
+  }
+  note('links: every packaged symlink is relative');
+}
+
 /// The directory holding Ogre's Media tree: `share/OGRE-Next/Media` on Linux,
 /// `Media` at the prefix root on Windows.
 function ogreMediaDir(prefix) {
@@ -215,6 +463,15 @@ function packageOgreNext() {
     if (existsSync(join(destination, 'Media', name))) {
       fail(`sample asset "${name}" leaked into the package; pruning is broken`);
     }
+  }
+  // Every Ogre-Next library sits beside its siblings in this one directory, so
+  // `$ORIGIN` is the whole search path they need — and the only spelling that
+  // survives the copy into `dist/lib` that `tension build` makes later.
+  // `$ORIGIN/..` as well: the render system plugins land in `lib/OGRE-Next/` and
+  // their dependencies are `lib/`. See the note on `$(INSTALL_RPATH)` in
+  // bootstrap.mjs for the measurement.
+  if (!WIN) {
+    relocatePayload(join(destination, 'lib'), '$ORIGIN:$ORIGIN/..', 'ogre-next', { exact: true });
   }
   writePayloadManifest(destination, 'ogre-next',
                        WIN ? ['lib/', 'include/', 'Media/', 'bin/'] : ['lib/', 'include/', 'Media/']);
@@ -377,6 +634,28 @@ function buildAdapter(ogreNextPayload) {
   }
   mkdirSync(join(destination, 'lib'), { recursive: true });
   cpSync(built, join(destination, 'lib', 'libtension_ogre' + (WIN ? '.dll' : '.so')));
+  // The adapter's own path, from the adapter's perspective: itself, then the
+  // Ogre-Next payload by both spellings (the local payload directory, and the
+  // `tension-`-prefixed name `npm pack` gives the published package). All of them
+  // are `$ORIGIN`-relative, so the same string works in `packages/`, in a
+  // published `node_modules/`, and — through the first entry — in the flat
+  // `dist/lib` that `tension build` assembles.
+  //
+  // The link also appends the *build tree's* `$ORIGIN/../../third_party/...`,
+  // because the copy CMake stages into `tension-ogre/build/` is what the C++ and
+  // Rust suites load, and that copy has to resolve Ogre without an environment
+  // variable. In the package the entry is dead — nothing is two levels up — and
+  // it is harmless there because `$ORIGIN` comes first and the payload is flat or
+  // a sibling. What the audit below enforces is the property that matters: no
+  // entry is absolute.
+  if (!WIN) {
+    const sibling = basename(ogreNextPayload);
+    relocatePayload(
+      join(destination, 'lib'),
+      ['$ORIGIN', `$ORIGIN/../../${sibling}/lib`, `$ORIGIN/../../tension-${sibling}/lib`].join(':'),
+      'ogre',
+    );
+  }
   // The Ogre runtime DLLs staged beside the adapter by the post-build step:
   // the adapter imports them and the host loads it with an altered search
   // path, so the directory is self-contained.
@@ -595,6 +874,15 @@ function buildCore() {
   const render2d = backend === 'rust';
   const enabled = [ai ? 'ai' : 'audio'];
   if (render2d) enabled.push('render2d-core');
+  // SDL3 goes *into* the binary. This is the one artifact that ships, so this is
+  // the one build that must not depend on a `libSDL3.so.0` the target machine
+  // happens to have: the cost is a CMake build of the vendored SDL source, paid
+  // here and nowhere else. `cargo build` for iteration stays on the system SDL.
+  //
+  // `TENSION_STATIC_SDL=0` builds a dynamic payload binary — for bisecting this
+  // flag, which is the only reason to want one.
+  const staticSdl = process.env.TENSION_STATIC_SDL !== '0';
+  if (staticSdl) enabled.push('static-sdl3');
   const features = ai
     ? ['--features', enabled.join(',')]
     : ['--no-default-features', '--features', enabled.join(',')];
@@ -603,6 +891,11 @@ function buildCore() {
     render2d
       ? 'core: 2D renderer is in core'
       : 'core: 2D renderer is the C++ DSO (TENSION_RENDER2D=cpp) — pass --capability at run time',
+  );
+  note(
+    staticSdl
+      ? 'core: SDL3 is static (the payload binary needs no libSDL3)'
+      : 'core: SDL3 is dynamic (TENSION_STATIC_SDL=0) — the payload needs libSDL3.so.0',
   );
   run('cargo', ['build', '--release', ...features], {
     cwd: join(repo, 'tension-core'),
@@ -643,6 +936,17 @@ buildCore();
 
 // The sonames only exist once the packages are staged, so this runs last.
 auditSdlLinkage();
+
+// Every library that ships must find its siblings through `$ORIGIN`. Checked
+// again here, after every payload is staged, rather than only where each one was
+// written: this is the property `dist/` depends on, and it should be asserted at
+// the end on the artifacts that actually exist.
+if (!WIN) {
+  auditRelocatablePayloads([
+    { dir: join(ogreNext, 'lib'), label: 'ogre-next' },
+    { dir: join(payload('ogre'), 'lib'), label: 'ogre' },
+  ]);
+}
 
 // ── build stamp ──────────────────────────────────────────────────────────────
 // Both binaries are now in place, so record what they were built from. The
