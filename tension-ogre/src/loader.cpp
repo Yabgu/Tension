@@ -147,17 +147,26 @@ void Loader::set_sink(LoaderSink sink) {
 }
 
 int32_t Loader::add_mount(const std::string &prefix, const std::string &tns_path,
-                          std::vector<uint8_t> bytes, tension_res *res) {
+                          const uint8_t *image, size_t image_len, tension_res *res) {
     std::lock_guard<std::mutex> lock(mutex_);
     const int32_t refusal = mount_refusal(mounts_, prefix, tns_path);
     if (refusal != 0) return refusal;
     std::unique_ptr<Mount> mount = std::make_unique<Mount>();
     mount->prefix = prefix;
     mount->tns_path = tns_path;
-    mount->bytes = std::move(bytes);
+    mount->image = image;
+    mount->image_len = image_len;
     mount->res = res;
     mounts_.push_back(std::move(mount));
     return 0;
+}
+
+bool Loader::has_mount(const std::string &prefix) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const std::unique_ptr<Mount> &mount : mounts_) {
+        if (mount->prefix == prefix) return true;
+    }
+    return false;
 }
 
 std::vector<const Mount *> Loader::mount_pointers_locked() const {

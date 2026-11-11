@@ -3,8 +3,6 @@
 #include "mounts.h"
 
 #include <cerrno>
-#include <fstream>
-#include <iterator>
 
 namespace tension_ogre {
 
@@ -18,16 +16,10 @@ int32_t mount_refusal(const MountTable &table, const std::string &prefix,
     return 0;
 }
 
-int32_t mount_open(const std::string &tns_path, std::vector<uint8_t> *bytes, tension_res **out,
-                   std::string *err) {
-    std::ifstream file(tns_path, std::ios::binary);
-    if (!file) return -ENOENT;
-    bytes->assign(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
-    if (file.bad() || bytes->empty()) return -EIO;
-
+int32_t mount_borrow(const uint8_t *image, size_t len, tension_res **out, std::string *err) {
+    if (image == nullptr || len == 0) return -EIO;
     char message[512] = {0};
-    const int32_t loaded =
-        tension_res_load_borrowed(bytes->data(), bytes->size(), out, message, sizeof message);
+    const int32_t loaded = tension_res_load_borrowed(image, len, out, message, sizeof message);
     if (loaded != 0) {
         if (err != nullptr) *err = message;
         return -EIO;

@@ -100,7 +100,7 @@ slot at 0 and answer the guest "success".
 | 10 | `submit_motion` | 10 | `(i32 count) -> i32` | one `guest_read` of `count` 48-byte `MotionUpdate`s, all-or-nothing | `adapter.cpp:1300`, `:868` |
 | 11 | `submit_bones` | 11 | `(i32 count) -> i32` | one read of the bone table at `BONE_TABLE_OFFSET`, all-or-nothing | `adapter.cpp:1302`, `:932` |
 | 12 | `create_mesh` | 12 | `(i32 vb, i32 vb_len, i32 format, i32 ib, i32 ib_len, i32 topology) -> i32` | copy vertex/index bytes out of the procedural window and return a resource id now, realise later | `adapter.cpp:1305`, `:1081` |
-| 13 | `mount_tns` | 13 | `(i32 prefix, i32 prefix_len, i32 path, i32 path_len) -> i32` | read a Tension Volume once and mount it under a prefix | `adapter.cpp:1306`, `:674` |
+| 13 | `mount_tns` | 13 | `(i32 prefix, i32 prefix_len, i32 path, i32 path_len) -> i32` | **deprecated** alias of `tension::res.mount` that also indexes the image for this loader | `adapter.cpp:1306`, `:674` |
 | 14 | `submit_animation` | 14 | `(i32 renderable, i32 clip, i32 clip_len, i32 time_ms) -> i32` | queue a clip and an absolute time within it | `adapter.cpp:1307`, `:634` |
 | 15 | `submit_skin_matrices` | 15 | `(i32 count) -> i32` | read a table of `(id, offset, bytes, flags)` plus the matrix blocks they name | `adapter.cpp:1303`, `:993` |
 | 16 | `window_handle` | 16 | `(i32 lo_ptr, i32 hi_ptr) -> i32` | **deprecated:** write the cached native window handle as two halves; `-ENODEV` under a host window | `adapter.cpp:1363-1384`, `:1443` |
@@ -440,7 +440,10 @@ The thread's three partners, and what each may touch:
 - **loader worker**: resolves paths through the mount table, reads bytes, checks
   magic, reports an errno. Calls no Ogre function (`loader.h:1-14`). Mounts are
   heap-stable and append-only, so a pointer taken under the lock stays valid
-  outside it (`mounts.h:11-17`).
+  outside it (`mounts.h`). The **bytes are the host's**: the worker reads through
+  a `tension_res` borrowing the image the session mounted, which is why the
+  operation is safe off-thread without a second copy (`tension-res/DESIGN.md`
+  §7.9 has the ownership rule).
 - **render thread**: every Ogre call, including the parse and creation in
   `drain_completions` (`loader.h:169-172`).
 
@@ -626,9 +629,12 @@ status. The list by verb, with the checks that produce each code:
   outside the 512 KiB procedural window, overlapping arrays, or any index past
   the vertex count; `-ENOSPC` when the resource table is full
   (`adapter.cpp:1081-1176`).
-- **`mount_tns`** — `-EINVAL` for an empty or malformed prefix, `-EEXIST` for a
-  duplicate prefix (`mounts.h:43-46`), and the resource library's own errno when
-  the volume cannot be opened or parsed (`adapter.cpp:695-711`).
+- **`mount_tns`** (deprecated: use `tension::res.mount`) — `-EINVAL` for an empty
+  or malformed prefix (`mounts.h`), `-ENOSYS` on a host without
+  `res_volume_bytes` (ABI < 7), and the **host's** errno when the volume cannot
+  be opened or parsed — it is the host that reads the file now. A prefix already
+  mounted answers 0 rather than `-EEXIST`, so `res.mount` and this verb can run
+  in either order.
 - **`window_handle`** — `-ENODEV` when there is no window: before `init`, while
   the window is coming up, with the null renderer, or after `shutdown`
   (`adapter.cpp:1230-1251`). This is the one code the adapter returns that is

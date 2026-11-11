@@ -453,9 +453,11 @@ fn test_state() -> HostState {
     HostState {
         args: Vec::new(),
         pending_line: None,
-        res: Vec::new(),
-                // No writable root in a unit test: every `res_write` is -EROFS.
-                write_root: None,
+        res: std::sync::Arc::new(std::sync::Mutex::new(
+            crate::res::MountTable::new(),
+        )),
+        // No writable root in a unit test: every `res_write` is -EROFS.
+        write_root: None,
         audio: audio::AudioSession::new(Box::new(HeadlessAdapter::new())),
         ai: ai::AiSession::new(Box::new(StubAdapter::new(ai::AiSink::detached()))),
         solver: SolverHost::default(),

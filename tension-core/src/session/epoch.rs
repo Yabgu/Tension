@@ -672,7 +672,9 @@ mod tests {
                 HostState {
                     args: Vec::new(),
                     pending_line: None,
-                    res: Vec::new(),
+                    res: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::res::MountTable::new(),
+                )),
                 // No writable root in a unit test: every `res_write` is -EROFS.
                 write_root: None,
                     audio: crate::audio::AudioSession::new(crate::default_adapter()),

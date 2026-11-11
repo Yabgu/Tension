@@ -55,6 +55,10 @@ declare function hostResReaddir(
 @external("tension::res", "res_write")
 declare function hostResWrite(pathPtr: usize, pathLen: i32, dataPtr: usize, dataLen: i32): i32;
 
+/** Mount a packed volume under a prefix. Returns the mount index or -errno. */
+@external("tension::res", "res_mount")
+declare function hostResMount(prefixPtr: usize, prefixLen: i32, pathPtr: usize, pathLen: i32): i32;
+
 /** `RES_SEEK_SET`: seek from the start of the file. */
 export const RES_SEEK_SET: i32 = 0;
 /** `RES_SEEK_CUR`: seek from the current position. */
@@ -268,6 +272,44 @@ export function resReadText(path: string): string | null {
   if (n < 0) return null;
   return String.UTF8.decodeUnsafe(changetype<usize>(buf), n);
 }
+
+/**
+ * Mount a packed volume under `prefix`, and answer its mount index.
+ *
+ * **Mounting is the host's, not a renderer's.** Before this verb it was reachable
+ * only through `ogre.mountTns`, so a guest that wanted a volume visible to
+ * `resReadFile` had to load the Ogre capability to get it, and the same volume
+ * had to be passed to the host (`--res`) *and* to the adapter (`--tns`) to be
+ * visible to both. One call now mounts it once, for everything.
+ *
+ *     resMount("resources", "/abs/path/assets.tns");
+ *     const mesh = resReadFile("resources/models/hero.mesh");   // both resolve
+ *     ogre.queueMeshLoad("resources/models/hero.mesh", 0);      // so does this
+ *
+ * A prefix is a *name* — one leading path segment, no slashes of its own — and
+ * it scopes the volume: `resources/models/x` resolves inside the mount, and
+ * `resources-old/x` does not. Mount resolution prefers the longest matching
+ * prefix, so a prefixed mount beats a flat `--res` pak for the paths it owns,
+ * and two flat paks still resolve in load order.
+ *
+ * Returns the mount index (>= 0), or:
+ *   `-EINVAL` (-22) an empty prefix or path, or a prefix spelled like a path;
+ *   `-EEXIST` (-17) that prefix is already mounted;
+ *   `-ENOENT` (-2)  no such file;
+ *   `-EIO`    (-5)  the file is not a readable volume.
+ *
+ * `ogre.mountTns(prefix, path)` is the same operation plus the adapter's own
+ * index of the image; either may be called first.
+ */
+export function resMount(prefix: string, path: string): i32 {
+  const prefixBytes = String.UTF8.encode(prefix, false);
+  const pathBytes = String.UTF8.encode(path, false);
+  return hostResMount(changetype<usize>(prefixBytes), i32(prefixBytes.byteLength),
+                      changetype<usize>(pathBytes), i32(pathBytes.byteLength));
+}
+
+/** The errno `resMount` answers for a prefix that is already mounted. */
+export const EEXIST: i32 = -17;
 
 /**
  * Write a whole file. Returns the bytes written, or a negative errno.

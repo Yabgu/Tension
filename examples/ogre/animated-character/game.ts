@@ -38,6 +38,7 @@ import {
   localToModel,
   mat4Multiply,
   print,
+  resMount,
   resReadFile,
   rt,
   restPose,
@@ -471,27 +472,28 @@ class Game {
   }
 
   /// Mount the packed volume the assets were shipped in.
+  ///
+  /// **One call, mounted by the host.** `resMount` is `tension::res`'s, not the
+  /// renderer's: the volume becomes visible to every resource reader in the
+  /// process at once, so the mesh goes to Ogre's loader and the animation
+  /// archives come back through `resReadFile` — the same bytes, one mount. This
+  /// example used to call `ogre.mountTns` *and* be handed the same volume again
+  /// as `--res`, because the adapter kept its own table; that is gone.
   private mountAssets(): void {
-    // Everything this example loads comes out of one packed volume (chunk 11):
-    // the assets live in `resources/`, `pack.sh` packs them, and the run script
-    // hands the absolute path in as `--tns=`. No mount, no bytes — there is no
-    // fallback to the disk.
     if (this.options.tns.length == 0) {
       fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
     }
-    const mounted = ogre.mountTns("resources", this.options.tns);
-    if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+    const mounted = resMount("resources", this.options.tns);
+    if (mounted < 0) fail("resMount refused (" + mounted.toString() + ")");
   }
 
-  /// The animation archives: the skeleton and the three clips, read through
-  /// `tension::res` — the `--res` pak the run script passes — and parsed by
-  /// the framework's own reader. `resReadFile` does **not** see the OGRE
-  /// mount (`--tns` feeds the adapter's loader, a separate table), which is
-  /// why the launcher gives the same volume to both flags.
+  /// The animation archives: the skeleton and the three clips, read through the
+  /// **same mount** the meshes and textures come from, and parsed by the
+  /// framework's own reader.
   private loadClips(): void {
-    const skeleton_bytes = resReadFile("models/characterMedium_skeleton.ozz");
+    const skeleton_bytes = resReadFile("resources/models/characterMedium_skeleton.ozz");
     if (skeleton_bytes == null) {
-      fail("resReadFile refused the skeleton archive (does ./run.sh pass --res?)");
+      fail("resReadFile refused the skeleton archive (is it in the mounted volume?)");
     }
     this.skeleton = Skeleton.parse(asStatic(skeleton_bytes!));
     if (this.skeleton.error.length > 0) fail("the skeleton archive: " + this.skeleton.error);
@@ -500,7 +502,7 @@ class Game {
            " joints, not the rig's 58");
     }
     for (let i = 0; i < CLIP_NAMES.length; i++) {
-      const path = "models/characterMedium_" + CLIP_NAMES[i] + ".ozz";
+      const path = "resources/models/characterMedium_" + CLIP_NAMES[i] + ".ozz";
       const bytes = resReadFile(path);
       if (bytes == null) fail("resReadFile refused " + path);
       const animation = Animation.parse(asStatic(bytes!));

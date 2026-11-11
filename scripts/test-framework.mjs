@@ -16,7 +16,7 @@
 //
 // Usage: node scripts/test-framework.mjs [path-to-tension-core] [path-to-stub-adapter]
 
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -199,6 +199,48 @@ function runWriteRootFixture(entry, out) {
   }
 }
 
+/// `res.mount`: a guest mounts a volume and reads it back through `tension::res`.
+///
+/// The runner has the half a guest cannot do — a volume — so it packs a scratch
+/// directory with one known file and passes the path as `--mount=`. Everything
+/// the fixture asserts (the prefix rules, the refusals, that a prefixed read
+/// resolves) needs only the guest side.
+function runMountFixture(entry, out) {
+  compileOrFail(entry, out);
+
+  const scratch = mkdtempSync(join(tmpdir(), 'tension-mount-'));
+  const source = join(scratch, 'source', 'fixtures');
+  mkdirSync(source, { recursive: true });
+  writeFileSync(join(source, 'hello.txt'), 'hello from a mounted volume');
+  const volume = join(scratch, 'fixtures.tns');
+
+  try {
+    // `tension-core pack <dir> -o <out>` is the repository's own packer, so the
+    // volume the guest mounts is produced by the same code a build uses. The
+    // packed directory is `fixtures/`, so the volume's root *is* its contents:
+    // `hello.txt`. The guest reaches it as `fixtures/hello.txt`, which is what
+    // proves the prefix is applied rather than baked into the volume.
+    const packDir = join(scratch, 'source', 'fixtures');
+    const packed = spawn(core, ['pack', packDir, '-o', volume], { cwd: scratch });
+    if (packed.status !== 0) {
+      console.error(packed.stdout + packed.stderr);
+      fail(RUNNER, `${entry}: could not pack a scratch volume`);
+    }
+
+    console.log(`==> running ${out} (with a scratch volume)`);
+    const result = spawn(core, [join(build, out), `--mount=${volume}`], { cwd: scratch });
+    console.log(indent(result.stdout));
+    if (result.status !== 0 || !result.stdout.includes('OK')) {
+      console.error(`${RUNNER}: ${entry}: the guest did not pass`);
+      process.stderr.write(result.stderr);
+      process.exit(1);
+    }
+    console.log(`    == ${entry}: OK`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 /// A fixture whose contract is a refusal, parameterised on the message. Used for
 /// both the drift check and the callback guard: the same three assertions (a
 /// non-zero exit, no OK, and the named message) in one place.
@@ -309,6 +351,7 @@ runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 // what this asserts. The pixel suites cover the bytes it produces.
 runFixture('guest-scene.ts', 'guest-scene.wasm');
 runFixture('guest-ui.ts', 'guest-ui.wasm');
+runMountFixture('guest-resmount.ts', 'guest-resmount.wasm');
 runWriteRootFixture('guest-wres.ts', 'guest-wres.wasm');
 runFixture('guest-verlet.ts', 'guest-verlet.wasm');
 runFixture('guest-physics-units.ts', 'guest-physics-units.wasm');

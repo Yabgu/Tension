@@ -376,11 +376,23 @@ export function queueTextureLoad(path: string, priority: i32 = 0): i32 {
 }
 
 /**
- * Mount a Tension Volume under `prefix` (chunk 11): every load path resolves
- * against the mount table by longest prefix, and the bytes come from the
- * volume — the disk is read once, here, and never again. `tnsPath` must be an
- * absolute path the host can open. Call it after `init` and before the first
- * load; loading a path no mount carries fails with -ENOENT (there is no
+ * Mount a Tension Volume under `prefix` — **deprecated, use `resMount`**.
+ *
+ * `resMount(prefix, path)` (in `tension-framework/assembly/res.ts`) is the same
+ * operation and does not require the Ogre capability to be loaded: mounting is
+ * the host's, not a renderer's. This wrapper remains because every Ogre guest in
+ * this tree calls it, and it still does one thing a plain `resMount` cannot —
+ * it also hands the volume to *this adapter's* loader, which reads meshes and
+ * textures on a worker thread and cannot call the guest-facing resource verbs
+ * from there.
+ *
+ * **Both are the same mount.** Whichever runs first creates the host's entry;
+ * the other indexes it. A guest may therefore call `resMount` and then
+ * `mountTns`, or the reverse, or (as the examples do) only `mountTns` and read
+ * the same volume through `resReadFile` at `prefix/...`.
+ *
+ * `tnsPath` must be a path the host can open. Call it after `init` and before the
+ * first load; loading a path no mount carries fails with `-ENOENT` (there is no
  * fallback to the disk).
  */
 export function mountTns(prefix: string, tnsPath: string): i32 {

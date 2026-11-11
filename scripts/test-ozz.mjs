@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // Build and run the ozz loading probe (chunk 19, 19f-b).
 //
-// No window and no renderer: the probe only reads bytes. The volume is passed on
-// both flags on purpose — `--res` mounts it for the `tension::res` capability
-// (which `resReadFile` reads), and `--tns=` is the guest's own argument, which it
-// hands to `ogre.mountTns` (the OGRE capability's mount). The two capabilities
-// keep separate mount tables, and the probe checks both.
+// No window and no renderer: the probe only reads bytes. The volume arrives as
+// the guest's own `--tns=` argument, and the **guest** mounts it with
+// `resMount` — the host's mount verb. One table serves `resReadFile` and the Ogre
+// loader alike, so the probe no longer needs the volume handed over twice.
 //
 // Usage: npm run test:ozz   (from the repository root)
 //        npm run test:ozz   (from the example directory)
@@ -64,7 +63,9 @@ if (inherit(process.execPath, [join(repo, 'scripts', 'pack-example.mjs'), exampl
 
 const volume = join(example, 'build', 'assets.tns');
 const result = spawn(core, [
-  '--res', volume,
+  // No `--res`: the guest mounts the volume itself (`resMount`), which registers
+  // it in the host's one mount table — the table `resReadFile` and the Ogre
+  // loader both read. Handing it over twice was the duplication this removed.
   '--capability', adapter,
   join(example, 'build', 'ozz-load.wasm'),
   `--tns=${volume}`,

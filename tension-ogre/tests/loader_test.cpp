@@ -209,11 +209,14 @@ struct Fixtures {
         res = handle;
     }
 
-    /// Mount the volume; the loader owns the image from here (the move keeps
-    /// the buffer's address, which is what the borrowed handle points at).
+    /// Index the volume. The image stays here (`bytes` is a member, so its
+    /// address is stable for the fixture's life) and both the loader and the
+    /// borrowed handle point at it — which is exactly the arrangement the host's
+    /// `res_volume_bytes` provides in a real session: someone else owns the
+    /// bytes, this side only parses them.
     void install(Loader &loader) {
         const int32_t mounted =
-            loader.add_mount("fixtures", volume.string(), std::move(bytes), res);
+            loader.add_mount("fixtures", volume.string(), bytes.data(), bytes.size(), res);
         check_eq(static_cast<uint64_t>(mounted), 0, "the fixture volume mounts under fixtures/");
     }
 };

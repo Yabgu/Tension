@@ -294,6 +294,15 @@ pub struct AdapterHost {
     /// import, and the host loop itself. One queue means one executor means one
     /// thread that touches SDL.
     control: Arc<crate::platform::ControlBus>,
+    /// The resource mount table, shared with the store by `Arc`.
+    ///
+    /// Here because `res_volume_bytes` is the one slot that answers a
+    /// *capability's* question about resources: the Ogre loader parses a volume
+    /// image on its worker thread, and the guest-facing `tension::res` verbs are
+    /// unreachable from there (they take the store, inside a wasm call). Empty
+    /// until `main` adopts the process's table, which is what makes a standalone
+    /// `AdapterHost` — a test's — still answer `-ENOENT` rather than crash.
+    mounts: Arc<Mutex<crate::res::MountTable>>,
     /// The event dispatcher and the published window record (ABI v7). Shared
     /// with the store by `Arc`, because registration happens on the interpreter
     /// thread (`link`) and dispatch happens inside the window's pump — one
@@ -419,6 +428,7 @@ impl AdapterHost {
         let mut host = Box::new(AdapterHost {
             api: FrozenApi(ffi::core_api(std::ptr::null_mut())),
             control,
+            mounts: Arc::new(Mutex::new(crate::res::MountTable::new())),
             shared,
             host_surface: Arc::new(Mutex::new(None)),
             link: Mutex::new(LinkState::default()),
@@ -443,6 +453,26 @@ impl AdapterHost {
     /// The event dispatcher and the published window record (ABI v7).
     pub fn shared(&self) -> &Arc<crate::platform::HostShared> {
         &self.shared
+    }
+
+    /// Adopt the process's resource mount table.
+    ///
+    /// `main` calls this once, after building the host and before any adapter
+    /// loads, so `res_volume_bytes` and the guest's `tension::res` verbs answer
+    /// from the same table. A host that skips it keeps an empty one, which is
+    /// what a unit test wants: the slot then refuses with `-ENOENT` instead of
+    /// reaching a filesystem the test did not choose.
+    pub fn adopt_mounts(
+        mut self: Box<Self>,
+        mounts: Arc<Mutex<crate::res::MountTable>>,
+    ) -> Box<Self> {
+        self.mounts = mounts;
+        self
+    }
+
+    /// The mount table this host serves `res_volume_bytes` from.
+    pub fn mounts(&self) -> &Arc<Mutex<crate::res::MountTable>> {
+        &self.mounts
     }
 
     /// The posting face: what the posting shims answer with, and what the
@@ -1268,7 +1298,9 @@ mod tests {
             HostState {
                 args: Vec::new(),
                 pending_line: None,
-                res: Vec::new(),
+                res: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::res::MountTable::new(),
+                )),
                 // No writable root in a unit test: every `res_write` is -EROFS.
                 write_root: None,
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),

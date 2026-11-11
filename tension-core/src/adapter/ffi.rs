@@ -227,6 +227,20 @@ pub type HostWindowInfoFn =
 pub type PadStateFn =
     unsafe extern "C" fn(*mut c_void, u32, *mut crate::platform::TensionPadRecord) -> i32;
 
+/// `res_volume_bytes`: mount `path` under `prefix` in the host's table and answer
+/// the volume image's address and length. The image is host-owned and never
+/// moves, so a capability may hand its own parser a borrowed view of it (the Ogre
+/// loader does, on its worker thread).
+pub type ResVolumeBytesFn = unsafe extern "C" fn(
+    *mut c_void,
+    *const c_char,
+    u32,
+    *const c_char,
+    u32,
+    *mut *const u8,
+    *mut u32,
+) -> i32;
+
 /// Mirrors `tension_core_api`. The session fills every slot; the adapter may
 /// call any of them subject to the header's thread and phase rules.
 #[repr(C)]
@@ -285,6 +299,10 @@ pub struct TensionCoreApi {
     /// ABI v7: one gamepad slot, read from the mirror the pump fills. `-ENODEV`
     /// for a slot with no pad.
     pub pad_state: Option<PadStateFn>,
+    /// ABI v7: a mounted volume's bytes, so a capability that reads assets on a
+    /// worker thread can parse the same image the host mounted instead of
+    /// keeping a mount table and a disk reader of its own.
+    pub res_volume_bytes: Option<ResVolumeBytesFn>,
 }
 
 // ── A.5: the adapter vtable ───────────────────────────────────────────────
@@ -347,7 +365,7 @@ const _: () = assert!(std::mem::size_of::<TensionValue>() == 8);
 
 #[cfg(target_pointer_width = "64")]
 const _: () = {
-    assert!(std::mem::size_of::<TensionCoreApi>() == 216);
+    assert!(std::mem::size_of::<TensionCoreApi>() == 224);
     assert!(std::mem::size_of::<TensionAdapter>() == 80);
     assert!(std::mem::offset_of!(TensionCoreApi, abi_version) == 0);
     assert!(std::mem::offset_of!(TensionCoreApi, user) == 8);
@@ -383,6 +401,9 @@ const _: () = {
     assert!(std::mem::offset_of!(TensionCoreApi, unregister_event_layer) == 192);
     assert!(std::mem::offset_of!(TensionCoreApi, host_window_info) == 200);
     assert!(std::mem::offset_of!(TensionCoreApi, pad_state) == 208);
+    // Appended after v7's dispatcher slots: the volume slot a capability reads
+    // assets through. The header's `_Static_assert` pins the same shape.
+    assert!(std::mem::offset_of!(TensionCoreApi, res_volume_bytes) == 216);
     // The struct itself: four u32 then three u64, so `instance` lands on 16.
     // `native_handle` was appended, so the first 32 bytes a pre-existing
     // adapter reads are byte-identical to what it was compiled against.
@@ -1800,6 +1821,94 @@ pub(crate) unsafe extern "C" fn pad_state(
     0
 }
 
+/// `res_volume_bytes` (ABI v7) — mount a volume and lend out its image.
+///
+/// The one resource question a capability asks that the `tension::res` verbs
+/// cannot answer: those take the store inside a wasm call, and a loader that
+/// reads assets on a worker thread is outside both. Before this slot the Ogre
+/// adapter kept a second mount table and its own disk reader, so one volume had
+/// to be given to the host *and* to the adapter.
+///
+/// Guest thread only, inside a guest-initiated call (it touches the filesystem
+/// and the shared table). A prefix that is already mounted answers that mount's
+/// bytes rather than `-EEXIST`, which is what lets `ogre.mount_tns` and a guest's
+/// own `res.mount` be called in either order.
+pub(crate) unsafe extern "C" fn res_volume_bytes(
+    user: *mut c_void,
+    prefix: *const c_char,
+    prefix_len: u32,
+    path: *const c_char,
+    path_len: u32,
+    bytes_out: *mut *const u8,
+    len_out: *mut u32,
+) -> i32 {
+    const ENOENT: i32 = -2;
+    const EIO: i32 = -5;
+    if user.is_null() || prefix.is_null() || bytes_out.is_null() || len_out.is_null() {
+        return EINVAL;
+    }
+    // `path` may be **absent** (`nullptr`, length 0): a capability that only
+    // wants the image of a mount the guest already made has no file path to
+    // give, and asking it for one would be asking it to know something the host
+    // decided. A null path with a non-zero length is a caller bug.
+    if path.is_null() && path_len != 0 {
+        return EINVAL;
+    }
+    // SAFETY: `user` is the AdapterHost this table was built with; the strings
+    // are the caller's own buffers with the lengths it passed (rule 3: lengths
+    // are bytes, never `size_t`).
+    let host = unsafe { &*(user as *const crate::adapter::AdapterHost) };
+    let prefix_bytes = unsafe { std::slice::from_raw_parts(prefix as *const u8, prefix_len as usize) };
+    let path_bytes: &[u8] = if path.is_null() {
+        &[]
+    } else {
+        unsafe { std::slice::from_raw_parts(path as *const u8, path_len as usize) }
+    };
+    let (Ok(prefix), Ok(path)) = (
+        std::str::from_utf8(prefix_bytes),
+        std::str::from_utf8(path_bytes),
+    ) else {
+        return EINVAL;
+    };
+
+    let table = host.mounts();
+    let mut mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    // An already-mounted prefix is answered before `path` is even looked at:
+    // that is what lets a capability ask "what image do you have under this
+    // name?" for a mount the *guest* made with `res.mount`, without knowing
+    // which file produced it.
+    if !mounts.has_prefix(prefix) {
+        if let Err(error) = mounts.mount(prefix, path) {
+            return error.code();
+        }
+        crate::logging::log(
+            crate::logging::Level::Info,
+            "res",
+            &format!("mounted \"{prefix}/\" from {path} (via res_volume_bytes)"),
+        );
+    }
+    let Some(index) = mounts.index_of(prefix) else {
+        return ENOENT;
+    };
+    let Some(mount) = mounts.get(index) else {
+        return ENOENT;
+    };
+    // The image is the set's own heap buffer: `MountTable.entries` may reallocate
+    // and move the `ResourceSet` struct, but not the `Vec<u8>` it owns, so this
+    // pointer stays valid for the session — which is the contract the header
+    // states and the reason a capability may keep it.
+    let Some(image) = mount.set.bytes() else {
+        return EIO;
+    };
+    // SAFETY: both out-pointers are checked non-null above and point at the
+    // caller's own storage.
+    unsafe {
+        *bytes_out = image.as_ptr();
+        *len_out = image.len() as u32;
+    }
+    0
+}
+
 /// The core API table, fully populated: every slot is a real function pointer, so
 /// an adapter that calls one gets a refusal rather than a null dereference.
 pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
@@ -1831,6 +1940,7 @@ pub(crate) fn core_api(user: *mut c_void) -> TensionCoreApi {
         unregister_event_layer: Some(unregister_event_layer),
         host_window_info: Some(host_window_info),
         pad_state: Some(pad_state),
+        res_volume_bytes: Some(res_volume_bytes),
     }
 }
 
@@ -1852,7 +1962,9 @@ mod tests {
             HostState {
                 args: Vec::new(),
                 pending_line: None,
-                res: Vec::new(),
+                res: std::sync::Arc::new(std::sync::Mutex::new(
+                    crate::res::MountTable::new(),
+                )),
                 // No writable root in a unit test: every `res_write` is -EROFS.
                 write_root: None,
                 audio: crate::audio::AudioSession::new(crate::default_adapter()),
@@ -2250,7 +2362,7 @@ mod tests {
         // took `tension_adapter` 72 -> 80, where v3 leaves it.
         assert_eq!(std::mem::size_of::<TensionValue>(), 8);
         if std::mem::size_of::<usize>() == 8 {
-            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 216);
+            assert_eq!(std::mem::size_of::<TensionCoreApi>(), 224);
             assert_eq!(std::mem::size_of::<TensionAdapter>(), 80);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, region_lookup), 104);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, log_named), 112);
@@ -2272,6 +2384,7 @@ mod tests {
             );
             assert_eq!(std::mem::offset_of!(TensionCoreApi, host_window_info), 200);
             assert_eq!(std::mem::offset_of!(TensionCoreApi, pad_state), 208);
+            assert_eq!(std::mem::offset_of!(TensionCoreApi, res_volume_bytes), 216);
             assert_eq!(std::mem::offset_of!(TensionAdapter, destroy), 64);
             assert_eq!(std::mem::offset_of!(TensionAdapter, layout_hash), 72);
         }

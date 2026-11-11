@@ -130,13 +130,20 @@ class Loader {
 
     void set_sink(LoaderSink sink);
 
-    /// Mount a Tension Volume under `prefix` (chunk 11). The loader owns the
-    /// bytes and borrows `res` over them (mounts.h). Returns 0, or the errno:
-    /// -EINVAL for a bad prefix, -EEXIST for a duplicate. The table is
-    /// append-only and never rewritten, which is what makes a resolved
+    /// Index the session's mount of a volume under `prefix` (chunk 11).
+    ///
+    /// **The session mounted it; this only records where the image is.** The
+    /// bytes come from `res_volume_bytes` — the host read the file and owns the
+    /// buffer — and `res` is this side's parser over them (mounts.h). Returns 0,
+    /// or the errno: -EINVAL for a bad prefix, -EEXIST for a duplicate. The
+    /// table is append-only and never rewritten, which is what makes a resolved
     /// pointer a lifetime decision rather than a race.
     int32_t add_mount(const std::string &prefix, const std::string &tns_path,
-                      std::vector<uint8_t> bytes, tension_res *res);
+                      const uint8_t *image, size_t image_len, tension_res *res);
+
+    /// Whether this loader already indexes a mount under `prefix`. Lets the
+    /// verb answer 0 for a mount the guest made itself through `res.mount`.
+    bool has_mount(const std::string &prefix) const;
 
     // ── the guest-thread face (called from the import shims) ─────────────
 

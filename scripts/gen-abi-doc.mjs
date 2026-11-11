@@ -771,7 +771,7 @@ function build() {
   if (postSlots + 1 !== pinned.slotsAfterUser) {
     throw new Error(
       `the header pins ${pinned.slotsAfterUser} pointer-sized slots after abi_version, ` +
-        `which is user + 21 functions; this parse found ${postSlots} functions`,
+        `which is user + 25 functions; this parse found ${postSlots} functions`,
     );
   }
   const last = coreMembers[coreMembers.length - 1];
@@ -779,8 +779,8 @@ function build() {
   if (assertedLast && assertedLast !== last.name) {
     throw new Error(`the header pins ${assertedLast} as last, this parse ends at ${last.name}`);
   }
-  if (postSlots === 25 && core.size !== 216) {
-    throw new Error(`computed sizeof(tension_core_api) = ${core.size}, the header pins 216`);
+  if (postSlots === 26 && core.size !== 224) {
+    throw new Error(`computed sizeof(tension_core_api) = ${core.size}, the header pins 224`);
   }
 
   annotate(coreMembers);

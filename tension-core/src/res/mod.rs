@@ -498,6 +498,21 @@ impl<'a> ResourceSet<'a> {
     pub fn owns_backing(&self) -> bool {
         self.backing.is_some()
     }
+
+    /// The bytes this set owns, when it owns them.
+    ///
+    /// `Some` for a set built by `load_from_vec` or `load_file`, `None` for a
+    /// copied or borrowed one — a copied set has no image in the process and a
+    /// borrowed one belongs to its caller, so neither can hand out a pointer.
+    ///
+    /// This exists for one caller: `res_mount` must give an adapter the volume
+    /// image so the adapter can parse it over the *same* bytes rather than
+    /// reading the disk a second time. The slice is stable for the set's life
+    /// (`backing` is a heap allocation nothing mutates or moves), which is what
+    /// makes it safe to hand out while the set is alive.
+    pub fn bytes(&self) -> Option<&[u8]> {
+        self.backing.as_deref()
+    }
 }
 
 impl Drop for ResourceSet<'_> {
@@ -614,6 +629,193 @@ fn load_raw(bytes: *const u8, len: usize, borrow: bool) -> Load {
             }
         }
         Load::Failed(Errno(if rc == 0 { -22 } else { rc }))
+    }
+}
+
+// ── the mount table ───────────────────────────────────────────────────────
+
+/// One mount: a pak's bytes and the prefix guest paths reach them under.
+///
+/// **This is the single mount table's entry type.** It holds both the `--res`
+/// paks (prefix `""`, one flat merged namespace, which is what they always
+/// were) and the volumes a guest mounts with `tension::res.mount`. Making them
+/// one type is what stops "mounted" meaning two things: before this, the Ogre
+/// capability kept a second table with its own resolution rule and its own file
+/// reader, so one volume had to be handed to the host *and* to the adapter to be
+/// visible to both.
+pub struct Mount {
+    /// `""` for a flat `--res` pak; otherwise a name with no trailing slash. A
+    /// mount under `"resources"` answers for `resources/models/x.mesh` and for
+    /// nothing else — `resources-old` is a different name.
+    pub prefix: String,
+    pub set: ResourceSet<'static>,
+}
+
+impl Mount {
+    /// A `--res` pak: no prefix, so it answers for every path it contains.
+    pub fn flat(set: ResourceSet<'static>) -> Self {
+        Self {
+            prefix: String::new(),
+            set,
+        }
+    }
+
+    /// The path inside this pak that `path` names, or `None` when this mount
+    /// does not answer for it.
+    ///
+    /// A guest may write a leading `/` or not (`res_read_file("/docs.bin")` and
+    /// `res_read_file("models/x.ozz")` are both in this tree), so the prefix is
+    /// matched against the path with the slash removed and the remainder is
+    /// handed to the library, which accepts both forms.
+    pub fn relative<'p>(&self, path: &'p str) -> Option<&'p str> {
+        if self.prefix.is_empty() {
+            return Some(path);
+        }
+        let trimmed = path.strip_prefix('/').unwrap_or(path);
+        let rest = trimmed.strip_prefix(self.prefix.as_str())?;
+        // The boundary matters: mount `resources` does not answer for
+        // `resources-old/x`, and the bare prefix names a directory, not a file.
+        rest.strip_prefix('/')
+    }
+}
+
+/// Every volume the session can read: `--res` paks first, then whatever a guest
+/// or a capability mounted.
+///
+/// Shared by `Arc<Mutex<_>>` between the store (which serves the
+/// `tension::res` verbs) and the adapter host (which serves
+/// [`tension_core_api::res_volume_bytes`] so a capability's worker thread can
+/// parse the same image). One table, two views of it, one set of rules.
+pub struct MountTable {
+    entries: Vec<Mount>,
+}
+
+impl Default for MountTable {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl MountTable {
+    pub fn new() -> Self {
+        Self { entries: Vec::new() }
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// One mount by its index — which is also what a guest fd's high bits name.
+    pub fn get(&self, index: usize) -> Option<&Mount> {
+        self.entries.get(index)
+    }
+
+    /// Every mounted set, for the load-time conflict check.
+    pub fn sets(&self) -> Vec<&ResourceSet<'static>> {
+        self.entries.iter().map(|mount| &mount.set).collect()
+    }
+
+    /// Append a `--res` pak and answer its index.
+    pub fn push_flat(&mut self, set: ResourceSet<'static>) -> usize {
+        let index = self.entries.len();
+        self.entries.push(Mount::flat(set));
+        index
+    }
+
+    /// Whether `prefix` is already taken.
+    pub fn has_prefix(&self, prefix: &str) -> bool {
+        self.entries.iter().any(|mount| mount.prefix == prefix)
+    }
+
+    /// The index of the mount under `prefix`, if there is one.
+    pub fn index_of(&self, prefix: &str) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|mount| mount.prefix == prefix)
+    }
+
+    /// Mount `path` under `prefix`, reading and parsing the volume.
+    ///
+    /// The one implementation of what mounting *means*: validate the name, read
+    /// the file once, parse it with this library. Every caller — the guest's
+    /// `res.mount`, the Ogre adapter's deprecated `mount_tns`, and the
+    /// adapter-facing volume slot — reaches it here, so the rules cannot drift
+    /// between them.
+    ///
+    /// Refusals: `-EINVAL` for an empty or path-shaped prefix or an empty path,
+    /// `-EEXIST` for a prefix already mounted, `-ENOENT` for a file that is not
+    /// there, `-EIO` for a volume that does not parse.
+    pub fn mount(&mut self, prefix: &str, path: &str) -> Result<usize, Errno> {
+        // A prefix is a *name*: it is matched against one leading path segment,
+        // so it must not spell one itself. `resources/` and `resources` would
+        // otherwise be two mounts shadowing each other's answers.
+        if prefix.is_empty() || path.is_empty() {
+            return Err(Errno(-22)); // EINVAL
+        }
+        if prefix.starts_with('/') || prefix.ends_with('/') || prefix.contains("//") {
+            return Err(Errno(-22)); // EINVAL
+        }
+        if self.has_prefix(prefix) {
+            return Err(Errno(-17)); // EEXIST
+        }
+        let set = ResourceSet::load_file(path).map_err(|error| match error {
+            LoadError::Io(io) if io.kind() == std::io::ErrorKind::NotFound => Errno(-2), // ENOENT
+            LoadError::Abi(errno) => errno,
+            _ => Errno(-5), // EIO
+        })?;
+        let index = self.entries.len();
+        self.entries.push(Mount {
+            prefix: prefix.to_string(),
+            set,
+        });
+        Ok(index)
+    }
+
+    /// Resolution: the **most specific** mount that answers wins, and among
+    /// equally specific ones the earliest.
+    ///
+    /// Specificity is prefix length, which gives all three rules this table
+    /// needs in one comparison:
+    ///
+    ///   * a mount under `"resources"` beats a flat pak for `resources/x.mesh`,
+    ///     because 10 > 0;
+    ///   * two `--res` paks are both flat, so load order decides (§7.2's
+    ///     first-match rule, unchanged);
+    ///   * a mount that does not answer for the path at all (`relative` is
+    ///     `None`) is skipped without being tried, so it cannot report a
+    ///     misleading error.
+    ///
+    /// `-ENOENT` from every candidate stays `-ENOENT`; any other failure is
+    /// reported rather than masked, so a malformed path is never disguised as a
+    /// miss.
+    pub fn resolve<T>(
+        &self,
+        path: &str,
+        mut f: impl FnMut(&ResourceSet<'static>, &str) -> Result<T, Errno>,
+    ) -> Result<(usize, T), Errno> {
+        // Specificity order. A `Vec` is deliberate rather than an array: the
+        // table is a handful of entries and `open` is not a per-frame call, so
+        // the allocation is cheaper than the arithmetic that would avoid it.
+        let mut order: Vec<usize> = (0..self.entries.len()).collect();
+        order.sort_by_key(|&index| (std::cmp::Reverse(self.entries[index].prefix.len()), index));
+
+        let mut first_error: Option<Errno> = None;
+        for index in order {
+            let mount = &self.entries[index];
+            let Some(relative) = mount.relative(path) else {
+                continue;
+            };
+            match f(&mount.set, relative) {
+                Ok(value) => return Ok((index, value)),
+                Err(e) if e.code() != -2 => first_error = first_error.or(Some(e)),
+                Err(_) => {}
+            }
+        }
+        Err(first_error.unwrap_or(Errno(-2)))
     }
 }
 

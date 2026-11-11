@@ -8,11 +8,11 @@
 // back through the framework's resource layer and parses them with the
 // framework's own anim reader.
 //
-// Where the bytes come from is worth one note: `resReadFile` reads the
-// `tension::res` capability, which is mounted by the interpreter's `--res`
-// flag — **not** by `ogre.mountTns`. The two capabilities keep separate mount
-// tables (the ogre mount feeds the OGRE loader only), so `test-ozz.sh` passes
-// the same volume to both flags, and this probe exercises both halves.
+// Where the bytes come from: `resMount`, the host's own mount verb. One call
+// makes the volume visible to every reader in the process — this file's
+// `resReadFile`, and Ogre's loader if a mesh needed loading. Before the mount
+// verb existed this probe had to be handed the volume as `--res` *and* pass it
+// to `ogre.mountTns`, because the two capabilities kept separate tables.
 //
 // The numbers are the artifacts' own: 58 joints in OGRE bone order, `Hips` at
 // 19 and `LeftForeArm` at 28 (the remap tool's promise), and the three clips'
@@ -27,15 +27,16 @@ import {
   argCount,
   makeCallbacks,
   print,
+  resMount,
   resReadFile,
 } from "tension-framework";
 import * as ogre from "tension-framework/assembly/ogre";
 
-const SKELETON_PATH = "models/characterMedium_skeleton.ozz";
+const SKELETON_PATH = "resources/models/characterMedium_skeleton.ozz";
 const CLIP_PATHS: string[] = [
-  "models/characterMedium_idle.ozz",
-  "models/characterMedium_run.ozz",
-  "models/characterMedium_jump.ozz",
+  "resources/models/characterMedium_idle.ozz",
+  "resources/models/characterMedium_run.ozz",
+  "resources/models/characterMedium_jump.ozz",
 ];
 const CLIP_NAMES: string[] = ["idle", "run", "jump"];
 const CLIP_SECONDS: f64[] = [1.375, 0.7083333, 0.5416667];
@@ -81,8 +82,8 @@ export function _start(): void {
   if (started != 0) fail("ogre::init refused the config (" + started.toString() + ")");
 
   if (tns.length == 0) fail("no --tns=<volume> argument (run via ./test-ozz.sh)");
-  const mounted = ogre.mountTns("resources", tns);
-  if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+  const mounted = resMount("resources", tns);
+  if (mounted < 0) fail("resMount refused (" + mounted.toString() + ")");
   ogre.assertSubmissionRegions();
 
   // ── the skeleton ───────────────────────────────────────────────────────

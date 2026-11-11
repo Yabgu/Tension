@@ -826,6 +826,42 @@ being tested, and a guest needs to tell "the sandbox said no" (its own bug) from
 "the disk said no" (the user's problem). Pinned in `res::tests` — including the
 two symlink cases, which are the ones a path-only check misses.
 
+### 7.9 Mounting: one table, two readers
+
+`res_open`, `res_read`, `res_seek`, `res_tell`, `res_stat`, `res_readdir` and
+`res_write` are the guest's verbs. They resolve against **the mount table**, and
+that table is the host's: `--res` paks enter it with the prefix `""` (one flat
+merged namespace, first match wins — §7.2, unchanged), and `res_mount(prefix,
+path)` appends a volume under a name.
+
+**Why a prefix rather than a flat addition.** A mount under `resources` answers
+for `resources/models/x.mesh` and for nothing else — `resources-old/x` is a
+different name — and resolution prefers the **longest** matching prefix, so a
+prefixed mount beats a flat pak for the paths it owns while two flat paks still
+resolve in load order. That single rule covers both kinds of entry.
+
+**Refusals.** `-EINVAL` for an empty prefix or path, or a prefix spelled like a
+path (leading `/`, trailing `/`, `//`); `-EEXIST` for a prefix already mounted;
+`-ENOENT` for a file that is not there; `-EIO` for a volume that does not parse.
+
+**The second reader.** A capability that loads assets on a worker thread — the
+Ogre loader does, which is what keeps a 4 MB mesh off the frame — cannot call
+these verbs: they take the store inside a wasm invocation, on the interpreter
+thread. So the table is also reachable through one slot of
+`tension_core_api`, `res_volume_bytes`, which mounts (or finds) a prefix and
+answers **the image's address and length**. The image is the `ResourceSet`'s own
+heap buffer, owned by the host, never unmounted and never moved, so the pointer
+is valid for the session and a capability may parse a borrowed view of the same
+bytes (`tension_res_load_borrowed`). One read of the file, one copy in the
+process, two readers.
+
+An already-mounted prefix is answered without looking at `path` at all, which is
+how a capability adopts a mount the guest made itself — the loader asks on the
+first load whose prefix it does not know, rather than requiring the guest to call
+an adapter-specific verb. That is what removed the second mount table, the second
+resolution rule and the second disk reader from `tension-ogre`, and it is why one
+volume no longer has to be passed to the host *and* to the adapter.
+
 ## 8. Compression mapping (to be completed in phase 2)
 
 Deflate (8) first, ZSTD (93) target, Stored (0) automatic for incompressible

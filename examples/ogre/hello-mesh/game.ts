@@ -17,7 +17,7 @@
 // path is gone.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import { ConfigBuilder, arg, argCount, print, RuntimeSession, rt } from "tension-framework";
+import { arg, argCount, ConfigBuilder, print, resMount, rt, RuntimeSession } from "tension-framework";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
 import * as ogre from "tension-framework/assembly/ogre";
 // The std's task machine: the table the push path parks in (0.7.0a).
@@ -124,8 +124,10 @@ class Game {
     if (this.options.tns.length == 0) {
       fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
     }
-    const mounted = ogre.mountTns("resources", this.options.tns);
-    if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+    // `resMount` is the host's own mount verb: the volume becomes visible to
+    // every reader at once, and the loader adopts it on the first load.
+    const mounted = resMount("resources", this.options.tns);
+    if (mounted < 0) fail("resMount refused (" + mounted.toString() + ")");
 
   }
 

@@ -744,6 +744,54 @@ bool read_guest_name(const tension_core_api *api, uint32_t ptr, uint32_t len, st
     return true;
 }
 
+/// Index the session's mount for a guest path's prefix, if it is not indexed yet.
+///
+/// **The adapter adopts what the host has.** Mounting is `tension::res`'s
+/// (`res.mount`), and a guest that calls it directly never touches this
+/// capability — so the loader cannot wait to be told. It asks: the first path
+/// segment that no local mount covers is looked up with `res_volume_bytes`,
+/// which answers any prefix the host already has without needing the file path
+/// again, and parses a borrowed view of the image.
+///
+/// Called from the guest-thread shims only (`queue`, `mount_tns`), because the
+/// slot touches the host's table and the filesystem. A path whose prefix is not
+/// mounted anywhere is left alone: the worker's own resolution then refuses it
+/// with the -ENOENT the guest already knows how to read.
+///
+/// Failure here is never fatal to the call: a mount that cannot be adopted is a
+/// mount this loader does not have, and the load that follows reports it.
+void adopt_mount_for(const std::string &name) {
+    AdapterState &s = adapter_state();
+    if (s.api == nullptr || s.api->res_volume_bytes == nullptr) return;
+    const size_t slash = name.find('/');
+    if (slash == std::string::npos || slash == 0) return;
+    const std::string prefix = name.substr(0, slash);
+    if (s.loader.has_mount(prefix)) return;
+
+    const uint8_t *image = nullptr;
+    uint32_t image_len = 0;
+    const int32_t found = s.api->res_volume_bytes(
+        s.api->user, prefix.data(), static_cast<uint32_t>(prefix.size()), nullptr, 0, &image,
+        &image_len);
+    if (found != 0) return; // not mounted by the host either; the load will say so
+
+    tension_res *res = nullptr;
+    std::string err;
+    const int32_t parsed = mount_borrow(image, image_len, &res, &err);
+    if (parsed != 0) {
+        log_line(2, "ogre: the session's mount \"" + prefix + "/\" did not parse" +
+                        (err.empty() ? "" : ": " + err));
+        return;
+    }
+    const int32_t indexed = s.loader.add_mount(prefix, "(session)", image, image_len, res);
+    if (indexed != 0) {
+        tension_res_free(res);
+        return;
+    }
+    log_line(1, "ogre: adopted the session's mount \"" + prefix + "/\" (" +
+                    std::to_string(image_len) + " bytes)");
+}
+
 int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension_value *ret,
                    uint32_t kind) {
     (void)ctx;
@@ -759,6 +807,11 @@ int32_t shim_queue(void *ctx, const tension_value *args, uint32_t nargs, tension
         log_line(3, "ogre: queue refused: the name is unreadable or too long");
         return refuse(ret, -EINVAL);
     }
+
+    // Before the job reaches the worker: a prefix the guest mounted through
+    // `tension::res` is one this loader has not seen, and the worker resolves
+    // against its own table.
+    adopt_mount_for(name);
 
     const int32_t job = s.loader.queue(kind, name, name_ptr, name_len, priority);
     // Through `refuse`: a bare `return job` leaves the wasm result slot at 0,
@@ -810,10 +863,26 @@ int32_t shim_queue_mesh(void *ctx, const tension_value *args, uint32_t nargs, te
     return shim_queue(ctx, args, nargs, ret, TENSION_OGRE_RES_KIND_MESH);
 }
 
-/// `mount_tns(prefix_ptr, prefix_len, tns_ptr, tns_len)`: read a Tension Volume
-/// off the disk once, hand its bytes to the resource library, and mount it
-/// under a prefix the load paths resolve against (chunk 11). The disk is
-/// touched exactly once per mount, here — reads never see it again.
+/// `mount_tns(prefix_ptr, prefix_len, tns_ptr, tns_len)` — **deprecated**.
+///
+/// Kept because every Ogre guest in this tree calls it, and because a rename is
+/// a worse trade than a shim: it is the same operation the generic
+/// `tension::res.mount` performs, with the same prefix rules, so a guest may use
+/// either. The difference is that this one also hands the resulting image to
+/// **this adapter's loader**, which is what an Ogre guest actually needs — the
+/// loader reads meshes and textures on a worker thread and cannot call the
+/// guest-facing resource verbs from there.
+///
+/// **The mount itself is the host's.** `res_volume_bytes` reads the file once,
+/// parses it into the session's one table and lends this adapter the same image
+/// a guest's `resReadFile` would see; the adapter only parses a view of it. So
+/// one volume, one read, one mount — the duplication this pass removes.
+///
+/// Calling it for a prefix already mounted (by `tension::res.mount`, or by an
+/// earlier call to this verb) is **not** an error: the loader indexes what the
+/// host has. That makes the two entry points interchangeable in either order,
+/// which matters because a guest may reasonably mount first and configure the
+/// renderer second.
 int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
     AdapterState &s = adapter_state();
     if (ret == nullptr || args == nullptr || nargs != 4) return refuse(ret, -EINVAL);
@@ -831,24 +900,47 @@ int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tensio
         return refuse(ret, -EINVAL);
     }
 
-    std::vector<uint8_t> bytes;
-    tension_res *res = nullptr;
-    std::string err;
-    const int32_t opened = mount_open(tns_path, &bytes, &res, &err);
-    if (opened != 0) {
-        log_line(3, "ogre: mount_tns refused: " + tns_path + " could not be opened (" +
-                         std::to_string(opened) + ")" + (err.empty() ? "" : ": " + err));
-        return refuse(ret, opened);
+    if (s.loader.has_mount(prefix)) {
+        // Already indexed. Answer 0 rather than making the guest care which of
+        // the two entry points ran first.
+        ret->i32 = 0;
+        return 0;
     }
 
-    const int32_t mounted = s.loader.add_mount(prefix, tns_path, std::move(bytes), res);
+    if (s.api == nullptr || s.api->res_volume_bytes == nullptr) {
+        log_line(3, "ogre: mount_tns refused: this host has no resource mounts (ABI < 7)");
+        return refuse(ret, -ENOSYS);
+    }
+
+    const uint8_t *image = nullptr;
+    uint32_t image_len = 0;
+    const int32_t mounted = s.api->res_volume_bytes(
+        s.api->user, prefix.data(), static_cast<uint32_t>(prefix.size()), tns_path.data(),
+        static_cast<uint32_t>(tns_path.size()), &image, &image_len);
     if (mounted != 0) {
-        log_line(3, "ogre: mount_tns refused: prefix \"" + prefix + "\" (" +
+        log_line(3, "ogre: mount_tns refused: \"" + prefix + "\" from " + tns_path + " (" +
                          std::to_string(mounted) + ")");
-        tension_res_free(res);
         return refuse(ret, mounted);
     }
-    log_line(1, "ogre: mounted \"" + prefix + "/\" from " + tns_path);
+
+    tension_res *res = nullptr;
+    std::string err;
+    const int32_t parsed = mount_borrow(image, image_len, &res, &err);
+    if (parsed != 0) {
+        log_line(3, "ogre: mount_tns: the host's image did not parse (" + std::to_string(parsed) +
+                         ")" + (err.empty() ? "" : ": " + err));
+        return refuse(ret, parsed);
+    }
+
+    const int32_t indexed = s.loader.add_mount(prefix, tns_path, image, image_len, res);
+    if (indexed != 0) {
+        log_line(3, "ogre: mount_tns refused: prefix \"" + prefix + "\" (" +
+                         std::to_string(indexed) + ")");
+        tension_res_free(res);
+        return refuse(ret, indexed);
+    }
+    log_line(1, "ogre: indexed the session's mount \"" + prefix + "/\" (" +
+                     std::to_string(image_len) + " bytes, from " + tns_path + ")");
     ret->i32 = 0;
     return 0;
 }

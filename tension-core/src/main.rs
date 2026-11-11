@@ -118,9 +118,17 @@ fn default_adapter() -> Box<dyn audio::AudioAdapter> {
 struct HostState {
     args: Vec<String>,
     pending_line: Option<Vec<u8>>,
-    /// The loaded resource paks, in load order: `--res` merges them into one
-    /// namespace, first match wins (§7.2). Each owns its bytes (1x memory).
-    res: Vec<ResourceSet<'static>>,
+    /// The mount table: `--res` paks (flat) followed by whatever a guest
+    /// mounted, in load order. Each owns its bytes (1x memory) and the guest's
+    /// fd space indexes it, so an fd's high bits are a mount index whichever
+    /// kind of mount produced it.
+    ///
+    /// `Arc<Mutex<_>>` because it has two readers: this store (the
+    /// `tension::res` verbs) and the adapter host (`res_volume_bytes`, for a
+    /// capability that parses the image on a worker thread). The same
+    /// arrangement `control` uses, for the same reason — one table, two
+    /// consumers, and neither owns it.
+    res: std::sync::Arc<std::sync::Mutex<res::MountTable>>,
     /// The one directory a guest may write into, or `None` when the root the
     /// host tried to take could not be resolved (a `--write-root` that does not
     /// exist). `None` makes `res_write` answer `-EROFS` for every path rather
@@ -892,11 +900,11 @@ fn main() -> anyhow::Result<()> {
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
     // at runtime. `load_file` keeps one copy of each pak (`tension-res/DESIGN.md` §9.2).
-    let mut resource_sets: Vec<ResourceSet<'static>> = Vec::with_capacity(cli.res_paths.len());
+    let mut resource_sets = res::MountTable::new();
     for path in &cli.res_paths {
         let set = ResourceSet::load_file(path)
             .map_err(|e| anyhow::anyhow!("--res {}: {e}", path.display()))?;
-        resource_sets.push(set);
+        resource_sets.push_flat(set);
     }
     // The writable root: a guest's only way to change anything on disk. Taken
     // here so a bad `--write-root` is a startup error rather than a save that
@@ -939,7 +947,7 @@ fn main() -> anyhow::Result<()> {
     // same path is a load-time error rather than a silent first-match. The
     // check costs one enumeration per pak, and nothing at lookup time.
     {
-        let all: Vec<&ResourceSet<'static>> = resource_sets.iter().collect();
+        let all = resource_sets.sets();
         if let Err(err) = check_pak_conflicts(&all) {
             eprintln!("tension-core: {err}");
             std::process::exit(2);
@@ -957,7 +965,7 @@ fn main() -> anyhow::Result<()> {
         HostState {
             args: cli.args,
             pending_line: None,
-            res: resource_sets,
+            res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
             write_root,
             audio: audio::AudioSession::new(default_adapter()),
             ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
@@ -1185,6 +1193,55 @@ fn main() -> anyhow::Result<()> {
     // filesystem under `--write-root`, because a pak is an immutable archive and
     // an editor that cannot save is a viewer. The sandbox is `res::WriteRoot`'s,
     // and every refusal there is -EROFS.
+    // `res_mount(prefix_ptr, prefix_len, path_ptr, path_len) -> mount index`
+    //
+    // The generic mount. A guest that wants a packed volume visible at
+    // `resources/models/x.mesh` says so once, here, and every `tension::res`
+    // verb sees it from then on — including `res_read_file`, which is what lets
+    // one volume serve both a guest's own readers and a capability's loader.
+    //
+    // **The host owns this table.** Before it, a mount existed only inside the
+    // Ogre capability: `ogre.mount_tns` kept its own prefix table, resolved
+    // paths by its own rule and read the disk with its own reader, so any guest
+    // that wanted a volume needed the Ogre adapter loaded, and the same volume
+    // had to be passed to the host (`--res`) *and* to the adapter (`--tns`) to be
+    // visible to both. One table removes the second implementation and the
+    // second copy of the bytes.
+    //
+    // Refusals: an empty prefix or path, a prefix with a trailing `/` or a
+    // leading `/` (-EINVAL — a prefix is a name, not a path), a duplicate prefix
+    // (-EEXIST), a file that does not exist (-ENOENT), and a volume that does not
+    // parse (-EIO). Returns the mount's index in the table, which is also what
+    // an fd's high bits name.
+    linker.func_wrap(
+        "tension::res",
+        "res_mount",
+        |mut caller: Caller<'_, HostState>, prefix_ptr: i32, prefix_len: i32,
+         path_ptr: i32, path_len: i32|
+         -> i32 {
+            let Some(prefix) = guest_path(&mut caller, prefix_ptr, prefix_len) else {
+                return EINVAL;
+            };
+            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
+                return EINVAL;
+            };
+            let table = mount_table(&caller);
+            let mut guard = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match guard.mount(&prefix, &path) {
+                Ok(index) => {
+                    drop(guard);
+                    crate::logging::log(
+                        crate::logging::Level::Info,
+                        "res",
+                        &format!("mounted \"{prefix}/\" from {path} (mount {index})"),
+                    );
+                    index as i32
+                }
+                Err(error) => error.code(),
+            }
+        },
+    )?;
+
     linker.func_wrap(
         "tension::res",
         "res_write",
@@ -1226,7 +1283,9 @@ fn main() -> anyhow::Result<()> {
             let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
                 return EINVAL;
             };
-            match resolve_set(&caller.data().res, |set| set.open_fd(&path)) {
+            let table = mount_table(&caller);
+            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match mounts.resolve(&path, |set, relative| set.open_fd(relative)) {
                 Ok((index, fd)) => pack_fd(index, fd),
                 Err(e) => e.code(),
             }
@@ -1240,10 +1299,12 @@ fn main() -> anyhow::Result<()> {
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF;
             };
-            let Some(set) = caller.data().res.get(index) else {
+            let table = mount_table(&caller);
+            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(mount) = mounts.get(index) else {
                 return EBADF;
             };
-            match set.close_fd(local) {
+            match mount.set.close_fd(local) {
                 Ok(()) => 0,
                 Err(e) => e.code(),
             }
@@ -1263,11 +1324,17 @@ fn main() -> anyhow::Result<()> {
             let want = len as usize;
             let mut copied: usize = 0;
             let mut chunk = [0u8; 4096];
+            // Cloned before the loop: `write_guest` takes `&mut caller` below,
+            // so the table must not be borrowed from the store across it.
+            let table = mount_table(&caller);
             while copied < want {
                 let step = (want - copied).min(chunk.len());
-                let outcome = match caller.data().res.get(index) {
-                    Some(set) => set.read_fd(local, &mut chunk[..step]),
-                    None => return EBADF,
+                let outcome = {
+                    let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    match mounts.get(index) {
+                        Some(mount) => mount.set.read_fd(local, &mut chunk[..step]),
+                        None => return EBADF,
+                    }
                 };
                 match outcome {
                     Ok(0) => break,
@@ -1298,10 +1365,12 @@ fn main() -> anyhow::Result<()> {
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF as i64;
             };
-            let Some(set) = caller.data().res.get(index) else {
+            let table = mount_table(&caller);
+            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(mount) = mounts.get(index) else {
                 return EBADF as i64;
             };
-            match set.seek_fd(local, off, whence) {
+            match mount.set.seek_fd(local, off, whence) {
                 Ok(pos) => pos,
                 Err(e) => e.code() as i64,
             }
@@ -1315,10 +1384,12 @@ fn main() -> anyhow::Result<()> {
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF as i64;
             };
-            let Some(set) = caller.data().res.get(index) else {
+            let table = mount_table(&caller);
+            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let Some(mount) = mounts.get(index) else {
                 return EBADF as i64;
             };
-            match set.tell_fd(local) {
+            match mount.set.tell_fd(local) {
                 Ok(pos) => pos,
                 Err(e) => e.code() as i64,
             }
@@ -1332,7 +1403,12 @@ fn main() -> anyhow::Result<()> {
             let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
                 return EINVAL;
             };
-            match resolve_set(&caller.data().res, |set| set.stat(&path)) {
+            let table = mount_table(&caller);
+            let stat = {
+                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                mounts.resolve(&path, |set, relative| set.stat(relative))
+            };
+            match stat {
                 Ok((_, stat)) => {
                     if write_stat(&mut caller, out_ptr, &stat) {
                         0
@@ -1352,9 +1428,13 @@ fn main() -> anyhow::Result<()> {
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF;
             };
-            let outcome = match caller.data().res.get(index) {
-                Some(set) => set.stat_fd(local),
-                None => return EBADF,
+            let table = mount_table(&caller);
+            let outcome = {
+                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                match mounts.get(index) {
+                    Some(mount) => mount.set.stat_fd(local),
+                    None => return EBADF,
+                }
             };
             match outcome {
                 Ok(stat) => {
@@ -1386,9 +1466,12 @@ fn main() -> anyhow::Result<()> {
             let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
                 return EINVAL;
             };
-            let entry = match resolve_set(&caller.data().res, |set| {
-                set.read_dir_at(&path, index as u32)
-            }) {
+            let table = mount_table(&caller);
+            let listed = {
+                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                mounts.resolve(&path, |set, relative| set.read_dir_at(relative, index as u32))
+            };
+            let entry = match listed {
                 Ok((_, Some(entry))) => entry,
                 Ok((_, None)) => return 0, // past the last child
                 Err(e) => return e.code(),
@@ -1924,11 +2007,15 @@ fn main() -> anyhow::Result<()> {
     // `main`'s frame, for as long as the linker does. It carries a clone of the
     // posting face, which is what an adapter thread reaches through
     // `post_event` with no borrow of the store at all.
+    // The mount table is the store's, and the adapter host adopts it before any
+    // capability loads: `res_volume_bytes` and the guest's `tension::res` verbs
+    // then answer from one table, which is the point of this pass.
     let adapter_host = adapter::AdapterHost::with_control(
         std::sync::Arc::clone(&store.data().posting),
         std::sync::Arc::clone(&store.data().control),
         std::sync::Arc::clone(&store.data().shared),
-    );
+    )
+    .adopt_mounts(std::sync::Arc::clone(&store.data().res));
     // Hand the surface cell to the store, so `create_window` can publish into
     // it later.
     //
@@ -3494,6 +3581,17 @@ fn pack_fd(set: usize, fd: i32) -> i32 {
     ((set as i32) << FD_SET_SHIFT) | (fd & FD_LOCAL_MASK)
 }
 
+/// The store's mount table, cloned out of `caller` so the borrow ends before the
+/// lock is taken.
+///
+/// `Caller::data` holds an immutable borrow of the store; a `MutexGuard` that
+/// outlived it would make the next verb's `data_mut` a borrow error rather than
+/// the clean compile it is. Cloning the `Arc` (not the table) is one refcount
+/// bump.
+fn mount_table(caller: &Caller<'_, HostState>) -> std::sync::Arc<std::sync::Mutex<res::MountTable>> {
+    std::sync::Arc::clone(&caller.data().res)
+}
+
 /// Split a guest fd back into (pak index, that pak's handle).
 fn fd_index(fd: i32) -> Option<(usize, i32)> {
     if fd <= 0 {
@@ -3504,25 +3602,6 @@ fn fd_index(fd: i32) -> Option<(usize, i32)> {
         return None;
     }
     Some(((fd >> FD_SET_SHIFT) as usize, local))
-}
-
-/// First-match resolution over the pak set (§7.2): the first pak that answers
-/// wins; `-ENOENT` from every pak stays `-ENOENT`; any other failure is
-/// reported rather than masked, so a malformed path is never disguised as a
-/// miss.
-fn resolve_set<T>(
-    sets: &[ResourceSet<'static>],
-    mut f: impl FnMut(&ResourceSet<'static>) -> Result<T, res::Errno>,
-) -> Result<(usize, T), res::Errno> {
-    let mut first_error: Option<res::Errno> = None;
-    for (index, set) in sets.iter().enumerate() {
-        match f(set) {
-            Ok(value) => return Ok((index, value)),
-            Err(e) if e.code() != ENOENT => first_error = first_error.or(Some(e)),
-            Err(_) => {}
-        }
-    }
-    Err(first_error.unwrap_or(res::Errno(ENOENT)))
 }
 
 #[cfg(test)]

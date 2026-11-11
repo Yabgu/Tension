@@ -360,11 +360,11 @@ const args = [];
 if (kind === 'res') {
   args.push('--res', join(exampleDir, 'game.tns'));
 } else if (kind === 'ogre') {
-  if (existsSync(assets)) {
-    // The same volume, once for the adapter's loader (--tns) and once for
-    // `tension::res` (--res); they are separate tables (see scripts/run-example.mjs).
-    args.push('--res', assets);
-  }
+  // **No `--res` here any more.** The guest mounts the volume itself with
+  // `res.mount`, which registers it in the host's one mount table — the same
+  // table `resReadFile` and the Ogre loader both read. Before the mount verb
+  // existed this had to hand the same volume over twice (once for `tension::res`,
+  // once for the adapter), which is the duplication that refactor removed.
   args.push('--capability', adapter);
   if (extraCapability) args.push('--capability', extraCapability);
 }

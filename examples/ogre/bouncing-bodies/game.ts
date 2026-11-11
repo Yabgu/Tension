@@ -50,9 +50,7 @@
 // path is gone.
 
 // The session: the loop, the arena, the event ring, the frame handshake.
-import {
-  ConfigBuilder, arg, argCount, makeCallbacks, print, RuntimeSession, rt,
-} from "tension-framework";
+import { arg, argCount, ConfigBuilder, makeCallbacks, print, resMount, rt, RuntimeSession } from "tension-framework";
 // The physics layer: bodies, contacts, impulses, and the cadence.
 import { World, WorldConfig } from "tension-framework/assembly/physics";
 // The OGRE SDK under its own path — its ConfigBuilder is a different one.
@@ -302,8 +300,10 @@ class Game {
     if (this.options.tns.length == 0) {
       fail("no --tns=<volume> argument (the assets are packed; run via ./run.sh)");
     }
-    const mounted = ogre.mountTns("resources", this.options.tns);
-    if (mounted != 0) fail("mountTns refused (" + mounted.toString() + ")");
+    // `resMount` is the host's own mount verb: the volume becomes visible to
+    // every reader at once, and the loader adopts it on the first load.
+    const mounted = resMount("resources", this.options.tns);
+    if (mounted < 0) fail("resMount refused (" + mounted.toString() + ")");
   }
 
   /// The floor's and the bodies' materials, the light, the camera and the floor

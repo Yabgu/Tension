@@ -1156,6 +1156,43 @@ typedef struct tension_core_api {
      */
     int32_t (*pad_state)(void *user, uint32_t slot, tension_pad_record *out);
 
+    /*
+     * A mounted volume's bytes, for a capability that must read them off the
+     * guest thread (ABI v7, slot 27).
+     *
+     * **Why a capability needs this at all.** The resource table is the host's,
+     * and its verbs (`tension::res`) are guest calls: they run inside a wasm
+     * invocation, on the interpreter thread, and they take the store. A
+     * capability that reads assets on a worker thread — the Ogre loader does,
+     * which is what keeps a 4 MB mesh off the frame — cannot use them. Before
+     * this slot existed it solved that by keeping its own mount table and
+     * reading the volume off the disk itself, so one volume had to be handed to
+     * the host *and* to the adapter to be visible to both.
+     *
+     * **What it does.** Mounts `path` under `prefix` in the host's table if that
+     * prefix is not already mounted, then answers the volume image's address and
+     * length. The image is owned by the host, is never unmounted, and never
+     * moves, so the pointer is valid for the life of the session — which is the
+     * one thing an adapter needs to parse the same bytes
+     * (`tension_res_load_borrowed`) without a second copy on disk.
+     *
+     * Calling it again with a prefix that is already mounted is not an error:
+     * it answers the bytes that are there, and **`path` is ignored** — which is
+     * how a capability adopts a mount the guest made with `res.mount` without
+     * knowing which file produced it. An unmounted prefix with an empty path is
+     * `-EINVAL`.
+     *
+     * Guest thread only, and only inside a guest-initiated call: it touches the
+     * store's resource table and the filesystem.
+     *
+     * Refusals: `-EINVAL` for an empty or path-shaped prefix or path,
+     * `-EEXIST` is not among them (see above), `-ENOENT` for a file that is not
+     * there, `-EIO` for a volume that does not parse.
+     */
+    int32_t (*res_volume_bytes)(void *user, const char *prefix, uint32_t prefix_len,
+                                const char *path, uint32_t path_len,
+                                const uint8_t **bytes_out, uint32_t *len_out);
+
 } tension_core_api;
 
 /* The most event layers one host serves; `register_event_layer`'s -ENOSPC. */
@@ -1379,27 +1416,27 @@ _Static_assert(sizeof(tension_value) == 8,
  * pointer-sized.)
  */
 #if defined(__cplusplus)
-static_assert(offsetof(tension_core_api, pad_state)
-                      + sizeof(((tension_core_api *)0)->pad_state)
+static_assert(offsetof(tension_core_api, res_volume_bytes)
+                      + sizeof(((tension_core_api *)0)->res_volume_bytes)
                   == sizeof(tension_core_api),
-              "tension_core_api: pad_state must stay the last "
+              "tension_core_api: res_volume_bytes must stay the last "
               "slot; an append updates this assertion and the Rust table "
               "together");
 static_assert(sizeof(tension_core_api)
-                  == offsetof(tension_core_api, user) + 26 * sizeof(void *),
-              "tension_core_api: expected 26 pointer-sized slots after "
+                  == offsetof(tension_core_api, user) + 27 * sizeof(void *),
+              "tension_core_api: expected 27 pointer-sized slots after "
               "abi_version; update this count, the Rust TensionCoreApi, and its "
               "size assertion together");
 #elif defined(__STDC_VERSION__) && (__STDC_VERSION__ >= 201112L)
-_Static_assert(offsetof(tension_core_api, pad_state)
-                       + sizeof(((tension_core_api *)0)->pad_state)
+_Static_assert(offsetof(tension_core_api, res_volume_bytes)
+                       + sizeof(((tension_core_api *)0)->res_volume_bytes)
                    == sizeof(tension_core_api),
-               "tension_core_api: pad_state must stay the last "
+               "tension_core_api: res_volume_bytes must stay the last "
                "slot; an append updates this assertion and the Rust table "
                "together");
 _Static_assert(sizeof(tension_core_api)
-                   == offsetof(tension_core_api, user) + 26 * sizeof(void *),
-               "tension_core_api: expected 26 pointer-sized slots after "
+                   == offsetof(tension_core_api, user) + 27 * sizeof(void *),
+               "tension_core_api: expected 27 pointer-sized slots after "
                "abi_version; update this count, the Rust TensionCoreApi, and its "
                "size assertion together");
 #endif
