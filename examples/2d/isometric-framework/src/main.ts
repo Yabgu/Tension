@@ -29,6 +29,10 @@ import {
   SpriteRecord,
   Tileset,
 } from "tension-framework";
+// The host's window bus, by path: the barrel does not re-export it. `windowInfo`
+// is how a guest loop learns the user pressed the X — `present`'s `-ECANCELED`
+// does not arrive when the host's pump is the one that drained the quit event.
+import { windowInfo } from "tension-framework/assembly/platform";
 import * as scene from "./scene.generated";
 
 const FRAME_BYTES: u32 = scene.CANVAS_WIDTH * scene.CANVAS_HEIGHT * 4;
@@ -343,11 +347,13 @@ export function _start_game(): void {
 
   // Windowed: hold the last frame until the window is closed. See
   // `examples/2d/isometric/src/main.ts` for the reasoning — same loop, same
-  // `-ECANCELED` signal, same iteration cap so a headless run cannot hang.
+  // `-ECANCELED` signal, same iteration cap so a headless run cannot hang, and
+  // the same direct `closeRequested` read that makes the X button work.
   if (wantsWindow() && failures == 0) {
     print("windowed: close the window to exit");
     let keep: i32 = 0;
     while (keep < 18000) {
+      if (windowInfo().closeRequested) break; // the X button
       if (canvas.present() != 0) break; // -ECANCELED: the window is gone
       RuntimeSession.wait(16);
       keep++;

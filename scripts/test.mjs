@@ -251,6 +251,23 @@ const SUITES = {
                        { env: suiteEnv({ TENSION_SESSION_READY: '1' }) }),
   },
 
+  // The X button, in two halves: every guest loop that presents frames reads
+  // `closeRequested` (static, always runs), and one of them is really launched
+  // and really clicked shut (needs a display, a window manager and `xdotool`;
+  // skipped with a printed reason otherwise).
+  //
+  // Its own suite rather than a case inside another one because it is the only
+  // gate in this tree that opens a *managed* window on purpose: `suiteEnv` tells
+  // the 2D suites to stay offscreen, and this one must not inherit that.
+  'window-close': {
+    title: 'window close',
+    needs: [],
+    // hello-sprites' guest and shader modules are this suite's inputs too.
+    holds: ['tension-2d-build'],
+    run: () => execute(node, [join(repo, 'scripts', 'test-window-close.mjs')],
+                       { env: suiteEnv() }),
+  },
+
   res: {
     title: 'tension-res',
     needs: [],

@@ -383,9 +383,18 @@ export function _start_game(): void {
   // The guest has already asserted everything it can, so this loop is not a
   // test — it is the reason `npm start` shows something. An empty `present`
   // re-presents the frame already in the target rather than clearing it, so each
-  // iteration is a repaint of the same image. `present` answers `-ECANCELED`
-  // once the window is gone, and that is the signal to stop drawing rather than
-  // an error to report.
+  // iteration is a repaint of the same image.
+  //
+  // **`closeRequested` is asked directly, and `present` is not trusted to say
+  // it.** The renderer learns of a close from its own pump, but the host pumps
+  // the same SDL queue in `RuntimeSession.wait`, so whichever pump drains the
+  // quit event is the only one that sees it — normally the host's. Which one
+  // wins is timing, and it differs by host build: on this rig's in-core debug
+  // host `present` does answer `-ECANCELED` about 215 ms after the click, while
+  // the same app under `tension dev` was measured needing the direct read (639
+  // frames drawn with the check absent, exit 350-450 ms with it). A loop that
+  // owns its lifetime should not depend on the race, so both are checked:
+  // `closeRequested` for the request, `present` for a window that died under it.
   //
   // Capped at ~3000 iterations (a minute at vsync) so a headless machine asked
   // for `--windowed` by mistake cannot hang a CI job.
@@ -396,6 +405,7 @@ export function _start_game(): void {
     // look at the window. One host-owned tick per repaint paces it.
     let keep: i32 = 0;
     while (keep < WINDOW_FRAMES) {
+      if (platform.windowInfo().closeRequested) break; // the X button
       if (canvas.present() != 0) break; // -ECANCELED: the window is gone
       RuntimeSession.wait(16);
       keep++;

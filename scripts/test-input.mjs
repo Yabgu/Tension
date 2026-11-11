@@ -80,6 +80,37 @@ if (process.env.TENSION_SESSION_READY === '1') {
 const asc = npmBin(framework, 'tensionscript');
 if (!existsSync(asc)) fail(RUNNER, 'tensionscript is not installed in tension-framework/node_modules');
 
+// ── case 0: the mirror's own unit gate ──────────────────────────────────────
+//
+// Before the guest runs, the translation it depends on. `tests/mirror_test.cpp`
+// drives `Mirror::ingest`/`snapshot` with hand-built batches and no host, which
+// is the only way to assert the thing that broke twice: a motion event whose
+// device id is 0 must move the pointer. Both the v7b filter and the v7c delta
+// accounting are pinned there, and neither needs a display to reproduce.
+//
+// Compiled from the same sources the DSO links, so a test that passes and a
+// capability that works cannot disagree about which `input.cpp` they mean.
+{
+  const mirrorTest = join(out, WIN ? 'mirror_test.exe' : 'mirror_test');
+  const cxx = process.env.CXX ?? (WIN ? 'g++' : 'c++');
+  const builtTest = spawn(cxx, [
+    '-std=c++17', '-O1', '-Wall', '-Wextra',
+    `-I${join(suite, 'src')}`,
+    `-I${join(suite, 'include')}`,
+    `-I${join(repo, 'tension-core', 'include')}`,
+    join(suite, 'src', 'input.cpp'),
+    join(suite, 'tests', 'mirror_test.cpp'),
+    '-o', mirrorTest,
+  ]);
+  if (builtTest.status !== 0) {
+    process.stderr.write(builtTest.stdout + builtTest.stderr);
+    fail(RUNNER, 'tests/mirror_test.cpp did not compile');
+  }
+  const ran = spawn(mirrorTest, []);
+  process.stdout.write(ran.stdout.replace(/^/gm, '  '));
+  if (ran.status !== 0) fail(RUNNER, 'the mirror unit gate failed');
+}
+
 const guest = join(out, 'guest-input.wasm');
 const compiled = spawn(asc, [join(suite, 'tests', 'guest-input.ts'),
                              '--config', join(framework, 'build', 'session.asconfig.json'),

@@ -379,10 +379,18 @@ export function _start_game(): void {
   // submitted already, so the target holds `front`; repainting it is the whole
   // loop. `tension::2d` re-presents without clearing when nothing is submitted,
   // and answers `-ECANCELED` once the window is gone.
+  //
+  // **`closeRequested` is asked directly.** `present`'s `-ECANCELED` only fires
+  // when its own pump drained SDL's quit event, and the host pumps the same
+  // queue in `RuntimeSession.wait` — so a loop that waits on `present` alone is
+  // depending on which pump won. It happens to win on this rig's in-core host;
+  // it was measured not to under `tension dev`, where the same loop needed this
+  // read. Both are checked, and the cost is one host call per frame.
   if (wantsWindow() && failures == 0) {
     print("windowed: close the window to exit");
     let keep: i32 = 0;
     while (keep < 18000) {
+      if (platform.windowInfo().closeRequested) break; // the X button
       if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
       RuntimeSession.wait(16);
       keep++;

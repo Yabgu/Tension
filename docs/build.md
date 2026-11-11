@@ -307,9 +307,9 @@ coexisted with this one.
 
 ## 6. Tests
 
-`node scripts/test.mjs` is the runner. Eighteen suites (`scripts/test.mjs:126-341`),
-scheduled by needs and resource holds; `npm test -- --<name>` runs a subset
-(`:405-415`).
+`node scripts/test.mjs` is the runner. Twenty-three suites (the `SUITES` table in
+`scripts/test.mjs`), scheduled by needs and resource holds; `npm test -- --<name>`
+runs a subset (`-- --list` prints the names).
 
 **Gates that are not tests of behaviour** — no build, seconds to run:
 
@@ -329,12 +329,30 @@ scheduled by needs and resource holds; `npm test -- --<name>` runs a subset
 - `framework` — the TensionScript SDK's own tests.
 - `ogre-guest` — 36 cases by default plus 17 opt-in, driving the Ogre adapter
   through real guests (`scripts/test-ogre.mjs`).
-- `input` — the input capability.
+- `input` — the input capability. Its first case is the mirror's own unit gate
+  (`tension-input/tests/mirror_test.cpp`): hand-built event batches in, state
+  records out, no host and no display. That is where "a motion event with device
+  id 0 moves the pointer" is pinned — the v7b filter froze the pointer at 0,0 and
+  every guest's hit-testing with it.
 - `res` — the Zig resource library (`zig build test`).
+- `window-close` — the X button, in two halves: every guest source that presents
+  frames reads `closeRequested` (static, always runs), and hello-sprites is really
+  launched and really clicked shut (needs a display, a window manager and
+  `xdotool`; skipped with the reason printed otherwise).
 - `hello-sprites`, `isometric`, `isometric-art`, `isometric-framework` — the 2D
   pixel suites (`docs/modules/2d.md` §7). `hello-sprites` is the one that
   asserts an absolute count (10240 = 10 × 32×32); the other three assert colours
   at named probes.
+
+**Content and tooling suites** — no guest, but they build shipped things:
+
+- `docs` — the documentation assets: Markdown and the SDK's doc comments into
+  `docs.bin`, the search index, the font atlas, and a recorded transcript for
+  every `runnable` block (`apps/docs/tools/check.mjs`). Slow-ish: a runnable block
+  is compiled and run, so a page cannot claim a program prints what it does not.
+- `cli` — `packages/cli`'s own `node --test` suite: the config contract
+  (`schema/tension.config.json` vs `src/config.js`, key by key), the parsers, and
+  the template scaffolding.
 
 **Native suites:**
 
@@ -352,7 +370,7 @@ the vtable offsets; `ogre-guest` for the adapter's behaviour; `core` for the
 session and the host-surface path. The native build's guards (G1–G3) are *not* in
 this list because they run in `build-native.mjs` — `npm test` does not re-run them.
 
-The suite list is **[V]** (`scripts/test.mjs:126-341`). Which suite *runs* on this
+The suite list is **[V]** (the `SUITES` table). Which suite *runs* on this
 rig was not re-executed for this page; the last full run recorded before it was
 the pass-4 ogre suite (36 cases, exit 0) plus the unit suites. The 2D pixel
 suites need a GPU device the CI image supplies through lavapipe; on a machine
