@@ -101,8 +101,21 @@ function presents(path) {
   return code.includes('.present(');
 }
 
+/**
+ * Whether the guest either asks about the close, or has handed the loop over.
+ *
+ * `Scene.run` checks `closeRequested` at the top of every frame, so a guest whose
+ * loop is the framework's does not repeat the check — and should not. The signal
+ * for that is `_game_running`: a guest exports it only to have the *host* drive
+ * it, which is exactly the delegation.
+ *
+ * Deliberately not `scene.run(`: the Ogre guests call `game.run()`, which builds
+ * their own loop and would sail through a substring test. `_game_running` is the
+ * thing that means what it says.
+ */
 function noticesClose(path) {
-  return readFileSync(path, 'utf8').includes('closeRequested');
+  const source = readFileSync(path, 'utf8');
+  return source.includes('closeRequested') || source.includes('_game_running');
 }
 
 // ── phase 1: the shape ──────────────────────────────────────────────────────
@@ -125,8 +138,8 @@ function shapePhase() {
       'a loop that owns its lifetime and waits on `present()` alone leaves the',
       'window\'s X button doing nothing — `present` only reports a close when',
       'its own pump drained SDL\'s quit event, and the host pumps the same queue',
-      'in `RuntimeSession.wait`. Read `windowInfo().closeRequested` at the top of',
-      'the loop, as `packages/cli/templates/starter/src/main.ts` does.',
+      'in `RuntimeSession.wait`. Either read `windowInfo().closeRequested` at the',
+      'top of the loop, or hand the loop to `scene.run`, which reads it for you.',
     ].join('\n'));
   }
 }

@@ -3,9 +3,20 @@
 //
 // A `Canvas` is one open handle: the GPU device, the offscreen target and the
 // capability's one session, plus the verbs that act on them. It owns nothing
-// else — no scene, no record buffer, no frame loop. The scene layer
-// (`tileset.ts`, `composite.ts`, `isometric-world.ts`) turns game state into
-// records; this turns a Canvas into a place to draw them.
+// else — no scene, no record buffer, no frame loop.
+//
+// **A game starts at `Scene`, not here.** `scene.ts` is the declarative layer:
+// nodes in fixed-size arrays, `commit` that packs the ones that changed and
+// submits them, and `run` that drives the whole frame loop. This class is the
+// verb surface that layer stands on, and its `submit`/`present` are what
+// `Scene.commit` and `Scene.run` call.
+//
+// Reach for `Canvas` directly in exactly two cases, both of which the examples
+// demonstrate: a **one-shot** program that draws a single frame and asserts on
+// the pixels (`hello-sprites`, and every pixel suite), and the **wire oracle**
+// (`examples/2d/isometric`), which builds records by hand *on purpose* so that a
+// lie in the layers above it shows up as a diff. A game with a loop uses
+// `Scene`.
 //
 // ## Errors
 //
@@ -353,6 +364,11 @@ export class Canvas {
    * Append the buffer's records to bucket `bucket` for the next `present`;
    * returns how many were accepted.
    *
+   * **`Scene.commit` calls this; a game usually does not.** The scene owns the
+   * buffer, decides which records changed and packs them, then hands the whole
+   * set here — so a caller that finds itself calling `submit` per frame is
+   * rebuilding a record set the scene could have retained.
+   *
    * **The count is the buffer's, not a parameter.** `submit(pipe, records, 4)`
    * on a buffer holding ten records used to be a legal call that drew four, and
    * the pointer and its count were two values that could disagree. Now the only
@@ -390,6 +406,9 @@ export class Canvas {
   /**
    * Draw every bucket recorded since the last `present`, in ascending bucket
    * order, then clear the staging state.
+   *
+   * **`Scene.run` calls this once per frame.** A caller driving its own loop
+   * calls it itself; nothing else in the 2D path draws.
    *
    * `-ECANCELED` means a windowed canvas's window was closed: stop, do not
    * retry (`tension_2d.h:76-78`).

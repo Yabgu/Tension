@@ -17,9 +17,11 @@ import {
   ConfigBuilder,
   PIPE_PRESET_MIN,
   print,
+  FrameStep,
   Pixels,
   Scene,
   Sprite,
+  Time,
   RuntimeSession,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
@@ -37,6 +39,12 @@ import {
   SHAPE_STATIC_TILE,
 } from "./atlas";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
+
+// The host drives a guest only when it exports both `__taskWake` and
+// `_game_running`; only the entry module's exports reach the wasm, so this is what
+// adopting the loop looks like. `scene.run` cannot supply it for you.
+export { __taskWake, __taskResume, __taskFail, _game_running } from "tension-framework";
+
 import { absf } from "./math";
 import { Body, PhysicsWorld } from "./physics";
 
@@ -132,6 +140,34 @@ function updateBoxes(scene: Scene, boxes: Sprite[], bodyIndex: i32[], world: Phy
     const b = world.bodies[bodyIndex[k]];
     boxes[k].frame = scene.registerFrame(getBoxFrame(b.shapeType, b.angle));
     boxes[k].moveTo(<f32>Mathf.round(b.x - 32.0), <f32>Mathf.round(b.y - 32.0));
+  }
+}
+
+/// The per-frame update, as `scene.run` calls it.
+///
+/// A class rather than a closure because a closure over a stack local cannot be
+/// called on this toolchain (`call_indirect`, `uninitialized element`, even with
+/// no `await` in sight); and holding the world, the sprites and their body
+/// indices in fields is what the game needs anyway.
+class BoxGame implements FrameStep {
+  private world: PhysicsWorld;
+  private scene: Scene;
+  private boxes: Sprite[];
+  private bodyIndex: i32[];
+
+  constructor(world: PhysicsWorld, scene: Scene, boxes: Sprite[], bodyIndex: i32[]) {
+    this.world = world;
+    this.scene = scene;
+    this.boxes = boxes;
+    this.bodyIndex = bodyIndex;
+  }
+
+  /// One fixed step of physics, then the transforms into the nodes. Nothing here
+  /// touches a record: setting a property marks the node and the scene does the
+  /// rest.
+  step(): void {
+    this.world.step(Time.deltaTime());
+    updateBoxes(this.scene, this.boxes, this.bodyIndex, this.world);
   }
 }
 
@@ -352,26 +388,16 @@ export function _start_game(): void {
     fail("simulation verification failed");
   }
 
-  // 9. Interactive Windowed Loop
+  // 9. The interactive loop — the host's, not ours.
+  //
+  // `scene.run` is step → commit → present → `await rt.frame()`, and the host
+  // wakes this task once per slice. It does not return: `_start_game` returns at
+  // the first park and the host owns the process from there, which is why the
+  // teardown below is inside `run` rather than here.
   if (wantsWindow() && physicsOk) {
     print("windowed: running 2D box physics simulation (close window to exit)");
-    let frameCount: i32 = 0;
-    while (frameCount < WINDOW_FRAMES) {
-      world.step(dt);
-
-      updateBoxes(scene, boxes, bodyIndex, world);
-      const recCount = scene.commit(canvas, pipe);
-      if (recCount != scene.recordCount()) break;
-      // The close button, asked directly. `present` answers -ECANCELED only when
-      // its own pump drained SDL's quit event, and the host pumps the same queue
-      // in `RuntimeSession.wait` — so a loop that waits on `present` alone leaves
-      // the X doing nothing (see `examples/2d/hello-sprites`).
-      if (platform.windowInfo().closeRequested) break;
-      if (canvas.present() != 0) break; // Window closed (-ECANCELED)
-
-      RuntimeSession.wait(16);
-      frameCount++;
-    }
+    scene.run(canvas, pipe, new BoxGame(world, scene, boxes, bodyIndex), WINDOW_FRAMES);
+    return;
   }
 
   canvas.close();

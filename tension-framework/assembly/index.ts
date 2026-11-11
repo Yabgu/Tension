@@ -1,4 +1,5 @@
 export * from "./io";
+export * from "./time";
 export * from "./bytes";
 export * from "./log";
 export * from "./audio";

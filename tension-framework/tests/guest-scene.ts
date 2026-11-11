@@ -18,6 +18,7 @@ import { Sprite } from "../assembly/2d/scene";
 import { SpriteRecord } from "../assembly/2d/types";
 import { Frame } from "../assembly/2d/types";
 import { print } from "../assembly/io";
+import { Time } from "../assembly/time";
 import { ConfigBuilder, RuntimeSession } from "../assembly/runtime";
 
 let failures: i32 = 0;
@@ -184,6 +185,30 @@ function caseBudget(): void {
   checkEq(scene.aliveCount(), COUNT, "and the nodes are still alive");
 }
 
+// ── 9. the clock is the guest's, and fixed ─────────────────────────────────
+//
+// `Time` is the loop's notion of elapsed time, and the contract worth pinning is
+// that it is a frame count rather than anything measured: `deltaTime()` is
+// exactly 1/60 and `now()` is `frames * delta`. That is what makes a guest a pure
+// function of its inputs — the docs engine records example output at build time
+// and ships it, which is only honest because the same program cannot produce a
+// different second.
+function caseTime(): void {
+  Time.reset();
+  checkEq(0, <i32>Time.frameCount(), "a reset clock is at frame 0");
+  check(Time.deltaTime() == <f32>0.0166666675, "deltaTime is exactly 1/60");
+  check(Time.now() == 0.0, "now() starts at zero");
+
+  for (let i: i32 = 0; i < 60; i++) Time.tick();
+  checkEq(60, <i32>Time.frameCount(), "sixty ticks is sixty frames");
+  // 60 ticks of 1/60 is one second, to within an f32's worth of accumulation.
+  const now = Time.now();
+  check(now > 0.9999 && now < 1.0001, "sixty ticks is one second");
+  // The step is fixed: ticking does not depend on how long anything took.
+  Time.tick();
+  check(Time.now() > now, "and a further tick advances it");
+}
+
 export function _start_game(): void {
   if (RuntimeSession.open(ConfigBuilder.forThisBuild()) != 0) {
     print("FAIL: the session did not open");
@@ -193,12 +218,13 @@ export function _start_game(): void {
   caseCulling();
   caseDestroy();
   caseBudget();
+  caseTime();
 
   if (failures != 0) {
     print("scene: " + failures.toString() + " check(s) failed");
     return;
   }
-  print("scene: retention, culling, ordering and the budget hold");
+  print("scene: retention, culling, ordering, the budget and the clock hold");
   print("OK");
   RuntimeSession.close();
 }

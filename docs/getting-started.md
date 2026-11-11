@@ -63,25 +63,66 @@ The window is the guest's to create. The runtime has no window flag: an
 application that wants one asks for it, and the size it asks for is the size it
 gets.
 
+This is the shape `tension init` writes, cut down to the parts that matter:
+
 ```ts
-import { Canvas, ConfigBuilder, print, RuntimeSession } from "tension-framework";
-import { windowRequest } from "tension-framework/assembly/platform";
+import {
+  Bytes, Canvas, ConfigBuilder, Frame, FrameStep, RuntimeSession, Scene, Sprite,
+} from "tension-framework";
+
+// The host drives a guest only when it exports both of these, and refuses half an
+// adoption at load. Only the entry module's exports reach the wasm, so this line
+// is what adopting the loop looks like.
+export { __taskWake, __taskResume, __taskFail, _game_running } from "tension-framework";
+
+class Bouncer implements FrameStep {
+  private sprites: Sprite[];
+  constructor(sprites: Sprite[]) { this.sprites = sprites; }
+
+  step(): void {                       // once per frame, before the scene commits
+    for (let i = 0; i < this.sprites.length; i++) this.sprites[i].x += 3.0;
+  }
+}
 
 export function _start_game(): void {
   RuntimeSession.open(ConfigBuilder.forThisBuild());
   const request = windowRequest();
   const canvas = Canvas.windowedOrOffscreen(request.width, request.height, request.title);
-  if (!canvas.isValid()) {
-    print("no canvas: " + canvas.lastError().toString());
-    return;
+  if (!canvas.isValid()) return;
+
+  const pipe = canvas.pipelineGraph(Bytes.ofArray(DEFAULT_2D_BLOB));
+  const texture = canvas.loadTextureFromRes("/sprites.iwi");
+  canvas.bindTexture(pipe, 0, texture);
+
+  const scene = Scene.create(request.width, request.height, 8);
+  const sprites: Sprite[] = [];
+  for (let i = 0; i < 4; i++) {
+    const sprite = scene.spawn(new Frame(0, <u16>(i * 32), 0, 32, 32));
+    sprite.moveTo(<f32>(i * 96), 64.0);
+    sprites.push(sprite);
   }
-  // ... submit records and present, frame by frame
+
+  // step, commit, present, yield — and `0` means "until the window closes".
+  scene.run(canvas, pipe, new Bouncer(sprites), 0);
 }
 ```
 
 `windowedOrOffscreen` opens a window when the machine has a display and falls
 back to an offscreen target when it does not, so the same guest runs on a
 developer's desktop and in CI.
+
+**`step` is a class rather than a closure** because a closure over a stack local
+cannot be called on this toolchain — it traps at `call_indirect` with
+`uninitialized element`. An interface method dispatches through a table entry the
+class installs at definition, and works. The state lives in fields, which is what
+a game wants anyway.
+
+**Nothing here builds a record.** `Scene` owns the record buffer and packs it once
+per frame from the nodes whose properties changed; `run` does the commit, the
+present and the yield to the host. Time is the guest's too: `Time.deltaTime()` is
+exactly `1/60` and `Time.now()` counts frames, so a program with the same inputs
+draws the same frames — which is what lets this page record the output of a
+program instead of describing it.
 
 ## Where to read next
 

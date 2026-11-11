@@ -1,12 +1,16 @@
 // src/main.ts — four sprites bouncing inside the window.
 //
-// Every Tension app has this shape:
+// Every Tension 2D app has this shape:
 //
 //   1. open the session        — nothing that touches guest memory works before it
 //   2. ask for a window        — the runtime has no window flag; the guest owns it
 //   3. set the pipeline        — the blob the adapter was built against
 //   4. load the atlas          — out of the packed volume, mounted at "/"
-//   5. present frames          — until the window closes
+//   5. spawn nodes, then run   — the scene draws them; the loop is the host's
+//
+// Step 5 is the interesting one, and it is two things: a `Scene` you put nodes
+// into, and `scene.run`, which hands the frame loop to the host. A game never
+// builds a record, never calls `submit`, and never calls `present`.
 //
 // The numbers are deliberately editable: change SPEED, save, and `tension dev`
 // rebuilds and restarts the game on its own.
@@ -16,14 +20,22 @@ import {
   Canvas,
   ConfigBuilder,
   Frame,
+  FrameStep,
   print,
-  RecordBuffer,
   RuntimeSession,
+  Scene,
+  Sprite,
 } from "tension-framework";
-// `platform` is imported by path because the barrel does not re-export it: it is
-// the host's window bus, not a capability, and a guest that only wants a canvas
-// should not have its import list grow by one.
-import { windowInfo, windowRequest } from "tension-framework/assembly/platform";
+
+// **The line that adopts the host's loop.** The host drives a guest only when it
+// exports both `__taskWake` and `_game_running`, and refuses half an adoption at
+// load. Only the *entry module's* exports reach the wasm, so the framework cannot
+// supply these for you — this is the one line `scene.run` needs, and it is the
+// step nothing warns you about if you leave it out: the guest simply returns and
+// draws nothing.
+export { __taskWake, __taskResume, __taskFail, _game_running } from "tension-framework";
+
+import { windowRequest } from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
 // ── the numbers worth changing ──────────────────────────────────────────────
@@ -43,7 +55,8 @@ const SPEED: i32 = 3;
 ///
 /// A bound rather than "until closed" so that a headless machine, or a CI job
 /// that was handed `--headless` by mistake, runs a bounded job instead of
-/// spinning until something kills it.
+/// spinning until something kills it. It is `scene.run`'s last argument: `0`
+/// means "no budget", which is what a windowed run passes.
 const HEADLESS_FRAMES: i32 = 240;
 
 // ── the volume ──────────────────────────────────────────────────────────────
@@ -56,6 +69,46 @@ function fail(what: string): void {
   print("starter: " + what);
   // A guest exits non-zero by trapping; there is no exit code to set.
   assert(false, what);
+}
+
+// ── the game ────────────────────────────────────────────────────────────────
+
+/// The per-frame update: a class, not a closure.
+///
+/// `FrameStep` is an interface for a measured reason. A closure that captures a
+/// *stack local* cannot be called on this toolchain — it traps at `call_indirect`
+/// with `uninitialized element`, synchronously, before any `await` is involved.
+/// A method dispatches through a table entry the class installs at definition,
+/// and that works. Holding the state in fields is what a game wants anyway.
+class Bouncer implements FrameStep {
+  private sprites: Sprite[];
+  private dx: i32[];
+  private dy: i32[];
+  private maxX: i32;
+  private maxY: i32;
+
+  constructor(sprites: Sprite[], dx: i32[], dy: i32[], width: i32, height: i32) {
+    this.sprites = sprites;
+    this.dx = dx;
+    this.dy = dy;
+    this.maxX = width - <i32>CELL;
+    this.maxY = height - <i32>CELL;
+  }
+
+  /// Called once per frame by `scene.run`, before the scene commits.
+  step(): void {
+    for (let i = 0; i < this.sprites.length; i++) {
+      const s = this.sprites[i];
+      s.x += <f32>this.dx[i];
+      s.y += <f32>this.dy[i];
+      // Position is a property, not a record field: setting it marks the node,
+      // and the scene decides what that costs this frame.
+      if (s.x < 0.0) { s.x = 0.0; this.dx[i] = -this.dx[i]; }
+      if (s.x > <f32>this.maxX) { s.x = <f32>this.maxX; this.dx[i] = -this.dx[i]; }
+      if (s.y < 0.0) { s.y = 0.0; this.dy[i] = -this.dy[i]; }
+      if (s.y > <f32>this.maxY) { s.y = <f32>this.maxY; this.dy[i] = -this.dy[i]; }
+    }
+  }
 }
 
 export function _start_game(): void {
@@ -93,8 +146,7 @@ export function _start_game(): void {
   // The blob is compiled in (a guest cannot read a file at run time) and it must
   // be the blob this adapter carries modules for: any other bytes are -ENOSYS
   // here, which is the whole reason `tension dev` emits it from the host.
-  const blob = Bytes.ofArray(DEFAULT_2D_BLOB);
-  const pipe = canvas.pipelineGraph(blob);
+  const pipe = canvas.pipelineGraph(Bytes.ofArray(DEFAULT_2D_BLOB));
   if (pipe < 0) {
     fail("set_pipeline -> " + pipe.toString() +
       " (the blob does not match this adapter)");
@@ -113,16 +165,13 @@ export function _start_game(): void {
     fail("set_texture -> " + canvas.lastError().toString());
   }
 
-  // ── 5. the sprites ────────────────────────────────────────────────────────
-  // One run of records, owned by a `RecordBuffer`: it holds the memory and the
-  // count, so `submit` sends exactly what was pushed and nothing here does
-  // pointer arithmetic.
-  const records = RecordBuffer.create(SPRITES);
+  // ── 5. the scene ──────────────────────────────────────────────────────────
+  // A node per sprite. The scene owns the record buffer, and `run` packs it once
+  // per frame from whatever changed — nothing here sees a record.
+  const scene = Scene.create(request.width, request.height, SPRITES);
 
   // One `Frame` per cell, built once. A Frame per sprite per frame would be an
   // allocation per frame, and the 2D runtime is explicitly free of those.
-  // `Frame` takes u16 fields, so each cell's origin is cast once here rather
-  // than at every use. `CELL` stays u32 because the arithmetic below needs it.
   const frames: Frame[] = [
     new Frame(0, <u16>0, <u16>0, <u16>CELL, <u16>CELL),
     new Frame(0, <u16>CELL, <u16>0, <u16>CELL, <u16>CELL),
@@ -130,61 +179,22 @@ export function _start_game(): void {
     new Frame(0, <u16>(3 * <i32>CELL), <u16>0, <u16>CELL, <u16>CELL),
   ];
 
-  // Position and velocity, indexed by sprite. Four small arrays rather than a
-  // record, because these are the game's own state and never cross a wire.
+  const sprites: Sprite[] = [];
   const xs: i32[] = [0, 96, 192, 288];
   const ys: i32[] = [0, 64, 128, 192];
-  const dx: i32[] = [SPEED, -SPEED, SPEED + 1, -(SPEED + 1)];
-  const dy: i32[] = [SPEED + 1, SPEED, -SPEED, -SPEED];
-
-  const width: i32 = request.width;
-  const height: i32 = request.height;
-  const maxX: i32 = width - <i32>CELL;
-  const maxY: i32 = height - <i32>CELL;
-
-  // A windowed run has no budget; an offscreen one has `HEADLESS_FRAMES`.
-  let budget: i32 = windowed ? -1 : HEADLESS_FRAMES;
-  let drawn: i32 = 0;
-
-  while (budget != 0) {
-    records.reset();
-    for (let i = 0; i < SPRITES; i++) {
-      // The record fills itself, and the buffer is what owns it.
-      records.pushFrame(xs[i], ys[i], frames[i], <u32>i, 0, 0);
-
-      xs[i] += dx[i];
-      ys[i] += dy[i];
-      if (xs[i] < 0) { xs[i] = 0; dx[i] = -dx[i]; }
-      if (xs[i] > maxX) { xs[i] = maxX; dx[i] = -dx[i]; }
-      if (ys[i] < 0) { ys[i] = 0; dy[i] = -dy[i]; }
-      if (ys[i] > maxY) { ys[i] = maxY; dy[i] = -dy[i]; }
-    }
-
-    const accepted = canvas.submit(pipe, records, 0);
-    if (accepted != SPRITES) {
-      fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
-    }
-
-    // The close button, asked directly. `present` answers -ECANCELED only when
-    // its own pump is the one that drained SDL's quit event, and the host pumps
-    // during `RuntimeSession.wait` too — so a loop that owns its lifetime and
-    // relies on `present` alone leaves the X doing nothing.
-    if (windowInfo().closeRequested) break;
-
-    // `present` answers -ECANCELED once the window is gone: that is the signal
-    // to stop, not an error to report.
-    if (canvas.present() != 0) break;
-
-    // Paced by the host, one tick per frame. Without this a software driver
-    // spins as fast as the CPU allows and the sprites cross the window in a
-    // blur — or the whole run finishes before anyone looks at it.
-    RuntimeSession.wait(16);
-    drawn++;
-    if (budget > 0) budget--;
+  for (let i = 0; i < SPRITES; i++) {
+    const sprite = scene.spawn(frames[i]);
+    sprite.moveTo(<f32>xs[i], <f32>ys[i]);
+    sprites.push(sprite);
   }
 
-  print("starter: drew " + drawn.toString() + " frames");
-
-  canvas.close();
-  RuntimeSession.close();
+  // ── 6. run ────────────────────────────────────────────────────────────────
+  // `run` is the whole frame loop — step, commit, present, yield — and it returns
+  // immediately, because the host owns the loop from the first `await` onward. It
+  // closes the canvas and the session when the loop ends.
+  const dx: i32[] = [SPEED, -SPEED, SPEED + 1, -(SPEED + 1)];
+  const dy: i32[] = [SPEED + 1, SPEED, -SPEED, -SPEED];
+  scene.run(canvas, pipe,
+            new Bouncer(sprites, dx, dy, request.width, request.height),
+            windowed ? 0 : HEADLESS_FRAMES);
 }

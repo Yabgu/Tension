@@ -61,6 +61,81 @@
 import { Canvas } from "./canvas";
 import { Frame, RECORD_SIZE } from "./types";
 import { RecordBuffer } from "./buffers";
+import { print } from "../io";
+import * as platform from "../platform";
+import { rt } from "../runtime/rt";
+import { RuntimeSession } from "../runtime";
+import { Time } from "../time";
+import { __taskBindTable } from "~lib/task-rt";
+
+// ── the adopted loop's exports ──────────────────────────────────────────────
+//
+// The host drives a guest only when the guest exports *both* `__taskWake` and
+// `_game_running`, and refuses half an adoption at load (`main.rs:1905-1925`):
+// a guest with the wake and no running-flag exits 0 having done nothing, which
+// reads as success. `_game_running` is the one this module can define.
+//
+// **`__taskWake` cannot be provided from here**, and that is a property of the
+// toolchain rather than a choice: only the *entry module's* exports reach the
+// wasm export section, so a framework re-export is invisible to the host. This
+// was measured, not assumed — a guest whose `main.ts` imports `Scene` and does
+// nothing else exports `_start_game` alone:
+//
+//     import { Scene } ...                     -> [_start_game]
+//     export { __taskWake, … } from "tension-framework"   -> [_start_game, __taskWake,
+//                                                  __taskResume, __taskFail, _game_running]   +1.5 KB
+//     export * from "tension-framework"         -> the same, +63 KB (no DCE)
+//
+// So a guest adopting the loop writes one line, and it is the line that *is* the
+// adoption:
+//
+//     export { __taskWake, __taskResume, __taskFail, _game_running } from "tension-framework";
+//
+// `export *` also works and was rejected: 63 KB of the framework that no game
+// calls, retained because an exported symbol is a reason to keep it.
+export { __taskWake, __taskResume, __taskFail } from "~lib/task-rt";
+
+/** 1 while the guest wants the host to drive it; 0 once the loop has ended. */
+export function _game_running(): i32 {
+  return loopRunning ? 1 : 0;
+}
+
+/** How many tasks may park at once — the loop uses one, with room for a load. */
+const TASK_SLOTS: i32 = 8;
+
+/** Read by `_game_running`. Set by `run`, cleared before `run` returns. */
+let loopRunning: bool = false;
+/** Frames the last `run` presented, and why it stopped. */
+let loopFrames: i32 = 0;
+let loopStopReason: string = "the loop never started";
+
+/**
+ * Frames the current (or last) `run` presented.
+ *
+ * Read after the loop ends, or from inside it — this is the guest's own count,
+ * and `Time.frameCount()` is the same number when nothing else ticks the clock.
+ */
+export function loopFrameCount(): i32 {
+  return loopFrames;
+}
+
+/** Why the last `run` stopped: a budget, the window, or a refused verb. */
+export function loopReason(): string {
+  return loopStopReason;
+}
+
+/**
+ * The guest's per-frame update, as the loop calls it.
+ *
+ * An interface rather than a function parameter because a closure over a stack
+ * local cannot be called on this toolchain — `Scene.run`'s doc comment carries
+ * the four-shape measurement. A class method dispatches through a table entry
+ * the class installs at definition, which is the one shape that works.
+ */
+export interface FrameStep {
+  /** Called once per frame, before the scene commits. */
+  step(): void;
+}
 
 /** Position or size changed: the record's rect is stale. */
 export const DIRTY_TRANSFORM: u8 = 1;
@@ -528,6 +603,118 @@ export class Scene {
     return canvas.submit(pipe, this.records, 0);
   }
 
+  /**
+   * Hand the scene to the host and drive it until the window closes.
+   *
+   * ```ts
+   * // main.ts — the one line that is the adoption (see below).
+   * export { __taskWake, __taskResume, __taskFail, _game_running } from "tension-framework";
+   *
+   * class Game implements FrameStep {
+   *   private world: physics.World;
+   *   private boxes: Sprite[];
+   *
+   *   step(): void {
+   *     this.world.step(Time.deltaTime());
+   *     for (let i = 0; i < this.boxes.length; i++) this.boxes[i].moveTo(...);
+   *   }
+   * }
+   *
+   * export function _start_game(): void {
+   *   // …session, canvas, pipeline, texture, spawn…
+   *   scene.run(canvas, pipe, new Game(world, boxes));
+   * }
+   * ```
+   *
+   * ## `step` is an interface, not a function parameter — measured
+   *
+   * The obvious signature is `run(canvas, pipe, () => void)`, and it **cannot
+   * work** on this toolchain: a closure that captures a *stack local* traps at
+   * `call_indirect` with `wasm trap: uninitialized element`. Not only under
+   * `await` — the synchronous case traps too, so this is the closure-lowering
+   * path in TensionScript 0.13.2, not the async transform. Measured, four shapes
+   * in one probe:
+   *
+   *     () => { n++ }   over a method local        TRAP (uninitialized element)
+   *     () => { o.hit() } over a local object       TRAP
+   *     () => { g++ }   over a module-level global  ok
+   *     () => { this.x++ } created in a method      ok
+   *     base-class method / interface method        ok   <- what this takes
+   *
+   * So the step crosses as an **interface**: virtual dispatch is a table entry
+   * the class installs at definition, not a closure built at the call site. That
+   * is also the shape a game already wants — a class holding its world and its
+   * sprites, with one method — and it is the shape `examples/ogre` uses for its
+   * loop.
+   *
+   * A closure over a module global still works if a caller prefers one, because
+   * the compiler needs no closure object for it; `FrameGlobal`-style globals are
+   * the documented escape hatch, and the trap above is why it is not the default.
+   *
+   * ## What one frame is
+   *
+   * 1. `step()` — the guest's own update, called once per frame;
+   * 2. `commit(canvas, pipe)` — pack what changed and submit it;
+   * 3. `present()` — draw it;
+   * 4. `await rt.frame()` — yield; the host wakes this task next frame.
+   *
+   * **`present` is inside the loop and belongs there.** A loop without it draws
+   * nothing: `submit` only stages records, and the blit is what puts them on
+   * screen. It is the loop's job because it is the one step the scene can do and
+   * a caller cannot get wrong.
+   *
+   * ## How it ends, and who tears down
+   *
+   * Three exits the **guest** sees: `maxFrames` reached (pass 0 for "until the
+   * window closes", which is what a windowed game wants), `closeRequested` on the
+   * host window, or a refused `commit`/`present` whose errno goes into the stop
+   * reason. On those, `run` closes the canvas and the session and prints
+   * `scene: N frame(s) (reason)`.
+   *
+   * The fourth exit it **cannot** see, and that is a property of the adopted
+   * loop rather than a gap here: when the user clicks X, the *host* pumps the
+   * event, sees `window_closed`, and leaves its loop before the guest's task is
+   * woken again (`main.rs:2930-2940`). The host then closes the session itself
+   * (`main.rs:2115`, "a guest that returns without closing it leaves the arena
+   * reporting READY"). So a window close during an adopted loop ends the process
+   * cleanly with exit 0 and no guest teardown line — verified, and the reason
+   * `examples/2d/hello-sprites` keeps its own loop: that example asserts on its
+   * own teardown output.
+   *
+   * ## `run` returns immediately
+   *
+   * It starts a *floating* task: the body runs to its first `await`, then the
+   * host takes over and `run` returns. `_start_game` therefore returns while
+   * frames are still being drawn — that is the whole shape of an adopted loop.
+   *
+   * ## The one call a caller could object to
+   *
+   * `__taskBindTable(TASK_SLOTS)`: parking needs a slot table, and the table is
+   * per-program rather than per-task. Binding replaces it, discarding anything
+   * parked earlier — so `run` must be called before anything else in the program
+   * parks. Every example satisfies that. A game that awaited an asset load during
+   * startup should bind the table itself before that load.
+   */
+  run(canvas: Canvas, pipe: i32, stepper: FrameStep, maxFrames: i32 = 0): void {
+    if (!canvas.isValid()) {
+      loopStopReason = "the canvas is not open";
+      print("scene: run refused — the canvas is not open");
+      return;
+    }
+    if (loopRunning) {
+      print("scene: run called while a loop is already driving this guest");
+      return;
+    }
+    rt.start();
+    __taskBindTable(TASK_SLOTS);
+    loopFrames = 0;
+    loopStopReason = "still running";
+    loopRunning = true;
+    // A floating task: no `await` here, so this returns at the first park and the
+    // host's loop drives the rest.
+    drive(canvas, pipe, this, stepper, maxFrames);
+  }
+
   /** Records the last pack produced. */
   recordCount(): i32 {
     return this.packed;
@@ -619,4 +806,73 @@ export class Scene {
   static recordBytes(): i32 {
     return <i32>RECORD_SIZE;
   }
+}
+
+// ── the loop ────────────────────────────────────────────────────────────────
+
+/**
+ * One frame at a time, yielding to the host between each.
+ *
+ * **Every local is declared before the first `await`**, and that is a compiler
+ * constraint rather than a style (`ogre/async.ts` records the same three: no
+ * default parameters, no `<T>expr` cast, no local declared after a park). So the
+ * counters are declared here and assigned inside the loop, and the reason strings
+ * are assigned rather than built inline where they would need a temporary.
+ *
+ * The `stepper` is an interface, for the reason `run`'s doc comment carries: a
+ * closure over a stack local traps at `call_indirect`, synchronously, so the
+ * step cannot cross as a function value.
+ */
+async function drive(canvas: Canvas, pipe: i32, scene: Scene, stepper: FrameStep,
+                     maxFrames: i32): void {
+  let frames: i32 = 0;
+  let reason: string = "";
+  let submitted: i32 = 0;
+  let presented: i32 = 0;
+  let budgeted: bool = maxFrames > 0;
+
+  while (true) {
+    if (budgeted && frames >= maxFrames) {
+      reason = "the frame budget was reached";
+      break;
+    }
+    // Asked at the top of the frame, before any work: the request is the guest's
+    // reason to stop, and a frame it draws after the user clicked X is a frame
+    // that arrives while the window is going away.
+    if (platform.windowInfo().closeRequested) {
+      reason = "the window was closed";
+      break;
+    }
+
+    stepper.step();
+
+    submitted = scene.commit(canvas, pipe);
+    if (submitted < 0) {
+      reason = "commit -> " + submitted.toString();
+      break;
+    }
+
+    presented = canvas.present();
+    if (presented != 0) {
+      // -ECANCELED: the window is gone. Any other errno is a real failure, and
+      // both end the loop — the number is in the reason either way.
+      reason = presented == -125
+        ? "the window was closed"
+        : "present -> " + presented.toString();
+      break;
+    }
+
+    frames++;
+    loopFrames = frames;
+    Time.tick();
+    // The park. The host's loop resolves this once per slice, and that is the
+    // only thing that ever resumes it.
+    await rt.frame();
+  }
+
+  loopStopReason = reason;
+  loopRunning = false;
+  canvas.close();
+  RuntimeSession.close();
+  print("scene: " + frames.toString() + " frame(s) (" + reason + ")");
 }
