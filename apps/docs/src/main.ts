@@ -965,7 +965,7 @@ class App {
       // The section title, with the matched prefix picked out in the link
       // colour — the highlight is what tells the reader *why* the row matched.
       this.drawHighlighted(this.docs.sectionTitlePtr(<u32>section),
-        <i32>this.docs.sectionTitleLen(<u32>section), x, y, 64);
+        <i32>this.docs.sectionTitleLen(<u32>section), x, y, CONTENT_COLS);
 
       // The page it belongs to, indented and muted.
       const page: i32 = <i32>this.docs.sectionPage(<u32>section);
@@ -973,7 +973,9 @@ class App {
       const titleLen: i32 = <i32>this.docs.pageTitleLen(<u32>page);
       const subY: i32 = y + RESULT_TITLE_H + RESULT_SUB_GAP;
       if (subY + CELL_H <= clipBottom) {
-        this.drawTruncated(titlePtr, titleLen, x + px(8), subY, MUTED, REGULAR, 60);
+        // The subtitle is indented, so it gets the column less its indent.
+        this.drawTruncated(titlePtr, titleLen, x + px(8), subY, MUTED, REGULAR,
+          CONTENT_COLS - 1);
       }
     }
   }
@@ -1041,9 +1043,16 @@ class App {
       }
 
       // A bullet for a list item: the font has `-`, which is what the Markdown
-      // source uses too.
-      if (kind == K_LIST_ITEM && len > 0) {
-        p.char(45, x - px(6), lineY, NORMAL, REGULAR, clipTop, clipBottom);
+      // source uses too. Two conditions, and both were wrong before:
+      //
+      //   * **One whole cell to the left** (`CELL_W`, not a fixed inset). With a
+      //     9-column VGA cell the gutter is 18px, and a 12px offset put the dash
+      //     inside the first character — `-Architecture`.
+      //   * **Only on the block's first line.** A wrapped continuation was
+      //     getting its own dash, so a two-line item read as two items. The
+      //     bullet belongs to the item, not to every line it occupies.
+      if (kind == K_LIST_ITEM && len > 0 && li == layout.blockFirstLine[blockSlot]) {
+        p.char(45, x - CELL_W, lineY, NORMAL, REGULAR, clipTop, clipBottom);
       }
 
       // Emit the line: group consecutive characters by style so the colour and

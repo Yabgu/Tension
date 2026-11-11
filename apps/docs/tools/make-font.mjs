@@ -30,7 +30,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { GLYPHS, COLS, ROWS } from './font8x16.mjs';
+import { GLYPHS, COLS, ROWS, ROM_COLS } from './font8x16.mjs';
 import { Surface } from './lib/iwi.mjs';
 import { encodePng, scaleNearest } from './lib/png.mjs';
 
@@ -83,8 +83,12 @@ const CHROME = [
   { name: 'code_bg', rgb: [24, 26, 24], use: 'the inset behind a code block' },
 ];
 
-const CELL_W = 8;
-const CELL_H = 16;
+// **The cell size comes from the font module**, not from a literal here. The
+// cell is 9 columns wide — the ROM's 8 plus the spacing column VGA text mode's
+// hardware supplies — and duplicating that number in two files is how the two
+// drift apart without either of them being obviously wrong.
+const CELL_W = COLS;
+const CELL_H = ROWS;
 const GRID_COLS = 32;
 const GRID_ROWS = 32;
 
@@ -154,8 +158,13 @@ function upscaleMask(mask, dilate) {
       // **last column of the previous row**, which is a diagonal bleed from a
       // different part of the glyph. That is the same class of bug the column-0
       // assertion at the bottom of this file exists to catch, and it caught it.
+      // Dilation is clamped to `ROM_COLS`, not to the cell: a bold glyph may
+      // thicken into its own eight columns and never into the spacing column,
+      // or bold text would lose the letter spacing that keeps characters apart.
       let ink = mask[py * CELL_W + px] ? 1 : 0;
-      if (!ink && dilate && px > 0) ink = mask[py * CELL_W + px - 1] ? 1 : 0;
+      if (!ink && dilate && px > 0 && px < ROM_COLS) {
+        ink = mask[py * CELL_W + px - 1] ? 1 : 0;
+      }
       if (!ink) continue;
       for (let dy = 0; dy < SCALE; dy++) {
         const row = (py * SCALE + dy) * BAKED_W;
@@ -224,37 +233,42 @@ for (let i = 0; i < CHROME.length; i++) {
 
 // ── the invariant the renderer depends on ───────────────────────────────────
 //
-// A glyph cell's **column 0 must be empty**. That single fact is what guarantees
-// two adjacent characters can never touch: cell N's ink ends at column 7 at the
-// latest, cell N+1's begins at column 1 at the earliest, so column 0 of the
-// second cell is always a clear pixel between them. It is also the invariant the
-// bold weight used to break — dilation replicated a column-7 pixel into column
-// 8, which *is* column 0 of the next cell, and the last character of one glyph
-// appeared as a stray dot at the left edge of the next.
+// Each glyph cell's **spacing column must be empty**. That is the last column of
+// the cell (index `BAKED_W - 1`), and it is what guarantees two adjacent
+// characters can never touch: cell N's ink ends at the column before it, cell
+// N+1's begins at column 0, and this blank column sits between them.
 //
-// `blitMask` now clamps dilation to its own cell and `font8x16.mjs` refuses a
-// table with ink in column 0, so this check should never fire. It stays because
-// it is the one assertion that validates the *baked bytes* rather than the
-// source table, and a future chrome cell or geometry change could reintroduce
-// the overlap without touching either of those.
+// The rule used to be *column 0 must be empty*, which was right for the previous
+// hand-authored table: that font drew into columns 1..7 and relied on the
+// following cell's column 0 as its gap. The VGA ROM font does the opposite —
+// 67 of its 95 ASCII glyphs are inked in column 0 — because VGA text mode's cell
+// is nine dots wide and the hardware's spacing comes *after* the glyph. So the
+// spacing column moved to the right end, along with the font.
+//
+// `font8x16.mjs` asserts the same rule on the source table, and `blitMask`
+// clamps bold dilation so it cannot reach the spacing column. This check stays
+// because it is the one assertion that validates the *baked bytes* rather than
+// the source table — the artefact the renderer actually samples — so a future
+// geometry or chrome change cannot reintroduce the overlap silently.
 function assertNoCrossCellInk() {
   const offenders = [];
+  const spacingX = BAKED_W - 1;
   for (let index = 0; index < GLYPH_CELLS; index++) {
     const { x, y } = cellOrigin(index);
     let inked = 0;
     for (let py = 0; py < BAKED_H; py++) {
-      if (atlas.pixels[((y + py) * ATLAS_W + x) * 4 + 3]) inked++;
+      if (atlas.pixels[((y + py) * ATLAS_W + (x + spacingX)) * 4 + 3]) inked++;
     }
     if (inked) {
       const code = index % GLYPH_STRIPE;
       const ch = String.fromCharCode(32 + code);
-      offenders.push(`cell ${index} ('${ch}') has ${inked} pixel(s) in column 0`);
+      offenders.push(`cell ${index} ('${ch}') has ${inked} pixel(s) in its spacing column`);
     }
   }
   if (offenders.length) {
     throw new Error('make-font: the baked atlas lets glyphs cross their cells, so ' +
       'characters can overlap — check the dilation clamp in blitMask and the ' +
-      'column-0 rule in font8x16.mjs:\n  ' + offenders.slice(0, 10).join('\n  '));
+      'spacing-column rule in font8x16.mjs:\n  ' + offenders.slice(0, 10).join('\n  '));
   }
 }
 assertNoCrossCellInk();

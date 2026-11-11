@@ -50,12 +50,13 @@ export const LINE_STEP: i32 = CELL_H + 8;
 /**
  * The content column, in characters.
  *
- * A character is `CELL_W` wide, so this is the pane's width divided by the cell.
- * With `SCALE = 2` the pane holds a little over half the columns it held at 1x —
- * which is the whole cost of bigger text, and the reason this went from 80 to 56
- * rather than staying put and overflowing. 56 x 16 = 896px inside a 911px pane.
+ * A character is `CELL_W` wide (18 at `SCALE = 2`, because the VGA cell carries
+ * its own spacing column), so this is the pane's usable width divided by the
+ * cell: 51 x 18 = 918px inside the 923px the pane affords to the right of
+ * `CONTENT_X`. The number moves whenever either the cell or the sidebar does,
+ * and when it was left at the 8-pixel cell's 56 the text ran off the window.
  */
-export const CONTENT_COLS: i32 = 56;
+export const CONTENT_COLS: i32 = 51;
 
 /** The code block's left inset, in pixels. `main.ts` draws the accent here. */
 export const CODE_INSET: i32 = 16 * SCALE;

@@ -87,6 +87,21 @@ export const TOC_NO_PAGE: u32 = 0xffffffff;
  */
 export class Docs {
   base: usize = 0;
+  /**
+   * **The buffer, retained.**
+   *
+   * `base` is a raw pointer into this array's data, and a pointer is not a
+   * reference: without this field the only thing keeping the bytes alive was the
+   * local variable in `main.start()`, which is gone by the time the frame loop
+   * runs. The GC is then free to reuse that memory — and did, once the 2x atlas
+   * made 2.3 MiB of texture and changed the allocation pattern: the transcript
+   * index read back as garbage, so the Run button reported "no transcript
+   * recorded" for a block that had one.
+   *
+   * Holding the array here makes the pointer's lifetime the reader's, which is
+   * what the pointer always assumed.
+   */
+  bytes: Uint8Array = new Uint8Array(0);
   stringsAt: usize = 0;
   pagesAt: usize = 0;
   blocksAt: usize = 0;
@@ -112,6 +127,7 @@ export class Docs {
   static open(bytes: Uint8Array): Docs {
     const docs = new Docs();
     docs.base = bytes.dataStart;
+    docs.bytes = bytes;
     if (<u32>bytes.length < DOCS_HEADER_BYTES) return docs;
 
     const at = docs.base;
@@ -255,6 +271,21 @@ const POSTING_BYTES: u32 = 12;
  */
 export class SearchIndex {
   base: usize = 0;
+  /**
+   * **The buffer, retained.**
+   *
+   * `base` is a raw pointer into this array's data, and a pointer is not a
+   * reference: without this field the only thing keeping the bytes alive was the
+   * local variable in `main.start()`, which is gone by the time the frame loop
+   * runs. The GC is then free to reuse that memory — and did, once the 2x atlas
+   * made 2.3 MiB of texture and changed the allocation pattern: the transcript
+   * index read back as garbage, so the Run button reported "no transcript
+   * recorded" for a block that had one.
+   *
+   * Holding the array here makes the pointer's lifetime the reader's, which is
+   * what the pointer always assumed.
+   */
+  bytes: Uint8Array = new Uint8Array(0);
   stringsAt: usize = 0;
   termsAt: usize = 0;
   postingsAt: usize = 0;
@@ -265,6 +296,7 @@ export class SearchIndex {
   static open(bytes: Uint8Array): SearchIndex {
     const index = new SearchIndex();
     index.base = bytes.dataStart;
+    index.bytes = bytes;
     if (<u32>bytes.length < SEARCH_HEADER_BYTES) return index;
 
     const at = index.base;
@@ -350,6 +382,21 @@ const ENTRY_BYTES: u32 = 24;
  */
 export class Transcripts {
   base: usize = 0;
+  /**
+   * **The buffer, retained.**
+   *
+   * `base` is a raw pointer into this array's data, and a pointer is not a
+   * reference: without this field the only thing keeping the bytes alive was the
+   * local variable in `main.start()`, which is gone by the time the frame loop
+   * runs. The GC is then free to reuse that memory — and did, once the 2x atlas
+   * made 2.3 MiB of texture and changed the allocation pattern: the transcript
+   * index read back as garbage, so the Run button reported "no transcript
+   * recorded" for a block that had one.
+   *
+   * Holding the array here makes the pointer's lifetime the reader's, which is
+   * what the pointer always assumed.
+   */
+  bytes: Uint8Array = new Uint8Array(0);
   count: u32 = 0;
   entriesAt: usize = 0;
   stringsAt: usize = 0;
@@ -357,6 +404,7 @@ export class Transcripts {
   static open(bytes: Uint8Array): Transcripts {
     const t = new Transcripts();
     t.base = bytes.dataStart;
+    t.bytes = bytes;
     if (<u32>bytes.length < TRANSCRIPT_HEADER_BYTES) return t;
     t.count = load<u32>(t.base + 12);
     // **The entry table starts immediately after the header.** Byte 16 holds the

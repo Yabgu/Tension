@@ -70,7 +70,20 @@ import { Canvas, SpriteRecord } from "tension-framework";
  */
 export const SCALE: i32 = 2;
 
-export const CELL_W: i32 = 8 * SCALE;
+/**
+ * The cell's width in source pixels: **9**, not 8.
+ *
+ * The ROM glyphs fill all eight of their columns, because VGA text mode's
+ * 80-column cell is nine dots wide and the hardware supplies the ninth as
+ * spacing (`tools/font8x16.mjs` has the detail). At an 8-pixel advance one
+ * glyph's column 0 would touch its neighbour's column 7. The ninth column is
+ * blank in the atlas for every glyph, which is what makes that impossible —
+ * and it is asserted on the baked bytes by `tools/make-font.mjs`.
+ *
+ * `tools/font8x16.mjs` is the source of this number (`COLS`), and
+ * `tools/verify.mjs` checks the baked atlas against this constant.
+ */
+export const CELL_W: i32 = 9 * SCALE;
 export const CELL_H: i32 = 16 * SCALE;
 
 const GRID_COLS: i32 = 32;
