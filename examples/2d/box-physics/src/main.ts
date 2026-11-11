@@ -18,7 +18,8 @@ import {
   PIPE_PRESET_MIN,
   print,
   Pixels,
-  RecordBuffer,
+  Scene,
+  Sprite,
   RuntimeSession,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
@@ -56,7 +57,8 @@ const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
 const ATLAS_SIZE: u32 = 1024;
 const ATLAS_BYTES: u32 = 74 + ATLAS_SIZE * ATLAS_SIZE * 4;
 
-const MAX_RECORDS: i32 = 128;
+/// Node capacity: 34 static + 12 dynamic, with room to spare.
+const MAX_NODES: i32 = 128;
 
 const SIMULATION_FRAMES: i32 = 600; // 10 seconds of physics @ 60 fps
 const WINDOW_FRAMES: i32 = 18000;
@@ -65,52 +67,72 @@ function fail(what: string): void {
   print("box-physics: " + what);
 }
 
-function emitStaticEnvironment(into: RecordBuffer): i32 {
+/// The room: floor, ceiling, two walls and two ramps. Spawned once and never
+/// touched again, which is the point — after the first frame these 34 nodes cost
+/// nothing to draw, because the scene keeps their bytes.
+function spawnStatics(scene: Scene): void {
   const tileFrame = getStaticTileFrame();
 
   // 1. Floor: 10 segments of 64 px across bottom (y = 330)
   for (let i = 0; i < 10; i++) {
-    into.pushFrame(i * 64, 330, tileFrame, <u32>into.count, 0, 0);
+    scene.spawn(tileFrame).moveTo(<f32>(i * 64), 330.0);
   }
 
   // 2. Ceiling: 10 segments of 64 px across top (y = 0)
   for (let i = 0; i < 10; i++) {
-    into.pushFrame(i * 64, 0, tileFrame, <u32>into.count, 0, 0);
+    scene.spawn(tileFrame).moveTo(<f32>(i * 64), 0.0);
   }
 
   // 3. Left Wall: 6 segments of 60 px along x = 0
   for (let i = 0; i < 6; i++) {
-    into.pushFrame(0, i * 60, tileFrame, <u32>into.count, 0, 0);
+    scene.spawn(tileFrame).moveTo(0.0, <f32>(i * 60));
   }
 
   // 4. Right Wall: 6 segments of 60 px along x = 620
   for (let i = 0; i < 6; i++) {
-    into.pushFrame(620, i * 60, tileFrame, <u32>into.count, 0, 0);
+    scene.spawn(tileFrame).moveTo(620.0, <f32>(i * 60));
   }
 
   // 5. Left Ramp at (175, 225) angle = 0.35 rad
   const leftRampFrame = getBoxFrame(SHAPE_RAMP, 0.35);
-  into.pushFrame(175 - 32, 225 - 32, leftRampFrame, <u32>into.count, 0, 0);
+  scene.spawn(leftRampFrame).moveTo(175.0 - 32.0, 225.0 - 32.0);
 
   // 6. Right Ramp at (465, 225) angle = -0.35 rad
   const rightRampFrame = getBoxFrame(SHAPE_RAMP, -0.35);
-  into.pushFrame(465 - 32, 225 - 32, rightRampFrame, <u32>into.count, 0, 0);
-
-  return into.count;
+  scene.spawn(rightRampFrame).moveTo(465.0 - 32.0, 225.0 - 32.0);
 }
 
-function emitDynamicBoxes(world: PhysicsWorld, into: RecordBuffer): i32 {
+/// One node per dynamic body, plus the body index behind it.
+///
+/// The body indices are kept because `world.bodies` also holds the statics, and
+/// walking it every frame to skip them would be a branch per body to find the
+/// same twelve entries.
+function spawnBoxes(scene: Scene, world: PhysicsWorld, bodyIndex: i32[]): Sprite[] {
+  const boxes: Sprite[] = [];
   for (let i = 0; i < world.bodies.length; i++) {
     const b = world.bodies[i];
     if (b.isStatic) continue;
-
-    const frame = getBoxFrame(b.shapeType, b.angle);
-    const spriteX = <i32>Mathf.round(b.x - 32.0);
-    const spriteY = <i32>Mathf.round(b.y - 32.0);
-
-    into.pushFrame(spriteX, spriteY, frame, <u32>into.count, 0, 0);
+    const sprite = scene.spawn(getBoxFrame(b.shapeType, b.angle));
+    sprite.moveTo(<f32>Mathf.round(b.x - 32.0), <f32>Mathf.round(b.y - 32.0));
+    boxes.push(sprite);
+    bodyIndex.push(i);
   }
-  return into.count;
+  return boxes;
+}
+
+/// Push the simulation's transforms into the nodes. Nothing is recorded here:
+/// setting a property marks the node, and `commit` decides what that costs.
+///
+/// `registerFrame` scans the table for the box's new angle cell — 112 entries,
+/// twelve boxes, once a frame. It is a lookup by value rather than a per-node
+/// frame table because a box's *art* is a pure function of its angle, and the
+/// scan is what keeps two boxes at the same angle sharing one cell.
+function updateBoxes(scene: Scene, boxes: Sprite[], bodyIndex: i32[], world: PhysicsWorld): void {
+  for (let k: i32 = 0; k < boxes.length; k++) {
+    const b = world.bodies[bodyIndex[k]];
+    boxes[k].frame = scene.registerFrame(getBoxFrame(b.shapeType, b.angle));
+    boxes[k].moveTo(<f32>Mathf.round(b.x - 32.0), <f32>Mathf.round(b.y - 32.0));
+  }
 }
 
 export function _start_game(): void {
@@ -216,21 +238,28 @@ export function _start_game(): void {
   world.addBody(Body.createDynamic(20, 290.0, 140.0, initialAngles[10], 19.0, 12.0, 0.01, 0.35, 0.4, SHAPE_PURPLE_SLAB));
   world.addBody(Body.createDynamic(21, 470.0, 150.0, initialAngles[11], 11.0, 11.0, 0.01, 0.35, 0.4, SHAPE_CYAN_CUBE));
 
-  const out = RecordBuffer.create(MAX_RECORDS);
+  // 5b. The scene: 34 static nodes and one per dynamic box.
+  const scene = Scene.create(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, MAX_NODES);
+  spawnStatics(scene);
+  const bodyIndex: i32[] = [];
+  const boxes = spawnBoxes(scene, world, bodyIndex);
+  print("scene -> " + scene.aliveCount().toString() + " nodes (" +
+        boxes.length.toString() + " dynamic), " + scene.frameCount().toString() + " frames");
 
   const dt: f32 = 1.0 / 60.0;
   let totalDrawnRecords: i32 = 0;
+  let totalWrites: i32 = 0;
 
   // 6. Run simulation loop for 180 frames (headless validation phase)
   for (let frame = 0; frame < SIMULATION_FRAMES; frame++) {
     world.step(dt);
+    updateBoxes(scene, boxes, bodyIndex, world);
 
-    out.reset();
-    emitStaticEnvironment(out);
-    const recCount = emitDynamicBoxes(world, out);
+    const recCount = scene.pack();
     totalDrawnRecords = recCount;
+    totalWrites += scene.writes();
 
-    const accepted = canvas.submit(pipe, out, 0);
+    const accepted = canvas.submit(pipe, scene.buffer(), 0);
     if (accepted != recCount) {
       fail("submit failed on frame " + frame.toString());
       canvas.close();
@@ -303,6 +332,13 @@ export function _start_game(): void {
     "screenshot -> " + written.toString() + " bytes, " +
       nonBlack.toString() + " non-black pixels (" + totalDrawnRecords.toString() + " sprite records)",
   );
+  // The number the scene exists for: 46 records drawn, 12 rewritten per frame
+  // (fewer as boxes settle), and 34 never rewritten at all after the first frame.
+  print(
+    "scene -> " + SIMULATION_FRAMES.toString() + " frames wrote " + totalWrites.toString() +
+      " record(s) of " + (totalDrawnRecords * SIMULATION_FRAMES).toString() + " drawn (" +
+      ((totalWrites * 100) / (totalDrawnRecords * SIMULATION_FRAMES)).toString() + "% packed)",
+  );
 
   // Expected at least 20k non-black pixels from floor, walls, ramps, and tumbled boxes
   if (nonBlack < 20000) {
@@ -323,11 +359,9 @@ export function _start_game(): void {
     while (frameCount < WINDOW_FRAMES) {
       world.step(dt);
 
-      out.reset();
-      emitStaticEnvironment(out);
-      const recCount = emitDynamicBoxes(world, out);
-
-      if (canvas.submit(pipe, out, 0) != recCount) break;
+      updateBoxes(scene, boxes, bodyIndex, world);
+      const recCount = scene.commit(canvas, pipe);
+      if (recCount != scene.recordCount()) break;
       // The close button, asked directly. `present` answers -ECANCELED only when
       // its own pump drained SDL's quit event, and the host pumps the same queue
       // in `RuntimeSession.wait` — so a loop that waits on `present` alone leaves

@@ -256,6 +256,11 @@ runFixture('guest-ogre.ts', 'guest-ogre.wasm', ['--capability', stub]);
 // the data rather than the object. No canvas, no display — the property is the
 // wrapper's. See the fixture's header for the trap this exists to keep buried.
 runFixture('guest-buffers.ts', 'guest-buffers.wasm');
+
+// The scene's packing contract: retention, culling, ordering, the budget. No
+// canvas and no GPU — `Scene` is a data structure and `pack()` is the whole of
+// what this asserts. The pixel suites cover the bytes it produces.
+runFixture('guest-scene.ts', 'guest-scene.wasm');
 runFixture('guest-verlet.ts', 'guest-verlet.wasm');
 runFixture('guest-physics-units.ts', 'guest-physics-units.wasm');
 

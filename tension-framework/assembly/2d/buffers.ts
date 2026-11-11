@@ -110,6 +110,36 @@ export class RecordBuffer {
                      sortKey, groupId, z);
   }
 
+  // --- the retaining path --------------------------------------------------
+  //
+  // `push` is for a caller that rebuilds its record set every frame: it appends
+  // and counts. A *scene* does not rebuild — it keeps the bytes from the last
+  // frame and overwrites only the slots whose node changed — so it needs to write
+  // at an index it chose and to say how many records the buffer now describes.
+  //
+  // These two are what make a retained packer possible without a second buffer:
+  // the out buffer *is* the cache, so a frame where nothing moved writes nothing
+  // and still submits a complete record set (`pack()` in `scene.ts`).
+
+  /** How many records the buffer describes. The packer's `count` write. */
+  setCount(count: i32): void {
+    this.count = count < 0 ? 0 : (count > this.cap ? this.cap : count);
+  }
+
+  /**
+   * Write record `index` in full, without touching `count` or `dropped`.
+   *
+   * Out-of-range writes are ignored rather than refused: a packer that computed
+   * a slot past the capacity is a bug in the packer, and it already counts the
+   * drop — the buffer refusing again would count it twice.
+   */
+  writeAt(index: i32, x: i32, y: i32, srcX: u16, srcY: u16, w: u16, h: u16, tex: u16,
+          sortKey: u32, groupId: u16, z: u8): void {
+    if (index < 0 || index >= this.cap) return;
+    const at = this.view();
+    at[index].setRect(x, y, srcX, srcY, w, h, tex, sortKey, groupId, z);
+  }
+
   /**
    * The records as a view, for `Canvas.submit` and for the scene layer's own
    * emitter.

@@ -11,6 +11,11 @@
 //   RecordBuffer    a frame's records, and the count that describes them
 //   Pixels          a `screenshot` destination, and the questions a test asks
 //
+// and the declarative layer over both:
+//
+//   Scene           nodes in fixed-size arrays; `commit` packs and submits
+//   Sprite          a handle to one node — mutate properties, not records
+//
 // three types that turn game state into records:
 //
 //   Tileset         pixels -> record fields (page + src rect)
@@ -44,6 +49,7 @@
 
 export * from "./types";
 export * from "./buffers";
+export * from "./scene";
 export * from "./constants";
 export * from "./canvas";
 export * from "./tileset";

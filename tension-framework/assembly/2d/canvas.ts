@@ -49,9 +49,17 @@
 //
 // ## What is deliberately not here
 //
-// No animation, no swapchain management, no auto-`present`, no scene graph. A
-// canvas is fixed for the handle's life; a resize is `close()` then
-// `Canvas.open()` (`tension_2d.h:59-61`).
+// No animation, no swapchain management, no auto-`present`. A canvas is fixed for
+// the handle's life; a resize is `close()` then `Canvas.open()`
+// (`tension_2d.h:59-61`).
+//
+// **And no scene.** `scene.ts` is the declarative layer — nodes in arrays, a
+// `commit` that packs and submits — and it is a separate module that *uses* this
+// one. A canvas that owned a scene would make the two impossible to test apart:
+// the scene is a pure data structure (`Scene.create(w, h, capacity)`, `pack()`),
+// so its retention, culling and ordering are asserted with no GPU in the process
+// (`tests/guest-scene.ts`), and this class stays the thing that talks to the
+// adapter.
 
 import { resReadFile } from "../res";
 // The host's window API: `windowedOrOffscreen` creates the window the canvas

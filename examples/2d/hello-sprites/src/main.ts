@@ -32,8 +32,8 @@ import {
   PIPE_PRESET_MIN,
   Pixels,
   print,
-  RecordBuffer,
   RuntimeSession,
+  Scene,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
@@ -174,9 +174,9 @@ function buildAtlas(): Bytes {
 /// The same ten records `smoke_core.cpp` submits: one per cell, 64 px apart,
 /// 32 px square, `sort_key = i` so draw order is submission-independent.
 ///
-/// The buffer owns its record count, so this fills it and there is no second
-/// number travelling beside it: `submit` sends exactly what was pushed.
-function writeSprites(records: RecordBuffer): void {
+/// A node per sprite, positioned once. Nothing here builds a record: the scene
+/// does that from these nodes, and `commit` is what turns them into bytes.
+function spawnSprites(scene: Scene): void {
   for (let i = 0; i < SPRITES; i++) {
     const cell = <u32>i;
     const frame = new Frame(
@@ -186,7 +186,8 @@ function writeSprites(records: RecordBuffer): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    records.pushFrame(i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    const sprite = scene.spawn(frame);
+    sprite.moveTo(<f32>(i * SPRITE_PITCH), 0.0);
   }
 }
 
@@ -298,15 +299,18 @@ export function _start_game(): void {
   print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)" +
     ", bound to page 0");
 
-  // 5. the records
+  // 5. the scene
   //
-  // `RecordBuffer` owns the memory and the count, and `Canvas.submit` writes the
-  // 12-byte header from that count — the header is one value with one wire
-  // layout, and a caller that could pass a stride could submit records the
-  // adapter cannot decode.
-  const records = RecordBuffer.create(SPRITES);
-  writeSprites(records);
-  const accepted = canvas.submit(pipe, records, 0);
+  // Ten nodes, positioned once. `commit` packs them into the scene's record
+  // buffer and submits it — the caller never sees a record, a count or a stride.
+  //
+  // Spawn order is the default depth, so sprite `i` sorts by `i` exactly as the
+  // hand-written `sort_key = i` did: the frame is byte-for-byte the one the
+  // imperative version produced, which is what the pixel assertions below are
+  // checking without meaning to.
+  const scene = Scene.create(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT, SPRITES);
+  spawnSprites(scene);
+  const accepted = scene.commit(canvas, pipe);
   if (accepted != SPRITES) {
     fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
     canvas.close();
