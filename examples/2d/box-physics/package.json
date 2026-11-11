@@ -1,0 +1,23 @@
+{
+  "name": "tension-example-box-physics",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore 2D example: rigid body box physics simulation with SAT collisions, rotation, and gravity",
+  "scripts": {
+    "build": "node ../../../scripts/build-2d-guest.mjs",
+    "build:debug": "node ../../../scripts/build-2d-guest.mjs --debug",
+    "test": "node test.mjs",
+    "start": "tension-core build/game.wasm --windowed"
+  },
+  "tension": {
+    "kind": "2d"
+  },
+  "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../../packages/core",
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}
