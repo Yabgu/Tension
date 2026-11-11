@@ -15,13 +15,15 @@ import {
   Solver,
   SolverConfig,
   PIPE_PRESET_MIN,
+  Pixels,
+  RecordBuffer,
   Rgba,
-  RECORD_SIZE,
   arg,
   argCount,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
-import { Canvas, SpriteRecord } from "tension-framework/assembly/2d";
+import { Bytes } from "tension-framework";
+import { Canvas } from "tension-framework/assembly/2d";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 import {
   AtlasFrame,
@@ -565,9 +567,8 @@ export function _start_game(): void {
 
   // 4. Set Pipeline and Bind Texture
   const BLOB_SIZE: u32 = 584;
-  const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
-  memory.copy(blobPtr, changetype<usize>(DEFAULT_2D_BLOB.dataStart), BLOB_SIZE);
-  const pipe = canvas.pipelineGraph(blobPtr, BLOB_SIZE);
+  const blob = Bytes.ofArray(DEFAULT_2D_BLOB);
+  const pipe = canvas.pipelineGraph(blob);
   if (pipe < PIPE_PRESET_MIN) {
     print("ERROR: pipelineGraph failed: " + pipe.toString());
     canvas.close();
@@ -629,8 +630,7 @@ export function _start_game(): void {
   // `sizeof<SpriteRecord>()`, and hardcoding the 28 bytes here would be a
   // second, unchecked copy of a layout the struct already states.
   const MAX_RECORDS: i32 = 512;
-  const recordsAddr: usize = memory.data(MAX_RECORDS * <i32>RECORD_SIZE, 8);
-  let records = changetype<@unmanaged [SpriteRecord *]>(recordsAddr);
+  const records = RecordBuffer.create(MAX_RECORDS);
 
   // 7. Simulation Loop
   const MAX_FRAMES: i32 = window ? 216000 : 500;
@@ -650,85 +650,30 @@ export function _start_game(): void {
     }
 
     // Build Render Records
-    let recIdx: u32 = 0;
+    records.reset();
 
     // Background tiles (1280x720 / 64x64 = 20x12 tiles)
     for (let by = 0; by < 720; by += 64) {
       for (let bx = 0; bx < 1280; bx += 64) {
-        records[recIdx].x = bx;
-        records[recIdx].y = by;
-        records[recIdx].srcX = FRAME_BG.srcX;
-        records[recIdx].srcY = FRAME_BG.srcY;
-        records[recIdx].w = FRAME_BG.w;
-        records[recIdx].h = FRAME_BG.h;
-        records[recIdx].tex = 0;
-        records[recIdx].sortKey = 10;
-        records[recIdx].groupId = 0;
-        records[recIdx].z = 0;
-        records[recIdx].flags = 0;
-        recIdx++;
+        records.push(bx, by, FRAME_BG.srcX, FRAME_BG.srcY, FRAME_BG.w, FRAME_BG.h, 0, 10, 0, 0);
       }
     }
 
     // Ceiling Platform at y = 0
     for (let cx = 64; cx < 1216; cx += 64) {
-      records[recIdx].x = cx;
-      records[recIdx].y = -30;
-      records[recIdx].srcX = FRAME_GROUND.srcX;
-      records[recIdx].srcY = FRAME_GROUND.srcY;
-      records[recIdx].w = FRAME_GROUND.w;
-      records[recIdx].h = FRAME_GROUND.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 50;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 1;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(cx, -30, FRAME_GROUND.srcX, FRAME_GROUND.srcY, FRAME_GROUND.w, FRAME_GROUND.h, 0, 50, 0, 1);
     }
 
     // Ground Platform at y = 620 (19 tiles)
     for (let gx = 64; gx < 1216; gx += 64) {
-      records[recIdx].x = gx;
-      records[recIdx].y = 620;
-      records[recIdx].srcX = FRAME_GROUND.srcX;
-      records[recIdx].srcY = FRAME_GROUND.srcY;
-      records[recIdx].w = FRAME_GROUND.w;
-      records[recIdx].h = FRAME_GROUND.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 50;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 1;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(gx, 620, FRAME_GROUND.srcX, FRAME_GROUND.srcY, FRAME_GROUND.w, FRAME_GROUND.h, 0, 50, 0, 1);
     }
 
     // Left and Right Walls (wy = 0 to 640)
     for (let wy = 0; wy < 640; wy += 64) {
-      records[recIdx].x = 36;
-      records[recIdx].y = wy;
-      records[recIdx].srcX = FRAME_WALL.srcX;
-      records[recIdx].srcY = FRAME_WALL.srcY;
-      records[recIdx].w = FRAME_WALL.w;
-      records[recIdx].h = FRAME_WALL.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 50;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 1;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(36, wy, FRAME_WALL.srcX, FRAME_WALL.srcY, FRAME_WALL.w, FRAME_WALL.h, 0, 50, 0, 1);
 
-      records[recIdx].x = 1180;
-      records[recIdx].y = wy;
-      records[recIdx].srcX = FRAME_WALL.srcX;
-      records[recIdx].srcY = FRAME_WALL.srcY;
-      records[recIdx].w = FRAME_WALL.w;
-      records[recIdx].h = FRAME_WALL.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 50;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 1;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(1180, wy, FRAME_WALL.srcX, FRAME_WALL.srcY, FRAME_WALL.w, FRAME_WALL.h, 0, 50, 0, 1);
     }
 
     // Ramp 1 tiles: from (100, 220) to (720, 340) (11 tiles)
@@ -736,18 +681,7 @@ export function _start_game(): void {
       const frac = (<f64>r) / 10.0;
       const rx = <i32>(100.0 + frac * 620.0 - 32.0);
       const ry = <i32>(220.0 + frac * 120.0);
-      records[recIdx].x = rx;
-      records[recIdx].y = ry;
-      records[recIdx].srcX = FRAME_RAMP.srcX;
-      records[recIdx].srcY = FRAME_RAMP.srcY;
-      records[recIdx].w = FRAME_RAMP.w;
-      records[recIdx].h = FRAME_RAMP.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 60;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 2;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(rx, ry, FRAME_RAMP.srcX, FRAME_RAMP.srcY, FRAME_RAMP.w, FRAME_RAMP.h, 0, 60, 0, 2);
     }
 
     // Ramp 2 tiles: from (1180, 380) to (520, 500) (11 tiles)
@@ -755,18 +689,7 @@ export function _start_game(): void {
       const frac = (<f64>r) / 10.0;
       const rx = <i32>(1180.0 - frac * 660.0 - 32.0);
       const ry = <i32>(380.0 + frac * 120.0);
-      records[recIdx].x = rx;
-      records[recIdx].y = ry;
-      records[recIdx].srcX = FRAME_RAMP.srcX;
-      records[recIdx].srcY = FRAME_RAMP.srcY;
-      records[recIdx].w = FRAME_RAMP.w;
-      records[recIdx].h = FRAME_RAMP.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 60;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 2;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(rx, ry, FRAME_RAMP.srcX, FRAME_RAMP.srcY, FRAME_RAMP.w, FRAME_RAMP.h, 0, 60, 0, 2);
     }
 
     // Dynamic Boxes
@@ -777,22 +700,15 @@ export function _start_game(): void {
       const th = state[base + 2];
 
       const boxF = getBoxFrame(BOX_STYLES[i], th);
-      records[recIdx].x = bx;
-      records[recIdx].y = by;
-      records[recIdx].srcX = boxF.srcX;
-      records[recIdx].srcY = boxF.srcY;
-      records[recIdx].w = boxF.w;
-      records[recIdx].h = boxF.h;
-      records[recIdx].tex = 0;
-      records[recIdx].sortKey = 100 + <u32>i;
-      records[recIdx].groupId = 0;
-      records[recIdx].z = 3;
-      records[recIdx].flags = 0;
-      recIdx++;
+      records.push(bx, by, boxF.srcX, boxF.srcY, boxF.w, boxF.h, 0, 100 + <u32>i, 0, 3);
     }
 
     // Submit and Present
-    canvas.submit(pipe, records, recIdx);
+    canvas.submit(pipe, records, 0);
+    // The close button, asked directly: `present`'s -ECANCELED only arrives when
+    // its own pump drained the quit event, and the host pumps the same queue in
+    // `RuntimeSession.wait` (see `examples/2d/hello-sprites`).
+    if (platform.windowInfo().closeRequested) break;
     const presentRc = canvas.present();
     if (presentRc != 0) {
       if (presentRc == -125) { // -ECANCELED: window closed
@@ -850,16 +766,10 @@ export function _start_game(): void {
   // 9. Screenshot Verification
   const SS_PIXELS: u32 = 1280 * 720;
   const SS_BYTES: u32 = SS_PIXELS * 4;
-  const ssBuf: usize = memory.data(<usize>SS_BYTES, 8);
-  let ssPix = changetype<@unmanaged [Rgba *]>(ssBuf);
-  const ssRc = canvas.screenshot(ssPix, SS_BYTES);
+  const ssPix = Pixels.create(1280, 720);
+  const ssRc = canvas.screenshot(ssPix);
   if (ssRc > 0) {
-    let nonZero: u32 = 0;
-    for (let p: u32 = 0; p < SS_PIXELS; p++) {
-      if (ssPix[p].r > 0 || ssPix[p].g > 0 || ssPix[p].b > 0) {
-        nonZero++;
-      }
-    }
+    const nonZero: u32 = <u32>ssPix.nonBlack();
     if (nonZero > 10000) {
       print("OK: Screenshot verified with " + nonZero.toString() + " rendered non-zero pixels");
     } else {

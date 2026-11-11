@@ -12,14 +12,14 @@
 import {
   arg,
   argCount,
+  Bytes,
   Canvas,
   ConfigBuilder,
   PIPE_PRESET_MIN,
   print,
-  RECORD_SIZE,
-  Rgba,
+  Pixels,
+  RecordBuffer,
   RuntimeSession,
-  SpriteRecord,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
 import {
@@ -57,7 +57,6 @@ const ATLAS_SIZE: u32 = 1024;
 const ATLAS_BYTES: u32 = 74 + ATLAS_SIZE * ATLAS_SIZE * 4;
 
 const MAX_RECORDS: i32 = 128;
-const RECORD_BYTES: i32 = MAX_RECORDS * <i32>RECORD_SIZE;
 
 const SIMULATION_FRAMES: i32 = 600; // 10 seconds of physics @ 60 fps
 const WINDOW_FRAMES: i32 = 18000;
@@ -66,56 +65,41 @@ function fail(what: string): void {
   print("box-physics: " + what);
 }
 
-function emitStaticEnvironment(
-  out: @unmanaged [SpriteRecord *],
-  startIdx: i32,
-): i32 {
-  let idx = startIdx;
+function emitStaticEnvironment(into: RecordBuffer): i32 {
   const tileFrame = getStaticTileFrame();
 
   // 1. Floor: 10 segments of 64 px across bottom (y = 330)
   for (let i = 0; i < 10; i++) {
-    out[idx].set(i * 64, 330, tileFrame, <u32>idx, 0, 0);
-    idx++;
+    into.pushFrame(i * 64, 330, tileFrame, <u32>into.count, 0, 0);
   }
 
   // 2. Ceiling: 10 segments of 64 px across top (y = 0)
   for (let i = 0; i < 10; i++) {
-    out[idx].set(i * 64, 0, tileFrame, <u32>idx, 0, 0);
-    idx++;
+    into.pushFrame(i * 64, 0, tileFrame, <u32>into.count, 0, 0);
   }
 
   // 3. Left Wall: 6 segments of 60 px along x = 0
   for (let i = 0; i < 6; i++) {
-    out[idx].set(0, i * 60, tileFrame, <u32>idx, 0, 0);
-    idx++;
+    into.pushFrame(0, i * 60, tileFrame, <u32>into.count, 0, 0);
   }
 
   // 4. Right Wall: 6 segments of 60 px along x = 620
   for (let i = 0; i < 6; i++) {
-    out[idx].set(620, i * 60, tileFrame, <u32>idx, 0, 0);
-    idx++;
+    into.pushFrame(620, i * 60, tileFrame, <u32>into.count, 0, 0);
   }
 
   // 5. Left Ramp at (175, 225) angle = 0.35 rad
   const leftRampFrame = getBoxFrame(SHAPE_RAMP, 0.35);
-  out[idx].set(175 - 32, 225 - 32, leftRampFrame, <u32>idx, 0, 0);
-  idx++;
+  into.pushFrame(175 - 32, 225 - 32, leftRampFrame, <u32>into.count, 0, 0);
 
   // 6. Right Ramp at (465, 225) angle = -0.35 rad
   const rightRampFrame = getBoxFrame(SHAPE_RAMP, -0.35);
-  out[idx].set(465 - 32, 225 - 32, rightRampFrame, <u32>idx, 0, 0);
-  idx++;
+  into.pushFrame(465 - 32, 225 - 32, rightRampFrame, <u32>into.count, 0, 0);
 
-  return idx;
+  return into.count;
 }
 
-function emitDynamicBoxes(
-  world: PhysicsWorld,
-  out: @unmanaged [SpriteRecord *],
-  startIdx: i32,
-): i32 {
-  let idx = startIdx;
+function emitDynamicBoxes(world: PhysicsWorld, into: RecordBuffer): i32 {
   for (let i = 0; i < world.bodies.length; i++) {
     const b = world.bodies[i];
     if (b.isStatic) continue;
@@ -124,10 +108,9 @@ function emitDynamicBoxes(
     const spriteX = <i32>Mathf.round(b.x - 32.0);
     const spriteY = <i32>Mathf.round(b.y - 32.0);
 
-    out[idx].set(spriteX, spriteY, frame, <u32>idx, 0, 0);
-    idx++;
+    into.pushFrame(spriteX, spriteY, frame, <u32>into.count, 0, 0);
   }
-  return idx;
+  return into.count;
 }
 
 export function _start_game(): void {
@@ -172,10 +155,8 @@ export function _start_game(): void {
   );
 
   // 3. Set pipeline graph
-  const BLOB_SIZE: i32 = 584;
-  const blobPtr: usize = memory.data(BLOB_SIZE, 8);
-  memory.copy(blobPtr, changetype<usize>(DEFAULT_2D_BLOB.dataStart), <usize>BLOB_SIZE);
-  const pipe = canvas.pipelineGraph(blobPtr, <u32>BLOB_SIZE);
+  const blob = Bytes.ofArray(DEFAULT_2D_BLOB);
+  const pipe = canvas.pipelineGraph(blob);
   if (pipe < PIPE_PRESET_MIN) {
     fail("set_pipeline -> " + pipe.toString());
     canvas.close();
@@ -185,7 +166,7 @@ export function _start_game(): void {
 
   // 4. Build and load the 1024x1024 RGBA atlas
   const atlas = buildBoxAtlas();
-  const tex = canvas.loadTexture(atlas, ATLAS_BYTES);
+  const tex = canvas.loadTexture(atlas);
   if (tex <= 0) {
     fail("texture_load -> " + tex.toString());
     canvas.close();
@@ -235,8 +216,7 @@ export function _start_game(): void {
   world.addBody(Body.createDynamic(20, 290.0, 140.0, initialAngles[10], 19.0, 12.0, 0.01, 0.35, 0.4, SHAPE_PURPLE_SLAB));
   world.addBody(Body.createDynamic(21, 470.0, 150.0, initialAngles[11], 11.0, 11.0, 0.01, 0.35, 0.4, SHAPE_CYAN_CUBE));
 
-  const records: usize = memory.data(RECORD_BYTES, 8);
-  let out = changetype<@unmanaged [SpriteRecord *]>(records);
+  const out = RecordBuffer.create(MAX_RECORDS);
 
   const dt: f32 = 1.0 / 60.0;
   let totalDrawnRecords: i32 = 0;
@@ -245,11 +225,12 @@ export function _start_game(): void {
   for (let frame = 0; frame < SIMULATION_FRAMES; frame++) {
     world.step(dt);
 
-    let recCount = emitStaticEnvironment(out, 0);
-    recCount = emitDynamicBoxes(world, out, recCount);
+    out.reset();
+    emitStaticEnvironment(out);
+    const recCount = emitDynamicBoxes(world, out);
     totalDrawnRecords = recCount;
 
-    const accepted = canvas.submit(pipe, out, <u32>recCount, 0);
+    const accepted = canvas.submit(pipe, out, 0);
     if (accepted != recCount) {
       fail("submit failed on frame " + frame.toString());
       canvas.close();
@@ -303,20 +284,15 @@ export function _start_game(): void {
   }
 
   // 8. Verify rendering via screenshot readback
-  const shotBuf: usize = memory.data(<i32>FRAME_BYTES, 8);
-  let shot = changetype<@unmanaged [Rgba *]>(shotBuf);
-  const written = canvas.screenshot(shot, FRAME_BYTES);
+  const shot = Pixels.create(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT);
+  const written = canvas.screenshot(shot);
   if (written != <i32>FRAME_BYTES) {
     fail("screenshot failed");
     canvas.close();
     return;
   }
 
-  let pixels = changetype<@unmanaged [Rgba *]>(shotBuf);
-  let nonBlack: u32 = 0;
-  for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    if (pixels[i].r != 0 || pixels[i].g != 0 || pixels[i].b != 0) nonBlack++;
-  }
+  const nonBlack: u32 = <u32>shot.nonBlack();
 
   print(
     "physics -> resolved " + world.totalCollisionsResolved.toString() +
@@ -347,10 +323,16 @@ export function _start_game(): void {
     while (frameCount < WINDOW_FRAMES) {
       world.step(dt);
 
-      let recCount = emitStaticEnvironment(out, 0);
-      recCount = emitDynamicBoxes(world, out, recCount);
+      out.reset();
+      emitStaticEnvironment(out);
+      const recCount = emitDynamicBoxes(world, out);
 
-      if (canvas.submit(pipe, out, <u32>recCount, 0) != recCount) break;
+      if (canvas.submit(pipe, out, 0) != recCount) break;
+      // The close button, asked directly. `present` answers -ECANCELED only when
+      // its own pump drained SDL's quit event, and the host pumps the same queue
+      // in `RuntimeSession.wait` — so a loop that waits on `present` alone leaves
+      // the X doing nothing (see `examples/2d/hello-sprites`).
+      if (platform.windowInfo().closeRequested) break;
       if (canvas.present() != 0) break; // Window closed (-ECANCELED)
 
       RuntimeSession.wait(16);

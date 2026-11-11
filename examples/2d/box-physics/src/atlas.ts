@@ -10,7 +10,7 @@
 // Alpha channel is 255 for the box interior/borders and 0 outside, allowing
 // seamless source-over blending through tension-2d's GPU pipeline.
 
-import { Frame, Rgba } from "tension-framework";
+import { Bytes, Frame, Rgba } from "tension-framework";
 import { absf, minf, normalizeAngle, PI, TWO_PI } from "./math";
 
 export const ATLAS_SIZE: u32 = 1024;
@@ -56,36 +56,43 @@ function getShapeProps(shapeType: i32): ShapeProps {
   return p;
 }
 
-export function buildBoxAtlas(): usize {
+export function buildBoxAtlas(): Bytes {
   const pixels = ATLAS_SIZE * ATLAS_SIZE * 4;
   const total: i32 = 74 + <i32>pixels;
-  const at: usize = memory.data(total, 8);
-  memory.fill(at, 0, <usize>total);
+  const image = Bytes.allocate(total);
+  image.fill(0);
 
   // The 74-byte packed IWI1 container header (TS6408)
-  store<u8>(at + 0, 0x49); // I
-  store<u8>(at + 1, 0x57); // W
-  store<u8>(at + 2, 0x49); // I
-  store<u8>(at + 3, 0x31); // 1
-  store<u32>(at + 4, ATLAS_SIZE); // width
-  store<u32>(at + 8, ATLAS_SIZE); // height
-  store<u8>(at + 12, 0); // colorSpace: sRGB
-  store<u16>(at + 13, 4); // componentCount: RGBA (4 channels)
-  store<u16>(at + 15, 32); // bitsPerPixel: 32
-  store<u8>(at + 17, 0); // storageLayout: interleaved
+  image.setByteAt(0, 0x49); // I
+  image.setByteAt(1, 0x57); // W
+  image.setByteAt(2, 0x49); // I
+  image.setByteAt(3, 0x31); // 1
+  image.setU32(4, ATLAS_SIZE); // width
+  image.setU32(8, ATLAS_SIZE); // height
+  image.setByteAt(12, 0); // colorSpace: sRGB
+  image.setU16(13, 4); // componentCount: RGBA (4 channels)
+  image.setU16(15, 32); // bitsPerPixel: 32
+  image.setByteAt(17, 0); // storageLayout: interleaved
 
   // Four 6-byte component descriptors (R, G, B, A)
   for (let i = 0; i < 4; i++) {
-    const at2 = at + 18 + <usize>(i * 6);
-    store<u8>(at2 + 0, <u8>(i + 1)); // semantic
-    store<u8>(at2 + 1, 2); // class UNORM
-    store<u16>(at2 + 2, <u16>(i * 8)); // bitOffset
-    store<u16>(at2 + 4, 8); // bitWidth
+    const at = 18 + i * 6;
+    image.setByteAt(at + 0, <u8>(i + 1)); // semantic
+    image.setByteAt(at + 1, 2); // class UNORM
+    image.setU16(at + 2, <u16>(i * 8)); // bitOffset
+    image.setU16(at + 4, 8); // bitWidth
   }
-  store<u64>(at + 66, <u64>pixels);
+  image.setU64(66, <u64>pixels);
 
-  // Pixel view over the pixel buffer (rule 5: record view)
-  let px = changetype<@unmanaged [Rgba *]>(at + 74);
+  // A pixel view for the rasteriser below, from the buffer's **address**.
+  //
+  // One million pixels through `setByteAt` would be four million bounds-checked
+  // stores; the header above is thirty bytes and the body is not. What makes this
+  // safe now is where the number comes from: `image.address()` is the framework's
+  // `dataStart`, so this is a view over a known buffer's data — not
+  // `changetype<usize>(typedArray)`, which is the object and was the Gate Zero
+  // fault (`tension-framework/assembly/bytes.ts` has the backtrace).
+  let px = changetype<@unmanaged [Rgba *]>(image.address() + 74);
 
   // 1. Rasterize rotation angles for shapes 0..6
   for (let shape = 0; shape <= SHAPE_RAMP; shape++) {
@@ -202,7 +209,7 @@ export function buildBoxAtlas(): usize {
     }
   }
 
-  return at;
+  return image;
 }
 
 export function getBoxFrame(shapeType: i32, angle: f32): Frame {
