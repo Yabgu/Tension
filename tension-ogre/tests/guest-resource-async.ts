@@ -10,6 +10,7 @@ import {
   ConfigBuilder, makeCallbacks, RuntimeSession, rt,
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
+import { resMount } from "../../tension-framework/assembly/res";
 import { Task } from "~lib/task";
 import { __taskBindTable } from "~lib/task-rt";
 
@@ -112,11 +113,11 @@ function openDropCase(tns: string): bool {
     .renderer(ogre.Renderer.Null)
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
   if (ogre.init(dropConfig) != 0) return false;
-  return ogre.mountTns("resources", tns) == 0;
+  return resMount("resources", tns) >= 0;
 }
 
 async function dropCase(tns: string): void {
-  if (!openDropCase(tns)) fail("case 2: session, ogre init or mountTns refused");
+  if (!openDropCase(tns)) fail("case 2: session, ogre init or resMount refused");
 
   // Fill the one slot with a completion nobody awaits.
   const filler: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
@@ -175,7 +176,7 @@ async function run(tns: string, drop: bool): void {
 
   // ── 1. missing mesh: the errno arrives, the task settles ───────────────
   if (!openSession(true)) fail("session or ogre init refused");
-  if (ogre.mountTns("resources", tns) != 0) fail("mountTns refused");
+  if (resMount("resources", tns) < 0) fail("resMount refused");
 
   let missingId: i32 = 0;
   let missingDone: i32 = 0;

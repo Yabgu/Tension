@@ -39,6 +39,7 @@ import {
   EventRecord
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
+import { resMount } from "../../tension-framework/assembly/res";
 import { Task, TaskRecord } from "~lib/task";
 import { __taskBindTable } from "~lib/task-rt";
 
@@ -169,7 +170,7 @@ function openDropCase(tns: string): i32 {
   const config = new ogre.ConfigBuilder()
     .renderer(ogre.Renderer.Null)
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
-  if (ogre.init(config) != 0 || tns.length == 0 || ogre.mountTns("resources", tns) != 0) {
+  if (ogre.init(config) != 0 || tns.length == 0 || resMount("resources", tns) < 0) {
     RuntimeSession.close();
     return -2;
   }
@@ -367,7 +368,7 @@ function openMain(tns: string): i32 {
     .headless(true).vsync(false).frameHz(60).windowSize(64, 64);
   if (ogre.init(config) != 0) return 2;
   if (tns.length == 0) return 3;
-  if (ogre.mountTns("resources", tns) != 0) return 4;
+  if (resMount("resources", tns) < 0) return 4;
   return 0;
 }
 
@@ -384,7 +385,7 @@ async function run(tns: string, drop: bool): void {
   if (mainOpen == 1) fail("session_open refused");
   if (mainOpen == 2) fail("ogre::init refused");
   if (mainOpen == 3) fail("no --tns=<volume> argument");
-  if (mainOpen == 4) fail("mountTns refused");
+  if (mainOpen == 4) fail("resMount refused");
 
   const job: i32 = ogre.queueMeshLoad("resources/meshes/Barrel.mesh", 0);
   if (job <= 0) fail("queueMeshLoad refused (" + job.toString() + ")");

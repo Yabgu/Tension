@@ -8,7 +8,7 @@
  *
  * **The error protocol is the capability's own.** A positive return is the
  * resource id; a negative return is the errno, unchanged from `jobError`,
- * `ogre.init`, `mountTns` and `queueMeshLoad`. Nothing throws — AS has no
+ * `resMount`, `ogre.init` and `ogre.queueMeshLoad`. Nothing throws — AS has no
  * `try`/`catch` — so a caller checks `id < 0` and reads the code from `id`.
  * There is deliberately no companion "last error" reader: it would be
  * module-level mutable state shared by every concurrent load, and every other

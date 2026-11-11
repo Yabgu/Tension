@@ -495,7 +495,7 @@ the batch (`:354`) and surviving a trap (`:397`), and a rejected submission
 delivered (`:432`).
 
 **Cross-cutting:** `ogre_surface.rs` exercises the adapter side of the same
-contract (sixteen imports, declared regions, `publish` no-op while clean);
+contract (fifteen imports, declared regions, `publish` no-op while clean);
 `ogre_host_surface.rs` runs a real guest through open, epochs, resize and close.
 
 ## 11. Non-goals

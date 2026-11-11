@@ -65,7 +65,7 @@ import {
   REGION_BUFFER_POOL,
 } from "../runtime/wire";
 import { regionOffset, regionSize } from "../runtime/arena";
-import { writeBytesAt, writeString, lastWriteLength, lastWriteOffset } from "../runtime/strings";
+import { writeString, lastWriteLength } from "../runtime/strings";
 import { rt } from "../runtime/rt";
 // The host's window API. This module only *reads* it here (`hasSurface`) and
 // creates a window in `initWindowed`; a guest that never calls that helper uses
@@ -101,9 +101,6 @@ declare function queueMeshLoadRaw(namePtr: u32, nameLen: u32, priority: i32): i3
 /** Queue a texture load; returns a job id (> 0) or an errno. */
 @external("ogre", "queue_texture_load")
 declare function queueTextureLoadRaw(namePtr: u32, nameLen: u32, priority: i32): i32;
-/** Mount a Tension Volume under a prefix; 0, or the errno the mount refused with. */
-@external("ogre", "mount_tns")
-declare function mountTnsRaw(prefixPtr: u32, prefixLen: u32, tnsPtr: u32, tnsLen: u32): i32;
 /** Copy a `Job` record into `out_ptr`; 0, or -ENOENT for an unknown id. */
 @external("ogre", "job_state")
 declare function jobStateRaw(jobId: i32, outPtr: u32): i32;
@@ -373,42 +370,6 @@ export function queueTextureLoad(path: string, priority: i32 = 0): i32 {
   const at = writeString(path);
   if (at == 0 && path.length > 0) return -28;
   return queueTextureLoadRaw(at, lastWriteLength, priority);
-}
-
-/**
- * Mount a Tension Volume under `prefix` — **deprecated, use `resMount`**.
- *
- * `resMount(prefix, path)` (in `tension-framework/assembly/res.ts`) is the same
- * operation and does not require the Ogre capability to be loaded: mounting is
- * the host's, not a renderer's. This wrapper remains because every Ogre guest in
- * this tree calls it, and it still does one thing a plain `resMount` cannot —
- * it also hands the volume to *this adapter's* loader, which reads meshes and
- * textures on a worker thread and cannot call the guest-facing resource verbs
- * from there.
- *
- * **Both are the same mount.** Whichever runs first creates the host's entry;
- * the other indexes it. A guest may therefore call `resMount` and then
- * `mountTns`, or the reverse, or (as the examples do) only `mountTns` and read
- * the same volume through `resReadFile` at `prefix/...`.
- *
- * `tnsPath` must be a path the host can open. Call it after `init` and before the
- * first load; loading a path no mount carries fails with `-ENOENT` (there is no
- * fallback to the disk).
- */
-export function mountTns(prefix: string, tnsPath: string): i32 {
-  // Two strings, one half: `writeString` always writes at the start of the
-  // guest half, so a second call would overwrite the first. `writeBytesAt`
-  // takes the offset it should land at, which is what the second string is
-  // placed with — the first string's byte length.
-  const prefixBytes = String.UTF8.encode(prefix);
-  const prefixAt = writeBytesAt(prefixBytes, 0);
-  const prefixLength = lastWriteLength;
-  if (prefixAt == 0 && prefixBytes.byteLength > 0) return -28; // -ENOSPC: the half is full
-  const tnsBytes = String.UTF8.encode(tnsPath);
-  const tnsAt = writeBytesAt(tnsBytes, prefixLength);
-  const tnsLength = lastWriteLength;
-  if (tnsAt == 0 && tnsBytes.byteLength > 0) return -28;
-  return mountTnsRaw(prefixAt, prefixLength, tnsAt, tnsLength);
 }
 
 /** A job's state (`JOB_*`), or `JOB_FAILED` for an id outside the table. */

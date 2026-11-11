@@ -668,7 +668,7 @@ class BackendOgre final : public Backend {
                 // `OldSkeletonManager::create` checks, so the manual skeleton
                 // path needs nothing here. (The 11a probe's finding was that a
                 // group which does not exist at all cannot host a resource;
-                // that is `mount_tns`'s business, not this call's.)
+                // that is `tension::res.mount`'s business, not this call's.)
             }
             // The NULL render system is the exception, and it is measured
             // rather than assumed: hanging a workspace over its window

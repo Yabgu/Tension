@@ -53,6 +53,7 @@ import { ConfigBuilder, RuntimeSession, makeCallbacks } from "../../tension-fram
 import { Solver, SolverConfig } from "../../tension-framework/assembly/solver";
 import { World, WorldConfig, physics_buf_in, physics_buf_out } from "../../tension-framework/assembly/physics";
 import * as ogre from "../../tension-framework/assembly/ogre";
+import { resMount } from "../../tension-framework/assembly/res";
 import { CameraRecord, Material, Renderable } from "../../tension-framework/assembly/ogre/wire";
 import { ensureHostWindow } from "./host-window";
 
@@ -336,7 +337,7 @@ export function _start_game(): void {
   // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
   // grandfathered.
   assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
-  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
+  assert(resMount("resources", tns) >= 0, "resMount refused");
 
   // ── the picture's scaffolding ────────────────────────────────────────
   // GL3+ only: the structural tier has no framebuffer to put anything in, and

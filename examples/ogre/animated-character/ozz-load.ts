@@ -12,7 +12,7 @@
 // makes the volume visible to every reader in the process — this file's
 // `resReadFile`, and Ogre's loader if a mesh needed loading. Before the mount
 // verb existed this probe had to be handed the volume as `--res` *and* pass it
-// to `ogre.mountTns`, because the two capabilities kept separate tables.
+// to the Ogre capability's own mount, because the two kept separate tables.
 //
 // The numbers are the artifacts' own: 58 joints in OGRE bone order, `Hips` at
 // 19 and `LeftForeArm` at 28 (the remap tool's promise), and the three clips'

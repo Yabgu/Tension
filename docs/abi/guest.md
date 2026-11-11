@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-86 imports across 12 modules: 53 registered by the host in 9 modules, 33 by 3 capability adapters.
+85 imports across 12 modules: 53 registered by the host in 9 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -35,22 +35,21 @@ says how in its own shim; the shared codes are in
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1536` |
-| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1537` |
-| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1538` |
-| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1540` |
-| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1541` |
-| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1543` |
-| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1545` |
-| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1546` |
-| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1547` |
-| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1550` |
-| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1552` |
-| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1555` |
-| `mount_tns` | `(i32, i32, i32, i32) → i32` | 13 | — | `tension-ogre/src/adapter.cpp:1556` |
-| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1557` |
-| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1553` |
-| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1560` |
+| `init` | `(i32, i32) → i32` | 1 | — | `tension-ogre/src/adapter.cpp:1454` |
+| `shutdown` | `(void) → i32` | 2 | — | `tension-ogre/src/adapter.cpp:1455` |
+| `last_error` | `(i32, i32) → i32` | 3 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1456` |
+| `queue_mesh_load` | `(i32, i32, i32) → i32` | 4 | — | `tension-ogre/src/adapter.cpp:1458` |
+| `queue_texture_load` | `(i32, i32, i32) → i32` | 5 | — | `tension-ogre/src/adapter.cpp:1459` |
+| `job_state` | `(i32, i32) → i32` | 6 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1461` |
+| `job_release` | `(i32) → i32` | 7 | — | `tension-ogre/src/adapter.cpp:1463` |
+| `submit` | `(i32, i32, i32) → i32` | 8 | — | `tension-ogre/src/adapter.cpp:1464` |
+| `screenshot` | `(i32, i32) → i32` | 9 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1465` |
+| `submit_motion` | `(i32) → i32` | 10 | — | `tension-ogre/src/adapter.cpp:1468` |
+| `submit_bones` | `(i32) → i32` | 11 | — | `tension-ogre/src/adapter.cpp:1470` |
+| `create_mesh` | `(i32, i32, i32, i32, i32, i32) → i32` | 12 | — | `tension-ogre/src/adapter.cpp:1473` |
+| `submit_animation` | `(i32, i32, i32, i32) → i32` | 14 | — | `tension-ogre/src/adapter.cpp:1474` |
+| `submit_skin_matrices` | `(i32) → i32` | 15 | — | `tension-ogre/src/adapter.cpp:1471` |
+| `window_handle` | `(i32, i32) → i32` | 16 | REENTRANT_READONLY | `tension-ogre/src/adapter.cpp:1477` |
 
 ## `scheduler`
 

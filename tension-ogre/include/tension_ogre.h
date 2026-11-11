@@ -13,11 +13,11 @@
  * they cannot leak into the wire contract — `docs/modules/ogre.md` §1: the version pin is a
  * build-time concern that the wire format does not depend on.
  *
- * The adapter registers sixteen imports. The first three — init, shutdown and
+ * The adapter registers fifteen imports. The first three — init, shutdown and
  * last_error — are the bring-up and error surface; the rest are the load,
  * query and per-frame submission verbs: queue_mesh_load, queue_texture_load,
  * job_state, job_release, submit, screenshot, submit_motion, submit_bones,
- * submit_skin_matrices, create_mesh, mount_tns, submit_animation and
+ * submit_skin_matrices, create_mesh, submit_animation and
  * window_handle. `tension-ogre/src/adapter.cpp`'s `registrations[]` is the
  * authoritative list; this header documents each one below.
  *

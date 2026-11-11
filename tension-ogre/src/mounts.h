@@ -23,7 +23,7 @@
 //
 // Threading: this table has no lock of its own. It lives in the `Loader`, which
 // guards it with the same mutex that guards the job table: the guest thread
-// appends (`mount_tns`), the loader's worker reads. See loader.h.
+// appends (`adopt_mount_for`), the loader's worker reads. See loader.h.
 
 #ifndef TENSION_OGRE_MOUNTS_H
 #define TENSION_OGRE_MOUNTS_H

@@ -46,6 +46,7 @@ import {
   makeCallbacks,
 } from "../../tension-framework/assembly/runtime";
 import * as ogre from "../../tension-framework/assembly/ogre";
+import { resMount } from "../../tension-framework/assembly/res";
 import {
   JOB_DONE,
   JOB_FAILED,
@@ -127,7 +128,7 @@ export function _start_game(): void {
   // path in as `--tns=`. No mount, no bytes — the fixtures are migrated, not
   // grandfathered.
   assert(tns.length > 0, "no --tns=<volume> argument (run through tests/run.sh)");
-  assert(ogre.mountTns("resources", tns) == 0, "mountTns refused");
+  assert(resMount("resources", tns) >= 0, "resMount refused");
   ogre.assertSubmissionRegions();
 
   // ── clause 1: the mesh, by the 3a path ───────────────────────────────

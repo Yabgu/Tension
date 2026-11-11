@@ -277,10 +277,12 @@ export function resReadText(path: string): string | null {
  * Mount a packed volume under `prefix`, and answer its mount index.
  *
  * **Mounting is the host's, not a renderer's.** Before this verb it was reachable
- * only through `ogre.mountTns`, so a guest that wanted a volume visible to
- * `resReadFile` had to load the Ogre capability to get it, and the same volume
- * had to be passed to the host (`--res`) *and* to the adapter (`--tns`) to be
- * visible to both. One call now mounts it once, for everything.
+ * only through the Ogre capability's own mount call, so a guest that wanted a
+ * volume visible to `resReadFile` had to load the Ogre adapter to get it, and the
+ * same volume had to be passed to the host (`--res`) *and* to the adapter
+ * (`--tns`) to be visible to both. That verb is gone; one call now mounts once,
+ * for everything. A capability that reads on a worker thread — the Ogre loader —
+ * adopts the mount by itself on the first path it does not know.
  *
  *     resMount("resources", "/abs/path/assets.tns");
  *     const mesh = resReadFile("resources/models/hero.mesh");   // both resolve
@@ -298,8 +300,8 @@ export function resReadText(path: string): string | null {
  *   `-ENOENT` (-2)  no such file;
  *   `-EIO`    (-5)  the file is not a readable volume.
  *
- * `ogre.mountTns(prefix, path)` is the same operation plus the adapter's own
- * index of the image; either may be called first.
+ * Returns the mount index, which is also the high half of the fds an `open`
+ * inside that mount hands back.
  */
 export function resMount(prefix: string, path: string): i32 {
   const prefixBytes = String.UTF8.encode(prefix, false);

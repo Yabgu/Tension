@@ -28,7 +28,7 @@ static `tension_adapter` whose `abi_version` is `TENSION_ADAPTER_ABI_VERSION`
 and whose `apply` slot is `nullptr` (`adapter.cpp:1580`). The vtable contract
 itself is `docs/abi/adapter.md`; this page does not restate it.
 
-The guest-visible surface is the wasm module `ogre`: sixteen imports, registered
+The guest-visible surface is the wasm module `ogre`: fifteen imports, registered
 in `link` (`adapter.cpp:1285-1311`) and pinned by name, arity, verb id and flags
 in `tension-core/tests/ogre_surface.rs:525`. The guest-side reference generated
 from the registration sites is `docs/abi/guest.md`.
@@ -60,7 +60,7 @@ destination. Nothing else in this page is meant to outlive the backend.
 SDK of about 1,800 lines across eight TypeScript files. The 3,240-line design
 note is not evidence of a 3,240-line contract: roughly 1,400 of its lines are
 §5.1's offset table, which the arena now derives from `layout_hash` and
-`tension-core/src/session/arena.rs`. The contract a guest can see is sixteen
+`tension-core/src/session/arena.rs`. The contract a guest can see is fifteen
 functions and eleven records.
 
 **Two nulls, two builds.** When `TENSION_OGRE_BACKEND` is anything but `ogre`,
@@ -77,7 +77,7 @@ there, `renderer = null` is `BackendOgre` driving Ogre's NULL render system
 Ogre library at all; `docs/known-limitations.md` records what headless does and
 does not cover.
 
-## 2. The sixteen verbs
+## 2. The fifteen verbs
 
 Every import is `i32` at the wasm boundary; guest pointers are `u32` offsets
 into the guest's own memory (`tension-ogre/include/tension_ogre.h:40-46`). The
@@ -100,7 +100,6 @@ slot at 0 and answer the guest "success".
 | 10 | `submit_motion` | 10 | `(i32 count) -> i32` | one `guest_read` of `count` 48-byte `MotionUpdate`s, all-or-nothing | `adapter.cpp:1300`, `:868` |
 | 11 | `submit_bones` | 11 | `(i32 count) -> i32` | one read of the bone table at `BONE_TABLE_OFFSET`, all-or-nothing | `adapter.cpp:1302`, `:932` |
 | 12 | `create_mesh` | 12 | `(i32 vb, i32 vb_len, i32 format, i32 ib, i32 ib_len, i32 topology) -> i32` | copy vertex/index bytes out of the procedural window and return a resource id now, realise later | `adapter.cpp:1305`, `:1081` |
-| 13 | `mount_tns` | 13 | `(i32 prefix, i32 prefix_len, i32 path, i32 path_len) -> i32` | **deprecated** alias of `tension::res.mount` that also indexes the image for this loader | `adapter.cpp:1306`, `:674` |
 | 14 | `submit_animation` | 14 | `(i32 renderable, i32 clip, i32 clip_len, i32 time_ms) -> i32` | queue a clip and an absolute time within it | `adapter.cpp:1307`, `:634` |
 | 15 | `submit_skin_matrices` | 15 | `(i32 count) -> i32` | read a table of `(id, offset, bytes, flags)` plus the matrix blocks they name | `adapter.cpp:1303`, `:993` |
 | 16 | `window_handle` | 16 | `(i32 lo_ptr, i32 hi_ptr) -> i32` | **deprecated:** write the cached native window handle as two halves; `-ENODEV` under a host window | `adapter.cpp:1363-1384`, `:1443` |
@@ -112,15 +111,17 @@ Two properties of the table are load-bearing and easy to miss:
   `:1293-1294`, `:1297-1298`, `:1310-1311`). They take a lock and copy; none
   pumps an epoch, and each is callable from inside a callback.
 - **No verb is `TENSION_IMPORT_DEFERRABLE`**, and the vtable's `apply` is null
-  (`adapter.cpp:1580`). A guest cannot call any of these sixteen from inside a
+  (`adapter.cpp:1580`). A guest cannot call any of these fifteen from inside a
   callback; the session refuses with `-EBUSY`. The only deferrable registration
   in the tree is the test echo adapter
   (`tension-core/tests/support/echo_adapter.c:279`).
 
 Verb ids are the numbers `apply` would receive if the adapter ever grew a
-deferred verb; they are assigned in `adapter.cpp:30-56`, where two comments
-record off-by-one corrections (`mount_tns` is 13, not 12; `submit_animation` is
-14, not 15) because the plan's numbering had drifted from the code's.
+deferred verb; they are assigned in `adapter.cpp:30-56`. **Id 13 is retired**:
+`mount_tns` held it and was removed when mounting became the host's
+(`tension::res.mount`, §2's note below), and the id is left as a hole rather than
+reused — a guest compiled against the old table then fails to link ("unknown
+import") instead of silently calling a different verb.
 
 ## 3. The config record
 
@@ -339,7 +340,7 @@ win. Four are concrete:
    (`DESIGN.md:140-146`), but the table above the warning is stale.
 3. **No `queue_*` verb is deferrable.** `DESIGN.md:1959-1960` says
    `TENSION_IMPORT_DEFERRABLE` "marks ... the `queue_*` verbs". The adapter
-   registers none of its sixteen with that flag (`adapter.cpp:1285-1311`) and
+   registers none of its fifteen with that flag (`adapter.cpp:1285-1311`) and
    ships `apply = nullptr` (`adapter.cpp:1580`); the session therefore refuses
    a callback-time call with `-EBUSY`. The flag is exercised only by the test
    echo adapter.
@@ -352,7 +353,7 @@ win. Four are concrete:
    undercounts by five.
 
 Two smaller ones: `tension_ogre.h:16-24` says this header documents each of the
-sixteen verbs "below", but only `init`, `shutdown`, `last_error` and
+fifteen verbs "below", but only `init`, `shutdown`, `last_error` and
 `window_handle` have doc blocks there — the other twelve are documented at
 their shims. And `DESIGN.md:337-1750` (§5.1) is an offsets table that the arena
 now derives from constants plus `layout_hash`; it was not diffed line by line
@@ -629,12 +630,6 @@ status. The list by verb, with the checks that produce each code:
   outside the 512 KiB procedural window, overlapping arrays, or any index past
   the vertex count; `-ENOSPC` when the resource table is full
   (`adapter.cpp:1081-1176`).
-- **`mount_tns`** (deprecated: use `tension::res.mount`) — `-EINVAL` for an empty
-  or malformed prefix (`mounts.h`), `-ENOSYS` on a host without
-  `res_volume_bytes` (ABI < 7), and the **host's** errno when the volume cannot
-  be opened or parsed — it is the host that reads the file now. A prefix already
-  mounted answers 0 rather than `-EEXIST`, so `res.mount` and this verb can run
-  in either order.
 - **`window_handle`** — `-ENODEV` when there is no window: before `init`, while
   the window is coming up, with the null renderer, or after `shutdown`
   (`adapter.cpp:1230-1251`). This is the one code the adapter returns that is
@@ -661,7 +656,7 @@ status. The list by verb, with the checks that produce each code:
 **Rust integration tests** (`cargo test --test <name>`):
 
 - `ogre_smoke.rs` — the DSO loads under both renderers and registers.
-- `ogre_surface.rs` — the sixteen imports with their flags, the event source,
+- `ogre_surface.rs` — the fifteen imports with their flags, the event source,
   the declared region set, `publish` as a no-op while clean, `shutdown`
   idempotent before `init` (`ogre_surface.rs:525-552`).
 - `ogre_hierarchy.rs` — a guest fixture's hierarchy, structurally and in pixels.
@@ -730,7 +725,10 @@ Files this page was derived from, and what each answers:
 - `tension-ogre/src/loader.h`, `loader.cpp` — jobs, the worker, the drain latch,
   mirroring.
 - `tension-ogre/src/scene.h`, `scene.cpp` — the mirror's rules and capacities.
-- `tension-ogre/src/mounts.h`, `mounts.cpp` — volume mounts and path resolution.
+- `tension-ogre/src/mounts.h`, `mounts.cpp` — the adapter's *borrowed index* of the
+  session's mounts and its path resolution. Not a mount table of its own: the
+  session owns mounting (`tension-res/DESIGN.md` §7.9), and this side only records
+  where each image is and parses a view of it.
 - `tension-ogre/src/status.h`, `status.cpp` — the render thread's write channel.
 - `tension-ogre/src/generated/ogre.generated.h`, `schema/ogre.json`,
   `tools/codegen/generate.mjs` — record shapes and the drift gate.

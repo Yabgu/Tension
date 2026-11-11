@@ -1,4 +1,4 @@
-// The adapter shim: the vtable the session loads, the sixteen imports the guest
+// The adapter shim: the vtable the session loads, the fifteen imports the guest
 // calls, and the render thread they start.
 //
 // The split this file implements is the ABI's: `init`/`link`/`publish`/`apply`/
@@ -41,13 +41,13 @@ constexpr uint32_t kVerbScreenshot = 9;
 constexpr uint32_t kVerbSubmitMotion = 10;
 constexpr uint32_t kVerbSubmitBones = 11;
 constexpr uint32_t kVerbCreateMesh = 12;
-// Note: 13, not 12 — `create_mesh` already holds 12, and a second verb on the
-// same id would shadow it (the 11b plan said "verb_id 12"; the count it was
-// after is the thirteenth verb, which is id 13).
-constexpr uint32_t kVerbMountTns = 13;
-// 14, not 15: the ids run 1..13 above, so the next verb is the fourteenth (the
-// same off-by-one the 11b plan had for mount_tns — the count it wanted, the id
-// it named, and the free slot differed by one).
+// **Id 13 is retired, not reused.** `mount_tns` held it and was removed when
+// mounting became the host's (`tension::res.mount`). Leaving the hole is
+// deliberate: a guest compiled against the old table would otherwise call
+// whatever took the id, and "unknown import" is a far better failure than
+// "silently a different verb".
+// 14, not 15: the ids run 1..12 and 13 is retired, so the next verb is the
+// fourteenth.
 constexpr uint32_t kVerbSubmitAnimation = 14;
 // 15: the guest's skin matrices, the fifteenth verb (chunk 19 round 19b).
 constexpr uint32_t kVerbSubmitSkinMatrices = 15;
@@ -753,7 +753,7 @@ bool read_guest_name(const tension_core_api *api, uint32_t ptr, uint32_t len, st
 /// which answers any prefix the host already has without needing the file path
 /// again, and parses a borrowed view of the image.
 ///
-/// Called from the guest-thread shims only (`queue`, `mount_tns`), because the
+/// Called from the guest-thread shims only (`queue`), because the
 /// slot touches the host's table and the filesystem. A path whose prefix is not
 /// mounted anywhere is left alone: the worker's own resolution then refuses it
 /// with the -ENOENT the guest already knows how to read.
@@ -861,88 +861,6 @@ int32_t shim_submit_animation(void *, const tension_value *args, uint32_t nargs,
 
 int32_t shim_queue_mesh(void *ctx, const tension_value *args, uint32_t nargs, tension_value *ret) {
     return shim_queue(ctx, args, nargs, ret, TENSION_OGRE_RES_KIND_MESH);
-}
-
-/// `mount_tns(prefix_ptr, prefix_len, tns_ptr, tns_len)` — **deprecated**.
-///
-/// Kept because every Ogre guest in this tree calls it, and because a rename is
-/// a worse trade than a shim: it is the same operation the generic
-/// `tension::res.mount` performs, with the same prefix rules, so a guest may use
-/// either. The difference is that this one also hands the resulting image to
-/// **this adapter's loader**, which is what an Ogre guest actually needs — the
-/// loader reads meshes and textures on a worker thread and cannot call the
-/// guest-facing resource verbs from there.
-///
-/// **The mount itself is the host's.** `res_volume_bytes` reads the file once,
-/// parses it into the session's one table and lends this adapter the same image
-/// a guest's `resReadFile` would see; the adapter only parses a view of it. So
-/// one volume, one read, one mount — the duplication this pass removes.
-///
-/// Calling it for a prefix already mounted (by `tension::res.mount`, or by an
-/// earlier call to this verb) is **not** an error: the loader indexes what the
-/// host has. That makes the two entry points interchangeable in either order,
-/// which matters because a guest may reasonably mount first and configure the
-/// renderer second.
-int32_t shim_mount_tns(void *, const tension_value *args, uint32_t nargs, tension_value *ret) {
-    AdapterState &s = adapter_state();
-    if (ret == nullptr || args == nullptr || nargs != 4) return refuse(ret, -EINVAL);
-
-    const uint32_t prefix_ptr = static_cast<uint32_t>(args[0].i32);
-    const uint32_t prefix_len = static_cast<uint32_t>(args[1].i32);
-    const uint32_t tns_ptr = static_cast<uint32_t>(args[2].i32);
-    const uint32_t tns_len = static_cast<uint32_t>(args[3].i32);
-
-    std::string prefix;
-    std::string tns_path;
-    if (!read_guest_name(s.api, prefix_ptr, prefix_len, prefix) ||
-        !read_guest_name(s.api, tns_ptr, tns_len, tns_path)) {
-        log_line(3, "ogre: mount_tns refused: the prefix or the path is unreadable or too long");
-        return refuse(ret, -EINVAL);
-    }
-
-    if (s.loader.has_mount(prefix)) {
-        // Already indexed. Answer 0 rather than making the guest care which of
-        // the two entry points ran first.
-        ret->i32 = 0;
-        return 0;
-    }
-
-    if (s.api == nullptr || s.api->res_volume_bytes == nullptr) {
-        log_line(3, "ogre: mount_tns refused: this host has no resource mounts (ABI < 7)");
-        return refuse(ret, -ENOSYS);
-    }
-
-    const uint8_t *image = nullptr;
-    uint32_t image_len = 0;
-    const int32_t mounted = s.api->res_volume_bytes(
-        s.api->user, prefix.data(), static_cast<uint32_t>(prefix.size()), tns_path.data(),
-        static_cast<uint32_t>(tns_path.size()), &image, &image_len);
-    if (mounted != 0) {
-        log_line(3, "ogre: mount_tns refused: \"" + prefix + "\" from " + tns_path + " (" +
-                         std::to_string(mounted) + ")");
-        return refuse(ret, mounted);
-    }
-
-    tension_res *res = nullptr;
-    std::string err;
-    const int32_t parsed = mount_borrow(image, image_len, &res, &err);
-    if (parsed != 0) {
-        log_line(3, "ogre: mount_tns: the host's image did not parse (" + std::to_string(parsed) +
-                         ")" + (err.empty() ? "" : ": " + err));
-        return refuse(ret, parsed);
-    }
-
-    const int32_t indexed = s.loader.add_mount(prefix, tns_path, image, image_len, res);
-    if (indexed != 0) {
-        log_line(3, "ogre: mount_tns refused: prefix \"" + prefix + "\" (" +
-                         std::to_string(indexed) + ")");
-        tension_res_free(res);
-        return refuse(ret, indexed);
-    }
-    log_line(1, "ogre: indexed the session's mount \"" + prefix + "/\" (" +
-                     std::to_string(image_len) + " bytes, from " + tns_path + ")");
-    ret->i32 = 0;
-    return 0;
 }
 
 int32_t shim_queue_texture(void *ctx, const tension_value *args, uint32_t nargs,
@@ -1553,7 +1471,6 @@ int32_t adapter_link(void *, const tension_core_api *core) {
         {"submit_skin_matrices", one_i32, 1, shim_submit_skin_matrices, kVerbSubmitSkinMatrices, 0},
         // A mesh out of guest memory, for a guest with no file to load (5.5).
         {"create_mesh", six_i32, 6, shim_create_mesh, kVerbCreateMesh, 0},
-        {"mount_tns", four_i32, 4, shim_mount_tns, kVerbMountTns, 0},
         {"submit_animation", four_i32, 4, shim_submit_animation, kVerbSubmitAnimation, 0},
         // The window token, for the guest to hand to a peer capability
         // (INPUT.md Q1). Read-only: a cached value, no pump, no block.

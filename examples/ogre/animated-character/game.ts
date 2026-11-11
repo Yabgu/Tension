@@ -477,7 +477,7 @@ class Game {
   /// renderer's: the volume becomes visible to every resource reader in the
   /// process at once, so the mesh goes to Ogre's loader and the animation
   /// archives come back through `resReadFile` — the same bytes, one mount. This
-  /// example used to call `ogre.mountTns` *and* be handed the same volume again
+  /// example used to call the Ogre capability's own mount *and* be handed the same volume again
   /// as `--res`, because the adapter kept its own table; that is gone.
   private mountAssets(): void {
     if (this.options.tns.length == 0) {
