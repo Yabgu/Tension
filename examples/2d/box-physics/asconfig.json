@@ -1,0 +1,13 @@
+{
+  "options": {
+    "runtime": "incremental",
+    "target": "release",
+    "optimizeLevel": 2,
+    "importMemory": true,
+    "memoryBase": 8388608,
+    "initialMemory": 256,
+    "maximumMemory": 512,
+    "exportTable": true,
+    "exportStart": "__start"
+  }
+}

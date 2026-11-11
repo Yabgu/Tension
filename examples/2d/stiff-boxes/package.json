@@ -1,0 +1,27 @@
+{
+  "name": "tension-example-stiff-boxes",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "2D Box Physics with continuous stiff contact penalty forces integrated via tension::solver BDF2",
+  "scripts": {
+    "build": "node emit-boxes.mjs && node ../../../scripts/build-2d-guest.mjs && node ../../../scripts/pack-example.mjs .",
+    "build:debug": "node emit-boxes.mjs && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
+    "test": "node test.mjs",
+    "start": "tension-core --res build/stiff-boxes.tns build/game.wasm --windowed"
+  },
+  "tension": {
+    "kind": "res",
+    "pack": {
+      "input": "assets",
+      "output": "build/stiff-boxes.tns"
+    }
+  },
+  "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../../packages/core",
+    "tension-framework": "file:../../../tension-framework"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  }
+}

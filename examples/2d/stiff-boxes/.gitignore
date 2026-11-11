@@ -1,0 +1,6 @@
+build/
+node_modules/
+
+# emit-boxes.mjs regenerates the 1024x1024 IWI atlas on every build; it is a
+# build product, and the packed volume it feeds is already ignored above.
+assets/textures/
