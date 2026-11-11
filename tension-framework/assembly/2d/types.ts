@@ -142,13 +142,30 @@ export struct SpriteRecord {
    * filled where it will be submitted from.
    */
   set(x: i32, y: i32, frame: Frame, sortKey: u32, groupId: u16, z: u8): void {
+    this.setRect(x, y, frame.srcX, frame.srcY, frame.w, frame.h, frame.tex,
+                 sortKey, groupId, z);
+  }
+
+  /**
+   * `set`, from the source rect directly rather than from a `Frame`.
+   *
+   * **The primitive of the two**, and the only method that writes a field. A
+   * caller that has a `Frame` uses `set`; a caller that has the five numbers — a
+   * UI painter drawing an atlas cell it computed inline, which is exactly what
+   * `apps/docs` does — uses this. Keeping `set` a delegation rather than a second
+   * set of ten assignments is what preserves "one layout, one writer": two
+   * bodies that each write every field are two places for a field to be forgotten
+   * the day one is added.
+   */
+  setRect(x: i32, y: i32, srcX: u16, srcY: u16, w: u16, h: u16, tex: u16,
+          sortKey: u32, groupId: u16, z: u8): void {
     this.x = x;
     this.y = y;
-    this.srcX = frame.srcX;
-    this.srcY = frame.srcY;
-    this.w = frame.w;
-    this.h = frame.h;
-    this.tex = frame.tex;
+    this.srcX = srcX;
+    this.srcY = srcY;
+    this.w = w;
+    this.h = h;
+    this.tex = tex;
     this.sortKey = sortKey;
     this.groupId = groupId;
     this.z = z;

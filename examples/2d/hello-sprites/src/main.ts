@@ -25,15 +25,15 @@
 import {
   arg,
   argCount,
+  Bytes,
   Canvas,
   ConfigBuilder,
   Frame,
   PIPE_PRESET_MIN,
+  Pixels,
   print,
-  RECORD_SIZE,
-  Rgba,
+  RecordBuffer,
   RuntimeSession,
-  SpriteRecord,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
@@ -63,9 +63,9 @@ function wantsWindow(): bool {
 /// decision here rather than a constant there.
 const CANVAS_WIDTH: u32 = 640;
 const CANVAS_HEIGHT: u32 = 360;
-/// `memory.data` takes a compile-time size, so the readback is sized from the
-/// same two constants rather than from `frameBytes(...)` -- the framework's
-/// helper is a function, and `memory.data` takes a compile-time size.
+/// The bytes `screenshot` writes, from the same two constants the canvas was
+/// opened with. `Pixels.create` sizes its own buffer from them, so this is the
+/// number the *assertion* compares against rather than a size anyone allocates.
 const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
 
 const SPRITES: i32 = 10;
@@ -95,15 +95,6 @@ const CELL_COLOURS: u8[][] = [
 
 // --- the atlas -------------------------------------------------------------
 
-/// Three packed channels: the atlas is IWI at 24 bpp, so a pixel there is three
-/// bytes with no fourth. Named rather than three `store<u8>` at `+0/+1/+2`,
-/// because a channel written to the wrong offset is a colour nobody can read.
-struct Rgb24 {
-  r: u8;
-  g: u8;
-  b: u8;
-}
-
 /// Build the IWI container `IWImageIO.ixx` writes: magic, a 74-byte header, then
 /// interleaved pixels.
 ///
@@ -111,12 +102,15 @@ struct Rgb24 {
 /// reader (`tension::io` is text only), and because building it exercises the
 /// path that matters: the guest writes bytes, the adapter reads them back
 /// through `guest_read`.
-function buildAtlas(): usize {
+function buildAtlas(): Bytes {
   const pixels = ATLAS_SIZE * ATLAS_SIZE * 3;
   const total = 74 + pixels;
-  const at: usize = memory.data(<usize>total, 8);
-
-  memory.fill(at, 0, <usize>total);
+  // A heap buffer with a runtime size, reachable only through `Bytes`. The old
+  // spelling was `memory.data(total, 8)` returning a `usize` this function then
+  // offset by hand, so "the atlas" was a number that meant the buffer only as
+  // long as nobody wrote the wrong arithmetic beside it.
+  const image = Bytes.allocate(total);
+  image.fill(0);
 
   // The 74-byte IWI1 header, byte by byte — the one record in this tree that
   // cannot be a struct, and worth saying why so nobody tries.
@@ -133,29 +127,29 @@ function buildAtlas(): usize {
   // So a struct here would silently move every field after `colorSpace` by a
   // byte, and the adapter's decoder would read a 1024-tall atlas as garbage.
   // The format is ImageViewer's, not ours; the stores stay.
-  store<u8>(at + 0, 0x49); // I
-  store<u8>(at + 1, 0x57); // W
-  store<u8>(at + 2, 0x49); // I
-  store<u8>(at + 3, 0x31); // 1
-  store<u32>(at + 4, ATLAS_SIZE); // width
-  store<u32>(at + 8, ATLAS_SIZE); // height
-  store<u8>(at + 12, 0); // colorSpace: sRGB
-  store<u16>(at + 13, 3); // componentCount
-  store<u16>(at + 15, 24); // bitsPerPixel
-  store<u8>(at + 17, 0); // storageLayout: interleaved
+  image.setByteAt(0, 0x49); // I
+  image.setByteAt(1, 0x57); // W
+  image.setByteAt(2, 0x49); // I
+  image.setByteAt(3, 0x31); // 1
+  image.setU32(4, ATLAS_SIZE); // width
+  image.setU32(8, ATLAS_SIZE); // height
+  image.setByteAt(12, 0); // colorSpace: sRGB
+  image.setU16(13, 3); // componentCount
+  image.setU16(15, 24); // bitsPerPixel
+  image.setByteAt(17, 0); // storageLayout: interleaved
 
   // Eight 6-byte component descriptors; the first three are R, G, B (UNORM,
   // 8 bits each, at 0/8/16), the rest are the reserved slots and stay zero.
   for (let i = 0; i < 8; i++) {
-    const at2 = at + 18 + <usize>(i * 6);
+    const at = 18 + i * 6;
     if (i < 3) {
-      store<u8>(at2 + 0, <u8>(i + 1)); // semantic R=1, G=2, B=3
-      store<u8>(at2 + 1, 2); // class UNORM
-      store<u16>(at2 + 2, <u16>(i * 8)); // bitOffset
-      store<u16>(at2 + 4, 8); // bitWidth
+      image.setByteAt(at + 0, <u8>(i + 1)); // semantic R=1, G=2, B=3
+      image.setByteAt(at + 1, 2); // class UNORM
+      image.setU16(at + 2, <u16>(i * 8)); // bitOffset
+      image.setU16(at + 4, 8); // bitWidth
     }
   }
-  store<u64>(at + 66, <u64>pixels);
+  image.setU64(66, <u64>pixels);
 
   // Paint the cells. Cell k covers (k%4, k/4) * 64, and cells 10..15 keep the
   // zero they were filled with -- black, which no sprite samples.
@@ -163,24 +157,26 @@ function buildAtlas(): usize {
   for (let y: u32 = 0; y < ATLAS_SIZE; y++) {
     for (let x: u32 = 0; x < ATLAS_SIZE; x++) {
       const cell = (y / CELL) * cellsPerRow + (x / CELL);
-      const o = at + 74 + <usize>((y * ATLAS_SIZE + x) * 3);
       if (cell < <u32>CELL_COLOURS.length) {
         const c = CELL_COLOURS[cell];
-        const px = changetype<@unmanaged Rgb24>(o);
-        px.r = c[0];
-        px.g = c[1];
-        px.b = c[2];
+        const o = 74 + <i32>((y * ATLAS_SIZE + x) * 3);
+        image.setByteAt(o + 0, c[0]);
+        image.setByteAt(o + 1, c[1]);
+        image.setByteAt(o + 2, c[2]);
       }
     }
   }
-  return at;
+  return image;
 }
 
 // --- the records -----------------------------------------------------------
 
 /// The same ten records `smoke_core.cpp` submits: one per cell, 64 px apart,
 /// 32 px square, `sort_key = i` so draw order is submission-independent.
-function writeSprites(out: @unmanaged [SpriteRecord *]): void {
+///
+/// The buffer owns its record count, so this fills it and there is no second
+/// number travelling beside it: `submit` sends exactly what was pushed.
+function writeSprites(records: RecordBuffer): void {
   for (let i = 0; i < SPRITES; i++) {
     const cell = <u32>i;
     const frame = new Frame(
@@ -190,7 +186,7 @@ function writeSprites(out: @unmanaged [SpriteRecord *]): void {
       SPRITE_SIZE,
       SPRITE_SIZE,
     );
-    out[i].set(i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
+    records.pushFrame(i * SPRITE_PITCH, 0, frame, <u32>i, 0, 0);
   }
 }
 
@@ -268,12 +264,13 @@ export function _start_game(): void {
   // 3. the pipeline, from the graph blob the adapter was built against. A
   //    blob whose hash the DSO does not carry is -ENOSYS here, so this failure
   //    has exactly one cause: the .t2dg is not the one build-2d.mjs compiled.
-  const BLOB_SIZE: u32 = 584; // DEFAULT_2D_BLOB.length, fixed at generation
-  const blobPtr: usize = memory.data(<usize>BLOB_SIZE, 8);
-  memory.copy(blobPtr, changetype<usize>(DEFAULT_2D_BLOB.dataStart), BLOB_SIZE);
-  const pipe = canvas.pipelineGraph(blobPtr, BLOB_SIZE);
+  // `Bytes.ofArray` copies the generated literal once, here, instead of the
+  // guest reserving a static block and `memory.copy`ing into it: same bytes, and
+  // no address for anyone to hold on to.
+  const blob = Bytes.ofArray(DEFAULT_2D_BLOB);
+  const pipe = canvas.pipelineGraph(blob);
   if (pipe < PIPE_PRESET_MIN) {
-    fail("set_pipeline -> " + pipe.toString() + " (blob " + BLOB_SIZE.toString() + " bytes)");
+    fail("set_pipeline -> " + pipe.toString() + " (blob " + blob.length.toString() + " bytes)");
     canvas.close();
     return;
   }
@@ -281,8 +278,8 @@ export function _start_game(): void {
 
   // 4. the texture
   const atlas = buildAtlas();
-  const atlasBytes = 74 + ATLAS_SIZE * ATLAS_SIZE * 3;
-  const tex = canvas.loadTexture(atlas, atlasBytes);
+  const atlasBytes = atlas.length;
+  const tex = canvas.loadTexture(atlas);
   if (tex <= 0) {
     fail("texture_load -> " + tex.toString());
     canvas.close();
@@ -301,16 +298,15 @@ export function _start_game(): void {
   print("texture_load -> texture " + tex.toString() + " (" + atlasBytes.toString() + " bytes)" +
     ", bound to page 0");
 
-  // 5. the records and the header
-  const records: usize = memory.data(<usize>(SPRITES * <i32>RECORD_SIZE), 8);
-  let out = changetype<@unmanaged [SpriteRecord *]>(records);
-  writeSprites(out);
-
-  // `Canvas.submit` writes the 12-byte submit header itself, from the records
-  // and the count: the header is one value with one wire layout, and a caller
-  // that could pass a different stride could submit records the adapter cannot
-  // decode.
-  const accepted = canvas.submit(pipe, out, <u32>SPRITES, 0);
+  // 5. the records
+  //
+  // `RecordBuffer` owns the memory and the count, and `Canvas.submit` writes the
+  // 12-byte header from that count — the header is one value with one wire
+  // layout, and a caller that could pass a stride could submit records the
+  // adapter cannot decode.
+  const records = RecordBuffer.create(SPRITES);
+  writeSprites(records);
+  const accepted = canvas.submit(pipe, records, 0);
   if (accepted != SPRITES) {
     fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
     canvas.close();
@@ -326,28 +322,17 @@ export function _start_game(): void {
   }
 
   // 7. read the frame back and count what is not black
-  const frame: usize = memory.data(<usize>FRAME_BYTES, 8);
-  // `screenshot` takes the frame as a pixel view -- `Rgba`, not raw bytes -- so
-  // the capacity `Canvas` checks and the pixels read below share one type.
-  let shot = changetype<@unmanaged [Rgba *]>(frame);
-  const written = canvas.screenshot(shot, FRAME_BYTES);
+  //
+  // `Pixels` is sized from the canvas that will fill it, and `screenshot`
+  // refuses a destination that is too small rather than writing a short frame.
+  const shot = Pixels.create(<i32>CANVAS_WIDTH, <i32>CANVAS_HEIGHT);
+  const written = canvas.screenshot(shot);
   if (written != <i32>FRAME_BYTES) {
     fail("screenshot -> " + written.toString() + ", expected " + FRAME_BYTES.toString());
     canvas.close();
     return;
   }
-
-  // A view, not a value: this function holds two pixel loops, and two value
-  // locals of one struct type in two loops crash the compiler (0.13.2 and
-  // 0.14.1 both: `duplicate local name`, from `fillSroaFieldLocals`). A view is
-  // a pointer local, so it is unaffected — and the fields are still named.
-  // `let`, not `const`: a const view beside an integer const crashes the
-  // compiler (types.ts has the repro).
-  let pixels = changetype<@unmanaged [Rgba *]>(frame);
-  let nonBlack: u32 = 0;
-  for (let i: u32 = 0; i < CANVAS_WIDTH * CANVAS_HEIGHT; i++) {
-    if (pixels[i].r != 0 || pixels[i].g != 0 || pixels[i].b != 0) nonBlack++;
-  }
+  const nonBlack: u32 = <u32>shot.nonBlack();
 
   // 8. per-sprite checks: each centre must be its own cell's colour. The count
   //    alone would pass if every sprite sampled the same cell.
@@ -355,11 +340,10 @@ export function _start_game(): void {
   for (let i = 0; i < SPRITES; i++) {
     const cx = <u32>(i * SPRITE_PITCH + <i32>SPRITE_SIZE / 2);
     const cy: u32 = <u32>SPRITE_SIZE / 2;
-    const at = cy * CANVAS_WIDTH + cx;
     const c = CELL_COLOURS[<i32>i];
-    const r = pixels[at].r;
-    const g = pixels[at].g;
-    const b = pixels[at].b;
+    const r = shot.channelAt(<i32>cx, <i32>cy, 0);
+    const g = shot.channelAt(<i32>cx, <i32>cy, 1);
+    const b = shot.channelAt(<i32>cx, <i32>cy, 2);
     const close = (abs(<i32>r - <i32>c[0]) <= 3) && (abs(<i32>g - <i32>c[1]) <= 3) &&
       (abs(<i32>b - <i32>c[2]) <= 3);
     if (!close) {

@@ -41,14 +41,7 @@ import {
   resReadFile,
   RuntimeSession,
 } from "tension-framework";
-import {
-  attach as inputAttach,
-  close as inputClose,
-  Kind as InputKind,
-  InputState,
-  open as inputOpen,
-  state as inputState,
-} from "tension-framework/assembly/input";
+import { close as inputClose, Snapshot } from "tension-framework/assembly/input";
 import { windowInfo, windowRequest } from "tension-framework/assembly/platform";
 
 import {
@@ -227,11 +220,18 @@ class App {
   private exitReason: string = "the frame bound was reached";
 
   // --- input ---------------------------------------------------------------
-  inputHandle: i32 = 0;
+  /**
+   * The input record, its buffer and its edge latch, in one object.
+   *
+   * What used to be here: a `memory.data(96, 8)` block, `load<u32>(ptr + 16 + …)`
+   * for the held-key set with the `16` written out in the app, a `Uint32Array`
+   * copy of that set for edge detection, and a latch call at the end of every
+   * frame that had to stay in step with the read at the start. Three of those
+   * four were places to be wrong in the same way, and none of them was this
+   * app's business.
+   */
+  input: Snapshot = new Snapshot(0);
   inputReady: bool = false;
-  stateBuffer: usize = 0;
-  /** Previous frame's held keys, for edge detection. */
-  prevKeys: Uint32Array = new Uint32Array(8);
   /** Accumulated wheel motion; the 2D adapter reports a float delta. */
   wheelCarry: f32 = 0.0;
   lastMouseX: i32 = -1;
@@ -243,7 +243,6 @@ class App {
   /** Where the last click landed, consumed by the hit tests in `draw`. */
   clickX: i32 = -1;
   clickY: i32 = -1;
-  prevButtons: u32 = 0;
 
   /** Hit rectangles recorded during a draw, consumed by the next click. */
   tocHitY: i32[] = [];
@@ -455,21 +454,14 @@ class App {
    * the mouse and keyboard arrived.
    */
   setupInput(): void {
-    this.stateBuffer = memory.data(96, 8); // input STATE_SIZE
-    const handle = inputOpen(0);
-    if (handle <= 0) return;
-    this.inputHandle = handle;
-    if (inputAttach(handle, InputKind.OwnSurface, 0, 0) == 0) {
-      this.inputReady = true;
-    }
+    this.input = Snapshot.open();
+    if (this.input.handle > 0 && this.input.attach()) this.inputReady = true;
   }
 
   /** Retry the attach; called once per frame until it succeeds. */
   pollAttach(): void {
-    if (this.inputReady || this.inputHandle <= 0) return;
-    if (inputAttach(this.inputHandle, InputKind.OwnSurface, 0, 0) == 0) {
-      this.inputReady = true;
-    }
+    if (this.inputReady) return;
+    if (this.input.attach()) this.inputReady = true;
   }
 
   // ── the loop ────────────────────────────────────────────────────────────
@@ -528,7 +520,7 @@ class App {
   }
 
   teardown(): void {
-    if (this.inputHandle > 0) inputClose(this.inputHandle);
+    if (this.input.handle > 0) inputClose(this.input.handle);
     if (this.canvas!.isValid()) this.canvas!.close();
     RuntimeSession.close();
     // Said out loud, because "the window closed" and "the process died" look
@@ -540,34 +532,21 @@ class App {
 
   // ── input ───────────────────────────────────────────────────────────────
 
-  /** Read the input record, if the capability is up, into `stateBuffer`. */
+  /** Read this frame's record. `Snapshot` latches the previous set itself. */
   private readState(): bool {
     if (!this.inputReady) return false;
-    return inputState(this.inputHandle, this.stateBuffer) > 0;
+    return this.input.read();
   }
 
-  /** Whether a scancode is held right now (reads `stateBuffer` in place). */
-  private held(scancode: u32): bool {
-    if (scancode >= 256) return false;
-    // `STATE_KEYS_OFFSET` is 16 and the set is 8 words.
-    const at: usize = this.stateBuffer + 16 + <usize>((scancode >> 5) * 4);
-    return (load<u32>(at) & (1 << (scancode & 31))) != 0;
-  }
-
-  /** A key that went down since the last frame. */
+  /**
+   * A key that went down since the last frame.
+   *
+   * `pressed` reads `held`-in-the-previous-frame from the snapshot's own latch,
+   * so the edge is decided where the record is read rather than by a copy this
+   * app has to remember to take.
+   */
   private pressed(scancode: u32): bool {
-    if (scancode >= 256) return false;
-    const word: i32 = <i32>(scancode >> 5);
-    const bit: u32 = 1 << (scancode & 31);
-    return (this.prevKeys[word] & bit) == 0 && this.held(scancode);
-  }
-
-  /** Snapshot the key set for the next frame's edge detection. */
-  private latchKeys(): void {
-    if (!this.inputReady) return;
-    for (let i: i32 = 0; i < 8; i++) {
-      this.prevKeys[i] = load<u32>(this.stateBuffer + 16 + <usize>(i * 4));
-    }
+    return this.input.pressed(scancode);
   }
 
   handleInput(): void {
@@ -577,7 +556,7 @@ class App {
       return;
     }
 
-    const state = InputState.read(this.stateBuffer);
+    const state = this.input;
 
     // Resolve a changed query before anything reads `results` — the search bar's
     // count and the results pane both come from it.
@@ -601,7 +580,7 @@ class App {
     this.lastMouseY = state.mouseY;
     const buttons = state.mouseButtons;
     this.lastButtons = buttons;
-    const justPressed: bool = (buttons & 1) != 0 && (this.prevButtons & 1) == 0;
+    const justPressed: bool = state.buttonPressed(1);
     if (justPressed) {
       this.clickX = state.mouseX;
       this.clickY = state.mouseY;
@@ -654,9 +633,6 @@ class App {
     }
 
     if (justPressed) this.doClick(state.mouseX, state.mouseY);
-
-    this.prevButtons = buttons;
-    this.latchKeys();
   }
 
   /** The visible height of the content pane. */

@@ -12,12 +12,13 @@
 // rebuilds and restarts the game on its own.
 
 import {
+  Bytes,
   Canvas,
   ConfigBuilder,
   Frame,
   print,
+  RecordBuffer,
   RuntimeSession,
-  SpriteRecord,
 } from "tension-framework";
 // `platform` is imported by path because the barrel does not re-export it: it is
 // the host's window bus, not a capability, and a guest that only wants a canvas
@@ -50,13 +51,6 @@ const HEADLESS_FRAMES: i32 = 240;
 /// The atlas, as the volume presents it. `assets/` is packed at the volume's
 /// root, so `assets/sprites.iwi` is `/sprites.iwi` at run time.
 const SHEET: string = "/sprites.iwi";
-
-/// The bytes one record array needs, from the type rather than from a constant:
-/// `sizeof` is the record's own answer to "how big am I".
-const RECORDS_BYTES: usize = <usize>SPRITES * <usize>sizeof<SpriteRecord>();
-
-/// The pipeline graph, 584 bytes, emitted by the host that will run this guest.
-const BLOB_SIZE: u32 = 584;
 
 function fail(what: string): void {
   print("starter: " + what);
@@ -99,9 +93,8 @@ export function _start_game(): void {
   // The blob is compiled in (a guest cannot read a file at run time) and it must
   // be the blob this adapter carries modules for: any other bytes are -ENOSYS
   // here, which is the whole reason `tension dev` emits it from the host.
-  const blob: usize = memory.data(<i32>BLOB_SIZE, 8);
-  memory.copy(blob, changetype<usize>(DEFAULT_2D_BLOB.dataStart), BLOB_SIZE);
-  const pipe = canvas.pipelineGraph(blob, BLOB_SIZE);
+  const blob = Bytes.ofArray(DEFAULT_2D_BLOB);
+  const pipe = canvas.pipelineGraph(blob);
   if (pipe < 0) {
     fail("set_pipeline -> " + pipe.toString() +
       " (the blob does not match this adapter)");
@@ -121,10 +114,10 @@ export function _start_game(): void {
   }
 
   // ── 5. the sprites ────────────────────────────────────────────────────────
-  // One run of records, reached through a view: the compiler supplies the stride
-  // and every field offset, so nothing here does that arithmetic.
-  const buffer: usize = memory.data(<i32>RECORDS_BYTES, 8);
-  let records = changetype<@unmanaged [SpriteRecord *]>(buffer);
+  // One run of records, owned by a `RecordBuffer`: it holds the memory and the
+  // count, so `submit` sends exactly what was pushed and nothing here does
+  // pointer arithmetic.
+  const records = RecordBuffer.create(SPRITES);
 
   // One `Frame` per cell, built once. A Frame per sprite per frame would be an
   // allocation per frame, and the 2D runtime is explicitly free of those.
@@ -154,9 +147,10 @@ export function _start_game(): void {
   let drawn: i32 = 0;
 
   while (budget != 0) {
+    records.reset();
     for (let i = 0; i < SPRITES; i++) {
-      // The record fills itself, and its receiver is the record in the buffer.
-      records[i].set(xs[i], ys[i], frames[i], <u32>i, 0, 0);
+      // The record fills itself, and the buffer is what owns it.
+      records.pushFrame(xs[i], ys[i], frames[i], <u32>i, 0, 0);
 
       xs[i] += dx[i];
       ys[i] += dy[i];
@@ -166,7 +160,7 @@ export function _start_game(): void {
       if (ys[i] > maxY) { ys[i] = maxY; dy[i] = -dy[i]; }
     }
 
-    const accepted = canvas.submit(pipe, records, <u32>SPRITES, 0);
+    const accepted = canvas.submit(pipe, records, 0);
     if (accepted != SPRITES) {
       fail("submit -> " + accepted.toString() + ", expected " + SPRITES.toString());
     }

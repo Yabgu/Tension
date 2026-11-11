@@ -244,3 +244,210 @@ export class InputState {
     return n < 32 && (load<u32>(padPtr + PAD_BUTTONS_OFFSET) & (1 << n)) != 0;
   }
 }
+
+// --- the safe read ---------------------------------------------------------
+
+/**
+ * A frame's input, read through a buffer this class owns.
+ *
+ * ## What it replaces
+ *
+ * Every guest that reads input wrote the same four things by hand: a
+ * `memory.data(96, 8)` block, a call to `state(handle, ptr)`, `load<u32>` at
+ * `ptr + 16 + (scancode >> 5) * 4` for the held-key set, and a copy of that set
+ * from last frame for edge detection. `apps/docs` does exactly this, with the
+ * `16` written out in the app because the constant lives in this file.
+ *
+ * Three of those four are places to be wrong the same way — the offset, the
+ * bitmap width, the order of the latch — and none of them is the guest's
+ * business. `Snapshot` owns the block, decodes with this file's own offsets, and
+ * keeps the previous frame's key set so `pressed` is a method rather than a
+ * convention.
+ *
+ * ## `read()` consumes the motion delta
+ *
+ * That is the capability's contract (`state()` at the top of this file): the
+ * delta accumulated since the previous call. So `read()` once per frame, and
+ * `mouseDx`/`mouseDy` are what happened since the last `read()` — not since the
+ * last `mouseX` read, because there is no such thing.
+ *
+ * ## Edges
+ *
+ * `read()` latches the frame it is about to replace *before* the call, so
+ * `pressed` is "held now, not held at the last `read`". A first `read` sees a
+ * zeroed previous set, so the first frame reports no spurious presses — which is
+ * the behaviour a windowed app needs, where input attaches several frames after
+ * the first draw.
+ *
+ * One allocation per frame: none. The block and the latch are allocated in the
+ * constructor.
+ */
+export class Snapshot {
+  /** The 96-byte state record. `dataStart` is the address; nothing else is. */
+  private block: Uint8Array;
+  /** Last frame's 256-bit key set, for `pressed`/`released`. */
+  private previousKeys: Uint32Array;
+  /** Last frame's button mask. */
+  private previousButtons: u32 = 0;
+  /** The capability's handle, or `<= 0` for one that never opened. */
+  handle: i32;
+
+  // --- the record, decoded ------------------------------------------------
+  version: u32 = 0;
+  flags: u32 = 0;
+  padsPresent: u32 = 0;
+  mouseButtons: u32 = 0;
+  mouseDx: i32 = 0;
+  mouseDy: i32 = 0;
+  mouseDxf: f32 = 0;
+  mouseDyf: f32 = 0;
+  mouseX: i32 = 0;
+  mouseY: i32 = 0;
+  wheelX: f32 = 0;
+  wheelY: f32 = 0;
+  seq: u64 = 0;
+  /** False until a `read()` has succeeded. */
+  valid: bool = false;
+
+  constructor(handle: i32) {
+    this.handle = handle;
+    this.block = new Uint8Array(<i32>STATE_SIZE);
+    this.previousKeys = new Uint32Array(8);
+  }
+
+  /**
+   * Open the capability and take a handle.
+   *
+   * A refusal answers a snapshot with `handle <= 0`: every `read` fails, every
+   * query answers false, and a caller draws without input rather than branching
+   * on an errno. `open` takes no meaningful flags in v7 — the host owns the
+   * window — so there is nothing to pass.
+   */
+  static open(): Snapshot {
+    return new Snapshot(openRaw(0));
+  }
+
+  /** Take a snapshot of an already-open handle, for a caller that owns one. */
+  static from(handle: i32): Snapshot {
+    return new Snapshot(handle);
+  }
+
+  /** Release the handle. The SDL subsystem stays up for the next `open`. */
+  close(): i32 {
+    const rc = closeRaw(this.handle);
+    this.valid = false;
+    return rc;
+  }
+
+  /**
+   * Whether this handle is attached to the host's window.
+   *
+   * `attach` is the verb behind it, and it may answer `-ENODEV` for a few frames
+   * while the window comes up — the input layer joins the window rather than
+   * owning one. So a caller retries rather than treating a failure as fatal;
+   * `-EBUSY` from an already-attached handle is the same state, said differently.
+   */
+  attach(): bool {
+    if (this.handle <= 0) return false;
+    const rc = attachRaw(this.handle, <i32>Kind.OwnSurface, 0, 0);
+    return rc == 0 || rc == -16; // 0 attached, -EBUSY already attached
+  }
+
+  /**
+   * Fill the record from the capability. Returns false when there is nothing to
+   * read — no handle, nothing attached, or a refused record — in which case the
+   * decoded fields keep the previous read's values and `valid` is false.
+   */
+  read(): bool {
+    if (this.handle <= 0) {
+      this.valid = false;
+      return false;
+    }
+    // Latch the frame that is about to be replaced, before it is replaced.
+    // Reading the latch out of the live block after the call would compare the
+    // new set with itself and report no edges at all.
+    for (let i: i32 = 0; i < 8; i++) this.previousKeys[i] = this.keyWord(i);
+    this.previousButtons = this.mouseButtons;
+
+    const got: i32 = stateRaw(this.handle, <u32>this.block.dataStart, <i32>STATE_SIZE);
+    if (got <= 0) {
+      this.valid = false;
+      return false;
+    }
+
+    const at = this.block.dataStart;
+    this.version = load<u32>(at + STATE_VERSION_OFFSET);
+    this.flags = load<u32>(at + STATE_FLAGS_OFFSET);
+    this.padsPresent = load<u32>(at + STATE_PADS_OFFSET);
+    this.mouseButtons = load<u32>(at + STATE_BUTTONS_OFFSET);
+    this.mouseDx = load<i32>(at + STATE_MOUSE_DX_OFFSET);
+    this.mouseDy = load<i32>(at + STATE_MOUSE_DY_OFFSET);
+    this.mouseDxf = load<f32>(at + STATE_MOUSE_DXF_OFFSET);
+    this.mouseDyf = load<f32>(at + STATE_MOUSE_DYF_OFFSET);
+    this.mouseX = load<i32>(at + STATE_MOUSE_X_OFFSET);
+    this.mouseY = load<i32>(at + STATE_MOUSE_Y_OFFSET);
+    this.wheelX = load<f32>(at + STATE_WHEEL_X_OFFSET);
+    this.wheelY = load<f32>(at + STATE_WHEEL_Y_OFFSET);
+    this.seq = load<u64>(at + STATE_SEQ_OFFSET);
+    this.valid = true;
+    return true;
+  }
+
+  // --- queries -------------------------------------------------------------
+
+  attached(): bool {
+    return this.valid && (this.flags & STATE_ATTACHED) != 0;
+  }
+
+  focused(): bool {
+    return this.valid && (this.flags & STATE_FOCUSED) != 0;
+  }
+
+  relative(): bool {
+    return this.valid && (this.flags & STATE_RELATIVE) != 0;
+  }
+
+  /** Whether one scancode (SDL numbering) is held in the current frame. */
+  held(scancode: u32): bool {
+    if (!this.valid || scancode >= 256) return false;
+    return (this.keyWord(<i32>(scancode >> 5)) & (1 << (scancode & 31))) != 0;
+  }
+
+  /** Whether it went down since the previous `read`. */
+  pressed(scancode: u32): bool {
+    if (!this.valid || scancode >= 256) return false;
+    const word = <i32>(scancode >> 5);
+    const bit: u32 = 1 << (scancode & 31);
+    return (this.previousKeys[word] & bit) == 0 && (this.keyWord(word) & bit) != 0;
+  }
+
+  /** Whether it came up since the previous `read`. */
+  released(scancode: u32): bool {
+    if (!this.valid || scancode >= 256) return false;
+    const word = <i32>(scancode >> 5);
+    const bit: u32 = 1 << (scancode & 31);
+    return (this.previousKeys[word] & bit) != 0 && (this.keyWord(word) & bit) == 0;
+  }
+
+  /** Whether SDL mouse button `n` (1-based, as SDL numbers them) is held. */
+  buttonHeld(n: u32): bool {
+    return this.valid && n >= 1 && n <= 32 && (this.mouseButtons & (1 << (n - 1))) != 0;
+  }
+
+  /** Whether it went down since the previous `read`. */
+  buttonPressed(n: u32): bool {
+    if (!this.valid || n < 1 || n > 32) return false;
+    const bit: u32 = 1 << (n - 1);
+    return (this.mouseButtons & bit) != 0 && (this.previousButtons & bit) == 0;
+  }
+
+  /** The data address, for the verbs. Framework use; see `Bytes.address`. */
+  address(): usize {
+    return this.block.dataStart;
+  }
+
+  /** One 32-bit word of the held-key set, from the record. */
+  private keyWord(index: i32): u32 {
+    return load<u32>(this.block.dataStart + STATE_KEYS_OFFSET + <usize>(index * 4));
+  }
+}

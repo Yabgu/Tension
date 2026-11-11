@@ -31,13 +31,21 @@
 //
 // ## Static buffers, and why they are safe
 //
-// Two verbs take a destination the guest writes: `submit` reads a 12-byte
-// header the caller must lay out, and `info` writes a 24-byte record. Both use
-// a module-level static block rather than allocating per call. 2D is a
-// capacity-1 capability — a second `open` is `-EBUSY` (`tension_2d.h:52-54`) —
-// so two Canvases never talk to one adapter at once, and neither `submit` nor
-// `info` is re-entrant (`info` is `REENTRANT_READONLY`: it may run inside a
-// callback, but nothing else in this class runs there).
+// Two verbs cross a destination: `submit` reads a 12-byte header and `info`
+// writes a 24-byte record. Both use a module-level static block rather than
+// allocating per call. 2D is a capacity-1 capability — a second `open` is
+// `-EBUSY` (`tension_2d.h:52-54`) — so two Canvases never talk to one adapter at
+// once, and neither `submit` nor `info` is re-entrant (`info` is
+// `REENTRANT_READONLY`: it may run inside a callback, but nothing else in this
+// class runs there).
+//
+// **The submit header is this class's, not the caller's.** It used to be a
+// `(ptr, count)` pair the guest laid out itself, which meant the header and the
+// records it described were two values that could disagree. `submit` now takes a
+// `RecordBuffer` and writes the header from that buffer's own count, so the
+// count in the header is the count of the records behind it by construction.
+// The two buffers a guest still owns — records and pixels — are `RecordBuffer`
+// and `Pixels`, and neither hands out an address (see `buffers.ts`).
 //
 // ## What is deliberately not here
 //
@@ -59,7 +67,9 @@ import {
   PIPE_PRESET_MIN,
   TEX_RGBA8,
 } from "./constants";
-import { HEADER_SIZE, Info, Rgba, SpriteRecord, SubmitHeader } from "./types";
+import { Bytes } from "../bytes";
+import { Pixels, RecordBuffer } from "./buffers";
+import { HEADER_SIZE, Info, SubmitHeader } from "./types";
 import {
   closeRaw,
   infoRaw,
@@ -258,9 +268,10 @@ export class Canvas {
    * compile through the host. `scripts/build-2d-guest.mjs` emits the blob as a
    * TypeScript literal for exactly this reason.
    */
-  pipelineGraph(blob: usize, len: u32): i32 {
+  pipelineGraph(blob: Bytes): i32 {
     if (!this.isValid()) return this.refuse(ERR_INVAL);
-    return this.record(setPipelineRaw(this.handle, i32(blob), i32(len)));
+    if (blob.isEmpty) return this.refuse(ERR_INVAL);
+    return this.record(setPipelineRaw(this.handle, i32(blob.address()), i32(blob.length)));
   }
 
   // --- textures ------------------------------------------------------------
@@ -277,8 +288,8 @@ export class Canvas {
    * v1 reads **IWI** (`IWI1`) with interleaved 8-bit RGB or RGBA; anything else
    * is `-ENOSYS`, not a guess (`tension_2d.h:216-222`).
    */
-  loadTexture(bytes: usize, len: u32): i32 {
-    return this.loadTextureAs(bytes, len, TEX_RGBA8);
+  loadTexture(bytes: Bytes): i32 {
+    return this.loadTextureAs(bytes, TEX_RGBA8);
   }
 
   /**
@@ -286,9 +297,13 @@ export class Canvas {
    * format, `-ENOSYS` for a container this build does not serve
    * (`tension_2d.h:210-214`).
    */
-  loadTextureAs(bytes: usize, len: u32, format: i32): i32 {
+  loadTextureAs(bytes: Bytes, format: i32): i32 {
     if (!this.isValid()) return this.refuse(ERR_INVAL);
-    return this.record(textureLoadRaw(this.handle, i32(bytes), i32(len), format));
+    // An empty source is `-EINVAL` at the adapter, and there is no reason to
+    // cross the boundary to be told what this object already knows.
+    if (bytes.isEmpty) return this.refuse(ERR_INVAL);
+    return this.record(textureLoadRaw(this.handle, i32(bytes.address()), i32(bytes.length),
+                                      format));
   }
 
   /**
@@ -308,7 +323,7 @@ export class Canvas {
     if (!this.isValid()) return this.refuse(ERR_INVAL);
     const bytes = resReadFile(path);
     if (bytes == null) return this.refuse(ERR_NOENT);
-    return this.loadTextureAs(bytes.dataStart, <u32>bytes.length, TEX_RGBA8);
+    return this.loadTextureAs(Bytes.viewOf(bytes), TEX_RGBA8);
   }
 
   /**
@@ -327,27 +342,40 @@ export class Canvas {
   // --- drawing -------------------------------------------------------------
 
   /**
-   * Append `count` records to bucket `bucket` for the next `present`; returns
-   * how many were accepted.
+   * Append the buffer's records to bucket `bucket` for the next `present`;
+   * returns how many were accepted.
    *
-   * The 12-byte `tension_2d_submit_hdr` is written here, from `count` and the
-   * records' own stride — a caller that could pass a stride could submit
-   * records the adapter cannot decode (`types.ts`, `SubmitHeader`). One
-   * `guest_read` copies the header and the whole array, so the records must be
-   * contiguous in guest memory, which is what `@unmanaged [SpriteRecord *]`
-   * says they are.
+   * **The count is the buffer's, not a parameter.** `submit(pipe, records, 4)`
+   * on a buffer holding ten records used to be a legal call that drew four, and
+   * the pointer and its count were two values that could disagree. Now the only
+   * way to submit n records is to have pushed n.
    *
-   * A short bucket answers `-ENOSPC` and the caller splits and re-submits —
-   * which is why a count comes back rather than a status. `-EINVAL` for a bad
-   * handle or header, `-ENOENT` for an unknown `pipe`.
+   * The 12-byte `tension_2d_submit_hdr` is written here, from that count and the
+   * records' own stride — a caller that could pass a stride could submit records
+   * the adapter cannot decode (`types.ts`, `SubmitHeader`). One `guest_read`
+   * copies the header and the whole array, so the records must be contiguous,
+   * which is a property of `RecordBuffer` rather than a promise from a caller.
+   *
+   * A short bucket answers `-ENOSPC` and the caller splits and re-submits — which
+   * is why a count comes back rather than a status. `-EINVAL` for a bad handle or
+   * header, `-ENOENT` for an unknown `pipe`.
+   *
+   * **Not a partial accept.** The adapter's budget is 4096 records summed across
+   * every bucket, and a submit that would exceed it is refused whole
+   * (`render2d/device.rs:506`, and the C++ reference at `render.cpp:672`). A
+   * caller that must draw regardless watches `RecordBuffer.dropped` and pages
+   * its own content; it does not get half a frame.
    *
    * The header block is shared by every Canvas in the module; see "Static
    * buffers" at the top.
    */
-  submit(pipe: i32, records: @unmanaged [SpriteRecord *], count: u32, bucket: i32 = 0): i32 {
+  submit(pipe: i32, records: RecordBuffer, bucket: i32 = 0): i32 {
     if (!this.isValid()) return this.refuse(ERR_INVAL);
+    const count = records.count;
+    if (count <= 0) return 0;
+    let view = records.view();
     let header = changetype<@unmanaged [SubmitHeader *]>(SUBMIT_HEADER);
-    header[0].set(records, count);
+    header[0].set(view, <u32>count);
     return this.record(submitRaw(this.handle, pipe, i32(SUBMIT_HEADER), bucket));
   }
 
@@ -414,23 +442,29 @@ export class Canvas {
   }
 
   /**
-   * Copy the last presented frame into `out` as RGBA8, and return the bytes
+   * Copy the last presented frame into `into` as RGBA8, and return the bytes
    * written (`width * height * 4`).
    *
-   * The capacity is checked here, before the verb: a buffer smaller than
-   * `frameBytes(width, height)` is `-EINVAL`, not the `-ENOSPC` the adapter
-   * would produce, because there is no reason to cross the boundary to learn
-   * something this object already knows. `-ENODEV` means nothing has been
+   * **The size is the destination's.** `Pixels` knows the `width` x `height` it
+   * was built for, so the capacity is checked here, before the verb: a `Pixels`
+   * smaller than `frameBytes(width, height)` is `-EINVAL`, not the `-ENOSPC` the
+   * adapter would produce, because there is no reason to cross the boundary to
+   * learn something this object already knows. `-ENODEV` means nothing has been
    * presented yet; `-EIO` means the download failed
    * (`tension_2d.h:258-268`).
    *
+   * A guest that passes the wrong-sized `Pixels` gets a refusal rather than a
+   * short frame, which is the improvement: the old signature took a byte count
+   * beside the pointer, and the two could describe different buffers.
+   *
    * Not re-entrant: it waits for the GPU, which no callback may do.
    */
-  screenshot(out: @unmanaged [Rgba *], bytes: u32): i32 {
+  screenshot(into: Pixels): i32 {
     if (!this.isValid()) return this.refuse(ERR_INVAL);
     const need = frameBytes(this.width, this.height);
-    if (need == 0 || bytes < need) return this.refuse(ERR_INVAL);
-    return this.record(screenshotRaw(this.handle, u32(<usize>out), i32(bytes)));
+    const have = into.byteLength();
+    if (need == 0 || have < <i32>need) return this.refuse(ERR_INVAL);
+    return this.record(screenshotRaw(this.handle, u32(into.address()), i32(have)));
   }
 
   // --- the errno record ----------------------------------------------------

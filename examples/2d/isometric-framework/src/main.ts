@@ -24,9 +24,8 @@ import { arg, argCount, Canvas, ConfigBuilder, print, RuntimeSession } from "ten
 import {
   Composite,
   IsometricWorld,
-  RECORD_SIZE,
-  Rgba,
-  SpriteRecord,
+  Pixels,
+  RecordBuffer,
   Tileset,
 } from "tension-framework";
 // The host's window bus, by path: the barrel does not re-export it. `windowInfo`
@@ -42,7 +41,6 @@ const FRAME_BYTES: u32 = scene.CANVAS_WIDTH * scene.CANVAS_HEIGHT * 4;
 /// (36 ground + 2 tree slices + 3 character layers + 1 lantern); 64 leaves room
 /// for a scene that grows, and `emit` is checked against `recordCount` below.
 const MAX_RECORDS: i32 = 64;
-const RECORD_BYTES: u32 = <u32>MAX_RECORDS * RECORD_SIZE;
 
 let failures: i32 = 0;
 
@@ -74,7 +72,7 @@ function hex2(v: u8): string {
   return (v < 16 ? "0" : "") + v.toString(16);
 }
 
-function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
+function emitFrame(name: string, frame: Pixels, bytes: u32): void {
   // A row is 128 bytes = 32 pixels; the chunk boundary is a pixel boundary
   // because `bytes` is `width * height * 4` and 128 is a multiple of 4.
   const chunk: u32 = 128;
@@ -83,8 +81,8 @@ function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
     let line = "FRAME " + name + " " + base.toString() + " ";
     const end: u32 = min<u32>(base + chunk, bytes);
     for (let i: u32 = base; i < end; i += 4) {
-      const px = i >> 2;
-      line += hex2(frame[px].r) + hex2(frame[px].g) + hex2(frame[px].b) + hex2(frame[px].a);
+      line += hex2(frame.byteAt(<i32>i)) + hex2(frame.byteAt(<i32>(i + 1))) +
+        hex2(frame.byteAt(<i32>(i + 2))) + hex2(frame.byteAt(<i32>(i + 3)));
     }
     print(line);
   }
@@ -92,9 +90,8 @@ function emitFrame(name: string, frame: @unmanaged [Rgba *], bytes: u32): void {
 }
 
 /// A pixel's colour, by channel name rather than by byte offset into it.
-function colourAt(frame: @unmanaged [Rgba *], x: i32, y: i32): u8[] {
-  const i = y * <i32>scene.CANVAS_WIDTH + x;
-  return [frame[i].r, frame[i].g, frame[i].b];
+function colourAt(frame: Pixels, x: i32, y: i32): u8[] {
+  return [frame.channelAt(x, y, 0), frame.channelAt(x, y, 1), frame.channelAt(x, y, 2)];
 }
 
 function same(a: u8[], b: u8[], tolerance: i32 = 2): bool {
@@ -265,11 +262,9 @@ export function _start_game(): void {
   tileset.define("hair", tileset.frameForPixel(scene.SHEET_HAIR_X, scene.SHEET_CHAR_Y, <u32>scene.CHAR_W, <u32>scene.CHAR_H));
   tileset.define("backpack", tileset.frameForPixel(scene.SHEET_BACKPACK_X, scene.SHEET_CHAR_Y, <u32>scene.CHAR_W, <u32>scene.CHAR_H));
 
-  const frameBuf: usize = memory.data(<usize>FRAME_BYTES, 8);
-  // The same block, named twice: bytes for the verb, pixels for the probes.
-  // `let`, not `const` — a const view in a scope that also has an integer const
-  // crashes the compiler (types.ts has the repro).
-  let frame = changetype<@unmanaged [Rgba *]>(frameBuf);
+  // The readback, sized from the canvas that fills it. `screenshot` refuses a
+  // destination that is too small, so the two cannot disagree.
+  const frame = Pixels.create(<i32>scene.CANVAS_WIDTH, <i32>scene.CANVAS_HEIGHT);
 
   print(
     "sort keys: crown " + scene.TREE_CROWN_SORT.toString() +
@@ -289,27 +284,16 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    const records: usize = memory.data(<usize>RECORD_BYTES, 8);
-
-    // The buffer as `[SpriteRecord *]`: a pointer to a run of records, which is
-    // what the frame is. Nothing here multiplies by a stride.
-    //
-    // `let`, not `const`, and that is a compiler constraint rather than a
-    // preference: a `const` whose type is a pointer view, in a scope that also
-    // declares an integer `const`, crashes `tensionscript` (0.13.2 and 0.14.1:
-    // `AssertionError` in `setConstantIntegerValue`). A view is a `let` away
-    // from working, and nothing here reassigns it.
-    let out = changetype<@unmanaged [SpriteRecord *]>(records);
-    const written = world.emit(out);
+    const buffer = RecordBuffer.create(MAX_RECORDS);
+    const written = world.emit(buffer);
     if (written != count) {
       print("FAIL: emit(" + name + ") wrote " + written.toString() + ", counted " + count.toString());
       failures++;
       break;
     }
-    // `Canvas.submit` writes the header from the same view the records went
-    // into: the record contract is one thing, and splitting its two halves
-    // across two modules is how they drift.
-    const accepted = canvas.submit(pipe, out, written, 0);
+    // `Canvas.submit` writes the header from the buffer's own count, so the
+    // number it sends and the number `emit` reported are the same value.
+    const accepted = canvas.submit(pipe, buffer, 0);
     if (accepted != <i32>written) {
       print("FAIL: submit(" + name + ") -> " + accepted.toString() + ", expected " + written.toString());
       failures++;
@@ -320,7 +304,7 @@ export function _start_game(): void {
       failures++;
       break;
     }
-    const got = canvas.screenshot(frame, FRAME_BYTES);
+    const got = canvas.screenshot(frame);
     if (got != <i32>FRAME_BYTES) {
       print("FAIL: screenshot(" + name + ") -> " + got.toString());
       failures++;

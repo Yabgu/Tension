@@ -46,7 +46,7 @@
 // graph. So a character is a `u8` and rendering allocates nothing: a frame draws
 // ~2,500 glyphs and none of them creates an object.
 
-import { Canvas, SpriteRecord } from "tension-framework";
+import { Canvas, RecordBuffer } from "tension-framework";
 
 // ── the atlas geometry, from `assets/ui.json` ───────────────────────────────
 //
@@ -142,9 +142,6 @@ export function hlineCost(w: i32): i32 {
   return w <= 0 ? 0 : (w + CELL_W - 1) / CELL_W;
 }
 
-/** One record's size, fixed at compile time so `memory.data` accepts it. */
-const RECORD_BYTES: usize = sizeof<SpriteRecord>();
-
 /**
  * A frame's worth of sprite records, and the rules for filling them.
  *
@@ -153,23 +150,38 @@ const RECORD_BYTES: usize = sizeof<SpriteRecord>();
  * and nothing else.
  */
 export class Painter {
-  private base: usize = memory.data(<i32>MAX_RECORDS * <i32>RECORD_BYTES, 8);
+  /**
+   * The records, and the count that describes them.
+   *
+   * `RecordBuffer` owns both, so `count`/`dropped` below are this class's own
+   * view of the same numbers rather than a second pair travelling beside a
+   * pointer. The budget is still `MAX_RECORDS`: the buffer's capacity, and the
+   * value `full` compares against, are the same constant.
+   */
+  private buf: RecordBuffer = RecordBuffer.create(MAX_RECORDS);
 
-  /** Records emitted this frame. */
-  count: i32 = 0;
+  /**
+   * Records emitted this frame — read from the buffer, not tracked beside it.
+   *
+   * A separate counter was a second answer to "how many records are there?", and
+   * the two could disagree: `submit` used the counter while the records lived in
+   * the buffer, so a `push` that was refused showed up in one and not the other.
+   */
+  get count(): i32 {
+    return this.buf.count;
+  }
+
   /** Records the clip refused because the budget was full. Drawn as a warning. */
-  dropped: i32 = 0;
+  get dropped(): i32 {
+    return this.buf.dropped;
+  }
+
   /** Draw order. Later is on top, because the host sorts by this. */
   private order: u32 = 0;
 
   reset(): void {
-    this.count = 0;
-    this.dropped = 0;
+    this.buf.reset();
     this.order = 0;
-  }
-
-  private view(): @unmanaged [SpriteRecord *] {
-    return changetype<@unmanaged [SpriteRecord *]>(this.base);
   }
 
   /**
@@ -179,27 +191,16 @@ export class Painter {
    * the chrome (a stretched 1x1 becomes a panel, a divider, a button box).
    */
   sprite(x: i32, y: i32, w: i32, h: i32, cell: i32): void {
-    if (this.count >= MAX_RECORDS) { this.dropped++; return; }
     // A zero- or negative-sized quad is not a draw; skipping it keeps the
-    // record count honest.
+    // record count honest. The budget needs no check here: `push` refuses and
+    // counts a refusal itself, so there is one place that decides what "full"
+    // means and one place that reports it.
     if (w <= 0 || h <= 0) return;
 
     const cellX: i32 = (cell % GRID_COLS) * CELL_W;
     const cellY: i32 = (cell / GRID_COLS) * CELL_H;
 
-    const v = this.view();
-    const i = this.count++;
-    v[i].x = x;
-    v[i].y = y;
-    v[i].srcX = <u16>cellX;
-    v[i].srcY = <u16>cellY;
-    v[i].w = <u16>w;
-    v[i].h = <u16>h;
-    v[i].tex = 0;
-    v[i].sortKey = this.order++;
-    v[i].groupId = 0;
-    v[i].z = 0;
-    v[i].flags = 0;
+    this.buf.push(x, y, <u16>cellX, <u16>cellY, <u16>w, <u16>h, 0, this.order++, 0, 0);
   }
 
   /**
@@ -261,7 +262,6 @@ export class Painter {
   private glyph(code: i32, x: i32, y: i32, colour: i32, weight: i32,
                 clipTop: i32, clipBottom: i32): void {
     if (code < FIRST_CHAR || code > LAST_CHAR) return;
-    if (this.count >= MAX_RECORDS) { this.dropped++; return; }
 
     // Vertical clip, in whole pixels because source == destination here.
     let destY: i32 = y;
@@ -284,19 +284,8 @@ export class Painter {
     const cellX: i32 = (cell % GRID_COLS) * CELL_W;
     const cellY: i32 = (cell / GRID_COLS) * CELL_H;
 
-    const v = this.view();
-    const i = this.count++;
-    v[i].x = x;
-    v[i].y = destY;
-    v[i].srcX = <u16>cellX;
-    v[i].srcY = <u16>(cellY + srcTop);
-    v[i].w = <u16>CELL_W;
-    v[i].h = <u16>destH;
-    v[i].tex = 0;
-    v[i].sortKey = this.order++;
-    v[i].groupId = 0;
-    v[i].z = 0;
-    v[i].flags = 0;
+    this.buf.push(x, destY, <u16>cellX, <u16>(cellY + srcTop), <u16>CELL_W,
+                  <u16>destH, 0, this.order++, 0, 0);
   }
 
   /**
@@ -337,13 +326,13 @@ export class Painter {
 
   /** Hand the frame to the canvas. `bucket` is the 2D renderer's z bucket. */
   submit(canvas: Canvas, pipe: i32): i32 {
-    if (this.count == 0) return 0;
-    return canvas.submit(pipe, this.view(), <u32>this.count, 0);
+    if (this.buf.count == 0) return 0;
+    return canvas.submit(pipe, this.buf, 0);
   }
 
   /** Whether the budget is exhausted — a caller can stop walking early. */
   get full(): bool {
-    return this.count >= MAX_RECORDS;
+    return this.buf.full();
   }
 }
 

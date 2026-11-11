@@ -17,7 +17,8 @@
 // enum, not because eight views are drawn today: entries beyond the ones you use
 // are zero and cost nothing.
 
-import { Frame, FACINGS, SpriteRecord } from "./types";
+import { RecordBuffer } from "./buffers";
+import { Frame, FACINGS } from "./types";
 import { Tileset } from "./tileset";
 
 class Layer {
@@ -92,18 +93,24 @@ export class Composite {
   }
 
   /**
-   * Write this composite's records at `out`, starting at `index`, positioned at
-   * (`x`,`y`). Returns how many were written.
+   * Append this composite's records to `into`, positioned at (`x`,`y`). Returns
+   * how many were appended.
+   *
+   * **No index parameter.** The buffer carries its own count, so the offset a
+   * caller used to track beside the pointer — `emitTo(out, n, …)` where `n` had
+   * to agree with everything written so far — is the buffer's business now. That
+   * agreement was never checked, and a composite emitted at the wrong `index`
+   * drew a character over another one.
    */
-  emitTo(out: @unmanaged [SpriteRecord *], index: i32, x: i32, y: i32): u32 {
+  emitInto(into: RecordBuffer, x: i32, y: i32): u32 {
     for (let i: i32 = 0; i < this.layers.length; i++) {
-      out[index + i].set(x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
+      into.pushFrame(x, y, this.layers[i].frame, this.sortKey, this.groupId, this.zOf(i));
     }
     return <u32>this.layers.length;
   }
 
-  /** `emitTo` at index 0 — the standalone use, when no world owns the buffer. */
-  emit(out: @unmanaged [SpriteRecord *], x: i32, y: i32): u32 {
-    return this.emitTo(out, 0, x, y);
+  /** `emitInto` — the standalone use, when no world owns the buffer. */
+  emit(into: RecordBuffer, x: i32, y: i32): u32 {
+    return this.emitInto(into, x, y);
   }
 }

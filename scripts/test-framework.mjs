@@ -252,6 +252,10 @@ runRefusalFixture('guest-drift-fixed.ts', 'guest-drift-fixed.wasm',
                   { message: DRIFT_MESSAGE, what: 'the drift check', session: true });
 
 runFixture('guest-ogre.ts', 'guest-ogre.wasm', ['--capability', stub]);
+// Gate Zero: the buffer wrappers hold across a collection, and their address is
+// the data rather than the object. No canvas, no display — the property is the
+// wrapper's. See the fixture's header for the trap this exists to keep buried.
+runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 runFixture('guest-verlet.ts', 'guest-verlet.wasm');
 runFixture('guest-physics-units.ts', 'guest-physics-units.wasm');
 

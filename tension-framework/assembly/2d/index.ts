@@ -6,13 +6,26 @@
 //   Canvas          one open handle: the verbs, the errno, `loadTextureFromRes`
 //   constants       the wire numbers, each citing its line of tension_2d.h
 //
-// and three types that turn game state into records:
+// and two buffers a guest owns:
+//
+//   RecordBuffer    a frame's records, and the count that describes them
+//   Pixels          a `screenshot` destination, and the questions a test asks
+//
+// three types that turn game state into records:
 //
 //   Tileset         pixels -> record fields (page + src rect)
 //   Composite       a character -> N records sharing a sort key and group
 //   IsometricWorld  tall art -> sliced records sorted by their bottom edge
 //
-// plus `types.ts`, which is the record layout all three write.
+// plus `types.ts`, which is the record layout all of them write.
+//
+// **No verb takes an address from a guest.** `Canvas.pipelineGraph`,
+// `loadTexture`, `submit` and `screenshot` take `Bytes`, `RecordBuffer` or
+// `Pixels`, and each of those holds the only `usize` involved. That is not
+// tidiness: a buffer addressed with `changetype<usize>(typedArray)` is the
+// *object*, 32 bytes before its data, so records written through it corrupt the
+// object that owns them and the collector traps on the next mark phase
+// (`bytes.ts` has the backtrace, `tests/guest-buffers.ts` keeps it buried).
 //
 // **`verbs.ts` is not exported.** Its nine `@external` declarations are the
 // wire, not the API: a guest calls `Canvas`, and the one verb that is not a
@@ -30,6 +43,7 @@
 // opinion.
 
 export * from "./types";
+export * from "./buffers";
 export * from "./constants";
 export * from "./canvas";
 export * from "./tileset";

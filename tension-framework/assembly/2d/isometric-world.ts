@@ -28,7 +28,8 @@
 // implementation of the same rule, and the two would eventually disagree about
 // which of two equal keys goes first.
 
-import { Frame, SpriteRecord } from "./types";
+import { RecordBuffer } from "./buffers";
+import { Frame } from "./types";
 import { Composite } from "./composite";
 import { Tileset } from "./tileset";
 
@@ -156,17 +157,19 @@ export class IsometricWorld {
    * order is stable across frames, which is what makes two submissions that
    * differ only in source order comparable.
    */
-  emit(out: @unmanaged [SpriteRecord *]): u32 {
-    let n: i32 = 0;
+  emit(into: RecordBuffer): u32 {
+    const start = into.count;
     for (let i: i32 = 0; i < this.statics.length; i++) {
       const p = this.statics[i];
-      out[n].set(p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
-      n++;
+      into.pushFrame(p.x, p.y, p.frame, p.sortKey, p.groupId, p.z);
     }
     for (let i: i32 = 0; i < this.actors.length; i++) {
       const a = this.actors[i];
-      n += <i32>a.composite.emitTo(out, n, a.x, a.y);
+      a.composite.emitInto(into, a.x, a.y);
     }
-    return <u32>n;
+    // What this call appended, read back from the buffer rather than counted
+    // here: a push the capacity refused is not a record, and reporting it as one
+    // would make `written == recordCount()` true for a frame that lost sprites.
+    return <u32>(into.count - start);
   }
 }
