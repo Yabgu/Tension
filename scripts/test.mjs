@@ -29,7 +29,11 @@
 //     file. So the generation happens once, up front, and the suites are told to
 //     skip it (`TENSION_SESSION_READY=1`).
 //   * `tension-core` loads the fixtures the framework and OGRE suites build, so it
-//     has to run after both. That is a data dependency, not a preference.
+//     has to run after both. That is a data dependency, not a preference — and
+//     selecting `core` alone **pulls those suites in**, because the alternative is
+//     cargo testing a fixture compiled before the last framework change (the
+//     `async_await` trap on a retired `ogre::mount_tns` import, which named the
+//     fixture rather than the missing build).
 //
 // Two suites also share a *resource* without sharing data: the OGRE guest suite
 // and the OGRE unit suite both own `tension-ogre/build` and `build-cmake`, and
@@ -42,7 +46,8 @@
 // Usage:
 //   npm test                    every suite, parallel
 //   npm test -- --serial        every suite, one at a time
-//   npm test -- --core          one suite
+//   npm test -- --core          one suite, and what it needs
+//   npm test -- --core --no-deps  one suite, no dependencies (they may be stale)
 //   npm test -- --jobs 2        at most two at once
 //   npm test -- --list          print the suite names
 
@@ -526,7 +531,7 @@ const JOBS = SERIAL_FLAG ? 1
 const optionValues = new Set();
 if (jobsFlag >= 0) optionValues.add(String(requestedJobs));
 const requested = argv
-  .filter((arg) => !['--serial', '--all', '--list', '--jobs'].includes(arg))
+  .filter((arg) => !['--serial', '--all', '--list', '--jobs', '--no-deps'].includes(arg))
   .filter((arg) => !optionValues.has(arg))
   .map((arg) => arg.replace(/^--/, ''))
   .filter(Boolean);
@@ -539,7 +544,30 @@ if (requested.length) {
     console.error(`      known: ${Object.keys(SUITES).join(', ')}`);
     process.exit(1);
   }
-  order = requested;
+  // **Selecting a suite selects what it needs.** `core` reads the fixtures the
+  // `framework` and `ogre-guest` suites build, so `node scripts/test.mjs core` on
+  // a tree whose OGRE guest was compiled before the framework changed used to run
+  // cargo against a *stale* fixture — and the failure (`async_await` trapping on a
+  // retired import) named the fixture, not the missing build. The dependency was
+  // declared in `needs` and then ignored for anything not in the selection.
+  //
+  // So the closure is taken: each requested suite pulls its `needs` in, and theirs
+  // in turn, in dependency order (a need is listed before the suite that needs it,
+  // which is also the order the scheduler would have picked anyway).
+  const noDeps = argv.includes('--no-deps');
+  const expanded = [];
+  const visit = (name, chain) => {
+    if (expanded.includes(name) || chain.includes(name)) return;   // a cycle is a bug, not a hang
+    for (const need of SUITES[name].needs) visit(need, [...chain, name]);
+    expanded.push(name);
+  };
+  if (noDeps) expanded.push(...requested);
+  else for (const name of requested) visit(name, []);
+  if (!noDeps && expanded.length > requested.length) {
+    const pulled = expanded.filter((name) => !requested.includes(name));
+    console.log(`test: ${requested.join(', ')} needs ${pulled.join(', ')} — running those first`);
+  }
+  order = expanded;
 }
 
 // ── shared preparation ──────────────────────────────────────────────────────
@@ -599,12 +627,11 @@ const startedAt = new Map();
 
 /// Whether a `needs` entry is satisfied.
 ///
-/// **A need outside the selected order counts as met.** `state` only holds the
-/// suites this run asked for, so `npm test -- --core` used to find its
-/// `framework` dependency absent, never consider it passed, and hang forever on
-/// an empty schedule — measured, and reported by Node as an unsettled top-level
-/// await. Selecting one suite is asking for that suite, not for its dependencies
-/// to be re-run.
+/// Every need is in `order`: the selection above takes the dependency closure, so
+/// a suite is only ever scheduled with its dependencies in the run. A need that is
+/// somehow absent still counts as met rather than blocking for ever — a tool that
+/// hangs is worse than one that runs a suite whose fixture it cannot see, and the
+/// suite itself fails loudly in that case.
 function needSatisfied(need) {
   if (!state.has(need)) return true;
   return state.get(need) === 'passed';
@@ -656,7 +683,10 @@ await new Promise((resolve) => {
     for (const name of order) {
       if (state.get(name) !== 'waiting') continue;
       const blocker = SUITES[name].needs.find((need) => state.get(need) === 'failed');
-      if (blocker) skip(name, `depends on ${SUITES[blocker].title}, which failed`);
+      if (blocker) {
+        skip(name, `depends on ${SUITES[blocker].title}, which failed — ` +
+                   `run \`node scripts/test.mjs ${blocker}\` and fix it first`);
+      }
     }
 
     while (running.size < JOBS) {

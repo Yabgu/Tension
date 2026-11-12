@@ -188,7 +188,10 @@ function hasPak(): bool {
 
 /**
  * Stat a path. Returns `null` when the path does not resolve — including every
- * path when no pak is loaded.
+ * path when no pak is loaded and nothing has been written.
+ *
+ * Same two places as a read: the paks, then the write root. So a guest can ask
+ * whether its own save exists before offering to load it.
  */
 export function resStat(path: string): ResEntry | null {
   const stat = statOf(path);
@@ -246,6 +249,10 @@ export function resList(path: string = "/"): string[] {
  * Read a whole file. `null` when the path does not resolve, is a directory, or
  * the payload cannot be read (a compressed payload reports -EIO until the
  * codecs land).
+ *
+ * Resolution is the packed volumes first, then the host's write root — so a file
+ * this guest wrote with `resWriteFile` is readable here, which is what an editor
+ * needs to load the document it just saved.
  */
 export function resReadFile(path: string): Uint8Array | null {
   const file = ResFile.open(path);
@@ -322,6 +329,13 @@ export const EEXIST: i32 = -17;
  * reading it. So a write lands on the real filesystem, under one directory the
  * *host* chose (`--write-root`, defaulting to the working directory), and the
  * guest's path resolves inside it.
+ *
+ * **What is written can be read back.** `res_open` (and so `resReadFile`,
+ * `resStat`, `resExists`, `resSize`) tries the packed volumes first and, on a
+ * miss, falls back to the same root. That is what makes save/load a round trip:
+ * a document written to `saves/scene.json` is readable from it on the next run,
+ * with no new verb and no path that distinguishes the two namespaces. A pak
+ * still wins if it holds the path, so a fallback cannot shadow shipped assets.
  *
  * The contract, which is the host's `res::WriteRoot` and stated here because it
  * is what a caller has to live with:

@@ -54,7 +54,7 @@ import {
   ALIGN_CENTER, AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget,
   Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History, JsonError, LINK,
   ListBehavior, ListSource, loadFontBook, MUTED, NORMAL, Painter, Palette, print, PropKind,
-  REGULAR, registerEditorCommands, resWriteFile, ROOT_ID, Scene, SetProperty,
+  REGULAR, registerEditorCommands, resReadFile, resWriteFile, ROOT_ID, Scene, SetProperty,
   SIZE_14, Sprite, State, TextBuffer, TextBuilder, TextPool, Ui, UiEvent, UiEventKind,
   WidgetBehavior, WidgetTree,
 } from "tension-framework";
@@ -121,7 +121,7 @@ const enum Mode {
 const enum Act {
   None = 0,
   Save = 1,
-  Revert = 2,
+  Load = 2,
   Exit = 3,
   Undo = 4,
   Redo = 5,
@@ -153,8 +153,18 @@ const BOX: i32 = 32;
 /** How many boxes the viewport animates. */
 const BOXES: i32 = 6;
 
+/**
+ * Where Save writes and Load reads, relative to the host's write root.
+ *
+ * One constant for both, because the pair is the feature: a save the load cannot
+ * find is a save that did nothing, and two literals drifting apart is exactly how
+ * that happens.
+ */
+const SAVE_PATH: string = "saves/scene.json";
+
 /** SDL scancodes, the same table the framework dispatches with. */
 const SC_A: u32 = 4;
+const SC_O: u32 = 18;
 const SC_S: u32 = 22;
 const SC_Y: u32 = 28;
 const SC_Z: u32 = 29;
@@ -600,8 +610,6 @@ class Editor extends AppShell {
   private mode: i32 = Mode.Edit;
   /** The console's last log line. */
   private logLine: string = "(ready)";
-  /** The bytes the last save wrote, so `Revert` has something to go back to. */
-  private snapshot: Bytes | null = null;
 
   constructor() {
     super("tension-editor", fontBook().pages[0], 240);
@@ -675,13 +683,12 @@ class Editor extends AppShell {
   private buildMenus(): void {
     const file = new MenuDef("File");
     file.add("Save scene", "Ctrl+S", Act.Save);
-    // **Revert, not Load**, and the difference is the host's, not the app's: a
-    // guest cannot read back what it wrote. `tension::res` is a read-only VFS over
-    // the packed volumes and `res_write` is the one verb that lands on the
-    // filesystem, so the bytes go out and cannot come in. Until the host lets
-    // `res_open` fall back to the write root, this item restores the snapshot the
-    // last save took — which is the half of "load" that is honest to offer.
-    file.add("Revert to saved", "", Act.Revert);
+    // **Load is a real read now.** `res_open` falls back to the write root when a
+    // path is not in any pak, so `saves/scene.json` — the file Save just wrote —
+    // comes back as bytes. Before that host change this row could only offer
+    // "revert to the snapshot in memory", because a guest could write and never
+    // read what it wrote.
+    file.add("Load scene", "Ctrl+O", Act.Load);
     file.add("Exit", "", Act.Exit);
 
     const edit = new MenuDef("Edit");
@@ -1083,7 +1090,7 @@ class Editor extends AppShell {
   /** The one dispatcher for everything a menu row or a toolbar button means. */
   runAct(act: i32): void {
     if (act == Act.Save) { this.saveScene(); return; }
-    if (act == Act.Revert) { this.revertScene(); return; }
+    if (act == Act.Load) { this.loadScene(); return; }
     if (act == Act.Exit) {
       this.log("exit");
       print("tension-editor: exit requested from the File menu");
@@ -1117,38 +1124,46 @@ class Editor extends AppShell {
     if (act == Act.Restart) { this.restartScene(); return; }
   }
 
-  /** Save the document where the host's write root puts it, and keep a copy. */
+  /** Save the document where the host's write root puts it. */
   private saveScene(): void {
     const bytes: Bytes = this.doc.toBytes();
-    const wrote: i32 = resWriteFile("saves/scene.json", bytes);
+    const wrote: i32 = resWriteFile(SAVE_PATH, bytes);
     if (wrote < 0) {
       this.log("save failed: " + wrote.toString());
       print("tension-editor: save failed: " + wrote.toString());
       return;
     }
-    this.snapshot = bytes;
     this.log("saved " + this.doc.liveCount.toString() + " nodes (" +
-             wrote.toString() + " bytes) to saves/scene.json");
-    print("tension-editor: saved saves/scene.json (" + wrote.toString() + " bytes)");
+             wrote.toString() + " bytes) to " + SAVE_PATH);
+    print("tension-editor: saved " + SAVE_PATH + " (" + wrote.toString() + " bytes)");
   }
 
   /**
-   * Put the document back to what the last save wrote.
+   * Replace the document with `saves/scene.json`.
    *
-   * A **new** document rather than a command: undoing *into* a document that is no
-   * longer open is a different feature, and the history holds commands that name
-   * ids from the old one. So the history is dropped, which is also what a load
-   * does in every editor that has one.
+   * The read goes through `tension::res`, so it needs no new host verb: `res_open`
+   * tries the packed volumes first and falls back to the write root, which is
+   * where `Save` put this file. A miss means nobody has saved yet, and says so
+   * rather than showing an empty scene.
+   *
+   * A load is a **new** document rather than a command. Undoing *into* a document
+   * that is no longer open is a different feature, and the history holds commands
+   * that name ids from the old one — so the history is dropped, which is what a
+   * load does in every editor that has one.
    */
-  private revertScene(): void {
-    if (this.snapshot == null) {
-      this.log("revert: nothing saved yet");
+  private loadScene(): void {
+    const raw = resReadFile(SAVE_PATH);
+    if (raw == null) {
+      this.log("load: no " + SAVE_PATH + " (save first)");
+      print("tension-editor: load: no " + SAVE_PATH);
       return;
     }
     const err = new JsonError();
-    const loaded = Document.fromBytes(this.snapshot!, err);
+    const loaded = Document.fromBytes(Bytes.viewOf(<Uint8Array>raw), err);
     if (!err.ok) {
-      this.log("revert failed: " + err.message);
+      this.log("load failed: " + err.message);
+      print("tension-editor: load failed: " + err.message + " (offset " +
+        err.at.toString() + ")");
       return;
     }
     this.doc = loaded;
@@ -1158,8 +1173,9 @@ class Editor extends AppShell {
     this.orderDirty = true;
     this.consoleDirty = true;
     this.syncOrder();
-    this.log("reverted to the saved snapshot (" + this.doc.liveCount.toString() + " nodes)");
-    print("tension-editor: reverted to the saved snapshot");
+    this.log("loaded " + this.doc.liveCount.toString() + " nodes from " + SAVE_PATH);
+    print("tension-editor: loaded " + SAVE_PATH + " (" +
+      (<Uint8Array>raw).length.toString() + " bytes)");
   }
 
   private addNode(): void {
@@ -1260,7 +1276,7 @@ class Editor extends AppShell {
       : (this.history.canRedo ? "redo " + this.history.redoLabel() : "(nothing)");
     this.ui.text(this.consoleLast, "last: " + reachable);
     this.ui.text(this.consoleKeys,
-      "keys: ctrl+z undo  ctrl+y redo  ctrl+a add  ctrl+s save  del remove");
+      "keys: ctrl+z undo  ctrl+y redo  ctrl+a add  ctrl+s save  ctrl+o load  del remove");
   }
 
   /** Write one line to the console panel and to stdout. The panel shows the last. */
@@ -1485,6 +1501,7 @@ class Editor extends AppShell {
     if (state.ctrl && state.pressed(SC_Z)) { this.runAct(Act.Undo); return; }
     if (state.ctrl && state.pressed(SC_Y)) { this.runAct(Act.Redo); return; }
     if (state.ctrl && state.pressed(SC_S)) { this.runAct(Act.Save); return; }
+    if (state.ctrl && state.pressed(SC_O)) { this.runAct(Act.Load); return; }
     // These two *do* collide with typing, so a focused field owns them: Ctrl+A in a
     // field is "select all" in every editor that has one, and Delete in a field is
     // a forward delete. Neither is a document command while the caret is in text.

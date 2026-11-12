@@ -72,6 +72,24 @@ is never reused *within* a run, and serializing it would make an undo of an add 
 a different file than the one before it, for a reason with nothing to do with the
 scene. A load derives it as one past the highest id it read.
 
+### Save and load are one path
+
+`File > Save scene` writes `saves/scene.json` through `res_write`, which lands on the
+filesystem under the host's write root (`--write-root`, the project directory for
+`tension dev`). `File > Load scene` reads the same path back through `resReadFile`,
+which reaches `res_open` — and `res_open` **tries the packed volumes first, then
+falls back to the write root** on a miss.
+
+That fallback is what makes the pair a round trip. The paks are immutable archives
+and stay the read side; a guest's own writes live beside them in one directory the
+host chose, and the read path is the same verb either way, so nothing in the app
+knows which namespace a path resolved in. A pak still wins if it holds the path, so
+a fallback cannot shadow a shipped asset.
+
+A load is a **new document**, not a command: the history is dropped, because undoing
+*into* a document that is no longer open is a different feature and the stack holds
+commands naming ids from the old one.
+
 **The reader is strict about the things that make a file valid JSON** — separators,
 trailing commas, unterminated containers — and lenient about everything else: an
 unknown key is skipped rather than misread as the next field, so a document from a
@@ -244,7 +262,8 @@ must be held (`keydown`, ~150 ms, `keyup`), exactly as a scripted click must use
 
 ## 7. What is not here
 
-Play mode (Pass 4), save and live reload (Pass 5). The **core** — `document.ts`,
+A true out-of-process play mode (the buttons toggle this process's chrome and keep
+drawing the scene), and live reload of a running document. The **core** — `document.ts`,
 `command.ts`, `palette.ts`, `json.ts` — still imports no `Canvas`, no `Scene` and
 nothing from the session; the shell is the only file that does, which is what keeps
 the whole of the logic testable with no display.
