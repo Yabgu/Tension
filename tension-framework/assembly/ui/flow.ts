@@ -15,10 +15,18 @@
 // this file decides *where* a line starts and how long it is; `Painter.text`
 // draws exactly the span it is given.
 
-import { CELL_H, CELL_W, DEFAULT_THEME } from "./theme";
+import { CELL_W, DEFAULT_THEME, Theme } from "./theme";
 
-/** One line of body text, in pixels: the cell plus air between lines. */
-export const LINE_STEP: i32 = CELL_H + 8;
+/**
+ * One line of the **default** atlas's body text, in pixels.
+ *
+ * Per-theme this is `theme.lineStep` — a `FontPage` carries the pitch its bake
+ * declared (21 px for 14 px Inter, 27 for 18), because line pitch is a design
+ * decision and cannot be derived from a cell size that varies by face. This
+ * constant is the VGA atlas's value, kept so the code that predates pages keeps
+ * reading the same number.
+ */
+export const LINE_STEP: i32 = DEFAULT_THEME.lineStep;
 
 /**
  * The narrowest column a layout will draw.
@@ -29,9 +37,14 @@ export const LINE_STEP: i32 = CELL_H + 8;
  */
 export const MIN_COLS: i32 = 8;
 
-/** A padding in source pixels, scaled with the font. */
-export function px(n: i32): i32 {
-  return n * DEFAULT_THEME.scale;
+/**
+ * A padding in device pixels, scaled with the theme's own unit.
+ *
+ * The second argument is what makes this usable with more than one font: pass a
+ * `FontPage` and eight units are that page's eight, not the default atlas's.
+ */
+export function px(n: i32, theme: Theme = DEFAULT_THEME): i32 {
+  return n * theme.spacing;
 }
 
 /** How many characters fit in `pixels` at `advance`. */

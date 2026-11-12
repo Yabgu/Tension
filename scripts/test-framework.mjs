@@ -17,9 +17,10 @@
 // Usage: node scripts/test-framework.mjs [path-to-tension-core] [path-to-stub-adapter]
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
+import { encodePng } from '../tension-framework/tools/lib/png.mjs';
 import { REPO, npmBin } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
@@ -241,6 +242,104 @@ function runMountFixture(entry, out) {
   }
 }
 
+/// The font specimen: baked outlines drawn through the real renderer.
+///
+/// Needs three things a plain `runFixture` cannot give it, which is why it has a
+/// runner of its own:
+///
+///   * **the atlas**, as a mounted volume — the guest has no filesystem, so the
+///     runner packs `tension-framework/assets/*.iwi` and passes `--res`;
+///   * **somewhere to write**, since `Pixels` hands out no address and the frame
+///     has to leave the guest as bytes (`--write-root`, then read back from Node);
+///   * **a PNG encoder**, which is Node's job. The guest prints the counts it
+///     can prove; the image is for a person to look at.
+///
+/// The assertions that can fail are in the guest (bands, the clip, the advances).
+/// What this half adds is that the file arrived whole and is a picture rather
+/// than a buffer of zeros.
+/// The 2D capability the specimen draws through.
+///
+/// The framework suite's interpreter is built with `--no-default-features`, so
+/// `tension::2d` is not linked in and must arrive as a DSO. Naming it when the
+/// binary *does* carry the renderer is harmless — a `tension::2d` DSO named on
+/// the command line is skipped in that build, which is the documented behaviour.
+function findRender2d() {
+  const override = process.env.TENSION_2D_LIB;
+  if (override) return existsSync(override) ? override : null;
+  const candidate = join(repo, 'tension-2d', 'build',
+                         `libtension_2d${process.platform === 'win32' ? '.dll' : '.so'}`);
+  return existsSync(candidate) ? candidate : null;
+}
+
+function runFontSpecimenFixture(entry, out) {
+  const render2d = findRender2d();
+  if (!render2d) {
+    console.log(`    == ${entry.replace(/\.ts$/, '')}: SKIP — no tension::2d ` +
+                `(build tension-2d, or set TENSION_2D_LIB)`);
+    return;
+  }
+  compileOrFail(entry, out);
+
+  const scratch = mkdtempSync(join(tmpdir(), 'tension-specimen-'));
+  const atlasDir = join(scratch, 'assets');
+  const writeDir = join(scratch, 'out');
+  mkdirSync(atlasDir, { recursive: true });
+  mkdirSync(writeDir, { recursive: true });
+  const volume = join(scratch, 'ui.tns');
+
+  try {
+    // Only the pages the guest names in its generated table, not the specimen's
+    // sources or previews: a volume is what `/ui.N.iwi` resolves against, and
+    // packing 1.1 MiB of TTFs into it would prove nothing.
+    const assets = join(framework, 'assets');
+    const pages = readdirSync(assets).filter((name) => /^ui\.\d+\.iwi$/.test(name));
+    if (pages.length === 0) {
+      fail(RUNNER, `${entry}: no baked pages in ${assets} — run "npm run assets:fonts"`);
+    }
+    for (const name of pages) {
+      writeFileSync(join(atlasDir, name), readFileSync(join(assets, name)));
+    }
+    const packed = spawn(core, ['pack', atlasDir, '-o', volume], { cwd: scratch });
+    if (packed.status !== 0) {
+      console.error(packed.stdout + packed.stderr);
+      fail(RUNNER, `${entry}: could not pack the atlas volume`);
+    }
+
+    console.log(`==> running ${out} (with the atlas mounted)`);
+    const result = spawn(core, ['--res', volume, '--write-root', writeDir,
+                                '--capability', render2d, join(build, out)],
+                         { cwd: scratch });
+    console.log(indent(result.stdout));
+    if (result.status !== 0 || !result.stdout.includes('OK')) {
+      console.error(`${RUNNER}: ${entry}: the specimen did not pass`);
+      process.stderr.write(result.stderr);
+      process.exit(1);
+    }
+
+    // The frame left the guest: right size, and not a black rectangle.
+    const raw = join(writeDir, 'font-specimen.rgba');
+    if (!existsSync(raw)) fail(RUNNER, `${entry}: the guest wrote no frame`);
+    const WIDTH = 720;
+    const HEIGHT = 420;
+    const bytes = readFileSync(raw);
+    if (bytes.length !== WIDTH * HEIGHT * 4) {
+      fail(RUNNER, `${entry}: the frame is ${bytes.length} bytes, expected ` +
+                   `${WIDTH * HEIGHT * 4}`);
+    }
+    let lit = 0;
+    for (let i = 0; i < bytes.length; i += 4) {
+      if (bytes[i] || bytes[i + 1] || bytes[i + 2]) lit++;
+    }
+    if (lit < 1000) fail(RUNNER, `${entry}: the frame is nearly black (${lit} lit pixels)`);
+
+    const png = join(build, 'font-specimen.png');
+    writeFileSync(png, encodePng(WIDTH, HEIGHT, bytes));
+    console.log(`    == ${entry}: OK  (${lit} lit pixels, screenshot ${relative(repo, png)})`);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
 /// A fixture whose contract is a refusal, parameterised on the message. Used for
 /// both the drift check and the callback guard: the same three assertions (a
 /// non-zero exit, no OK, and the named message) in one place.
@@ -351,6 +450,7 @@ runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 // what this asserts. The pixel suites cover the bytes it produces.
 runFixture('guest-scene.ts', 'guest-scene.wasm');
 runFixture('guest-ui.ts', 'guest-ui.wasm');
+runFontSpecimenFixture('guest-font-specimen.ts', 'guest-font-specimen.wasm');
 runFixture('guest-editor.ts', 'guest-editor.wasm');
 runMountFixture('guest-resmount.ts', 'guest-resmount.wasm');
 runWriteRootFixture('guest-wres.ts', 'guest-wres.wasm');

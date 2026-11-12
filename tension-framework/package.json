@@ -8,7 +8,9 @@
   "scripts": {
     "build": "tensionscript index.ts -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
     "test": "cd .. && node scripts/test.mjs --framework && node tension-framework/tests/rt-dispatch.mjs",
-    "build:fixture": "bash tests/run.sh"
+    "build:fixture": "bash tests/run.sh",
+    "assets:fonts": "node tools/font/bake-ttf.mjs --spec assets/fonts/fonts.json --atlas assets --manifest assets/ui.json --ts assembly/ui/fonts.generated.ts --preview assets/preview",
+    "verify:fonts": "node tools/font/verify-atlas.mjs"
   },
   "exports": {
     ".": {
@@ -17,6 +19,7 @@
   },
   "files": [
     "assembly",
+    "assets",
     "tools",
     "index.ts",
     "index.d.ts"
@@ -29,6 +32,7 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.13.2"
+    "@yabgu_gm/tensionscript": "^0.13.2",
+    "opentype.js": "^2.0.0"
   }
 }

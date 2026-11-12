@@ -122,7 +122,14 @@ export const MAX_RECORDS: i32 = 4000;
  * lookup, because the painter reads `cellW`/`cellH` on every glyph.
  */
 export class Theme {
-  /** The integer bake factor. Only used to derive the fields below. */
+  /**
+   * The integer bake factor of the *default* atlas.
+   *
+   * A page of real outlines has no such factor — it is baked at its own pixel
+   * size and drawn 1:1 — so this field means "how many device pixels one source
+   * pixel became" for the VGA atlas and nothing at all for a `FontPage`. It
+   * survives because `px()` reads `spacing` and `spacing` defaults to it.
+   */
   scale: i32;
   cellW: i32;
   cellH: i32;
@@ -133,8 +140,31 @@ export class Theme {
   firstChar: i32;
   lastChar: i32;
 
+  /**
+   * The texture page a record from this atlas samples.
+   *
+   * A record's `tex` field is the page of the pipeline's texture array, and
+   * `set_texture` is what gives it meaning. The default atlas is page 0 and
+   * always was; a `FontPage` carries its own index, which is what lets three
+   * faces live in one pipeline instead of three.
+   */
+  slot: i32;
+
+  /**
+   * A padding unit in device pixels, and the space between lines.
+   *
+   * Both used to be module constants derived from the one global cell, which was
+   * fine while there was one font. A 14 px UI font and an 18 px one want
+   * different padding, so they live here: `px(n, theme)` and `theme.lineStep`
+   * are the per-theme spelling, and the module-level `px(n)`/`LINE_STEP` remain
+   * as the default atlas's values so existing callers keep working.
+   */
+  spacing: i32;
+  lineStep: i32;
+
   constructor(scale: i32, cellW: i32, cellH: i32, gridCols: i32, stripe: i32,
-              colourStride: i32, glyphCells: i32, firstChar: i32, lastChar: i32) {
+              colourStride: i32, glyphCells: i32, firstChar: i32, lastChar: i32,
+              slot: i32 = 0, spacing: i32 = 0, lineStep: i32 = 0) {
     this.scale = scale;
     this.cellW = cellW;
     this.cellH = cellH;
@@ -144,6 +174,17 @@ export class Theme {
     this.glyphCells = glyphCells;
     this.firstChar = firstChar;
     this.lastChar = lastChar;
+    this.slot = slot;
+    this.spacing = spacing > 0 ? spacing : (scale > 0 ? scale : 1);
+    // The default atlas's `LINE_STEP` was `CELL_H + 8` at SCALE 2, i.e. four
+    // padding units. Keeping that arithmetic here is what makes `LINE_STEP`
+    // still equal `DEFAULT_THEME.lineStep`.
+    this.lineStep = lineStep > 0 ? lineStep : cellH + 4 * this.spacing;
+  }
+
+  /** `n` padding units in device pixels, for a layout that wants to breathe. */
+  pad(n: i32): i32 {
+    return n * this.spacing;
   }
 }
 

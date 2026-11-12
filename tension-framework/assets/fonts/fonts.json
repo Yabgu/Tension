@@ -1,0 +1,30 @@
+{
+  "//": "What `tools/font/bake-ttf.mjs` bakes. One page per (font, size).",
+  "//pairs": "The (colour, weight) stripes every page carries, in cell order. The framework's palette is 0=normal 1=muted 2=link 3=code 4=heading, weight 0=regular 1=bold. Each pair is 95 cells; a page with six is 570. Baking a pair nobody draws is 95 cells of dead VRAM per page, so this list is the knob.",
+  "pairs": [[0, 0], [1, 0], [2, 0], [3, 0], [4, 0], [4, 1]],
+  "faces": {
+    "inter-regular": { "file": "assets/fonts/Inter-Regular.ttf", "weight": 0 },
+    "inter-bold": { "file": "assets/fonts/Inter-Bold.ttf", "weight": 1 },
+    "mono-regular": { "file": "assets/fonts/JetBrainsMono-Regular.ttf", "weight": 0 }
+  },
+  "pages": [
+    {
+      "font": "inter",
+      "size": 14,
+      "faces": ["inter-regular", "inter-bold"],
+      "lineHeight": 21
+    },
+    {
+      "font": "inter",
+      "size": 18,
+      "faces": ["inter-regular", "inter-bold"],
+      "lineHeight": 27
+    },
+    {
+      "font": "mono",
+      "size": 14,
+      "faces": ["mono-regular"],
+      "lineHeight": 21
+    }
+  ]
+}

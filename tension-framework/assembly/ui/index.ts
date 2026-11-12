@@ -3,6 +3,7 @@
 // ## The pieces
 //
 //   * `theme.ts`   what an atlas is — cell size, colour stripes, chrome cells.
+//   * `fonts.ts`   a baked (font, size) page, and the book that indexes them.
 //   * `painter.ts` sprite records: rectangles, rules, glyphs, with a clip.
 //   * `flow.ts`    where lines end: wrapping, column counts, centring.
 //   * `widget.ts`  the four shapes every panel is made of.
@@ -36,4 +37,5 @@ export * from "./theme";
 export * from "./painter";
 export * from "./flow";
 export * from "./hit";
+export * from "./fonts";
 export * from "./widget";
