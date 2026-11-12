@@ -9,6 +9,7 @@
 //   * `layout.ts`  the retained tree: a widget pool, measure, arrange, paint.
 //   * `builder.ts` how a guest authors that tree, once, at startup.
 //   * `events.ts`  focus, capture, the bubble — what input does to the tree.
+//   * `behavior.ts` how a widget measures, arranges, paints and handles — the open half.
 //   * `text.ts`    owned text buffers, the appender, and the frame's pool.
 //   * `widget.ts`  the four immediate-mode shapes the two apps still draw with.
 //   * `hit.ts`     click targets, recorded by the draw that produced them.
@@ -44,6 +45,8 @@ export * from "./hit";
 export * from "./fonts";
 export * from "./text";
 export * from "./layout";
+export * from "./event-def";
 export * from "./events";
+export * from "./behavior";
 export * from "./builder";
 export * from "./widget";

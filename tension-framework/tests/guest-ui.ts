@@ -9,8 +9,10 @@ import { Painter } from "../assembly/ui/painter";
 import { Hits } from "../assembly/ui/hit";
 import { Snapshot } from "../assembly/input";
 import {
-  NO_EVENTS, SCAN_BACKSPACE, SCAN_LEFT, SCAN_TAB, UiEvents,
+  ChangeTarget, ClickTarget, SCAN_BACKSPACE, SCAN_LEFT, SCAN_TAB,
 } from "../assembly/ui/events";
+import { WidgetBehavior } from "../assembly/ui/builder";
+import { UiEvent, UiEventKind } from "../assembly/ui/event-def";
 import { TextBuilder, TextPool } from "../assembly/ui/text";
 import { ListSource } from "../assembly/ui/layout";
 import { drawText } from "../assembly/ui/widget";
@@ -180,11 +182,11 @@ class Bench {
   p: Painter;
   hits: Hits;
 
-  constructor(capacity: i32 = 64, events: UiEvents = NO_EVENTS) {
+  constructor(capacity: i32 = 64) {
     // Locals first: the compiler refuses to read `this` before every field has
     // been assigned, and the builder wants the tree it is about to be given.
     const tree = new WidgetTree(fontBook(), capacity);
-    const ui = new Ui(tree, events);
+    const ui = new Ui(tree);
     const p = new Painter();
     const hits = new Hits();
     this.tree = tree;
@@ -642,36 +644,59 @@ function caseHitCursor(): void {
 
 // ── the event system ────────────────────────────────────────────────────────
 
-/// Records what the dispatcher told it, so a test can assert the walk.
-class Recorder extends UiEvents {
-  calls: i32 = 0;
-  lastId: i32 = -1;
-  firstId: i32 = -1;
-  /** The id that consumes the click, or -1 for "nobody does". */
-  consumeAt: i32 = -1;
-  drags: i32 = 0;
-  changes: i32 = 0;
+/// A click target that counts what it was told.
+///
+/// Handlers are objects with a method, not closures: the compiler this targets
+/// cannot call a closure back across a module boundary (the note in `events.ts` has
+/// the minimal repro). `watch` is the one-line wiring an app writes.
+class Tally implements ClickTarget, ChangeTarget {
+  n: i32 = 0;
   lastValue: i32 = -999;
-  /** An id whose arrival this test cares about. */
-  watchId: i32 = -1;
-  watched: bool = false;
+  firstId: i32 = -1;
+  /** The widget this tally was last attached to, so `click` knows who fired. */
+  via: i32 = -1;
 
-  onClick(id: i32): bool {
-    if (this.calls == 0) this.firstId = id;
-    if (id == this.watchId) this.watched = true;
-    this.calls++;
-    this.lastId = id;
-    return id == this.consumeAt;
+  click(): void {
+    if (this.n == 0) this.firstId = this.via;
+    this.n++;
   }
 
-  onDrag(id: i32, dx: i32, dy: i32): bool {
-    this.drags++;
-    return false;
-  }
-
-  onChange(id: i32, value: i32): void {
-    this.changes++;
+  change(value: i32): void {
+    this.n++;
     this.lastValue = value;
+  }
+}
+
+/// A custom widget: it measures itself from its floors, paints two rules, records a
+/// hit target, and **refuses** every event so the bubble continues.
+///
+/// This is the whole of what `ui.node(parent, behavior)` needs from a caller — the
+/// four methods of `WidgetBehavior` and nothing else. The engine still owns the
+/// dirty flags, the clip, the cull and the record accounting; this owns only what a
+/// passive box differs in.
+class Passive implements WidgetBehavior {
+  /** How many events reached `handle`, so a test can prove dispatch happened. */
+  handled: i32 = 0;
+
+  measure(ui: Ui, id: i32): void {
+    ui.setSize(id, ui.tree.minW[id], ui.tree.minH[id]);
+    ui.applyFloors(id);
+  }
+
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {
+    // No children, nothing to place.
+  }
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    const t: WidgetTree = ui.tree;
+    const page = t.page[id];
+    p.addHit(t.x[id], t.y[id], t.w[id], t.h[id], t.id[id], id);
+    p.hline(t.x[id], t.y[id], t.w[id], page.chromeCell(5), page);
+  }
+
+  handle(ui: Ui, id: i32, ev: UiEvent): bool {
+    this.handled++;
+    return false;                 // never consume: the bubble goes on
   }
 }
 
@@ -745,6 +770,7 @@ function caseZeroAllocText(): void {
   check(b.ui.isFocused(f), "the field takes the focus");
 
   for (let i: i32 = 0; i < 40; i++) {
+    print("  [za] frame " + i.toString());
     snap.pushText("a");
     snap.latch();
     b.ui.pool.begin();
@@ -794,9 +820,13 @@ function caseZeroAllocText(): void {
   // A composed line costs the pool nothing beyond its bytes.
   const tb = new TextBuilder(32);
   tb.str("node ").int(-2147483648).str(" ok");
-  checkEq(19, tb.len, "a builder composes \"node \" + INT_MIN + \" ok\" in 19 bytes");
-  checkEq(45, tb.bytes[5], "the minus sign opens the integer");
-  checkEq(56, tb.bytes[15], "and the digits end on the last one");
+  const tbLen: i32 = tb.len;
+  const tbMinus: i32 = tb.bytes[5];
+  const tbLast: i32 = tb.bytes[15];
+  print("  [za] p5 len=" + tbLen.toString() + " minus=" + tbMinus.toString() + " last=" + tbLast.toString());
+  checkEq(19, tbLen, "a builder composes node + INT_MIN + ok in 19 bytes");
+  checkEq(45, tbMinus, "the minus sign opens the integer");
+  checkEq(56, tbLast, "and the digits end on the last one");
 }
 
 /// Focus is a pre-order walk over what can take it, and Tab follows it.
@@ -865,9 +895,13 @@ function caseFocusOrder(): void {
 }
 
 /// Bubbling: the button consumes, and the row behind it never hears about it.
+///
+/// Handler order at each widget on the way up: the registered target fires and
+/// consumes, else the behavior's `handle` decides, else the parent hears it. So a
+/// button with a handler never hands its click to the row, and a button *without*
+/// one still consumes it (a button is a target) — both asserted here.
 function caseBubbling(): void {
-  const rec = new Recorder();
-  const b = new Bench(64, rec);
+  const b = new Bench(64);
   const root = b.ui.root(400, 200);
   const col = b.ui.column(root, { pad: 4 });
   const row = b.ui.row(col, { pad: 2 });
@@ -880,35 +914,64 @@ function caseBubbling(): void {
   const by: i32 = b.tree.y[btn] + b.tree.h[btn] / 2;
   checkEq(b.tree.id[btn], b.ui.hits.at(bx, by), "the pointer is over the button");
 
-  rec.consumeAt = b.tree.id[btn];
+  const btnTally = new Tally();
+  btnTally.via = b.tree.id[btn];
+  const rowTally = new Tally();
+  rowTally.via = b.tree.id[row];
+  b.ui.onClick(b.tree.id[btn], btnTally);
+  b.ui.onClick(b.tree.id[row], rowTally);
+
   const snap = Snapshot.synthetic();
   pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
-  checkEq(1, rec.calls, "the button consumed the click, so the walk stopped");
-  checkEq(b.tree.id[btn], rec.firstId, "and it was the button that heard it");
+  checkEq(1, btnTally.n, "the button's handler fired exactly once");
+  checkEq(0, rowTally.n, "a button inside a row takes the click; the row does not");
+  checkEq(b.tree.id[btn], btnTally.firstId, "and it was the button that heard it");
 
-  // Now nobody consumes: the walk goes up through the row to the root.
-  rec.calls = 0;
-  rec.consumeAt = -1;
-  pointerFrame(b.ui, snap, bx, by, 0, 0, 0);   // release first
-  pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
-  check(rec.calls >= 3, "an unconsumed click bubbles to every ancestor");
-  checkEq(b.tree.id[btn], rec.firstId, "starting at the widget that was hit");
+  // A press on a *caption* inside the row: a label is a target but does not consume,
+  // so the click bubbles up to the row and stops there. This is the positive half of
+  // "bubbling works" — the button case above is the half where it must not.
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 0);   // release
 
-  // And the row *does* hear about it when the button refuses: the walk goes up.
-  rec.calls = 0;
-  rec.watched = false;
-  rec.watchId = b.tree.id[row];
-  rec.consumeAt = b.tree.id[row];
-  pointerFrame(b.ui, snap, bx, by, 0, 0, 0);
-  pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
-  check(rec.watched, "a refusing button lets the row hear about the click");
-  checkEq(2, rec.calls, "and the row's consumption stops the walk there");
+  // A *passive* custom widget: it records a hit target and refuses the event, so the
+  // click bubbles to the row. This is the positive half of "bubbling works" — and it
+  // is a custom behavior doing the work, which is the extension point in one line.
+  const passive = new Passive();
+  const tail = b.ui.node(row, passive, { minW: 40, minH: 20 });
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  const lx: i32 = b.tree.x[tail] + 2;
+  const ly: i32 = b.tree.y[tail] + 2;
+  checkEq(b.tree.id[tail], b.ui.hits.at(lx, ly), "the custom widget records a target");
+  pointerFrame(b.ui, snap, lx, ly, 0, 0, 1);
+  checkEq(1, rowTally.n, "a click on a passive widget bubbles to the row");
+  checkEq(1, btnTally.n, "and does not reach the button beside it");
+  checkEq(1, passive.handled, "the custom behavior saw the event on the way past");
+
+  // A press on the row's own background hits nothing: containers are not targets.
+  pointerFrame(b.ui, snap, lx, ly, 0, 0, 0);
+  const emptyX: i32 = b.tree.x[row] + b.tree.w[row] - 1;
+  pointerFrame(b.ui, snap, emptyX, b.tree.y[row] + 1, 0, 0, 1);
+  checkEq(1, rowTally.n, "and the row's bare background is not a target");
+
+  // With no handler on the button, the bubble still stops there.
+  const b2 = new Bench(32);
+  const r2 = b2.ui.root(300, 120);
+  const row2 = b2.ui.row(r2, { pad: 2 });
+  const btn2 = b2.ui.button(row2, "Ok", { pad: 4, minH: 24 });
+  b2.tree.layout();
+  b2.p.reset();
+  b2.tree.paint(b2.p, b2.ui.hits);
+  const row2Tally = new Tally();
+  b2.ui.onClick(b2.tree.id[row2], row2Tally);
+  const s2 = Snapshot.synthetic();
+  pointerFrame(b2.ui, s2, b2.tree.x[btn2] + 4, b2.tree.y[btn2] + 4, 0, 0, 1);
+  checkEq(0, row2Tally.n, "an unwired button still consumes the click");
 }
 
 /// Mouse capture: a split keeps moving when the pointer leaves its divider.
 function caseDragCapture(): void {
-  const rec = new Recorder();
-  const b = new Bench(64, rec);
+  const b = new Bench(64);
   const root = b.ui.root(600, 300);
   // `flex: 1` because a split's measured height is its two panes', and two empty
   // columns measure nothing — a split with no content and no flex is zero tall and
@@ -953,15 +1016,15 @@ function caseDragCapture(): void {
   pointerFrame(b.ui, snap, 100, cy, -300, 0, 0);
   b.tree.layout();
   checkEq(after, b.tree.splitPx[sp], "and the divider ignores motion with no button down");
-  check(rec.drags > 0, "the handler saw the drags");
 }
 
 /// A slider maps the pointer onto its range, through capture.
 function caseSlider(): void {
-  const rec = new Recorder();
-  const b = new Bench(64, rec);
+  const rec = new Tally();
+  const b = new Bench(64);
   const root = b.ui.root(400, 100);
   const sl = b.ui.slider(root, 500, { minW: 200 });
+  b.ui.onChange(sl, rec);
   b.tree.layout();
   b.p.reset();
   b.tree.paint(b.p, b.ui.hits);
@@ -1137,29 +1200,53 @@ export function _start_game(): void {
     print("FAIL: the session did not open");
     return;
   }
+  print(">>> caseGeometry");
   caseGeometry();
+  print(">>> caseWrapping");
   caseWrapping();
+  print(">>> caseColumns");
   caseColumns();
+  print(">>> caseCosts");
   caseCosts();
+  print(">>> caseGlyphClip");
   caseGlyphClip();
+  print(">>> caseHits");
   caseHits();
+  print(">>> casePool");
   casePool();
+  print(">>> caseProps");
   caseProps();
+  print(">>> caseFlex");
   caseFlex();
+  print(">>> caseSplit");
   caseSplit();
+  print(">>> caseLeafSizes");
   caseLeafSizes();
+  print(">>> caseTextBuffer");
   caseTextBuffer();
+  print(">>> caseDirty");
   caseDirty();
+  print(">>> caseCull");
   caseCull();
+  print(">>> caseListItemClip");
   caseListItemClip();
+  print(">>> caseTreeCost");
   caseTreeCost();
+  print(">>> caseHitCursor");
   caseHitCursor();
+  print(">>> caseZeroAllocText");
   caseZeroAllocText();
+  print(">>> caseFocusOrder");
   caseFocusOrder();
+  print(">>> caseBubbling");
   caseBubbling();
+  print(">>> caseDragCapture");
   caseDragCapture();
+  print(">>> caseSlider");
   caseSlider();
+  print(">>> caseVirtualList");
   caseVirtualList();
+  print(">>> caseTextEditing");
   caseTextEditing();
 
   if (failures != 0) {

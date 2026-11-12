@@ -50,12 +50,15 @@
 // in `layout.ts` for why the setters are allowed to set only one bit.
 
 import { Snapshot } from "../input";
-import { Dispatcher, NO_EVENTS, UiEvents } from "./events";
+import { builtinBehaviors, LabelBehavior } from "./behavior";
+import { ChangeTarget, ClickTarget, Dispatcher } from "./events";
+import { UiEvent } from "./event-def";
 import { FontBook, FontPage } from "./fonts";
 import { Hits } from "./hit";
 import {
   Align, DIVIDER_PX, Dirty, Kind, LIST_ROWS, ListSource, RULE_H, SLIDER_MAX, WidgetTree,
 } from "./layout";
+import { Painter } from "./painter";
 import { TextBuilder, TextPool } from "./text";
 
 /** `Props.align` values. One-based so that 0 can mean "the kind's default". */
@@ -90,6 +93,25 @@ export class Props {
 }
 
 /**
+ * What a widget is, behaviourally.
+ *
+ * Implement it and pass an instance to `ui.node(parent, behavior)`; the built-in
+ * kinds are the eleven implementations below. The engine never asks a widget what
+ * `Kind` it is — `Kind` survives as a tag for introspection and for the builder's
+ * convenience methods.
+ */
+export interface WidgetBehavior {
+  /** Write the widget's desired size. */
+  measure(ui: Ui, id: i32): void;
+  /** Place the widget's children inside `x,y,w,h`. */
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void;
+  /** Emit this widget's own records. */
+  paint(ui: Ui, id: i32, p: Painter): void;
+  /** Handle one event. True consumes it and stops the bubble. */
+  handle(ui: Ui, id: i32, ev: UiEvent): bool;
+}
+
+/**
  * The tree's authoring front end.
  *
  * Holds no state of its own beyond the tree: a builder call allocates, links, sets
@@ -111,20 +133,35 @@ export class Ui {
   /** Focus, capture, hover and the bubble. */
   dispatch: Dispatcher;
 
-  constructor(tree: WidgetTree, events: UiEvents = NO_EVENTS) {
+  /**
+   * The built-in behaviors, indexed by `Kind`.
+   *
+   * Built here rather than at module load in `behavior.ts`: that module imports
+   * this one for the `Ui` type, so a module-level array of instances there would be
+   * a use-before-init waiting for a load order to change.
+   */
+  private builtins: WidgetBehavior[];
+
+  constructor(tree: WidgetTree) {
     // Locals first: TensionScript refuses to read `this` before every field has
     // been assigned, and the dispatcher wants the tree and the hit list.
     const hits = new Hits();
-    const dispatch = new Dispatcher(tree, hits, events);
+    const dispatch = new Dispatcher(tree, hits);
+    const builtins = builtinBehaviors();
     this.tree = tree;
     this.book = tree.book;
     this.hits = hits;
     this.dispatch = dispatch;
+    this.builtins = builtins;
+    // The two back-references that make dispatch and the passes work: the tree
+    // calls behaviors with this facade, and the dispatcher does the same.
+    tree.host = this;
+    dispatch.owner = this;
   }
 
-  /** Replace the event handler without rebuilding the tree. */
-  setEvents(events: UiEvents): void {
-    this.dispatch.events = events;
+  /** The behavior a slot runs, for introspection and for the tests. */
+  behaviorOf(id: i32): WidgetBehavior {
+    return this.tree.behavior[id];
   }
 
   // ── the shapes ──────────────────────────────────────────────────────────
@@ -249,6 +286,10 @@ export class Ui {
       // shows and `paintSelf` gives it a hit target because it has one.
       const row: i32 = t.alloc(Kind.Label);
       if (row < 0) break;
+      // Allocated directly rather than through `make` (a row is not a builder
+      // shape), so its behavior is assigned here — the one thing `make` does that
+      // this path would otherwise miss.
+      t.behavior[row] = this.builtins[Kind.Label];
       t.align[row] = Align.Stretch;
       t.append(i, row);
       t.itemIndex[row] = -1;
@@ -388,6 +429,10 @@ export class Ui {
     const t: WidgetTree = this.tree;
     const i: i32 = t.alloc(kind);
     if (i < 0) return -1;
+    t.behavior[i] = this.builtins[kind];
+    // A list is the only built-in that narrows the clip for its own children; see
+    // `clipsChildren` in `layout.ts` for why nothing else does.
+    t.clipsChildren[i] = kind == Kind.List;
     t.align[i] = align;
     if (gap > 0) t.gap[i] = gap;
     if (parent >= 0) t.append(parent, i);
@@ -626,8 +671,145 @@ export class Ui {
   /** A text field's text, as a `String`. Allocates: for tests and logs, not frames. */
   textOf(id: i32): string {
     const b = this.tree.bufferOf(id);
-    if (b == null || b!.len <= 0) return "";
-    return String.UTF8.decodeUnsafe(b!.bytes.dataStart, <usize>b!.len, false);
+    if (b.len <= 0) return "";
+    return String.UTF8.decodeUnsafe(b.bytes.dataStart, <usize>b.len, false);
+  }
+
+  // ── custom widgets ──────────────────────────────────────────────────────
+
+  /**
+   * A widget whose behavior the caller supplies.
+   *
+   * This is the extension point the whole pass exists for: a docking layout, an
+   * icon button, a divider that drags differently. The engine never learns the
+   * behavior's name — it asks it to measure, arrange, paint and handle, and owns
+   * everything that must be true of every widget (dirty flags, clipping, culling,
+   * record accounting).
+   *
+   *     const dock = ui.node(root, new DockLayout());
+   *
+   * Pass an **instance**, not a shared singleton, if the behavior keeps state: the
+   * built-in behaviors are stateless on purpose and are shared across every widget,
+   * but a custom one is free to remember its own solution.
+   */
+  node(parent: i32, behavior: WidgetBehavior, props: Props | null = null): i32 {
+    const i: i32 = this.make(Kind.Custom, props, Align.Stretch, 0, parent);
+    if (i < 0) return -1;
+    this.tree.behavior[i] = behavior;
+    return i;
+  }
+
+  /**
+   * Whether this widget's children are clipped to its content box.
+   *
+   * A behavior cannot set it (the interface is the four passes, on purpose), so a
+   * custom container that scrolls turns it on here after `ui.node`.
+   */
+  clips(id: i32, on: bool = true): i32 {
+    this.tree.clipsChildren[id] = on;
+    this.tree.markArrange(id);
+    return id;
+  }
+
+  // ── closures ────────────────────────────────────────────────────────────
+
+  /**
+   * A click handler for one widget.
+   *
+   * Fires when a press resolves to this widget or bubbles up to it, and **consumes**
+   * the event — which is why a button with a handler never clicks the panel behind
+   * it. UI events are synchronous, so a closure may capture `this` or a module
+   * global freely; nothing is deferred and nothing outlives the call.
+   */
+  onClick(id: i32, target: ClickTarget): i32 {
+    this.dispatch.setClick(id, target);
+    return id;
+  }
+
+  /**
+   * A value-change handler: a slider's position (`0..SLIDER_MAX`), or `-1` when a
+   * text field's contents changed. Fired by the behavior, not by the dispatcher, so
+   * a custom control can report a change the engine has never heard of.
+   */
+  onChange(id: i32, target: ChangeTarget): i32 {
+    this.dispatch.setChange(id, target);
+    return id;
+  }
+
+  /** A wheel handler: `delta` is in pixels, positive for scrolling down. */
+  onScroll(id: i32, target: ChangeTarget): i32 {
+    this.dispatch.setScroll(id, target);
+    return id;
+  }
+
+  /** Return in a field. */
+  onSubmit(id: i32, target: ClickTarget): i32 {
+    this.dispatch.setSubmit(id, target);
+    return id;
+  }
+
+  /** Take mouse capture for a widget: every motion until the button comes up. */
+  capture(id: i32): void {
+    this.dispatch.capture(id);
+  }
+
+  /** Drop capture. */
+  release(): void {
+    this.dispatch.release();
+  }
+
+  /** Fire a change handler from a custom behavior, after it has updated a value. */
+  fireChange(id: i32, value: i32): void {
+    this.dispatch.fireChange(id, value);
+  }
+
+  /** Fire a submit handler from a custom behavior. */
+  fireSubmit(id: i32): void {
+    this.dispatch.fireSubmit(id);
+  }
+
+  /** Insert this frame's typed bytes at a widget's caret, from a custom behavior. */
+  insertTyped(id: i32): void {
+    this.dispatch.typedInto(id);
+  }
+
+  /** Scroll a list by a pixel delta. Used by `ListBehavior`. */
+  scrollList(id: i32, dy: i32): void {
+    this.tree.scrollBy(id, dy);
+  }
+
+  /** Measure a widget's own text, for a custom behavior that sizes itself from it. */
+  measureOwnText(id: i32): i32 {
+    return this.tree.measureOwnText(id);
+  }
+
+  /** Apply the widget's `minW`/`minH`, after a behavior has written a size. */
+  applyFloors(id: i32): void {
+    this.tree.applyFloors(id);
+  }
+
+  /** Write a widget's measured size. The floors are applied by the caller. */
+  setSize(id: i32, w: i32, h: i32): void {
+    this.tree.w[id] = w;
+    this.tree.h[id] = h;
+  }
+
+  /** Place a widget: the one write path for geometry. */
+  setRect(id: i32, x: i32, y: i32, w: i32, h: i32): void {
+    this.tree.x[id] = x;
+    this.tree.y[id] = y;
+    this.tree.w[id] = w;
+    this.tree.h[id] = h;
+  }
+
+  /** A widget's hit id, for a behavior recording a target. */
+  hitIdOf(id: i32): i32 {
+    return this.tree.id[id];
+  }
+
+  /** The widget under the pointer, from the last dispatch. */
+  get hoveredOrNone(): i32 {
+    return this.dispatch.hoverId;
   }
 }
 

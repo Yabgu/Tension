@@ -21,7 +21,9 @@ path.
 | `ui/fonts.ts` | a baked (font, size) page — its baseline, pitch and advances — and the book that indexes them |
 | `ui/layout.ts` | the retained tree: a widget pool, the measure/arrange passes, the three dirty flags, clip-aware paint |
 | `ui/builder.ts` | how a guest authors that tree: `ui.row(parent, { pad: 8 })`, once, at startup — and the runtime half of `Ui`: focus, text, list state |
-| `ui/events.ts` | what a pointer and a keyboard do to the tree: the bubble, focus, capture |
+| `ui/events.ts` | what a pointer and a keyboard do to the tree: the bubble, focus, capture, and the handler targets |
+| `ui/behavior.ts` | the built-in `WidgetBehavior`s: how each kind measures, arranges, paints and handles |
+| `ui/event-def.ts` | the event vocabulary (`UiEvent`, `UiEventKind`), in a module that imports nothing |
 | `ui/text.ts` | owned text buffers, the byte appender, and the frame-scoped pool |
 | `ui/widget.ts` | the four *immediate-mode* shapes the two apps still draw with: label, rule, button, list row |
 | `app/shell.ts` | session, window, canvas, resize, texture reload, input attach, the close button, teardown |
@@ -176,12 +178,12 @@ painter.count`; and the paint flag clearing itself.
 
 And the pass-three half: a field typed into for 155 frames with the pool's
 watermark flat and the heap's page count unchanged; Tab skipping a button and
-wrapping both ways; a button consuming a click so its row never hears it, and the
-row hearing it when the button refuses; a split dragged far outside its bounds
-still moving and still clamping; a slider clamped at both ends of its track; a
-1000-item list arranged and painted in twenty widgets with a scroll that does not
-dirty the root; the `listItem` regression; and a caret placed by a click at a
-distance the advance table makes exact.
+wrapping both ways; a button consuming a click so its row never hears it, and a
+**custom** passive widget refusing one so the row does hear it; a split dragged far
+outside its bounds still moving and still clamping; a slider clamped at both ends of
+its track; a 1000-item list arranged and painted in twenty widgets with a scroll
+that does not dirty the root; the `listItem` regression; and a caret placed by a
+click at a distance the advance table makes exact.
 
 The pixel half is proved by the two apps that ship on it — `apps/docs` (whose
 `verify` checks the atlas against `theme.ts`) and the editor — until they migrate
@@ -496,3 +498,119 @@ boundary where `read()` would have been. It exists because replay and headless
 checks have to run the *same* event code the live path runs, or they prove nothing —
 and it is why `guest-ui.ts` can assert that a drag keeps moving past its bounds
 without a window.
+
+## 14. Behaviors: the open half of the engine
+
+### Why the `switch` had to go
+
+Dispatch used to be `if (k == Kind.Button)` in `measureSelf` and another chain in
+`paintSelf`. That is **closed**: a docking layout, an icon button, or a divider
+that drags differently had no way in except by editing the engine, so every new
+control was a framework change and a re-test of every other control.
+
+A widget is now a **slot** plus a **behavior object**:
+
+```ts
+export interface WidgetBehavior {
+  measure(ui: Ui, id: i32): void;
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void;
+  paint(ui: Ui, id: i32, p: Painter): void;
+  handle(ui: Ui, id: i32, ev: UiEvent): bool;
+}
+```
+
+`ui.node(parent, new DockLayout())` registers one. The engine never learns its
+name — it asks the behavior to measure, arrange, paint and handle, and keeps
+everything that must be true of *every* widget: the dirty flags, the clip, the
+cull, and the record accounting.
+
+### Behaviors are stateless; the tree holds the state
+
+A built-in behavior is a **shared singleton**: one `RowBehavior` arranges every row
+in the tree. That works because nothing is stored on it — geometry, style, text and
+interaction state all live in the tree's parallel arrays, keyed by slot. The
+behavior is a function of `(tree, slot)`.
+
+A custom behavior may hold its own state, and then it must be constructed per
+widget, which is exactly what passing an instance gives you.
+
+The slot's behaviour lives in `tree.behavior[]`; `Kind` survives as a tag for
+introspection (`tree.kind[i]`) and for the builder's convenience methods, but no
+pass dispatches on it. One flag, `clipsChildren`, is data rather than a fifth
+interface method: a `List` sets it so its rows are culled at the window edge, and a
+custom scrolling container can turn it on with `ui.clips(id)`.
+
+### The event vocabulary
+
+```ts
+class UiEvent {
+  kind: i32;      // Click, Release, Drag, Wheel, Key, Text
+  x: i32; y: i32; // pointer, in tree coordinates
+  dx: i32; dy: i32;
+  value: i32;     // scancode, slider value, byte count
+  mods: i32;      // KMOD_*, bit 0 is shift
+  localX: i32;    // pointer inside the widget's content box
+}
+```
+
+One instance is refilled per event; a drag delivers sixty a second and none of
+them touches the heap.
+
+### Handlers: targets, not closures
+
+The intended API was `ui.onClick(id, () => { … })`. **It cannot work on the
+compiler this targets** (TensionScript 0.13.2): a closure created in one module,
+stored in a framework object, and called back from another traps with `wasm trap:
+uninitialized element` — an indirect call through a function-table entry that was
+never filled. Minimised:
+
+| shape | result |
+|---|---|
+| `new Box((): void => { n++; }).run()` | works |
+| closure capturing `this`, stored via `ui.onClick`, called from the framework | **traps** |
+| closure capturing a mutable local | `AS100: Not implemented: a captured local without a declared type`; typed, it aborts at the first call |
+
+So a handler is an object with a method — the same mechanism that makes
+`WidgetBehavior` work, verified by every widget in the suite:
+
+```ts
+class Save implements ClickTarget {
+  click(): void { this.doc.save(); }
+}
+ui.onClick(this.saveButton, new Save(this));
+ui.onChange(this.zoom, new ZoomLabel(this));
+```
+
+| binding | interface | fires |
+|---|---|---|
+| `ui.onClick(id, target)` | `ClickTarget.click()` | a press on the widget or bubbled to it; **consumes** |
+| `ui.onChange(id, target)` | `ChangeTarget.change(value)` | a slider's position, or `-1` for a text edit |
+| `ui.onScroll(id, target)` | `ChangeTarget.change(delta)` | the wheel over the widget; consumes |
+| `ui.onSubmit(id, target)` | `ClickTarget.click()` | Return in a field |
+
+When the compiler is fixed, `ui.onClick(id, fn)` becomes an additive overload that
+wraps the closure in a target; nothing above `Dispatcher` changes.
+
+### The order at each widget, and why
+
+At every widget from the hit target upward:
+
+1. a registered **target** fires and consumes;
+2. otherwise the behavior's **`handle`** decides;
+3. otherwise the event goes to the parent.
+
+Targets come first because `ButtonBehavior.handle` consumes a click (a button *is* a
+target — otherwise an unwired button would click the panel behind it), so a
+behavior-first order would make `ui.onClick` on a button unreachable.
+
+### Custom widgets write their own behaviour
+
+A behavior writes its size with `ui.setSize` and then `ui.applyFloors`, places
+children with `ui.setRect`, and records targets with `p.addHit` — the three
+invariants the engine owns. Everything else is a field on `ui.tree`, which is
+public because hiding twenty-eight arrays behind accessors would make a custom
+control unreadable; what is *reserved* is the invariant, not the data.
+
+`ui.node(row, new Passive(), { minW: 40, minH: 20 })` is the whole call, and the
+test suite's `Passive` widget is the whole implementation: four methods, no
+registration anywhere else in the engine.
