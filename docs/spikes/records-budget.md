@@ -105,9 +105,32 @@ the one node `ctrl+a` adds, which is why the chrome is 1133 and not 1121).
 **The number is the evidence, so the number is what is kept.** No screenshot is
 committed for this measurement: a PNG is a blob that history keeps forever, and
 what a reader needs is the figure, the window size, the document, and how to
-reproduce it — all of which this section states. A measurement that genuinely
-needs an image is a UT/E2E reference fixture in the test tree, where the image
-is an input something asserts against rather than an artifact.
+reproduce it, all of which this section states.
+
+## Where an image may live
+
+The rule for the whole tree, and the reason this page carries figures instead of
+pictures:
+
+1. **A screenshot that captures a measurement is a test fixture**, in the test
+tree, and a test must read or assert it. Being under `tests/` is necessary, not
+sufficient: a fixture no test touches is an orphan blob that only grows history.
+2. **A UT/E2E reference image** lives in the test tree as a fixture the test
+diffs against. There, the image is an input to an assertion.
+3. **A texture, font or other asset** (license or generated provenance) lives in
+the asset tree. It is input, not evidence, and no test asserts it.
+4. **A screenshot as a doc illustration, or one with no asserting test, is
+committed nowhere.** The number in prose is the record.
+5. If CI should guard the chrome count measured here, the test is a
+**chrome-count assertion** (parse the status bar, expect `^\d+ ui rec$`, compare
+to a constant), not a pixel fixture.
+6. Pre-existing PNGs on `main` (the font previews under
+`tension-framework/assets/preview/`, `examples/2d/isometric/screenshots/preview.png`,
+the framework preview) predate this rule and are out of scope for any branch
+that is not changing them; they are not a precedent for new ones.
+
+The mechanism is `.gitignore`'s `docs/spikes/*.png` rule, and the rule is stated
+beside it so the next capture is deleted rather than committed.
 
 An earlier reading on the editor pass, against the editor's 5-node opening
 document, gave 1121 `ui rec` in Edit — so Edit chrome is ~1120-1135 and moves
