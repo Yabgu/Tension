@@ -330,9 +330,9 @@ itself from its content would refuse to shrink below it.
 
     inner  = w - 2 * pad
     gaps   = gap * (n - 1)
-    free   = max(0, inner - gaps - Σ width of flex == 0 children)
+    free   = max(0, inner - gaps - sum(width of flex == 0 children))
     each flex child but the LAST gets  free * flex / flexTotal   (floored)
-    the LAST flex child gets           free - Σ given
+    the LAST flex child gets           free - sum(given)
 
 The residual goes to the last flex child rather than being distributed, because
 that is what makes the shares sum to the row **exactly**: a leftover pixel at the
