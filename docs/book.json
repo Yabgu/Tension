@@ -44,7 +44,9 @@
         { "title": "Pipeline notes", "page": "pipeline-notes.md" },
         { "title": "Session findings", "page": "session-findings.md" },
         { "title": "Known issues", "page": "known-issues.md" },
-        { "title": "Known limitations", "page": "known-limitations.md" }
+        { "title": "Known limitations", "page": "known-limitations.md" },
+        { "title": "Backlog: byte-offset decoders", "page": "backlog/byte-offset-decoders.md" },
+        { "title": "Spike: the record budget", "page": "spikes/records-budget.md" }
       ]
     }
   ]

@@ -80,11 +80,42 @@ function piece(name) {
 
 // ── 2. the scene, as records ────────────────────────────────────────────────
 
-const CANVAS = { w: 320, h: 180 };
-// The ground is centred: 6x6 of 16px is 96, so 112 either side in a 320 canvas.
-const GROUND_ORIGIN = { x: 112, y: 44 };
-const GROUND_COLS = 6;
-const GROUND_ROWS = 6;
+/// A `--flag value` a caller passed, or `fallback`.
+///
+/// The grid and canvas are parameters for one reason: `docs/spikes/records-budget.md`
+/// measures what a *realistic* tiled scene costs before the nested-guest work
+/// budgets against it, and a 6x6 field measures nothing. The defaults are the
+/// frame this example has always drawn, so a run with no flags is unchanged.
+function option(name, fallback) {
+  const at = process.argv.indexOf(name);
+  if (at < 0) return fallback;
+  const value = process.argv[at + 1];
+  if (value === undefined || value.startsWith('--')) die(`${name} needs a value`);
+  return value;
+}
+
+function pair(name, fallback, min = 1) {
+  const raw = option(name, null);
+  if (raw === null) return fallback;
+  const parts = raw.split(/[x,]/).map(Number);
+  if (parts.length !== 2 || parts.some((n) => !Number.isInteger(n) || n < min)) {
+    die(`${name} wants two integers (each >= ${min}), got \`${raw}\``);
+  }
+  return { a: parts[0], b: parts[1] };
+}
+
+const canvasPair = pair('--canvas', { a: 320, b: 180 });
+const CANVAS = { w: canvasPair.a, h: canvasPair.b };
+// The ground is centred by default: 6x6 of 16px is 96, so 112 either side in a
+// 320 canvas. An explicit `--origin` is what a spike uses to fill the canvas.
+const GROUND_COLS = Number(option('--cols', 6));
+const GROUND_ROWS = Number(option('--rows', 6));
+if (!Number.isInteger(GROUND_COLS) || !Number.isInteger(GROUND_ROWS) ||
+    GROUND_COLS <= 0 || GROUND_ROWS <= 0) {
+  die(`--cols/--rows want positive integers, got ${GROUND_COLS}x${GROUND_ROWS}`);
+}
+const originPair = pair('--origin', { a: 112, b: 44 }, 0);
+const GROUND_ORIGIN = { x: originPair.a, y: originPair.b };
 
 // The trunk slice must begin *below* the composite probe, or the probe
 // pixel is covered by the tree and the composite assertion tests the wrong
@@ -562,6 +593,11 @@ writeFileSync(join(here, 'scene.json'), JSON.stringify({
 }, null, 2));
 
 console.log(`${RUNNER}: wrote src/scene.generated.ts`);
+console.log(
+  `${RUNNER}: ${GROUND_COLS}x${GROUND_ROWS} ground (${GROUND_COLS * GROUND_ROWS} cells) ` +
+  `on ${CANVAS.w}x${CANVAS.h} at (${GROUND_ORIGIN.x},${GROUND_ORIGIN.y}), ` +
+  `${back.length} records/frame`,
+);
 console.log(
   `${RUNNER}: tree slices sort ${TREE_CROWN_SORT} / ${TREE_TRUNK_SORT}, ` +
   `character ${CHAR_SORT}, lantern ${LANTERN_SORT}`,

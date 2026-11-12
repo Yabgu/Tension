@@ -139,3 +139,11 @@ examples/2d/isometric/screenshots/back.png
 examples/2d/isometric/screenshots/front.png
 examples/2d/isometric-framework/screenshots/framework-back.png
 examples/2d/isometric-framework/screenshots/framework-front.png
+
+# A spike screenshot is measurement evidence, and the measurement is the number,
+# not the image. Those live in the write-up as text (records, dimensions, the
+# command run) because a number survives review and a blob survives forever.
+# An image that a *test* asserts against is a different thing: it becomes a
+# UT/E2E reference fixture in the test tree, where it is an input rather than an
+# artifact.
+docs/spikes/*.png
