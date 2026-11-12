@@ -15,43 +15,48 @@
 //
 //     root
 //      └ column (flex 1)
-//         ├ row   menu        File  Edit  View  Run  ……  last undo     32 px
+//         ├ row   menu        File Edit View Run … Play Stop Restart … undo   34 px
 //         ├ rule
 //         ├ split (Axis.X)    ── the draggable divider ──
 //         │  ├ column sidebar   (minW 320)   SCENE + a virtualised list
 //         │  └ row    body      (flex 1)
 //         │     ├ node   viewport  (flex 1)  bucket 0, its own pipeline
-//         │     └ column inspector (minW 360)
+//         │     └ column inspector (minW 360)   x / y / z + read-only rows
 //         ├ rule
 //         ├ column console    (minH 240)
 //         ├ rule
-//         └ row   status      (minH 32)
+//         └ row   status      (minH 34)
+//
+// A **dropdown** is the one thing outside the tree: `drawMenu` paints it after
+// `tree.paint`, into the same hit list, so it is above every panel and its rows
+// win the hit test. The tree has no absolute positioning or z-order yet, and a
+// popup is exactly the widget that needs both — see `drawMenu` for why an overlay
+// is the honest way to do this today.
 //
 // **There is no layout arithmetic left in this file.** Every `x`/`y`/`w`/`h` is
 // decided by `WidgetBehavior.arrange`; every string is either a label's own buffer
-// or the frame's `TextPool`; every click is a target the paint recorded. The three
-// things the old version did by hand — `Rect`s, `px()` padding and a `Hits` array
-// — are the framework's job now.
+// or the frame's `TextPool`; every click is a target the paint recorded.
 //
 // ## Why no fills, still
 //
 // The renderer clears to opaque black and a full-window fill costs the whole
 // 4,096-record budget (`ui/theme.ts`). So panels are **rules**, the viewport is a
-// rectangle of rules, and the black is the background. The scene tree's selected
-// row underlines; the inspector's labels are muted.
+// rectangle of rules, and the black is the background. Play mode therefore *hides*
+// chrome rather than dimming it: a scrim would be ~5,000 records.
 //
 // ## What is not here
 //
-// Play mode, save and live reload. The document is edited in memory and the
-// viewport draws procedurally generated boxes — no game asset is loaded, which is
-// what keeps this about the composite rather than about an asset pipeline.
+// A true Play mode (a second guest process; the buttons toggle this one's chrome
+// and the scene keeps running), live reload, and asset loading. The viewport draws
+// procedurally generated boxes.
 
 import {
-  AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget, Document,
-  fontBook, FontBook, FONT_MONO, Frame, HEADING, History, LINK, ListBehavior, ListSource,
-  loadFontBook, MUTED, NORMAL, Painter, Palette, print, REGULAR, registerEditorCommands,
-  ROOT_ID, Scene, SetX, SIZE_14, Sprite, TextBuilder, TextPool, Ui, UiEvent, WidgetBehavior,
-  WidgetTree,
+  ALIGN_CENTER, AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget,
+  Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History, JsonError, LINK,
+  ListBehavior, ListSource, loadFontBook, MUTED, NORMAL, Painter, Palette, print, PropKind,
+  REGULAR, registerEditorCommands, resWriteFile, ROOT_ID, Scene, SetProperty,
+  SIZE_14, Sprite, State, TextBuffer, TextBuilder, TextPool, Ui, UiEvent, UiEventKind,
+  WidgetBehavior, WidgetTree,
 } from "tension-framework";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
@@ -68,13 +73,66 @@ const CONSOLE_H: i32 = 240;
 /** One panel's inset from its own edge. */
 const PANEL_PAD: i32 = 10;
 /** Air above and below a line of text in a bar. */
-const BAR_PAD: i32 = 5;
-/** A bar's height: one line of type plus its air. */
-const BAR_H: i32 = 32;
-/** The gap between two menu items. */
-const ITEM_GAP: i32 = 14;
+const BAR_PAD: i32 = 4;
+/**
+ * A bar's height.
+ *
+ * `lineStep` (21) plus two of air would be 29; the bars hold buttons, and a button
+ * is `lineStep + 2*3` = 27 tall. 34 leaves a button three pixels of room to sit in.
+ */
+const BAR_H: i32 = 34;
+/** The gap between two menu-bar items. */
+const ITEM_GAP: i32 = 10;
 /** How many recycled row widgets the scene tree owns. */
 const TREE_ROWS: i32 = 40;
+
+/** A dropdown's metrics, in pixels. */
+const MENU_ITEM_H: i32 = 31;
+const MENU_PAD: i32 = 3;
+const MENU_PAD_X: i32 = 12;
+/** The gap between a label and its shortcut column. */
+const MENU_GAP: i32 = 28;
+
+/**
+ * The hit-id space a dropdown item occupies.
+ *
+ * **Negative, and that is load-bearing.** A hit id is handed to the dispatcher as
+ * a slot, and `Dispatcher.press` reads `itemIndex[slot]` for a non-negative slot —
+ * so a large positive sentinel would index past the pool and trap. A negative one
+ * is what the dispatcher already treats as "no widget": it blurs the focus and
+ * leaves the event alone, which is exactly what an overlay wants.
+ */
+const MENU_HIT_BASE: i32 = -1000;
+
+/** The scene's modes. `Edit` is the editor; `Play` is the same frame without chrome. */
+const enum Mode {
+  Edit = 0,
+  Play = 1,
+}
+
+/**
+ * What a menu row (or a toolbar button) does.
+ *
+ * An enum and a `switch`, not a closure: the compiler this targets cannot call a
+ * stored closure back across a module boundary (`docs/modules/ui.md` §14). A
+ * handler target object is the other spelling, and it is what the *widgets* use —
+ * the menu rows live in an overlay, which has no slots to bind targets to.
+ */
+const enum Act {
+  None = 0,
+  Save = 1,
+  Revert = 2,
+  Exit = 3,
+  Undo = 4,
+  Redo = 5,
+  AddNode = 6,
+  DeleteNode = 7,
+  ToggleConsole = 8,
+  ToggleInspector = 9,
+  Play = 10,
+  Stop = 11,
+  Restart = 12,
+}
 
 /**
  * The game's world, and the field the boxes bounce in.
@@ -97,10 +155,68 @@ const BOXES: i32 = 6;
 
 /** SDL scancodes, the same table the framework dispatches with. */
 const SC_A: u32 = 4;
+const SC_S: u32 = 22;
 const SC_Y: u32 = 28;
 const SC_Z: u32 = 29;
-const SC_BACKSPACE: u32 = 42;
+const SC_ESCAPE: u32 = 41;
 const SC_DELETE: u32 = 76;
+
+// ── the menus ───────────────────────────────────────────────────────────────
+
+/**
+ * One dropdown row.
+ *
+ * The label and the shortcut are `TextBuffer`s, not strings: the menu is painted
+ * every frame it is open, and `String.UTF8.encode` allocates. They are written
+ * once, when the menu is built.
+ */
+class MenuItem {
+  label: string;
+  shortcut: string;
+  act: i32;
+  text: TextBuffer;
+  short: TextBuffer;
+  labelW: i32 = 0;
+  shortW: i32 = 0;
+  /** The id this row records, and the id `Hits.at` answers for it. */
+  hitId: i32 = 0;
+
+  constructor(label: string, shortcut: string, act: i32) {
+    this.label = label;
+    this.shortcut = shortcut;
+    this.act = act;
+    const t = new TextBuffer(32);
+    t.set(label);
+    const s = new TextBuffer(16);
+    s.set(shortcut);
+    this.text = t;
+    this.short = s;
+  }
+}
+
+/** One menu: a title in the bar and the rows under it. */
+class MenuDef {
+  title: string;
+  /** The title's UTF-8, written once: the bar is painted every frame. */
+  titleBytes: TextBuffer;
+  items: MenuItem[] = new Array<MenuItem>();
+  /** The menu-bar button's slot, filled once the tree is built. */
+  button: i32 = -1;
+  titleW: i32 = 0;
+
+  constructor(title: string) {
+    this.title = title;
+    const t = new TextBuffer(16);
+    t.set(title);
+    this.titleBytes = t;
+  }
+
+  add(label: string, shortcut: string, act: i32): MenuItem {
+    const item = new MenuItem(label, shortcut, act);
+    this.items.push(item);
+    return item;
+  }
+}
 
 // ── the viewport ────────────────────────────────────────────────────────────
 
@@ -111,8 +227,6 @@ const SC_DELETE: u32 = 76;
  * smallest honest use of it: four methods, no engine knowledge. The widget **owns
  * its own rect** — `arrange` is handed the rectangle the row gave it and keeps it,
  * so the frame's camera and the scene's clip read the same numbers the UI drew at.
- * Before the tree, those numbers were recomputed by hand in two places from four
- * constants.
  *
  * The caption is built with a `TextBuilder` the behavior owns rather than with a
  * widget's text, because it is a *caption about this widget*, not content:
@@ -124,7 +238,18 @@ class ViewportBehavior implements WidgetBehavior {
   y: i32 = 0;
   w: i32 = 0;
   h: i32 = 0;
+  /** `Mode.Play` draws the banner; `Mode.Edit` draws the caption alone. */
+  mode: i32 = Mode.Edit;
   private label: TextBuilder = new TextBuilder(64);
+  /** "PLAYING …" as UTF-8, encoded once. A banner per frame would allocate. */
+  private banner: Uint8Array = new Uint8Array(64);
+  private bannerLen: i32 = 0;
+
+  constructor() {
+    const text: string = "PLAYING - Stop returns to the editor";
+    this.bannerLen = <i32>String.UTF8.encodeUnsafe(changetype<usize>(text), text.length,
+                                                  this.banner.dataStart);
+  }
 
   measure(ui: Ui, id: i32): void {
     // Nothing intrinsic: the row's flex gives it the width that is left, and the
@@ -162,13 +287,25 @@ class ViewportBehavior implements WidgetBehavior {
     p.vline(this.x, this.y, this.h, div, page);
     p.vline(this.x + this.w - 1, this.y, this.h, div, page);
 
+    if (this.mode == Mode.Play) {
+      // The banner is a band of `Surface` plus one bright line. Not a scrim: a
+      // full-panel fill is ~1,500 records and the frame's budget is 4,096 for
+      // everything (`ui/theme.ts`), so the honest way to say "playing" is to say
+      // it, not to darken the world behind it.
+      const bandH: i32 = page.lineStep + 2 * 6;
+      p.fill(this.x + 1, this.y + 1, this.w - 2, bandH, page.chromeCell(Chrome.Surface), page);
+      p.textBytes(this.banner, 0, this.bannerLen, this.x + PANEL_PAD, this.y + 7,
+                  HEADING, BOLD, 0, this.y + 1, this.y + 1 + bandH, page);
+    }
+
     // **Clipped to the panel**: this text is longer than a narrow viewport, and
     // unclipped it drew straight over the inspector — the same bug the game
     // scene's own clip exists to prevent, in the UI layer. It is the framework's
     // clip now, not a hand-trimmed string.
     p.pushClip(this.x, this.y, this.w, this.h);
-    p.textBytes(this.label.bytes, 0, this.label.len, this.x + PANEL_PAD, this.y + BAR_PAD,
-                MUTED, REGULAR, 0, this.y, this.y + this.h, page);
+    p.textBytes(this.label.bytes, 0, this.label.len, this.x + PANEL_PAD,
+                this.y + this.h - page.lineStep - 4, MUTED, REGULAR, 0,
+                this.y, this.y + this.h, page);
     p.popClip();
   }
 
@@ -213,7 +350,7 @@ class SceneModel extends ListSource {
  *
  * `ListBehavior` already recycles rows, clips its own subtree and maps the wheel;
  * the only thing a scene tree adds is that the selected row is marked. Drawing it
- * from the *list's* own paint — rather than from the app, which no longer draws —
+ * from the *list's* own paint — rather than from the app, which does not draw —
  * is what keeps the underline inside the list's clip and in step with the rows the
  * arrange just placed.
  */
@@ -237,12 +374,70 @@ class SceneTreeBehavior extends ListBehavior {
   }
 }
 
+// ── the menu-bar button ─────────────────────────────────────────────────────
+
+/**
+ * A menu's title in the bar: text that behaves like a button.
+ *
+ * A `Button` was the other option and it is the wrong shape here — a filled box per
+ * menu reads as a toolbar of four buttons, not as a menu bar. So this is a custom
+ * behavior: it measures like a label, paints a `Surface` behind itself while it is
+ * open or hovered, and opens its menu on a press. That is the whole of what the
+ * open extension point is for, and it is nine lines of drawing.
+ */
+class MenuButtonBehavior implements WidgetBehavior {
+  app: Editor;
+  menu: i32 = 0;
+
+  constructor(app: Editor, menu: i32) {
+    this.app = app;
+    this.menu = menu;
+  }
+
+  measure(ui: Ui, id: i32): void {
+    const t: WidgetTree = ui.tree;
+    const page = t.page[id];
+    const w: i32 = ui.book.measureText(page, REGULAR, this.app.menus[this.menu].title) +
+      2 * t.pad[id];
+    ui.setSize(id, w, page.lineStep + 2 * t.pad[id]);
+    ui.applyFloors(id);
+  }
+
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {}
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    const t: WidgetTree = ui.tree;
+    const page = t.page[id];
+    const x: i32 = t.x[id];
+    const y: i32 = t.y[id];
+    const w: i32 = t.w[id];
+    const h: i32 = t.h[id];
+    const open: bool = this.app.openMenu == this.menu;
+    const hovered: bool = (t.state[id] & State.Hover) != 0;
+    if (open || hovered) p.fill(x, y, w, h, page.chromeCell(Chrome.Surface), page);
+    if (open) p.hline(x, y + h - 1, w, page.chromeCell(Chrome.White), page);
+    const tw: i32 = ui.book.measureText(page, REGULAR, this.app.menus[this.menu].title);
+    p.textBytes(this.app.menus[this.menu].titleBytes.bytes, 0,
+                this.app.menus[this.menu].titleBytes.len,
+                x + (w - tw) / 2, y + (h - page.lineStep) / 2,
+                open ? HEADING : NORMAL, REGULAR, 0, y, y + h, page);
+    p.addHit(x, y, w, h, t.id[id], id);
+  }
+
+  handle(ui: Ui, id: i32, ev: UiEvent): bool {
+    if (ev.kind == UiEventKind.Click) {
+      this.app.toggleMenu(this.menu);
+      return true;
+    }
+    return false;
+  }
+}
+
 // ── the handlers ────────────────────────────────────────────────────────────
 //
 // Handlers are objects with a method, not closures: a closure stored by the
 // framework and called back from another module traps on this compiler
-// (`docs/modules/ui.md` §14 has the measurement). A one-line class is the shape an
-// app writes, and it is an ordinary object, so it may hold `this`.
+// (`docs/modules/ui.md` §14). A one-line class is the shape an app writes.
 
 /** A click on a row of the scene tree: `ui.lastItem` is the item that was hit. */
 class SelectRow implements ClickTarget {
@@ -257,29 +452,63 @@ class SelectRow implements ClickTarget {
   }
 }
 
-/** The X field changed: apply what it holds, live, as one merged edit. */
-class EditX implements ChangeTarget {
+/** A property field changed: apply it, live, as one merged edit. */
+class PropertyEdit implements ChangeTarget {
   app: Editor;
+  kind: i32;
 
-  constructor(app: Editor) {
+  constructor(app: Editor, kind: i32) {
     this.app = app;
+    this.kind = kind;
   }
 
   change(value: i32): void {
-    this.app.applyField();
+    this.app.applyField(this.kind);
   }
 }
 
-/** Return in the X field: apply, then normalise what the field shows. */
-class SubmitX implements ClickTarget {
+/** Return in a property field: apply, then show the canonical value. */
+class PropertySubmit implements ClickTarget {
   app: Editor;
+  kind: i32;
 
-  constructor(app: Editor) {
+  constructor(app: Editor, kind: i32) {
     this.app = app;
+    this.kind = kind;
   }
 
   click(): void {
-    this.app.commitField();
+    this.app.commitField(this.kind);
+  }
+}
+
+/** A click on the caption beside a field: focus that field. */
+class FocusField implements ClickTarget {
+  app: Editor;
+  field: i32;
+
+  constructor(app: Editor, field: i32) {
+    this.app = app;
+    this.field = field;
+  }
+
+  click(): void {
+    this.app.ui.setFocus(this.field);
+  }
+}
+
+/** A toolbar button: run one `Act`. */
+class RunAct implements ClickTarget {
+  app: Editor;
+  act: i32;
+
+  constructor(app: Editor, act: i32) {
+    this.app = app;
+    this.act = act;
+  }
+
+  click(): void {
+    this.app.runAct(this.act);
   }
 }
 
@@ -292,39 +521,53 @@ class Editor extends AppShell {
   palette: Palette = Palette.create(this.history);
 
   // --- the tree ----------------------------------------------------------
-  //
-  // Built in the constructor, resized on every `onResize`. One `Ui` holds the
-  // tree, the font book and the frame's hit list; the shell's `Painter` is what
-  // the tree paints into.
   book: FontBook = fontBook();
   ui: Ui = new Ui(new WidgetTree(fontBook()));
 
-  private main: i32 = -1;
+  private sidebar: i32 = -1;
+  private inspector: i32 = -1;
+  private consoleCol: i32 = -1;
   private sceneList: i32 = -1;
   private sceneTree: SceneTreeBehavior = new SceneTreeBehavior();
   private sceneModel: SceneModel = new SceneModel(this);
   private viewport: ViewportBehavior = new ViewportBehavior();
 
   private undoLabel: i32 = -1;
-  private field: i32 = -1;
   private inspName: i32 = -1;
-  private inspY: i32 = -1;
-  private inspZ: i32 = -1;
   private inspFrame: i32 = -1;
   private inspParent: i32 = -1;
   private inspVisible: i32 = -1;
   private inspHint: i32 = -1;
   private consoleUndo: i32 = -1;
   private consoleLast: i32 = -1;
+  private consoleLog: i32 = -1;
   private consoleKeys: i32 = -1;
   private statusLeft: i32 = -1;
   private statusRight: i32 = -1;
+
+  /** The three editable properties, in inspector order, and their `PropKind`s. */
+  private fields: i32[] = new Array<i32>(3);
+  private fieldKinds: i32[] = new Array<i32>(3);
+
+  // --- the menus ---------------------------------------------------------
+  menus: MenuDef[] = new Array<MenuDef>();
+  /** Which menu is open, or -1. */
+  openMenu: i32 = -1;
+  /** The overlay's rectangle, recomputed when a menu opens. */
+  private menuX: i32 = 0;
+  private menuY: i32 = 0;
+  private menuW: i32 = 0;
+  private menuH: i32 = 0;
+  /** The menu row under the pointer, from the last paint's hit list. */
+  private menuHover: i32 = -1;
+  /** Set by `toggleMenu`, so the press that opened a menu does not close it. */
+  private menuToggled: bool = false;
 
   // --- the flattened tree, for the list ----------------------------------
   //
   // A list addresses its rows by index and the document addresses its nodes by
   // id; these arrays are the map. Rebuilt only when the document's *shape*
-  // changes — never per frame, and never by a `Document.ids()` call in a paint.
+  // changes — never per frame.
   orderIds: i32[] = new Array<i32>(256);
   private orderDepths: i32[] = new Array<i32>(256);
   orderCount: i32 = 0;
@@ -338,22 +581,31 @@ class Editor extends AppShell {
   private boxes: Sprite[] = [];
   private boxDx: f32[] = [];
   private boxDy: f32[] = [];
+  private startX: i32[] = [80, 300, 520, 700, 180, 620];
+  private startY: i32[] = [120, 380, 200, 480, 460, 60];
   private t: f32 = 0.0;
 
   // --- interaction --------------------------------------------------------
   /** The node the inspector is showing, and the document selected. */
   selected: i32 = ROOT_ID;
-  /** Whether the field held focus last frame, for the blur commit. */
-  private fieldWasFocused: bool = false;
+  /** The widget that held the focus last frame, for the commit-on-blur edge. */
+  private lastFocus: i32 = -1;
   /** Whether the console's history lines need rebuilding. */
   private consoleDirty: bool = true;
   /** Frames drawn, for the status bar and a sanity check. */
   private drawn: i32 = 0;
   private lastUndo: string = "";
   private built: bool = false;
+  /** `Mode.Edit` or `Mode.Play`. */
+  private mode: i32 = Mode.Edit;
+  /** The console's last log line. */
+  private logLine: string = "(ready)";
+  /** The bytes the last save wrote, so `Revert` has something to go back to. */
+  private snapshot: Bytes | null = null;
 
   constructor() {
     super("tension-editor", fontBook().pages[0], 240);
+    this.buildMenus();
     this.build(1280, 720);
   }
 
@@ -365,10 +617,8 @@ class Editor extends AppShell {
    * The pages come out of the volume (`assets/ui.N.iwi`, baked from real outlines
    * by `npm run assets`) and `loadFontBook` uploads them as the layers of one
    * texture array — which is what lets a single record name its page. The game's
-   * atlas is **generated here**, four solid colour cells, because this pass is
-   * about the composite and not an asset pipeline. It is still a real texture at a
-   * real, *different* size, which is the harder case: the renderer rebinds
-   * `u_tex_size` per span.
+   * atlas is **generated here**, because this pass is about the composite and not
+   * an asset pipeline.
    */
   protected loadAssets(canvas: Canvas, pipe: i32): bool {
     const bound: i32 = loadFontBook(canvas, pipe);
@@ -394,6 +644,7 @@ class Editor extends AppShell {
     }
 
     this.buildScene();
+    this.log("ready: " + this.doc.liveCount.toString() + " nodes");
     print("tension-editor: ui pipe " + pipe.toString() + " / game pipe " +
       this.gamePipe.toString() + ", " + this.boxes.length.toString() + " boxes");
     return true;
@@ -409,23 +660,69 @@ class Editor extends AppShell {
    *
    * `WidgetTree.resize` marks the root for an arrange and stops there. No widget
    * is re-measured by a resize — that is the property the two passes exist for —
-   * and the split re-clamps its divider out of its own `arrange`, so a window
-   * narrowed past a pane's floor cannot leave the divider outside the frame.
+   * and the split re-clamps its divider out of its own `arrange`.
    */
   protected onResize(width: i32, height: i32): void {
     this.ui.tree.resize(width, height);
+    // A menu anchored to a button that has moved is drawn at the old place, so it
+    // closes: a popup at the wrong coordinates is worse than a popup that shut.
+    this.openMenu = -1;
+  }
+
+  // ── the menus, once ─────────────────────────────────────────────────────
+
+  /** The four menus, their rows, and the ids their rows record. */
+  private buildMenus(): void {
+    const file = new MenuDef("File");
+    file.add("Save scene", "Ctrl+S", Act.Save);
+    // **Revert, not Load**, and the difference is the host's, not the app's: a
+    // guest cannot read back what it wrote. `tension::res` is a read-only VFS over
+    // the packed volumes and `res_write` is the one verb that lands on the
+    // filesystem, so the bytes go out and cannot come in. Until the host lets
+    // `res_open` fall back to the write root, this item restores the snapshot the
+    // last save took — which is the half of "load" that is honest to offer.
+    file.add("Revert to saved", "", Act.Revert);
+    file.add("Exit", "", Act.Exit);
+
+    const edit = new MenuDef("Edit");
+    edit.add("Undo", "Ctrl+Z", Act.Undo);
+    edit.add("Redo", "Ctrl+Y", Act.Redo);
+    edit.add("Add node", "Ctrl+A", Act.AddNode);
+    edit.add("Delete node", "Del", Act.DeleteNode);
+
+    const view = new MenuDef("View");
+    view.add("Console", "", Act.ToggleConsole);
+    view.add("Inspector", "", Act.ToggleInspector);
+
+    const run = new MenuDef("Run");
+    run.add("Play", "", Act.Play);
+    run.add("Stop", "", Act.Stop);
+    run.add("Restart", "", Act.Restart);
+
+    this.menus.push(file);
+    this.menus.push(edit);
+    this.menus.push(view);
+    this.menus.push(run);
+
+    // Ids and widths are assigned once, here: the popup paints every frame it is
+    // open and none of this may be recomputed there.
+    const page = this.book.pages[0];
+    let next: i32 = 0;
+    for (let m: i32 = 0; m < this.menus.length; m++) {
+      const def = this.menus[m];
+      for (let i: i32 = 0; i < def.items.length; i++) {
+        const item = def.items[i];
+        item.hitId = MENU_HIT_BASE - next;
+        next++;
+        item.labelW = this.book.measureText(page, REGULAR, item.label);
+        item.shortW = item.shortcut.length > 0
+          ? this.book.measureText(page, REGULAR, item.shortcut) : 0;
+      }
+    }
   }
 
   // ── the tree, once ──────────────────────────────────────────────────────
 
-  /**
-   * Build the whole widget tree.
-   *
-   * Called once, from the constructor. Everything here is authoring: no measure,
-   * no paint, no input. The sizes are the design's; the *type* is the page's, so a
-   * bar's height is `BAR_H` (a line plus air) while a panel's inset is
-   * `page.pad(...)`'s business.
-   */
   private build(w: i32, h: i32): void {
     const ui: Ui = this.ui;
     const root: i32 = ui.root(w, h);
@@ -433,35 +730,40 @@ class Editor extends AppShell {
 
     // ── the menu bar ──────────────────────────────────────────────────────
     const menu: i32 = ui.row(col, { minH: BAR_H, pad: BAR_PAD, gap: ITEM_GAP });
-    // Clipped to its own box: this is what replaces the old `fit()` helper. The
-    // undo label can be longer than the window, and a clipped child is the same
-    // answer as a truncated string with none of the arithmetic.
     ui.clips(menu);
-    ui.label(menu, "File", { colour: MUTED });
-    ui.label(menu, "Edit", { colour: MUTED });
-    ui.label(menu, "View", { colour: MUTED });
-    ui.label(menu, "Run", { colour: MUTED });
+    // Clipped to its own box: the undo label is the last child and a long one would
+    // otherwise draw past the window edge. Nothing that needs to be *reachable*
+    // depends on overrunning — the toolbar buttons come before the label.
+    for (let m: i32 = 0; m < this.menus.length; m++) {
+      const btn: i32 = ui.node(menu, new MenuButtonBehavior(this, m), { pad: 6 });
+      this.menus[m].button = btn;
+    }
     ui.spacer(menu, 1);
+    const tools: i32 = ui.row(menu, { gap: 6, align: ALIGN_CENTER });
+    ui.button(tools, "Play", { pad: 3 });
+    ui.button(tools, "Stop", { pad: 3 });
+    ui.button(tools, "Restart", { pad: 3 });
+    // The three buttons are bound by index, in build order, so the target and the
+    // widget cannot drift: `runAct` is what both a button and a menu row call.
+    let b: i32 = ui.tree.firstChild[tools];
+    if (b >= 0) { ui.onClick(b, new RunAct(this, Act.Play)); b = ui.tree.nextSibling[b]; }
+    if (b >= 0) { ui.onClick(b, new RunAct(this, Act.Stop)); b = ui.tree.nextSibling[b]; }
+    if (b >= 0) { ui.onClick(b, new RunAct(this, Act.Restart)); }
     this.undoLabel = ui.label(menu, "", { colour: LINK });
     ui.rule(col);
 
     // ── the body: sidebar | viewport + inspector ─────────────────────────
-    //
-    // One split, because there is one divider the user drags. The inspector is a
-    // *fixed* 360 inside the right-hand pane rather than a second pane, which is
-    // the difference between "the split is the sidebar's edge" and "a resize
-    // resets two dividers".
     const main: i32 = ui.split(col, Axis.X, { flex: 1 });
-    this.main = main;
     ui.divider(main, SIDEBAR_W);
 
     const sidebar: i32 = ui.column(main, { minW: SIDEBAR_W, pad: PANEL_PAD, gap: 2 });
+    this.sidebar = sidebar;
     ui.clips(sidebar);
     ui.label(sidebar, "SCENE", { colour: HEADING, weight: BOLD });
     this.sceneList = ui.list(sidebar, this.sceneModel, TREE_ROWS, { flex: 1 });
     // The list, drawn by a behavior that also marks the selection. `setBehavior`
-    // is the extension point: everything `ui.list` set up (the recycled rows, the
-    // clip, the scroll state) stays, and only the paint changes.
+    // is the extension point: everything `ui.list` set up stays, and only the
+    // paint changes.
     ui.setBehavior(this.sceneList, this.sceneTree);
     // The tree's names are identifiers, so they are set in the mono face.
     this.setFont(this.sceneList, FONT_MONO, SIZE_14);
@@ -470,16 +772,15 @@ class Editor extends AppShell {
     const vp: i32 = ui.node(body, this.viewport, { flex: 1 });
     ui.flex(vp, 1);
 
-    const inspector: i32 = ui.column(body, { minW: INSPECTOR_W, pad: PANEL_PAD, gap: 2 });
+    const inspector: i32 = ui.column(body, { minW: INSPECTOR_W, pad: PANEL_PAD, gap: 6 });
+    this.inspector = inspector;
     ui.clips(inspector);
     ui.label(inspector, "INSPECTOR", { colour: HEADING, weight: BOLD });
     this.inspName = ui.label(inspector, "", { colour: HEADING, weight: BOLD });
     ui.rule(inspector);
-    const fieldRow: i32 = ui.row(inspector, { gap: 12 });
-    ui.label(fieldRow, "x", { colour: MUTED });
-    this.field = ui.field(fieldRow, "", { minW: 140, pad: 2, flex: 1 });
-    this.inspY = ui.label(inspector, "", { colour: MUTED });
-    this.inspZ = ui.label(inspector, "", { colour: MUTED });
+    this.buildField(inspector, "x", PropKind.X, 0);
+    this.buildField(inspector, "y", PropKind.Y, 1);
+    this.buildField(inspector, "z", PropKind.Z, 2);
     this.inspFrame = ui.label(inspector, "", { colour: MUTED });
     this.inspParent = ui.label(inspector, "", { colour: MUTED });
     this.inspVisible = ui.label(inspector, "", { colour: MUTED });
@@ -489,15 +790,18 @@ class Editor extends AppShell {
 
     // ── the console ───────────────────────────────────────────────────────
     const consoleCol: i32 = ui.column(col, { minH: CONSOLE_H, pad: PANEL_PAD, gap: 2 });
+    this.consoleCol = consoleCol;
     ui.clips(consoleCol);
     ui.label(consoleCol, "CONSOLE", { colour: HEADING, weight: BOLD });
     this.consoleUndo = ui.label(consoleCol, "", { colour: MUTED });
     this.consoleLast = ui.label(consoleCol, "", { colour: MUTED });
+    this.consoleLog = ui.label(consoleCol, "", { colour: LINK });
     this.consoleKeys = ui.label(consoleCol, "", { colour: MUTED });
     // Code is monospaced: the console's columns were aligned in the old build and a
     // proportional face would undo that silently.
     ui.font(this.consoleUndo, FONT_MONO, SIZE_14);
     ui.font(this.consoleLast, FONT_MONO, SIZE_14);
+    ui.font(this.consoleLog, FONT_MONO, SIZE_14);
     ui.font(this.consoleKeys, FONT_MONO, SIZE_14);
     ui.rule(col);
 
@@ -514,11 +818,38 @@ class Editor extends AppShell {
     // a list is where its rows' clicks belong. `ui.onClick` on the list is
     // therefore "a row was clicked", and `ui.lastItem` says which one.
     ui.onClick(this.sceneList, new SelectRow(this));
-    ui.onChange(this.field, new EditX(this));
-    ui.onSubmit(this.field, new SubmitX(this));
 
     this.syncOrder();
     this.syncConsole();
+  }
+
+  /**
+   * One property row: a caption that focuses the field, and the field.
+   *
+   * The caption is `ui.clickable` because a `Label` records no hit by default — a
+   * caption is for reading. Making it a target is what lets a click anywhere on the
+   * row's left half put the caret in the field, which is where a user aiming at
+   * "x" expects to end up.
+   */
+  private buildField(parent: i32, caption: string, kind: i32, index: i32): void {
+    const ui: Ui = this.ui;
+    // **The row stretches; the caption is what is centred.** Putting `align` on
+    // the row instead centres the *row* inside the column, which measured it from
+    // its content — a 164-px row floating in a 340-px panel, with the field squeezed
+    // to its floor. Measured, and the reason the caption carries the alignment.
+    const row: i32 = ui.row(parent, { gap: 12 });
+    const lab: i32 = ui.label(row, caption, { colour: MUTED, align: ALIGN_CENTER });
+    const field: i32 = ui.field(row, "", { minW: 140, pad: 3, flex: 1 });
+    this.fields[index] = field;
+    this.fieldKinds[index] = kind;
+    ui.onChange(field, new PropertyEdit(this, kind));
+    ui.onSubmit(field, new PropertySubmit(this, kind));
+    // **The whole row focuses the field**, not only the caption. A click four pixels
+    // above a field used to land on nothing, blur the field, and leave the next
+    // Backspace to delete a node — measured. The row's own hit is recorded before
+    // its children, so the field still wins a click that lands on the field.
+    ui.clickable(row);
+    ui.onClick(row, new FocusField(this, field));
   }
 
   /** Give a list (and the rows it will recycle) one page. */
@@ -563,11 +894,9 @@ class Editor extends AppShell {
       new Frame(0, <u16>(BOX * 2), <u16>0, <u16>BOX, <u16>BOX),
       new Frame(0, <u16>(BOX * 3), <u16>0, <u16>BOX, <u16>BOX),
     ];
-    const startX: i32[] = [80, 300, 520, 700, 180, 620];
-    const startY: i32[] = [120, 380, 200, 480, 460, 60];
     for (let i: i32 = 0; i < BOXES; i++) {
       const sprite = this.gameScene.spawn(cells[i % 4]);
-      sprite.moveTo(<f32>startX[i], <f32>startY[i]);
+      sprite.moveTo(<f32>this.startX[i], <f32>this.startY[i]);
       this.boxes.push(sprite);
       this.boxDx.push(i % 2 == 0 ? 1.5 : -1.5);
       this.boxDy.push(i % 3 == 0 ? 1.0 : -1.0);
@@ -602,21 +931,24 @@ class Editor extends AppShell {
       b.moveTo(x, y);
     }
 
-    // **One dispatch per frame**, and `readText` inside it is the frame's only read
-    // of the typed stream — the queue has one consumer or it has two.
+    // **One dispatch per frame**, against the *previous* frame's hit list, and
+    // `readText` inside it is the frame's only read of the typed stream — the queue
+    // has one consumer or it has two.
+    this.menuToggled = false;
     if (this.inputReady && this.input.read()) {
       this.ui.frame(this.input);
     } else {
       this.ui.frame(null);
     }
 
+    this.trackMenu();
     this.commitOnBlur();
-    // A focused field owns the keyboard, so the commands stand down: a Backspace
-    // meant for a number is not a request to delete a node.
-    if (this.ui.focusId < 0) this.shortcuts();
+    // The commands run whatever holds the focus — except the ones that a *typing*
+    // key would shadow. See `shortcuts` for which and why.
+    this.shortcuts();
   }
 
-  /** One frame: layout, the game into bucket 0, the tree into bucket 1. */
+  /** One frame: layout, the game into bucket 0, the tree and the popup into bucket 1. */
   protected draw(p: Painter): void {
     this.drawn++;
     this.syncOrder();
@@ -638,26 +970,251 @@ class Editor extends AppShell {
     }
 
     this.ui.tree.paint(p, this.ui.hits);
+    // The dropdown goes into the same hit list, after the tree, so it is on top of
+    // every panel and its rows win the hit test.
+    this.drawMenu(p);
+  }
+
+  // ── the popup ───────────────────────────────────────────────────────────
+
+  /** Open `which`, or close it if it is already open. */
+  toggleMenu(which: i32): void {
+    if (this.openMenu == which) {
+      this.openMenu = -1;
+      return;
+    }
+    this.showMenu(which);
+  }
+
+  private showMenu(which: i32): void {
+    const m = this.menus[which];
+    let w: i32 = 0;
+    let h: i32 = 2 * MENU_PAD;
+    for (let i: i32 = 0; i < m.items.length; i++) {
+      const it = m.items[i];
+      const rowW: i32 = it.labelW + (it.shortW > 0 ? MENU_GAP + it.shortW : 0);
+      if (rowW > w) w = rowW;
+      h += MENU_ITEM_H;
+    }
+    w += 2 * MENU_PAD_X;
+
+    let x: i32 = this.ui.xOf(m.button);
+    const maxX: i32 = this.width - w - 2;
+    if (x > maxX) x = maxX > 0 ? maxX : 0;
+    this.menuX = x;
+    this.menuY = this.ui.yOf(m.button) + this.ui.hOf(m.button);
+    this.menuW = w;
+    this.menuH = h;
+    this.openMenu = which;
+    this.menuToggled = true;
+  }
+
+  /** Paint the open menu, into the frame's hit list. */
+  private drawMenu(p: Painter): void {
+    if (this.openMenu < 0) return;
+    const m = this.menus[this.openMenu];
+    const page = this.book.pages[0];
+    const x: i32 = this.menuX;
+    const y: i32 = this.menuY;
+    const w: i32 = this.menuW;
+    const h: i32 = this.menuH;
+
+    // Re-arm the hit list: `tree.paint` disarms it when it returns, because a
+    // caller that draws after the tree should not be able to record targets
+    // silently. This one is deliberate.
+    p.useHits(this.ui.hits);
+    p.fill(x, y, w, h, page.chromeCell(Chrome.Surface), page);
+    p.hline(x, y, w, page.chromeCell(Chrome.White), page);
+    p.hline(x, y + h - 1, w, page.chromeCell(Chrome.Divider), page);
+    p.vline(x, y, h, page.chromeCell(Chrome.Divider), page);
+    p.vline(x + w - 1, y, h, page.chromeCell(Chrome.Divider), page);
+
+    for (let i: i32 = 0; i < m.items.length; i++) {
+      const it = m.items[i];
+      const ry: i32 = y + MENU_PAD + i * MENU_ITEM_H;
+      if (it.hitId == this.menuHover) {
+        p.fill(x + 1, ry, w - 2, MENU_ITEM_H, page.chromeCell(Chrome.Selection), page);
+      }
+      const ty: i32 = ry + (MENU_ITEM_H - page.lineStep) / 2;
+      p.textBytes(it.text.bytes, 0, it.text.len, x + MENU_PAD_X, ty,
+                  NORMAL, REGULAR, 0, ry, ry + MENU_ITEM_H, page);
+      if (it.short.len > 0) {
+        p.textBytes(it.short.bytes, 0, it.short.len, x + w - MENU_PAD_X - it.shortW, ty,
+                    MUTED, REGULAR, 0, ry, ry + MENU_ITEM_H, page);
+      }
+      p.addHit(x + 1, ry, w - 2, MENU_ITEM_H, it.hitId, it.hitId);
+    }
+    p.useHits(null);
+  }
+
+  /** Hover, click and dismiss for the popup. Runs after the dispatch. */
+  private trackMenu(): void {
+    const mx: i32 = this.input.mouseX;
+    const my: i32 = this.input.mouseY;
+    const over: i32 = this.ui.hits.at(mx, my);
+    this.menuHover = this.itemByHit(over) != null ? over : -1;
+
+    if (!this.input.buttonPressed(1)) return;
+    const item = this.itemByHit(over);
+    if (item != null) {
+      this.openMenu = -1;
+      this.runAct(item!.act);
+      return;
+    }
+    // A press anywhere else dismisses — except the press that opened a menu, which
+    // the button's own behavior already handled this frame.
+    if (this.openMenu >= 0 && !this.menuToggled) this.openMenu = -1;
+  }
+
+  /** The row a hit id belongs to, or null. */
+  private itemByHit(hitId: i32): MenuItem | null {
+    if (hitId > MENU_HIT_BASE) return null;
+    for (let m: i32 = 0; m < this.menus.length; m++) {
+      const def = this.menus[m];
+      for (let i: i32 = 0; i < def.items.length; i++) {
+        if (def.items[i].hitId == hitId) return def.items[i];
+      }
+    }
+    return null;
+  }
+
+  // ── the actions ─────────────────────────────────────────────────────────
+
+  /** The one dispatcher for everything a menu row or a toolbar button means. */
+  runAct(act: i32): void {
+    if (act == Act.Save) { this.saveScene(); return; }
+    if (act == Act.Revert) { this.revertScene(); return; }
+    if (act == Act.Exit) {
+      this.log("exit");
+      print("tension-editor: exit requested from the File menu");
+      this.stopLoop("the File menu asked to exit");
+      return;
+    }
+    if (act == Act.Undo) {
+      if (this.history.undo(this.doc)) this.afterEdit("undo");
+      this.syncSelection();
+      return;
+    }
+    if (act == Act.Redo) {
+      if (this.history.redo(this.doc)) this.afterEdit("redo");
+      this.syncSelection();
+      return;
+    }
+    if (act == Act.AddNode) { this.addNode(); return; }
+    if (act == Act.DeleteNode) { this.deleteNode(); return; }
+    if (act == Act.ToggleConsole) {
+      this.ui.hidden(this.consoleCol, !this.ui.isHidden(this.consoleCol));
+      this.log(this.ui.isHidden(this.consoleCol) ? "console: hidden" : "console: shown");
+      return;
+    }
+    if (act == Act.ToggleInspector) {
+      this.ui.hidden(this.inspector, !this.ui.isHidden(this.inspector));
+      this.log(this.ui.isHidden(this.inspector) ? "inspector: hidden" : "inspector: shown");
+      return;
+    }
+    if (act == Act.Play) { this.setMode(Mode.Play); return; }
+    if (act == Act.Stop) { this.setMode(Mode.Edit); return; }
+    if (act == Act.Restart) { this.restartScene(); return; }
+  }
+
+  /** Save the document where the host's write root puts it, and keep a copy. */
+  private saveScene(): void {
+    const bytes: Bytes = this.doc.toBytes();
+    const wrote: i32 = resWriteFile("saves/scene.json", bytes);
+    if (wrote < 0) {
+      this.log("save failed: " + wrote.toString());
+      print("tension-editor: save failed: " + wrote.toString());
+      return;
+    }
+    this.snapshot = bytes;
+    this.log("saved " + this.doc.liveCount.toString() + " nodes (" +
+             wrote.toString() + " bytes) to saves/scene.json");
+    print("tension-editor: saved saves/scene.json (" + wrote.toString() + " bytes)");
   }
 
   /**
-   * Frame the first box, clamped to the world.
+   * Put the document back to what the last save wrote.
    *
-   * A real editor tracks the selection; pointing the camera at the scene tree's
-   * selection is the obvious next step and not this pass's.
+   * A **new** document rather than a command: undoing *into* a document that is no
+   * longer open is a different feature, and the history holds commands that name
+   * ids from the old one. So the history is dropped, which is also what a load
+   * does in every editor that has one.
    */
-  private cameraToBoxes(vp: ViewportBehavior): void {
-    if (this.boxes.length == 0) return;
-    const lead = this.boxes[0];
-    const cx: f32 = lead.x + <f32>BOX * 0.5 - <f32>vp.w * 0.5;
-    const cy: f32 = lead.y + <f32>BOX * 0.5 - <f32>vp.h * 0.5;
-    const maxX: f32 = <f32>(WORLD_W - vp.w);
-    const maxY: f32 = <f32>(WORLD_H - vp.h);
-    this.gameScene.setCamera(clamp(cx, 0.0, maxX > 0.0 ? maxX : 0.0),
-                             clamp(cy, 0.0, maxY > 0.0 ? maxY : 0.0));
+  private revertScene(): void {
+    if (this.snapshot == null) {
+      this.log("revert: nothing saved yet");
+      return;
+    }
+    const err = new JsonError();
+    const loaded = Document.fromBytes(this.snapshot!, err);
+    if (!err.ok) {
+      this.log("revert failed: " + err.message);
+      return;
+    }
+    this.doc = loaded;
+    this.history.clear();
+    this.selected = ROOT_ID;
+    this.doc.select(ROOT_ID, true);
+    this.orderDirty = true;
+    this.consoleDirty = true;
+    this.syncOrder();
+    this.log("reverted to the saved snapshot (" + this.doc.liveCount.toString() + " nodes)");
+    print("tension-editor: reverted to the saved snapshot");
   }
 
-  // ── the status bar ──────────────────────────────────────────────────────
+  private addNode(): void {
+    const args = new Args();
+    args.parent = this.selected >= 0 ? this.selected : ROOT_ID;
+    args.text = "node";
+    if (this.palette.run(this.doc, "node.add", args)) {
+      this.selected = this.lastId();
+      this.orderDirty = true;
+      this.afterEdit("add");
+    }
+  }
+
+  private deleteNode(): void {
+    if (this.selected == ROOT_ID) return;
+    const args = Args.forNode(this.selected);
+    if (this.palette.run(this.doc, "node.remove", args)) {
+      this.selected = ROOT_ID;
+      this.orderDirty = true;
+      this.afterEdit("remove");
+    }
+  }
+
+  /** Enter or leave play mode: hide the chrome, and say so in three places. */
+  private setMode(m: i32): void {
+    if (this.mode == m) {
+      this.log(m == Mode.Play ? "run: already playing" : "run: already in the editor");
+      return;
+    }
+    this.mode = m;
+    const playing: bool = m == Mode.Play;
+    // **Hiding, not dimming.** A scrim over the chrome is ~5,000 records against a
+    // 4,096 budget, so the honest "the editor steps aside" is to collapse the three
+    // panels a player does not need. The bar stays — Stop has to be reachable.
+    this.ui.hidden(this.sidebar, playing);
+    this.ui.hidden(this.inspector, playing);
+    this.ui.hidden(this.consoleCol, playing);
+    this.viewport.mode = m;
+    const what: string = playing ? "play" : "stop";
+    this.log("run: " + what + " (mode " + m.toString() + ")");
+    print("tension-editor: run: " + what);
+  }
+
+  /** Put the boxes back where they started, and play. */
+  private restartScene(): void {
+    for (let i: i32 = 0; i < this.boxes.length; i++) {
+      this.boxes[i].moveTo(<f32>this.startX[i], <f32>this.startY[i]);
+    }
+    this.t = 0.0;
+    this.log("run: restart");
+    print("tension-editor: run: restart");
+    this.setMode(Mode.Play);
+  }
+
+  // ── the panels ──────────────────────────────────────────────────────────
 
   /**
    * The status bar, from the frame's text pool.
@@ -684,6 +1241,7 @@ class Editor extends AppShell {
     this.ui.textPool(this.statusLeft);
 
     pool.begin();
+    pool.str(this.mode == Mode.Play ? "PLAYING   " : "edit   ");
     pool.str("frame ");
     pool.int(this.drawn);
     pool.str("   game ");
@@ -692,7 +1250,7 @@ class Editor extends AppShell {
     this.ui.textPool(this.statusRight);
   }
 
-  /** The console's three history lines, rebuilt only when the history moved. */
+  /** The console's lines, rebuilt only when something in them moved. */
   private syncConsole(): void {
     if (!this.consoleDirty) return;
     this.consoleDirty = false;
@@ -702,7 +1260,13 @@ class Editor extends AppShell {
       : (this.history.canRedo ? "redo " + this.history.redoLabel() : "(nothing)");
     this.ui.text(this.consoleLast, "last: " + reachable);
     this.ui.text(this.consoleKeys,
-      "keys: ctrl+z undo   ctrl+y redo   ctrl+a add   del remove");
+      "keys: ctrl+z undo  ctrl+y redo  ctrl+a add  ctrl+s save  del remove");
+  }
+
+  /** Write one line to the console panel and to stdout. The panel shows the last. */
+  log(message: string): void {
+    this.logLine = message;
+    this.ui.text(this.consoleLog, "log: " + message);
   }
 
   // ── the scene tree's model ──────────────────────────────────────────────
@@ -711,8 +1275,8 @@ class Editor extends AppShell {
    * Flatten the document, rebuild the list, and re-point the selection.
    *
    * `orderDirty` is set by every edit that changes the tree's *shape* — add,
-   * remove, undo, redo — and never by a frame. `Document.ids()` allocates, and a
-   * paint is not where that belongs.
+   * remove, undo, redo, load — and never by a frame. `Document.ids()` allocates,
+   * and a paint is not where that belongs.
    */
   private syncOrder(): void {
     if (!this.orderDirty) return;
@@ -746,9 +1310,7 @@ class Editor extends AppShell {
    * Colour the rows: the selected one is white and bold, the rest body text.
    *
    * Done after the arrange, because a row's *item* is what the arrange decides — a
-   * recycled row was showing some other node a frame ago. A row whose item did not
-   * change is not touched, so this walks forty widgets and writes nothing on a
-   * frame where the selection held still.
+   * recycled row was showing some other node a frame ago.
    */
   private styleRows(): void {
     const t: WidgetTree = this.ui.tree;
@@ -768,15 +1330,15 @@ class Editor extends AppShell {
     }
   }
 
-  /** Select the row a click landed on, commit what the field held, and tell the doc. */
+  /** Select the row a click landed on, commit what a field held, and tell the doc. */
   selectItem(index: i32): void {
     if (index < 0 || index >= this.orderCount) return;
     const id: i32 = this.orderIds[index];
     if (id == this.selected) return;
     // The field belonged to the *old* node, so it commits before the selection
-    // moves — otherwise leaving the field by clicking a row would write the old
-    // text onto the new node's X.
-    if (this.fieldWasFocused) this.commitField();
+    // moves — otherwise leaving a field by clicking a row would write the old text
+    // onto the new node.
+    this.commitFocused();
     this.selected = id;
     this.selectedIndex = index;
     this.sceneTree.selected = index;
@@ -787,79 +1349,116 @@ class Editor extends AppShell {
 
   // ── the inspector ───────────────────────────────────────────────────────
 
-  /** Re-read the selected node into the inspector's labels and its field. */
+  /** Re-read the selected node into the inspector's fields and labels. */
   private syncInspector(): void {
     const id: i32 = this.selected;
     if (!this.doc.alive(id)) {
+      for (let i: i32 = 0; i < this.fields.length; i++) this.ui.text(this.fields[i], "");
       this.ui.text(this.inspName, "");
-      this.ui.text(this.inspY, "");
-      this.ui.text(this.inspZ, "");
       this.ui.text(this.inspFrame, "");
       this.ui.text(this.inspParent, "");
       this.ui.text(this.inspVisible, "");
-      this.ui.text(this.field, "");
       this.ui.text(this.inspHint, "nothing selected");
       return;
     }
     const node = this.doc.node(id);
     this.ui.text(this.inspName, "node " + id.toString() + "  " + node.name);
-    this.ui.text(this.inspY, "y " + node.y.toString());
-    this.ui.text(this.inspZ, "z " + node.z.toString());
+    // The fields show the *document's* values. While a user types, the edit applies
+    // live and nothing writes back — a field that rewrites itself under the caret
+    // is a field that moves the caret.
+    this.ui.text(this.fields[0], node.x.toString());
+    this.ui.text(this.fields[1], node.y.toString());
+    this.ui.text(this.fields[2], node.z.toString());
     this.ui.text(this.inspFrame, "frame " + node.frame.toString());
     this.ui.text(this.inspParent, "parent " + node.parent.toString());
     this.ui.text(this.inspVisible, "visible " + (node.visible ? "yes" : "no"));
-    // The field shows the canonical value whenever the selection moves. While a
-    // user types, `applyField` keeps the document in step and nothing re-reads the
-    // value back into the field — a field that rewrites itself under the caret is a
-    // field that moves the caret.
-    this.ui.text(this.field, node.x.toString());
-    this.ui.text(this.inspHint, "click x to edit");
+    this.ui.text(this.inspHint, "click a value to edit it; Enter or leaving applies");
   }
 
   // ── editing ─────────────────────────────────────────────────────────────
 
+  /** The field slot for a `PropKind`, or -1 when it is not one of the three. */
+  private slotOf(kind: i32): i32 {
+    for (let i: i32 = 0; i < this.fieldKinds.length; i++) {
+      if (this.fieldKinds[i] == kind) return this.fields[i];
+    }
+    return -1;
+  }
+
+  /** The `PropKind` a field slot edits, or -1. */
+  private kindOfField(slot: i32): i32 {
+    for (let i: i32 = 0; i < this.fields.length; i++) {
+      if (this.fields[i] == slot) return this.fieldKinds[i];
+    }
+    return -1;
+  }
+
   /**
-   * Apply what the field holds, live, as one undoable edit.
+   * Apply what a field holds, live, as one undoable edit.
    *
-   * `SetX.merge` collapses a burst of same-node edits, so a typed `12.5` is one
-   * history entry whose `before` is the value from before the first keystroke —
-   * which is what a drag does, and why `merge` exists at all.
+   * `SetProperty.merge` collapses a burst of same-node, same-property edits, so a
+   * typed `12.5` is one history entry whose `before` is the value from before the
+   * first keystroke — which is what a drag does, and why `merge` exists.
    */
-  applyField(): void {
+  applyField(kind: i32): void {
     const id: i32 = this.selected;
     if (!this.doc.alive(id)) return;
-    const text: string = this.ui.textOf(this.field);
+    const slot: i32 = this.slotOf(kind);
+    if (slot < 0) return;
+    const text: string = this.ui.textOf(slot);
     if (!looksNumeric(text)) return;
     const value: f32 = <f32>parseDecimal(text);
-    if (value == this.doc.xOf(id)) return;
-    this.history.exec(this.doc, new SetX(id, value));
-    this.afterEdit("set x");
+    if (value == this.doc.number(id, <PropKind>kind)) return;
+    this.history.exec(this.doc, new SetProperty(id, <PropKind>kind, value));
+    this.afterEdit("set " + propertyName(kind));
   }
 
-  /** Return, or leaving the field: apply, then show what the document holds. */
-  commitField(): void {
-    this.applyField();
-    const id: i32 = this.selected;
-    if (this.doc.alive(id)) this.ui.text(this.field, this.doc.node(id).x.toString());
+  /** Return, or leaving a field: apply, then show the document's value. */
+  commitField(kind: i32): void {
+    this.applyField(kind);
+    if (!this.doc.alive(this.selected)) return;
+    this.ui.text(this.slotOf(kind), this.doc.number(this.selected, <PropKind>kind).toString());
+  }
+
+  /** Commit whichever field currently holds the focus, if any. */
+  private commitFocused(): void {
+    const kind: i32 = this.kindOfField(this.ui.focusId);
+    if (kind >= 0) this.commitField(kind);
   }
 
   /**
-   * A focus loss commits.
+   * A focus loss commits; **Escape cancels**.
    *
    * The edge is tracked here rather than in a handler because focus lives in the
    * dispatcher: there is no "blur" event to bind, and inventing one for this app
-   * would be a second source of truth about who holds the keyboard.
+   * would be a second source of truth about who holds the keyboard. Escape is the
+   * one exception a user expects — it is "never mind", so the fields are re-read
+   * from the document instead of applied.
    */
   private commitOnBlur(): void {
-    const now: bool = this.ui.isFocused(this.field);
-    if (this.fieldWasFocused && !now) this.commitField();
-    this.fieldWasFocused = now;
+    const now: i32 = this.ui.focusId;
+    const cancelled: bool = this.input.pressed(SC_ESCAPE);
+    if (this.lastFocus >= 0 && now != this.lastFocus) {
+      const kind: i32 = this.kindOfField(this.lastFocus);
+      if (cancelled || kind < 0) {
+        // Cancelled: the document never changed, so re-reading it *is* the revert.
+        this.syncInspector();
+      } else {
+        this.commitField(kind);
+      }
+    }
+    this.lastFocus = now;
   }
 
   /** What the menu and the console report after an edit. */
   private afterEdit(what: string): void {
-    this.lastUndo = what + ": " + (this.history.canUndo ? this.history.undoLabel() : "");
+    const label: string = this.history.canUndo ? this.history.undoLabel() : "";
+    // The menu bar says what happened ("set x"); the console says what the command
+    // was ("x = 42.0"). A bar that tried to say both ran off the end of a 1280-px
+    // window the moment a node name got long, and a bar is not a log.
+    this.lastUndo = what;
     this.ui.text(this.undoLabel, this.lastUndo);
+    this.log(what + " -> " + label);
     this.consoleDirty = true;
   }
 
@@ -875,37 +1474,27 @@ class Editor extends AppShell {
    */
   private shortcuts(): void {
     const state = this.input;
-    if (state.ctrl && state.pressed(SC_Z)) {
-      if (this.history.undo(this.doc)) this.afterEdit("undo");
-      this.syncSelection();
+    if (state.pressed(SC_ESCAPE) && this.openMenu >= 0) {
+      this.openMenu = -1;
       return;
     }
-    if (state.ctrl && state.pressed(SC_Y)) {
-      if (this.history.redo(this.doc)) this.afterEdit("redo");
-      this.syncSelection();
-      return;
-    }
-    if (state.ctrl && state.pressed(SC_A)) {
-      const args = new Args();
-      args.parent = this.selected >= 0 ? this.selected : ROOT_ID;
-      args.text = "node";
-      if (this.palette.run(this.doc, "node.add", args)) {
-        this.selected = this.lastId();
-        this.orderDirty = true;
-        this.afterEdit("add");
-      }
-      return;
-    }
-    if (state.pressed(SC_DELETE) || state.pressed(SC_BACKSPACE)) {
-      if (this.selected != ROOT_ID) {
-        const args = Args.forNode(this.selected);
-        if (this.palette.run(this.doc, "node.remove", args)) {
-          this.selected = ROOT_ID;
-          this.orderDirty = true;
-          this.afterEdit("remove");
-        }
-      }
-    }
+    // Undo, redo, save and load run **even while a field has the focus**. They are
+    // commands about the document, and a user who just typed a number reaches for
+    // Ctrl+Z without leaving the field — measured: with the old rule the keystroke
+    // did nothing at all, because the field consumes what it does not know.
+    if (state.ctrl && state.pressed(SC_Z)) { this.runAct(Act.Undo); return; }
+    if (state.ctrl && state.pressed(SC_Y)) { this.runAct(Act.Redo); return; }
+    if (state.ctrl && state.pressed(SC_S)) { this.runAct(Act.Save); return; }
+    // These two *do* collide with typing, so a focused field owns them: Ctrl+A in a
+    // field is "select all" in every editor that has one, and Delete in a field is
+    // a forward delete. Neither is a document command while the caret is in text.
+    if (this.ui.focusId >= 0) return;
+    if (state.ctrl && state.pressed(SC_A)) { this.runAct(Act.AddNode); return; }
+    // **Delete, not Backspace.** Backspace is a typing key: when the focus is lost
+    // — a click a few pixels off a field — its first press deleted the selected
+    // node, which is how a user loses work without touching the menu. `Del` is
+    // deliberate, and it is what the legend says.
+    if (state.pressed(SC_DELETE)) { this.runAct(Act.DeleteNode); }
   }
 
   /** After an undo, the selected id may be gone; fall back to the root. */
@@ -936,9 +1525,36 @@ class Editor extends AppShell {
     }
     return depth;
   }
+
+  // ── the camera ──────────────────────────────────────────────────────────
+
+  /**
+   * Frame the first box, clamped to the world.
+   *
+   * A real editor tracks the selection; pointing the camera at the scene tree's
+   * selection is the obvious next step and not this pass's.
+   */
+  private cameraToBoxes(vp: ViewportBehavior): void {
+    if (this.boxes.length == 0) return;
+    const lead = this.boxes[0];
+    const cx: f32 = lead.x + <f32>BOX * 0.5 - <f32>vp.w * 0.5;
+    const cy: f32 = lead.y + <f32>BOX * 0.5 - <f32>vp.h * 0.5;
+    const maxX: f32 = <f32>(WORLD_W - vp.w);
+    const maxY: f32 = <f32>(WORLD_H - vp.h);
+    this.gameScene.setCamera(clamp(cx, 0.0, maxX > 0.0 ? maxX : 0.0),
+                             clamp(cy, 0.0, maxY > 0.0 ? maxY : 0.0));
+  }
 }
 
 // ── small functions ─────────────────────────────────────────────────────────
+
+/** The menu label for a `PropKind`. */
+function propertyName(kind: i32): string {
+  if (kind == PropKind.X) return "x";
+  if (kind == PropKind.Y) return "y";
+  if (kind == PropKind.Z) return "z";
+  return "property";
+}
 
 /**
  * Whether a field's text is a number this app will apply.

@@ -28,6 +28,16 @@ export const enum UiEventKind {
   Key = 4,
   /** Typed text arrived for the focused widget; the bytes are in `ui.pendingText`. */
   Text = 5,
+  /**
+   * This widget just gained the focus. Delivered to its behavior only.
+   *
+   * A field needs it for one reason that is not cosmetic: the caret. A field that
+   * has never been focused has a caret at 0, so Tab into it and the first character
+   * lands *before* the existing text — a real bug, and one no amount of click
+   * handling fixes, because a Tab is not a click. The event is not bubbled: focus
+   * belongs to one widget, and a container hearing it would have to filter.
+   */
+  Focus = 6,
 }
 
 /**

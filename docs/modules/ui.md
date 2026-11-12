@@ -418,7 +418,7 @@ and the wasm heap at the same page count — 115 consecutive frames added no pag
 
 | kind | measure | paint |
 | --- | --- | --- |
-| `Label` | its advances × `lineStep` | glyphs, `textAlign` inside its box; a hit only when it is a list row |
+| `Label` | its advances × `lineStep` | glyphs, `textAlign` inside its box; a hit when it is a list row, or when `ui.clickable` said so |
 | `Button` | label + `2·pad` each way | fill + a bright edge: top when idle, bottom when pressed, both when hovered or focused |
 | `TextField` | `minW` (or 96) — **not** its text | surface, underline (white when focused), selection block, glyphs, caret |
 | `Slider` | `minW` (or 120) × `lineStep` | a 2-px track and a 9×16 thumb at `value / SLIDER_MAX` |
@@ -429,6 +429,36 @@ A `TextField`'s box does not follow its text: the caret would move out from unde
 the pointer. Its selection is **one** `fill` from the low boundary to the high one,
 and both boundaries come from `advanceTo` — the same quarter-pixel arithmetic the
 glyphs and the caret use, so the three cannot disagree about where a byte sits.
+
+### Two flags the engine owns: `hidden` and `clickable`
+
+Both are **data**, not behavior methods, because both are facts about the tree that
+a behavior cannot see from its own slot.
+
+`ui.hidden(id)` takes a widget out of the layout *and* off the screen. Out of the
+layout is the half that matters: the parent's flow skips it, so its flex siblings
+reclaim the space (collapse the console and the viewport grows). It is arranged
+nowhere, painted nowhere, and records no hits — so a collapsed panel cannot be
+clicked where it used to be. Play mode in the editor is exactly this: three panels
+collapse and the viewport fills the window. Note the asymmetry that follows from
+measuring: hiding the **only** child of a fixed-size column collapses the column
+too, which is why the panels a caller collapses are flex children or split panes.
+
+`ui.clickable(id)` lets a widget that is not a control record a click target. The
+engine records its rectangle **before** its behavior paints, so children (which
+paint later) win the hit test: a click on a field inside a clickable row is the
+field's, and a click on the row's caption is the row's. That is what makes "click
+the caption beside a field to focus it" — and, later, "click a panel to focus it" —
+a one-line change in the app rather than a new behavior.
+
+### Focus is an event
+
+`UiEventKind.Focus` is dispatched to a widget's behavior when it gains the focus,
+and to nothing else — it does not bubble and it fires no target. A text field
+answers it by putting the **caret at the end**: tabbing into a field whose caret sat
+at 0 made the first typed character land before the existing value, which reads as
+"the field is broken". A click still places the caret where it landed, because a
+click is a position and a Tab is not.
 
 ### The list
 

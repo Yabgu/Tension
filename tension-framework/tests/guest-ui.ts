@@ -1127,6 +1127,11 @@ function caseTextEditing(): void {
 
   const snap = Snapshot.synthetic();
   b.ui.setFocus(f);
+  // Focus is an event of its own now (`UiEventKind.Focus`), and a field answers it
+  // by putting the caret at the end — Tab into a field and type used to insert
+  // *before* the value, because the caret was still at 0.
+  checkEq(3, b.ui.caret(f), "focusing a field puts the caret at the end");
+  b.ui.setCaret(f, 1);            // and a click still places it where it landed
 
   // Typing inserts at the caret, not at the end.
   snap.pushText("X");
@@ -1205,6 +1210,105 @@ function caseTextEditing(): void {
   b.ui.frame(snap);
   checkEq(1, submitted.n, "Return in a focused field fires its submit handler");
   b.ui.setFocus(-1);
+}
+
+/// `ui.hidden`: out of the flow, off the screen, and out of the hit list.
+///
+/// The three halves matter separately. "Out of the flow" is what makes a flex
+/// sibling reclaim the space (that is what play mode needs: collapse the panels and
+/// the viewport grows). "Off the screen" is `visible = false`. "Out of the hit
+/// list" is the consequence a user notices — a collapsed panel that still answered
+/// clicks would be a click landing on nothing.
+function caseHidden(): void {
+  const b = new Bench();
+
+  // Out of the flow: a fixed middle child of a row gives its space to the flex pair.
+  const root = b.ui.root(300, 100);
+  const row = b.ui.row(root);
+  const a = b.ui.spacer(row, 1);
+  const mid = b.ui.label(row, "mid");
+  const c = b.ui.spacer(row, 1);
+  b.tree.layout();
+  const midW: i32 = b.tree.w[mid];
+  check(midW > 0, "the label occupies its measured width");
+  const aWas: i32 = b.tree.w[a];
+  b.ui.hidden(mid);
+  b.tree.layout();
+  checkEq(300, b.tree.w[a] + b.tree.w[c], "a hidden child's space goes to the flex siblings");
+  check(b.tree.w[a] > aWas, "and the first of them grew");
+
+  // Off the screen and out of the hit list.
+  // The column **flexes**, so hiding its only child does not collapse the column
+  // itself — an empty column measures to nothing, which is correct and is what the
+  // first half of this test asserts. What is being tested here is the *child*.
+  const root2 = b.ui.root(200, 200);
+  const col = b.ui.column(root2, { flex: 1 });
+  const btn = b.ui.button(col, "go", { pad: 4 });
+  b.tree.layout();
+  const bx: i32 = b.tree.x[btn] + 2;
+  const by: i32 = b.tree.y[btn] + 2;
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(btn, b.ui.hits.at(bx, by), "a button records a hit");
+
+  b.ui.hidden(btn);
+  b.tree.layout();
+  check(!b.tree.visible[btn], "a hidden widget is not visible");
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(0, b.tree.cost[btn], "and paints nothing");
+  checkEq(0, b.ui.hits.count, "so nothing answers a click where it used to be");
+
+  b.ui.hidden(btn, false);
+  b.tree.layout();
+  check(b.tree.visible[btn], "unhiding brings it back");
+
+  // A split with one pane gives the survivor everything, and the divider returns.
+  const root3 = b.ui.root(400, 100);
+  const sp = b.ui.split(root3, Axis.X);
+  const left = b.ui.column(sp);
+  const right = b.ui.column(sp);
+  b.tree.layout();
+  const rightWas: i32 = b.tree.w[right];
+  check(rightWas < 400, "the split divides its width");
+  b.ui.hidden(left);
+  b.tree.layout();
+  checkEq(400, b.tree.w[right], "a split with one pane gives it the whole width");
+  b.ui.hidden(left, false);
+  b.tree.layout();
+  checkEq(rightWas, b.tree.w[right], "and the divider comes back where it was");
+}
+
+/// `ui.clickable`: a caption that answers a click.
+function caseClickable(): void {
+  const b = new Bench();
+  const root = b.ui.root(200, 100);
+  const col = b.ui.column(root);
+  const lab = b.ui.label(col, "x");
+  b.ui.clickable(lab);
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  const hx: i32 = b.tree.x[lab] + 2;
+  const hy: i32 = b.tree.y[lab] + 2;
+  checkEq(lab, b.ui.hits.at(hx, hy), "a clickable label records a hit");
+
+  const tally = new Tally();
+  tally.via = b.tree.id[lab];
+  b.ui.onClick(b.tree.id[lab], tally);
+  const snap = Snapshot.synthetic();
+  pointerFrame(b.ui, snap, hx, hy, 0, 0, 1);
+  checkEq(1, tally.n, "and a press on it fires its handler");
+  pointerFrame(b.ui, snap, hx, hy, 0, 0, 0);
+
+  // A plain label still records nothing: the permission is opt-in.
+  const root2 = b.ui.root(200, 100);
+  const col2 = b.ui.column(root2);
+  b.ui.label(col2, "caption");
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(0, b.ui.hits.count, "a plain label records no hit");
 }
 
 /// `ui.setBehavior`: a slot the builder made, handed to the caller's behavior.
@@ -1291,6 +1395,10 @@ export function _start_game(): void {
   caseTextEditing();
   print(">>> caseSetBehavior");
   caseSetBehavior();
+  print(">>> caseHidden");
+  caseHidden();
+  print(">>> caseClickable");
+  caseClickable();
 
   if (failures != 0) {
     print("ui: " + failures.toString() + " check(s) failed");

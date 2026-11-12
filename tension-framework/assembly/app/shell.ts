@@ -83,6 +83,8 @@ export abstract class AppShell {
   /** Frames an offscreen run draws before stopping; 0 means "no bound". */
   private headlessBudget: i32;
   private exitReason: string = "the frame bound was reached";
+  /** Set by `stopLoop`; the loop reads it once per frame. */
+  private stopping: bool = false;
   /** The name this app's lines carry. A build's logs should say which app. */
   private name: string;
 
@@ -106,6 +108,21 @@ export abstract class AppShell {
 
   /** Draw one frame. The shell has reset the painter; anything emitted is sent. */
   protected abstract draw(p: Painter): void;
+
+  /**
+   * End the loop from inside the app, after this frame.
+   *
+   * The guest cannot close the host's window (that is the window manager's, and
+   * `closeRequested` reports it rather than causing it), so an app whose menu says
+   * **Exit** needs a way to stop that is its own. The frame in flight still draws
+   * and presents — an exit that skipped the draw would leave the last visible frame
+   * half a frame old — and the ordinary `teardown` path runs, so textures, the input
+   * handle and the session are still released in the one place they always were.
+   */
+  protected stopLoop(reason: string = "the app asked to exit"): void {
+    this.stopping = true;
+    this.exitReason = reason;
+  }
 
   /** Read input, once per frame, before the draw. The default reads nothing. */
   protected update(): void {}
@@ -321,6 +338,9 @@ export abstract class AppShell {
       }
       this.frames++;
       this.afterFrame();
+      // `stopLoop` asked for this: the frame it was asked in has been drawn and
+      // presented, which is the difference between an exit and a freeze.
+      if (this.stopping) break;
 
       RuntimeSession.wait(FRAME_WAIT_MS);
 

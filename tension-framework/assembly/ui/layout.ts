@@ -435,6 +435,32 @@ export class WidgetTree {
   clipsChildren: bool[];
 
   /**
+   * Whether the widget is **out of the layout and off the screen**.
+   *
+   * Not the same thing as `visible`, which is *derived* by arrange from the clip
+   * and says "this rect met the viewport". `hidden` is the opposite direction: a
+   * panel a user collapsed, or the whole editor chrome while a scene plays. A
+   * hidden widget is skipped by its parent's flow — it takes no space, so a flex
+   * sibling reclaims it — is not arranged, records nothing and therefore is not
+   * clickable.
+   *
+   * It is data rather than a behavior concern for the same reason `clipsChildren`
+   * is: a behavior cannot see its siblings, so "this panel is collapsed" is a
+   * property of the tree, not of the panel.
+   */
+  hidden: bool[];
+
+  /**
+   * Whether a widget that is not a control still records a hit target.
+   *
+   * A `Label` is a caption and records nothing, which is why a click on a panel's
+   * background goes to nobody. Some labels are targets all the same — the caption
+   * beside a field, which should focus it — and this is that permission. Set with
+   * `ui.clickable(id)`.
+   */
+  clickable: bool[];
+
+  /**
    * The `Ui` the passes call behaviors with.
    *
    * Set by `Ui`'s constructor. The tree keeps the data and the walk; the behaviors
@@ -525,6 +551,8 @@ export class WidgetTree {
     this.source = new Array<ListSource>(cap);
     this.behavior = new Array<WidgetBehavior>(cap);
     this.clipsChildren = new Array<bool>(cap);
+    this.hidden = new Array<bool>(cap);
+    this.clickable = new Array<bool>(cap);
     this.focusable = new Array<bool>(cap);
     this.draggable = new Array<bool>(cap);
     this.effX = new Array<i32>(cap);
@@ -602,6 +630,8 @@ export class WidgetTree {
     // check for a null.
     this.behavior[i] = this.noBeh;
     this.clipsChildren[i] = false;
+    this.hidden[i] = false;
+    this.clickable[i] = false;
     this.focusable[i] = false;
     this.draggable[i] = false;
     this.effX[i] = 0;
@@ -1306,6 +1336,17 @@ export class WidgetTree {
       return;
     }
     if ((this.dirty[i] & Dirty.Arrange) == 0) return;
+    // A hidden widget is out of the layout: its parent's flow already skipped it
+    // (so a flex sibling holds the space), and here it must not be arranged, must
+    // not run its behavior and must not paint. `visible = false` is what makes the
+    // paint skip the whole subtree, which is also what makes it unclickable — a
+    // collapsed panel must not keep a hit rect where it used to be.
+    if (this.hidden[i]) {
+      this.visible[i] = false;
+      this.subtree[i] = 0;
+      this.dirty[i] = this.dirty[i] & ~Dirty.Arrange;
+      return;
+    }
     this.arranges++;
 
     // The clip in force for this widget, remembered so that a subtree can be
@@ -1440,13 +1481,30 @@ export class WidgetTree {
     if (depth > MAX_DEPTH) return 0;
     if (!this.visible[i]) {
       this.skipped++;
+      // `cost` means "records this widget emitted in the last paint", so a skipped
+      // widget emitted zero — leaving the previous frame's count there made a hidden
+      // panel report the cost it had before it was hidden, and any budget arithmetic
+      // built on it inherited the lie.
+      this.cost[i] = 0;
       this.subtree[i] = 0;
       return 0;
     }
     if (p.full) {
       this.skipped++;
+      this.cost[i] = 0;
       this.subtree[i] = 0;
       return 0;
+    }
+
+    // A **clickable** widget records its own rectangle before its behavior paints,
+    // which is what makes "click the panel's background to focus it" possible
+    // without a behavior that knows about focus: the engine owns the rect and the
+    // hit, so any widget — a row, a column, a custom panel — can opt in with
+    // `ui.clickable(id)`. Children paint after, so their targets are recorded later
+    // and win the hit test; a click on a field inside a clickable row is the
+    // field's, and a click on the row's caption is the row's.
+    if (this.clickable[i]) {
+      p.addHit(this.x[i], this.y[i], this.w[i], this.h[i], this.id[i], i);
     }
 
     const before: i32 = p.count;

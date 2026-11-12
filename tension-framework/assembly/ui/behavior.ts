@@ -67,6 +67,12 @@ export function contentW(t: WidgetTree, i: i32): i32 {
   let n: i32 = 0;
   let c: i32 = t.firstChild[i];
   while (c >= 0) {
+    // A hidden child takes no space: its parent measures as if it were not there,
+    // which is what lets a flex sibling grow into a collapsed panel's place.
+    if (t.hidden[c]) {
+      c = t.nextSibling[c];
+      continue;
+    }
     if (horizontal) {
       sum += t.w[c];
       if (t.h[c] > cross) cross = t.h[c];
@@ -92,6 +98,10 @@ export function contentH(t: WidgetTree, i: i32): i32 {
   let n: i32 = 0;
   let c: i32 = t.firstChild[i];
   while (c >= 0) {
+    if (t.hidden[c]) {
+      c = t.nextSibling[c];
+      continue;
+    }
     if (horizontal) {
       if (t.h[c] > cross) cross = t.h[c];
     } else {
@@ -163,6 +173,28 @@ export function advanceTo(ui: Ui, id: i32, n: i32): i32 {
     q += page.advanceQ(weight, code);
   }
   return (q + 3) / 4;
+}
+
+/**
+ * The two panes of a split, skipping hidden ones.
+ *
+ * A split is defined as "two children", but which two is the tree's answer, not
+ * the slot's: collapsing one pane (play mode collapses the sidebar) must leave the
+ * remaining pane filling the split rather than leaving the split arranging a
+ * zero-width rect at a stale position.
+ */
+function paneOf(t: WidgetTree, i: i32, second: bool): i32 {
+  let c: i32 = t.firstChild[i];
+  let seen: i32 = 0;
+  while (c >= 0) {
+    if (!t.hidden[c]) {
+      if (!second && seen == 0) return c;
+      if (second && seen == 1) return c;
+      seen++;
+    }
+    c = t.nextSibling[c];
+  }
+  return -1;
 }
 
 /** Where a widget's text starts inside its own box, for its `textAlign`. */
@@ -294,6 +326,13 @@ function placeMain(t: WidgetTree, i: i32, horizontal: bool): void {
   let lastFlex: i32 = -1;
   let c: i32 = t.firstChild[i];
   while (c >= 0) {
+    // Hidden children are out of the flow: no space, no gap, no placement. The gap
+    // arithmetic counts `n` *after* this skip, so collapsing the middle child of a
+    // three-child row does not leave a stray gap behind it.
+    if (t.hidden[c]) {
+      c = t.nextSibling[c];
+      continue;
+    }
     n++;
     if (t.flex[c] > 0) {
       flexTotal += t.flex[c];
@@ -314,6 +353,10 @@ function placeMain(t: WidgetTree, i: i32, horizontal: bool): void {
   let cursor: i32 = horizontal ? innerX : innerY;
   c = t.firstChild[i];
   while (c >= 0) {
+    if (t.hidden[c]) {
+      c = t.nextSibling[c];
+      continue;
+    }
     let main: i32 = horizontal ? t.w[c] : t.h[c];
     const fl: i32 = t.flex[c];
     if (fl > 0) {
@@ -360,9 +403,11 @@ export class SplitPaneBehavior implements WidgetBehavior {
   measure(ui: Ui, id: i32): void {
     const t: WidgetTree = ui.tree;
     const pad: i32 = t.pad[id];
-    const a: i32 = t.firstChild[id];
-    const b: i32 = a >= 0 ? t.nextSibling[a] : -1;
+    const a: i32 = paneOf(t, id, false);
+    const b: i32 = a >= 0 ? paneOf(t, id, true) : -1;
     if (a < 0 || b < 0) {
+      // One pane (or none): the split measures to its own floor and the arrange
+      // gives the survivor the whole rectangle.
       t.w[id] = 2 * pad;
       t.h[id] = 2 * pad;
       ui.applyFloors(id);
@@ -381,11 +426,16 @@ export class SplitPaneBehavior implements WidgetBehavior {
 
   arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {
     const t: WidgetTree = ui.tree;
-    const a: i32 = t.firstChild[id];
-    const b: i32 = a >= 0 ? t.nextSibling[a] : -1;
-    if (a < 0 || b < 0) return;
-
+    const a: i32 = paneOf(t, id, false);
+    const b: i32 = a >= 0 ? paneOf(t, id, true) : -1;
+    if (a < 0) return;
     const pad: i32 = t.pad[id];
+    if (b < 0) {
+      // A collapsed pane: the survivor takes the whole content box, and the
+      // divider is not drawn at all (there is nothing to separate).
+      ui.setRect(a, x + pad, y + pad, w - 2 * pad, h - 2 * pad);
+      return;
+    }
     const div: i32 = t.gap[id] > 0 ? t.gap[id] : DIVIDER_PX;
     const innerX: i32 = x + pad;
     const innerY: i32 = y + pad;
@@ -422,8 +472,9 @@ export class SplitPaneBehavior implements WidgetBehavior {
 
   paint(ui: Ui, id: i32, p: Painter): void {
     const t: WidgetTree = ui.tree;
-    const a: i32 = t.firstChild[id];
-    if (a < 0) return;
+    const a: i32 = paneOf(t, id, false);
+    const b: i32 = a >= 0 ? paneOf(t, id, true) : -1;
+    if (a < 0 || b < 0) return;
     const div: i32 = t.gap[id] > 0 ? t.gap[id] : DIVIDER_PX;
     const pad: i32 = t.pad[id];
     const page: FontPage = t.page[id];
@@ -431,17 +482,26 @@ export class SplitPaneBehavior implements WidgetBehavior {
     const y: i32 = t.y[id];
     const w: i32 = t.w[id];
     const h: i32 = t.h[id];
+    const look = new Look();
+    look.read(t.state[id]);
+
+    // **Hover and press are visible, because a 4-px hairline with no feedback
+    // reads as a painted line rather than as a handle.** The colour is the whole
+    // vocabulary this toolkit has (no tint, no radius): divider at rest, thumb
+    // grey on hover, white while dragging.
+    const cell: i32 = look.pressed ? Chrome.White
+      : (look.hovered ? Chrome.Thumb : Chrome.Divider);
 
     // The drawn rule stays exactly as wide as it is; the *target* is widened by
     // DIVIDER_GRAB each way, because a 4-px hairline is not a thing to aim at.
     // Widening the pixels instead would move the panes.
     if (t.axis[id] == Axis.X) {
       const dx: i32 = t.x[a] + t.w[a];
-      p.fill(dx, y + pad, div, h - 2 * pad, page.chromeCell(Chrome.Divider), page);
+      p.fill(dx, y + pad, div, h - 2 * pad, page.chromeCell(cell), page);
       p.addHit(dx - DIVIDER_GRAB, y, div + 2 * DIVIDER_GRAB, h, t.id[id], id);
     } else {
       const dy: i32 = t.y[a] + t.h[a];
-      p.fill(x + pad, dy, w - 2 * pad, div, page.chromeCell(Chrome.Divider), page);
+      p.fill(x + pad, dy, w - 2 * pad, div, page.chromeCell(cell), page);
       p.addHit(x, dy - DIVIDER_GRAB, w, div + 2 * DIVIDER_GRAB, t.id[id], id);
     }
   }
@@ -500,11 +560,19 @@ export class LabelBehavior implements WidgetBehavior {
     const h: i32 = t.h[id];
     const look = new Look();
     look.read(t.state[id]);
+    // A recycled list row is clickable and a plain label is not: the row exists to
+    // be picked, and a caption exists to be read. Being clickable is also what
+    // earns it a hover background — a list of words with no response to the pointer
+    // gives the user no way to know the rows are targets at all.
+    const row: bool = t.itemIndex[id] >= 0;
+    if ((row || t.clickable[id]) && (look.hovered || look.pressed)) {
+      p.fill(x, y, w, h, t.page[id].chromeCell(Chrome.Surface), t.page[id]);
+    }
     const tx: i32 = alignedTextX(ui, id, x, w);
     paintText(ui, id, p, tx, y, w - (tx - x), h, look.disabled);
-    // A recycled list row is clickable and a plain label is not: the row exists to
-    // be picked, and a caption exists to be read.
-    if (t.itemIndex[id] >= 0) p.addHit(x, y, w, h, t.id[id], id);
+    // A list row is a target by definition; a merely *clickable* label has its hit
+    // recorded by the engine (`WidgetTree.paintAt`), so it is not doubled here.
+    if (row) p.addHit(x, y, w, h, t.id[id], id);
   }
 
   handle(ui: Ui, id: i32, ev: UiEvent): bool {
@@ -641,6 +709,15 @@ export class TextFieldBehavior implements WidgetBehavior {
   handle(ui: Ui, id: i32, ev: UiEvent): bool {
     const t: WidgetTree = ui.tree;
     if ((t.state[id] & State.Disabled) != 0) return false;
+
+    // **Focus puts the caret at the end.** Tabbing into a field whose caret sat at
+    // 0 made the first typed character land *before* the existing value — the kind
+    // of bug that reads as "the field is broken". A click still places the caret
+    // where it landed, because a click is a position and a Tab is not.
+    if (ev.kind == UiEventKind.Focus) {
+      t.setCaret(id, t.textLength(id));
+      return true;
+    }
 
     if (ev.kind == UiEventKind.Click) {
       t.shiftHeld = ev.shift;

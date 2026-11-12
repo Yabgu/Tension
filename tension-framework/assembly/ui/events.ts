@@ -535,7 +535,19 @@ export class Dispatcher {
     const prev: i32 = this.focusId;
     this.focusId = next;
     if (prev >= 0 && prev < t.used) this.setState(prev, State.Focus, false);
-    if (next >= 0) this.setState(next, State.Focus, true);
+    if (next >= 0) {
+      this.setState(next, State.Focus, true);
+      // Tell the widget it has the focus, and **only** the widget: this is not a
+      // bubble and not a target, because focus is one widget's business (a field
+      // puts its caret at the end; a panel has nothing to do). Sent after the state
+      // bit is set, so a handler that reads `isFocused` sees the truth.
+      const owner: Ui | null = this.owner;
+      if (owner != null) {
+        this.ev.set(UiEventKind.Focus, this.pointer.x, this.pointer.y, 0, 0, 0,
+                    this.pointer.mods);
+        t.behavior[next].handle(owner!, next, this.ev);
+      }
+    }
   }
 
   /** Leave the focused widget. */

@@ -158,6 +158,32 @@ function caseMergeCollapsesDrag(): void {
   history.exec(doc, new SetX(1, 11.0));
   history.exec(doc, new SetX(second.id, 12.0));
   checkEq(2, history.undoCount, "two nodes' x edits are two entries");
+
+  // **A redo of a merged edit must land on the LAST value, not the first.**
+  // `apply` writes `after = value`, so a merge that moved only `after` left the
+  // entry holding the number from the first keystroke: the label said 42, the
+  // screen said 42, and redo put back 30. Measured in the editor's property field.
+  history.clear();
+  history.exec(doc, new SetX(1, 30.0));
+  history.exec(doc, new SetX(1, 3.0));
+  history.exec(doc, new SetX(1, 42.0));
+  checkEq(1, history.undoCount, "three keystrokes are one entry");
+  checkF(42.0, doc.xOf(1), "the node holds the last one");
+  check(history.undo(doc), "and it undoes");
+  check(history.redo(doc), "and it redoes");
+  checkF(42.0, doc.xOf(1), "the redo restores the last value, not the first");
+  check(history.undoLabel() == "x = 42.0", "and the entry's label says so: " +
+        history.undoLabel());
+
+  // The same fold on the property command the inspector actually uses.
+  history.clear();
+  doc.setX(1, 0.0);
+  history.exec(doc, new SetProperty(1, PropKind.X, 30.0));
+  history.exec(doc, new SetProperty(1, PropKind.X, 42.0));
+  checkEq(1, history.undoCount, "a property burst is one entry");
+  check(history.undo(doc), "it undoes");
+  check(history.redo(doc), "it redoes");
+  checkF(42.0, doc.xOf(1), "and the redo lands on the last value");
 }
 
 // ── 4. the undo limit drops the oldest, and nothing else ──────────────────
