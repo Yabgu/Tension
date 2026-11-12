@@ -18,6 +18,27 @@
 //! `sdl3::init()` lets the first calling thread claim main-thread status and
 //! refuses every later one, so a normal `#[test]` would pass exactly once.
 //!
+//! # Unix only, and why
+//!
+//! The adapter is reached with `libc::dlopen`/`dlsym` rather than through
+//! `tension_core`'s own loader, because the loader is what the assertion is
+//! *about*: a test that went through it could not tell "the adapter is wrong"
+//! from "the loader is wrong". That puts the test on `libc`, which has no
+//! `dlopen` on Windows, so the body is compiled for Unix and a Windows run
+//! reports itself as skipped.
+//!
+//! The compile gate is what lets `cargo test` build this crate on Windows at
+//! all; before it, the whole `core` suite failed to compile there ("cannot find
+//! function `dlopen` in crate `libc`"). Making the body run on Windows is a
+//! separate piece of work — a `LoadLibraryExA`/`GetProcAddress` shim mirroring
+//! `tension-core/src/adapter/ffi.rs`'s `os_loader`, plus `dso_path()` learning
+//! the `.dll` spelling.
+//!
+//! The skip **exits 0**: `cargo test` has no way to report "not applicable", and
+//! a non-zero exit would fail the `core` suite on every Windows machine for a
+//! test that cannot run there. The banner it prints says so instead, and
+//! `docs/known-limitations.md` is where the missing coverage is recorded.
+//!
 //! # What each assertion is for
 //!
 //! Every one is a real assertion rather than "did not crash", because the
@@ -27,6 +48,12 @@
 //! Run: `cargo test --test ogre_host_surface`, or as the `ogre-host-surface`
 //! suite in `npm test`. Needs a display that supports Vulkan; skipped with a
 //! printed reason when there is none.
+
+// On Windows the body is compiled out (`main` is Unix-gated below), so the
+// helpers it drove are unused there. `allow` rather than `cfg` on each item:
+// keeping them compiled means they stay type-checked, which is the value of
+// building this file on a platform that cannot run it.
+#![cfg_attr(not(unix), allow(dead_code, unused_imports, unused_variables))]
 
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::path::{Path, PathBuf};
@@ -507,6 +534,7 @@ fn check(condition: bool, what: &str) {
     }
 }
 
+#[cfg(unix)]
 fn main() {
     let dso = match dso_path() {
         Some(path) => path,
@@ -990,3 +1018,18 @@ unsafe extern "C" fn count_frame(user: *mut c_void) {
 unsafe extern "C" fn shader_nothing(_: *const c_void, _: *mut c_char, _: u32) -> i32 { ENOSYS }
 
 unsafe extern "C" fn compile_nothing(_: *mut c_void, _: *const u8, _: u32, _: *mut u8, _: u32, _: *mut u8, _: u32, _: *mut u32, _: *mut u32) -> i32 { ENOSYS }
+
+/// What a Windows run reports.
+///
+/// `harness = false` means the exit status *is* the verdict, and cargo has no
+/// third state, so this prints the reason and exits 0. The alternative — exit
+/// non-zero — makes `npm test -- core` red on every Windows machine for a test
+/// that cannot run there at all, which teaches people to ignore the suite.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "SKIP: ogre_host_surface loads the adapter through `libc::dlopen`, which has no \
+         Windows equivalent here; the host window and surface halves of this probe are \
+         covered by the platform_create / platform_surface suites."
+    );
+}
