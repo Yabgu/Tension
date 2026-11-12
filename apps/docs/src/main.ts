@@ -47,7 +47,7 @@
 // colour (`colourFor`).
 
 import {
-  AppShell, BOLD, Canvas, ChangeTarget, Chrome, ClickTarget, CODE, ColumnBehavior, FontBook,
+  AppShell, Axis, BOLD, Canvas, ChangeTarget, Chrome, ClickTarget, CODE, FontBook,
   FontPage, fontBook, FONT_INTER, FONT_MONO, HEADING, LINK, ListBehavior, ListSource,
   loadFontBook, MUTED, NORMAL, Painter, print, REGULAR, resReadFile, SIZE_14, TextBuffer,
   TextBuilder, TextPool, Ui, UiEvent, UiEventKind, WidgetBehavior, WidgetTree,
@@ -70,6 +70,16 @@ import {
 // constant cannot serve two sizes.
 
 const SIDEBAR_W: i32 = 320;
+/** The narrowest the sidebar may be dragged, and the widest the divider may go. */
+const SIDEBAR_MIN: i32 = 180;
+/**
+ * The narrowest the content column may be dragged.
+ *
+ * Not `MAX_MEASURE_PX`: the measure is a cap the wrap respects, and a reader who
+ * wants a narrow window beside the sidebar should get a narrower column, not a
+ * refusal to drag. 420 px holds a short paragraph without breaking every word.
+ */
+const MAIN_MIN: i32 = 420;
 /** One panel's inset from its own edge. */
 const PANEL_PAD: i32 = 10;
 /** The gap between two sidebar rows. */
@@ -230,21 +240,6 @@ class QueryChanged implements ChangeTarget {
 
   change(value: i32): void {
     this.app.queryChanged();
-  }
-}
-
-/**
- * The sidebar's own edge.
- *
- * A `Column` plus one rule down its right side, drawn *inside* the column's rect
- * (its last pixel) so it needs no clip of its own and nothing can paint over it.
- */
-class SidebarBehavior extends ColumnBehavior {
-  paint(ui: Ui, id: i32, p: Painter): void {
-    const t: WidgetTree = ui.tree;
-    const page: FontPage = t.page[id];
-    if (t.w[id] <= 0 || t.h[id] <= 0) return;
-    p.vline(t.x[id] + t.w[id] - 1, t.y[id], t.h[id], page.chromeCell(Chrome.Divider), page);
   }
 }
 
@@ -691,7 +686,6 @@ class App extends AppShell {
   private tocBehavior: TocBehavior = new TocBehavior();
   private pageBehavior: PageBehavior = new PageBehavior();
   private tocModel: TocModel = new TocModel();
-  private sidebarBehavior: SidebarBehavior = new SidebarBehavior();
 
   // --- what the reader is looking at ---------------------------------------
   /** The page being read, or -1 while search results are showing. */
@@ -816,15 +810,18 @@ class App extends AppShell {
   private build(w: i32, h: i32): void {
     const ui: Ui = this.ui;
     const root: i32 = ui.root(w, h);
-    const row: i32 = ui.row(root, { flex: 1 });
+    // **A split, not a row.** The sidebar's width is the reader's to set: a
+    // 320-pixel table of contents is right for a chapter list and wasteful for a
+    // deep module tree. `ui.split` draws the divider and owns the drag (capture,
+    // clamp, hover feedback), so this file keeps no width state at all — the
+    // arrange clamps `splitPx` into `[minA, total - divider - minB]` on every pass,
+    // which is also what makes the pane survive a window narrower than both floors.
+    const split: i32 = ui.split(root, Axis.X, { flex: 1 });
+    ui.divider(split, SIDEBAR_W);
 
     // ── the sidebar ───────────────────────────────────────────────────────
-    const sidebar: i32 = ui.column(row, { minW: SIDEBAR_W, pad: PANEL_PAD, gap: PANEL_GAP });
+    const sidebar: i32 = ui.column(split, { minW: SIDEBAR_MIN, pad: PANEL_PAD, gap: PANEL_GAP });
     ui.clips(sidebar);
-    // The pane's own edge: a one-pixel rule down the sidebar's right side, which is
-    // the only thing separating the two regions (there are still no fills — the
-    // renderer clears to black and the clear *is* the background).
-    ui.setBehavior(sidebar, this.sidebarBehavior);
 
     ui.label(sidebar, "Tension", { colour: HEADING, weight: BOLD });
 
@@ -836,7 +833,9 @@ class App extends AppShell {
     ui.onClick(this.toc, new TocClick(this));
 
     // ── the main column ───────────────────────────────────────────────────
-    const main: i32 = ui.column(row, { flex: 1 });
+    // `minW` is the split's clamp for the second pane, not a layout hint: it is
+    // what stops a drag from squeezing the text column to a word a line.
+    const main: i32 = ui.column(split, { minW: MAIN_MIN, flex: 1 });
 
     const bar: i32 = ui.row(main, { pad: BAR_PAD, gap: 8 });
     this.searchField = ui.field(bar, "", { pad: FIELD_PAD, flex: 1 });
