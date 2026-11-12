@@ -37,13 +37,26 @@ export function drawLabel(p: Painter, chars: Uint8Array, start: i32, len: i32, x
   return p.textBytes(chars, start, len, x, y, colour, weight, advance, clipTop, clipBottom);
 }
 
-/** The same, for a string already in memory — used for static UI words. */
+/**
+ * The same, for a string already in memory — used for static UI words.
+ *
+ * **Encodes into the painter's frame pool**, not into a fresh `ArrayBuffer`. The
+ * old body was `Uint8Array.wrap(String.UTF8.encode(value))`, which allocates one
+ * buffer per string per frame — the cost this pass exists to remove, paid by a
+ * function with twenty-odd call sites in `apps/editor`.
+ *
+ * Retained widgets do not come through here: a `Label` owns its bytes and a frame
+ * only reads them (`text.ts`). This is the immediate-mode path, and it stays until
+ * the last caller moves to the tree — at which point it is deleted, which is a
+ * one-line change in the app and not a rewrite here.
+ */
 export function drawText(p: Painter, value: string, x: i32, y: i32, colour: i32 = NORMAL,
                      weight: i32 = REGULAR, advance: i32 = CELL_W,
                      clipTop: i32 = -0x7FFFFFFF, clipBottom: i32 = 0x7FFFFFFF): i32 {
-  const bytes = Uint8Array.wrap(String.UTF8.encode(value, false));
-  return p.textBytes(bytes, 0, i32(bytes.length), x, y, colour, weight, advance,
-                     clipTop, clipBottom);
+  p.texts.next();
+  p.texts.str(value);
+  return p.textBytes(p.texts.buffer, p.texts.start, p.texts.len, x, y, colour, weight,
+                     advance, clipTop, clipBottom);
 }
 
 /** A one-pixel horizontal rule across `w` at `y`. */
@@ -85,8 +98,9 @@ export function button(p: Painter, x: i32, y: i32, w: i32, h: i32, chars: Uint8A
 /** A button whose label is a `String`; same shape, for menus and dialogs. */
 export function textButton(p: Painter, x: i32, y: i32, w: i32, h: i32, value: string,
                            advance: i32 = CELL_W, pressed: bool = false): void {
-  const bytes = Uint8Array.wrap(String.UTF8.encode(value, false));
-  button(p, x, y, w, h, bytes, 0, i32(bytes.length), advance, pressed);
+  p.texts.next();
+  p.texts.str(value);
+  button(p, x, y, w, h, p.texts.buffer, p.texts.start, p.texts.len, advance, pressed);
 }
 
 /**

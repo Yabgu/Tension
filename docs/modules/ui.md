@@ -20,7 +20,9 @@ path.
 | `ui/hit.ts` | click targets, recorded by the draw that produced them |
 | `ui/fonts.ts` | a baked (font, size) page — its baseline, pitch and advances — and the book that indexes them |
 | `ui/layout.ts` | the retained tree: a widget pool, the measure/arrange passes, the three dirty flags, clip-aware paint |
-| `ui/builder.ts` | how a guest authors that tree: `ui.row(parent, { pad: 8 })`, once, at startup |
+| `ui/builder.ts` | how a guest authors that tree: `ui.row(parent, { pad: 8 })`, once, at startup — and the runtime half of `Ui`: focus, text, list state |
+| `ui/events.ts` | what a pointer and a keyboard do to the tree: the bubble, focus, capture |
+| `ui/text.ts` | owned text buffers, the byte appender, and the frame-scoped pool |
 | `ui/widget.ts` | the four *immediate-mode* shapes the two apps still draw with: label, rule, button, list row |
 | `app/shell.ts` | session, window, canvas, resize, texture reload, input attach, the close button, teardown |
 
@@ -147,12 +149,13 @@ it does rather than being a preference:
 
 ## 8. What is not here
 
-No layout *solver* (constraints, intrinsic sizing passes, a stylesheet), no
-virtualised list, no focus traversal and no drag: the tree is measured and
-arranged by arithmetic over a fixed pool (§12) and nothing in it animates. An
-app that wants retained, declarative *drawing* rather than a widget tree uses
-`Scene` and `scene.run`, which is a different shape for a different job — `Scene`
-keeps bytes between frames, and a UI keeps geometry.
+No layout *solver* — no constraints, no intrinsic-sizing fixpoint, no stylesheet —
+no scroll bars, no menus, no tooltips, and nothing animates. The tree is measured
+and arranged by arithmetic over a fixed pool (§12), scrolled by a pixel offset
+(§13), and drawn without a single transition. An app that wants retained,
+declarative *drawing* rather than a widget tree uses `Scene` and `scene.run`,
+which is a different shape for a different job — `Scene` keeps bytes between
+frames, and a UI keeps geometry.
 
 ## 9. Tests
 
@@ -170,6 +173,15 @@ re-clamped after a resize; a label measuring from its page and a button adding
 its pads; `measures == 0` after a resize; colour changing no geometry; a culled
 widget emitting no record and recording no target; `tree.totalCost() ==
 painter.count`; and the paint flag clearing itself.
+
+And the pass-three half: a field typed into for 155 frames with the pool's
+watermark flat and the heap's page count unchanged; Tab skipping a button and
+wrapping both ways; a button consuming a click so its row never hears it, and the
+row hearing it when the button refuses; a split dragged far outside its bounds
+still moving and still clamping; a slider clamped at both ends of its track; a
+1000-item list arranged and painted in twenty widgets with a scroll that does not
+dirty the root; the `listItem` regression; and a caret placed by a click at a
+distance the advance table makes exact.
 
 The pixel half is proved by the two apps that ship on it — `apps/docs` (whose
 `verify` checks the atlas against `theme.ts`) and the editor — until they migrate
@@ -361,3 +373,126 @@ descendant's, so `tree.totalCost()` is exactly `painter.count`. Layout emits no
 records at all: 512 widgets cost zero of the 4,096 until they are painted, and
 paint stops when the painter is full (`skipped` counts what it did not reach)
 rather than emitting into a refusal.
+
+## 13. Controls, text and events
+
+### Zero-allocation text
+
+`String.UTF8.encode` answers a **fresh `ArrayBuffer`**, so every caller that wanted
+bytes allocated once per string — and `drawText` did it once per string per frame.
+`text.ts` removes that by never asking for a buffer:
+
+    need = String.UTF8.byteLength(s)          // count
+    buf.reserve(need)                         // grow only if it must
+    String.UTF8.encodeUnsafe(changetype<usize>(s), s.length, buf.dataStart)
+
+Three lifetimes, three types:
+
+| type | lifetime | who holds it |
+| --- | --- | --- |
+| `TextBuffer` | the widget's | `Label`, `Button`, `TextField` — one each, grown by doubling |
+| `TextBuilder` | the statement's | a composed line: `str`/`int`/`ch`, no `String` |
+| `TextPool` | the frame's | `tree.texts` for list rows, `painter.texts` for `drawText` |
+
+A `Label` owns its bytes and a frame only *reads* them, so a frame that changes no
+text allocates nothing. The two pools are separate on purpose: the tree's is
+rewound by `layout()` and its windows are copied into rows immediately, while the
+painter's is rewound by `reset()` and holds what the current draw is about to read.
+Sharing one would raise the question "who rewinds it?" for no bytes saved.
+
+`drawText` is **not** deleted, because its twenty-odd call sites are all in
+`apps/editor`, which is under a hold. Its body now writes into
+`painter.texts`, so **the allocation is gone at every call site today**; the
+function itself goes when the last caller moves to the tree.
+
+Measured by the suite: a field typed into for 155 frames leaves the tree's pool at
+`highWater 0` (a fixed label wrote nothing), the label's buffer capacity unchanged,
+and the wasm heap at the same page count — 115 consecutive frames added no page.
+
+### The controls
+
+| kind | measure | paint |
+| --- | --- | --- |
+| `Label` | its advances × `lineStep` | glyphs, `textAlign` inside its box; a hit only when it is a list row |
+| `Button` | label + `2·pad` each way | fill + a bright edge: top when idle, bottom when pressed, both when hovered or focused |
+| `TextField` | `minW` (or 96) — **not** its text | surface, underline (white when focused), selection block, glyphs, caret |
+| `Slider` | `minW` (or 120) × `lineStep` | a 2-px track and a 9×16 thumb at `value / SLIDER_MAX` |
+| `Rule` | one pixel tall | a tiled hline |
+| `List` | its floors — **never** its content | nothing of its own; it clips its rows and lets them draw |
+
+A `TextField`'s box does not follow its text: the caret would move out from under
+the pointer. Its selection is **one** `fill` from the low boundary to the high one,
+and both boundaries come from `advanceTo` — the same quarter-pixel arithmetic the
+glyphs and the caret use, so the three cannot disagree about where a byte sits.
+
+### The list
+
+A thousand-item list cannot be a thousand widgets, so `List` owns a fixed set of
+**recycled row widgets** and re-points them at item indices as it scrolls. What is
+arranged is the rows (`n`), what is painted is the visible subset of them, and
+both stay bounded by the window rather than by the data.
+
+* `placeList` clamps `scrollY`, then gives row *k* the item `floor(scrollY/itemH) +
+  k`. That floor is the row containing the window's top edge — no extra row is
+  needed above it, and backing off one would put a widget entirely out of view.
+* A row whose index did not change is **not** refilled: that is why scrolling by
+  one row costs one row's text and not a screen's.
+* The clip for the rows is the list's own content box, intersected during
+  **arrange** (so a row out of the window is culled, not drawn and clipped) and
+  pushed during **paint**. No other container narrows the clip for its children.
+* Scrolling calls `reflowSubtree(list)`, which arranges that subtree from the clip
+  it last had and **does not dirty an ancestor** — the assertion the suite makes.
+
+The model is a `ListSource`: `count()` and `text(index, out)`, where `out` is the
+frame pool. A model that set row text itself would be a second author of the row.
+
+### Events
+
+The frame, in this order:
+
+    ui.frame(input)            // 1. dispatch, against LAST frame's hit list
+    tree.layout()              // 2. measure and arrange what the event dirtied
+    tree.paint(p, ui.hits)     // 3. draw, recording THIS frame's targets
+
+Step 1 uses the previous paint's targets because a hit list is a record of what was
+drawn and is therefore always one frame old when a click arrives. The alternative —
+dispatch after painting — matches the click against rects this frame has already
+moved. Between "matched where the widget was when you saw it" and "matched where it
+moved to while you clicked", the first activates what the user aimed at; the cost is
+a focus ring one frame late, which nobody can see.
+
+**The bubble.** A press resolves to the topmost target (`Hits.tagAt`, which is the
+widget slot), then the walk goes **up** the `parent` chain calling `onClick(id)`
+until a handler answers true. A button inside a row inside a panel is one click on
+the button: the row never hears about it, and a button that *refuses* lets the row
+hear about it. `id` is the widget's hit id; a recycled row shares one id across
+every item it shows, so a handler that needs the item reads `ui.lastItem`.
+
+**Focus.** `focusId` is a slot. Tab walks the tree in **pre-order** over widgets
+whose `focusable` is set (fields are; buttons are not, until something asks), with
+Shift-Tab walking back and both wrapping. A press on a focusable widget focuses it,
+a press on anything else — or on nothing — blurs. Escape blurs.
+
+**`readText`, exactly once.** `frame` calls `input.readText(scratch)` once,
+unconditionally, before anything else looks at it, and **discards** the bytes when
+nothing is focused. Zero calls lets the host's mirror fill and drop keystrokes; two
+calls means two consumers draining one queue, so each sees half the typing. An
+oversized paste answers `-ENOSPC` and consumes nothing, and the dispatcher grows the
+scratch to `textPending()` so the next frame's single read succeeds.
+
+**Capture.** A press on a widget with `draggable` takes capture: every motion until
+the button comes up goes to that widget, wherever the pointer is. The grab band
+decides *who* grabbed it; capture decides *who keeps it*. A `Split`'s divider is a
+4-px rule with a ±`DIVIDER_GRAB` (3 px) target, and dragging it adds `mouseDx` to
+`splitPx`, which `arrange` clamps at both ends. A `Slider` maps the pointer's
+position absolutely, because a thumb moved only by deltas drifts out of step with
+its track after one dropped frame.
+
+### Testability, and the synthetic snapshot
+
+`Snapshot.synthetic()` is a record no host fills: the caller sets the pointer, the
+buttons, the modifiers, the held keys and the staged text, and `latch()` is the edge
+boundary where `read()` would have been. It exists because replay and headless
+checks have to run the *same* event code the live path runs, or they prove nothing —
+and it is why `guest-ui.ts` can assert that a drag keeps moving past its bounds
+without a window.

@@ -7,6 +7,13 @@
 
 import { Painter } from "../assembly/ui/painter";
 import { Hits } from "../assembly/ui/hit";
+import { Snapshot } from "../assembly/input";
+import {
+  NO_EVENTS, SCAN_BACKSPACE, SCAN_LEFT, SCAN_TAB, UiEvents,
+} from "../assembly/ui/events";
+import { TextBuilder, TextPool } from "../assembly/ui/text";
+import { ListSource } from "../assembly/ui/layout";
+import { drawText } from "../assembly/ui/widget";
 import {
   Axis, Dirty, Kind, KIND_NONE, RULE_H, WidgetTree,
 } from "../assembly/ui/layout";
@@ -33,6 +40,13 @@ function checkEq(want: i32, got: i32, what: string): void {
   if (want != got) {
     failures++;
     print("  FAIL: " + what + " (want " + want.toString() + ", got " + got.toString() + ")");
+  }
+}
+
+function checkStr(want: string, got: string, what: string): void {
+  if (want != got) {
+    failures++;
+    print("  FAIL: " + what + " (want \"" + want + "\", got \"" + got + "\")");
   }
 }
 
@@ -166,11 +180,11 @@ class Bench {
   p: Painter;
   hits: Hits;
 
-  constructor(capacity: i32 = 64) {
+  constructor(capacity: i32 = 64, events: UiEvents = NO_EVENTS) {
     // Locals first: the compiler refuses to read `this` before every field has
     // been assigned, and the builder wants the tree it is about to be given.
     const tree = new WidgetTree(fontBook(), capacity);
-    const ui = new Ui(tree);
+    const ui = new Ui(tree, events);
     const p = new Painter();
     const hits = new Hits();
     this.tree = tree;
@@ -359,27 +373,21 @@ function caseLeafSizes(): void {
   checkEq(300, b.tree.w[r], "and spans the column");
 }
 
-/// The text arena: encoded once, reused in place, never a copy per frame.
-function caseTextArena(): void {
+/// A widget's own buffer: encoded in place, grown by doubling, never per frame.
+function caseTextBuffer(): void {
   const b = new Bench();
   const root = b.ui.root(300, 100);
   const col = b.ui.column(root);
   const f = b.ui.field(col, "hello");
   b.tree.layout();
-  const used = b.tree.textUsed;
-  checkEq(5, used, "the field's text is five bytes of arena");
+  checkEq(5, b.tree.textLength(f), "the field's text is five bytes");
+  const cap0 = b.tree.bufferOf(f).capacity;
 
-  // Retyping into the same run rewrites it and grows nothing.
+  // A same-length rewrite goes into the same bytes: no growth, no new buffer.
   b.ui.text(f, "world");
   b.tree.layout();
-  checkEq(5, b.tree.textUsed, "a same-length rewrite reuses its own run");
-
-  // Longer text takes the tail. The arena is append-only — reclaiming the gap
-  // would be a compaction pass over every widget's `textAt`, which is a heap in
-  // its own right and not what a UI's text churn needs.
-  b.ui.text(f, "hello there");
-  b.tree.layout();
-  checkEq(16, b.tree.textUsed, "longer text is appended at the tail");
+  checkEq(5, b.tree.textLength(f), "a same-length rewrite keeps its length");
+  checkEq(cap0, b.tree.bufferOf(f).capacity, "and needs no new capacity");
 
   // A field's box does not grow with its content: the caret would move out from
   // under the pointer.
@@ -396,16 +404,27 @@ function caseTextArena(): void {
   b.tree.layout();
   check(b.tree.w[lab] > shortW, "a label grows with its text");
 
-  // The arena never hands out a stale run: a widget that was freed and reused for
-  // another label reads its own bytes, not the previous widget's.
+  // Each widget owns its bytes: a second label does not see the first one's.
   const other = b.ui.label(col, "zzz");
   b.tree.layout();
-  checkEq(3, b.tree.textLen[other], "a new label has its own run");
-  const tail = b.tree.textUsed;
+  checkEq(3, b.tree.textLength(other), "a new label has its own buffer");
   b.ui.text(other, "yyy");
   b.tree.layout();
-  checkEq(3, b.tree.textLen[other], "and rewrites it in place when it fits");
-  checkEq(tail, b.tree.textUsed, "growing the arena by nothing");
+  checkEq(3, b.tree.textLength(other), "and rewrites it in place");
+  checkEq(19, b.tree.textLength(lab), "leaving its neighbour's text alone");
+
+  // A container carries no buffer at all until something writes to it.
+  checkEq(0, b.tree.textLength(col), "a column has no text");
+  checkEq(0, b.tree.bufferOf(col).capacity <= 32 ? 0 : 1, "and no buffer of its own");
+
+  // Growth is by doubling, so retyping a long string once does not grow per byte.
+  const long = b.ui.label(col, "0123456789abcdef0123456789abcdef0123456789abcdef");
+  b.tree.layout();
+  const capLong = b.tree.bufferOf(long).capacity;
+  check(capLong >= 48 && capLong <= 96, "a 48-byte label grew to one doubling");
+  b.ui.text(long, "0123456789abcdef0123456789abcdef0123456789abcde");
+  b.tree.layout();
+  checkEq(capLong, b.tree.bufferOf(long).capacity, "and a shorter rewrite reuses it");
 }
 
 /// The three flags: work happens only where the change reaches.
@@ -621,6 +640,498 @@ function caseHitCursor(): void {
   checkEq(-1, h.at(9, 0), "and not one pixel left of it");
 }
 
+// ── the event system ────────────────────────────────────────────────────────
+
+/// Records what the dispatcher told it, so a test can assert the walk.
+class Recorder extends UiEvents {
+  calls: i32 = 0;
+  lastId: i32 = -1;
+  firstId: i32 = -1;
+  /** The id that consumes the click, or -1 for "nobody does". */
+  consumeAt: i32 = -1;
+  drags: i32 = 0;
+  changes: i32 = 0;
+  lastValue: i32 = -999;
+  /** An id whose arrival this test cares about. */
+  watchId: i32 = -1;
+  watched: bool = false;
+
+  onClick(id: i32): bool {
+    if (this.calls == 0) this.firstId = id;
+    if (id == this.watchId) this.watched = true;
+    this.calls++;
+    this.lastId = id;
+    return id == this.consumeAt;
+  }
+
+  onDrag(id: i32, dx: i32, dy: i32): bool {
+    this.drags++;
+    return false;
+  }
+
+  onChange(id: i32, value: i32): void {
+    this.changes++;
+    this.lastValue = value;
+  }
+}
+
+/// A model with `n` rows of "item <i>".
+class CountingModel extends ListSource {
+  n: i32 = 0;
+
+  constructor(n: i32) {
+    super();
+    this.n = n;
+  }
+
+  count(): i32 {
+    return this.n;
+  }
+
+  text(index: i32, out: TextPool): void {
+    out.str("item ");
+    out.int(index);
+  }
+}
+
+/// One dispatch, with the pointer where a frame put it.
+function pointerFrame(ui: Ui, snap: Snapshot, x: i32, y: i32,
+                      dx: i32, dy: i32, buttons: u32): void {
+  snap.latch();
+  snap.setPointer(x, y, dx, dy);
+  snap.setButtons(buttons);
+  ui.frame(snap);
+}
+
+/// One draw, into the hit list the next dispatch will read.
+///
+/// Both draw paths run in the same frame — a tree paint and one `drawText` — so the
+/// "this frame allocated nothing" checks cover the retained path *and* the
+/// immediate-mode one that the two apps still use.
+function drawFrame(b: Bench): void {
+  b.tree.layout();
+  b.p.reset();
+  drawText(b.p, "frame", 0, 0);
+  b.tree.paint(b.p, b.ui.hits);
+}
+
+/// A press and release at a point, with a draw in between, and no motion.
+function clickAt(b: Bench, snap: Snapshot, x: i32, y: i32): void {
+  pointerFrame(b.ui, snap, x, y, 0, 0, 1);
+  drawFrame(b);
+  pointerFrame(b.ui, snap, x, y, 0, 0, 0);
+  drawFrame(b);
+}
+
+/// **The allocation claim**, as a number rather than a promise.
+///
+/// A text field is typed into for forty frames and a label beside it never
+/// changes. What must hold: the tree's frame pool wrote **nothing** (no list row
+/// was refilled), the label's buffer was never reallocated, and every keystroke
+/// arrived exactly once.
+function caseZeroAllocText(): void {
+  const b = new Bench();
+  const root = b.ui.root(400, 160);
+  const col = b.ui.column(root);
+  const f = b.ui.field(col, "");
+  const lab = b.ui.label(col, "fixed caption");
+  b.tree.layout();
+
+  const labCap = b.tree.bufferOf(lab).capacity;
+  const labLen = b.tree.textLength(lab);
+
+  const snap = Snapshot.synthetic();
+  b.ui.setFocus(f);
+  check(b.ui.isFocused(f), "the field takes the focus");
+
+  for (let i: i32 = 0; i < 40; i++) {
+    snap.pushText("a");
+    snap.latch();
+    b.ui.pool.begin();
+    b.ui.frame(snap);
+    b.tree.layout();
+  }
+
+  checkEq(40, b.tree.textLength(f), "forty frames of typing delivered forty bytes");
+  checkEq("a".repeat(40).length, b.ui.textOf(f).length, "and they are all there");
+  checkEq(0, b.tree.texts.highWater, "the frame pool wrote no bytes for a fixed label");
+  checkEq(0, b.tree.texts.dropped, "and dropped none");
+  checkEq(labCap, b.tree.bufferOf(lab).capacity, "the label's buffer was never reallocated");
+  checkEq(labLen, b.tree.textLength(lab), "and its text never changed");
+  check(b.tree.bufferOf(f).capacity < 256, "the field's buffer grew by doubling, not per byte");
+
+  // The heap, as a second witness. Every widget's buffer has reached its size by
+  // frame five (a field grows on the keystroke that needs it, by doubling), so the
+  // next hundred and fifteen frames must not add one page. This is *evidence*
+  // rather than proof — a mark-and-sweep heap can recycle — but it is the page
+  // count the process actually holds, and the two assertions above are the
+  // mechanism the number is supposed to reflect.
+  const pagesBefore: i32 = memory.size();
+  for (let i: i32 = 0; i < 115; i++) {
+    snap.pushText("b");
+    snap.latch();
+    b.ui.frame(snap);
+    drawFrame(b);
+  }
+  checkEq(pagesBefore, memory.size(), "115 more frames added no wasm page to the heap");
+  checkEq(155, b.tree.textLength(f), "and every frame's keystroke still arrived");
+
+  // The same claim for the painter's pool, which is where `drawText` writes.
+  const p = new Painter();
+  p.reset();
+  const before = p.texts.highWater;
+  drawText(p, "frames", 0, 0);
+  const one = p.texts.highWater;
+  check(before == 0 && one == 6, "drawText wrote six bytes into the frame pool");
+  const cap: i32 = p.texts.capacity;
+  for (let i: i32 = 0; i < 20; i++) drawText(p, "frames", 0, 0);
+  checkEq(21 * 6, p.texts.highWater, "twenty-one strings in a frame are 126 bytes of pool");
+  checkEq(cap, p.texts.capacity, "and the pool's allocation never grew");
+  checkEq(0, p.texts.dropped, "and none of it was dropped");
+  p.reset();
+  checkEq(0, p.texts.highWater, "a new frame rewinds the cursor");
+
+  // A composed line costs the pool nothing beyond its bytes.
+  const tb = new TextBuilder(32);
+  tb.str("node ").int(-2147483648).str(" ok");
+  checkEq(19, tb.len, "a builder composes \"node \" + INT_MIN + \" ok\" in 19 bytes");
+  checkEq(45, tb.bytes[5], "the minus sign opens the integer");
+  checkEq(56, tb.bytes[15], "and the digits end on the last one");
+}
+
+/// Focus is a pre-order walk over what can take it, and Tab follows it.
+function caseFocusOrder(): void {
+  const b = new Bench();
+  const root = b.ui.root(400, 200);
+  const col = b.ui.column(root);
+  const first = b.ui.field(col, "one");
+  const middle = b.ui.button(col, "not focusable");
+  const last = b.ui.field(col, "two");
+  b.tree.layout();
+
+  check(!b.tree.focusable[middle], "a button is not in the tab order");
+  check(b.tree.focusable[first] && b.tree.focusable[last], "fields are");
+
+  b.ui.setFocus(first);
+  check(b.ui.isFocused(first), "SetFocus takes");
+  b.ui.focusNext(false);
+  check(b.ui.isFocused(last), "Tab skips the button and lands on the next field");
+  b.ui.focusNext(false);
+  check(b.ui.isFocused(first), "Tab wraps to the first");
+  b.ui.focusNext(true);
+  check(b.ui.isFocused(last), "Shift-Tab wraps backwards");
+
+  // The same through a real Tab edge, which is the path an app runs.
+  const snap = Snapshot.synthetic();
+  b.ui.setFocus(first);
+  snap.latch();
+  snap.setKey(SCAN_TAB, true);
+  b.ui.frame(snap);
+  check(b.ui.isFocused(last), "a Tab scancode moves the focus the same way");
+  snap.latch();
+  snap.setKey(SCAN_TAB, false);
+  b.ui.frame(snap);
+  check(b.ui.isFocused(last), "and holding it does not run away");
+
+  // A click on nothing blurs.
+  b.ui.setFocus(last);
+  clickAt(b, snap, 5, 500);
+  checkEq(-1, b.ui.focusId, "clicking empty space blurs");
+
+  // The `readText` contract: bytes typed while nothing is focused are **consumed
+  // and discarded**, not held for the next field that happens to get focus.
+  const b3 = new Bench();
+  const r3 = b3.ui.root(300, 100);
+  const only = b3.ui.field(r3, "");
+  b3.tree.layout();
+  const s3 = Snapshot.synthetic();
+  s3.pushText("typed into nothing");
+  s3.latch();
+  b3.ui.frame(s3);
+  checkEq(0, b3.tree.textLength(only), "bytes with no focus go nowhere");
+  b3.ui.setFocus(only);
+  s3.latch();
+  b3.ui.frame(s3);
+  checkEq(0, b3.tree.textLength(only), "and they are not delivered to the field that focuses next");
+
+  // Exactly once: the queue is empty after the frame that read it.
+  s3.pushText("ok");
+  s3.latch();
+  const before = s3.textPending();
+  b3.ui.frame(s3);
+  checkEq(2, before, "the queue held two bytes before the frame");
+  checkEq(0, s3.textPending(), "and none after it — one read consumed them");
+  checkEq(2, b3.tree.textLength(only), "which is exactly what the field received");
+}
+
+/// Bubbling: the button consumes, and the row behind it never hears about it.
+function caseBubbling(): void {
+  const rec = new Recorder();
+  const b = new Bench(64, rec);
+  const root = b.ui.root(400, 200);
+  const col = b.ui.column(root, { pad: 4 });
+  const row = b.ui.row(col, { pad: 2 });
+  const btn = b.ui.button(row, "File", { pad: 4, minH: 30 });
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+
+  const bx: i32 = b.tree.x[btn] + b.tree.w[btn] / 2;
+  const by: i32 = b.tree.y[btn] + b.tree.h[btn] / 2;
+  checkEq(b.tree.id[btn], b.ui.hits.at(bx, by), "the pointer is over the button");
+
+  rec.consumeAt = b.tree.id[btn];
+  const snap = Snapshot.synthetic();
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
+  checkEq(1, rec.calls, "the button consumed the click, so the walk stopped");
+  checkEq(b.tree.id[btn], rec.firstId, "and it was the button that heard it");
+
+  // Now nobody consumes: the walk goes up through the row to the root.
+  rec.calls = 0;
+  rec.consumeAt = -1;
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 0);   // release first
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
+  check(rec.calls >= 3, "an unconsumed click bubbles to every ancestor");
+  checkEq(b.tree.id[btn], rec.firstId, "starting at the widget that was hit");
+
+  // And the row *does* hear about it when the button refuses: the walk goes up.
+  rec.calls = 0;
+  rec.watched = false;
+  rec.watchId = b.tree.id[row];
+  rec.consumeAt = b.tree.id[row];
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 0);
+  pointerFrame(b.ui, snap, bx, by, 0, 0, 1);
+  check(rec.watched, "a refusing button lets the row hear about the click");
+  checkEq(2, rec.calls, "and the row's consumption stops the walk there");
+}
+
+/// Mouse capture: a split keeps moving when the pointer leaves its divider.
+function caseDragCapture(): void {
+  const rec = new Recorder();
+  const b = new Bench(64, rec);
+  const root = b.ui.root(600, 300);
+  // `flex: 1` because a split's measured height is its two panes', and two empty
+  // columns measure nothing — a split with no content and no flex is zero tall and
+  // correctly culled.
+  const sp = b.ui.split(root, Axis.X, { flex: 1 });
+  const left = b.ui.column(sp);
+  const right = b.ui.column(sp);
+  b.ui.minW(left, 100);
+  b.ui.minW(right, 100);
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+
+  const div: i32 = b.tree.gap[sp];
+  const divX: i32 = b.tree.x[left] + b.tree.w[left];
+  const cy: i32 = 150;
+
+  // The divider's target is wider than the divider, so a press 2 px off still grabs.
+  checkEq(b.tree.id[sp], b.ui.hits.at(divX - 2, cy), "the grab band reaches left of the divider");
+  checkEq(b.tree.id[sp], b.ui.hits.at(divX + div + 2, cy), "and right of it");
+  checkEq(-1, b.ui.hits.at(divX - 20, cy), "but not twenty pixels away");
+
+  const snap = Snapshot.synthetic();
+  const startSplit: i32 = b.tree.splitPx[sp];
+  pointerFrame(b.ui, snap, divX, cy, 0, 0, 1);
+  checkEq(sp, b.ui.captureId, "the press took capture");
+
+  pointerFrame(b.ui, snap, divX + 40, cy, 40, 0, 1);
+  checkEq(startSplit + 40, b.tree.splitPx[sp], "a 40-px drag moved the divider 40 px");
+
+  // Far outside the widget: capture is what keeps it moving, and `arrange` clamps.
+  pointerFrame(b.ui, snap, 5000, 5000, 4000, 0, 1);
+  b.tree.layout();
+  checkEq(600 - div - 100, b.tree.splitPx[sp], "dragging past the right pane clamps to its floor");
+  checkEq(100, b.tree.w[right], "and the pane keeps its minimum");
+
+  // Release: motion no longer routes anywhere.
+  pointerFrame(b.ui, snap, 5000, 5000, 0, 0, 0);
+  checkEq(-1, b.ui.captureId, "the release dropped capture");
+  b.tree.layout();
+  const after: i32 = b.tree.splitPx[sp];
+  pointerFrame(b.ui, snap, 100, cy, -300, 0, 0);
+  b.tree.layout();
+  checkEq(after, b.tree.splitPx[sp], "and the divider ignores motion with no button down");
+  check(rec.drags > 0, "the handler saw the drags");
+}
+
+/// A slider maps the pointer onto its range, through capture.
+function caseSlider(): void {
+  const rec = new Recorder();
+  const b = new Bench(64, rec);
+  const root = b.ui.root(400, 100);
+  const sl = b.ui.slider(root, 500, { minW: 200 });
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+
+  const x0: i32 = b.tree.x[sl];
+  const w: i32 = b.tree.w[sl];
+  checkEq(500, b.ui.valueOf(sl), "a slider starts where it was built");
+  checkEq(w, 200, "and is as wide as its minW");
+
+  const snap = Snapshot.synthetic();
+  pointerFrame(b.ui, snap, x0 + w / 2, 10, 0, 0, 1);
+  checkEq(500, b.ui.valueOf(sl), "a press in the middle lands at half");
+  pointerFrame(b.ui, snap, x0, 10, -100, 0, 1);
+  checkEq(0, b.ui.valueOf(sl), "dragging to the left end is zero");
+  pointerFrame(b.ui, snap, x0 - 500, 10, -500, 0, 1);
+  checkEq(0, b.ui.valueOf(sl), "and past it stays zero");
+  pointerFrame(b.ui, snap, x0 + w + 500, 10, 900, 0, 1);
+  checkEq(1000, b.ui.valueOf(sl), "past the right end is the maximum");
+  checkEq(1000, rec.lastValue, "and the handler was told");
+  pointerFrame(b.ui, snap, x0 + w + 500, 10, 0, 0, 0);
+  checkEq(-1, b.ui.captureId, "the release drops capture");
+}
+
+/// A thousand items, twenty widgets: only the visible rows are arranged and painted.
+function caseVirtualList(): void {
+  const model = new CountingModel(1000);
+  const b = new Bench(128);
+  const root = b.ui.root(400, 240);
+  const col = b.ui.column(root);
+  const list = b.ui.list(col, model, 20, { minH: 200 });
+  b.tree.layout();
+
+  checkEq(20, b.tree.childCount(list), "twenty row widgets, not a thousand");
+  checkEq(1000, b.tree.itemCount[list], "and a thousand items behind them");
+
+  const innerH: i32 = b.tree.h[list] - 2 * b.tree.pad[list];
+  const ih: i32 = b.tree.itemH[list];
+  const visible: i32 = innerH / ih + 1;
+
+  // Arrange is the list and its rows: nothing like the item count.
+  check(b.tree.arranges >= 20 && b.tree.arranges <= 24,
+        "arranging a 1000-item list placed about twenty widgets");
+
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  check(b.ui.hits.count <= visible,
+        "only the rows on screen record a hit target");
+  check(b.ui.hits.count > 0, "and at least one does");
+  check(b.tree.cost[list] == 0, "the list itself draws nothing");
+  check(b.tree.subtree[list] < 20 * 8, "and its subtree costs the visible rows, not all twenty");
+
+  // The rows that scrolled out are laid out where they belong and marked invisible.
+  let row: i32 = b.tree.firstChild[list];
+  let k: i32 = 0;
+  let hidden: i32 = 0;
+  while (row >= 0) {
+    if (!b.tree.visible[row]) hidden++;
+    row = b.tree.nextSibling[row];
+    k++;
+  }
+  check(hidden > 0, "the rows below the window are culled");
+  checkEq(20, k, "and all twenty still exist");
+
+  // Scrolling re-arranges the list only — the root is not dirtied.
+  b.ui.scrollTo(list, 100 * ih);
+  checkEq(0, b.tree.dirty[b.tree.root] & Dirty.Arrange, "a scroll does not dirty the root");
+  check((b.tree.dirty[list] & Dirty.Arrange) != 0, "it dirties the list");
+  b.tree.layout();
+  checkEq(100, b.tree.itemIndex[b.tree.firstChild[list]], "the first row now shows item 100");
+  checkEq(100 * ih, b.ui.scrollOf(list), "and the scroll offset is where it was asked to be");
+
+  // The rows that are showing have the right text, and the pool still bounded it.
+  const first: i32 = b.tree.firstChild[list];
+  checkEq(8, b.tree.textLength(first), "a row reads \"item 100\" (eight bytes)");
+  check(b.tree.texts.highWater > 0 && b.tree.texts.highWater <= 200,
+        "and filling the window wrote a bounded number of bytes");
+
+  // Past the end: the scroll clamps rather than blanking the window.
+  b.ui.scrollTo(list, 1 << 20);
+  b.tree.layout();
+  const maxScroll: i32 = 1000 * ih - innerH;
+  checkEq(maxScroll, b.ui.scrollOf(list), "an over-scroll clamps to the last page");
+  check(b.tree.visible[b.tree.firstChild[list]], "and the last page is drawn");
+
+  // Scrolling back to the top brings item 0 back into the first row.
+  b.ui.scrollTo(list, 0);
+  b.tree.layout();
+  checkEq(0, b.tree.itemIndex[b.tree.firstChild[list]], "and back to the top is item 0");
+}
+
+/// A text field's caret, selection and editing — the parts that are arithmetic.
+function caseTextEditing(): void {
+  const b = new Bench();
+  const root = b.ui.root(400, 100);
+  const f = b.ui.field(root, "abc", { minW: 200 });
+  b.tree.layout();
+
+  b.ui.setCaret(f, 1);
+  checkEq(1, b.ui.caret(f), "the caret is where it was put");
+
+  const snap = Snapshot.synthetic();
+  b.ui.setFocus(f);
+
+  // Typing inserts at the caret, not at the end.
+  snap.pushText("X");
+  snap.latch();
+  b.ui.frame(snap);
+  checkStr("aXbc", b.ui.textOf(f), "typed bytes go in at the caret");
+  checkEq(2, b.ui.caret(f), "and the caret follows them");
+
+  // Backspace deletes before the caret.
+  snap.latch();
+  snap.setKey(SCAN_BACKSPACE, true);
+  b.ui.frame(snap);
+  checkStr("abc", b.ui.textOf(f), "backspace removes the character before the caret");
+  checkEq(1, b.ui.caret(f), "and moves the caret back");
+  snap.latch();
+  snap.setKey(SCAN_BACKSPACE, false);
+
+  // Left/right move it; a shift-left extends a selection.
+  b.ui.setCaret(f, 3);
+  snap.latch();
+  snap.setKey(SCAN_LEFT, true);
+  b.ui.frame(snap);
+  checkEq(2, b.ui.caret(f), "left moves the caret one code point");
+  snap.latch();
+  snap.setKey(SCAN_LEFT, false);
+  b.ui.frame(snap);
+
+  b.ui.setCaret(f, 3);
+  snap.latch();
+  snap.setModifiers(0x3);           // KMOD_LSHIFT
+  snap.setKey(SCAN_LEFT, true);
+  b.ui.frame(snap);
+  checkEq(2, b.tree.selectionLo(f), "shift-left selects");
+  checkEq(3, b.tree.selectionHi(f), "one character, from the anchor to the caret");
+  checkEq(1, b.tree.selectionHi(f) - b.tree.selectionLo(f), "which is one byte of selection");
+
+  // Typing over a selection replaces it.
+  snap.latch();
+  snap.setKey(SCAN_LEFT, false);
+  snap.pushText("Z");
+  b.ui.frame(snap);
+  checkStr("abZ", b.ui.textOf(f), "typing replaces the selection");
+
+  // A click places the caret, using the same advance arithmetic as the draw. Mono
+  // makes the boundaries exact (nine pixels per glyph), so the assertion is about
+  // the caret arithmetic rather than about rounding.
+  b.ui.font(f, FONT_MONO, SIZE_14);
+  b.ui.text(f, "abZ");
+  // Padding so the text starts inside the field rather than at its left edge: a
+  // click left of the *text* has to still be inside the *field*, or it is a click
+  // on nothing (which blurs, correctly) and proves nothing about the caret.
+  b.ui.pad(f, 20);
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  const tx: i32 = b.tree.x[f] + b.tree.pad[f];
+  const snap2 = Snapshot.synthetic();
+  const cy2: i32 = b.tree.y[f] + 5;
+  pointerFrame(b.ui, snap2, tx + 19, cy2, 0, 0, 1);
+  checkEq(2, b.ui.caret(f), "a click 19 px in — nearest the boundary after \"ab\" — is caret 2");
+  pointerFrame(b.ui, snap2, tx + 19, cy2, 0, 0, 0);      // release, so the next is a press
+  pointerFrame(b.ui, snap2, 8, cy2, -31, 0, 1);
+  checkEq(0, b.ui.caret(f), "a click inside the field but left of the text is caret 0");
+  pointerFrame(b.ui, snap2, 8, cy2, 0, 0, 0);
+  pointerFrame(b.ui, snap2, 195, cy2, 187, 0, 1);
+  checkEq(3, b.ui.caret(f), "and a click past the last glyph clamps to the end");
+}
+
 export function _start_game(): void {
   if (RuntimeSession.open(ConfigBuilder.forThisBuild()) != 0) {
     print("FAIL: the session did not open");
@@ -637,18 +1148,25 @@ export function _start_game(): void {
   caseFlex();
   caseSplit();
   caseLeafSizes();
-  caseTextArena();
+  caseTextBuffer();
   caseDirty();
   caseCull();
   caseListItemClip();
   caseTreeCost();
   caseHitCursor();
+  caseZeroAllocText();
+  caseFocusOrder();
+  caseBubbling();
+  caseDragCapture();
+  caseSlider();
+  caseVirtualList();
+  caseTextEditing();
 
   if (failures != 0) {
     print("ui: " + failures.toString() + " check(s) failed");
     return;
   }
-  print("ui: wrapping, columns, costs, clipping, hits, pool, flex, split, flags hold");
+  print("ui: layout, text, controls, events, drag and virtualisation hold");
   print("OK");
   RuntimeSession.close();
 }

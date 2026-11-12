@@ -37,6 +37,7 @@ import { Canvas } from "../2d/canvas";
 import { RecordBuffer } from "../2d/buffers";
 import { FontPage } from "./fonts";
 import { Hits } from "./hit";
+import { TextPool } from "./text";
 import { DEFAULT_THEME, MAX_RECORDS, Theme } from "./theme";
 
 /**
@@ -83,6 +84,16 @@ export class Painter {
    * a list would be a second argument the caller could mismatch.
    */
   private hitList: Hits | null = null;
+
+  /**
+   * The frame's scratch text, for callers that have a `String` to draw.
+   *
+   * A `String` has to be encoded before it can be drawn, and `String.UTF8.encode`
+   * answers a fresh `ArrayBuffer` — the per-frame allocation `drawText` used to
+   * pay once per string. With this pool the encode writes into a buffer that
+   * outlives the frame, and `reset()` rewinds the cursor.
+   */
+  texts: TextPool = new TextPool(4096);
 
   constructor(theme: Theme = DEFAULT_THEME, capacity: i32 = MAX_RECORDS) {
     this.theme = theme;
@@ -235,6 +246,10 @@ export class Painter {
     this.buf.reset();
     this.order = 0;
     this.clearClip();
+    // The frame boundary for scratch text. A caller that draws a string is writing
+    // into `texts`; without this the cursor would walk the pool until it filled and
+    // then every string would come out empty.
+    this.texts.begin();
   }
 
   // ── chrome ──────────────────────────────────────────────────────────────

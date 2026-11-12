@@ -8,6 +8,8 @@
 //   * `flow.ts`    where lines end: wrapping, column counts, centring.
 //   * `layout.ts`  the retained tree: a widget pool, measure, arrange, paint.
 //   * `builder.ts` how a guest authors that tree, once, at startup.
+//   * `events.ts`  focus, capture, the bubble — what input does to the tree.
+//   * `text.ts`    owned text buffers, the appender, and the frame's pool.
 //   * `widget.ts`  the four immediate-mode shapes the two apps still draw with.
 //   * `hit.ts`     click targets, recorded by the draw that produced them.
 //
@@ -40,6 +42,8 @@ export * from "./painter";
 export * from "./flow";
 export * from "./hit";
 export * from "./fonts";
+export * from "./text";
 export * from "./layout";
+export * from "./events";
 export * from "./builder";
 export * from "./widget";

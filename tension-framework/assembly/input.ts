@@ -374,10 +374,107 @@ export class Snapshot {
    */
   private textBuffer: Uint8Array = new Uint8Array(TEXT_CAPACITY);
 
+  /**
+   * Bytes staged by `pushText`, waiting for `readText`.
+   *
+   * Only a synthetic snapshot ever has any: a real one drains the host's mirror.
+   */
+  private staged: Uint8Array = new Uint8Array(0);
+  private stagedLen: i32 = 0;
+
   constructor(handle: i32) {
     this.handle = handle;
     this.block = new Uint8Array(<i32>STATE_SIZE);
     this.previousKeys = new Uint32Array(8);
+  }
+
+  /**
+   * A snapshot **no host will fill**: the caller owns every field.
+   *
+   * Two things need this and neither is a test hack. A recorded input trace has to
+   * be replayed through the same event code the live path runs, or replay proves
+   * nothing; and the UI's event system is arithmetic over an input record, so a
+   * check that "a drag moves the split" should not need a window, an SDL pump or a
+   * compositor to run. `latch()` is the edge boundary — call it once per frame,
+   * exactly where `read()` would have been.
+   */
+  static synthetic(): Snapshot {
+    const s = new Snapshot(0);
+    s.valid = true;
+    return s;
+  }
+
+  /**
+   * The edge boundary for a synthetic snapshot: remember this frame before the
+   * caller replaces it.
+   *
+   * The same latch `read()` does, extracted so the two cannot drift: `pressed` is
+   * "held now, not held at the previous latch", whatever filled the record.
+   */
+  latch(): void {
+    for (let i: i32 = 0; i < 8; i++) this.previousKeys[i] = this.keyWord(i);
+    this.previousButtons = this.mouseButtons;
+  }
+
+  /** Set the pointer for the frame that is about to run. */
+  setPointer(x: i32, y: i32, dx: i32 = 0, dy: i32 = 0): void {
+    this.mouseX = x;
+    this.mouseY = y;
+    this.mouseDx = dx;
+    this.mouseDy = dy;
+    this.valid = true;
+  }
+
+  /** Set the button mask (bit 0 is SDL button 1). */
+  setButtons(mask: u32): void {
+    this.mouseButtons = mask;
+    this.valid = true;
+  }
+
+  /** Set the modifier bits (`MOD_*`). */
+  setModifiers(bits: u32): void {
+    this.modifiers = bits;
+    this.valid = true;
+  }
+
+  /** Set the wheel delta for this frame. */
+  setWheel(x: f32, y: f32): void {
+    this.wheelX = x;
+    this.wheelY = y;
+    this.valid = true;
+  }
+
+  /** Hold or release one scancode in the record `pressed()`/`held()` read. */
+  setKey(scancode: u32, down: bool): void {
+    if (scancode >= 256) return;
+    const word: i32 = <i32>(scancode >> 5);
+    const bit: u32 = 1 << (scancode & 31);
+    const at: usize = this.block.dataStart + STATE_KEYS_OFFSET + <usize>(word * 4);
+    const now: u32 = load<u32>(at);
+    store<u32>(at, down ? (now | bit) : (now & ~bit));
+    this.valid = true;
+  }
+
+  /**
+   * Stage bytes for `readText` on a snapshot with no handle.
+   *
+   * A capability that is not open has no queue to drain, so a replay supplies the
+   * keystrokes itself; `readText` hands them out with the same consume-once rule
+   * the real one has, which is what makes the exactly-once contract testable.
+   */
+  pushText(value: string): void {
+    const need: i32 = String.UTF8.byteLength(value);
+    const total: i32 = this.stagedLen + need;
+    if (total > this.staged.length) {
+      let cap: i32 = this.staged.length > 0 ? this.staged.length : 32;
+      while (cap < total) cap *= 2;
+      const grown = new Uint8Array(cap);
+      for (let i: i32 = 0; i < this.stagedLen; i++) grown[i] = this.staged[i];
+      this.staged = grown;
+    }
+    String.UTF8.encodeUnsafe(changetype<usize>(value), value.length,
+                             this.staged.dataStart + <usize>this.stagedLen);
+    this.stagedLen = total;
   }
 
   /**
@@ -503,13 +600,22 @@ export class Snapshot {
    * bytes this is the cheaper path: no string, no decode.
    */
   readText(out: Uint8Array): i32 {
-    if (this.handle <= 0) return 0;
+    if (this.handle <= 0) {
+      // Synthetic: hand out what was staged, and consume it. `-ENOSPC` when the
+      // caller's buffer is too small, matching the real verb: nothing is lost.
+      if (this.stagedLen <= 0) return 0;
+      if (out.length < this.stagedLen) return -28;
+      for (let i: i32 = 0; i < this.stagedLen; i++) out[i] = this.staged[i];
+      const n: i32 = this.stagedLen;
+      this.stagedLen = 0;
+      return n;
+    }
     return textRaw(this.handle, <u32>out.dataStart, <i32>out.length);
   }
 
   /** How many typed bytes are waiting, without consuming them. */
   textPending(): i32 {
-    if (this.handle <= 0) return 0;
+    if (this.handle <= 0) return this.stagedLen;
     return textSize(this.handle);
   }
 

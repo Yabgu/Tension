@@ -271,6 +271,21 @@ function findRender2d() {
   return existsSync(candidate) ? candidate : null;
 }
 
+/// The input capability, for the UI gate.
+///
+/// `guest-ui` drives the event system through a **synthetic** snapshot — no window,
+/// no attach, no host — but the module still *declares* `tension::input` imports
+/// because the dispatcher calls `readText`, and an import that is declared must
+/// resolve at instantiation whether or not this frame reaches it. So the DSO is
+/// named for that fixture and nothing else in the suite needs it.
+function findInput() {
+  const override = process.env.TENSION_INPUT_LIB;
+  if (override) return existsSync(override) ? override : null;
+  const candidate = join(repo, 'tension-input', 'build',
+                         `libtension_input${process.platform === 'win32' ? '.dll' : '.so'}`);
+  return existsSync(candidate) ? candidate : null;
+}
+
 function runFontSpecimenFixture(entry, out) {
   const render2d = findRender2d();
   if (!render2d) {
@@ -449,7 +464,12 @@ runFixture('guest-buffers.ts', 'guest-buffers.wasm');
 // canvas and no GPU — `Scene` is a data structure and `pack()` is the whole of
 // what this asserts. The pixel suites cover the bytes it produces.
 runFixture('guest-scene.ts', 'guest-scene.wasm');
-runFixture('guest-ui.ts', 'guest-ui.wasm');
+const inputLib = findInput();
+if (!inputLib) {
+  fail(RUNNER, 'guest-ui: no tension::input DSO — build it with\n' +
+               '        npm run build:input (or set TENSION_INPUT_LIB)');
+}
+runFixture('guest-ui.ts', 'guest-ui.wasm', ['--capability', inputLib]);
 runFontSpecimenFixture('guest-font-specimen.ts', 'guest-font-specimen.wasm');
 runFixture('guest-editor.ts', 'guest-editor.wasm');
 runMountFixture('guest-resmount.ts', 'guest-resmount.wasm');
