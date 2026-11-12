@@ -4,8 +4,10 @@
 //
 // There is no text verb in the 2D renderer. A character on screen is one sprite
 // sampling one cell of an atlas, and that is the whole mechanism — so this file
-// is an index computation with a clip, not a layout system. `flow.ts` owns where
-// lines go; this owns which pixels each glyph occupies.
+// is an index computation with a clip, not a layout system. Where a line starts and
+// how far it runs is the caller's (`apps/docs/src/layout.ts` is the reference: it
+// breaks at word boundaries using the same advance table); this owns which pixels
+// each glyph occupies.
 //
 // ## Two text paths, one trim
 //
@@ -38,7 +40,7 @@ import { RecordBuffer } from "../2d/buffers";
 import { FontPage } from "./fonts";
 import { Hits } from "./hit";
 import { TextPool } from "./text";
-import { DEFAULT_THEME, MAX_RECORDS, Theme } from "./theme";
+import { MAX_RECORDS, Theme } from "./theme";
 
 /**
  * How deep the clip stack goes.
@@ -95,7 +97,15 @@ export class Painter {
    */
   texts: TextPool = new TextPool(4096);
 
-  constructor(theme: Theme = DEFAULT_THEME, capacity: i32 = MAX_RECORDS) {
+  /**
+   * A painter over one atlas.
+   *
+   * The `Theme` is required: there is no default atlas any more. A page of type
+   * (`FontPage`) *is* a theme, so a caller with a `FontBook` passes
+   * `book.pages[0]` and gets the painter's fallback for the arithmetic that only
+   * wants a grid.
+   */
+  constructor(theme: Theme, capacity: i32 = MAX_RECORDS) {
     this.theme = theme;
     this.buf = RecordBuffer.create(capacity > 0 ? capacity : MAX_RECORDS);
   }
@@ -115,9 +125,10 @@ export class Painter {
   /**
    * Record a click target for a rectangle **this painter would draw**.
    *
-   * The clip gate is the whole point. `widget.ts`'s `listItem` recorded its target
-   * unconditionally — including for a row scrolled out of the pane — so a click in
-   * the empty space where a hidden row used to be selected it. Here the target is
+   * The clip gate is the whole point. The immediate-mode list helper this replaces
+   * recorded its target unconditionally — including for a row scrolled out of the
+   * pane — so a click in the empty space where a hidden row used to be selected it.
+   * Here the target is
    * the **intersection** of the rectangle with the clip, which is exactly what got
    * drawn: a half-scrolled row is clickable in its visible half and nowhere else,
    * and a row entirely outside records nothing at all.
@@ -436,9 +447,9 @@ export class Painter {
       let cursorQ: i32 = 0;
       for (let i: i32 = 0; i < len; i++) {
         const code: i32 = load<u8>(ptr + <usize>i);
-        // This function never breaks a line: `flow.ts` decides where every line
-        // starts and how far it runs. A control byte advances like a space, and
-        // a tab is four of them.
+        // This function never breaks a line: the caller decides where every line
+        // starts and how far it runs. A control byte advances like a space, and a
+        // tab is four of them.
         if (code == 9) { cursorQ += spaceQ * 4; continue; }
         if (code < 32) { cursorQ += spaceQ; continue; }
         this.emitGlyph(page.cellOf(colour, weight, code), page, x + ((cursorQ + 2) / 4), y,

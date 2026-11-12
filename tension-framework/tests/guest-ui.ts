@@ -9,23 +9,20 @@ import { Painter } from "../assembly/ui/painter";
 import { Hits } from "../assembly/ui/hit";
 import { Snapshot } from "../assembly/input";
 import {
-  ChangeTarget, ClickTarget, SCAN_BACKSPACE, SCAN_LEFT, SCAN_TAB,
+  ChangeTarget, ClickTarget, SCAN_BACKSPACE, SCAN_LEFT, SCAN_RETURN, SCAN_TAB,
 } from "../assembly/ui/events";
 import { WidgetBehavior } from "../assembly/ui/builder";
 import { UiEvent, UiEventKind } from "../assembly/ui/event-def";
 import { TextBuilder, TextPool } from "../assembly/ui/text";
 import { ListSource } from "../assembly/ui/layout";
-import { drawText } from "../assembly/ui/widget";
 import {
   Axis, Dirty, Kind, KIND_NONE, RULE_H, WidgetTree,
 } from "../assembly/ui/layout";
 import { ALIGN_CENTER, ALIGN_START, ALIGN_STRETCH, Props, Ui } from "../assembly/ui/builder";
-import { listItem } from "../assembly/ui/widget";
-import { FONT_MONO, SIZE_14, fontBook } from "../assembly/ui/fonts";
 import {
-  LINE_STEP, MIN_COLS, breakLine, centred, columnsFor, fitColumns,
-} from "../assembly/ui/flow";
-import { CELL_H, CELL_W, DEFAULT_THEME, MAX_RECORDS, hlineCost, tileCost } from "../assembly/ui/theme";
+  Chrome, FONT_INTER, FONT_MONO, FontPage, SIZE_14, SIZE_18, fontBook,
+} from "../assembly/ui/fonts";
+import { BOLD, CODE, HEADING, MAX_RECORDS, NORMAL, REGULAR, hlineCost, tileCost } from "../assembly/ui/theme";
 import { print } from "../assembly/io";
 import { ConfigBuilder, RuntimeSession } from "../assembly/runtime";
 
@@ -56,99 +53,162 @@ function bytesOf(text: string): Uint8Array {
   return Uint8Array.wrap(String.UTF8.encode(text, false));
 }
 
-/// The cell geometry is the atlas's, and `LINE_STEP` is derived from it.
+/// The book's geometry: one cell and one line pitch per (family, size).
+///
+/// The VGA pass asserted one global `CELL_W`/`CELL_H` and a `LINE_STEP` derived
+/// from it. A proportional face has one cell per page — 14 px Inter's cell is not
+/// 18 px Inter's — so the assertions are per page, and the *fallback* is what gets
+/// checked separately: asking for a pair the atlas does not carry must hand back a
+/// page rather than a null, because a null would be a trap in every caller.
 function caseGeometry(): void {
-  checkEq(18, CELL_W, "the 2x atlas cell is 18 wide (9 * 2)");
-  checkEq(32, CELL_H, "and 32 tall (16 * 2)");
-  checkEq(CELL_H + 8, LINE_STEP, "a line is the cell plus eight pixels of air");
+  const book = fontBook();
+  const body: FontPage = book.page(FONT_INTER, SIZE_14);
+  const head: FontPage = book.page(FONT_INTER, SIZE_18);
+  const mono: FontPage = book.page(FONT_MONO, SIZE_14);
+
+  checkEq(3, book.count, "the default atlas carries three pages");
+  checkEq(18, body.cellW, "Inter 14's cell is 18 wide");
+  checkEq(20, body.cellH, "and 20 tall");
+  checkEq(21, body.lineStep, "with a 21-pixel line pitch");
+  checkEq(22, head.cellW, "Inter 18's cell is wider");
+  checkEq(27, head.lineStep, "and its pitch is 27");
+  checkEq(11, mono.cellW, "Mono 14's cell is 11 wide");
+  checkEq(21, mono.lineStep, "and its pitch is the body's");
+  check(body.lineStep != head.lineStep, "two sizes are two pitches, not one");
+
+  // A pair the atlas does not bake answers a page, not a null.
+  const fallback: FontPage = book.page(FONT_MONO, SIZE_18);
+  check(fallback == body, "an unbaked (family, size) falls back to page 0");
+
+  // Bold is baked only in the heading stripe: six pairs, not ten. Asking for
+  // (normal, bold) must answer -1 so the painter *skips* the glyph rather than
+  // sampling the stripe beside it.
+  checkEq(0, body.pairSlot(NORMAL, REGULAR), "(normal, regular) is baked");
+  checkEq(-1, body.pairSlot(NORMAL, BOLD), "(normal, bold) is not");
+  checkEq(5, body.pairSlot(HEADING, BOLD), "(heading, bold) is the sixth stripe");
+  checkEq(-1, body.cellOf(NORMAL, BOLD, 65), "so a bold A in body colour has no cell");
+
   checkEq(4000, MAX_RECORDS, "the record cap leaves room under the renderer's 4096");
 }
 
-/// Wrapping: the three rules `breakLine` documents, asserted where they are.
-function caseWrapping(): void {
-  const text = bytesOf("the quick brown fox jumps");
-  const n: i32 = i32(text.length);
+/// Measurement is per glyph now, and the painter reproduces the same table.
+///
+/// The three properties a proportional layout depends on: two letters can measure
+/// differently, a span measures as the sum of its glyphs, and the cursor the
+/// painter returns is the measured width — because a wrap that measured one table
+/// and a draw that advanced another would put the last word of every line in the
+/// wrong place.
+function caseMeasure(): void {
+  const book = fontBook();
+  const body: FontPage = book.page(FONT_INTER, SIZE_14);
+  const mono: FontPage = book.page(FONT_MONO, SIZE_14);
 
-  // Shorter than the column: the whole span, with any trailing space trimmed.
-  checkEq(n, breakLine(text, 0, n, 40), "a line that fits is returned whole");
+  const narrow: i32 = book.measureText(body, REGULAR, "iii");
+  const wide: i32 = book.measureText(body, REGULAR, "WWW");
+  check(wide > narrow * 2, "three Ws are more than twice three is");
+  checkEq(book.measureText(body, REGULAR, "W") * 3, wide, "a span is the sum of its glyphs");
 
-  // A break lands on a space and excludes it.
-  const at: i32 = breakLine(text, 0, n, 10);     // "the quick " -> 9
-  checkEq(9, at, "the break lands before the space");
-  checkEq(32, i32(text[at]), "and the character after it is the space");
+  // Advances are quarter-pixels, so a two-character string can be an odd number of
+  // pixels and a per-glyph rounding would lose it.
+  const iq: i32 = body.advanceQ(REGULAR, 105);        // 'i'
+  checkEq((iq + 3) / 4, body.advancePx(REGULAR, 105), "advancePx rounds a glyph up");
+  checkEq(book.measureText(body, REGULAR, "ii"), (2 * iq + 3) / 4,
+          "measure rounds the accumulated position once, not each step");
 
-  // Mid-word when there is no space: a long token is broken, never spilled.
-  const token = bytesOf("tension_framework_assembly");
-  checkEq(8, breakLine(token, 0, i32(token.length), 8), "a long token breaks mid-word");
+  // Mono advances every printable glyph by the same number — which is what makes
+  // it usable for a table.
+  checkEq(mono.advanceQ(REGULAR, 65), mono.advanceQ(REGULAR, 87), "mono's A and W advance alike");
 
-  // A space exactly at the limit is a valid break — the widest line that fits.
-  const edge = bytesOf("12345 789");
-  checkEq(5, breakLine(edge, 0, i32(edge.length), 5), "a space at the limit breaks there");
-}
+  // The painter's cursor is the measurement, for the body page and for mono.
+  const text = bytesOf("Wave");
+  const p = new Painter(body);
+  p.reset();
+  p.setClip(0, 0, 1000, 1000);
+  const end: i32 = p.textBytes(text, 0, 4, 0, 0, NORMAL, REGULAR, 0, 0, 1000, body);
+  checkEq(book.measure(body, REGULAR, text, 0, 4), end, "the painter lands where measure says");
+  checkEq(4, p.count, "and emitted one record per glyph");
 
-/// The responsive column: capped, floored, and centred.
-function caseColumns(): void {
-  checkEq(80, columnsFor(80 * CELL_W), "a column is pixels over advance");
-  checkEq(80, fitColumns(80 * CELL_W + 24, 12, 80), "a pane exactly at the cap keeps it");
-  checkEq(80, fitColumns(4000, 12, 80), "a very wide pane is capped, not filled");
+  p.reset();
+  const monoEnd: i32 = p.textBytes(text, 0, 4, 0, 0, CODE, REGULAR, 0, 0, 1000, mono);
+  // Rounded **once**, on the accumulated position. Four advances of 8.5 px are 34
+  // px, not 4 x 9: rounding each step is the drift the quarter-pixel table exists
+  // to prevent, and it is visible in the two numbers.
+  const monoQ: i32 = mono.advanceQ(REGULAR, 87);
+  checkEq((monoQ * 4 + 3) / 4, monoEnd, "mono's cursor is four advances, rounded once");
+  check(mono.advancePx(REGULAR, 87) * 4 > monoEnd, "a per-glyph rounding would land 2 px wide");
 
-  // A pane too narrow to hold MIN_COLS still gets MIN_COLS, so no wrap loop
-  // divides by zero or emits a zero-length line forever.
-  checkEq(MIN_COLS, fitColumns(10, 12, 80), "a pane narrower than the floor gets the floor");
-
-  // Centring: the column sits in the middle of what is left, and never against
-  // the pane's own edge.
-  checkEq(1000 + (1000 - 20 * CELL_W) / 2, centred(1000, 1000, 20, 8), "a column centres");
-  checkEq(1008, centred(1000, 100, 80, 8), "and never crosses the inset");
+  // A code point the page does not carry advances like a space and draws nothing:
+  // a missing glyph must leave a gap, not overlap the next character.
+  p.reset();
+  const odd = bytesOf("a\u0001b");
+  const oddEnd: i32 = p.textBytes(odd, 0, 3, 0, 0, NORMAL, REGULAR, 0, 0, 1000, body);
+  checkEq(2, p.count, "the undrawable byte emits no record");
+  checkEq(book.measure(body, REGULAR, odd, 0, 3), oddEnd, "and still advances");
 }
 
 /// Tile costs, and that `fill` emits exactly what `tileCost` promised.
 function caseCosts(): void {
-  checkEq(1, tileCost(CELL_W, CELL_H), "one cell is one record");
-  checkEq(4, tileCost(CELL_W * 2, CELL_H * 2), "two by two is four");
-  checkEq(2, tileCost(CELL_W + 1, CELL_H), "a partial column rounds up");
-  checkEq(0, tileCost(0, 100), "nothing is not a draw");
-  checkEq(3, hlineCost(CELL_W * 2 + 1), "a rule rounds its partial cell up");
+  const page: FontPage = fontBook().pages[0];
+  const cw: i32 = page.cellW;
+  const ch: i32 = page.cellH;
+  checkEq(1, tileCost(cw, ch, page), "one cell is one record");
+  checkEq(4, tileCost(cw * 2, ch * 2, page), "two by two is four");
+  checkEq(2, tileCost(cw + 1, ch, page), "a partial column rounds up");
+  checkEq(0, tileCost(0, 100, page), "nothing is not a draw");
+  checkEq(3, hlineCost(cw * 2 + 1, page), "a rule rounds its partial cell up");
 
-  const p = new Painter();
+  const p = new Painter(page);
   p.reset();
-  p.fill(0, 0, CELL_W * 2, CELL_H * 2, 953);
-  checkEq(tileCost(CELL_W * 2, CELL_H * 2), p.count, "fill emits what tileCost predicts");
+  p.fill(0, 0, cw * 2, ch * 2, page.chromeCell(Chrome.Panel));
+  checkEq(tileCost(cw * 2, ch * 2, page), p.count, "fill emits what tileCost predicts");
 
   // The clip trims a fill to the rectangle it is given.
   p.reset();
-  p.setClip(0, 0, CELL_W, CELL_H * 2);
-  p.fill(0, 0, CELL_W * 4, CELL_H * 2, 953);
+  p.setClip(0, 0, cw, ch * 2);
+  p.fill(0, 0, cw * 4, ch * 2, page.chromeCell(Chrome.Panel));
   checkEq(2, p.count, "a clip trims a rectangle to its own bounds");
   p.clearClip();
 }
 
 /// A glyph outside the clip emits nothing; a straddling one is trimmed.
 function caseGlyphClip(): void {
-  const p = new Painter();
+  // Mono, because every advance is the same and "the third cell" is then an exact
+  // rectangle rather than a rounded one.
+  const mono: FontPage = fontBook().page(FONT_MONO, SIZE_14);
+  const p = new Painter(mono);
   const text = bytesOf("abcdef");
+  const cw: i32 = mono.advancePx(REGULAR, 97);      // 'a', and every other glyph
 
   p.reset();
   p.setClip(0, 0, 1000, 1000);
-  p.textBytes(text, 0, 6, 0, 0, 0, 0, CELL_W, 0, 1000);
+  p.textBytes(text, 0, 6, 0, 0, NORMAL, REGULAR, 0, 0, 1000, mono);
   checkEq(6, p.count, "six glyphs in the open emit six records");
 
   p.reset();
-  p.setClip(CELL_W * 2, 0, CELL_W, 1000);        // only the third cell
-  p.textBytes(text, 0, 6, 0, 0, 0, 0, CELL_W, 0, 1000);
-  checkEq(1, p.count, "a clip to one cell emits one glyph");
+  // **One cell, not one advance.** Mono's cell (11 px) is wider than its advance
+  // (8.5), so neighbouring cells overlap and only the first cell's left edge is
+  // private to it. A clip there is a clip to exactly one glyph.
+  p.setClip(0, 0, cw / 2, 1000);
+  p.textBytes(text, 0, 6, 0, 0, NORMAL, REGULAR, 0, 0, 1000, mono);
+  checkEq(1, p.count, "a clip inside one cell emits one glyph");
+
+  // A clip past the last glyph emits nothing, whatever the text was.
+  p.reset();
+  p.setClip(1000, 0, 100, 1000);
+  p.textBytes(text, 0, 6, 0, 0, NORMAL, REGULAR, 0, 0, 1000, mono);
+  checkEq(0, p.count, "a clip past the text emits nothing");
 
   // Fully outside below: nothing at all.
   p.reset();
   p.setClip(0, 0, 1000, 10);
-  p.textBytes(text, 0, 6, 0, 100, 0, 0, CELL_W, 0, 1000);
+  p.textBytes(text, 0, 6, 0, 100, NORMAL, REGULAR, 0, 0, 1000, mono);
   checkEq(0, p.count, "a glyph below the clip is not drawn");
   p.clearClip();
 
   // The budget refuses and counts rather than growing.
-  const small = new Painter(DEFAULT_THEME, 3);
+  const small = new Painter(mono, 3);
   small.reset();
-  small.textBytes(text, 0, 6, 0, 0, 0, 0, CELL_W, 0, 1000);
+  small.textBytes(text, 0, 6, 0, 0, NORMAL, REGULAR, 0, 0, 1000, mono);
   checkEq(3, small.count, "a small painter stops at its capacity");
   checkEq(3, small.dropped, "and counts what it refused");
 }
@@ -187,7 +247,8 @@ class Bench {
     // been assigned, and the builder wants the tree it is about to be given.
     const tree = new WidgetTree(fontBook(), capacity);
     const ui = new Ui(tree);
-    const p = new Painter();
+    // The bench draws with the tree's default page: one painter, one atlas.
+    const p = new Painter(tree.defaultPage);
     const hits = new Hits();
     this.tree = tree;
     this.ui = ui;
@@ -530,56 +591,6 @@ function caseCull(): void {
   check(b.tree.skipped >= 1, "the paint reports what it skipped");
 }
 
-/// The `listItem` bug, asserted: a row scrolled out of the pane records no target.
-///
-/// This is the defect the pass exists to fix, so it gets a test that fails on the
-/// old code — where the early return for a vertically clipped row still called
-/// `hits.add`, so a click in the space where the row used to be selected it.
-function caseListItemClip(): void {
-  const p = new Painter();
-  const hits = new Hits();
-  const row = bytesOf("a row");
-
-  p.reset();
-  p.useHits(hits);
-  p.pushClip(100, 100, 200, 60);         // a pane holding two 20-px rows
-
-  // Inside: one target, at the row's own rectangle.
-  listItem(p, row, 0, 5, 100, 110, 200, 1);
-  checkEq(1, hits.count, "a row inside the pane records one target");
-  checkEq(110, hits.yAt(0), "at its own y");
-
-  // Below the pane: no target at all, and no record either.
-  const before = p.count;
-  listItem(p, row, 0, 5, 100, 200, 200, 2);
-  checkEq(1, hits.count, "a row below the pane records nothing");
-  checkEq(before, p.count, "and draws nothing");
-
-  // Straddling the bottom edge: the target is the visible half, not the whole row.
-  listItem(p, row, 0, 5, 100, 150, 200, 3);
-  checkEq(2, hits.count, "a straddling row still records");
-  checkEq(10, hits.hAt(1), "trimmed to the ten pixels of it that are visible");
-  checkEq(3, hits.idAt(1), "and it is the row's own id");
-
-  // A click where the hidden row used to be finds nothing.
-  checkEq(-1, hits.at(150, 200), "a click in the empty space finds nothing");
-  checkEq(1, hits.at(150, 110), "and a click on the visible row finds it");
-
-  // The mechanism, stated so it is measured rather than asserted: raw `Hits.add`
-  // has no clip and records anyway — which is exactly what `listItem` used to do
-  // — while `addHit` is the gate that refuses it.
-  hits.begin();
-  hits.add(100, 200, 200, 20, 9);
-  checkEq(1, hits.count, "raw Hits.add records a target outside the clip");
-  checkEq(9, hits.at(150, 200), "so a click in the empty space would find it");
-  hits.begin();
-  check(!p.addHit(100, 200, 200, 20, 9), "addHit refuses the same rectangle");
-  checkEq(0, hits.count, "and records nothing");
-
-  p.popClip();
-  p.useHits(null);
-}
-
 /// Cost: what the painter charged, per widget and in total.
 function caseTreeCost(): void {
   const b = new Bench();
@@ -730,13 +741,14 @@ function pointerFrame(ui: Ui, snap: Snapshot, x: i32, y: i32,
 
 /// One draw, into the hit list the next dispatch will read.
 ///
-/// Both draw paths run in the same frame — a tree paint and one `drawText` — so the
-/// "this frame allocated nothing" checks cover the retained path *and* the
-/// immediate-mode one that the two apps still use.
+/// The frame also composes one ephemeral string into the painter's pool, so the
+/// "this frame allocated nothing" checks cover the retained path *and* the scratch
+/// text a status line writes.
 function drawFrame(b: Bench): void {
   b.tree.layout();
   b.p.reset();
-  drawText(b.p, "frame", 0, 0);
+  b.p.texts.begin();
+  b.p.texts.str("frame");
   b.tree.paint(b.p, b.ui.hits);
 }
 
@@ -802,15 +814,15 @@ function caseZeroAllocText(): void {
   checkEq(pagesBefore, memory.size(), "115 more frames added no wasm page to the heap");
   checkEq(155, b.tree.textLength(f), "and every frame's keystroke still arrived");
 
-  // The same claim for the painter's pool, which is where `drawText` writes.
-  const p = new Painter();
+  // The same claim for the painter's pool, which is where scratch text goes.
+  const p = new Painter(fontBook().pages[0]);
   p.reset();
   const before = p.texts.highWater;
-  drawText(p, "frames", 0, 0);
+  p.texts.str("frames");
   const one = p.texts.highWater;
-  check(before == 0 && one == 6, "drawText wrote six bytes into the frame pool");
+  check(before == 0 && one == 6, "one composed string wrote six bytes into the frame pool");
   const cap: i32 = p.texts.capacity;
-  for (let i: i32 = 0; i < 20; i++) drawText(p, "frames", 0, 0);
+  for (let i: i32 = 0; i < 20; i++) p.texts.str("frames");
   checkEq(21 * 6, p.texts.highWater, "twenty-one strings in a frame are 126 bytes of pool");
   checkEq(cap, p.texts.capacity, "and the pool's allocation never grew");
   checkEq(0, p.texts.dropped, "and none of it was dropped");
@@ -1127,6 +1139,11 @@ function caseTextEditing(): void {
 
   const snap = Snapshot.synthetic();
   b.ui.setFocus(f);
+  // Focus is an event of its own now (`UiEventKind.Focus`), and a field answers it
+  // by putting the caret at the end — Tab into a field and type used to insert
+  // *before* the value, because the caret was still at 0.
+  checkEq(3, b.ui.caret(f), "focusing a field puts the caret at the end");
+  b.ui.setCaret(f, 1);            // and a click still places it where it landed
 
   // Typing inserts at the caret, not at the end.
   snap.pushText("X");
@@ -1193,6 +1210,147 @@ function caseTextEditing(): void {
   pointerFrame(b.ui, snap2, 8, cy2, 0, 0, 0);
   pointerFrame(b.ui, snap2, 195, cy2, 187, 0, 1);
   checkEq(3, b.ui.caret(f), "and a click past the last glyph clamps to the end");
+
+  // Return is the field's commit, not the app's shortcut. A form's Enter belongs
+  // to the form, and the widget that knows it is a text field is this one — so the
+  // key fires the submit target and is consumed, rather than bubbling to a panel.
+  const submitted = new Tally();
+  b.ui.onSubmit(f, submitted);
+  b.ui.setFocus(f);
+  snap.latch();
+  snap.setKey(SCAN_RETURN, true);
+  b.ui.frame(snap);
+  checkEq(1, submitted.n, "Return in a focused field fires its submit handler");
+  b.ui.setFocus(-1);
+}
+
+/// `ui.hidden`: out of the flow, off the screen, and out of the hit list.
+///
+/// The three halves matter separately. "Out of the flow" is what makes a flex
+/// sibling reclaim the space (that is what play mode needs: collapse the panels and
+/// the viewport grows). "Off the screen" is `visible = false`. "Out of the hit
+/// list" is the consequence a user notices — a collapsed panel that still answered
+/// clicks would be a click landing on nothing.
+function caseHidden(): void {
+  const b = new Bench();
+
+  // Out of the flow: a fixed middle child of a row gives its space to the flex pair.
+  const root = b.ui.root(300, 100);
+  const row = b.ui.row(root);
+  const a = b.ui.spacer(row, 1);
+  const mid = b.ui.label(row, "mid");
+  const c = b.ui.spacer(row, 1);
+  b.tree.layout();
+  const midW: i32 = b.tree.w[mid];
+  check(midW > 0, "the label occupies its measured width");
+  const aWas: i32 = b.tree.w[a];
+  b.ui.hidden(mid);
+  b.tree.layout();
+  checkEq(300, b.tree.w[a] + b.tree.w[c], "a hidden child's space goes to the flex siblings");
+  check(b.tree.w[a] > aWas, "and the first of them grew");
+
+  // Off the screen and out of the hit list.
+  // The column **flexes**, so hiding its only child does not collapse the column
+  // itself — an empty column measures to nothing, which is correct and is what the
+  // first half of this test asserts. What is being tested here is the *child*.
+  const root2 = b.ui.root(200, 200);
+  const col = b.ui.column(root2, { flex: 1 });
+  const btn = b.ui.button(col, "go", { pad: 4 });
+  b.tree.layout();
+  const bx: i32 = b.tree.x[btn] + 2;
+  const by: i32 = b.tree.y[btn] + 2;
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(btn, b.ui.hits.at(bx, by), "a button records a hit");
+
+  b.ui.hidden(btn);
+  b.tree.layout();
+  check(!b.tree.visible[btn], "a hidden widget is not visible");
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(0, b.tree.cost[btn], "and paints nothing");
+  checkEq(0, b.ui.hits.count, "so nothing answers a click where it used to be");
+
+  b.ui.hidden(btn, false);
+  b.tree.layout();
+  check(b.tree.visible[btn], "unhiding brings it back");
+
+  // A split with one pane gives the survivor everything, and the divider returns.
+  const root3 = b.ui.root(400, 100);
+  const sp = b.ui.split(root3, Axis.X);
+  const left = b.ui.column(sp);
+  const right = b.ui.column(sp);
+  b.tree.layout();
+  const rightWas: i32 = b.tree.w[right];
+  check(rightWas < 400, "the split divides its width");
+  b.ui.hidden(left);
+  b.tree.layout();
+  checkEq(400, b.tree.w[right], "a split with one pane gives it the whole width");
+  b.ui.hidden(left, false);
+  b.tree.layout();
+  checkEq(rightWas, b.tree.w[right], "and the divider comes back where it was");
+}
+
+/// `ui.clickable`: a caption that answers a click.
+function caseClickable(): void {
+  const b = new Bench();
+  const root = b.ui.root(200, 100);
+  const col = b.ui.column(root);
+  const lab = b.ui.label(col, "x");
+  b.ui.clickable(lab);
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  const hx: i32 = b.tree.x[lab] + 2;
+  const hy: i32 = b.tree.y[lab] + 2;
+  checkEq(lab, b.ui.hits.at(hx, hy), "a clickable label records a hit");
+
+  const tally = new Tally();
+  tally.via = b.tree.id[lab];
+  b.ui.onClick(b.tree.id[lab], tally);
+  const snap = Snapshot.synthetic();
+  pointerFrame(b.ui, snap, hx, hy, 0, 0, 1);
+  checkEq(1, tally.n, "and a press on it fires its handler");
+  pointerFrame(b.ui, snap, hx, hy, 0, 0, 0);
+
+  // A plain label still records nothing: the permission is opt-in.
+  const root2 = b.ui.root(200, 100);
+  const col2 = b.ui.column(root2);
+  b.ui.label(col2, "caption");
+  b.tree.layout();
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(0, b.ui.hits.count, "a plain label records no hit");
+}
+
+/// `ui.setBehavior`: a slot the builder made, handed to the caller's behavior.
+///
+/// The extension point has two halves — `ui.node` for a widget a behavior brings
+/// into being, and this for one the builder made (`List`, `Button`, …). What must
+/// survive the swap is everything the builder owns: the slot, its place in the
+/// tree, its floors, its state. What must change is the four passes.
+function caseSetBehavior(): void {
+  const b = new Bench();
+  const root = b.ui.root(200, 100);
+  const col = b.ui.column(root);
+  const lbl = b.ui.label(col, "hello");
+  b.ui.size(lbl, 40, 20);
+  b.tree.layout();
+  checkEq(40, b.tree.w[lbl], "a label measures itself from its text and floors");
+
+  const passive = new Passive();
+  b.ui.setBehavior(lbl, passive);
+  check(b.ui.behaviorOf(lbl) == passive, "setBehavior replaced the widget's behavior");
+  b.tree.layout();
+  checkEq(40, b.tree.w[lbl], "the replacement's measure wrote the size");
+  checkEq(20, b.tree.h[lbl], "and the floors still apply");
+
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(hlineCost(40, fontBook().pages[0]), b.tree.cost[lbl],
+          "the replacement painted its rule, not the glyphs");
+  checkEq(1, b.ui.hits.count, "and recorded its own hit target");
+  checkEq(lbl, b.ui.hits.at(5, 5), "which a click finds");
 }
 
 export function _start_game(): void {
@@ -1202,10 +1360,8 @@ export function _start_game(): void {
   }
   print(">>> caseGeometry");
   caseGeometry();
-  print(">>> caseWrapping");
-  caseWrapping();
-  print(">>> caseColumns");
-  caseColumns();
+  print(">>> caseMeasure");
+  caseMeasure();
   print(">>> caseCosts");
   caseCosts();
   print(">>> caseGlyphClip");
@@ -1228,8 +1384,6 @@ export function _start_game(): void {
   caseDirty();
   print(">>> caseCull");
   caseCull();
-  print(">>> caseListItemClip");
-  caseListItemClip();
   print(">>> caseTreeCost");
   caseTreeCost();
   print(">>> caseHitCursor");
@@ -1248,6 +1402,12 @@ export function _start_game(): void {
   caseVirtualList();
   print(">>> caseTextEditing");
   caseTextEditing();
+  print(">>> caseSetBehavior");
+  caseSetBehavior();
+  print(">>> caseHidden");
+  caseHidden();
+  print(">>> caseClickable");
+  caseClickable();
 
   if (failures != 0) {
     print("ui: " + failures.toString() + " check(s) failed");

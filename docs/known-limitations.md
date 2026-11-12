@@ -23,7 +23,7 @@ yet.
 | HDR output | — | Ogre-Next has no output-HDR path | the colour-management API | vision §5.1 |
 | Hardware floor: a Vulkan, D3D12 or Metal GPU (~2017 or newer) | the renderer split | there is no software-rendering path; `SDL_GPU` needs one of those three, and Ogre's Vulkan backend needs Vulkan | a software backend (lavapipe covers CI, not users) | vision §5.1 |
 | Win32 is cross-compiled, never run | — | needs a Windows machine and a Win32 host-surface variant | both exist | vision §5.3 |
-| `tension-input` builds on Windows, has never been run there | v7 | needs a Windows machine to run the input suites | one exists | vision §5.3 |
+| The OGRE host-surface probe does not run on Windows | v7 | it reaches the adapter with `libc::dlopen`, which has no Windows equivalent; the test is Unix-gated and reports itself skipped | a `LoadLibraryExA` shim in the test, and `dso_path()` learning the `.dll` spelling | — |
 | The GL3+ fallback needs an X11 display | — | GL3+ is the non-Vulkan fallback and it is GLX-only; a Wayland window has no adoptable handle | an EGL backend, or `SDL_VIDEODRIVER=x11` on XWayland | vision §6 |
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
 | Win32 header path is a checked-in overlay | `ci/linsys2.md` | Ogre's tree has no `WIN32` platform define for the Vulkan window | upstream, or the overlay grows | — |
@@ -224,20 +224,28 @@ driver (`create_window … target=Vulkan on 'wayland'`), which is what the
 surfaces above are for. The same pin makes `hello-sprites`' windowed run work.
 The default suite (`npm test`) sets no driver and passes on either session.
 
-## `tension-input` on Windows: builds, not run
+## `tension-input` on Windows — **closed**
 
-**`tension-input` builds on Windows as of v7.** The capability has no X11 and no
-SDL dependency left — no `libX11`, no `SDL_Init`, no thread — so
-`scripts/build-input.mjs` has no platform gate and produces
-`libtension_input.dll` with the same recipe it uses for `.so` (`CXX`,
-`-std=c++17 -O2 -fPIC -Wall -Wextra -shared`). On Linux the DSO's `DT_NEEDED`
-is `libstdc++`, `libm`, `libgcc_s`, `libc`, and the build fails if `SDL`
-appears; the Windows import list is the same runtime minus nothing platform
-shaped, because nothing in `src/` names one.
+The claim was "builds, not run", and it was true for two separate reasons.
 
-**It has not been run there.** Compiling is the whole claim: the input suites
-start a real host and create a real window, and none of that has been executed
-on Windows. `scripts/test-input.mjs` no longer skips Windows, so the claim will
-be tested the first time someone runs it there; until then, "builds" is the
-limit of what this repository knows, and [`vision.md`](vision.md) §5.3 is the
-condition that changes it.
+**It could not be loaded there.** A MinGW `-shared` build imports
+`libgcc_s_seh-1.dll`, `libstdc++-6.dll` and `libwinpthread-1.dll`. Unix resolves
+those through the DSO's own `DT_NEEDED`/RPATH; Windows has no RPATH, so a
+dependency resolves only beside the *executable* or somewhere on `PATH` — and
+MSYS2's `ucrt64/bin` is on `PATH` only inside an MSYS2 shell. Loaded from
+cmd/PowerShell, which is where `npm start` runs, `LoadLibrary` answered 126
+(`ERROR_MOD_NOT_FOUND`), the host reported `could not load adapter` and the
+capability looked unbuilt. `scripts/build-input.mjs` now passes `-static` on
+Windows, which leaves `KERNEL32` and the UCRT api-sets in the import list: the
+DSO needs nothing from the environment, at the cost of the C++ runtime inside
+it.
+
+**It has now been run.** `npm test -- input` passes on Windows — the 49 mirror
+checks and the with-display, no-window, no-driver and no-env host cases — and
+`apps/editor`, whose guest imports `tension::input`, runs there: menu items and
+scene rows select on click, typed text reaches an Inspector field and applies
+(`log: set x -> x = 150.0`), and Play/Stop/Restart drive the run state.
+
+What that does **not** claim: the gamepad slots and relative-mouse confinement
+were not separately exercised on Windows, and the suite's own coverage is the
+boundary of what is proven — this is a run, not an audit.

@@ -256,92 +256,143 @@ if (!existsSync(transcriptPath)) {
   }
 }
 
-// ── ui.iwi ──────────────────────────────────────────────────────────────────
+// ── the UI pages ────────────────────────────────────────────────────────────
+//
+// Three baked faces (`ui.0.iwi`, `ui.1.iwi`, `ui.2.iwi`), one manifest and the
+// guest's own constants. This section is the *app's* view of that contract: the
+// pages the volume packs, against the manifest that names them, against the file
+// `tension-framework/assembly/ui/fonts.generated.ts` — which is what the guest
+// actually compiles in. `tools/font/verify-atlas.mjs` checks the bake against its
+// own spec; this checks the copy this app will ship.
+//
+// The old single-atlas check lived here and compared the VGA bake against the
+// `CELL_W` the toolkit hard-coded. That atlas is gone (see `docs/modules/ui.md`):
+// a proportional face has one cell per (family, size), so "the cell" is a per-page
+// number and a single global constant can only be wrong for two pages out of three.
 
-process.stdout.write('\nui.iwi\n');
-const atlasPath = join(assets, 'ui.iwi');
+process.stdout.write('\nui pages\n');
 const uiPath = join(assets, 'ui.json');
-if (!existsSync(atlasPath) || !existsSync(uiPath)) {
-  fail('ui.iwi or ui.json does not exist — run the font baker (see docs/check.mjs)');
+const guestFonts = join(repo, 'tension-framework', 'assembly', 'ui', 'fonts.generated.ts');
+if (!existsSync(uiPath)) {
+  fail('ui.json does not exist — run scripts/assets.mjs (or `npm run assets`)');
 } else {
-  const atlas = readFileSync(atlasPath);
   const ui = JSON.parse(readFileSync(uiPath, 'utf8'));
 
-  if (atlas.subarray(0, 4).toString('ascii') !== 'IWI1') {
-    fail('not an IWI container');
-  } else {
+  ok(`manifest v${ui.version}: ${ui.pages.length} page(s), atlas ${ui.atlas.width}x${ui.atlas.height}`);
+  if (ui.version !== 2) fail(`manifest version ${ui.version}, this viewer reads 2`);
+
+  // Every page: a real IWI the decoder accepts, sized as the manifest claims, with
+  // a grid that tiles it exactly.
+  for (const page of ui.pages) {
+    const file = join(appDir, page.file);
+    if (!existsSync(file)) {
+      fail(`${page.file} does not exist — run scripts/assets.mjs`);
+      continue;
+    }
+    const atlas = readFileSync(file);
+    if (atlas.subarray(0, 4).toString('ascii') !== 'IWI1') {
+      fail(`${page.file} is not an IWI container`);
+      continue;
+    }
     const width = atlas.readUInt32LE(4);
     const height = atlas.readUInt32LE(8);
     const components = atlas.readUInt16LE(13);
     const bitsPerPixel = atlas.readUInt16LE(15);
     const pixelBytes = Number(atlas.readBigUInt64LE(66));
 
-    ok(`IWI1 ${width}x${height}, ${components} components, ${bitsPerPixel} bpp, ` +
-       `${(atlas.length / 1024).toFixed(1)} KiB`);
-
-    // The decoder's own refusals: 3 or 4 components, interleaved, 8-bit.
-    if (components !== 4) fail(`the viewer needs RGBA (4 components), this has ${components}`);
-    else if (bitsPerPixel !== 32) fail(`expected 32 bits per pixel, got ${bitsPerPixel}`);
-    else if (atlas[17] !== 0) fail('planar storage is refused by the decoder');
-    else ok('the container is one the 2D decoder accepts');
-
-    if (pixelBytes !== width * height * 4) {
-      fail(`declared ${pixelBytes} pixel bytes, ${width * height * 4} required`);
-    } else if (atlas.length !== 74 + pixelBytes) {
-      fail(`file is ${atlas.length} bytes, header + pixels is ${74 + pixelBytes}`);
-    } else {
-      ok('pixel data matches the declared size exactly');
-    }
-
     if (width !== ui.atlas.width || height !== ui.atlas.height) {
-      fail(`ui.json says ${ui.atlas.width}x${ui.atlas.height}, the file is ${width}x${height}`);
+      fail(`${page.file} is ${width}x${height}, the manifest says ` +
+           `${ui.atlas.width}x${ui.atlas.height} (every page is a layer of one array)`);
+    } else if (components !== 4 || bitsPerPixel !== 32) {
+      fail(`${page.file}: the viewer needs RGBA8, this has ${components} components / ${bitsPerPixel} bpp`);
+    } else if (pixelBytes !== width * height * 4 || atlas.length !== 74 + pixelBytes) {
+      fail(`${page.file}: pixel data is ${pixelBytes} bytes, ${width * height * 4} required`);
+    } else if (page.grid.cols * page.cell.w > width || page.grid.rows * page.cell.h > height ||
+               (page.grid.cols + 1) * page.cell.w <= width ||
+               (page.grid.rows + 1) * page.cell.h <= height) {
+      fail(`${page.file}: ${page.grid.cols}x${page.grid.rows} cells of ` +
+           `${page.cell.w}x${page.cell.h} is not the maximal grid in ${width}x${height}`);
+    } else if (page.glyphCells + Object.keys(ui.chrome).length > page.grid.cols * page.grid.rows) {
+      fail(`${page.file}: ${page.glyphCells} glyph cells + ${Object.keys(ui.chrome).length} chrome ` +
+           `cells do not fit in ${page.grid.cols * page.grid.rows} cells`);
     } else {
-      ok('ui.json dimensions match the file');
+      ok(`${page.file}: ${page.font} ${page.size}px, ${page.cell.w}x${page.cell.h} cells, ` +
+         `${(atlas.length / 1024).toFixed(0)} KiB`);
     }
+  }
 
-    // The cell formula in the manifest must reproduce the baker's layout.
-    const { stripe, colourStride, glyphCells } = ui.text;
-    const cells = (width / ui.atlas.cellWidth) * (height / ui.atlas.cellHeight);
-    if (glyphCells + Object.keys(ui.chrome).length > cells) {
-      fail(`${glyphCells} glyph cells + chrome do not fit in ${cells} cells`);
-    } else {
-      ok(`${glyphCells} glyph cells + ${Object.keys(ui.chrome).length} chrome cells in ${cells} cells`);
-    }
-    const sample = 4 * colourStride + 1 * stripe + ('A'.charCodeAt(0) - 32);
-    if (sample >= glyphCells) fail(`the cell formula puts 'A' bold/heading at ${sample}, outside the stripe`);
-    else ok(`'A' (heading, bold) is cell ${sample}`);
-
-    // **The painter's cell size must be the baked one.** The toolkit emits one
-    // sprite per glyph with `w = CELL_W, h = CELL_H`, and those are also the
-    // record's *source* texel rect — so if the theme disagrees with `ui.json`
-    // the sampler reads the neighbouring cells and every character is drawn from
-    // the wrong place. It would look like damaged glyphs, not like a
-    // configuration error, which is why this is checked rather than trusted.
-    //
-    // The constants moved to the framework when the toolkit was extracted: the
-    // atlas and the cell geometry are one contract, and the app that bakes an
-    // atlas is not the only thing that reads it.
-    const textSource = readFileSync(
-      join(repo, 'tension-framework', 'assembly', 'ui', 'theme.ts'), 'utf8');
-    const readConst = (name, pattern) => {
-      const match = textSource.match(pattern);
-      if (!match) {
-        fail(`assembly/ui/theme.ts no longer declares ${name} in the form this check reads`);
-        return 0;
-      }
-      return Number(match[1]);
+  // The guest's table, page by page. A stale `fonts.generated.ts` is the failure
+  // this whole section exists for: it does not throw, it samples the neighbouring
+  // cell, which reads as damaged glyphs.
+  if (!existsSync(guestFonts)) {
+    fail('tension-framework/assembly/ui/fonts.generated.ts is missing — run the framework bake');
+  } else {
+    const source = readFileSync(guestFonts, 'utf8');
+    const scalar = (name) => {
+      const match = source.match(new RegExp(`export const ${name}: i32 = (-?\\d+);`));
+      return match ? Number(match[1]) : null;
     };
-    const scale = readConst('SCALE', /export const SCALE: i32 = (\d+);/);
-    const baseW = readConst('CELL_W', /export const CELL_W: i32 = (\d+) \* SCALE;/);
-    const baseH = readConst('CELL_H', /export const CELL_H: i32 = (\d+) \* SCALE;/);
-    const guestCellW = baseW * scale;
-    const guestCellH = baseH * scale;
-    if (guestCellW !== ui.atlas.cellWidth || guestCellH !== ui.atlas.cellHeight) {
-      fail(`the atlas cell is ${ui.atlas.cellWidth}x${ui.atlas.cellHeight} but the guest draws ` +
-        `${guestCellW}x${guestCellH} — rebuild the font at the guest's scale ` +
-        `(FONT_SCALE=${scale} node ../../tension-framework/tools/font/make-font.mjs)`);
+    const list = (name) => {
+      const match = source.match(new RegExp(`export const ${name}: i32\\[\\] = \\[([^\\]]*)\\]`));
+      if (!match) return null;
+      return match[1].split(',').map((t) => t.trim()).filter(Boolean).map(Number);
+    };
+
+    const count = scalar('FONT_PAGE_COUNT');
+    if (count !== ui.pages.length) {
+      fail(`fonts.generated.ts declares ${count} page(s), the manifest bakes ${ui.pages.length}`);
     } else {
-      ok(`the guest's ${guestCellW}x${guestCellH} cell matches the baked atlas (SCALE ${scale})`);
+      ok(`the guest compiles in ${count} page(s), as baked`);
+    }
+
+    const cellsW = list('FONT_CELL_W');
+    const cellsH = list('FONT_CELL_H');
+    const grids = list('FONT_GRID_COLS');
+    const heights = list('FONT_LINE_HEIGHT');
+    const firsts = scalar('FONT_CHROME_FIRST');
+    let drifted = 0;
+    for (const page of ui.pages) {
+      const i = page.slot;
+      if (!cellsW || !cellsH || !grids || !heights) {
+        fail('fonts.generated.ts no longer declares the per-page arrays this check reads');
+        break;
+      }
+      if (cellsW[i] !== page.cell.w || cellsH[i] !== page.cell.h) {
+        fail(`page ${i}: the guest's cell is ${cellsW[i]}x${cellsH[i]}, the bake wrote ` +
+             `${page.cell.w}x${page.cell.h}`);
+        drifted++;
+      }
+      if (grids[i] !== page.grid.cols) {
+        fail(`page ${i}: the guest's grid is ${grids[i]} columns, the bake wrote ${page.grid.cols}`);
+        drifted++;
+      }
+      if (heights[i] !== page.lineHeight) {
+        fail(`page ${i}: the guest's line step is ${heights[i]}, the bake wrote ${page.lineHeight}`);
+        drifted++;
+      }
+      if (page.chromeFirst !== firsts) {
+        fail(`page ${i}: chrome starts at ${page.chromeFirst}, the guest looks at ${firsts}`);
+        drifted++;
+      }
+    }
+    if (!drifted) ok('every page\'s cell, grid, line step and chrome offset match the guest');
+
+    // One advance table entry per (page, weight, glyph). A short table would read
+    // zeros for the last page, which draws every glyph on top of the previous one.
+    const advances = source.match(/export const FONT_ADVANCES: u8\[\] = \[([\s\S]*?)\];/);
+    const weights = scalar('FONT_WEIGHTS');
+    const glyphs = scalar('FONT_GLYPHS');
+    if (!advances) {
+      fail('fonts.generated.ts no longer declares FONT_ADVANCES in the form this check reads');
+    } else {
+      const entries = advances[1].split(',').map((t) => t.trim()).filter(Boolean).length;
+      const want = ui.pages.length * (weights ?? 0) * (glyphs ?? 0);
+      if (entries !== want) {
+        fail(`the advance table holds ${entries} entries, ${want} required ` +
+             `(${ui.pages.length} pages x ${weights} weights x ${glyphs} glyphs)`);
+      } else {
+        ok(`the advance table holds ${entries} quarter-pixel advances, exactly as required`);
+      }
     }
   }
 }

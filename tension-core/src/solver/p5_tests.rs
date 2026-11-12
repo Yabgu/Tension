@@ -458,6 +458,7 @@ fn test_state() -> HostState {
         )),
         // No writable root in a unit test: every `res_write` is -EROFS.
         write_root: None,
+        write_files: Default::default(),
         audio: audio::AudioSession::new(Box::new(HeadlessAdapter::new())),
         ai: ai::AiSession::new(Box::new(StubAdapter::new(ai::AiSink::detached()))),
         solver: SolverHost::default(),

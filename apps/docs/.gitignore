@@ -16,3 +16,12 @@ node_modules/
 # but the CLI emits it for a 2D project and an unexplained file is worse than an
 # ignored one.
 src/graph.generated.ts
+
+# Emitted by `scripts/assets.mjs`: the framework's baked metrics, mirrored into
+# this app so `verify-atlas.mjs` can check this app's atlas against the constants
+# the guest compiles in. The framework's copy is the source; this is a product.
+src/ui-fonts.generated.ts
+
+# Screenshots taken while checking the viewer on a machine: blobs that grow with
+# every UI change and that no build or test reads.
+screenshots/

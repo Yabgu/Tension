@@ -6,6 +6,16 @@ assets/
 # The wasm, the packed volume and the resolved asconfig `tension dev` writes.
 build/
 
+# Where `File > Save scene` writes (`res_write` lands under the host's write root,
+# which is this directory for `tension dev`).
+saves/
+
+# Screenshots taken while checking this app on a machine. Binary blobs that grow
+# with every UI change and that no build or test reads, so they stay out of the
+# history: a capture belongs in a review comment, not in a commit. `npm run
+# assets` writes the atlas previews to `assets/`, which is ignored above.
+screenshots/
+
 # The self-contained app `tension build` writes.
 dist/
 
@@ -15,3 +25,8 @@ node_modules/
 # **game** pipeline (the UI takes preset 1), so this one is load-bearing — and
 # still not committed, because it is versioned with the runtime.
 src/graph.generated.ts
+
+# Emitted by `npm run assets`: the framework's baked metrics, mirrored into this
+# app so `verify-atlas.mjs` can check this app's atlas against the constants the
+# guest compiles in. The framework's copy is the source; this is a product.
+src/ui-fonts.generated.ts

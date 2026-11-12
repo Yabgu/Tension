@@ -3,7 +3,7 @@
 // ## The allocation this file exists to remove
 //
 // `String.UTF8.encode(s)` answers a **fresh `ArrayBuffer`**. Every caller that
-// wanted bytes therefore allocated once per string, and `widget.ts`'s `drawText`
+// wanted bytes therefore allocated once per string, and the immediate-mode
 // did it once per string per frame — which is exactly the cost the retained UI was
 // supposed to have removed. The fix is not a cleverer encode; it is to stop asking
 // for a new buffer and write into one that already exists:
@@ -240,6 +240,25 @@ export class TextBuilder {
   }
 
   /**
+   * Append `n` bytes the caller already has at `ptr`.
+   *
+   * The path a *document* takes: `apps/docs` draws titles out of a packed bundle,
+   * where a string is a pointer and a length and there is no `String` to hand to
+   * `str` — decoding one would allocate, which is the thing this class exists to
+   * avoid. A caller that has a `String` should use `str`; this is for the one that
+   * has bytes.
+   */
+  raw(ptr: usize, n: i32): TextBuilder {
+    const take: i32 = n > 0 ? n : 0;
+    if (take == 0 || ptr == 0) return this;
+    if (!this.reserve(take)) return this;
+    const dst: usize = this.bytes.dataStart + <usize>(this.at + this.len);
+    memory.copy(dst, ptr, <usize>take);
+    this.len += take;
+    return this;
+  }
+
+  /**
    * Append a decimal integer.
    *
    * Hand-rolled because `i32.toString()` allocates a `String`. The magnitude is
@@ -344,6 +363,12 @@ export class TextPool {
   /** Append one byte to the current string. */
   ch(value: i32): void {
     this.b.ch(value);
+    this.settle();
+  }
+
+  /** Append `n` bytes the caller already has at `ptr`. @see TextBuilder.raw */
+  raw(ptr: usize, n: i32): void {
+    this.b.raw(ptr, n);
     this.settle();
   }
 

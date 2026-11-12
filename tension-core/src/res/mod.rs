@@ -852,6 +852,7 @@ impl MountTable {
 /// being tested, and the guest needs to tell "the sandbox said no" from "the
 /// disk said no" — the first is a bug in its own path handling, the second is
 /// the user's problem.
+#[derive(Clone)]
 pub struct WriteRoot {
     root: std::path::PathBuf,
 }
@@ -950,6 +951,196 @@ impl WriteRoot {
         std::fs::write(&real_target, bytes).map_err(|_| Errno(-5))?;
         Ok(bytes.len() as u32)
     }
+
+    /// The file `guest_path` names inside the root, opened read-only.
+    ///
+    /// **Read-after-write is the point.** `res_write` lands on the real
+    /// filesystem while the pak VFS stays the read side, so before this an
+    /// editor could save a document and not load it back: the write succeeded,
+    /// and `res_open` looked in paks that never held it. The host's `res_open`
+    /// now tries the mounts first and falls back here, which makes the pair
+    /// symmetric without making a pak writable.
+    ///
+    /// The checks are `write`'s, in the other direction: the parent must
+    /// canonicalize inside the root (so a symlinked directory cannot lead out),
+    /// the target must not itself be a symlink, and it must be a regular file —
+    /// a directory opened as a file is `-EISDIR`, the same answer the paks give.
+    ///
+    /// Answers the open file and its length.
+    pub fn open_read(&self, guest_path: &str) -> Result<(std::fs::File, u64), Errno> {
+        let target = self.resolve(guest_path)?;
+        let parent = target.parent().ok_or(Errno(-22))?;
+        // A missing parent is `-ENOENT` rather than the `-EIO` an unreadable one
+        // gets: nothing was written to that directory, and "no such file" is
+        // what a caller that skipped the save should hear.
+        let real_parent = match std::fs::canonicalize(parent) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Errno(-2)),
+            Err(_) => return Err(Errno(-5)),
+        };
+        if !real_parent.starts_with(&self.root) {
+            return Err(Errno(-30)); // a symlink in the parent chain left the root
+        }
+        let real_target = real_parent.join(target.file_name().ok_or(Errno(-22))?);
+        let metadata = match std::fs::symlink_metadata(&real_target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Errno(-2))
+            }
+            Err(_) => return Err(Errno(-5)),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(Errno(-30));
+        }
+        if metadata.is_dir() {
+            return Err(Errno(-21)); // EISDIR
+        }
+        let file = std::fs::File::open(&real_target).map_err(|error| match error.kind() {
+            std::io::ErrorKind::NotFound => Errno(-2),
+            std::io::ErrorKind::PermissionDenied => Errno(-13), // EACCES
+            _ => Errno(-5),
+        })?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok((file, size))
+    }
+
+    /// `stat` for a path inside the root, in the paks' 12-byte shape.
+    ///
+    /// Same fallback as `open_read`, and needed for the same reason: a guest that
+    /// asks `res_stat` what it just saved must be told the truth, or it will not
+    /// know whether a load has anything to read.
+    pub fn stat(&self, guest_path: &str) -> Result<Stat, Errno> {
+        let target = self.resolve(guest_path)?;
+        let parent = target.parent().ok_or(Errno(-22))?;
+        let real_parent = match std::fs::canonicalize(parent) {
+            Ok(path) => path,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Err(Errno(-2)),
+            Err(_) => return Err(Errno(-5)),
+        };
+        if !real_parent.starts_with(&self.root) {
+            return Err(Errno(-30));
+        }
+        let real_target = real_parent.join(target.file_name().ok_or(Errno(-22))?);
+        let metadata = match std::fs::symlink_metadata(&real_target) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(Errno(-2))
+            }
+            Err(_) => return Err(Errno(-5)),
+        };
+        if metadata.file_type().is_symlink() {
+            return Err(Errno(-30));
+        }
+        if metadata.is_dir() {
+            return Ok(Stat {
+                kind: KIND_DIRECTORY,
+                size: 0,
+                flags: 0,
+            });
+        }
+        Ok(Stat {
+            kind: KIND_FILE,
+            size: metadata.len().min(u32::MAX as u64) as u32,
+            flags: 0,
+        })
+    }
+}
+
+/// The open files a guest holds on the **write root**, indexed by a local handle.
+///
+/// The paks are memory-mapped archives and their handles are the library's; a
+/// real file needs `std::fs::File`, whose reader is stateful in a way the pak's
+/// table-of-contents reader is not. So the two live in different tables, and the
+/// guest fd's high bits say which: `FD_WRITE_TAG` for this one, a mount index for
+/// the other (see `pack_fd` in `main.rs`).
+///
+/// A slot that is freed is reused, so a guest that opens and closes in a loop
+/// does not grow the table. Handles are 1-based so that 0 is never a valid fd —
+/// `fd_index` refuses a zero local handle for the paks for the same reason.
+#[derive(Default)]
+pub struct WriteFiles {
+    slots: Vec<Option<std::fs::File>>,
+}
+
+impl WriteFiles {
+    pub fn new() -> Self {
+        Self { slots: Vec::new() }
+    }
+
+    /// How many handles are open, for a test or a teardown log.
+    pub fn live(&self) -> usize {
+        self.slots.iter().filter(|slot| slot.is_some()).count()
+    }
+
+    /// Open `guest_path` under `root` and answer its local handle.
+    pub fn open(&mut self, root: &WriteRoot, guest_path: &str) -> Result<i32, Errno> {
+        let (file, _) = root.open_read(guest_path)?;
+        if let Some(index) = self.slots.iter().position(|slot| slot.is_none()) {
+            self.slots[index] = Some(file);
+            return Ok(index as i32 + 1);
+        }
+        self.slots.push(Some(file));
+        Ok(self.slots.len() as i32)
+    }
+
+    fn slot(&mut self, local: i32) -> Result<&mut std::fs::File, Errno> {
+        if local <= 0 {
+            return Err(Errno(-9)); // EBADF
+        }
+        self.slots
+            .get_mut(local as usize - 1)
+            .and_then(|slot| slot.as_mut())
+            .ok_or(Errno(-9))
+    }
+
+    pub fn read(&mut self, local: i32, dst: &mut [u8]) -> Result<usize, Errno> {
+        use std::io::Read;
+        let file = self.slot(local)?;
+        file.read(dst).map_err(|_| Errno(-5))
+    }
+
+    pub fn seek(&mut self, local: i32, off: i64, whence: i32) -> Result<i64, Errno> {
+        use std::io::{Seek, SeekFrom};
+        let from = match whence {
+            0 => SeekFrom::Start(off.max(0) as u64),
+            1 => SeekFrom::Current(off),
+            2 => SeekFrom::End(off),
+            _ => return Err(Errno(-22)), // EINVAL
+        };
+        let file = self.slot(local)?;
+        file.seek(from).map(|pos| pos as i64).map_err(|_| Errno(-5))
+    }
+
+    pub fn tell(&mut self, local: i32) -> Result<i64, Errno> {
+        use std::io::Seek;
+        let file = self.slot(local)?;
+        file.stream_position().map(|pos| pos as i64).map_err(|_| Errno(-5))
+    }
+
+    pub fn stat(&mut self, local: i32) -> Result<Stat, Errno> {
+        let file = self.slot(local)?;
+        let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+        Ok(Stat {
+            kind: KIND_FILE,
+            size: size.min(u32::MAX as u64) as u32,
+            flags: 0,
+        })
+    }
+
+    /// Close a handle. Closing twice is `-EBADF`, not a silent success: a guest
+    /// that double-closes has a bug, and the second answer is where it shows.
+    pub fn close(&mut self, local: i32) -> Result<(), Errno> {
+        if local <= 0 {
+            return Err(Errno(-9));
+        }
+        match self.slots.get_mut(local as usize - 1) {
+            Some(slot) if slot.is_some() => {
+                *slot = None;
+                Ok(())
+            }
+            _ => Err(Errno(-9)),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1026,6 +1217,86 @@ mod tests {
         root.write("nested/deeper/doc.tns", b"bye").expect("a rewrite");
         let again = std::fs::read(directory(&dir).join("nested/deeper/doc.tns")).unwrap();
         assert_eq!(again, b"bye");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Read-after-write: what a guest saved is what a guest can open.
+    ///
+    /// The pair is the feature. `res_write` lands on the filesystem and the paks
+    /// stay the read side, so before the fallback in `open_read` a document could
+    /// be saved and never loaded — the exact failure an editor reports as "load
+    /// is not supported". This asserts the round trip, the size, and that the
+    /// sandbox still applies on the way back in.
+    #[test]
+    fn a_write_can_be_read_back() {
+        let dir = scratch("readback");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+
+        root.write("saves/scene.json", b"{\"nodes\":[1,2]}").expect("a save");
+        let (mut file, size) = root.open_read("saves/scene.json").expect("the read-back");
+        assert_eq!(size, 15);
+        let mut body = String::new();
+        std::io::Read::read_to_string(&mut file, &mut body).expect("reads");
+        assert_eq!(body, "{\"nodes\":[1,2]}");
+
+        // `stat` agrees with `open_read`, or a guest that asks first is misled.
+        let stat = root.stat("saves/scene.json").expect("stat");
+        assert!(stat.is_file());
+        assert_eq!(stat.size, 15);
+        assert!(!stat.is_compressed());
+
+        // A miss is a miss, not an invention.
+        assert!(root.open_read("saves/other.json").is_err());
+        assert_eq!(root.stat("saves/other.json").unwrap_err().code(), -2);
+        // And a path with no such directory is `-ENOENT`, not the `-EIO` an
+        // unreadable directory would get.
+        assert_eq!(root.open_read("nowhere/x.json").unwrap_err().code(), -2);
+
+        // The sandbox is not weakened by the read side.
+        assert_eq!(root.open_read("../escape.txt").unwrap_err().code(), -30);
+        assert_eq!(root.open_read("/etc/passwd").unwrap_err().code(), -30);
+        assert_eq!(root.stat("../escape.txt").unwrap_err().code(), -30);
+
+        // A directory is not a file.
+        std::fs::create_dir_all(directory(&dir).join("saves/dir")).expect("mkdir");
+        assert_eq!(root.open_read("saves/dir").unwrap_err().code(), -21);
+        assert!(root.stat("saves/dir").expect("stat").is_dir());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The handle table: 1-based handles, reuse after a close, and a double
+    /// close refused rather than silently accepted.
+    #[test]
+    fn the_file_table_reuses_handles_and_refuses_a_double_close() {
+        let dir = scratch("handles");
+        let root = WriteRoot::new(&dir).expect("a directory is a valid root");
+        root.write("a.txt", b"one").expect("a save");
+        root.write("b.txt", b"two").expect("a save");
+
+        let mut files = WriteFiles::new();
+        let a = files.open(&root, "a.txt").expect("opens");
+        let b = files.open(&root, "b.txt").expect("opens");
+        assert_eq!((a, b), (1, 2));
+        assert_eq!(files.live(), 2);
+
+        let mut buf = [0u8; 8];
+        let n = files.read(a, &mut buf).expect("reads");
+        assert_eq!(&buf[..n], b"one");
+        assert_eq!(files.tell(a).expect("tell"), 3);
+        assert_eq!(files.seek(a, 0, 0).expect("seek"), 0);
+        assert_eq!(files.read(a, &mut buf).expect("reads"), 3);
+
+        // Closing frees the slot, and the next open reuses it rather than
+        // growing the table: a guest that opens in a frame loop must not leak.
+        files.close(a).expect("closes");
+        assert_eq!(files.live(), 1);
+        let c = files.open(&root, "a.txt").expect("reopens");
+        assert_eq!(c, a);
+        files.close(c).expect("closes the re-opened handle");
+        assert_eq!(files.close(c).unwrap_err().code(), -9);
+        assert_eq!(files.close(0).unwrap_err().code(), -9);
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -700,6 +700,66 @@ export class Ui {
   }
 
   /**
+   * Give an existing widget a different behavior.
+   *
+   * The other half of the extension point: `ui.node` supplies a behavior for a
+   * widget it also creates, and this replaces one on a widget the builder made — a
+   * `List` that marks its own selection, a `Button` that draws an icon. The slot,
+   * its children, its flags and its scroll state stay exactly where they are; only
+   * the four passes change hands.
+   *
+   * Marked for a measure because a replacement is free to size itself differently,
+   * and a widget measured by its old behavior is the one thing that cannot be
+   * checked from here.
+   */
+  setBehavior(id: i32, behavior: WidgetBehavior): i32 {
+    if (id < 0 || id >= this.tree.used) return -1;
+    this.tree.behavior[id] = behavior;
+    this.tree.markMeasure(id);
+    return id;
+  }
+
+  /**
+   * Take a widget out of the layout and off the screen, or put it back.
+   *
+   * Out of the layout is the half that matters: a hidden child gives its space to
+   * its flex siblings, so collapsing the console grows the viewport and collapsing
+   * the inspector grows the viewport *and* leaves the split's sidebar the width it
+   * had. It records no hits either, so a collapsed panel cannot be clicked where it
+   * used to be.
+   *
+   * Marked for a measure because the parent's content size changes, and for an
+   * arrange because placement changes — the same two a resize needs.
+   */
+  hidden(id: i32, on: bool = true): i32 {
+    if (id < 0 || id >= this.tree.used) return -1;
+    if (this.tree.hidden[id] == on) return id;
+    this.tree.hidden[id] = on;
+    this.tree.markMeasure(id);
+    this.tree.markArrange(id);
+    return id;
+  }
+
+  /**
+   * Let a widget that is not a control record a click target.
+   *
+   * A `Label` records nothing by default (a caption is for reading), which is what
+   * makes a click on a panel's background go to nobody. This is the permission for
+   * the exceptions: the caption beside a field, which should focus it.
+   */
+  clickable(id: i32, on: bool = true): i32 {
+    if (id < 0 || id >= this.tree.used) return -1;
+    this.tree.clickable[id] = on;
+    this.tree.markPaint(id);
+    return id;
+  }
+
+  /** Whether a widget is collapsed. */
+  isHidden(id: i32): bool {
+    return id >= 0 && id < this.tree.used && this.tree.hidden[id];
+  }
+
+  /**
    * Whether this widget's children are clipped to its content box.
    *
    * A behavior cannot set it (the interface is the four passes, on purpose), so a

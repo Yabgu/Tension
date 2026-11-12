@@ -2248,6 +2248,70 @@ impl HostWindow {
         Ok(())
     }
 
+    /// Shrink a windowed request that cannot fit the display's work area, and
+    /// put it back where a window that *did* fit would have been placed.
+    ///
+    /// **The failure this exists for.** A window is created at a *client* size
+    /// and the window system adds its decoration around that. Asked for
+    /// 1920x1080 on a 1920x1080 display, Win32 builds a 1936x1119 outer frame and
+    /// centres *that*, so the client origin lands at (0, 0) while the title bar
+    /// sits at y = -31 and the left border at x = -8. Every pixel of the client is
+    /// on screen and none of the chrome is: the window reads as "it opened
+    /// fullscreen" and there is no frame left to drag or an X to click. Measured
+    /// with `GetWindowRect` on a 1920x1080 display. A window manager that
+    /// constrains its own windows never produces it, which is why the same
+    /// project looked correct on Linux.
+    ///
+    /// SDL will not say how big the decoration is — `Window::border_size` is
+    /// X11-only, and physical pixels besides — so the request is fitted into the
+    /// work area with [`DECORATION_MARGIN`] standing in for the frame. Re-centring
+    /// is not cosmetic: the position the window system picked was computed for the
+    /// size that did not fit, and leaving it there would keep the chrome off the
+    /// screen with the client merely smaller.
+    ///
+    /// Main thread only.
+    pub fn fit_to_work_area(&mut self) -> Result<(), PlatformError> {
+        let requested = (
+            self.width.load(Ordering::Relaxed),
+            self.height.load(Ordering::Relaxed),
+        );
+
+        // A driver with no display to ask — `offscreen`, `dummy` — has no work
+        // area to fit into. That is not a failure: the window was created.
+        let Ok(display) = self.window.get_display() else {
+            return Ok(());
+        };
+        let Ok(area) = display.get_usable_bounds() else {
+            return Ok(());
+        };
+        let work = (area.width().max(1), area.height().max(1));
+
+        let fitted = fitted_client_size(requested, work);
+        if fitted == requested {
+            return Ok(());
+        }
+
+        // `set_window_size` rather than `set_size`: it publishes the size, so a
+        // guest that reads `windowInfo()` before the next pump sees the window it
+        // actually has instead of the one it asked for.
+        self.set_window_size(fitted.0, fitted.1)?;
+
+        let x = area.x() + (work.0 as i32 - fitted.0 as i32) / 2;
+        let y = area.y() + (work.1 as i32 - fitted.1 as i32) / 2;
+        self.window
+            .set_position(sdl3::video::WindowPos::from(x), sdl3::video::WindowPos::from(y));
+
+        crate::logging::log(
+            crate::logging::Level::Info,
+            "core",
+            &format!(
+                "create_window: {}x{} does not fit the {}x{} work area; opened at {}x{}",
+                requested.0, requested.1, work.0, work.1, fitted.0, fitted.1
+            ),
+        );
+        Ok(())
+    }
+
     /// Change the window's title.
     ///
     /// The host keeps the title it created the window with, so this updates
@@ -2473,6 +2537,32 @@ impl HostWindow {
     }
 }
 
+/// What a windowed request must leave of the display's work area for the window
+/// system's own decoration.
+///
+/// Win32 draws a 16x39 frame around a 1920x1080 client at 100% scale, so these
+/// are twice the frame in each direction: a request that lands within a title
+/// bar of the work area's edge takes the fitting path too, instead of
+/// overhanging by exactly the amount it was allowed to be close by. They are
+/// *logical* units, because the request and `SDL_GetDisplayUsableBounds` are
+/// both logical — above 100% scale the same frame is fewer logical pixels, so
+/// the margin only ever gives back slack.
+const DECORATION_MARGIN: (u32, u32) = (32, 64);
+
+/// The client size a windowed request becomes on a display whose work area is
+/// `work`.
+///
+/// Pure so the arithmetic has a test that needs no display: the SDL calls
+/// around it (`get_display`, `get_usable_bounds`, `set_size`) are the part that
+/// needs a window, and they carry no decisions of their own.
+fn fitted_client_size(requested: (u32, u32), work: (u32, u32)) -> (u32, u32) {
+    let max = (
+        work.0.saturating_sub(DECORATION_MARGIN.0).max(1),
+        work.1.saturating_sub(DECORATION_MARGIN.1).max(1),
+    );
+    (requested.0.min(max.0), requested.1.min(max.1))
+}
+
 /// Create the host's window from a guest's (or a renderer's) request.
 ///
 /// One window per process: a second request is [`PlatformError::Busy`] rather
@@ -2525,6 +2615,21 @@ pub fn create_window(
         window.set_max_size(config.max_width, config.max_height)?;
     }
 
+    // Last, so an explicit min/max bound still has the window system's own clamp
+    // behind it — and skipped for a fullscreen request, which has already taken
+    // the whole display and has no frame to keep on screen.
+    if config.mode == WindowMode::Windowed {
+        // A refusal here is not fatal: the window exists and is usable, it merely
+        // overhangs, which is the window this code had before it existed.
+        if let Err(error) = window.fit_to_work_area() {
+            crate::logging::log(
+                crate::logging::Level::Warn,
+                "core",
+                &format!("create_window: could not fit the window to its work area: {error}"),
+            );
+        }
+    }
+
     *slot = Some(window);
     Ok(WINDOW_ID)
 }
@@ -2546,5 +2651,57 @@ impl Drop for HostWindow {
                 instance.destroy_instance(None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request that already fits keeps every pixel it asked for: the margin
+    /// only exists where something has to give.
+    #[test]
+    fn a_request_inside_the_work_area_is_untouched() {
+        assert_eq!(fitted_client_size((1280, 720), (1920, 1032)), (1280, 720));
+        // 1888x968 is exactly the largest client a 1920x1032 work area holds
+        // once the decoration margin is paid, so it is the boundary case for
+        // "fits" rather than an arbitrary one.
+        assert_eq!(
+            fitted_client_size(
+                (1920 - DECORATION_MARGIN.0, 1032 - DECORATION_MARGIN.1),
+                (1920, 1032)
+            ),
+            (1920 - DECORATION_MARGIN.0, 1032 - DECORATION_MARGIN.1)
+        );
+    }
+
+    /// The bug this arithmetic exists for: a client the size of the display
+    /// leaves no room for the frame, which is what put the title bar above the
+    /// screen. Each axis is fitted on its own, because a window can overhang in
+    /// one and not the other.
+    #[test]
+    fn a_request_the_size_of_the_work_area_loses_the_frame_from_both_axes() {
+        assert_eq!(
+            fitted_client_size((1920, 1080), (1920, 1032)),
+            (1888, 968)
+        );
+        assert_eq!(
+            fitted_client_size((1920, 720), (1920, 1032)),
+            (1888, 720)
+        );
+        assert_eq!(
+            fitted_client_size((1280, 1080), (1920, 1032)),
+            (1280, 968)
+        );
+    }
+
+    /// A work area narrower than the margin still yields a window: one pixel is
+    /// refused by `create_window`'s own zero check, and a saturating subtraction
+    /// that wrapped to a huge value would produce a window larger than the
+    /// display — the exact failure this function removes.
+    #[test]
+    fn a_work_area_smaller_than_the_margin_still_yields_a_usable_window() {
+        assert_eq!(fitted_client_size((800, 600), (16, 32)), (1, 1));
+        assert_eq!(fitted_client_size((800, 600), (0, 0)), (1, 1));
     }
 }

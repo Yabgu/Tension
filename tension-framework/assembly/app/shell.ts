@@ -44,7 +44,8 @@ import { OPEN_WINDOWED } from "../2d/constants";
 import { ConfigBuilder, RuntimeSession } from "../runtime";
 import { close as inputClose, Snapshot } from "../input";
 import { print } from "../io";
-import { Theme, DEFAULT_THEME } from "../ui/theme";
+import { Theme } from "../ui/theme";
+import { fontBook } from "../ui/fonts";
 import { Painter } from "../ui/painter";
 import { windowInfo, windowRequest, WindowInfo } from "../platform";
 
@@ -83,10 +84,12 @@ export abstract class AppShell {
   /** Frames an offscreen run draws before stopping; 0 means "no bound". */
   private headlessBudget: i32;
   private exitReason: string = "the frame bound was reached";
+  /** Set by `stopLoop`; the loop reads it once per frame. */
+  private stopping: bool = false;
   /** The name this app's lines carry. A build's logs should say which app. */
   private name: string;
 
-  constructor(name: string = "app", theme: Theme = DEFAULT_THEME, headlessBudget: i32 = 120) {
+  constructor(name: string = "app", theme: Theme = fontBook().pages[0], headlessBudget: i32 = 120) {
     this.name = name;
     this.painter = new Painter(theme);
     this.headlessBudget = headlessBudget;
@@ -106,6 +109,21 @@ export abstract class AppShell {
 
   /** Draw one frame. The shell has reset the painter; anything emitted is sent. */
   protected abstract draw(p: Painter): void;
+
+  /**
+   * End the loop from inside the app, after this frame.
+   *
+   * The guest cannot close the host's window (that is the window manager's, and
+   * `closeRequested` reports it rather than causing it), so an app whose menu says
+   * **Exit** needs a way to stop that is its own. The frame in flight still draws
+   * and presents — an exit that skipped the draw would leave the last visible frame
+   * half a frame old — and the ordinary `teardown` path runs, so textures, the input
+   * handle and the session are still released in the one place they always were.
+   */
+  protected stopLoop(reason: string = "the app asked to exit"): void {
+    this.stopping = true;
+    this.exitReason = reason;
+  }
 
   /** Read input, once per frame, before the draw. The default reads nothing. */
   protected update(): void {}
@@ -156,6 +174,23 @@ export abstract class AppShell {
     this.title = request.title;
     this.width = request.width > 0 ? request.width : 1;
     this.height = request.height > 0 ? request.height : 1;
+
+    // Create the window first, then take the size from the **window**: the host
+    // fits a request that cannot fit the display (a client area the size of the
+    // work area leaves no room for its own title bar), and a layout built on the
+    // request would be a layout for a window that does not exist. Opening the
+    // canvas before this read is what made a fitted window draw at the requested
+    // size and rebuild on the next frame, paying for two GPU devices to arrive
+    // at the size the window had all along.
+    if (!this.headless) {
+      Canvas.openWindow(this.width, this.height, this.title);
+      const actual: WindowInfo = windowInfo();
+      if (actual.width > 0 && actual.height > 0) {
+        this.width = <i32>actual.width;
+        this.height = <i32>actual.height;
+      }
+    }
+
     // Before the canvas: a layout is arithmetic on the window size, so computing
     // it first means `loadAssets` can already read a column count.
     this.onResize(this.width, this.height);
@@ -321,6 +356,9 @@ export abstract class AppShell {
       }
       this.frames++;
       this.afterFrame();
+      // `stopLoop` asked for this: the frame it was asked in has been drawn and
+      // presented, which is the difference between an exit and a freeze.
+      if (this.stopping) break;
 
       RuntimeSession.wait(FRAME_WAIT_MS);
 

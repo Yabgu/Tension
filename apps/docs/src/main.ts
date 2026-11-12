@@ -1,108 +1,122 @@
 // `tension-docs`: the offline documentation viewer.
 //
 // A Tension guest that reads four files out of its packed volume and draws a
-// reading UI with nothing but the 2D sprite API:
+// reading UI:
 //
 //     /docs.bin         the pages, blocks and runs (2.2a)
 //     /search.bin       the inverted index (2.2a)
 //     /transcripts.bin  recorded output for the runnable blocks (2.2a)
-//     /ui.iwi           the font atlas: 5 colours x 2 weights x 95 glyphs
+//     /ui.0.iwi …       the three baked faces: Inter 14, Inter 18, Mono 14
 //
-// ## The frame
+// ## The frame, as a tree
 //
-//     0                                           1280
-//     +----------------+-----------------------------+
-//     |  sidebar       |  search bar                 |  0
-//     |  (table of     +-----------------------------+
-//     |   contents)    |                             |  40
-//     |                |  content column (80 cols)   |
-//     |                |                             |
-//     |                |                             |  690
-//     +----------------+-----------------------------+
-//     |  status: page, position, hints              |  690..720
-//     +---------------------------------------------+
+//     root
+//      └ row (flex 1)
+//         ├ column sidebar (minW 320)          the table of contents
+//         │   ├ label "Tension"                (Inter 18, bold)
+//         │   └ list (flex 1)                  48 recycled rows over the whole TOC
+//         └ column main (flex 1)
+//             ├ row   search                    the query field + the hit count
+//             ├ rule
+//             ├ node  content (flex 1)          the page flow, or the results
+//             └ row   status                    hints and counters
 //
-// The sidebar is 260px, the divider one pixel, and the content column is 640px
-// (80 characters) at x=301 — the measure, with room for a margin on both sides.
+// **There is no layout arithmetic left in this file.** Every `x`/`y`/`w`/`h` is
+// decided by `WidgetBehavior.arrange`; every click is a target the paint recorded;
+// the scroll offset is the only number the app keeps, and it moves the *text*
+// inside a pane whose rectangle the tree owns.
 //
-// ## What this file is not
+// ## What the retained tree actually bought here
 //
-// It is not a retained-mode UI. Every frame is built from scratch into one
-// record buffer and submitted once, which is what makes scrolling exact: there is
-// no scroll state to invalidate, only an offset that changes what the same loop
-// decides to draw. `text.ts` and `layout.ts` carry the two expensive parts, and
-// both are cached across frames.
+// The viewer used to keep parallel hit arrays (`tocHitY`, `runHitX`, `runHitY`, …)
+// filled during the draw and scanned by `doClick`, with a comment beside the result
+// rows because that scan had drifted one row from the draw. The rows are widgets
+// now: a list row records its own target where it draws itself, and a click
+// bubbles from the row to the list that owns it. The run buttons and the result
+// rows are recorded by the one widget that paints them and read back by its own
+// `handle` — the shape a page of prose needs, because its targets live at absolute
+// positions inside a scrolling region.
+//
+// ## The text
+//
+// Proportional, from the baked pages. A heading is Inter 18, the body is Inter 14,
+// an inline code span is JetBrains Mono 14 — measured and drawn from the same
+// advance table (`layout.ts` explains why that is what makes wrapping correct). One
+// consequence is deliberate: the atlas bakes bold **only in the heading stripe**, so
+// a `strong` span is drawn as white bold rather than as a second weight of the body
+// colour (`colourFor`).
 
-// **The shell is the framework's now.** Session, window, canvas, resize,
-// texture reload, input attach, the close button, the headless bound and the
-// teardown line all live in `tension-framework/assembly/app/shell.ts`, because
-// every one of them was a bug found by running this viewer and the editor needs
-// the same answers. What is left in this file is the document: pages, search,
-// transcripts and the pixels they draw.
 import {
-  AppShell,
-  BOLD, CELL_H, CELL_W, Canvas,
-  CHROME_CARET, CHROME_DIVIDER, CHROME_PANEL, CHROME_SELECTION, CHROME_WHITE,
-  CODE, GLYPH_CELLS, HEADING, LINK, MUTED, NORMAL, Painter, REGULAR, SCALE,
-  centred, fitColumns, LINE_STEP, print, px, resReadFile, tileCost, DEFAULT_THEME,
+  AppShell, Axis, BOLD, Canvas, ChangeTarget, Chrome, ClickTarget, CODE, FontBook,
+  FontPage, fontBook, FONT_INTER, FONT_MONO, HEADING, LINK, ListBehavior, ListSource,
+  loadFontBook, MUTED, NORMAL, Painter, print, REGULAR, resReadFile, SIZE_14, TextBuffer,
+  TextBuilder, TextPool, Ui, UiEvent, UiEventKind, WidgetBehavior, WidgetTree,
 } from "tension-framework";
 
 import {
   Docs, SearchIndex, Transcripts,
-  B_LEVEL, F_RUNNABLE, K_CODE, K_HEADING, K_LIST_ITEM, K_QUOTE, K_RULE,
-  S_CODE, S_LINK, compareTermToQuery, jsonNumber, termHasPrefix,
+  F_RUNNABLE, K_CODE, K_HEADING, K_LIST_ITEM, K_QUOTE, K_RULE,
+  compareTermToQuery, termHasPrefix, TOC_NO_PAGE,
 } from "./format";
 import {
-  advanceFor, CODE_INSET, colourFor, MAX_COLS, PageLayout, weightFor,
+  CODE_INSET, colourFor, MAX_MEASURE_PX, PageLayout, pageFor, weightFor,
 } from "./layout";
 
 // ── the shell's geometry ────────────────────────────────────────────────────
+//
+// Only the things that are *design decisions*: a pane's width, an inset, the
+// number of rows a list recycles. Everything derived from type — a line's pitch, a
+// button's height, the air inside a bar — comes from the page (`FontPage`), so one
+// constant cannot serve two sizes.
 
-// `px` — a padding in source pixels, scaled with the font — is the toolkit's now
-// (`tension-framework/assembly/ui/flow.ts`). Every gap in this shell was tuned
-// against an 8x16 cell, so writing them as `px(n)` rather than as the doubled
-// literal keeps the relationship visible at any `SCALE`.
-
-const SIDEBAR_W: i32 = 320;        // was 260 — TOC titles are half as many chars wide
-const DIVIDER_X: i32 = SIDEBAR_W;
-const MAIN_X: i32 = SIDEBAR_W + 1;
-const SEARCH_H: i32 = CELL_H + px(12);
-const STATUS_H: i32 = CELL_H + px(8);
+const SIDEBAR_W: i32 = 320;
+/** The narrowest the sidebar may be dragged, and the widest the divider may go. */
+const SIDEBAR_MIN: i32 = 180;
 /**
- * The horizontal padding inside the main pane, on each side of the text column.
+ * The narrowest the content column may be dragged.
  *
- * The column itself is **not** a constant: it is derived from the window width
- * every time the window changes size (`App.applyGeometry`), capped at
- * `MAX_COLS` and centred in whatever space is left over.
+ * Not `MAX_MEASURE_PX`: the measure is a cap the wrap respects, and a reader who
+ * wants a narrow window beside the sidebar should get a narrower column, not a
+ * refusal to drag. 420 px holds a short paragraph without breaking every word.
  */
-const CONTENT_PAD: i32 = px(12);
-const CONTENT_TOP: i32 = SEARCH_H + px(4);
-
-/** One table-of-contents row: the text, plus a little air under it. */
-const TOC_STEP: i32 = CELL_H + px(3);
+const MAIN_MIN: i32 = 420;
+/** One panel's inset from its own edge. */
+const PANEL_PAD: i32 = 10;
+/** The gap between two sidebar rows. */
+const PANEL_GAP: i32 = 2;
+/** The horizontal inset of the text column inside the content pane. */
+const CONTENT_PAD: i32 = 24;
+/** Air around the search field. */
+const FIELD_PAD: i32 = 5;
+/** Air above and below a bar's line. */
+const BAR_PAD: i32 = 5;
+/** How many rows the table of contents recycles. */
+const TOC_ROWS: i32 = 48;
+/**
+ * Spaces per TOC nesting level.
+ *
+ * Indentation is *text*, not layout: the list has no opinion about hierarchy, and a
+ * model that pushed rows around would be a second layout engine. Six spaces of
+ * Inter 14 is ~21 px, which is one level's worth at this size.
+ */
+const TOC_INDENT: i32 = 6;
+/** The gap between the hint and the counters in the status bar. */
+const STATUS_GAP: i32 = 16;
+/** Frames an offscreen run draws before it stops. */
+const HEADLESS_FRAMES: i32 = 120;
 
 /**
- * Where the first search result sits, and the pitch between rows.
+ * The hit ids the content pane uses for things that are not widgets.
  *
- * Module-level because two places need them — the draw and the click hit test —
- * and when those two disagreed the pane selected the row *below* the one under
- * the pointer. One definition is the mechanism that stops that recurring.
- *
- * A row is **two** text lines: the section title and, under it, the page it
- * belongs to. At the 2x cell that is 32 + 8 + 32 = 72px, so the pitch is 88.
- * The 1x formula (`LINE_STEP + 6` = 30) was a single line's worth and the rows
- * overlapped each other the moment the cell grew.
+ * Negative, because a widget slot is never negative and the pane's own target is
+ * `HIT_NONE`: a run button's id is the **block index** (non-negative), and a search
+ * result's is `RESULT_HIT_BASE - i`. `PageBehavior.handle` reads them back with
+ * `hits.at`, so the draw and the click share one arithmetic.
  */
-const RESULT_TITLE_H: i32 = CELL_H;
-const RESULT_SUB_GAP: i32 = px(4);
-const RESULT_ROW_H: i32 = RESULT_TITLE_H + RESULT_SUB_GAP + CELL_H;
-const RESULT_TOP: i32 = CONTENT_TOP + px(4) + LINE_STEP + px(4);
-const RESULT_STEP: i32 = RESULT_ROW_H + px(8);
+const HIT_NONE: i32 = -1;
+const RESULT_HIT_BASE: i32 = -2000;
 
-/** A transcript panel's header row: one line of text plus its rule. */
-const PANEL_HEAD: i32 = LINE_STEP + px(1);
-
-/** Scancodes (SDL numbering) — `input.state`'s key set is this numbering. */
+/** Scancodes (SDL numbering) — `input.pressed` reads this numbering. */
 const SC_UP: u32 = 82;
 const SC_DOWN: u32 = 81;
 const SC_PAGEUP: u32 = 75;
@@ -111,140 +125,636 @@ const SC_HOME: u32 = 74;
 const SC_END: u32 = 77;
 const SC_SLASH: u32 = 56;
 const SC_ESCAPE: u32 = 41;
-const SC_BACKSPACE: u32 = 42;
 const SC_RETURN: u32 = 40;
-const SC_SPACE: u32 = 44;
-const SC_MINUS: u32 = 45;
-const SC_PERIOD: u32 = 55;
-const SC_UNDERSCORE: u32 = 45; // shifted minus; shift is not tracked, so `-`
-const SC_N: u32 = 17;          // 'n' — next page
-const SC_P: u32 = 19;          // 'p' — previous page
+const SC_N: u32 = 17;
+const SC_P: u32 = 19;
 
-/** Frames an offscreen run draws before it stops. */
-const HEADLESS_FRAMES: i32 = 120;
-
-/** The longest query the search field accepts. */
-const MAX_QUERY: i32 = 48;
+// ── the sidebar ─────────────────────────────────────────────────────────────
 
 /**
- * The application.
+ * The table of contents, as a list model.
  *
- * A class rather than a bag of module-level globals because there is exactly one
- * of it and its state is what the frame loop reads: page, scroll, query, focus.
+ * Item `i` is TOC entry `i`, so the list's `lastItem` *is* the entry — no second
+ * index, and no way for the two to drift. The indentation is written into the row's
+ * text (one run of spaces per nesting level), which is what keeps the list free of
+ * any opinion about hierarchy.
  */
+class TocModel extends ListSource {
+  app: App | null = null;
+
+  count(): i32 {
+    const app: App | null = this.app;
+    return app == null ? 0 : <i32>app.docs.tocCount;
+  }
+
+  text(index: i32, out: TextPool): void {
+    const app: App | null = this.app;
+    if (app == null) return;
+    const depth: i32 = <i32>app.docs.tocDepth(<u32>index);
+    for (let i: i32 = 0; i < depth * TOC_INDENT; i++) out.ch(32);
+    out.raw(app.docs.tocTitlePtr(<u32>index), <i32>app.docs.tocTitleLen(<u32>index));
+  }
+}
+
+/**
+ * The list, plus the current page's marker and the per-row colours.
+ *
+ * `ListBehavior` already recycles rows, clips its own subtree and maps the wheel.
+ * What a table of contents adds is that one row is *current* — a selection
+ * background and a bright right edge — and that a group heading (an entry with no
+ * page) is dimmer than a link. The colours are decided in `arrange`, where the rows
+ * have just been placed; the marker is drawn in `paint`, which the engine calls
+ * **before** the rows draw themselves, so it is behind the text rather than over it.
+ */
+class TocBehavior extends ListBehavior {
+  app: App | null = null;
+
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {
+    super.arrange(ui, id, x, y, w, h);
+    const app: App | null = this.app;
+    if (app == null) return;
+    const t: WidgetTree = ui.tree;
+    let row: i32 = t.firstChild[id];
+    while (row >= 0) {
+      const item: i32 = t.itemIndex[row];
+      if (item >= 0) {
+        const pg: u32 = app.docs.tocPage(<u32>item);
+        const current: bool = pg != TOC_NO_PAGE && <i32>pg == app.page;
+        // A group heading is a label, not a link: muted and regular. The current
+        // page is white and bold — the atlas bakes bold for the heading stripe,
+        // which is exactly this pair.
+        t.colour[row] = pg == TOC_NO_PAGE ? MUTED : (current ? HEADING : NORMAL);
+        t.weight[row] = current ? BOLD : REGULAR;
+      }
+      row = t.nextSibling[row];
+    }
+  }
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    const app: App | null = this.app;
+    if (app == null) return;
+    const t: WidgetTree = ui.tree;
+    const page: FontPage = t.page[id];
+    const pad: i32 = t.pad[id];
+    p.pushClip(t.x[id] + pad, t.y[id] + pad, t.w[id] - 2 * pad, t.h[id] - 2 * pad);
+    let row: i32 = t.firstChild[id];
+    while (row >= 0) {
+      const item: i32 = t.itemIndex[row];
+      if (item >= 0 && <i32>app.docs.tocPage(<u32>item) == app.page) {
+        p.fill(t.x[row], t.y[row], t.w[row], t.h[row],
+               page.chromeCell(Chrome.Selection), page);
+        p.fill(t.x[row] + t.w[row] - 2, t.y[row], 2, t.h[row],
+               page.chromeCell(Chrome.White), page);
+        break;
+      }
+      row = t.nextSibling[row];
+    }
+    p.popClip();
+  }
+}
+
+/** A click on a TOC row: `ui.lastItem` is the entry, and its page is the target. */
+class TocClick implements ClickTarget {
+  app: App;
+
+  constructor(app: App) {
+    this.app = app;
+  }
+
+  click(): void {
+    const item: i32 = this.app.ui.lastItem;
+    if (item < 0) return;
+    const pg: u32 = this.app.docs.tocPage(<u32>item);
+    if (pg == TOC_NO_PAGE) return;
+    this.app.openPage(<i32>pg);
+  }
+}
+
+/** The search field changed: rank the query before anything reads it. */
+class QueryChanged implements ChangeTarget {
+  app: App;
+
+  constructor(app: App) {
+    this.app = app;
+  }
+
+  change(value: i32): void {
+    this.app.queryChanged();
+  }
+}
+
+// ── the content pane ────────────────────────────────────────────────────────
+
+/**
+ * The page flow, or the search results, inside one scrolling rectangle.
+ *
+ * This is the largest custom behavior in the repository and it is deliberately one
+ * widget: a page is a *flow* of lines whose vertical positions a `PageLayout`
+ * computes once, and turning a thousand lines into a thousand widgets to hand that
+ * arithmetic back to a column would spend the pool's whole budget on one document.
+ * What the tree still owns is everything around it — the pane's rectangle, its clip,
+ * culling and the dispatch — and what stays here is a walk over
+ * `lineStart`/`lineLen`/`lineY`.
+ *
+ * **Nothing is measured per frame.** The wrap is cached in `PageLayout`; `paint`
+ * skips the lines above the pane with a scan and stops at the first line below it,
+ * so a 2,000-line page costs its visible lines and no more.
+ *
+ * **The hits are the draw's.** A run button records `(rect, blockIndex)` through
+ * `p.addHit` as it is painted; `handle` reads the topmost id back at the press
+ * position. One arithmetic, one owner — which is what the parallel hit arrays in
+ * this file's previous life were trying to be.
+ */
+class PageBehavior implements WidgetBehavior {
+  app: App | null = null;
+  /** The pane's rectangle, from the last arrange: the geometry this widget paints. */
+  x: i32 = 0;
+  y: i32 = 0;
+  w: i32 = 0;
+  h: i32 = 0;
+  /** The transcript header, which carries a number and so cannot be a literal. */
+  private head: TextBuilder = new TextBuilder(64);
+  /** The button labels, encoded once: literals, but not free to encode per frame. */
+  private runLabel: Uint8Array = new Uint8Array(32);
+  private runLen: i32 = 0;
+  private hideLabel: Uint8Array = new Uint8Array(32);
+  private hideLen: i32 = 0;
+
+  constructor() {
+    const run: string = "Run (recorded)";
+    this.runLen = <i32>String.UTF8.encodeUnsafe(changetype<usize>(run), run.length,
+                                               this.runLabel.dataStart);
+    const hide: string = "Hide output";
+    this.hideLen = <i32>String.UTF8.encodeUnsafe(changetype<usize>(hide), hide.length,
+                                                 this.hideLabel.dataStart);
+  }
+
+  measure(ui: Ui, id: i32): void {
+    // Nothing intrinsic: the column gives the pane what is left, and a page that
+    // measured itself from its content would be as tall as the document.
+    ui.setSize(id, 0, 0);
+    ui.applyFloors(id);
+  }
+
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {
+    if (x == this.x && y == this.y && w == this.w && h == this.h) return;
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+  }
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    const app: App | null = this.app;
+    if (app == null) return;
+    const t: WidgetTree = ui.tree;
+    const x: i32 = t.x[id];
+    const y: i32 = t.y[id];
+    const w: i32 = t.w[id];
+    const h: i32 = t.h[id];
+    if (w <= 0 || h <= 0) return;
+
+    p.pushClip(x, y, w, h);
+    // The pane's own target, which is also the one the wheel needs: a click on the
+    // blank part of a page lands here (`HIT_NONE`) and a wheel over the text
+    // scrolls it.
+    p.addHit(x, y, w, h, HIT_NONE, id);
+    if (app.queryLen() > 0) {
+      this.paintResults(ui, id, p, app);
+    } else {
+      this.paintPage(ui, id, p, app);
+    }
+    p.popClip();
+  }
+
+  handle(ui: Ui, id: i32, ev: UiEvent): bool {
+    const app: App | null = this.app;
+    if (app == null) return false;
+    if (ev.kind == UiEventKind.Wheel) {
+      app.scrollBy(-ev.value * app.step() * 3);
+      return true;
+    }
+    if (ev.kind == UiEventKind.Click) {
+      const hit: i32 = ui.hits.at(ev.x, ev.y);
+      if (hit >= 0) {
+        // A run button: its id is the block the page flow gave it.
+        app.toggleTranscript(hit);
+        return true;
+      }
+      if (hit <= RESULT_HIT_BASE) {
+        app.openResult(RESULT_HIT_BASE - hit);
+        return true;
+      }
+      // The pane's own background: nothing to do, but the click is ours.
+      return hit == HIT_NONE;
+    }
+    return false;
+  }
+
+  // --- the page ------------------------------------------------------------
+
+  private paintPage(ui: Ui, id: i32, p: Painter, app: App): void {
+    const t: WidgetTree = ui.tree;
+    const layout: PageLayout = app.layout;
+    const chars: Uint8Array = layout.chars;
+    const styles: Uint8Array = layout.styles;
+    const y: i32 = t.y[id];
+    const h: i32 = t.h[id];
+    const bottom: i32 = y + h;
+    const scroll: i32 = app.scroll;
+    const left: i32 = this.textLeft(app);
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    const bodyBase: i32 = body.baseline;
+
+    // Where the transcript panel hangs, decided while walking the flow and drawn
+    // after it: the panel is an overlay, and drawing it inside the loop let the
+    // paragraphs below paint straight over it.
+    let transcriptY: i32 = -1;
+
+    // Only the visible lines are walked. The scan is over the cached `lineY`, and
+    // everything before it is skipped without touching a glyph.
+    let li: i32 = 0;
+    while (li < layout.lineCount &&
+           layout.lineY[li] + layout.blockStep[layout.lineBlock[li]] < scroll) {
+      li++;
+    }
+
+    for (; li < layout.lineCount; li++) {
+      const block: i32 = layout.lineBlock[li];
+      const kind: u8 = layout.blockKind[block];
+      const level: u8 = layout.blockLevel[block];
+      const step: i32 = layout.blockStep[block];
+      const lineY: i32 = layout.lineY[li] - scroll + y;
+      if (lineY > bottom) break;
+
+      const indent: i32 = kind == K_CODE ? CODE_INSET
+        : (kind == K_LIST_ITEM || kind == K_QUOTE ? CODE_INSET : 0);
+      const lx: i32 = left + indent;
+      const start: i32 = layout.lineStart[li];
+      const len: i32 = layout.lineLen[li];
+
+      // A rule is a bar where a line of text would be.
+      if (kind == K_RULE) {
+        p.fill(left, lineY + step / 2, layout.wrapPx, 1,
+               body.chromeCell(Chrome.Divider), body);
+        continue;
+      }
+
+      // A code block's marker: a one-pixel accent on the left, drawn per line so a
+      // scrolled block has a continuous rule. A full background behind the block
+      // would be the other option and is unaffordable: tiled at the cell size that
+      // is ~100 records *per line*.
+      if (kind == K_CODE) {
+        p.fill(left, lineY, 1, step, body.chromeCell(Chrome.Selection), body);
+      }
+
+      // A heading's rule, sized to its own measured text, is what gives the
+      // hierarchy its weight without a second pipeline. `lineW` is the wrap's own
+      // measurement, so the rule ends exactly where the text does.
+      if (kind == K_HEADING && level <= 2) {
+        p.fill(lx, lineY + step - 3, layout.lineW[li], level == 1 ? 2 : 1,
+               body.chromeCell(Chrome.Divider), body);
+      }
+
+      // A bullet for a list item — only on the block's **first** line. A wrapped
+      // continuation that got its own dash read as a second item.
+      if (kind == K_LIST_ITEM && len > 0 && li == layout.blockFirstLine[block]) {
+        const dash: i32 = body.advancePx(REGULAR, 45);
+        p.char(45, lx - dash - 6, lineY, MUTED, REGULAR, y, bottom, body);
+      }
+
+      // Emit the line: consecutive characters in one style become one call, and
+      // the cursor is the *painter's* answer — the same advance table the wrap used.
+      let i: i32 = 0;
+      let cx: i32 = lx;
+      while (i < len) {
+        const style: u8 = styles[start + i];
+        let j: i32 = i + 1;
+        while (j < len && styles[start + j] == style) j++;
+        const runPage: FontPage = pageFor(kind, style);
+        const ty: i32 = lineY + (bodyBase - runPage.baseline);
+        cx = p.textBytes(chars, start + i, j - i, cx, ty,
+                         colourFor(kind, level, style), weightFor(kind, style), 0, y, bottom,
+                         runPage);
+        i = j;
+      }
+
+      // The Run button, on the row the layout reserved for it — the block's last
+      // line, which carries no text.
+      if (kind == K_CODE && (layout.blockFlags[block] & F_RUNNABLE) != 0 &&
+          li == layout.blockFirstLine[block] + layout.blockLineCount[block] - 1) {
+        this.paintRunButton(p, app, layout.blockIndex[block], lineY);
+      }
+
+      // The transcript, anchored under its block. Only the anchor is decided here.
+      if (app.showingBlock >= 0 && layout.blockIndex[block] == app.showingBlock &&
+          li == layout.blockFirstLine[block] + layout.blockLineCount[block] - 1) {
+        transcriptY = lineY + step + 4;
+      }
+    }
+
+    if (transcriptY >= 0) this.paintTranscript(p, app, transcriptY);
+  }
+
+  /**
+   * The "Run (recorded)" button.
+   *
+   * A filled box of the selection colour with a bright top edge, right-aligned to
+   * the text column on its own row. The label is drawn in the heading colour, which
+   * is the only way to get light text on a lighter box when the atlas carries the
+   * colour rather than the shader.
+   */
+  private paintRunButton(p: Painter, app: App, block: i32, lineY: i32): void {
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    const showing: bool = app.showingBlock == block;
+    const n: i32 = showing ? this.hideLen : this.runLen;
+    const bytes: Uint8Array = showing ? this.hideLabel : this.runLabel;
+    const w: i32 = app.book.measure(body, REGULAR, bytes, 0, n) + 16;
+    // The button owns the row the layout reserved for it: one line step less two
+    // pixels of air, so the transcript panel anchored below the row cannot be
+    // overlapped by the box.
+    const h: i32 = body.lineStep - 2;
+    const left: i32 = this.textLeft(app);
+    const bx: i32 = left + app.layout.wrapPx - w;
+    if (bx < left) return;
+
+    p.fill(bx, lineY, w, h, body.chromeCell(Chrome.Selection), body);
+    p.fill(bx, lineY, w, 1, body.chromeCell(Chrome.White), body);
+    p.textBytes(bytes, 0, n, bx + 8, lineY + 3, HEADING, REGULAR, 0, lineY, lineY + h, body);
+    p.addHit(bx, lineY, w, h, block, app.contentId());
+  }
+
+  /** Where the text column starts, in tree space: the measure, centred. */
+  private textLeft(app: App): i32 {
+    const inset: i32 = this.w - app.layout.wrapPx;
+    return this.x + (inset > 0 ? inset / 2 : 0);
+  }
+
+  // --- the search results --------------------------------------------------
+
+  private paintResults(ui: Ui, id: i32, p: Painter, app: App): void {
+    const t: WidgetTree = ui.tree;
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    const step: i32 = body.lineStep;
+    const left: i32 = this.textLeft(app);
+    const top: i32 = t.y[id] + 4;
+    const bottom: i32 = t.y[id] + t.h[id];
+    const q: TextBuffer = t.bufferOf(app.searchField);
+
+    const prompt: string = "Results for";
+    this.paintText(p, app, prompt, left, top, MUTED, top, bottom);
+    const promptW: i32 = app.book.measureText(body, REGULAR, prompt);
+    p.textBytes(q.bytes, 0, q.len, left + promptW + 8, top, LINK, REGULAR, 0,
+                top, bottom, body);
+
+    const rowsTop: i32 = top + step + 8;
+    if (app.results.length == 0) {
+      this.paintText(p, app, "no section matches that prefix", left, rowsTop, MUTED,
+                     top, bottom);
+      return;
+    }
+
+    const rowH: i32 = step * 2 + 4;
+    const rowStep: i32 = rowH + 6;
+    for (let i: i32 = 0; i < app.results.length; i++) {
+      const ry: i32 = rowsTop + i * rowStep - app.scroll;
+      if (ry > bottom) break;
+      if (ry + rowH < top) continue;
+
+      const section: i32 = app.results[i];
+      // The title, with the matched prefix picked out in the link colour — the
+      // highlight is what tells the reader *why* the row matched.
+      this.paintHighlighted(p, app, app.docs.sectionTitlePtr(<u32>section),
+                            <i32>app.docs.sectionTitleLen(<u32>section), left, ry, bottom);
+
+      // The page it belongs to, indented and muted.
+      const page: i32 = <i32>app.docs.sectionPage(<u32>section);
+      if (page >= 0 && page < <i32>app.docs.pageCount) {
+        const subY: i32 = ry + step + 2;
+        if (subY + step <= bottom) {
+          p.text(app.docs.pageTitlePtr(<u32>page), <i32>app.docs.pageTitleLen(<u32>page),
+                 left + 8, subY, MUTED, REGULAR, 0, subY, bottom, body);
+        }
+      }
+      p.addHit(left, ry, app.layout.wrapPx, rowH, RESULT_HIT_BASE - i, id);
+    }
+  }
+
+  /** A title with the query's occurrences in the link colour, over a byte span. */
+  private paintHighlighted(p: Painter, app: App, ptr: usize, len: i32, x: i32, y: i32,
+                           bottom: i32): void {
+    const q: TextBuffer = app.ui.tree.bufferOf(app.searchField);
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    let i: i32 = 0;
+    let cx: i32 = x;
+    while (i < len) {
+      let match: bool = false;
+      if (q.len > 0 && i + q.len <= len) {
+        match = true;
+        for (let k: i32 = 0; k < q.len; k++) {
+          if (lowerAscii(load<u8>(ptr + <usize>(i + k))) != lowerAscii(q.bytes[k])) {
+            match = false;
+            break;
+          }
+        }
+      }
+      if (match) {
+        cx = p.text(ptr + <usize>i, q.len, cx, y, LINK, REGULAR, 0, y, bottom, body);
+        i += q.len;
+        continue;
+      }
+      cx = p.text(ptr + <usize>i, 1, cx, y, NORMAL, REGULAR, 0, y, bottom, body);
+      i++;
+    }
+  }
+
+  // --- small text ----------------------------------------------------------
+
+  /**
+   * A literal string, drawn in the body page.
+   *
+   * The encode goes into a [`TextBuilder`] the behavior owns rather than into a
+   * fresh `Uint8Array`: a literal is a static `String`, but encoding one still
+   * needs a destination, and a destination per call is the allocation the retained
+   * UI exists to remove.
+   */
+  private paintText(p: Painter, app: App, text: string, x: i32, y: i32, colour: i32,
+                    clipTop: i32, clipBottom: i32): void {
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    this.head.clear();
+    this.head.str(text);
+    p.textBytes(this.head.bytes, this.head.at, this.head.len, x, y, colour, REGULAR, 0,
+                clipTop, clipBottom, body);
+  }
+
+  // --- the transcript ------------------------------------------------------
+
+  /**
+   * The recorded transcript, below its code block.
+   *
+   * **Opaque**, because it is an overlay: without the backing the paragraph below
+   * shows through and neither is readable. Anchored under the block's last line and
+   * never moved up over it — shrinking the number of visible lines is the honest
+   * answer, and the reader can scroll to see the rest.
+   */
+  private paintTranscript(p: Painter, app: App, y: i32): void {
+    const body: FontPage = app.book.page(FONT_INTER, SIZE_14);
+    const step: i32 = body.lineStep;
+    const left: i32 = this.textLeft(app);
+    const bottom: i32 = this.y + this.h;
+    const headH: i32 = step + 6;
+    const width: i32 = app.layout.wrapPx;
+
+    if (app.showingEntry < 0) {
+      if (y + headH <= bottom) {
+        p.fill(left, y, width, headH, body.chromeCell(Chrome.Surface), body);
+        p.hline(left, y, width, body.chromeCell(Chrome.Selection), body);
+        this.paintText(p, app, "no transcript recorded for this block", left + 8, y + 4,
+                       MUTED, y, bottom);
+      }
+      return;
+    }
+
+    const ptr: usize = app.transcripts.textPtr(<u32>app.showingEntry);
+    const len: i32 = <i32>app.transcripts.textLen(<u32>app.showingEntry);
+    const lines: i32 = app.transcriptLines(app.showingEntry);
+
+    const avail: i32 = bottom - y;
+    const fit: i32 = (avail - headH) / step;
+    if (fit < 1) {
+      if (y + headH <= bottom) {
+        this.paintText(p, app, "scroll down to see the output", left + 8, y + 4,
+                       MUTED, y, bottom);
+      }
+      return;
+    }
+    const shown: i32 = lines < fit ? lines : fit;
+    const panelH: i32 = shown * step + headH;
+
+    p.fill(left, y, width, panelH, body.chromeCell(Chrome.Panel), body);
+    p.hline(left, y, width, body.chromeCell(Chrome.Selection), body);
+    p.fill(left, y, 1, panelH, body.chromeCell(Chrome.Selection), body);
+
+    this.head.clear();
+    this.head.str("output - recorded at build time, ");
+    this.head.int(<i32>app.transcripts.durationMs(<u32>app.showingEntry));
+    this.head.str(" ms");
+    p.textBytes(this.head.bytes, this.head.at, this.head.len, left + 8, y + 4, MUTED,
+                REGULAR, 0, y, bottom, body);
+
+    const code: FontPage = app.book.page(FONT_MONO, SIZE_14);
+    let lineY: i32 = y + headH;
+    let s: i32 = 0;
+    for (let n: i32 = 0; n < shown; n++) {
+      let e: i32 = s;
+      while (e < len && load<u8>(ptr + <usize>e) != 10) e++;
+      const lineLen: i32 = e - s;
+      if (lineLen > 0) {
+        p.text(ptr + <usize>s, lineLen, left + 8, lineY, CODE, REGULAR, 0, y, bottom, code);
+      }
+      lineY += step;
+      s = e + 1;
+      if (s >= len) break;
+    }
+
+    if (shown < lines) {
+      this.paintText(p, app, "... more line(s) below", left + 8, lineY, MUTED, y, bottom);
+    }
+  }
+}
+
+// ── the app ─────────────────────────────────────────────────────────────────
+
 class App extends AppShell {
+  // --- the document and its three asset files -----------------------------
   docs: Docs = Docs.open(new Uint8Array(0));
   search: SearchIndex = SearchIndex.open(new Uint8Array(0));
   transcripts: Transcripts = Transcripts.open(new Uint8Array(0));
   layout: PageLayout = new PageLayout();
 
-  // --- the text column, which depends on the window ------------------------
-  /**
-   * How many characters a line may hold, after `onResize` has run.
-   *
-   * Not a constant: the window can be dragged, and the whole point of the
-   * responsive pass is that a wider window shows *more words per line* rather
-   * than the same frame enlarged. Capped at `MAX_COLS` so the measure stays
-   * readable and the per-frame record count stays inside the renderer's budget.
-   */
-  cols: i32 = 8;
-  /** Where the text column starts. Centre it when the pane is wider than the cap. */
-  contentX: i32 = 0;
+  // --- the tree ------------------------------------------------------------
+  book: FontBook = fontBook();
+  ui: Ui = new Ui(new WidgetTree(fontBook()));
 
-  constructor() {
-    // The name the shell's own lines carry: a launcher's log should say which
-    // app is talking, and this is the string the teardown line has always used.
-    super("tension-docs", DEFAULT_THEME, HEADLESS_FRAMES);
-  }
+  searchField: i32 = -1;
+  private toc: i32 = -1;
+  private hitCount: i32 = -1;
+  private content: i32 = -1;
+  private hint: i32 = -1;
+  private counters: i32 = -1;
 
+  private tocBehavior: TocBehavior = new TocBehavior();
+  private pageBehavior: PageBehavior = new PageBehavior();
+  private tocModel: TocModel = new TocModel();
+
+  // --- what the reader is looking at ---------------------------------------
   /** The page being read, or -1 while search results are showing. */
   page: i32 = 0;
   scroll: i32 = 0;
-
-  // --- search --------------------------------------------------------------
-  /** The query, as bytes: the field is ASCII, so a byte per character. */
-  query: Uint8Array = new Uint8Array(MAX_QUERY);
-  queryLen: i32 = 0;
-  /** Where the caret is; always `queryLen` in v1 (append-only editing). */
-  searchFocused: bool = false;
-  /** Section indices matching the query, best first. */
-  results: i32[] = [];
-  resultScores: i32[] = [];
-  /**
-   * Set whenever the query changes, cleared after `computeResults`.
-   *
-   * A flag rather than a comparison against the last query: the query is a byte
-   * array, so "has it changed" would be a memcmp for a question the editing path
-   * already knows the answer to. `computeResults` was declared and never called
-   * in the first draft — the search pane showed "0 sections" for every query —
-   * which is why this is now named after the thing that was missing.
-   */
-  private resultsDirty: bool = false;
-
-  /** Per-section score for the current query; sized on first use. */
-  private scores: i32[] = [];
-  /** 0/1 per section: whether it is already in `touched`. */
-  private marked: u8[] = [];
-  /** Which sections the last query touched, so clearing is proportional. */
-  private touched: i32[] = [];
-
-  // --- the runnable panel --------------------------------------------------
   /** The block whose transcript is showing, or -1. */
   showingBlock: i32 = -1;
   showingEntry: i32 = -1;
-  /**
-   * How much page height the open transcript adds.
-   *
-   * The panel is drawn anchored under its code block, which does not move — so
-   * without this the page has no room to scroll into and a Run button near the
-   * bottom of a page answers by changing its own label and nothing else.
-   */
+  /** How much page height the open transcript adds. */
   transcriptH: i32 = 0;
 
-  // --- input ---------------------------------------------------------------
+  // --- search --------------------------------------------------------------
+  /** Section indices matching the query, best first. */
+  results: i32[] = [];
+  resultScores: i32[] = [];
+  /** Set whenever the query changes, cleared after `computeResults`. */
+  private resultsDirty: bool = false;
+  private scores: i32[] = [];
+  private marked: u8[] = [];
+  private touched: i32[] = [];
+
+  // --- status --------------------------------------------------------------
   /**
-   * The input record, its buffer and its edge latch, in one object.
+   * What the status bar said last, so a frame that changes nothing writes nothing.
    *
-   * `input` and `inputReady` are the shell's: it opens the capability, retries
-   * the attach while the window comes up, and closes it at teardown. This app
-   * reads the record and nothing else.
+   * `lastRecordsSeen` is *this* app's latch on the shell's own counter
+   * (`AppShell.lastRecords`, written after the frame is submitted); the two names
+   * differ because shadowing the shell's field is a compile error, and rightly so.
    */
-  /** Accumulated wheel motion; the 2D adapter reports a float delta. */
-  wheelCarry: f32 = 0.0;
-  lastMouseX: i32 = -1;
-  lastDx: i32 = 0;
-  lastFlags: u32 = 0;
-  lastMouseY: i32 = -1;
-  lastButtons: u32 = 0;
+  private lastRecordsSeen: i32 = -1;
+  private lastDroppedSeen: i32 = -1;
+  private lastPage: i32 = -2;
+  private lastHits: i32 = -2;
+  private lastHint: string = "";
+  private builder: TextBuilder = new TextBuilder(64);
+  private builder2: TextBuilder = new TextBuilder(32);
 
-  /** Where the last click landed, consumed by the hit tests in `draw`. */
-  clickX: i32 = -1;
-  clickY: i32 = -1;
+  /** Set when the TOC's scroll should be re-centred on the current page. */
+  private tocSync: bool = false;
+  /** A block to scroll to once the next layout is built, or -1. */
+  private pendingBlock: i32 = -1;
 
-  /** Hit rectangles recorded during a draw, consumed by the next click. */
-  tocHitY: i32[] = [];
-  tocHitPage: i32[] = [];
-  runHitX: i32[] = [];
-  runHitY: i32[] = [];
-  runHitBlock: i32[] = [];
+  constructor() {
+    // The name the shell's own lines carry: a launcher's log should say which app
+    // is talking, and this is the string the teardown line has always used.
+    super("tension-docs", fontBook().pages[0], HEADLESS_FRAMES);
+    // The behaviors need the app, and the app needs its fields assigned before it
+    // can be handed out; the constructor is the first place both are true.
+    this.tocBehavior.app = this;
+    this.pageBehavior.app = this;
+    this.tocModel.app = this;
+    this.build(1280, 720);
+  }
 
-  // ── setup ───────────────────────────────────────────────────────────────
+  // ── the shell's hooks ───────────────────────────────────────────────────
 
   /**
-   * The atlas, and nothing else: the shell has already opened the session, the
-   * canvas and the pipeline, and calls this once at startup and again after every
-   * canvas rebuild (a canvas is fixed for its lifetime, so reopening one destroys
-   * its textures with it).
+   * The three pages of type.
+   *
+   * `loadFontBook` uploads every page and binds each to its slot — one call,
+   * because the file the bake wrote, the slot a record names and the page the book
+   * hands out must agree, and a caller that bound two of three gets a frame with
+   * one face missing.
    */
   protected loadAssets(canvas: Canvas, pipe: i32): bool {
-    const atlas = canvas.loadTextureFromRes("/ui.iwi");
-    if (atlas <= 0) {
-      print("tension-docs: /ui.iwi did not load: " + atlas.toString() +
+    const bound: i32 = loadFontBook(canvas, pipe);
+    if (bound != 0) {
+      print("tension-docs: the UI pages did not load: " + bound.toString() +
         " (run `npm run assets` in apps/docs)");
-      return false;
-    }
-    if (canvas.bindTexture(pipe, 0, atlas) != 0) {
-      print("tension-docs: set_texture refused");
       return false;
     }
     return true;
@@ -253,10 +763,8 @@ class App extends AppShell {
   /**
    * The volume and the opening page, after the shell's startup.
    *
-   * The three data files are read once, whole: the readers keep offsets into
-   * those buffers rather than copying. They are *not* in `loadAssets`, because
-   * that runs again on every resize and re-reading half a megabyte to rebuild a
-   * canvas is work nothing asked for.
+   * The three data files are read once, whole: the readers keep offsets into those
+   * buffers rather than copying them.
    */
   start(): bool {
     if (!super.start()) return false;
@@ -277,9 +785,8 @@ class App extends AppShell {
     const transcriptBytes = resReadFile("/transcripts.bin");
     if (transcriptBytes != null) this.transcripts = Transcripts.open(transcriptBytes);
 
-    // Start on the first page — the book's opening chapter.
-    this.page = 0;
-    this.layout.build(this.docs, 0, this.cols);
+    this.ui.items(this.toc, <i32>this.docs.tocCount);
+    this.openPage(0);
 
     print("tension-docs: " + this.docs.pageCount.toString() + " pages, " +
       this.search.termCount.toString() + " search terms, " +
@@ -288,231 +795,332 @@ class App extends AppShell {
   }
 
   /**
-   * Derive the text column from the window, and remember where it starts.
+   * A new window size: the root's rectangle, and nothing else.
    *
-   * This is the whole of the responsive layout, and the arithmetic is the
-   * toolkit's (`fitColumns`/`centred`) because the editor lays out a column too.
-   * The sidebar is a fixed width and the main pane takes the rest; the column is
-   * the pane's width less its padding, capped at `MAX_COLS` so a very wide window
-   * does not produce a line the eye cannot track (and a frame the record budget
-   * cannot afford); and what is left over is split evenly to centre the column,
-   * because a text block pinned to the left of a 2560px window reads as a bug.
-   *
-   * Called **before** the canvas comes back from a resize, so it touches no
-   * canvas: pure arithmetic on the window size and this app's data.
+   * No widget is re-measured by a resize — that is the property the two passes
+   * exist for. The text column follows in `draw`, where the content pane's new
+   * width is known (it is an arrange's answer, not a window size).
    */
   protected onResize(width: i32, height: i32): void {
-    const pane: i32 = width - MAIN_X;
-    this.cols = fitColumns(pane, CONTENT_PAD, MAX_COLS);
-    this.contentX = centred(MAIN_X, pane, this.cols, px(4));
-
-    // The text was wrapped for the old width, so the page is laid out again —
-    // and the scroll clamped, or a window dragged wider leaves the reader past
-    // the end of a page that just got shorter.
-    if (this.docs.ok) {
-      this.layout.build(this.docs, <u32>this.page, this.cols);
-      this.clampScroll();
-    }
+    this.ui.tree.resize(width, height);
   }
 
-  // ── the frame ────────────────────────────────────────────────────────────
+  // ── the tree, once ──────────────────────────────────────────────────────
+
+  private build(w: i32, h: i32): void {
+    const ui: Ui = this.ui;
+    const root: i32 = ui.root(w, h);
+    // **A split, not a row.** The sidebar's width is the reader's to set: a
+    // 320-pixel table of contents is right for a chapter list and wasteful for a
+    // deep module tree. `ui.split` draws the divider and owns the drag (capture,
+    // clamp, hover feedback), so this file keeps no width state at all — the
+    // arrange clamps `splitPx` into `[minA, total - divider - minB]` on every pass,
+    // which is also what makes the pane survive a window narrower than both floors.
+    const split: i32 = ui.split(root, Axis.X, { flex: 1 });
+    ui.divider(split, SIDEBAR_W);
+
+    // ── the sidebar ───────────────────────────────────────────────────────
+    const sidebar: i32 = ui.column(split, { minW: SIDEBAR_MIN, pad: PANEL_PAD, gap: PANEL_GAP });
+    ui.clips(sidebar);
+
+    ui.label(sidebar, "Tension", { colour: HEADING, weight: BOLD });
+
+    // Four pixels of pad puts the row clip *inside* the pane's own content box, so
+    // a title too long for the sidebar stops short of the rule instead of having a
+    // glyph trimmed in half at it.
+    this.toc = ui.list(sidebar, this.tocModel, TOC_ROWS, { flex: 1, pad: 4 });
+    ui.setBehavior(this.toc, this.tocBehavior);
+    ui.onClick(this.toc, new TocClick(this));
+
+    // ── the main column ───────────────────────────────────────────────────
+    // `minW` is the split's clamp for the second pane, not a layout hint: it is
+    // what stops a drag from squeezing the text column to a word a line.
+    const main: i32 = ui.column(split, { minW: MAIN_MIN, flex: 1 });
+
+    const bar: i32 = ui.row(main, { pad: BAR_PAD, gap: 8 });
+    this.searchField = ui.field(bar, "", { pad: FIELD_PAD, flex: 1 });
+    ui.onChange(this.searchField, new QueryChanged(this));
+    this.hitCount = ui.label(bar, "", { colour: MUTED });
+
+    ui.rule(main);
+
+    this.content = ui.node(main, this.pageBehavior, { flex: 1 });
+    // The one container that clips its children: the page flow is positioned in
+    // scrolled coordinates, so what is above the pane must be *culled*, not drawn
+    // and then trimmed.
+    ui.clips(this.content);
+
+    const status: i32 = ui.row(main, { pad: BAR_PAD, gap: STATUS_GAP });
+    ui.clips(status);
+    this.hint = ui.label(status, "", { colour: MUTED });
+    ui.spacer(status, 1);
+    this.counters = ui.label(status, "", { colour: MUTED });
+  }
+
+  /** The content widget's slot, for the behavior that paints the run buttons. */
+  contentId(): i32 {
+    return this.content;
+  }
+
+  // ── the frame ───────────────────────────────────────────────────────────
 
   /**
-   * Read this frame's input. The shell calls it once per frame, before `draw`,
-   * and owns the attach retry and the close button.
+   * Read this frame's input and hand it to the tree.
+   *
+   * The dispatcher's `frame` is the frame's **only** read of the typed stream: it
+   * calls `readText` once, stores the bytes, and dispatches them to the focused
+   * field. A second reader would be a second consumer of one queue.
    */
   protected update(): void {
-    this.handleInput();
-  }
-
-  // ── input ───────────────────────────────────────────────────────────────
-
-  /** Read this frame's record. `Snapshot` latches the previous set itself. */
-  private readState(): bool {
-    if (!this.inputReady) return false;
-    return this.input.read();
-  }
-
-  /**
-   * A key that went down since the last frame.
-   *
-   * `pressed` reads `held`-in-the-previous-frame from the snapshot's own latch,
-   * so the edge is decided where the record is read rather than by a copy this
-   * app has to remember to take.
-   */
-  private pressed(scancode: u32): bool {
-    return this.input.pressed(scancode);
-  }
-
-  handleInput(): void {
-    if (!this.readState()) {
-      // No input: the page still draws. Do not advance the guards, so the first
-      // frame with input does not see a spurious press.
-      return;
+    let live: bool = false;
+    if (this.inputReady && this.input.read()) {
+      this.ui.frame(this.input);
+      live = true;
+    } else {
+      this.ui.frame(null);
     }
 
-    const state = this.input;
+    if (live) this.shortcuts();
 
-    // Resolve a changed query before anything reads `results` — the search bar's
-    // count and the results pane both come from it.
+    // A query that changed during the dispatch is ranked before anything reads
+    // `results` — the counter and the results pane both come from it.
     if (this.resultsDirty) {
       this.computeResults();
       this.resultsDirty = false;
+      this.ui.repaint(this.content);
+    }
+  }
+
+  /**
+   * The keys the field does not own.
+   *
+   * `/` focuses the search field, Escape clears the query (or closes the
+   * transcript), and the page keys scroll. The dispatcher delivers Tab and Escape's
+   * *blur* itself; what is left here is what a *page* means, which no widget can
+   * know.
+   */
+  private shortcuts(): void {
+    const input = this.input;
+
+    if (input.pressed(SC_SLASH) && this.ui.focusId != this.searchField) {
+      this.ui.setFocus(this.searchField);
     }
 
-    // ── the wheel ─────────────────────────────────────────────────────────
-    this.wheelCarry += state.wheelY;
-    if (this.wheelCarry >= 1.0 || this.wheelCarry <= -1.0) {
-      const steps: i32 = <i32>this.wheelCarry;
-      this.scrollBy(-steps * LINE_STEP * 2);
-      this.wheelCarry -= <f32>steps;
-    }
-
-    // ── clicking ──────────────────────────────────────────────────────────
-    this.lastMouseX = state.mouseX;
-    this.lastDx = state.mouseDx;
-    this.lastFlags = state.flags;
-    this.lastMouseY = state.mouseY;
-    const buttons = state.mouseButtons;
-    this.lastButtons = buttons;
-    const justPressed: bool = state.buttonPressed(1);
-    if (justPressed) {
-      this.clickX = state.mouseX;
-      this.clickY = state.mouseY;
-    }
-
-    // ── the keyboard ──────────────────────────────────────────────────────
-    if (this.pressed(SC_SLASH) && !this.searchFocused) {
-      this.searchFocused = true;
-    } else if (this.pressed(SC_ESCAPE)) {
-      if (this.searchFocused && this.queryLen > 0) {
-        this.queryLen = 0;
-        this.resultsDirty = true;
-      } else if (this.searchFocused) {
-        this.searchFocused = false;
-      } else {
-        this.showingBlock = -1;
-      }
-    } else if (this.pressed(SC_BACKSPACE) && this.searchFocused && this.queryLen > 0) {
-      this.queryLen--;
-      this.resultsDirty = true;
-    } else if (this.searchFocused) {
-      // Typing: a-z, 0-9, space, and the two punctuation marks a search query
-      // actually uses. Scancodes, because there is no text event on this path.
-      const code: i32 = scancodeToChar(this);
-      if (code > 0 && this.queryLen < MAX_QUERY) {
-        this.query[this.queryLen++] = <u8>code;
-        this.resultsDirty = true;
+    if (input.pressed(SC_ESCAPE)) {
+      if (this.queryLen() > 0) {
+        this.clearQuery();
+        this.scroll = 0;
+        this.ui.repaint(this.content);
+      } else if (this.showingBlock >= 0) {
+        this.toggleTranscript(this.showingBlock);
       }
     }
 
-    // Scrolling keys work whether or not the field has focus, except that a
-    // focused field owns Home/End for the caret (not implemented: append-only).
-    if (this.pressed(SC_DOWN)) this.scrollBy(LINE_STEP * 2);
-    if (this.pressed(SC_UP)) this.scrollBy(-LINE_STEP * 2);
-    if (this.pressed(SC_PAGEDOWN)) this.scrollBy(this.pageHeight() - LINE_STEP);
-    if (this.pressed(SC_PAGEUP)) this.scrollBy(-(this.pageHeight() - LINE_STEP));
-    if (this.pressed(SC_HOME)) this.scroll = 0;
-    if (this.pressed(SC_END)) this.scroll = this.maxScroll();
+    const step: i32 = this.step();
+    if (input.pressed(SC_DOWN)) this.scrollBy(step * 2);
+    if (input.pressed(SC_UP)) this.scrollBy(-step * 2);
+    if (input.pressed(SC_PAGEDOWN)) this.scrollBy(this.paneH() - step);
+    if (input.pressed(SC_PAGEUP)) this.scrollBy(-(this.paneH() - step));
+    if (input.pressed(SC_HOME)) this.scrollBy(-this.maxScroll());
+    if (input.pressed(SC_END)) this.scrollBy(this.maxScroll());
 
-    // Page navigation and the transcript, by keyboard. `n`/`p` rather than the
-    // arrows, which already scroll — and rather than Tab, which a window
-    // manager may claim.
-    if (!this.searchFocused) {
-      if (this.pressed(SC_N)) this.stepPage(1);
-      if (this.pressed(SC_P)) this.stepPage(-1);
-      if (this.pressed(SC_RETURN)) {
+    // Page navigation by keyboard, for the display where the pointer is not
+    // available: `n`/`p` rather than the arrows, which already scroll.
+    if (this.ui.focusId != this.searchField) {
+      if (input.pressed(SC_N)) this.stepPage(1);
+      if (input.pressed(SC_P)) this.stepPage(-1);
+      if (input.pressed(SC_RETURN)) {
         const block: i32 = this.firstRunnableBlock();
         if (block >= 0) this.toggleTranscript(block);
       }
     }
-
-    if (justPressed) this.doClick(state.mouseX, state.mouseY);
   }
 
-  /** The visible height of the content pane. */
-  private pageHeight(): i32 {
-    return this.height - STATUS_H - CONTENT_TOP;
+  /** One frame: layout, the column's width, then the records. */
+  protected draw(p: Painter): void {
+    this.syncStatus();
+    this.ui.tree.layout();
+    this.syncLayout();
+    if (this.tocSync) this.syncTocScroll();
+    this.ui.tree.paint(p, this.ui.hits);
+  }
+
+  /**
+   * Re-wrap the page if the content pane's width (or the page) changed.
+   *
+   * The wrap is a function of a rectangle that only an **arrange** knows, so it
+   * cannot be done in `onResize`: the sidebar's width, the padding and the measure
+   * cap all take part. Doing it here also means a window dragged wider re-wraps on
+   * the frame it got wider.
+   */
+  private syncLayout(): void {
+    if (!this.docs.ok) return;
+    const w: i32 = this.ui.wOf(this.content) - 2 * CONTENT_PAD;
+    const wrap: i32 = w > MAX_MEASURE_PX ? MAX_MEASURE_PX : w;
+    if (this.layout.page != this.page || this.layout.wrapPx != wrap) {
+      this.layout.build(this.docs, <u32>this.page, wrap);
+      this.clampScroll();
+      this.ui.repaint(this.content);
+    }
+    // A search result's first block, once the page it names has a layout.
+    if (this.pendingBlock >= 0) {
+      this.scroll = this.layout.scrollForBlock(this.pendingBlock);
+      this.pendingBlock = -1;
+      this.clampScroll();
+    }
+  }
+
+  /** Keep the current page's TOC entry on screen, centred where it can be. */
+  private syncTocScroll(): void {
+    this.tocSync = false;
+    if (!this.docs.ok) return;
+    const total: i32 = <i32>this.docs.tocCount;
+    let at: i32 = -1;
+    for (let i: i32 = 0; i < total; i++) {
+      const pg: u32 = this.docs.tocPage(<u32>i);
+      if (pg != TOC_NO_PAGE && <i32>pg == this.page) { at = i; break; }
+    }
+    if (at < 0) return;
+    const rowH: i32 = this.ui.tree.itemH[this.toc] > 0
+      ? this.ui.tree.itemH[this.toc] : this.step();
+    this.ui.scrollTo(this.toc, at * rowH - this.ui.hOf(this.toc) / 2 + rowH);
+  }
+
+  // ── the status bar ──────────────────────────────────────────────────────
+
+  /**
+   * The two counters and the hint.
+   *
+   * Composed with a `TextBuilder` and written into the labels' own buffers: no
+   * `String` is built, so a frame that changes nothing allocates nothing. The hint
+   * degrades to a short form when the window cannot carry it *and* the counters — a
+   * reader who cannot see `/ search` has no way to discover search at all, so it
+   * shortens rather than vanishing.
+   */
+  private syncStatus(): void {
+    const records: i32 = this.lastRecords;
+    const dropped: i32 = this.lastDropped;
+    const pageNo: i32 = this.page + 1;
+    if (records != this.lastRecordsSeen || dropped != this.lastDroppedSeen ||
+        pageNo != this.lastPage) {
+      this.lastRecordsSeen = records;
+      this.lastDroppedSeen = dropped;
+      this.lastPage = pageNo;
+      const b: TextBuilder = this.builder;
+      b.clear();
+      b.int(pageNo);
+      b.ch(47);                       // '/'
+      b.int(<i32>this.docs.pageCount);
+      b.str("   ");
+      b.int(records);
+      b.str(" sp");
+      if (dropped > 0) {
+        b.str("   ");
+        b.int(dropped);
+        b.str(" dropped");
+      }
+      this.ui.textBuilder(this.counters, b);
+      this.ui.colour(this.counters, dropped > 0 ? HEADING : MUTED);
+    }
+
+    const focused: bool = this.ui.focusId == this.searchField;
+    const full: string = !this.inputReady
+      ? "input unavailable"
+      : (focused ? "type to search   Esc to clear" : "/ search   n/p keys   Enter output");
+    const brief: string = focused ? "Esc to clear" : "/ search   n/p";
+    const body: FontPage = this.book.page(FONT_INTER, SIZE_14);
+    const statusW: i32 = this.ui.wOf(this.ui.tree.parent[this.hint]);
+    const space: i32 = statusW - this.ui.wOf(this.counters) - STATUS_GAP - 4 * BAR_PAD;
+    const want: string = this.book.measureText(body, REGULAR, full) <= space
+      ? full
+      : (this.book.measureText(body, REGULAR, brief) <= space ? brief : "");
+    if (want != this.lastHint) {
+      this.lastHint = want;
+      this.ui.text(this.hint, want);
+      this.ui.colour(this.hint, this.inputReady ? MUTED : HEADING);
+    }
+
+    // The hit count, beside the field.
+    const n: i32 = this.queryLen() >= 2 ? this.results.length : -1;
+    if (n != this.lastHits) {
+      this.lastHits = n;
+      const b2: TextBuilder = this.builder2;
+      b2.clear();
+      if (n >= 0) {
+        b2.int(n);
+        b2.str(n == 1 ? " section" : " sections");
+      }
+      this.ui.textBuilder(this.hitCount, b2);
+    }
+  }
+
+  // ── the page ────────────────────────────────────────────────────────────
+
+  /** The body line step — the unit every scroll distance is expressed in. */
+  step(): i32 {
+    return this.book.page(FONT_INTER, SIZE_14).lineStep;
+  }
+
+  /** The visible height of the content pane, from its arranged rectangle. */
+  private paneH(): i32 {
+    const h: i32 = this.ui.hOf(this.content);
+    return h > 0 ? h : 1;
   }
 
   private maxScroll(): i32 {
     // **The pane shows the results only when there is a query**, so that is also
-    // the only case where the scroll range is the results list. Keying this on
-    // `searchFocused` (which it did) meant pressing Escape — clear the query,
-    // keep the focus — left the page un-scrollable, because the range had
-    // collapsed to an empty list while the pane was drawing the document.
-    const total: i32 = this.queryLen > 0
-      ? RESULT_TOP + this.results.length * RESULT_STEP + px(8)
-      : this.layout.height + this.transcriptH;
-    const max: i32 = total - this.pageHeight();
+    // the only case where the scroll range is the results list.
+    const step: i32 = this.step();
+    let total: i32 = this.layout.height + this.transcriptH;
+    if (this.queryLen() > 0) {
+      total = step * 2 + 16 + this.results.length * (step * 2 + 10);
+    }
+    const max: i32 = total - this.paneH();
     return max > 0 ? max : 0;
   }
 
-  private scrollBy(delta: i32): void {
+  scrollBy(delta: i32): void {
+    const before: i32 = this.scroll;
     this.scroll += delta;
+    this.clampScroll();
+    if (this.scroll != before) this.ui.repaint(this.content);
+  }
+
+  private clampScroll(): void {
     if (this.scroll < 0) this.scroll = 0;
     const max: i32 = this.maxScroll();
     if (this.scroll > max) this.scroll = max;
   }
 
   /**
-   * Resolve a click against the rectangles the last draw recorded.
+   * Show `page`, from the top.
    *
-   * Hit testing against recorded rectangles rather than recomputing positions is
-   * what keeps the click and the pixels from disagreeing: there is one layout,
-   * and the draw writes down what it drew.
+   * The wrap follows in `syncLayout`, where the pane's width is known: a page change
+   * does not know how wide the window is, and building the layout twice per click
+   * would be the cost of pretending it does.
    */
-  doClick(x: i32, y: i32): void {
-    // The run buttons first: they sit inside the content pane.
-    for (let i: i32 = 0; i < this.runHitBlock.length; i++) {
-      const bx: i32 = this.runHitX[i];
-      const by: i32 = this.runHitY[i];
-      if (x >= bx && x < bx + RUN_BTN_W && y >= by && y < by + RUN_BTN_H) {
-        this.toggleTranscript(this.runHitBlock[i]);
-        return;
-      }
-    }
+  openPage(page: i32): void {
+    if (!this.docs.ok) return;
+    if (page < 0 || page >= <i32>this.docs.pageCount) return;
+    this.page = page;
+    this.scroll = 0;
+    this.showingBlock = -1;
+    this.showingEntry = -1;
+    this.transcriptH = 0;
+    this.clearQuery();
+    this.tocSync = true;
+    this.ui.repaint(this.content);
+    this.ui.repaint(this.toc);
+  }
 
-    // The sidebar.
-    if (x < SIDEBAR_W) {
-      for (let i: i32 = 0; i < this.tocHitPage.length; i++) {
-        const ty: i32 = this.tocHitY[i];
-        if (y >= ty && y < ty + TOC_STEP) {
-          const target: i32 = this.tocHitPage[i];
-          if (target >= 0) this.openPage(target);
-          return;
-        }
-      }
-      return;
-    }
-
-    // The search bar: a click focuses it.
-    if (y < SEARCH_H) {
-      this.searchFocused = true;
-      return;
-    }
-
-    // A search result.
-    if (this.queryLen > 0) {
-      for (let i: i32 = 0; i < this.results.length; i++) {
-        // `RESULT_TOP`/`RESULT_STEP` are the draw's own numbers: a hit test that
-        // recomputed them could drift, and it had — the old pair here were one
-        // row above the rows being drawn, so a click selected its neighbour.
-        const ry: i32 = RESULT_TOP + i * RESULT_STEP;
-        if (y >= ry && y < ry + RESULT_STEP) {
-          const section: i32 = this.results[i];
-          const page: i32 = <i32>this.docs.sectionPage(section);
-          const block: i32 = <i32>this.docs.sectionBlockFirst(section);
-          this.openPage(page);
-          this.scroll = this.layout.scrollForBlock(block);
-          this.clampScroll();
-          this.searchFocused = false;
-          this.queryLen = 0;
-          this.resultsDirty = true;
-          return;
-        }
-      }
-    }
+  /** Open a search result: its page, scrolled to its first block. */
+  openResult(index: i32): void {
+    if (index < 0 || index >= this.results.length) return;
+    const section: i32 = this.results[index];
+    const page: i32 = <i32>this.docs.sectionPage(<u32>section);
+    const block: i32 = <i32>this.docs.sectionBlockFirst(<u32>section);
+    this.openPage(page);
+    this.pendingBlock = block;
   }
 
   /**
@@ -527,28 +1135,30 @@ class App extends AppShell {
       this.showingEntry = -1;
       this.transcriptH = 0;
       this.clampScroll();
+      this.ui.repaint(this.content);
       return;
     }
     this.showingBlock = block;
     this.showingEntry = this.transcripts.ok ? this.transcripts.find(block) : -1;
 
-    // The panel becomes part of the page's height, and opening it scrolls to it
-    // when it would not otherwise be visible. A code block near the bottom of a
-    // page is the common case, and "the button answered but nothing appeared"
-    // is indistinguishable from a dead button.
+    // The panel becomes part of the page's height, and opening it scrolls to it when
+    // it would not otherwise be visible. A code block near the bottom of a page is
+    // the common case, and "the button answered but nothing appeared" is
+    // indistinguishable from a dead button.
     this.transcriptH = this.showingEntry >= 0
-      ? this.transcriptLines(this.showingEntry) * LINE_STEP + PANEL_HEAD + px(6)
-      : LINE_STEP + 18;
+      ? this.transcriptLines(this.showingEntry) * this.step() + this.step() + 6
+      : this.step() + 12;
     const anchor: i32 = this.layout.anchorForBlock(block);
     if (anchor >= 0) {
-      const want: i32 = anchor + this.transcriptH - this.pageHeight();
+      const want: i32 = anchor + this.transcriptH - this.paneH();
       if (want > this.scroll) this.scroll = want;
     }
     this.clampScroll();
+    this.ui.repaint(this.content);
   }
 
   /** How many lines a recorded transcript has, header excluded. */
-  private transcriptLines(entry: i32): i32 {
+  transcriptLines(entry: i32): i32 {
     const ptr: usize = this.transcripts.textPtr(<u32>entry);
     const len: i32 = <i32>this.transcripts.textLen(<u32>entry);
     let lines: i32 = 1;
@@ -569,82 +1179,76 @@ class App extends AppShell {
     return -1;
   }
 
-  /**
-   * Move to the adjacent page in the table of contents.
-   *
-   * The keyboard equivalent of clicking the sidebar, and it exists because the
-   * pointer is not always available: `input.state` reports `mouse_x`/`mouse_y`
-   * only for motion the capability attributes to a device, and on a display
-   * where injected (or a compositor-remapped) pointer motion carries device id 0
-   * the capability drops it — measured on this rig: `b=1` while a button is
-   * held, `m=0 dx=0` throughout. A viewer that could only be navigated by a mouse
-   * would be unusable there, so both paths exist and share `openPage`.
-   */
+  /** Move to the adjacent page in the table of contents. */
   private stepPage(delta: i32): void {
-    // Walk the table of contents, not the page array: a group entry is not a
-    // destination, and the TOC is the order the reader sees.
     const total: i32 = <i32>this.docs.tocCount;
     let here: i32 = -1;
     for (let i: i32 = 0; i < total; i++) {
       const pg: u32 = this.docs.tocPage(<u32>i);
-      if (pg != 0xffffffff && <i32>pg == this.page) { here = i; break; }
+      if (pg != TOC_NO_PAGE && <i32>pg == this.page) { here = i; break; }
     }
     if (here < 0) return;
     let next: i32 = here + delta;
     while (next >= 0 && next < total) {
       const pg: u32 = this.docs.tocPage(<u32>next);
-      if (pg != 0xffffffff) {
+      if (pg != TOC_NO_PAGE) {
         this.openPage(<i32>pg);
-        this.searchFocused = false;
         return;
       }
       next += delta;
     }
   }
 
-  private clampScroll(): void {
-    const max: i32 = this.maxScroll();
-    if (this.scroll > max) this.scroll = max;
-    if (this.scroll < 0) this.scroll = 0;
-  }
-
-  private openPage(page: i32): void {
-    if (page < 0 || page >= <i32>this.docs.pageCount) return;
-    this.page = page;
-    this.layout.build(this.docs, <u32>page, this.cols);
-    this.scroll = 0;
-    this.showingBlock = -1;
-    this.showingEntry = -1;
-    this.transcriptH = 0;
-  }
-
   // ── search ──────────────────────────────────────────────────────────────
+
+  /** The query, as bytes: it is the search field's own buffer. */
+  queryLen(): i32 {
+    return this.searchField >= 0 ? this.ui.tree.textLength(this.searchField) : 0;
+  }
+
+  private clearQuery(): void {
+    if (this.searchField < 0) return;
+    if (this.ui.tree.textLength(this.searchField) > 0) this.ui.text(this.searchField, "");
+    this.resultsDirty = true;
+  }
+
+  /**
+   * The field changed: rank the query, and show the results.
+   *
+   * Called by the closure the field's `onChange` registered, and *also* the point
+   * where the pane switches from the document to the results: a query that is typed
+   * but not yet ranked would draw the previous page under a new prompt.
+   */
+  queryChanged(): void {
+    this.resultsDirty = true;
+    this.scroll = 0;
+  }
 
   /**
    * Resolve the query into ranked sections.
    *
-   * Prefix-first, and that is the whole as-you-type story: a reader typing
-   * `rend` gets every term beginning with it, which is a dictionary scan over
-   * 5,744 sorted terms affords in microseconds. Scored by occurrence count,
-   * weighted up for a term in a section's heading and for an exact term match.
+   * Prefix-first, and that is the whole as-you-type story: a reader typing `rend`
+   * gets every term beginning with it, which is a dictionary scan over 5,744 sorted
+   * terms affords in microseconds. Scored by occurrence count, weighted up for a term
+   * in a section's heading and for an exact term match.
    *
-   * **No `Map`.** AssemblyScript's `Map#get` is the `[]` operator, which throws
-   * on a missing key rather than returning null (`std/assembly/map.ts`), so the
-   * obvious `map.get(k)` accumulator killed the guest with "Key does not
-   * exist". Sections are dense integers, so the accumulator is a flat score
-   * array instead: one indexed add per posting, and no hashing at all.
+   * **No `Map`.** AssemblyScript's `Map#get` is the `[]` operator, which throws on a
+   * missing key rather than returning null, so the obvious accumulator kills the
+   * guest. Sections are dense integers, so the accumulator is a flat score array
+   * instead: one indexed add per posting, and no hashing at all.
    */
   private computeResults(): void {
     this.results = [];
     this.resultScores = [];
 
     const sections: i32 = <i32>this.docs.sectionCount;
+    if (sections <= 0) return;
     if (this.scores.length != sections + 1) {
       this.scores = new Array<i32>(sections + 1);
       this.marked = new Array<u8>(sections + 1);
     }
-    // Clear only what the last query touched — a memset of 628 entries per
-    // keystroke would be the largest thing this function does.
+    // Clear only what the last query touched — a memset of 628 entries per keystroke
+    // would be the largest thing this function does.
     for (let i: i32 = 0; i < this.touched.length; i++) {
       const at: i32 = this.touched[i];
       this.scores[at] = 0;
@@ -652,7 +1256,9 @@ class App extends AppShell {
     }
     this.touched = [];
 
-    if (this.queryLen < 2 || !this.search.ok) return;
+    const q: TextBuffer = this.ui.tree.bufferOf(this.searchField);
+    const qlen: i32 = q.len;
+    if (qlen < 2 || !this.search.ok) return;
 
     // The dictionary index at or after the query prefix.
     let lo: i32 = 0;
@@ -661,7 +1267,7 @@ class App extends AppShell {
       const mid: i32 = (lo + hi) >> 1;
       const cmp: i32 = compareTermToQuery(
         this.search.termPtr(<u32>mid), this.search.termLen(<u32>mid),
-        this.query.dataStart, <u32>this.queryLen);
+        q.bytes.dataStart, <u32>qlen);
       if (cmp < 0) lo = mid + 1;
       else hi = mid - 1;
     }
@@ -670,12 +1276,12 @@ class App extends AppShell {
     for (let t: i32 = lo; t < <i32>this.search.termCount && considered < 40; t++) {
       const termLen: u32 = this.search.termLen(<u32>t);
       if (!termHasPrefix(this.search.termPtr(<u32>t), termLen,
-                          this.query.dataStart, <u32>this.queryLen)) break;
+                          q.bytes.dataStart, <u32>qlen)) break;
       considered++;
 
-      // A term that *is* the query is worth more than one that merely shares
-      // its prefix: "load" should outrank "loader" for the query "load".
-      const exactWeight: i32 = termLen == <u32>this.queryLen ? 2 : 1;
+      // A term that *is* the query is worth more than one that merely shares its
+      // prefix: "load" should outrank "loader" for the query "load".
+      const exactWeight: i32 = termLen == <u32>qlen ? 2 : 1;
 
       const first: u32 = this.search.termPostFirst(<u32>t);
       const count: u32 = this.search.termPostCount(<u32>t);
@@ -706,7 +1312,7 @@ class App extends AppShell {
         if (scores[ranked[j]] > scores[ranked[best]]) best = j;
       }
       if (best != i) {
-        const t: i32 = ranked[i]; ranked[i] = ranked[best]; ranked[best] = t;
+        const tmp: i32 = ranked[i]; ranked[i] = ranked[best]; ranked[best] = tmp;
       }
     }
 
@@ -716,548 +1322,15 @@ class App extends AppShell {
       this.resultScores.push(scores[ranked[i]]);
     }
   }
-
-  // ── drawing ─────────────────────────────────────────────────────────────
-
-  protected draw(p: Painter): void {
-    this.tocHitY = [];
-    this.tocHitPage = [];
-    this.runHitX = [];
-    this.runHitY = [];
-    this.runHitBlock = [];
-
-    const clipTop: i32 = CONTENT_TOP;
-    const clipBottom: i32 = this.height - STATUS_H;
-
-    // **No background fill.** The 2D renderer clears to opaque black, and a
-    // sprite cannot be stretched, so painting 1280x720 would cost 7,200 of the
-    // 4,096 records the frame may stage — more than the text it exists to
-    // surround. The clear *is* the background, and the divider below is what
-    // separates the two regions.
-    p.vline(DIVIDER_X, 0, this.height, CHROME_DIVIDER);
-
-    this.drawSidebar();
-    this.drawSearchBar();
-
-    if (this.queryLen > 0) {
-      this.drawResults(clipTop, clipBottom);
-    } else {
-      this.drawContent(clipTop, clipBottom);
-    }
-
-    this.drawStatusBar();
-    // The shell resets the painter before this call and submits it after, so a
-    // frame cannot be built and never sent — and the record count it reports is
-    // the one that was actually handed over.
-  }
-
-  /** The table of contents, scrolled so the current page stays visible. */
-  private drawSidebar(): void {
-    const p = this.painter;
-    const top: i32 = px(8);
-
-    // The book's title, in the heading colour.
-    this.drawBytesAt("Tension", 7, px(8), top, HEADING, BOLD, CELL_W);
-
-    const rowsTop: i32 = top + CELL_H + px(4);
-    const rows: i32 = (this.height - rowsTop - 8) / TOC_STEP;
-    const total: i32 = <i32>this.docs.tocCount;
-
-    // Keep the current page's entry on screen: find it, then centre the window
-    // on it when it would otherwise fall outside.
-    let first: i32 = 0;
-    if (total > rows) {
-      let currentRow: i32 = 0;
-      for (let i: i32 = 0; i < total; i++) {
-        const pg: u32 = this.docs.tocPage(<u32>i);
-        if (pg != 0xffffffff && <i32>pg == this.page) currentRow = i;
-      }
-      first = currentRow - rows / 2;
-      if (first < 0) first = 0;
-      if (first > total - rows) first = total - rows;
-    }
-
-    for (let r: i32 = 0; r < rows && first + r < total; r++) {
-      const i: i32 = first + r;
-      const y: i32 = rowsTop + r * TOC_STEP;
-      const page: u32 = this.docs.tocPage(<u32>i);
-      const depth: u32 = this.docs.tocDepth(<u32>i);
-      const indent: i32 = px(6) + <i32>depth * px(6);
-      const active: bool = page != 0xffffffff && <i32>page == this.page;
-
-      // One row is 40x2 = 80 records, affordable once for the current row.
-      if (active) {
-        p.fill(0, y - px(1), SIDEBAR_W, TOC_STEP, CHROME_SELECTION);
-        p.fill(SIDEBAR_W - px(2), y - px(1), px(2), TOC_STEP, CHROME_WHITE);
-      }
-
-      const colour: i32 = page == 0xffffffff ? MUTED : (active ? HEADING : NORMAL);
-      const weight: i32 = page == 0xffffffff ? BOLD : REGULAR;
-      const maxChars: i32 = (SIDEBAR_W - indent - px(4)) / CELL_W;
-      this.drawTruncated(this.docs.tocTitlePtr(<u32>i), <i32>this.docs.tocTitleLen(<u32>i),
-        indent, y, colour, weight, maxChars);
-
-      this.tocHitY.push(y - px(1));
-      this.tocHitPage.push(page == 0xffffffff ? -1 : <i32>page);
-    }
-  }
-
-  /** The search field, and its placeholder when empty. */
-  private drawSearchBar(): void {
-    const p = this.painter;
-    p.hline(MAIN_X, SEARCH_H - 1, this.width - MAIN_X, CHROME_DIVIDER);
-
-    // A magnifier stand-in: the font has no icon, so the prompt is text.
-    const promptX: i32 = MAIN_X + px(8);
-    const promptY: i32 = (SEARCH_H - CELL_H) / 2;
-
-    if (this.queryLen == 0 && !this.searchFocused) {
-      this.drawBytesAt("Press / to search", 17, promptX, promptY, MUTED, REGULAR, CELL_W);
-      return;
-    }
-
-    const startX: i32 = promptX;
-    const cursorX: i32 = p.text(
-      this.query.dataStart, this.queryLen, startX, promptY,
-      NORMAL, REGULAR, CELL_W, 0, this.height);
-
-    // The caret blinks on a two-second cycle: `frames` is the only clock the
-    // guest has, and a caret that never blinks reads as a rendering artefact.
-    if (this.searchFocused && (this.frames / 30) % 2 == 0) {
-      p.sprite(cursorX, promptY, CELL_W - px(4), CELL_H, CHROME_CARET);
-    }
-
-    // The result count, right-aligned in the bar.
-    if (this.queryLen >= 2) {
-      const label: string = this.results.length.toString() + " sections";
-      const w: i32 = label.length * CELL_W;
-      this.drawString(label, this.width - px(12) - w, promptY, MUTED, REGULAR, CELL_W);
-    }
-  }
-
-  /** Search results: a section title, its page, and the score. */
-  private drawResults(clipTop: i32, clipBottom: i32): void {
-    const p = this.painter;
-    const x: i32 = this.contentX;
-    const top: i32 = CONTENT_TOP + px(4);
-
-    this.drawBytesAt("Results for", 11, x, top, MUTED, REGULAR, CELL_W);
-    p.text(this.query.dataStart, this.queryLen,
-      x + 12 * CELL_W, top, LINK, BOLD, CELL_W, 0, this.height);
-
-    if (this.results.length == 0) {
-      this.drawBytesAt("no section matches that prefix", 31, x, top + LINE_STEP,
-        MUTED, REGULAR, CELL_W);
-      return;
-    }
-
-    for (let i: i32 = 0; i < this.results.length; i++) {
-      const y: i32 = RESULT_TOP + i * RESULT_STEP;
-      // Half a row visible at the bottom is normal and reads as "more below";
-      // the *subtitle* is only drawn when it fits, so nothing is ever painted
-      // under the status bar.
-      if (y + CELL_H > clipBottom) break;
-      if (y + RESULT_STEP < clipTop) continue;
-
-      const section: i32 = this.results[i];
-
-      // The section title, with the matched prefix picked out in the link
-      // colour — the highlight is what tells the reader *why* the row matched.
-      this.drawHighlighted(this.docs.sectionTitlePtr(<u32>section),
-        <i32>this.docs.sectionTitleLen(<u32>section), x, y, this.cols);
-
-      // The page it belongs to, indented and muted.
-      const page: i32 = <i32>this.docs.sectionPage(<u32>section);
-      const titlePtr: usize = this.docs.pageTitlePtr(<u32>page);
-      const titleLen: i32 = <i32>this.docs.pageTitleLen(<u32>page);
-      const subY: i32 = y + RESULT_TITLE_H + RESULT_SUB_GAP;
-      if (subY + CELL_H <= clipBottom) {
-        // The subtitle is indented, so it gets the column less its indent.
-        this.drawTruncated(titlePtr, titleLen, x + px(8), subY, MUTED, REGULAR,
-          this.cols - 1);
-      }
-    }
-  }
-
-  /** The document page. */
-  private drawContent(clipTop: i32, clipBottom: i32): void {
-    const p = this.painter;
-    const layout = this.layout;
-
-    // The page title, above the flow and not part of it — a reader scrolling
-    // should lose the title first, which is why it scrolls with the text.
-    const scroll: i32 = this.scroll;
-
-    // Only the visible lines are walked. `firstLineAt` is a scan over ~40
-    // entries, and everything before it is skipped without touching a glyph —
-    // this is what keeps a 2,000-line page inside the record budget.
-    // The transcript is drawn **after** every line, not where its block ends:
-    // it is an overlay, and drawing it inside the line loop let the paragraphs
-    // below paint straight over it. Deferring it is what makes it occlude.
-    let transcriptY: i32 = -1;
-
-    let startLine: i32 = 0;
-    while (startLine < layout.lineCount &&
-           layout.lineY[startLine] + LINE_STEP < scroll) {
-      startLine++;
-    }
-
-    for (let li: i32 = startLine; li < layout.lineCount; li++) {
-      const lineY: i32 = layout.lineY[li] - scroll + CONTENT_TOP;
-      if (lineY > clipBottom) break;
-
-      const blockSlot: i32 = layout.lineBlock[li];
-      const kind: u8 = layout.blockKind[blockSlot];
-      const level: u8 = layout.blockLevel[blockSlot];
-      const indent: i32 = kind == K_CODE ? CODE_INSET : (kind == K_LIST_ITEM ? CODE_INSET : 0);
-      const x: i32 = this.contentX + indent;
-      const start: i32 = layout.lineStart[li];
-      const len: i32 = layout.lineLen[li];
-
-      // A rule is a bar where a line of text would be.
-      if (kind == K_RULE) {
-        p.fill(this.contentX, lineY + CELL_H / 2, this.cols * CELL_W, 1, CHROME_DIVIDER);
-        continue;
-      }
-
-      // A code block's marker: a **one-source-pixel** accent on the left, drawn
-      // per line so a scrolled block has a continuous rule. It stays one source
-      // pixel — so two device pixels at SCALE 2 — rather than scaling with
-      // `px()`: a 2px-tall bar was a deliberate hairline, and tripling it would
-      // turn a rule into a stripe.
-      //
-      // A full background behind the block would be the other option and is
-      // unaffordable: tiled at the cell size that is 56 x 2 = 112 records *per
-      // line*, which ten visible code lines would spend a quarter of the frame
-      // on.
-      if (kind == K_CODE) {
-        p.fill(this.contentX, lineY - px(1), px(1), LINE_STEP, CHROME_SELECTION);
-      }
-
-      // A heading's rule, sized to its text, is what gives the hierarchy its
-      // weight without a second pipeline.
-      if (kind == K_HEADING && level <= 2) {
-        const width: i32 = len * advanceFor(kind, level);
-        p.fill(x, lineY + CELL_H, width, level == 1 ? 2 : 1, CHROME_DIVIDER);
-      }
-
-      // A bullet for a list item: the font has `-`, which is what the Markdown
-      // source uses too. Two conditions, and both were wrong before:
-      //
-      //   * **One whole cell to the left** (`CELL_W`, not a fixed inset). With a
-      //     9-column VGA cell the gutter is 18px, and a 12px offset put the dash
-      //     inside the first character — `-Architecture`.
-      //   * **Only on the block's first line.** A wrapped continuation was
-      //     getting its own dash, so a two-line item read as two items. The
-      //     bullet belongs to the item, not to every line it occupies.
-      if (kind == K_LIST_ITEM && len > 0 && li == layout.blockFirstLine[blockSlot]) {
-        p.char(45, x - CELL_W, lineY, NORMAL, REGULAR, clipTop, clipBottom);
-      }
-
-      // Emit the line: group consecutive characters by style so the colour and
-      // weight are computed per run rather than per glyph.
-      let i: i32 = 0;
-      while (i < len) {
-        const style: u8 = layout.styles[start + i];
-        let j: i32 = i + 1;
-        while (j < len && layout.styles[start + j] == style) j++;
-
-        const colour: i32 = colourFor(kind, level, style);
-        const weight: i32 = weightFor(kind, style);
-        const advance: i32 = advanceFor(kind, level);
-        p.text(layout.chars.dataStart + <usize>(start + i), j - i,
-          x + i * advance, lineY, colour, weight, advance, clipTop, clipBottom);
-        i = j;
-      }
-
-      // The Run button, on the row the layout reserved for it — the block's
-      // last line, which carries no text (`layout.ts`).
-      if (kind == K_CODE && blockSlot >= 0 &&
-          (layout.blockFlags[blockSlot] & F_RUNNABLE) != 0 &&
-          li == layout.blockFirstLine[blockSlot] + layout.blockLineCount[blockSlot] - 1) {
-        this.drawRunButton(layout.blockIndex[blockSlot], lineY);
-      }
-
-      // The transcript, anchored under its block. Only the anchor is decided
-      // here; the panel is drawn once the flow is complete.
-      if (this.showingBlock >= 0 && blockSlot >= 0 &&
-          layout.blockIndex[blockSlot] == this.showingBlock &&
-          li == layout.blockFirstLine[blockSlot] + layout.blockLineCount[blockSlot] - 1) {
-        transcriptY = lineY + LINE_STEP + 10;
-      }
-    }
-
-    if (transcriptY >= 0) this.drawTranscript(transcriptY);
-  }
-
-  /**
-   * The "Run (recorded)" button.
-   *
-   * A filled box of the link colour with the label over it. The label is drawn
-   * in the panel colour, which is the only way to get dark text on a light box
-   * when the atlas carries the colour rather than the shader.
-   */
-  private drawRunButton(block: i32, y: i32): void {
-    const p = this.painter;
-    if (y > this.height - STATUS_H) return;
-
-    const label: string = this.showingBlock == block ? "Hide output" : "Run (recorded)";
-    const w: i32 = label.length * CELL_W + px(10);
-
-    // **Right-aligned to the text column**, on its own row. At 1x the button sat
-    // in the right-hand margin beside the code; at 2x the margin is the same
-    // pixels and the button is twice as wide, so "outside the column" is
-    // off-screen — and reserving a gutter inside the column cost a third of the
-    // width and broke code tokens. A row of its own solves both.
-    const x: i32 = this.contentX + this.cols * CELL_W - w;
-
-    p.fill(x, y, w, RUN_BTN_H, CHROME_SELECTION);
-    p.fill(x, y, w, px(1), CHROME_WHITE);
-    this.drawString(label, x + px(5), y + (RUN_BTN_H - CELL_H) / 2, HEADING, REGULAR, CELL_W);
-
-    this.runHitX.push(x);
-    this.runHitY.push(y);
-    this.runHitBlock.push(block);
-  }
-
-  /**
-   * The recorded transcript, below its code block.
-   *
-   * Anchored under the block's last line and **never moved up over it**: an
-   * earlier version slid the panel upward when it did not fit, which drew it on
-   * top of the code it was explaining. Shrinking the number of visible lines is
-   * the honest answer — the reader can scroll to see the rest, and the code stays
-   * where it was.
-   */
-  private drawTranscript(y: i32): void {
-    const p = this.painter;
-    const bottom: i32 = this.height - STATUS_H - px(4);
-
-    if (this.showingEntry < 0) {
-      if (y + PANEL_HEAD <= bottom) {
-        p.fill(this.contentX, y, this.cols * CELL_W, PANEL_HEAD, CHROME_PANEL);
-        p.hline(this.contentX, y, this.cols * CELL_W, CHROME_SELECTION);
-        this.drawString("no transcript recorded for this block",
-          this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
-      }
-      return;
-    }
-
-    const ptr: usize = this.transcripts.textPtr(<u32>this.showingEntry);
-    const len: i32 = <i32>this.transcripts.textLen(<u32>this.showingEntry);
-    const lines: i32 = this.transcriptLines(this.showingEntry);
-
-    const avail: i32 = bottom - y;
-    // `PANEL_HEAD` for the header row; whatever is left is body lines.
-    const fit: i32 = (avail - PANEL_HEAD) / LINE_STEP;
-    if (fit < 1) {
-      if (y + PANEL_HEAD <= bottom) {
-        this.drawString("scroll down to see the output",
-          this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
-      }
-      return;
-    }
-    const shown: i32 = lines < fit ? lines : fit;
-    const panelH: i32 = shown * LINE_STEP + PANEL_HEAD;
-
-    // **Opaque**, because this is an overlay: without the backing the paragraph
-    // below shows through the transcript and neither is readable. The cost is
-    // `tileCost(width, panelH)`, which falls as the cell grows — a panel is
-    // ceil(w / CELL_W) x ceil(h / CELL_H) tiles, so the 2x cell made it
-    // *cheaper* than the 1x one. The status bar reports the running total.
-    p.fill(this.contentX, y, this.cols * CELL_W, panelH, CHROME_PANEL);
-    p.hline(this.contentX, y, this.cols * CELL_W, CHROME_SELECTION);
-    p.fill(this.contentX, y, px(1), panelH, CHROME_SELECTION);
-
-    const ms: string = this.transcripts.durationMs(<u32>this.showingEntry).toString();
-    this.drawString("output - recorded at build time, " + ms + " ms",
-      this.contentX + px(4), y + px(3), MUTED, REGULAR, CELL_W);
-
-    let lineY: i32 = y + PANEL_HEAD;
-    let s: i32 = 0;
-    for (let n: i32 = 0; n < shown; n++) {
-      let e: i32 = s;
-      while (e < len && load<u8>(ptr + <usize>e) != 10) e++;
-      const lineLen: i32 = e - s < this.cols - 2 ? e - s : this.cols - 2;
-      if (lineLen > 0) {
-        p.text(ptr + <usize>s, lineLen, this.contentX + px(4), lineY, CODE, REGULAR,
-          CELL_W, 0, this.height);
-      }
-      lineY += LINE_STEP;
-      s = e + 1;
-      if (s >= len) break;
-    }
-
-    if (shown < lines) {
-      this.drawString("... " + (lines - shown).toString() + " more line(s)",
-        this.contentX + px(4), lineY, MUTED, REGULAR, CELL_W);
-    }
-  }
-
-  /** Page title, position, record count, and the key hints. */
-  private drawStatusBar(): void {
-    const p = this.painter;
-    const y: i32 = this.height - STATUS_H;
-    p.hline(MAIN_X, y, this.width - MAIN_X, CHROME_DIVIDER);
-
-    const pageNo: string = (this.page + 1).toString() + "/" + this.docs.pageCount.toString();
-
-    const textY: i32 = y + (STATUS_H - CELL_H) / 2;
-
-    // **The bar holds two things, and they take turns.** At 1x it also carried
-    // the page title; at 2x that plus the shortcuts plus the counters do not fit
-    // in 959px. The title went (it is the page's own H1), and now the two
-    // survivors are laid out against each other rather than at fixed offsets:
-    // the counters are measured first, and the shortcuts are only drawn when
-    // they fit in the space that is left. A window dragged narrow used to
-    // overprint them — `n/p key53  En526  opt`.
-    const right: string = pageNo + "   " + this.lastRecords.toString() + " sp" +
-      (this.lastDropped > 0 ? "  " + this.lastDropped.toString() + " dropped" : "");
-    const rightW: i32 = right.length * CELL_W;
-    const rightX: i32 = this.width - px(12) - rightW;
-
-    const hintX: i32 = MAIN_X + px(8);
-    const room: i32 = rightX - CELL_W - hintX;
-    // Longest first, then a short form, then silence. Dropping the shortcuts
-    // entirely the moment the window narrows is a worse trade than showing the
-    // two that matter: a reader who cannot see "/ search" has no way to discover
-    // search at all.
-    const full: string = !this.inputReady
-      ? "input unavailable"
-      : (this.searchFocused ? "type to search   Esc to clear"
-                            : "/ search   n/p keys   Enter output");
-    const brief: string = this.searchFocused ? "Esc to clear" : "/ search   n/p";
-    const hint: string = full.length * CELL_W <= room ? full
-                       : (brief.length * CELL_W <= room ? brief : "");
-    if (hint.length > 0) {
-      this.drawString(hint, hintX, textY,
-        this.inputReady ? MUTED : HEADING, REGULAR, CELL_W);
-    }
-
-    this.drawString(right, rightX, textY,
-      this.lastDropped > 0 ? HEADING : MUTED, REGULAR, CELL_W);
-  }
-
-  // ── text helpers ────────────────────────────────────────────────────────
-
-  private drawBytesAt(text: string, len: i32, x: i32, y: i32,
-                      colour: i32, weight: i32, advance: i32): void {
-    const bytes = String.UTF8.encode(text, false);
-    this.painter.text(changetype<usize>(bytes), len, x, y, colour, weight, advance, 0, this.height);
-  }
-
-  private drawString(text: string, x: i32, y: i32,
-                     colour: i32, weight: i32, advance: i32): void {
-    const bytes = String.UTF8.encode(text, false);
-    this.painter.text(changetype<usize>(bytes), bytes.byteLength, x, y, colour, weight, advance, 0, this.height);
-  }
-
-  /** Draw a byte span, truncating to `maxChars` with no ellipsis glyph. */
-  private drawTruncated(ptr: usize, len: i32, x: i32, y: i32,
-                        colour: i32, weight: i32, maxChars: i32): void {
-    const n: i32 = len < maxChars ? len : maxChars;
-    this.painter.text(ptr, n, x, y, colour, weight, CELL_W, 0, this.height);
-  }
-
-  /**
-   * A title with the query's occurrences in the link colour.
-   *
-   * Case-insensitive over ASCII: the engine folds `A-Z` to `a-z` by ORing 32,
-   * which is exact for the characters the font carries.
-   */
-  private drawHighlighted(ptr: usize, len: i32, x: i32, y: i32, maxChars: i32): void {
-    const n: i32 = len < maxChars ? len : maxChars;
-    const p = this.painter;
-    let i: i32 = 0;
-    while (i < n) {
-      // Is there a match starting here?
-      let match: bool = false;
-      if (this.queryLen > 0 && i + this.queryLen <= n) {
-        match = true;
-        for (let k: i32 = 0; k < this.queryLen; k++) {
-          const a: i32 = lowerAscii(load<u8>(ptr + <usize>(i + k)));
-          const b: i32 = lowerAscii(this.query[k]);
-          if (a != b) { match = false; break; }
-        }
-      }
-      if (match) {
-        p.text(ptr + <usize>i, this.queryLen, x + i * CELL_W, y, LINK, BOLD, CELL_W, 0, this.height);
-        i += this.queryLen;
-        continue;
-      }
-      const colour: i32 = NORMAL;
-      p.text(ptr + <usize>i, 1, x + i * CELL_W, y, colour, REGULAR, CELL_W, 0, this.height);
-      i++;
-    }
-  }
 }
+
+// ── entry point ─────────────────────────────────────────────────────────────
 
 /** Fold an ASCII letter to lower case; every other byte is unchanged. */
 function lowerAscii(c: u8): i32 {
   if (c >= 65 && c <= 90) return <i32>c + 32;
   return <i32>c;
 }
-
-const RUN_BTN_W: i32 = 15 * CELL_W + px(10);
-const RUN_BTN_H: i32 = CELL_H + px(3);
-
-/**
- * The character a pressed alphanumeric scancode stands for, or 0.
- *
- * Scancodes rather than a text event: `input.state` reports a held-key bitmap
- * and nothing else, so a typed character is derived from the physical key. That
- * is exactly right for a search query of `[a-z0-9 -_.]` and exactly wrong for
- * anything else — a limitation stated in the report, not worked around.
- */
-function scancodeToChar(app: App): i32 {
-  // a-z
-  if (app.pressed(4)) return 65 + 32; // a
-  if (app.pressed(5)) return 66 + 32;
-  if (app.pressed(6)) return 67 + 32;
-  if (app.pressed(7)) return 68 + 32;
-  if (app.pressed(8)) return 69 + 32;
-  if (app.pressed(9)) return 70 + 32;
-  if (app.pressed(10)) return 71 + 32;
-  if (app.pressed(11)) return 72 + 32;
-  if (app.pressed(12)) return 73 + 32;
-  if (app.pressed(13)) return 74 + 32;
-  if (app.pressed(14)) return 75 + 32;
-  if (app.pressed(15)) return 76 + 32;
-  if (app.pressed(16)) return 77 + 32;
-  if (app.pressed(17)) return 78 + 32;
-  if (app.pressed(18)) return 79 + 32;
-  if (app.pressed(19)) return 80 + 32;
-  if (app.pressed(20)) return 81 + 32;
-  if (app.pressed(21)) return 82 + 32;
-  if (app.pressed(22)) return 83 + 32;
-  if (app.pressed(23)) return 84 + 32;
-  if (app.pressed(24)) return 85 + 32;
-  if (app.pressed(25)) return 86 + 32;
-  if (app.pressed(26)) return 87 + 32;
-  if (app.pressed(27)) return 88 + 32;
-  if (app.pressed(28)) return 89 + 32;
-  if (app.pressed(29)) return 90 + 32;
-
-  // 1-9, 0
-  if (app.pressed(30)) return 49;
-  if (app.pressed(31)) return 50;
-  if (app.pressed(32)) return 51;
-  if (app.pressed(33)) return 52;
-  if (app.pressed(34)) return 53;
-  if (app.pressed(35)) return 54;
-  if (app.pressed(36)) return 55;
-  if (app.pressed(37)) return 56;
-  if (app.pressed(38)) return 57;
-  if (app.pressed(39)) return 48;
-
-  if (app.pressed(SC_SPACE)) return 32;
-  if (app.pressed(SC_MINUS)) return 45;
-  if (app.pressed(SC_PERIOD)) return 46;
-  if (app.pressed(SC_UNDERSCORE)) return 95;
-  return 0;
-}
-
-// ── entry point ─────────────────────────────────────────────────────────────
 
 const app = new App();
 
@@ -1268,11 +1341,10 @@ export function _start_game(): void {
 // **No `_game_running` export, and no `__taskWake`.**
 //
 // The host refuses half an adoption: a guest with `_game_running` and no
-// `__taskWake` asks the host to drive a loop the host then cannot resume a task
-// in, and `main.rs` refuses that pairing before the first guest instruction
-// rather than running a loop that silently does nothing.
+// `__taskWake` asks the host to drive a loop the host then cannot resume a task in,
+// and `main.rs` refuses that pairing before the first guest instruction rather than
+// running a loop that silently does nothing.
 //
 // This viewer owns its loop the way `examples/2d/hello-sprites` does: `present`
 // pumps the window's events, a closed window answers `-ECANCELED`, and the loop
-// ends. Adopting the host-driven loop would mean parking on `rt.frame()` every
-// frame for no benefit — there is no async work here to interleave.
+// ends.

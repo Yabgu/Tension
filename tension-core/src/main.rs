@@ -135,6 +135,13 @@ struct HostState {
     /// than falling back to something writable: a save that landed somewhere
     /// unexpected is worse than a save that failed and said so.
     write_root: Option<res::WriteRoot>,
+    /// The open files a guest holds on the write root, keyed by a local handle.
+    ///
+    /// Separate from `res` for one reason: a pak's reader is the library's
+    /// (a table of contents over mapped bytes) and a real file's is
+    /// `std::fs::File`, which owns a cursor. The guest's fd says which table it
+    /// belongs to in its high bits (`FD_WRITE_TAG`).
+    write_files: std::sync::Arc<std::sync::Mutex<res::WriteFiles>>,
     audio: audio::AudioSession,
     ai: ai::AiSession,
     /// The `tension::solver` host side: wasm-source bindings keyed by the
@@ -263,6 +270,14 @@ struct HostState {
 /// unambiguous even though every `ResourceSet` numbers its own handles from 1.
 const FD_SET_SHIFT: i32 = 16;
 const FD_LOCAL_MASK: i32 = 0xFFFF;
+/// The mount-index value that means "this fd is a **write-root file**".
+///
+/// The high half of a guest fd is a 16-bit mount index, and `--res` paks are
+/// numbered from zero, so the top value is free: no table can hold 32,767
+/// mounts, and `MountTable::get` would answer `None` for it anyway. Reserving it
+/// is what lets one fd space hold both kinds, which is what makes the fallback
+/// in `res_open` invisible to a guest.
+const FD_WRITE_TAG: i32 = 0x7FFF;
 
 const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
@@ -967,6 +982,7 @@ fn main() -> anyhow::Result<()> {
             pending_line: None,
             res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
             write_root,
+            write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
             audio: audio::AudioSession::new(default_adapter()),
             ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
             solver: solver::SolverHost::default(),
@@ -1284,10 +1300,37 @@ fn main() -> anyhow::Result<()> {
                 return EINVAL;
             };
             let table = mount_table(&caller);
-            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            match mounts.resolve(&path, |set, relative| set.open_fd(relative)) {
-                Ok((index, fd)) => pack_fd(index, fd),
-                Err(e) => e.code(),
+            let open = {
+                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                mounts.resolve(&path, |set, relative| set.open_fd(relative))
+            };
+            match open {
+                Ok((index, fd)) => return pack_fd(index, fd),
+                // **Not in any pak: try what the guest itself wrote.** The paks
+                // are immutable and `res_write` lands on the filesystem, so
+                // without this an editor could save a document and never load it
+                // back — the write succeeded and the read looked in archives that
+                // never held it.
+                Err(error) if error.code() == ENOENT => {}
+                // Only a *miss* falls through. A malformed path (`-EINVAL`) or a
+                // volume that failed to read is reported, because the fallback
+                // exists for "not there", not for "the question was wrong".
+                Err(error) => return error.code(),
+            }
+            // Both handles are *cloned* out of the store rather than borrowed:
+            // `WriteRoot` is a canonical `PathBuf` and the files table is an
+            // `Arc`, so this is one path copy and one refcount bump — and it
+            // keeps the borrow checker's answer simple instead of reaching for
+            // a pointer that the store's own `data_mut` calls could invalidate.
+            let files = std::sync::Arc::clone(&caller.data().write_files);
+            let root = caller.data().write_root.clone();
+            let Some(root) = root else {
+                return ENOENT; // no write root means nothing was ever written
+            };
+            let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            match files.open(&root, &path) {
+                Ok(local) => (FD_WRITE_TAG << FD_SET_SHIFT) | (local & FD_LOCAL_MASK),
+                Err(error) => error.code(),
             }
         },
     )?;
@@ -1296,6 +1339,14 @@ fn main() -> anyhow::Result<()> {
         "tension::res",
         "res_close",
         |caller: Caller<'_, HostState>, fd: i32| -> i32 {
+            if is_write_fd(fd) {
+                let files = write_files(&caller);
+                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                return match files.close(fd & FD_LOCAL_MASK) {
+                    Ok(()) => 0,
+                    Err(error) => error.code(),
+                };
+            }
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF;
             };
@@ -1317,6 +1368,38 @@ fn main() -> anyhow::Result<()> {
         |mut caller: Caller<'_, HostState>, fd: i32, ptr: i32, len: i32| -> i32 {
             if len < 0 {
                 return EINVAL;
+            }
+            if is_write_fd(fd) {
+                // Same loop, different reader. The write-root file owns a cursor,
+                // so a short read leaves the position exactly where the next call
+                // should continue — which is what `res_read`'s contract is and
+                // what a pak's offset argument gives it for free.
+                let files = write_files(&caller);
+                let want = len as usize;
+                let mut copied: usize = 0;
+                let mut chunk = [0u8; 4096];
+                while copied < want {
+                    let step = (want - copied).min(chunk.len());
+                    let outcome = {
+                        let mut files =
+                            files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                        files.read(fd & FD_LOCAL_MASK, &mut chunk[..step])
+                    };
+                    match outcome {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            if !write_guest(&mut caller, ptr + copied as i32, &chunk[..n]) {
+                                return EINVAL;
+                            }
+                            copied += n;
+                            if n < step {
+                                break;
+                            }
+                        }
+                        Err(error) => return error.code(),
+                    }
+                }
+                return copied as i32;
             }
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF;
@@ -1362,6 +1445,14 @@ fn main() -> anyhow::Result<()> {
         "tension::res",
         "res_seek",
         |caller: Caller<'_, HostState>, fd: i32, off: i64, whence: i32| -> i64 {
+            if is_write_fd(fd) {
+                let files = write_files(&caller);
+                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                return match files.seek(fd & FD_LOCAL_MASK, off, whence) {
+                    Ok(pos) => pos,
+                    Err(error) => error.code() as i64,
+                };
+            }
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF as i64;
             };
@@ -1381,6 +1472,14 @@ fn main() -> anyhow::Result<()> {
         "tension::res",
         "res_tell",
         |caller: Caller<'_, HostState>, fd: i32| -> i64 {
+            if is_write_fd(fd) {
+                let files = write_files(&caller);
+                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                return match files.tell(fd & FD_LOCAL_MASK) {
+                    Ok(pos) => pos,
+                    Err(error) => error.code() as i64,
+                };
+            }
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF as i64;
             };
@@ -1408,6 +1507,16 @@ fn main() -> anyhow::Result<()> {
                 let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 mounts.resolve(&path, |set, relative| set.stat(relative))
             };
+            // Same fallback as `res_open`, and needed for the same reason: a guest
+            // that asks what it just saved must be told the truth, or it cannot
+            // know whether a load has anything to read.
+            let stat = match stat {
+                Err(error) if error.code() == -2 => match caller.data().write_root.clone() {
+                    Some(root) => root.stat(&path).map(|stat| (0usize, stat)),
+                    None => Err(error),
+                },
+                other => other,
+            };
             match stat {
                 Ok((_, stat)) => {
                     if write_stat(&mut caller, out_ptr, &stat) {
@@ -1425,6 +1534,24 @@ fn main() -> anyhow::Result<()> {
         "tension::res",
         "res_stat_fd",
         |mut caller: Caller<'_, HostState>, fd: i32, out_ptr: i32| -> i32 {
+            if is_write_fd(fd) {
+                let files = write_files(&caller);
+                let outcome = {
+                    let mut files =
+                        files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    files.stat(fd & FD_LOCAL_MASK)
+                };
+                return match outcome {
+                    Ok(stat) => {
+                        if write_stat(&mut caller, out_ptr, &stat) {
+                            0
+                        } else {
+                            EINVAL
+                        }
+                    }
+                    Err(error) => error.code(),
+                };
+            }
             let Some((index, local)) = fd_index(fd) else {
                 return EBADF;
             };
@@ -3574,6 +3701,19 @@ fn write_stat(caller: &mut Caller<'_, HostState>, ptr: i32, stat: &Stat) -> bool
     rec[4..8].copy_from_slice(&stat.size.to_le_bytes());
     rec[8..12].copy_from_slice(&stat.flags.to_le_bytes());
     write_guest(caller, ptr, &rec)
+}
+
+/// Whether an fd names a file on the write root rather than a pak's handle.
+fn is_write_fd(fd: i32) -> bool {
+    fd > 0 && (fd >> FD_SET_SHIFT) == FD_WRITE_TAG
+}
+
+/// The store's write-root file table, cloned out of `caller` for the same
+/// borrow reason `mount_table` is.
+fn write_files(
+    caller: &Caller<'_, HostState>,
+) -> std::sync::Arc<std::sync::Mutex<res::WriteFiles>> {
+    std::sync::Arc::clone(&caller.data().write_files)
 }
 
 /// Guest fd for a pak's handle.

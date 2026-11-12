@@ -516,6 +516,72 @@ the vtable offsets; `ogre-guest` for the adapter's behaviour; `core` for the
 session and the host-surface path. The native build's guards (G1–G3) are *not* in
 this list because they run in `build-native.mjs` — `npm test` does not re-run them.
 
+### 6.1 Running the suites in parallel (`--jobs`)
+
+A full serial run takes about **195 s** on a 12-core box, and almost all of that
+is one suite at a time: the suites are independent processes that mostly read the
+tree, so 90% of the machine sits idle. `--jobs N` fixes that.
+
+| invocation | width |
+|---|---|
+| `npm test` / `--jobs` absent | `min(cores - 1, 8)` locally; **1 on CI** |
+| `--jobs 0` | the same auto-detection, spelled out |
+| `--jobs 1` | one at a time — byte-identical to the pre-flag runner, declaration order |
+| `--jobs N` | N suites at once, most expensive ready suite first |
+| `--serial` | the same as `--jobs 1`, kept for muscle memory |
+
+**CI is unchanged.** `CI`, `GITHUB_ACTIONS`, `GITLAB_CI`, `CIRCLECI`, `TRAVIS`,
+`BUILDKITE`, `TF_BUILD` and `JENKINS_URL` are all read; any of them sets the width
+to 1. The reason is diagnosis, not speed: a failing CI log is read by someone who
+was not there, and four interleaved streams hide which suite broke. An explicit
+`--jobs N` still overrides it, so the choice is never taken away.
+
+Each suite runs in its own process with its own output section, so parallelism
+changes the *order* of the `----- <suite> (<n>s) -----` blocks (and their timings)
+but not their content. The summary and the exit code are computed from the same
+per-suite results either way, and a parallel run prints `[SKIP]` for a suite whose
+dependency failed exactly as a serial one does.
+
+**Which suites may run at once.** Every suite declares a `class` in the audit table
+next to `SUITES` (`node scripts/test.mjs --list --verbose` prints it with the
+resource each one holds):
+
+- **parallel** — reads the tree, or writes only inside a `mkdtemp` of its own:
+  `eol`, `deps`, `win32-headers`, `ogre-capacities`, `codegen`, `abi-docs`, `cli`,
+  `starter`. Nothing another suite can see changes.
+- **isolated** — writes a build directory a sibling also writes, so it holds a tag
+  naming that directory: `framework`, `docs`, `input`, `ogre-unit`, and the six 2D
+  example suites. Two suites holding the same tag never overlap; two holding
+  different tags do.
+- **serial** — needs something that cannot be shared at all: `ogre-guest` and
+  `ogre-unit` (the Ogre adapter build and cache), `res` and `core` (`zig` in
+  `tension-res`, plus cargo's target lock), and the five `platform-*`/`window-close`
+  suites (a real SDL window on the one display, and cargo's target lock).
+
+The 2D example tags are per directory on purpose: `emit()` writes generated pages
+and `pack-example.mjs` writes `build/assets.tns` *into the example directory*, so
+two runs in `examples/2d/isometric/` race. Measured before the tags existed: one
+`ENOENT … page1.iwi` in twelve concurrent attempts, and none in fifteen after, with
+two runs in *different* directories clean 10/10.
+
+**Where the wall clock goes.** `core` needs both `framework` and `ogre-guest`, so
+the critical path is `framework` (45 s) → `core` (25 s). Nothing finishes sooner
+than ~70 s however many cores you have, and that is why the schedules below stop
+improving past four jobs: the run becomes critical-path bound, and each extra job
+just takes CPU away from the two suites the clock is waiting on.
+
+| width | wall clock |
+|---|---|
+| `--jobs 1` | 195 s |
+| `--jobs 3` | 89 s |
+| `--jobs 4` | **88 s** |
+| `--jobs 8` | 93 s |
+
+So the auto default is generous rather than optimal on a wide machine — the
+formula is the one the flag documents, and `--jobs 4` is the measured best on a
+12-core box. If a suite ever leaves the critical path, the auto default becomes
+the right number without anyone changing it.
+
 The suite list is **[V]** (the `SUITES` table). Which suite *runs* on this
 rig was not re-executed for this page; the last full run recorded before it was
 the pass-4 ogre suite (36 cases, exit 0) plus the unit suites. The 2D pixel

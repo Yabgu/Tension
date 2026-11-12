@@ -29,7 +29,11 @@
 //     file. So the generation happens once, up front, and the suites are told to
 //     skip it (`TENSION_SESSION_READY=1`).
 //   * `tension-core` loads the fixtures the framework and OGRE suites build, so it
-//     has to run after both. That is a data dependency, not a preference.
+//     has to run after both. That is a data dependency, not a preference — and
+//     selecting `core` alone **pulls those suites in**, because the alternative is
+//     cargo testing a fixture compiled before the last framework change (the
+//     `async_await` trap on a retired `ogre::mount_tns` import, which named the
+//     fixture rather than the missing build).
 //
 // Two suites also share a *resource* without sharing data: the OGRE guest suite
 // and the OGRE unit suite both own `tension-ogre/build` and `build-cmake`, and
@@ -42,7 +46,8 @@
 // Usage:
 //   npm test                    every suite, parallel
 //   npm test -- --serial        every suite, one at a time
-//   npm test -- --core          one suite
+//   npm test -- --core          one suite, and what it needs
+//   npm test -- --core --no-deps  one suite, no dependencies (they may be stale)
 //   npm test -- --jobs 2        at most two at once
 //   npm test -- --list          print the suite names
 
@@ -124,6 +129,54 @@ function execute(command, args = [], options = {}) {
 // `holds`  exclusive resource tags. Two suites with a tag in common never run
 //          at the same time.
 // `run`    returns a promise for `{ status, output }`.
+//
+// ## The three classes, and why each suite is in one
+//
+// The class is the audit, declared once instead of inferred: the scheduler only
+// looks at `holds`, but a reader asking "may I run two of these at once" wants the
+// answer in one place, and `--list --verbose` prints it.
+//
+//   parallel  reads the tree, or writes only inside a `mkdtemp` of its own.
+//             Nothing another suite can see changes while it runs.
+//   isolated  writes a build directory that a sibling suite also writes. Safe to
+//             run at the same time as anything that uses a *different* directory;
+//             the `holds` tag is which ones share.
+//   serial    needs a resource that cannot be shared at all: cargo's target lock,
+//             `zig` in `tension-res`, the OGRE adapter build + cache, or a real
+//             managed window on the only display.
+//
+// The tags, and the exact directory behind each:
+//
+//   cargo-target          tension-core/target — five suites run `cargo test`
+//                         against one manifest. Cargo's own lock makes this
+//                         correct but *blocking*: a second invocation prints
+//                         "Blocking waiting for file lock" and sits there, which
+//                         in a jobs pool wastes a slot and looks like a hang.
+//                         Declaring it makes the wait visible and avoids it.
+//   display               a real SDL window on the one X/Wayland display. Four
+//                         probes create windows; two at once is not what they
+//                         assert, and a compositor that reorders focus would make
+//                         the result depend on the machine.
+//   zig                   tension-res/build, which `tension-core`'s build script
+//                         also drives.
+//   tension-ogre-build    tension-ogre/{build,build-cmake} and the Ogre cache.
+//   tension-input-build   tension-input/build. `ogre-guest` builds the input DSO
+//                         too (its `input-camera` case loads it), so it and the
+//                         `input` suite write the same directory — found by this
+//                         audit, not by a failure, because the two had never run
+//                         at the same time.
+//  2d-example:<dir>       examples/2d/<dir> — `emit()` writes generated pages
+//                         and `pack-example.mjs` writes `build/assets.tns` into
+//                         the *example directory*, so two runs in one directory
+//                         race. Measured: four concurrent runs produced one
+//                         `ENOENT ... page1.iwi` in twelve attempts, and none in
+//                         fifteen after giving each directory its own tag. Two
+//                         runs in *different* directories were clean 10/10.
+//
+// The 2D shader modules (`tension-2d/build/shaders`) are the one 2D resource that
+// is genuinely global — every 2D suite's guard rebuilds them when they are
+// missing. They are built once in the preparation phase instead, so no suite's
+// guard can fire and the tag is not needed.
 
 const SUITES = {
   eol: {
@@ -233,7 +286,7 @@ const SUITES = {
     title: 'tension-ogre (guest)',
     needs: [],
     // Shares `tension-ogre/build` and `build-cmake` with the unit suite.
-    holds: ['tension-ogre-build'],
+    holds: ['tension-ogre-build', 'tension-input-build'],
     run: () => execute(node, [join(repo, 'scripts', 'test-ogre.mjs')],
                        { env: suiteEnv({ TENSION_SESSION_READY: '1' }) }),
   },
@@ -249,7 +302,7 @@ const SUITES = {
   input: {
     title: 'tension-input',
     needs: [],
-    holds: [],
+    holds: ['tension-input-build'],
     run: () => execute(node, [join(repo, 'scripts', 'test-input.mjs')],
                        { env: suiteEnv({ TENSION_SESSION_READY: '1' }) }),
   },
@@ -266,7 +319,7 @@ const SUITES = {
     title: 'window close',
     needs: [],
     // hello-sprites' guest and shader modules are this suite's inputs too.
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:hello-sprites', 'display'],
     run: () => execute(node, [join(repo, 'scripts', 'test-window-close.mjs')],
                        { env: suiteEnv() }),
   },
@@ -290,7 +343,7 @@ const SUITES = {
     needs: [],
     // Writes the shader modules and the guest, in directories the other 2D
     // suites also use.
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:hello-sprites'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'hello-sprites', 'test.mjs'),
     ], { env: suiteEnv() }),
@@ -306,7 +359,7 @@ const SUITES = {
     needs: [],
     // Builds the adapter and the guest; both live in directories another 2D
     // suite would also write.
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:isometric'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
     ], { env: suiteEnv() }),
@@ -319,7 +372,7 @@ const SUITES = {
   'isometric-art': {
     title: 'isometric (art)',
     needs: [],
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:isometric'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'isometric', 'test.mjs'),
     ], { env: suiteEnv() }),
@@ -335,7 +388,7 @@ const SUITES = {
     // its comparison, so depending on the `isometric` suite would run it twice
     // and would make the framework suite un-runnable on its own.
     needs: [],
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:isometric-framework'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
     ], { env: suiteEnv() }),
@@ -353,7 +406,7 @@ const SUITES = {
   'box-physics': {
     title: 'box-physics',
     needs: [],
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:box-physics'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'box-physics', 'test.mjs'),
     ], { env: suiteEnv() }),
@@ -362,7 +415,7 @@ const SUITES = {
   'stiff-boxes': {
     title: 'stiff-boxes',
     needs: [],
-    holds: ['tension-2d-build'],
+    holds: ['2d-example:stiff-boxes'],
     run: () => execute(node, [
       join(repo, 'examples', '2d', 'stiff-boxes', 'test.mjs'),
     ], { env: suiteEnv() }),
@@ -398,7 +451,7 @@ const SUITES = {
   'platform-surface': {
     title: 'platform surface',
     needs: [],
-    holds: [],
+    holds: ['cargo-target', 'display'],
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
@@ -413,7 +466,7 @@ const SUITES = {
   'platform-window': {
     title: 'platform window',
     needs: [],
-    holds: [],
+    holds: ['cargo-target', 'display'],
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
@@ -431,7 +484,7 @@ const SUITES = {
   'platform-create': {
     title: 'platform create',
     needs: [],
-    holds: [],
+    holds: ['cargo-target', 'display'],
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
@@ -445,7 +498,7 @@ const SUITES = {
   'platform-control': {
     title: 'platform control',
     needs: [],
-    holds: [],
+    holds: ['cargo-target', 'display'],
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
@@ -460,7 +513,7 @@ const SUITES = {
     // The `ogre_*` integration tests read the fixtures the two suites above
     // build, so this one runs after them or not at all.
     needs: ['framework', 'ogre-guest'],
-    holds: ['zig'],
+    holds: ['zig', 'cargo-target'],
     // `ai` is a default feature and pulls a vendored llama.cpp build that needs
     // libclang — a heavy dependency AGENTS.md explicitly excludes from the test
     // suite. The tests therefore run with the feature set the shipped host is
@@ -477,11 +530,84 @@ const SUITES = {
   },
 };
 
+// ── the audit: class and expected cost, per suite ───────────────────────────
+//
+// `cost` is what the suite took on the reference machine (12 cores, Linux), and
+// it exists for one purpose: the pool starts the longest suites first. That is
+// the classic longest-processing-time-first rule — it is not optimal scheduling,
+// but it is never worse than the declaration order, and the difference here is
+// large: `framework` (45 s) and `ogre-guest` (44 s) gate `core`, so starting them
+// at t=0 rather than fifth is worth more than any other change.
+//
+// A wrong number costs only scheduling quality, never correctness, so these are
+// hints rather than a table to keep exact.
+const AUDIT = {
+  // Reads the tree, or writes only into its own temp dir.
+  eol: { class: 'parallel', cost: 0 },
+  deps: { class: 'parallel', cost: 0 },
+  'win32-headers': { class: 'parallel', cost: 0 },
+  'ogre-capacities': { class: 'parallel', cost: 0 },
+  codegen: { class: 'parallel', cost: 0 },
+  'abi-docs': { class: 'parallel', cost: 0 },
+  cli: { class: 'parallel', cost: 1 },
+  starter: { class: 'parallel', cost: 13 },
+
+  // Writes a build directory that a sibling also writes.
+  //
+  // `framework` is the exception that proves the tag is about *sharing*: it writes
+  // `tension-framework/build` (its compiled fixture guests) and nothing else does,
+  // so it holds no tag. `ogre-guest` and `input` read `build/session.asconfig.json`
+  // from there, which the preparation phase wrote before the pool started — a read,
+  // not a race.
+  framework: { class: 'isolated', cost: 45 },
+  docs: { class: 'isolated', cost: 6 },
+  input: { class: 'isolated', cost: 4 },
+  'ogre-unit': { class: 'isolated', cost: 0 },
+  'hello-sprites': { class: 'isolated', cost: 4 },
+  isometric: { class: 'isolated', cost: 10 },
+  'isometric-art': { class: 'isolated', cost: 10 },
+  'isometric-framework': { class: 'isolated', cost: 20 },
+  'box-physics': { class: 'isolated', cost: 5 },
+  'stiff-boxes': { class: 'isolated', cost: 5 },
+
+  // A resource that cannot be shared.
+  'ogre-guest': { class: 'serial', cost: 44 },
+  'window-close': { class: 'serial', cost: 3 },
+  res: { class: 'serial', cost: 0 },
+  core: { class: 'serial', cost: 25 },
+  'platform-surface': { class: 'serial', cost: 0 },
+  'platform-window': { class: 'serial', cost: 0 },
+  'platform-create': { class: 'serial', cost: 0 },
+  'platform-control': { class: 'serial', cost: 0 },
+};
+
+for (const [name, entry] of Object.entries(SUITES)) {
+  const audit = AUDIT[name];
+  // A suite with no entry is assumed parallel and cheap *and* is reported, so a
+  // new suite cannot quietly join the schedule without someone classifying it.
+  entry.class = audit?.class ?? 'parallel';
+  entry.cost = audit?.cost ?? 1;
+  if (!audit) console.log(`test: note — ${name} has no audit entry (assumed parallel)`);
+}
+
 // ── command line ────────────────────────────────────────────────────────────
 
 const argv = process.argv.slice(2);
 if (argv.includes('--list')) {
-  for (const name of Object.keys(SUITES)) console.log(name);
+  // `--list --verbose` is the audit, printed: the class each suite is in and the
+  // resource it holds exclusively. Kept beside the schedule rather than in a doc
+  // so the two cannot disagree.
+  if (argv.includes('--verbose')) {
+    for (const name of Object.keys(SUITES)) {
+      const suite = SUITES[name];
+      const holds = suite.holds.length ? suite.holds.join(',') : '-';
+      const needs = suite.needs.length ? suite.needs.join(',') : '-';
+      console.log(`${name.padEnd(20)} ${String(suite.class).padEnd(9)} ` +
+                  `cost ${String(suite.cost).padStart(2)}s  holds ${holds.padEnd(26)} needs ${needs}`);
+    }
+  } else {
+    for (const name of Object.keys(SUITES)) console.log(name);
+  }
   process.exit(0);
 }
 
@@ -496,11 +622,21 @@ if (argv.includes('--list')) {
 // CI also tends to have fewer cores than a dev box, so the parallelism buys less
 // there anyway.
 //
-// `--serial` and `--jobs N` override either default, so the choice is never taken
-// away: `npm test -- --jobs 4` on CI is one flag.
+// The flag, exactly:
+//
+//   (absent)    min(cores - 1, 8) locally, **1 on CI** — CI's choice is unchanged
+//   --jobs 0    the same auto-detection, spelled out
+//   --jobs 1    one at a time: byte-identical to the pre-flag runner
+//   --jobs N    N suites at once
+//   --serial    one at a time (the same as `--jobs 1`, kept for muscle memory)
+//
+// `cores - 1` rather than `cores` because the machine has to stay usable while the
+// suite runs — a full-everything run pins every core and makes the editor you are
+// iterating in stutter. The cap of 8 is where the suites stop overlapping: past
+// it the pool is limited by the exclusive tags and the critical path, not by width.
 const SERIAL_FLAG = argv.includes('--serial');
 const jobsFlag = argv.indexOf('--jobs');
-const requestedJobs = jobsFlag >= 0 ? Number(argv[jobsFlag + 1]) : 0;
+const AUTO_JOBS = Math.max(1, Math.min(8, availableParallelism() - 1));
 
 /// Whether this looks like a CI run.
 ///
@@ -514,19 +650,44 @@ const CI = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'CIRCLECI', 'TRAVIS',
     return value !== undefined && value !== '' && value !== 'false' && value !== '0';
   });
 
+/// Parse `--jobs`, refusing anything that is not a non-negative integer. A typo
+/// that silently means "everything" is the failure mode a scheduler must not have.
+const requestedJobs = (() => {
+  if (jobsFlag < 0) return -1;                 // absent
+  const raw = argv[jobsFlag + 1];
+  if (raw === undefined) {
+    console.error('test: --jobs needs a number (0 = auto)');
+    process.exit(1);
+  }
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < 0) {
+    console.error(`test: --jobs wants a non-negative integer, got '${raw}'`);
+    process.exit(1);
+  }
+  return value;
+})();
+
 const JOBS = SERIAL_FLAG ? 1
+  : requestedJobs === 0 ? AUTO_JOBS
   : requestedJobs > 0 ? requestedJobs
   : CI ? 1
-  : Math.max(1, Math.min(4, availableParallelism()));
+  : AUTO_JOBS;
+
+/// How many jobs a *local* run would use, for the message when CI forces 1.
+const JOBS_NOTE = SERIAL_FLAG ? ' (--serial)'
+  : requestedJobs === 0 ? ` (--jobs 0: auto)`
+  : requestedJobs > 0 ? ''
+  : CI ? ' (CI: serial by default; --jobs N to override)'
+  : ' (auto)';
 
 /// `--core` or `core` selects one suite. The filter strips the `--` prefix from
 /// every argument that is not an option, so `--codegen` selects codegen. A
 /// selector that silently means "everything" is worse than one that errors, so
 /// unknown names are refused.
 const optionValues = new Set();
-if (jobsFlag >= 0) optionValues.add(String(requestedJobs));
+if (jobsFlag >= 0) optionValues.add(String(argv[jobsFlag + 1]));
 const requested = argv
-  .filter((arg) => !['--serial', '--all', '--list', '--jobs'].includes(arg))
+  .filter((arg) => !['--serial', '--all', '--list', '--jobs', '--no-deps'].includes(arg))
   .filter((arg) => !optionValues.has(arg))
   .map((arg) => arg.replace(/^--/, ''))
   .filter(Boolean);
@@ -539,7 +700,30 @@ if (requested.length) {
     console.error(`      known: ${Object.keys(SUITES).join(', ')}`);
     process.exit(1);
   }
-  order = requested;
+  // **Selecting a suite selects what it needs.** `core` reads the fixtures the
+  // `framework` and `ogre-guest` suites build, so `node scripts/test.mjs core` on
+  // a tree whose OGRE guest was compiled before the framework changed used to run
+  // cargo against a *stale* fixture — and the failure (`async_await` trapping on a
+  // retired import) named the fixture, not the missing build. The dependency was
+  // declared in `needs` and then ignored for anything not in the selection.
+  //
+  // So the closure is taken: each requested suite pulls its `needs` in, and theirs
+  // in turn, in dependency order (a need is listed before the suite that needs it,
+  // which is also the order the scheduler would have picked anyway).
+  const noDeps = argv.includes('--no-deps');
+  const expanded = [];
+  const visit = (name, chain) => {
+    if (expanded.includes(name) || chain.includes(name)) return;   // a cycle is a bug, not a hang
+    for (const need of SUITES[name].needs) visit(need, [...chain, name]);
+    expanded.push(name);
+  };
+  if (noDeps) expanded.push(...requested);
+  else for (const name of requested) visit(name, []);
+  if (!noDeps && expanded.length > requested.length) {
+    const pulled = expanded.filter((name) => !requested.includes(name));
+    console.log(`test: ${requested.join(', ')} needs ${pulled.join(', ')} — running those first`);
+  }
+  order = expanded;
 }
 
 // ── shared preparation ──────────────────────────────────────────────────────
@@ -556,6 +740,18 @@ if (requested.length) {
 
 const needsPreparation = order.some((name) =>
   ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
+
+/// The 2D suites, i.e. the ones whose setup may rebuild the shader modules.
+///
+/// `examples/2d/*/test.mjs` and `scripts/build-2d-guest.mjs` each check for
+/// `tension-2d/build/shaders/default_2d.vert.spv` and, when it is missing, run
+/// `scripts/build-2d.mjs` — a shared write into `tension-2d/build`. That guard is
+/// per-suite, so on a clean tree two of them can race. Building it once here is
+/// the same answer as the debug host and the session constants: do the shared work
+/// before the pool starts, and no suite's guard ever fires.
+const needs2dShaders = order.some((name) =>
+  ['hello-sprites', 'isometric', 'isometric-art', 'isometric-framework',
+   'box-physics', 'stiff-boxes', 'window-close'].includes(name));
 
 function banner(text) {
   console.log('\n======================================================================');
@@ -589,6 +785,21 @@ if (needsPreparation) {
   }
 }
 
+if (needs2dShaders) {
+  // Only when missing: `build-2d.mjs` also compiles shadergen and the graph blob,
+  // and paying that on every run would make the preparation phase the slowest part
+  // of a suite that did not need it.
+  const spirv = join(repo, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv');
+  if (!existsSync(spirv)) {
+    banner('Preparing (2D shader modules)');
+    const built = inherit(node, [join(repo, 'scripts', 'build-2d.mjs')], { env: suiteEnv() });
+    if (built.status !== 0) {
+      console.error('test: the 2D shader modules did not build; the 2D suites cannot run');
+      process.exit(1);
+    }
+  }
+}
+
 // ── the schedule ────────────────────────────────────────────────────────────
 
 const state = new Map(order.map((name) => [name, 'waiting']));
@@ -599,12 +810,11 @@ const startedAt = new Map();
 
 /// Whether a `needs` entry is satisfied.
 ///
-/// **A need outside the selected order counts as met.** `state` only holds the
-/// suites this run asked for, so `npm test -- --core` used to find its
-/// `framework` dependency absent, never consider it passed, and hang forever on
-/// an empty schedule — measured, and reported by Node as an unsettled top-level
-/// await. Selecting one suite is asking for that suite, not for its dependencies
-/// to be re-run.
+/// Every need is in `order`: the selection above takes the dependency closure, so
+/// a suite is only ever scheduled with its dependencies in the run. A need that is
+/// somehow absent still counts as met rather than blocking for ever — a tool that
+/// hangs is worse than one that runs a suite whose fixture it cannot see, and the
+/// suite itself fails loudly in that case.
 function needSatisfied(need) {
   if (!state.has(need)) return true;
   return state.get(need) === 'passed';
@@ -616,6 +826,38 @@ function readyToRun(name) {
   if (suite.needs.some((need) => !needSatisfied(need))) return false;
   if (suite.holds.some((tag) => held.has(tag))) return false;
   return true;
+}
+
+/**
+ * The next suite to start.
+ *
+ * **Two strategies, chosen by `JOBS`, and the difference is deliberate.**
+ *
+ * `JOBS === 1` keeps the declaration order exactly. That is the promise the flag
+ * makes — "`--jobs 1` is what the runner always did" — and it matters beyond
+ * nostalgia: CI runs at 1, and a serial log whose suite order changes between
+ * runs is a log you cannot diff against the last one.
+ *
+ * `JOBS > 1` picks the **most expensive ready suite** (longest-processing-time
+ * first), with declaration order as the tie-break. The output is already
+ * interleaved at that point, so ordering by cost costs nothing and buys the wall
+ * clock: `framework` (45 s) and `ogre-guest` (44 s) are what `core` waits for, and
+ * the declaration order puts four 0.1 s checks ahead of them. Measured here,
+ * that single change was worth ~4 s of an 92 s run.
+ */
+function nextReady() {
+  if (JOBS === 1) return order.find(readyToRun) ?? null;
+  let best = null;
+  let bestCost = -1;
+  for (const name of order) {
+    if (!readyToRun(name)) continue;
+    const cost = SUITES[name].cost;
+    if (cost > bestCost) {
+      best = name;
+      bestCost = cost;
+    }
+  }
+  return best;
 }
 
 function finish(name, status, output, elapsed) {
@@ -643,9 +885,7 @@ function skip(name, reason) {
   console.log(`\n==> ${SUITES[name].title}: SKIPPED — ${reason}`);
 }
 
-console.log(`test: ${order.length} suite(s), ${JOBS} at a time`
-  + (JOBS === 1 && CI && !SERIAL_FLAG && requestedJobs <= 0 ? ' (CI: serial by default; --jobs N to override)' : '')
-  + (SERIAL_FLAG ? ' (--serial)' : ''));
+console.log(`test: ${order.length} suite(s), ${JOBS} at a time${JOBS_NOTE}`);
 
 let runningCount = 0;
 
@@ -656,11 +896,14 @@ await new Promise((resolve) => {
     for (const name of order) {
       if (state.get(name) !== 'waiting') continue;
       const blocker = SUITES[name].needs.find((need) => state.get(need) === 'failed');
-      if (blocker) skip(name, `depends on ${SUITES[blocker].title}, which failed`);
+      if (blocker) {
+        skip(name, `depends on ${SUITES[blocker].title}, which failed — ` +
+                   `run \`node scripts/test.mjs ${blocker}\` and fix it first`);
+      }
     }
 
     while (running.size < JOBS) {
-      const next = order.find(readyToRun);
+      const next = nextReady();
       if (!next) break;
 
       const suite = SUITES[next];

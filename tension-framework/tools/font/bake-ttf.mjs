@@ -4,13 +4,14 @@
 //
 // ## Why this replaces the VGA bitmap table
 //
-// `make-font.mjs` bakes an 8x16 ROM font. It is legible, it is monospace, and it
-// is the reason the toolkit is arithmetic instead of measurement — every glyph
-// advances one cell, so "does this fit" is a division. A UI toolkit that lays out
-// real panels needs real text: proportional advances, a real bold face, and two
-// sizes. So this tool takes outlines, rasterizes them at the exact pixel size
-// they will be drawn at, and writes the same IWI container the 2D renderer
-// already decodes (`tension-core/src/render2d/iwi.rs`).
+// The VGA pass baked an 8x16 ROM font into one atlas. It was legible, it was
+// monospace, and it was the reason the toolkit was arithmetic instead of
+// measurement — every glyph advanced one cell, so "does this fit" was a division.
+// A UI toolkit that lays out real panels needs real text: proportional advances, a
+// real bold face, and two sizes. So this tool takes outlines, rasterizes them at
+// the exact pixel size they will be drawn at, and writes the same IWI container the
+// 2D renderer already decodes (`tension-core/src/render2d/iwi.rs`). It is now the
+// only font tool: the VGA bake was deleted with the atlas it produced.
 //
 // ## The three constraints that decide everything here
 //
@@ -22,7 +23,7 @@
 //
 // 2. **The shader has no tint.** A record samples the atlas verbatim, so a
 //    coloured glyph has to *be* a coloured glyph. Every (colour, weight) pair is
-//    its own stripe of 95 cells — the same layout `make-font.mjs` uses, so the
+//    its own stripe of 95 cells — the layout the VGA bake used, so the
 //    cell formula the framework already implements (`colour * 190 + weight * 95
 //    + code - 32`) is unchanged.
 //
@@ -83,7 +84,7 @@ const TOLERANCE = 0.2;
 const ADVANCE_UNIT = 4;
 
 /**
- * The palette, unchanged from `make-font.mjs`.
+ * The palette, unchanged from the VGA bake.
  *
  * The order *is* the ABI: `NORMAL` is 0 … `HEADING` is 4 in `ui/theme.ts`, and
  * a page's cell index is derived from these indices. Reordering this list is a
@@ -135,6 +136,7 @@ const opts = {
   ts: 'src/ui-fonts.generated.ts',
   prefix: 'ui',
   preview: null,
+  faces: '.',
 };
 for (let i = 0; i < argv.length; i++) {
   const take = () => {
@@ -147,6 +149,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--manifest') opts.manifest = take();
   else if (argv[i] === '--ts') opts.ts = take();
   else if (argv[i] === '--prefix') opts.prefix = take();
+  else if (argv[i] === '--faces') opts.faces = take();
   else if (argv[i] === '--preview') opts.preview = take();
   else if (argv[i] === '--no-preview') opts.preview = null;
   else die(`unknown argument '${argv[i]}'`);
@@ -195,7 +198,12 @@ const CHROME_FIRST = GLYPH_CELLS;
 /// deprecated in the version this tree pins, and it reaches the filesystem on
 /// its own terms.
 function loadFace(name, entry) {
-  const path = resolve(process.cwd(), entry.file);
+  // `--faces` is the root a spec's `file` paths are read from. It exists so a
+  // *consumer* can name a shared spec (`../../tension-framework/assets/fonts/
+  // fonts.json`) without copying the typefaces into its own tree: the spec's
+  // paths are written relative to the repository, and the app is not the
+  // repository.
+  const path = resolve(process.cwd(), opts.faces, entry.file);
   let bytes;
   try {
     bytes = readFileSync(path);

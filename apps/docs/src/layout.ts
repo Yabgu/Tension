@@ -3,12 +3,13 @@
 // ## Why this is cached
 //
 // A page can be scrolled, and every scroll offset redraws. Re-wrapping a page's
-// prose per frame would be ~15,000 character comparisons at 60 Hz for a layout
-// that cannot have changed — the text, the column width and the font are all
-// constant while a page is open. So the work is done once, in `build()`, when the
-// page is loaded, and the render loop reads arrays.
+// prose per frame would be tens of thousands of advance-table lookups at 60 Hz
+// for a layout that cannot have changed — the text, the column width and the fonts
+// are all constant while a page is open. So the work is done once, in `build()`,
+// when the page is loaded or the pane changes width, and the render loop reads
+// arrays.
 //
-// The cache key is the page index. One page is resident; moving to another
+// The cache key is `(page, wrapPx)`. One page is resident; moving to another
 // rebuilds. That is the whole policy, and it is enough because a reader looks at
 // one page at a time.
 //
@@ -22,28 +23,34 @@
 //
 //     chars   "The runtime takes a .wasm"
 //     styles  000000011111111110000000000   (S_CODE for the code span)
-//     line 0  start=0 len=27 y=40
+//     line 0  start=0 len=27 x=40 w=213
 //
-// ## One cell size, so no per-line size
+// ## Wrapping is measured now, not counted
 //
-// Every glyph is `CELL_W x CELL_H` — 16x32, because `text.ts` explains that the
-// scale lives in the baked atlas and cannot live in the record. A line therefore
-// differs from another only by indent, spacing, colour and weight. Headings get
-// a wider advance and a rule beneath, which reads as a heading without
-// pretending to be a larger font.
+// The VGA pass wrapped at a *column count*: every glyph was one cell, so "does
+// this line fit" was a comparison of integers and a break was a scan back to a
+// space. A proportional face has no column. Inter 14's `i` advances 3.5 px and its
+// `W` 10.75, so a line of 80 characters can be anywhere from 280 to 860 pixels
+// wide — a column count that keeps the wide line inside the pane wastes half of
+// it, and one that fills the pane lets the wide line run over the divider.
 //
-// **The vertical rhythm is proportional to `LINE_STEP`, not fixed in pixels.**
-// The numbers below are written as fractions of a line so that raising `SCALE`
-// keeps the page looking the same rather than merely redrawing it bigger —
-// a 30px gap that was 1.25 lines at 24px/line is still 1.25 lines at 40px/line.
+// So a line is accumulated in **quarter-pixels** from the page's own advance
+// table (`FontPage.advanceQ`, the same table the painter reads), and a break is
+// where the *pixels* stop fitting. Inline styles pick their own page: a code span
+// inside a paragraph is measured in JetBrains Mono's advances and drawn in it, and
+// the two agree because both are the same table.
+//
+// ## Blocks carry their own type size
+//
+// A heading is Inter 18 and the body is Inter 14, so a line's pitch is a property
+// of its *block* (`blockStep`), not a global constant. That is what lets an H1 sit
+// 27 px apart from itself while the paragraph below it advances 21 — the old
+// single `LINE_STEP` could only make the heading's size a wider advance, which is
+// letter-spacing pretending to be a font.
 
-// The page's own layout: what a *document* looks like, on top of the toolkit's
-// line arithmetic. `PageLayout` knows about blocks, runs and code fences; the
-// wrapping, the cell geometry and the vertical rhythm come from `tension-ui`,
-// which is where they had to go the moment a second app needed them.
 import {
-  CELL_H, CELL_W, CODE, DEFAULT_THEME, HEADING, LINE_STEP, LINK, MIN_COLS, MUTED, NORMAL,
-  SCALE, breakLine, px,
+  CODE, fontBook, FontBook, FontPage, FONT_INTER, FONT_MONO, HEADING, LINK, MUTED, NORMAL,
+  SIZE_14, SIZE_18,
 } from "tension-framework";
 
 import {
@@ -53,46 +60,176 @@ import {
 } from "./format";
 
 /**
- * The widest the text column is ever allowed to get, in characters.
+ * The widest the text column is ever allowed to get, in pixels.
  *
  * A cap rather than a computed value, and it exists for two independent reasons:
  *
- *   * **Readability.** Prose wider than about 80 characters is hard to track —
- *     the eye loses the line return. This is the one place the layout is allowed
- *     to waste window width, and on a 2560px display it does.
- *   * **The record budget.** A glyph is one sprite record, so a line's cost is
- *     its column count. 80 columns against a 1080px-tall window is roughly
- *     80 x 24 = 1,920 records of text, which fits the 4096 the renderer stages
- *     per frame with room for the shell and an open transcript panel.
+ *   * **Readability.** Prose wider than about 90 characters is hard to track —
+ *     the eye loses the line return. At Inter 14 that is roughly this many pixels,
+ *     and it is the one place the layout is allowed to waste window width.
+ *   * **The record budget.** A glyph is one sprite record, so a line's cost is its
+ *     character count. 720 px of Inter 14 is ~95 characters against a 21 px pitch,
+ *     so a 900 px-tall pane holds ~43 lines ≈ 4,000 glyphs — the whole of the
+ *     renderer's budget. The column is capped so that a page of *prose* costs a
+ *     fraction of it; `main.ts` reports the real count in the status bar.
  *
- * The actual column count is per-window (`PageLayout.cols`) and comes from
- * `main.ts`, which is the only side that knows how wide the window is.
+ * What is left over is split evenly, so the column is centred: a text block pinned
+ * to the left of a 2560 px window reads as a bug.
  */
-export const MAX_COLS: i32 = 80;
+export const MAX_MEASURE_PX: i32 = 720;
+
+/** The narrowest column a layout will wrap to, so a narrow pane still wraps. */
+export const MIN_MEASURE_PX: i32 = 200;
 
 /** The code block's left inset, in pixels. `main.ts` draws the accent here. */
-export const CODE_INSET: i32 = 16 * SCALE;
+export const CODE_INSET: i32 = 16;
+
+/** The height of a horizontal rule's own row. */
+export const RULE_ROW_H: i32 = 9;
+
+/** Air above the first block, and below the last one. */
+const TOP_PAD: i32 = 4;
+const BOTTOM_PAD: i32 = 12;
+
+/**
+ * The page a block's text is set in.
+ *
+ * Headings are the larger size, and code — a code *block* or an inline span — is
+ * the mono face at the body size. Everything else is body Inter.
+ */
+export function pageFor(kind: u8, style: u8): FontPage {
+  const book: FontBook = fontBook();
+  if (kind == K_HEADING) return book.page(FONT_INTER, SIZE_18);
+  if (kind == K_CODE || style == S_CODE) return book.page(FONT_MONO, SIZE_14);
+  return book.page(FONT_INTER, SIZE_14);
+}
+
+/**
+ * The weight a style is set in.
+ *
+ * `strong` and headings are the only bold text, and the atlas bakes bold **only
+ * for the heading stripe** (six pairs, not ten). So a strong span is drawn in the
+ * heading colour as well — white bold against `#D6D6D6` body — which is the one
+ * emphasis this atlas can carry. `colourFor` is where that pairing is decided, and
+ * the two functions must agree or the glyph is skipped for a missing stripe.
+ */
+export function weightFor(kind: u8, style: u8): i32 {
+  if (kind == K_HEADING) return 1;
+  if (style == S_STRONG) return 1;
+  return 0;
+}
+
+/**
+ * Resolve a style and block kind to the atlas colour.
+ *
+ * One function, so a paragraph's `strong` span and a code block's prose agree
+ * about what "strong" means. Headings ignore inline styles entirely: a bold word
+ * inside an H1 would be a distinction the reader cannot make.
+ */
+export function colourFor(kind: u8, level: u8, style: u8): i32 {
+  if (kind == K_HEADING) return HEADING_COLOUR;
+  if (kind == K_CODE) return CODE_COLOUR;
+  if (kind == K_QUOTE) return MUTED_COLOUR;
+  if (style == S_CODE) return CODE_COLOUR;
+  if (style == S_LINK) return LINK_COLOUR;
+  if (style == S_EMPHASIS) return MUTED_COLOUR;
+  // Strong is bold, and the atlas carries bold only in the heading stripe.
+  if (style == S_STRONG) return HEADING_COLOUR;
+  return NORMAL_COLOUR;
+}
+
+/** The page a block's *lines* are set in, ignoring inline styles. */
+function blockPage(kind: u8): FontPage {
+  return pageFor(kind, S_PLAIN);
+}
+
+/** The page a single character is measured and drawn in. */
+function charPage(kind: u8, style: u8): FontPage {
+  return pageFor(kind, style);
+}
 
 /**
  * Space before a block, by kind — what makes a page scannable.
  *
- * Written as fractions of `LINE_STEP` rather than as pixels: the ratios are what
- * the page's rhythm is made of, and they have to survive a change of `SCALE`.
- * The comment beside each number is the pixel value it had at the 1x cell size.
+ * Written as fractions of the **body** line step rather than as pixels: the
+ * ratios are what the page's rhythm is made of, and they have to survive a change
+ * of font size. The pins sit above on the body's grid even when the block itself
+ * is set larger, which is what keeps an H1 from pushing its neighbours apart by
+ * a step and a half.
  */
-function spaceBefore(kind: u8, level: u8): i32 {
+function spaceBefore(kind: u8, level: u8, bodyStep: i32): i32 {
   if (kind == K_HEADING) {
-    if (level <= 1) return LINE_STEP * 5 / 4;   // was 30 against LINE_STEP 24
-    if (level == 2) return LINE_STEP;           // was 24
-    if (level == 3) return LINE_STEP * 3 / 4;   // was 18
-    return LINE_STEP * 7 / 12;                  // was 14
+    if (level <= 1) return bodyStep * 5 / 4;   // 26 px
+    if (level == 2) return bodyStep;           // 21
+    if (level == 3) return bodyStep * 3 / 4;   // 15
+    return bodyStep * 7 / 12;                  // 12
   }
-  if (kind == K_PARAGRAPH) return LINE_STEP / 2;  // was 12
-  if (kind == K_CODE) return LINE_STEP / 2;       // was 12
-  if (kind == K_LIST_ITEM) return LINE_STEP / 12; // was 2
-  if (kind == K_QUOTE) return LINE_STEP * 5 / 12; // was 10
-  if (kind == K_RULE) return LINE_STEP * 7 / 12;  // was 14
-  return LINE_STEP / 3;                           // was 8
+  if (kind == K_PARAGRAPH) return bodyStep / 2;  // 10
+  if (kind == K_CODE) return bodyStep / 2;       // 10
+  if (kind == K_LIST_ITEM) return bodyStep / 12; // 1
+  if (kind == K_QUOTE) return bodyStep * 5 / 12; // 8
+  if (kind == K_RULE) return bodyStep * 7 / 12;  // 12
+  return bodyStep / 3;                           // 7
+}
+
+/** Left indent in pixels, by block kind. */
+function indentFor(kind: u8): i32 {
+  if (kind == K_CODE) return CODE_INSET;
+  if (kind == K_LIST_ITEM) return CODE_INSET;
+  if (kind == K_QUOTE) return CODE_INSET;
+  return 0;
+}
+
+/**
+ * How far a character advances, in quarter-pixels, in its own style's page.
+ *
+ * The measurement the painter will later reproduce exactly: `Painter.textBytes`
+ * accumulates the same table per character, so a line measured here and drawn
+ * there is the same width to the quarter-pixel.
+ */
+function advanceQOf(kind: u8, chars: Uint8Array, styles: Uint8Array, at: i32): i32 {
+  const style: u8 = styles[at];
+  const code: i32 = chars[at];
+  // A control byte (a tab, a stray newline in code) advances like a space: the
+  // layout has already decided where the line breaks.
+  const c: i32 = code < 32 ? 32 : code;
+  return charPage(kind, style).advanceQ(weightFor(kind, style), c);
+}
+
+/**
+ * The break width for a byte range, honouring word boundaries and **pixels**.
+ *
+ * Returns the number of characters from `start` that fit in `availPx`, preferring
+ * to break at the last space in that run. A single word longer than the line is
+ * broken mid-word rather than overflowing — a URL in a code sample is the case, and
+ * spilling past the pane would paint over the divider beside it.
+ */
+export function breakLinePx(kind: u8, chars: Uint8Array, styles: Uint8Array,
+                            start: i32, end: i32, availPx: i32): i32 {
+  const limitQ: i32 = availPx * 4;
+  let q: i32 = 0;
+  let i: i32 = start;
+  let lastSpace: i32 = -1;
+  while (i < end) {
+    const c: i32 = chars[i];
+    if (c == 32) lastSpace = i;
+    const a: i32 = advanceQOf(kind, chars, styles, i);
+    if (q + a > limitQ) break;
+    q += a;
+    i++;
+  }
+  if (i >= end) {
+    // Trim a trailing space so a single-line paragraph does not carry one.
+    let n: i32 = end - start;
+    while (n > 0 && chars[start + n - 1] == 32) n--;
+    return n;
+  }
+  // The last space inside the run is a break point: everything before it fits and
+  // the space itself moves to the next line to be skipped.
+  if (lastSpace > start) return lastSpace - start;
+  // No space: break where the pixels ran out, but never at zero (a glyph wider
+  // than the whole pane would otherwise emit an empty line for ever).
+  return i > start ? i - start : 1;
 }
 
 /**
@@ -106,15 +243,17 @@ export class PageLayout {
   /** The page this layout describes; -1 when empty. */
   page: i32 = -1;
   /**
-   * The column this layout was wrapped at, in characters.
+   * The pixel width this layout was wrapped at.
    *
-   * Stored because the layout is a *cache*: `main.ts` reads it back to size
-   * rules and panels to the same width the text was wrapped to, and a stale
-   * value there is a rule that stops at the wrong place after a resize.
+   * Stored because the layout is a *cache*: `main.ts` reads it back to size rules
+   * and panels to the same width the text was wrapped to, and a stale value there
+   * is a rule that stops at the wrong place after a resize.
    */
-  cols: i32 = MIN_COLS;
+  wrapPx: i32 = MIN_MEASURE_PX;
   /** Total laid-out height, for clamping the scroll. */
   height: i32 = 0;
+  /** The body line step this layout was built with. */
+  bodyStep: i32 = 21;
 
   /** Every character on the page, flattened across runs. */
   chars: Uint8Array = new Uint8Array(0);
@@ -125,6 +264,8 @@ export class PageLayout {
   lineStart: i32[] = [];
   lineLen: i32[] = [];
   lineY: i32[] = [];
+  /** The line's width in pixels, from the advance table. */
+  lineW: i32[] = [];
   /** The block a line belongs to, so the renderer can ask for its kind. */
   lineBlock: i32[] = [];
 
@@ -136,6 +277,8 @@ export class PageLayout {
   blockFlags: u8[] = [];
   blockY: i32[] = [];
   blockH: i32[] = [];
+  /** The block's line pitch: 27 px for an H1, 21 for the body. */
+  blockStep: i32[] = [];
   blockFirstLine: i32[] = [];
   blockLineCount: i32[] = [];
   /** A code block's language string (a bundle offset), or 0. */
@@ -145,18 +288,24 @@ export class PageLayout {
   get blockCount(): i32 { return this.blockIndex.length; }
 
   /**
-   * Lay out `page`.
+   * Lay out `page` at `wrapPx` pixels of usable width.
    *
    * Two passes over the page's runs: the first counts characters so the buffers
    * are allocated once at their final size, the second fills them. A growable
    * array would double the allocations for the same result.
    */
-  build(docs: Docs, page: u32, cols: i32): void {
+  build(docs: Docs, page: u32, wrapPx: i32): void {
+    const book: FontBook = fontBook();
+    const body: FontPage = book.page(FONT_INTER, SIZE_14);
+
     this.page = page;
-    this.cols = cols < MIN_COLS ? MIN_COLS : cols;
+    let wrap: i32 = wrapPx < MIN_MEASURE_PX ? MIN_MEASURE_PX : wrapPx;
+    this.wrapPx = wrap;
+    this.bodyStep = body.lineStep;
     this.lineStart = [];
     this.lineLen = [];
     this.lineY = [];
+    this.lineW = [];
     this.lineBlock = [];
     this.blockIndex = [];
     this.blockKind = [];
@@ -164,12 +313,14 @@ export class PageLayout {
     this.blockFlags = [];
     this.blockY = [];
     this.blockH = [];
+    this.blockStep = [];
     this.blockFirstLine = [];
     this.blockLineCount = [];
     this.blockExtra = [];
 
     const first: u32 = docs.pageBlockFirst(page);
     const count: u32 = docs.pageBlockCount(page);
+    const bodyStep: i32 = body.lineStep;
 
     // ── pass 1: size the character buffer ──────────────────────────────────
     let total: i32 = 0;
@@ -184,7 +335,7 @@ export class PageLayout {
 
     // ── pass 2: fill, then wrap ────────────────────────────────────────────
     let at: i32 = 0;
-    let y: i32 = 8 * SCALE; // top padding inside the content column
+    let y: i32 = TOP_PAD;
 
     for (let b: u32 = 0; b < count; b++) {
       const bi: u32 = first + b;
@@ -206,9 +357,8 @@ export class PageLayout {
           // The source wraps its paragraphs at ~80 columns, so a run's text
           // carries the newlines the author typed. They are not breaks in the
           // rendered page — the pane re-wraps — and passing one through would
-          // make `Painter.text` start a new line mid-paragraph, which reads as
-          // an orphaned word 20 pixels low. Code keeps its newlines: there they
-          // are the listing's own structure.
+          // make the painter start a new line mid-paragraph. Code keeps its
+          // newlines: there they are the listing's own structure.
           if (kind != K_CODE && (c == 10 || c == 13 || c == 9)) c = 32;
           this.chars[at] = c;
           this.styles[at] = style;
@@ -217,21 +367,15 @@ export class PageLayout {
       }
       const len: i32 = at - start;
 
-      const indent: i32 = indentFor(kind, level);
-      // **The width every line of this block may use, in characters.**
-      //
-      // `this.cols` is how many *body* cells fit across the pane. A block that
-      // is indented gets fewer, and a block whose characters advance further
-      // gets fewer again — so the character count is the column's pixel width
-      // less the indent, divided by this block's own advance. Wrapping a heading
-      // at `this.cols` would let it run past the pane: at the 2x cell a level-1
-      // heading advances 22px per character against 18px for prose, so 80 of
-      // those is 1760px in a 1440px column. Dividing by the block's advance is
-      // what keeps the widest line inside.
-      const advance: i32 = advanceFor(kind, level);
-      const cols: i32 = (this.cols * CELL_W - indent) / advance;
+      const step: i32 = blockPage(kind).lineStep;
+      const indent: i32 = indentFor(kind);
+      // **The width every line of this block may use, in pixels.** The column
+      // less the block's own inset — and, because the measurement is per
+      // character, a code span inside a paragraph makes its line shorter without
+      // the wrap having to know which span it was.
+      const avail: i32 = wrap - indent > 0 ? wrap - indent : wrap;
 
-      y += spaceBefore(kind, level);
+      y += spaceBefore(kind, level, bodyStep);
 
       const blockSlot: i32 = this.blockIndex.length;
       this.blockIndex.push(<i32>bi);
@@ -239,25 +383,23 @@ export class PageLayout {
       this.blockLevel.push(level);
       this.blockFlags.push(flags);
       this.blockY.push(y);
+      this.blockStep.push(step);
       this.blockExtra.push(<i32>docs.blockExtra(bi));
       this.blockFirstLine.push(this.lineStart.length);
 
       let lines: i32 = 0;
 
       if (kind == K_RULE) {
-        // A rule is a line of the layout with no text: the renderer draws a
-        // 1px bar where a line would be.
+        // A rule is a line of the layout with no text: the renderer draws a 1px
+        // bar where a line would be.
         lines = 1;
-        this.lineStart.push(start);
-        this.lineLen.push(0);
-        this.lineY.push(y);
-        this.lineBlock.push(blockSlot);
-        y += 4 * SCALE;
+        this.pushLine(start, 0, y, 0, blockSlot);
+        y += RULE_ROW_H;
       } else if (kind == K_CODE) {
         // Code keeps its own line breaks and does not re-wrap at word
-        // boundaries — a wrapped shell command is a broken shell command. A
-        // line past the column is hard-wrapped at the column, which is the one
-        // place a long line is truncated rather than reflowed.
+        // boundaries — a wrapped shell command is a broken shell command. A line
+        // past the column is hard-wrapped at the column, which is the one place a
+        // long line is truncated rather than reflowed.
         let s: i32 = start;
         const end: i32 = start + len;
         // Leading blank lines in a fence are noise in a box this small.
@@ -266,12 +408,9 @@ export class PageLayout {
         while (e > s && this.chars[e - 1] == 10) e--;
 
         if (s >= e) {
-          this.lineStart.push(start);
-          this.lineLen.push(0);
-          this.lineY.push(y);
-          this.lineBlock.push(blockSlot);
+          this.pushLine(start, 0, y, 0, blockSlot);
           lines = 1;
-          y += LINE_STEP;
+          y += step;
         }
         while (s < e) {
           let nl: i32 = s;
@@ -279,13 +418,20 @@ export class PageLayout {
           let span: i32 = nl - s;
           let cursor: i32 = s;
           while (span > 0) {
-            const take: i32 = span > cols ? cols : span;
-            this.lineStart.push(cursor);
-            this.lineLen.push(take);
-            this.lineY.push(y);
-            this.lineBlock.push(blockSlot);
+            // Hard wrap: as many characters as fit in the pixel width.
+            let take: i32 = 0;
+            let q: i32 = 0;
+            const limitQ: i32 = avail * 4;
+            while (take < span) {
+              const a: i32 = advanceQOf(kind, this.chars, this.styles, cursor + take);
+              if (q + a > limitQ && take > 0) break;
+              q += a;
+              take++;
+            }
+            if (take <= 0) take = 1;
+            this.pushLine(cursor, take, y, (q + 3) / 4, blockSlot);
             lines++;
-            y += LINE_STEP;
+            y += step;
             cursor += take;
             span -= take;
           }
@@ -293,40 +439,29 @@ export class PageLayout {
         }
 
         // **A runnable block's button gets its own row** — a line with no text,
-        // reserved here so the button has somewhere to sit that the layout
-        // knows about.
-        //
-        // It used to sit *beside* the block's first line, with the layout
-        // reserving a gutter of the column so no code could reach it. At the 2x
-        // cell that gutter was 18 of 56 columns — a third of the width, spent on
-        // every line of a code sample to make room for one button — and it began
-        // breaking tokens mid-word (`"tension-frame` / `work";`). A row of its
-        // own gives the code the whole column back.
-        //
-        // The row is a real line in the flow: it advances `LINE_STEP`, the
-        // transcript anchors under it, and the paragraph after the block cannot
-        // be drawn on top of it.
+        // reserved here so the button has somewhere to sit that the layout knows
+        // about. It is a real line in the flow: it advances a step, the transcript
+        // anchors under it, and the paragraph after the block cannot be drawn on
+        // top of it.
         if ((flags & F_RUNNABLE) != 0) {
-          this.lineStart.push(start);
-          this.lineLen.push(0);
-          this.lineY.push(y);
-          this.lineBlock.push(blockSlot);
+          this.pushLine(start, 0, y, 0, blockSlot);
           lines++;
-          y += LINE_STEP;
+          y += step;
         }
       } else {
-        // Prose: wrap at word boundaries.
+        // Prose: wrap at word boundaries, measured in pixels.
         let s: i32 = start;
         const end: i32 = start + len;
         while (s < end) {
-          const take: i32 = breakLine(this.chars, s, end, cols);
+          const take: i32 = breakLinePx(kind, this.chars, this.styles, s, end, avail);
           if (take <= 0) break;
-          this.lineStart.push(s);
-          this.lineLen.push(take);
-          this.lineY.push(y);
-          this.lineBlock.push(blockSlot);
+          let q: i32 = 0;
+          for (let i: i32 = 0; i < take; i++) {
+            q += advanceQOf(kind, this.chars, this.styles, s + i);
+          }
+          this.pushLine(s, take, y, (q + 3) / 4, blockSlot);
           lines++;
-          y += LINE_STEP;
+          y += step;
           s += take;
           // Skip the space the break consumed, so the next line does not start
           // with one.
@@ -334,30 +469,36 @@ export class PageLayout {
         }
         if (lines == 0) {
           // An empty paragraph still occupies a line in the flow.
-          this.lineStart.push(start);
-          this.lineLen.push(0);
-          this.lineY.push(y);
-          this.lineBlock.push(blockSlot);
+          this.pushLine(start, 0, y, 0, blockSlot);
           lines = 1;
-          y += LINE_STEP;
+          y += step;
         }
       }
 
       this.blockLineCount.push(lines);
-      // A code block is drawn inset in its own darker box, so it needs padding
-      // at the bottom that plain prose does not.
-      const codePad: i32 = kind == K_CODE ? 6 * SCALE : 0;
+      // A code block is drawn inset in its own darker box, so it needs padding at
+      // the bottom that plain prose does not.
+      const codePad: i32 = kind == K_CODE ? 6 : 0;
       this.blockH.push(y - this.blockY[blockSlot] + codePad);
       if (kind == K_CODE) y += codePad;
     }
 
-    this.height = y + 12 * SCALE; // bottom padding
+    this.height = y + BOTTOM_PAD;
+  }
+
+  /** One line, in the four arrays that describe it. */
+  private pushLine(start: i32, len: i32, y: i32, w: i32, blockSlot: i32): void {
+    this.lineStart.push(start);
+    this.lineLen.push(len);
+    this.lineY.push(y);
+    this.lineW.push(w);
+    this.lineBlock.push(blockSlot);
   }
 
   /** The scroll offset that puts a block at the top of the pane. */
   scrollForBlock(block: i32): i32 {
     for (let i: i32 = 0; i < this.blockIndex.length; i++) {
-      if (this.blockIndex[i] == block) return this.blockY[i] - 8 * SCALE;
+      if (this.blockIndex[i] == block) return this.blockY[i] - TOP_PAD;
     }
     return 0;
   }
@@ -365,77 +506,30 @@ export class PageLayout {
   /**
    * Where a block's transcript panel hangs, in page space.
    *
-   * The same expression the draw uses for its anchor (`lineY + LINE_STEP + 10`
-   * on the block's last line), in page coordinates so a caller can decide how far
-   * to scroll before the frame that draws it. `-1` when the block is not on this
-   * page.
+   * The same expression the draw uses for its anchor (the last line's top plus one
+   * step), in page coordinates so a caller can decide how far to scroll before the
+   * frame that draws it. `-1` when the block is not on this page.
    */
   anchorForBlock(block: i32): i32 {
     for (let i: i32 = 0; i < this.blockIndex.length; i++) {
       if (this.blockIndex[i] == block) {
         const last: i32 = this.blockFirstLine[i] + this.blockLineCount[i] - 1;
-        if (last >= 0 && last < this.lineY.length) return this.lineY[last] + LINE_STEP + 5 * SCALE;
+        if (last >= 0 && last < this.lineY.length) {
+          return this.lineY[last] + this.blockStep[i] + 5;
+        }
         return -1;
       }
     }
     return -1;
   }
 
-  /** The first line at or below `y` — a linear scan, bounded by ~40 lines. */
+  /** The first line at or below `y` — a linear scan, bounded by the line count. */
   firstLineAt(y: i32): i32 {
     for (let i: i32 = 0; i < this.lineStart.length; i++) {
-      if (this.lineY[i] + LINE_STEP > y) return i;
+      if (this.lineY[i] + this.blockStep[this.lineBlock[i]] > y) return i;
     }
     return this.lineStart.length;
   }
-}
-
-/** Left indent in pixels, by block kind. Two cells' worth, so indented blocks
- *  read as inset at any `SCALE`. */
-function indentFor(kind: u8, level: u8): i32 {
-  if (kind == K_CODE) return CODE_INSET;
-  if (kind == K_LIST_ITEM) return CODE_INSET;
-  if (kind == K_QUOTE) return CODE_INSET;
-  return 0;
-}
-
-/**
- * Resolve a style and block kind to the atlas colour and weight.
- *
- * One function, so a paragraph's `strong` span and a code block's prose agree
- * about what "strong" means. Headings ignore inline styles entirely: a bold
- * word inside an H2 would be a distinction the reader cannot make.
- */
-export function colourFor(kind: u8, level: u8, style: u8): i32 {
-  if (kind == K_HEADING) return HEADING_COLOUR;
-  if (kind == K_CODE) return CODE_COLOUR;
-  if (kind == K_QUOTE) return MUTED_COLOUR;
-  if (style == S_CODE) return CODE_COLOUR;
-  if (style == S_LINK) return LINK_COLOUR;
-  if (style == S_EMPHASIS) return MUTED_COLOUR;
-  return NORMAL_COLOUR;
-}
-
-/**
- * The weight for a style and block kind.
- *
- * `strong`, a heading, and a list item's leading bullet are the only bold text.
- * The bold weight is baked into the atlas as a separate stripe, so it costs the
- * same one record as regular text.
- */
-export function weightFor(kind: u8, style: u8): i32 {
-  if (kind == K_HEADING) return 1;
-  if (style == S_STRONG) return 1;
-  return 0;
-}
-
-/** The per-character advance: headings get air, everything else is one cell. */
-export function advanceFor(kind: u8, level: u8): i32 {
-  if (kind != K_HEADING) return CELL_W;
-  // Letter-spacing, in source pixels, scaled with everything else.
-  if (level <= 1) return CELL_W + 3 * SCALE;
-  if (level == 2) return CELL_W + 1 * SCALE;
-  return CELL_W;
 }
 
 // The atlas colour indices, straight from the theme: `layout.ts` used to keep

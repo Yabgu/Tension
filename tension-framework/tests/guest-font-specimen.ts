@@ -289,7 +289,7 @@ export function _start_game(): void {
   checkAdvances(book);
 
   const bands = new Bands();
-  const painter = new Painter();
+  const painter = new Painter(book.pages[0]);
   drawSpecimen(painter, book, bands);
   print("  drew " + painter.count.toString() + " records" +
         (painter.dropped > 0 ? " (" + painter.dropped.toString() + " dropped)" : ""));

@@ -70,14 +70,49 @@ function firstExisting(candidates) {
   return candidates.find((path) => path && existsSync(path)) ?? null;
 }
 
-const compiler = firstExisting([
-  process.env.TENSIONSCRIPT,
-  join(repo, 'tension-framework', 'node_modules', '.bin', `tensionscript${EXE}`),
-  join(repo, 'apps', 'docs', 'node_modules', '.bin', `tensionscript${EXE}`),
-]);
+/**
+ * The TensionScript compiler, as `{ command, prefix, shell }`.
+ *
+ * **The npm shim is not an executable image on Windows**, and asking for one by
+ * the platform's executable suffix finds nothing: npm writes three files into
+ * `node_modules/.bin` — `tensionscript`, `tensionscript.cmd`, `tensionscript.ps1`
+ * — and only the `.cmd` is launchable there, while the extensionless file is a
+ * POSIX shell script. Measured on Windows: `no TensionScript compiler found` on a
+ * tree whose `.bin` was present and correct. `scripts/lib/toolchain.mjs`'s
+ * `npmBin()` says the same thing in one line.
+ *
+ * The package's own `bin` field comes **first**, run through this Node: it needs
+ * no shim and no shell on any platform, which is the order `packages/cli/src/
+ * project.js` already settled on. The `.cmd` shim is the fallback, spawned
+ * through a shell because Node refuses to launch a `.cmd` bare.
+ */
+function findCompiler() {
+  if (process.env.TENSIONSCRIPT) {
+    const explicit = process.env.TENSIONSCRIPT;
+    return { command: explicit, prefix: [], shell: WIN && /\.(cmd|bat)$/i.test(explicit) };
+  }
+  for (const base of [join(repo, 'tension-framework'), appDir]) {
+    const pkgDir = join(base, 'node_modules', '@yabgu_gm', 'tensionscript');
+    const manifest = join(pkgDir, 'package.json');
+    if (!existsSync(manifest)) continue;
+    const bin = JSON.parse(readFileSync(manifest, 'utf8')).bin;
+    const entry = typeof bin === 'string' ? bin : bin?.tensionscript;
+    if (!entry) continue;
+    const js = join(pkgDir, entry);
+    if (existsSync(js)) return { command: process.execPath, prefix: [js], shell: false };
+  }
+  for (const base of [join(repo, 'tension-framework'), appDir]) {
+    const shim = join(base, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript');
+    if (existsSync(shim)) return { command: shim, prefix: [], shell: WIN };
+  }
+  return null;
+}
+
+const compiler = findCompiler();
 if (!compiler) {
   fail('no TensionScript compiler found', [
-    'looked in tension-framework/node_modules/.bin and apps/docs/node_modules/.bin',
+    'looked for the @yabgu_gm/tensionscript `bin` and the .bin shim, in',
+    'tension-framework/ and apps/docs/',
     'run:  npm install   (in tension-framework, or at the repository root)',
   ]);
 }
@@ -203,11 +238,12 @@ for (let i = 0; i < runnable.length; i++) {
    * The check is `WebAssembly.Module.imports`, not a grep of the source: what
    * matters is the module the compiler emitted, not what the text looks like.
    */
-  const compile = (configPath) => spawnSync(compiler, [
+  const compile = (configPath) => spawnSync(compiler.command, [
+    ...compiler.prefix,
     join(dir, 'src', 'main.ts'),
     '--config', configPath,
     '-o', wasmPath,
-  ], { cwd: dir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS });
+  ], { cwd: dir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, shell: compiler.shell });
 
   let compiled = compile(sessionConfig);
 

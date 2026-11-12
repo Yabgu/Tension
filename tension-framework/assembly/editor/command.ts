@@ -207,10 +207,20 @@ export class SetX implements Command {
     doc.setX(this.id, this.before);
   }
 
+  /**
+   * Fold a burst of edits into this one entry.
+   *
+   * **`value` is updated too, and that is the whole bug this comment prevents.**
+   * `apply` writes `after = value`, so a merge that only moved `after` left `value`
+   * at the *first* keystroke's number: the label and the screen said 42, and a
+   * redo — which runs `apply` again — put back 30. Measured on the editor's X
+   * field, where typing `42` then undoing and redoing landed on `30`.
+   */
   merge(next: Command): bool {
     if (!(next instanceof SetX)) return false;
     const other = <SetX>next;
     if (other.id != this.id) return false;
+    this.value = other.value;
     this.after = other.after;
     return true;
   }
@@ -244,10 +254,12 @@ export class SetY implements Command {
     doc.setY(this.id, this.before);
   }
 
+  /** Same fold as `SetX.merge`, and the same reason `value` moves with `after`. */
   merge(next: Command): bool {
     if (!(next instanceof SetY)) return false;
     const other = <SetY>next;
     if (other.id != this.id) return false;
+    this.value = other.value;
     this.after = other.after;
     return true;
   }
@@ -289,15 +301,25 @@ export class SetProperty implements Command {
     doc.setNumber(this.id, this.kind, this.before);
   }
 
+  /** Same fold as `SetX.merge`, and the same reason `value` moves with `after`. */
   merge(next: Command): bool {
     if (!(next instanceof SetProperty)) return false;
     const other = <SetProperty>next;
     if (other.id != this.id || other.kind != this.kind) return false;
+    this.value = other.value;
     this.after = other.after;
     return true;
   }
 
-  label(): string { return "set " + this.kind.toString(); }
+  /**
+   * The menu label, spelled out: a `PropKind` is an index, and "set 0" is what a
+   * user saw before this — an enum's number leaking into a menu.
+   */
+  label(): string {
+    const name: string = this.kind == PropKind.X ? "x"
+      : (this.kind == PropKind.Y ? "y" : (this.kind == PropKind.Z ? "z" : "frame"));
+    return name + " = " + this.after.toString();
+  }
 }
 
 /**
