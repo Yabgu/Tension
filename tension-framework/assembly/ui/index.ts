@@ -5,13 +5,11 @@
 //   * `theme.ts`   what an atlas is — cell size, colour stripes, chrome cells.
 //   * `fonts.ts`   a baked (font, size) page, and the book that indexes them.
 //   * `painter.ts` sprite records: rectangles, rules, glyphs, with a clip.
-//   * `flow.ts`    where lines end: wrapping, column counts, centring.
 //   * `layout.ts`  the retained tree: a widget pool, measure, arrange, paint.
 //   * `builder.ts` how a guest authors that tree, once, at startup.
 //   * `events.ts`  focus, capture, the bubble — what input does to the tree.
 //   * `behavior.ts` how a widget measures, arranges, paints and handles — the open half.
 //   * `text.ts`    owned text buffers, the appender, and the frame's pool.
-//   * `widget.ts`  the four immediate-mode shapes the two apps still draw with.
 //   * `hit.ts`     click targets, recorded by the draw that produced them.
 //
 // ## The three rules that make it work at this size
@@ -29,18 +27,19 @@
 // Usage, in an `AppShell` (`tension-framework/assembly/app/shell.ts`):
 //
 //     loadAssets(canvas: Canvas, pipe: i32): bool {
-//       const atlas = canvas.loadTextureFromRes("/ui.iwi");
-//       if (atlas <= 0) return false;
-//       return canvas.bindTexture(pipe, 0, atlas) == 0;
+//       return loadFontBook(canvas, pipe) == 0;
 //     }
 //
 //     draw(p: Painter): void {
-//       widget.text(p, "Hits: " + this.hits.toString(), 8, 8, NORMAL);
+//       this.ui.tree.paint(p, this.ui.hits);
 //     }
+//
+// `apps/docs` and `apps/editor` are the two worked examples; both also show the
+// extension point (`ui.node(parent, new MyBehavior())`) that a page flow or a
+// viewport rectangle needs.
 
 export * from "./theme";
 export * from "./painter";
-export * from "./flow";
 export * from "./hit";
 export * from "./fonts";
 export * from "./text";
@@ -49,4 +48,3 @@ export * from "./event-def";
 export * from "./events";
 export * from "./behavior";
 export * from "./builder";
-export * from "./widget";

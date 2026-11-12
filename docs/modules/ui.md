@@ -16,7 +16,6 @@ path.
 |---|---|
 | `ui/theme.ts` | what an *atlas* is: cell size, the colour/weight stripe, the chrome cells, the record budget |
 | `ui/painter.ts` | sprite records: rectangles, rules, glyphs, and the clip |
-| `ui/flow.ts` | where a line ends: wrapping, column counts, centring, the vertical rhythm |
 | `ui/hit.ts` | click targets, recorded by the draw that produced them |
 | `ui/fonts.ts` | a baked (font, size) page — its baseline, pitch and advances — and the book that indexes them |
 | `ui/layout.ts` | the retained tree: a widget pool, the measure/arrange passes, the three dirty flags, clip-aware paint |
@@ -25,13 +24,20 @@ path.
 | `ui/behavior.ts` | the built-in `WidgetBehavior`s: how each kind measures, arranges, paints and handles |
 | `ui/event-def.ts` | the event vocabulary (`UiEvent`, `UiEventKind`), in a module that imports nothing |
 | `ui/text.ts` | owned text buffers, the byte appender, and the frame-scoped pool |
-| `ui/widget.ts` | the four *immediate-mode* shapes the two apps still draw with: label, rule, button, list row |
 | `app/shell.ts` | session, window, canvas, resize, texture reload, input attach, the close button, teardown |
 
 The split is not decorative. `theme.ts` and `painter.ts` are about *pixels*;
-`flow.ts` is about *where text goes*; `hit.ts` is about *what a click lands on*.
+`layout.ts` is about *where things go*; `hit.ts` is about *what a click lands on*.
 They are separate because the bugs they prevent are separate, and each file's
 header records the measurement behind it.
+
+**Two files are gone.** `ui/flow.ts` held the VGA pass's wrapping — `fitColumns`,
+`centred`, `breakLine`, all of it arithmetic over a *column count* — and
+`ui/widget.ts` held the four immediate-mode shapes the apps drew with before the
+tree. Neither survives proportional type: a line's length is measured in pixels
+from the advance table now, so "how many characters fit" is not a question with a
+column-shaped answer. `apps/docs/src/layout.ts` is the reference implementation of
+the replacement, and §4 below is its rule.
 
 ## 2. The three rules the whole thing rests on
 
@@ -60,8 +66,7 @@ const p = new Painter();                  // the default theme: the 2x atlas
 p.reset();
 p.setClip(x, y, w, h);                    // optional; every draw is trimmed to it
 p.fill(x, y, w, h, CHROME_PANEL);         // tiled; `tileCost(w, h)` says what it costs
-p.textBytes(chars, 0, len, x, y, NORMAL, REGULAR, CELL_W, clipTop, clipBottom);
-p.textBytes(chars, 0, len, x, y, MUTED,  REGULAR, 0, clipTop, clipBottom, page);  // proportional
+p.text(chars.dataStart, len, x, y, NORMAL, REGULAR, 0, clipTop, clipBottom, page);
 p.submit(canvas, pipe);                   // one bucket; records go to the canvas
 ```
 
@@ -72,22 +77,48 @@ horizontal one comes from the clip, because a scrolling page only ever needs the
 first.
 
 `Painter.text` **never breaks a line.** A painter that also honoured `\n` would
-break a line the layout had already placed — the orphaned-word bug — so a
-control byte is treated as a space and `flow.ts` owns the wrapping.
+break a line the layout had already placed — the orphaned-word bug — so a control
+byte is treated as a space and the caller owns the wrapping.
 
-## 4. The flow
+Pass a `FontPage` and the cursor advances by each glyph's own **quarter-pixel**
+advance, rounded once on the accumulated position; the returned x is where the
+next glyph would go, so a caller can append without re-measuring. With no page the
+call falls back to a fixed `advance` per character, which is what a hand-built
+bitmap atlas wants.
 
-```ts
-cols = fitColumns(paneWidth, padding, MAX_COLS);   // capped, floored, never zero
-x    = centred(paneX, paneWidth, cols, px(4));     // centred, never against the edge
-take = breakLine(chars, start, end, cols);         // never leaves a leading space
-```
+## 4. The flow: wrapping in pixels
 
-`breakLine` has three rules worth knowing exactly, because the obvious variants
-are wrong: the candidate line is `[start, start+cols)`, a break at a space
-excludes the space, and a space at `start+cols` is itself a valid break (it
-yields the widest line that fits). A token longer than the column breaks
-mid-word rather than spilling.
+There is no column count any more, and that is the whole of this section. The VGA
+pass wrapped by counting characters, because every glyph was one cell: "does this
+line fit" was a comparison of integers. A proportional face has no column — Inter
+14's `i` advances 3.5 px and its `W` 10.75 — so a line of eighty characters is
+anywhere from 280 to 860 pixels wide, and a column arithmetic that kept the wide
+line inside the pane would waste half of it.
+
+So a line is accumulated in quarter-pixels from the page's own table, and a break
+is where the **pixels** stop fitting:
+
+    q    = 0
+    for each character:  q += page.advanceQ(weight, code)
+                         stop when q + next > availPx * 4, remembering the last space
+
+    take = lastSpace - start        // a break excludes the space
+         = i - start                // mid-word, when the run has no space in it
+         = 1                        // a glyph wider than the pane still advances
+
+Three properties make this the same measurement the painter will reproduce, and
+they are what the suite asserts rather than assumes:
+
+* **One table.** `page.advanceQ` is the function `Painter.text` calls, so a line
+  measured at 412 px is drawn 412 px wide. Two tables would put the last word of
+  every line in the wrong place.
+* **Inline styles pick their own page.** A code span inside a paragraph is
+  measured and drawn in Mono 14, so it makes the line shorter without the wrap
+  knowing which span it was.
+* **The pitch is the block's.** Inter 18's headings sit 27 px apart and the body's
+  paragraphs 21, because a line's step is a property of its block
+  (`PageLayout.blockStep`). One global `LINE_STEP` could only have made a heading
+  a *wider advance*, which is letter-spacing pretending to be a font.
 
 ## 5. The hit list
 
@@ -106,9 +137,7 @@ record is read, and a second mechanism would be a second answer.
 ```ts
 class MyApp extends AppShell {
   protected loadAssets(canvas: Canvas, pipe: i32): bool {   // textures; twice per session
-    const atlas = canvas.loadTextureFromRes("/ui.iwi");
-    if (atlas <= 0) return false;
-    return canvas.bindTexture(pipe, 0, atlas) == 0;
+    return loadFontBook(canvas, pipe) == 0;   // every page, bound to its slot
   }
 
   protected draw(p: Painter): void { /* one frame, records only */ }
@@ -316,7 +345,8 @@ at startup — `ui.column(root, { pad: 8, flex: 1 })` — and `setText` is the o
 call on that path that encodes a string. The frame path is `layout()` and
 `paint()`, and neither allocates: text lives in a 16 KiB arena, copied in when it
 is *set*, which is what removes the per-frame `String.UTF8.encode` that
-`widget.ts`'s `drawText` still pays for the two apps that use it.
+the immediate-mode `drawText` the apps used to call paid it once per string per
+frame, which is why it is gone.
 
 ### The two passes
 
@@ -397,7 +427,7 @@ Three lifetimes, three types:
 | --- | --- | --- |
 | `TextBuffer` | the widget's | `Label`, `Button`, `TextField` — one each, grown by doubling |
 | `TextBuilder` | the statement's | a composed line: `str`/`int`/`ch`, no `String` |
-| `TextPool` | the frame's | `tree.texts` for list rows, `painter.texts` for `drawText` |
+| `TextPool` | the frame's | `tree.texts` for list rows, `painter.texts` for scratch strings |
 
 A `Label` owns its bytes and a frame only *reads* them, so a frame that changes no
 text allocates nothing. The two pools are separate on purpose: the tree's is
@@ -405,10 +435,16 @@ rewound by `layout()` and its windows are copied into rows immediately, while th
 painter's is rewound by `reset()` and holds what the current draw is about to read.
 Sharing one would raise the question "who rewinds it?" for no bytes saved.
 
-`drawText` is **not** deleted, because its twenty-odd call sites are all in
-`apps/editor`, which is under a hold. Its body now writes into
-`painter.texts`, so **the allocation is gone at every call site today**; the
-function itself goes when the last caller moves to the tree.
+`TextPool.raw(ptr, n)` is the fourth spelling, added when the viewer moved: a
+document's titles arrive from a packed bundle as a pointer and a length, with no
+`String` in sight, and decoding one to hand to `str` would allocate exactly what
+the pool exists to avoid. `apps/docs`'s table of contents fills a row with
+`out.raw(titlePtr, titleLen)` and copies nothing.
+
+**`drawText` is deleted.** `apps/editor` migrated first and `apps/docs` now
+migrates too, so the last call site is gone and with it the four immediate-mode
+shapes in `ui/widget.ts` (`text`, `label`, `rule`, `listItem`) — the one that had
+the clip bug §5 exists to prevent.
 
 Measured by the suite: a field typed into for 155 frames leaves the tree's pool at
 `highWater 0` (a fixed label wrote nothing), the label's buffer capacity unchanged,

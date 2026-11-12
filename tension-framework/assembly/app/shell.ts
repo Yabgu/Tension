@@ -44,7 +44,8 @@ import { OPEN_WINDOWED } from "../2d/constants";
 import { ConfigBuilder, RuntimeSession } from "../runtime";
 import { close as inputClose, Snapshot } from "../input";
 import { print } from "../io";
-import { Theme, DEFAULT_THEME } from "../ui/theme";
+import { Theme } from "../ui/theme";
+import { fontBook } from "../ui/fonts";
 import { Painter } from "../ui/painter";
 import { windowInfo, windowRequest, WindowInfo } from "../platform";
 
@@ -88,7 +89,7 @@ export abstract class AppShell {
   /** The name this app's lines carry. A build's logs should say which app. */
   private name: string;
 
-  constructor(name: string = "app", theme: Theme = DEFAULT_THEME, headlessBudget: i32 = 120) {
+  constructor(name: string = "app", theme: Theme = fontBook().pages[0], headlessBudget: i32 = 120) {
     this.name = name;
     this.painter = new Painter(theme);
     this.headlessBudget = headlessBudget;

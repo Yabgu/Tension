@@ -4,13 +4,14 @@
 //
 // ## Why this replaces the VGA bitmap table
 //
-// `make-font.mjs` bakes an 8x16 ROM font. It is legible, it is monospace, and it
-// is the reason the toolkit is arithmetic instead of measurement — every glyph
-// advances one cell, so "does this fit" is a division. A UI toolkit that lays out
-// real panels needs real text: proportional advances, a real bold face, and two
-// sizes. So this tool takes outlines, rasterizes them at the exact pixel size
-// they will be drawn at, and writes the same IWI container the 2D renderer
-// already decodes (`tension-core/src/render2d/iwi.rs`).
+// The VGA pass baked an 8x16 ROM font into one atlas. It was legible, it was
+// monospace, and it was the reason the toolkit was arithmetic instead of
+// measurement — every glyph advanced one cell, so "does this fit" was a division.
+// A UI toolkit that lays out real panels needs real text: proportional advances, a
+// real bold face, and two sizes. So this tool takes outlines, rasterizes them at
+// the exact pixel size they will be drawn at, and writes the same IWI container the
+// 2D renderer already decodes (`tension-core/src/render2d/iwi.rs`). It is now the
+// only font tool: the VGA bake was deleted with the atlas it produced.
 //
 // ## The three constraints that decide everything here
 //
@@ -22,7 +23,7 @@
 //
 // 2. **The shader has no tint.** A record samples the atlas verbatim, so a
 //    coloured glyph has to *be* a coloured glyph. Every (colour, weight) pair is
-//    its own stripe of 95 cells — the same layout `make-font.mjs` uses, so the
+//    its own stripe of 95 cells — the layout the VGA bake used, so the
 //    cell formula the framework already implements (`colour * 190 + weight * 95
 //    + code - 32`) is unchanged.
 //
@@ -83,7 +84,7 @@ const TOLERANCE = 0.2;
 const ADVANCE_UNIT = 4;
 
 /**
- * The palette, unchanged from `make-font.mjs`.
+ * The palette, unchanged from the VGA bake.
  *
  * The order *is* the ABI: `NORMAL` is 0 … `HEADING` is 4 in `ui/theme.ts`, and
  * a page's cell index is derived from these indices. Reordering this list is a

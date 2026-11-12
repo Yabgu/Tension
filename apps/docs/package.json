@@ -5,7 +5,7 @@
   "type": "module",
   "description": "The offline documentation engine: a Tension guest that renders the repository's docs, with search and recorded runnable examples.",
   "scripts": {
-    "assets": "node tools/bundle.mjs && node tools/search.mjs && node tools/make-font.mjs && node tools/run-examples.mjs",
+    "assets": "node tools/bundle.mjs && node tools/search.mjs && node scripts/assets.mjs && node tools/run-examples.mjs",
     "dev": "tension dev",
     "start": "tension dev",
     "build": "tension build",

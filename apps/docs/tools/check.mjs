@@ -63,8 +63,12 @@ step('search      (inverted index -> search.bin)', ['tools/search.mjs']);
 // toolkit's cell constants are one contract (`assembly/ui/theme.ts`): a second
 // copy here is how the `m` and `w` glyphs went wrong twice. It writes into the
 // *current* directory's `assets/`, which is this one.
-step('make-font   (glyph table -> ui.iwi)',
-     ['../../tension-framework/tools/font/make-font.mjs']);
+// The three UI pages, the manifest and the guest's advance table. `scripts/assets.mjs`
+// bakes them from the *framework's* spec and faces (a second copy of either is how
+// the two apps end up sampling different grids) and then runs `verify-atlas.mjs`,
+// which is the only check that sees all three artifacts at once.
+step('bake-font   (TTF outlines -> ui.N.iwi + ui.json + ui-fonts.generated.ts)',
+     ['scripts/assets.mjs']);
 step('run-examples(compile + run -> transcripts.bin)', ['tools/run-examples.mjs']);
 
 process.stdout.write('==> docs: verify\n');
