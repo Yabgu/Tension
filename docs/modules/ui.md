@@ -19,7 +19,9 @@ path.
 | `ui/flow.ts` | where a line ends: wrapping, column counts, centring, the vertical rhythm |
 | `ui/hit.ts` | click targets, recorded by the draw that produced them |
 | `ui/fonts.ts` | a baked (font, size) page — its baseline, pitch and advances — and the book that indexes them |
-| `ui/widget.ts` | the four shapes a panel is made of: label, rule, button, list row |
+| `ui/layout.ts` | the retained tree: a widget pool, the measure/arrange passes, the three dirty flags, clip-aware paint |
+| `ui/builder.ts` | how a guest authors that tree: `ui.row(parent, { pad: 8 })`, once, at startup |
+| `ui/widget.ts` | the four *immediate-mode* shapes the two apps still draw with: label, rule, button, list row |
 | `app/shell.ts` | session, window, canvas, resize, texture reload, input attach, the close button, teardown |
 
 The split is not decorative. `theme.ts` and `painter.ts` are about *pixels*;
@@ -145,12 +147,12 @@ it does rather than being a preference:
 
 ## 8. What is not here
 
-No retained widget tree, no layout solver, no styling layer, and no scene: an
-app draws in `draw()` from its own state, every frame. A game that wants
-retained, declarative drawing uses `Scene` and `scene.run`, which is a different
-shape for a different job — `Scene` keeps bytes between frames and this toolkit
-rebuilds a frame's records on purpose, because a UI's cost is its *text* and text
-is what changes when a panel scrolls.
+No layout *solver* (constraints, intrinsic sizing passes, a stylesheet), no
+virtualised list, no focus traversal and no drag: the tree is measured and
+arranged by arithmetic over a fixed pool (§12) and nothing in it animates. An
+app that wants retained, declarative *drawing* rather than a widget tree uses
+`Scene` and `scene.run`, which is a different shape for a different job — `Scene`
+keeps bytes between frames, and a UI keeps geometry.
 
 ## 9. Tests
 
@@ -158,9 +160,20 @@ is what changes when a panel scrolls.
 and no GPU: wrapping (including the space-at-the-limit rule), the column floor
 and cap, centring, `tileCost` against what `fill` actually emits, the clip
 (whole-cell skip, straddle trim, nothing-outside), the budget's refusal and
-count, and hit testing's topmost-wins. The pixel half is proved by the two apps
-that ship on it — `apps/docs` (whose `verify` checks the atlas against
-`theme.ts`) and the editor.
+count, and hit testing's topmost-wins.
+
+It also covers the retained tree, and the cases are chosen to be the ones that
+*can* fail: the pool's capacity, free-list reuse and cycle refusal; `Props`
+literals; three flex shares summing to the row exactly, with and without padding
+and gaps, and again with a floored child; a split clamped at both ends and
+re-clamped after a resize; a label measuring from its page and a button adding
+its pads; `measures == 0` after a resize; colour changing no geometry; a culled
+widget emitting no record and recording no target; `tree.totalCost() ==
+painter.count`; and the paint flag clearing itself.
+
+The pixel half is proved by the two apps that ship on it — `apps/docs` (whose
+`verify` checks the atlas against `theme.ts`) and the editor — until they migrate
+to the tree.
 
 ## 10. Baked fonts: outlines in, pages out
 
@@ -259,3 +272,92 @@ its build-time guarantee that every character it can draw exists. The two paths
 meet at the record: a baked glyph and a dynamic quad are both `(x, y, src rect,
 page)`, so a widget drawn with either looks the same to everything above the
 painter.
+
+## 12. The retained tree
+
+`ui/layout.ts` is a widget tree held in **arrays**, and everything about its shape
+follows from that one decision.
+
+| Array | What it is |
+| --- | --- |
+| `id`, `kind` | what a `Hits` target answers, and one of the nine `Kind`s |
+| `parent`, `firstChild`, `lastChild`, `nextSibling` | the tree, as `i32` slots |
+| `x`, `y`, `w`, `h` | geometry, written by arrange |
+| `pad`, `gap`, `flex`, `minW`, `minH`, `align`, `axis` | the style, written by the builder |
+| `dirty`, `visible`, `cost`, `subtree` | the flags and what the last paint charged |
+| `textAt`, `textLen`, `textW`, `page`, `colour`, `weight` | content in a shared arena |
+| `splitPx` | a split's divider, as **state** |
+
+A widget is a slot index, never a reference. Adding one is a free-list pop and a
+few dozen stores — nothing for the collector to trace and no cycle it cannot see —
+and a test can assert geometry as numbers instead of walking objects with getters.
+The cap is `WIDGET_CAPACITY` (512) and a refusal is counted in `overflow` rather
+than growing the pool mid-frame.
+
+**Authoring is once; frames are arithmetic.** `ui/builder.ts` allocates and links
+at startup — `ui.column(root, { pad: 8, flex: 1 })` — and `setText` is the only
+call on that path that encodes a string. The frame path is `layout()` and
+`paint()`, and neither allocates: text lives in a 16 KiB arena, copied in when it
+is *set*, which is what removes the per-frame `String.UTF8.encode` that
+`widget.ts`'s `drawText` still pays for the two apps that use it.
+
+### The two passes
+
+**Measure** is bottom-up and answers "how big does this want to be": a label from
+its advance table, a button from its label plus `2 * pad`, a row or column from
+its children plus gaps plus `2 * pad`, a split from both panes plus the divider.
+The root is exempt — its rectangle is the window's, because a root that measured
+itself from its content would refuse to shrink below it.
+
+**Arrange** is top-down and answers "where does this go". Along a row's main axis:
+
+    inner  = w - 2 * pad
+    gaps   = gap * (n - 1)
+    free   = max(0, inner - gaps - Σ width of flex == 0 children)
+    each flex child but the LAST gets  free * flex / flexTotal   (floored)
+    the LAST flex child gets           free - Σ given
+
+The residual goes to the last flex child rather than being distributed, because
+that is what makes the shares sum to the row **exactly**: a leftover pixel at the
+end of a toolbar is visible as a stripe, and post-hoc distribution is the same
+arithmetic with more places to drift. A share below the child's `minW` is floored
+to `minW` and paid for out of the residual, which is a flexbox's rule.
+
+A **split** clamps `splitPx` at the *start of every arrange*, not only when a drag
+moves it: a window narrowed past the smaller pane's floor would otherwise leave
+the divider outside the frame, and a drag handler would be asked to fix a number
+the layout had already invalidated. Narrower than both floors, the left floor
+wins (`hi` is clamped up to `lo` rather than inverted) and the clip hides the
+overrun.
+
+### The three flags
+
+    Measure  ⇒  Arrange  ⇒  Paint
+
+Setters set the **earliest** stage they invalidate and nothing else; `layout()`
+promotes once per frame. Text, a page swap, a weight, a floor, padding and gaps
+are measures — a container's *size* depends on them. Flex and alignment are
+arranges. A colour is a paint, and paint propagates nowhere. `resize` is an
+arrange only, which is the assertion that proves the split is real: after a
+resize `measures == 0` and `arranges > 0`.
+
+### Clip and culling
+
+`arrange` records `visible = intersects(viewport)` for every widget it places, and
+`paint` walks pre-order and stops at an invisible one — so a scrolled-out subtree
+costs a comparison, not a walk. `paint` pushes the viewport as the painter's clip,
+so the two cannot disagree about what is on screen.
+
+`Painter.addHit` is the other half of the clip story, and it is where the
+`listItem` bug died: it records the **intersection** of the target with the clip —
+the pixels that were actually drawn — so a half-scrolled row is clickable in its
+visible half and a fully hidden one records nothing at all. `listItem` used to
+call `Hits.add` twice, once on the early return for a row outside its caller's
+vertical clip, which is how a scrolled-out row kept a target; it now records
+through `addHit` and takes no `Hits` parameter at all.
+
+`cost` is what the last paint charged a widget, and `subtree` is that plus every
+descendant's, so `tree.totalCost()` is exactly `painter.count`. Layout emits no
+records at all: 512 widgets cost zero of the 4,096 until they are painted, and
+paint stops when the painter is full (`skipped` counts what it did not reach)
+rather than emitting into a refusal.

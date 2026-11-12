@@ -6,7 +6,9 @@
 //   * `fonts.ts`   a baked (font, size) page, and the book that indexes them.
 //   * `painter.ts` sprite records: rectangles, rules, glyphs, with a clip.
 //   * `flow.ts`    where lines end: wrapping, column counts, centring.
-//   * `widget.ts`  the four shapes every panel is made of.
+//   * `layout.ts`  the retained tree: a widget pool, measure, arrange, paint.
+//   * `builder.ts` how a guest authors that tree, once, at startup.
+//   * `widget.ts`  the four immediate-mode shapes the two apps still draw with.
 //   * `hit.ts`     click targets, recorded by the draw that produced them.
 //
 // ## The three rules that make it work at this size
@@ -38,4 +40,6 @@ export * from "./painter";
 export * from "./flow";
 export * from "./hit";
 export * from "./fonts";
+export * from "./layout";
+export * from "./builder";
 export * from "./widget";

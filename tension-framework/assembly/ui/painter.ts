@@ -36,6 +36,7 @@
 import { Canvas } from "../2d/canvas";
 import { RecordBuffer } from "../2d/buffers";
 import { FontPage } from "./fonts";
+import { Hits } from "./hit";
 import { DEFAULT_THEME, MAX_RECORDS, Theme } from "./theme";
 
 /**
@@ -74,9 +75,74 @@ export class Painter {
   private stackX1: i32[] = new Array<i32>(CLIP_DEPTH);
   private stackY1: i32[] = new Array<i32>(CLIP_DEPTH);
 
+  /**
+   * Where `addHit` records targets, or null when nothing is listening.
+   *
+   * Held by the painter rather than passed to every draw verb because the point of
+   * `addHit` is that the record and the target come from one call: a verb that took
+   * a list would be a second argument the caller could mismatch.
+   */
+  private hitList: Hits | null = null;
+
   constructor(theme: Theme = DEFAULT_THEME, capacity: i32 = MAX_RECORDS) {
     this.theme = theme;
     this.buf = RecordBuffer.create(capacity > 0 ? capacity : MAX_RECORDS);
+  }
+
+  // ── hits ────────────────────────────────────────────────────────────────
+
+  /** Direct `addHit` at `list` until `useHits(null)`. */
+  useHits(list: Hits | null): void {
+    this.hitList = list;
+  }
+
+  /** The list currently receiving targets, for a caller that wants to read it back. */
+  hits(): Hits | null {
+    return this.hitList;
+  }
+
+  /**
+   * Record a click target for a rectangle **this painter would draw**.
+   *
+   * The clip gate is the whole point. `widget.ts`'s `listItem` recorded its target
+   * unconditionally — including for a row scrolled out of the pane — so a click in
+   * the empty space where a hidden row used to be selected it. Here the target is
+   * the **intersection** of the rectangle with the clip, which is exactly what got
+   * drawn: a half-scrolled row is clickable in its visible half and nowhere else,
+   * and a row entirely outside records nothing at all.
+   *
+   * The clipping happens whatever the geometry: no clip is in force at frame start,
+   * so an unclipped caller behaves as before.
+   */
+  addHit(x: i32, y: i32, w: i32, h: i32, id: i32, tag: i32 = -1): bool {
+    const list: Hits | null = this.hitList;
+    if (list == null) return false;
+    if (w <= 0 || h <= 0) return false;
+
+    const x0: i32 = x > this.clipX0 ? x : this.clipX0;
+    const y0: i32 = y > this.clipY0 ? y : this.clipY0;
+    const x1: i32 = x + w < this.clipX1 ? x + w : this.clipX1;
+    const y1: i32 = y + h < this.clipY1 ? y + h : this.clipY1;
+    if (x1 <= x0 || y1 <= y0) return false;
+
+    return list.add(x0, y0, x1 - x0, y1 - y0, id, tag);
+  }
+
+  /** The clip in force, for a caller that needs to reason about it. */
+  clipLeft(): i32 {
+    return this.clipX0;
+  }
+
+  clipTop(): i32 {
+    return this.clipY0;
+  }
+
+  clipRight(): i32 {
+    return this.clipX1;
+  }
+
+  clipBottom(): i32 {
+    return this.clipY1;
   }
 
   /** Records emitted this frame — read from the buffer, not tracked beside it. */

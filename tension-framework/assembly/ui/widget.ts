@@ -6,9 +6,13 @@
 // ones rather than a second set that drifts.
 //
 // Everything here draws immediately, into a `Painter`, and records its click
-// target in a `Hits` list at the moment it draws (`hit.ts` explains why that
-// ordering is the mechanism). Nothing allocates per frame — text is bytes and a
-// span, not a `String`.
+// target through `Painter.addHit` at the moment it draws (`hit.ts` explains why
+// that ordering is the mechanism, and why the painter owns the clip gate). Nothing
+// allocates per frame — text is bytes and a span, not a `String`.
+//
+// This module is the **immediate-mode** half of the toolkit: the two apps in this
+// tree draw with it, and it stays for as long as they do. A panel that wants
+// retained geometry uses the tree in `layout.ts`/`builder.ts` instead.
 
 import { Painter } from "./painter";
 import { LINE_STEP, px } from "./flow";
@@ -16,7 +20,6 @@ import {
   BOLD, CELL_H, CELL_W, CHROME_DIVIDER, CHROME_SELECTION, CHROME_SURFACE, CHROME_WHITE,
   HEADING, MUTED, NORMAL, REGULAR,
 } from "./theme";
-import { Hits } from "./hit";
 
 /** The target ids a shell hands back from `Hits.at`, for the shared widgets. */
 export const HIT_NONE: i32 = 0;
@@ -92,20 +95,33 @@ export function textButton(p: Painter, x: i32, y: i32, w: i32, h: i32, value: st
  * `selected` underlines rather than fills — a filled row at this size is a block
  * of colour the same weight as the panel behind it, and the underline reads as
  * "this one" without competing with the text.
+ *
+ * ## The fixed bug, and why the record moved
+ *
+ * This function used to take a `Hits` and call `hits.add` **twice**: once on the
+ * early return for a row outside the caller's vertical clip, and once at the end.
+ * The early return is the defect — a row scrolled out of a pane still recorded its
+ * target, so a click in the empty space where it used to be selected it, and a
+ * scrolled-out row could steal a click from the row that replaced it.
+ *
+ * The record now comes from `Painter.addHit`, which intersects with the painter's
+ * **own** clip and records nothing when the intersection is empty. So there is no
+ * parameter to pass and no early return to get wrong: the target is whatever part
+ * of the row the painter would actually have drawn, which is the only rectangle
+ * the user can point at. `Hits` is no longer a parameter here for that reason.
  */
-export function listItem(p: Painter, hits: Hits | null, chars: Uint8Array, start: i32, len: i32,
+export function listItem(p: Painter, chars: Uint8Array, start: i32, len: i32,
                          x: i32, y: i32, width: i32, id: i32, tag: i32 = -1,
                          colour: i32 = NORMAL, weight: i32 = REGULAR,
                          selected: bool = false, clipTop: i32 = -0x7FFFFFFF,
                          clipBottom: i32 = 0x7FFFFFFF): void {
   const step: i32 = LINE_STEP;
-  if (y + step < clipTop || y >= clipBottom) {
-    if (hits != null) hits.add(x, y, width, step, id, tag);
-    return;
+  if (y + step >= clipTop && y < clipBottom) {
+    p.textBytes(chars, start, len, x, y, colour, weight, CELL_W, clipTop, clipBottom);
+    if (selected) p.hline(x, y + CELL_H, width, CHROME_WHITE);
   }
-  p.textBytes(chars, start, len, x, y, colour, weight, CELL_W, clipTop, clipBottom);
-  if (selected) p.hline(x, y + CELL_H, width, CHROME_WHITE);
-  if (hits != null) hits.add(x, y, width, step, id, tag);
+  // After the draw, and gated by the painter's clip — the same rule the tree uses.
+  p.addHit(x, y, width, step, id, tag);
 }
 
 /**
