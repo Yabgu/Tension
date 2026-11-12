@@ -135,6 +135,7 @@ const opts = {
   ts: 'src/ui-fonts.generated.ts',
   prefix: 'ui',
   preview: null,
+  faces: '.',
 };
 for (let i = 0; i < argv.length; i++) {
   const take = () => {
@@ -147,6 +148,7 @@ for (let i = 0; i < argv.length; i++) {
   else if (argv[i] === '--manifest') opts.manifest = take();
   else if (argv[i] === '--ts') opts.ts = take();
   else if (argv[i] === '--prefix') opts.prefix = take();
+  else if (argv[i] === '--faces') opts.faces = take();
   else if (argv[i] === '--preview') opts.preview = take();
   else if (argv[i] === '--no-preview') opts.preview = null;
   else die(`unknown argument '${argv[i]}'`);
@@ -195,7 +197,12 @@ const CHROME_FIRST = GLYPH_CELLS;
 /// deprecated in the version this tree pins, and it reaches the filesystem on
 /// its own terms.
 function loadFace(name, entry) {
-  const path = resolve(process.cwd(), entry.file);
+  // `--faces` is the root a spec's `file` paths are read from. It exists so a
+  // *consumer* can name a shared spec (`../../tension-framework/assets/fonts/
+  // fonts.json`) without copying the typefaces into its own tree: the spec's
+  // paths are written relative to the repository, and the app is not the
+  // repository.
+  const path = resolve(process.cwd(), opts.faces, entry.file);
   let bytes;
   try {
     bytes = readFileSync(path);

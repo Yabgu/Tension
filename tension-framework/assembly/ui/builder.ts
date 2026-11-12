@@ -700,6 +700,26 @@ export class Ui {
   }
 
   /**
+   * Give an existing widget a different behavior.
+   *
+   * The other half of the extension point: `ui.node` supplies a behavior for a
+   * widget it also creates, and this replaces one on a widget the builder made — a
+   * `List` that marks its own selection, a `Button` that draws an icon. The slot,
+   * its children, its flags and its scroll state stay exactly where they are; only
+   * the four passes change hands.
+   *
+   * Marked for a measure because a replacement is free to size itself differently,
+   * and a widget measured by its old behavior is the one thing that cannot be
+   * checked from here.
+   */
+  setBehavior(id: i32, behavior: WidgetBehavior): i32 {
+    if (id < 0 || id >= this.tree.used) return -1;
+    this.tree.behavior[id] = behavior;
+    this.tree.markMeasure(id);
+    return id;
+  }
+
+  /**
    * Whether this widget's children are clipped to its content box.
    *
    * A behavior cannot set it (the interface is the four passes, on purpose), so a

@@ -5,7 +5,7 @@
   "type": "module",
   "description": "The Tension editor: a guest app that edits a scene document, with a command palette, an undo history and a live game viewport.",
   "scripts": {
-    "assets": "node ../../tension-framework/tools/font/make-font.mjs",
+    "assets": "node scripts/assets.mjs",
     "dev": "tension dev",
     "start": "tension dev",
     "build": "tension build",

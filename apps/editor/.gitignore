@@ -15,3 +15,8 @@ node_modules/
 # **game** pipeline (the UI takes preset 1), so this one is load-bearing — and
 # still not committed, because it is versioned with the runtime.
 src/graph.generated.ts
+
+# Emitted by `npm run assets`: the framework's baked metrics, mirrored into this
+# app so `verify-atlas.mjs` can check this app's atlas against the constants the
+# guest compiles in. The framework's copy is the source; this is a product.
+src/ui-fonts.generated.ts

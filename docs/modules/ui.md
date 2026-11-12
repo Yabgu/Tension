@@ -238,7 +238,10 @@ accumulates. It costs one shift per glyph.
 of the ten (colour x weight) combinations: five colours regular, plus bold
 headings. Asking for one that was not baked is a *missing stripe* — `cellOf`
 answers -1 and the painter draws nothing — rather than a recolour or a
-neighbour's glyph. Adding a pair is a spec line and a re-bake.
+neighbour's glyph. Adding a pair is a spec line and a re-bake. In practice this
+constrains call sites: the default spec's only bold pair is `HEADING`, so a bold
+label must be `HEADING` too — `NORMAL` + bold is a stripe nobody baked, and it
+draws nothing at all (silently: there is no record to see missing).
 
 `FONT_ATLAS_SIZE` is shared across pages because a pipeline binds its pages as
 layers of one texture array, so every page is the same dimensions even though each
@@ -557,6 +560,11 @@ One instance is refilled per event; a drag delivers sixty a second and none of
 them touches the heap.
 
 ### Handlers: targets, not closures
+
+> **Closures over `this` trap on TensionScript 0.13.2.** Use target objects —
+> `ui.onClick(id, new SaveHandler(this))` — until the compiler is fixed. The
+> editor is written this way throughout: four one-method classes at the top of
+> `apps/editor/src/main.ts`, and no closure anywhere that the framework stores.
 
 The intended API was `ui.onClick(id, () => { … })`. **It cannot work on the
 compiler this targets** (TensionScript 0.13.2): a closure created in one module,

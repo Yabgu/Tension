@@ -9,7 +9,7 @@ import { Painter } from "../assembly/ui/painter";
 import { Hits } from "../assembly/ui/hit";
 import { Snapshot } from "../assembly/input";
 import {
-  ChangeTarget, ClickTarget, SCAN_BACKSPACE, SCAN_LEFT, SCAN_TAB,
+  ChangeTarget, ClickTarget, SCAN_BACKSPACE, SCAN_LEFT, SCAN_RETURN, SCAN_TAB,
 } from "../assembly/ui/events";
 import { WidgetBehavior } from "../assembly/ui/builder";
 import { UiEvent, UiEventKind } from "../assembly/ui/event-def";
@@ -1193,6 +1193,47 @@ function caseTextEditing(): void {
   pointerFrame(b.ui, snap2, 8, cy2, 0, 0, 0);
   pointerFrame(b.ui, snap2, 195, cy2, 187, 0, 1);
   checkEq(3, b.ui.caret(f), "and a click past the last glyph clamps to the end");
+
+  // Return is the field's commit, not the app's shortcut. A form's Enter belongs
+  // to the form, and the widget that knows it is a text field is this one — so the
+  // key fires the submit target and is consumed, rather than bubbling to a panel.
+  const submitted = new Tally();
+  b.ui.onSubmit(f, submitted);
+  b.ui.setFocus(f);
+  snap.latch();
+  snap.setKey(SCAN_RETURN, true);
+  b.ui.frame(snap);
+  checkEq(1, submitted.n, "Return in a focused field fires its submit handler");
+  b.ui.setFocus(-1);
+}
+
+/// `ui.setBehavior`: a slot the builder made, handed to the caller's behavior.
+///
+/// The extension point has two halves — `ui.node` for a widget a behavior brings
+/// into being, and this for one the builder made (`List`, `Button`, …). What must
+/// survive the swap is everything the builder owns: the slot, its place in the
+/// tree, its floors, its state. What must change is the four passes.
+function caseSetBehavior(): void {
+  const b = new Bench();
+  const root = b.ui.root(200, 100);
+  const col = b.ui.column(root);
+  const lbl = b.ui.label(col, "hello");
+  b.ui.size(lbl, 40, 20);
+  b.tree.layout();
+  checkEq(40, b.tree.w[lbl], "a label measures itself from its text and floors");
+
+  const passive = new Passive();
+  b.ui.setBehavior(lbl, passive);
+  check(b.ui.behaviorOf(lbl) == passive, "setBehavior replaced the widget's behavior");
+  b.tree.layout();
+  checkEq(40, b.tree.w[lbl], "the replacement's measure wrote the size");
+  checkEq(20, b.tree.h[lbl], "and the floors still apply");
+
+  b.p.reset();
+  b.tree.paint(b.p, b.ui.hits);
+  checkEq(hlineCost(40), b.tree.cost[lbl], "the replacement painted its rule, not the glyphs");
+  checkEq(1, b.ui.hits.count, "and recorded its own hit target");
+  checkEq(lbl, b.ui.hits.at(5, 5), "which a click finds");
 }
 
 export function _start_game(): void {
@@ -1248,6 +1289,8 @@ export function _start_game(): void {
   caseVirtualList();
   print(">>> caseTextEditing");
   caseTextEditing();
+  print(">>> caseSetBehavior");
+  caseSetBehavior();
 
   if (failures != 0) {
     print("ui: " + failures.toString() + " check(s) failed");

@@ -663,6 +663,13 @@ export class TextFieldBehavior implements WidgetBehavior {
       else if (ev.value == SCAN_RIGHT) t.moveCaret(id, 1, ev.shift);
       else if (ev.value == SCAN_HOME) t.setCaret(id, 0);
       else if (ev.value == SCAN_END) t.setCaret(id, t.textLength(id));
+      // Return is the field's *commit*, not the app's: a form's Enter belongs to
+      // the form, and the widget that knows it is a text field is this one. The
+      // registered `ui.onSubmit` target hears it; with none, nothing happens.
+      else if (ev.value == SCAN_RETURN || ev.value == SCAN_KP_ENTER) {
+        ui.fireSubmit(id);
+        return true;
+      }
       else return false;
       if (changed) ui.fireChange(id, -1);
       return true;
@@ -881,6 +888,8 @@ export class ListBehavior implements WidgetBehavior {
 // one-way: `events.ts` imports behaviors, so behaviors must not import it.
 const SCAN_BACKSPACE: i32 = 42;
 const SCAN_DELETE: i32 = 76;
+const SCAN_RETURN: i32 = 40;
+const SCAN_KP_ENTER: i32 = 88;
 const SCAN_RIGHT: i32 = 79;
 const SCAN_LEFT: i32 = 80;
 const SCAN_HOME: i32 = 74;

@@ -4,26 +4,34 @@
 //
 // `Document` holds the scene, `History` makes every edit reversible, `Palette`
 // names the edits, and this file is the part that turns a mouse and a keyboard
-// into dispatches. It draws with `tension-ui`'s `Painter` and hosts the app loop
+// into commands. It is drawn by the **retained widget tree** (`ui/layout.ts`),
+// whose behaviors own every measure, arrange and paint, and it hosts the app loop
 // in `AppShell`. The one thing that is not ordinary: the **game viewport** is a
 // second `Scene` with its own pipeline and its own texture, drawn into canvas
 // bucket 0 while the UI goes to bucket 1 — so one `present` composites a world
 // under a chrome, which is the architecture the editor exists to prove.
 //
-// ## The frame
+// ## The frame, as a tree
 //
-//     0        32                                                         1920
-//     +---------+---------------------------------------------------------+
-//     | menu: File  Edit  View  Run                             (32 px)    |   0
-//     +---------+--------------------------------+------------------------+
-//     | scene   |  game viewport                 | inspector              |
-//     | tree    |  (bucket 0, its own pipeline)  | (selected node)        |
-//     | 320 px  |                                | 360 px                 |
-//     +---------+--------------------------------+------------------------+
-//     | console (240 px)                                                    |
-//     +---------------------------------------------------------------------+
-//     | status: undo label, node count, records, mode             (32 px)   |
-//     +---------------------------------------------------------------------+
+//     root
+//      └ column (flex 1)
+//         ├ row   menu        File  Edit  View  Run  ……  last undo     32 px
+//         ├ rule
+//         ├ split (Axis.X)    ── the draggable divider ──
+//         │  ├ column sidebar   (minW 320)   SCENE + a virtualised list
+//         │  └ row    body      (flex 1)
+//         │     ├ node   viewport  (flex 1)  bucket 0, its own pipeline
+//         │     └ column inspector (minW 360)
+//         ├ rule
+//         ├ column console    (minH 240)
+//         ├ rule
+//         └ row   status      (minH 32)
+//
+// **There is no layout arithmetic left in this file.** Every `x`/`y`/`w`/`h` is
+// decided by `WidgetBehavior.arrange`; every string is either a label's own buffer
+// or the frame's `TextPool`; every click is a target the paint recorded. The three
+// things the old version did by hand — `Rect`s, `px()` padding and a `Hits` array
+// — are the framework's job now.
 //
 // ## Why no fills, still
 //
@@ -34,40 +42,39 @@
 //
 // ## What is not here
 //
-// Play mode (Pass 4), save and live reload (Pass 5). The document is edited in
-// memory and the viewport draws procedurally generated boxes — no game asset is
-// loaded yet, which is what keeps this pass about the composite rather than about
-// an asset pipeline.
+// Play mode, save and live reload. The document is edited in memory and the
+// viewport draws procedurally generated boxes — no game asset is loaded, which is
+// what keeps this about the composite rather than about an asset pipeline.
 
 import {
-  AppShell, Args, BOLD, Bytes, CELL_H, CELL_W, Canvas, CHROME_DIVIDER, CHROME_SELECTION,
-  CHROME_WHITE, Document, drawText, Frame, HEADING, Hits, History, LINE_STEP, LINK, MUTED,
-  NORMAL, Painter, Palette, print, px, REGULAR, registerEditorCommands, ROOT_ID, rule, Scene,
-  SetX, Sprite, vrule, DEFAULT_THEME,
+  AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget, Document,
+  fontBook, FontBook, FONT_MONO, Frame, HEADING, History, LINK, ListBehavior, ListSource,
+  loadFontBook, MUTED, NORMAL, Painter, Palette, print, REGULAR, registerEditorCommands,
+  ROOT_ID, Scene, SetX, SIZE_14, Sprite, TextBuilder, TextPool, Ui, UiEvent, WidgetBehavior,
+  WidgetTree,
 } from "tension-framework";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
-// ── the layout ──────────────────────────────────────────────────────────────
+// ── the theme's numbers ─────────────────────────────────────────────────────
+//
+// Sizes that are *not* derived from type: a panel's width is a design decision, a
+// bar's height is a line of type plus its air. Everything a line depends on — its
+// pitch, its inset — comes from the page (`FontPage.lineStep`, `.pad`), because
+// the point of the font pass is that one number cannot serve two sizes.
 
-/** Every panel's size, in pixels, at any window size. */
-const MENU_H: i32 = CELL_H;          // 32 at the 2x cell: one line of text
-const STATUS_H: i32 = CELL_H;
 const SIDEBAR_W: i32 = 320;
 const INSPECTOR_W: i32 = 360;
 const CONSOLE_H: i32 = 240;
-/** One pixel between panels; the divider is the only separation there is. */
-const RULE_W: i32 = 1;
-
-/**
- * The minimum canvas a layout is computed for.
- *
- * A window dragged small would otherwise give the viewport a negative width, and
- * every panel's arithmetic downstream would be arithmetic on nonsense. The
- * config also asks the window manager for this minimum; this is the backstop for a
- * compositor that ignores it.
- */
-const MIN_W: i32 = 900;
-const MIN_H: i32 = 600;
+/** One panel's inset from its own edge. */
+const PANEL_PAD: i32 = 10;
+/** Air above and below a line of text in a bar. */
+const BAR_PAD: i32 = 5;
+/** A bar's height: one line of type plus its air. */
+const BAR_H: i32 = 32;
+/** The gap between two menu items. */
+const ITEM_GAP: i32 = 14;
+/** How many recycled row widgets the scene tree owns. */
+const TREE_ROWS: i32 = 40;
 
 /**
  * The game's world, and the field the boxes bounce in.
@@ -88,6 +95,194 @@ const BOX: i32 = 32;
 /** How many boxes the viewport animates. */
 const BOXES: i32 = 6;
 
+/** SDL scancodes, the same table the framework dispatches with. */
+const SC_A: u32 = 4;
+const SC_Y: u32 = 28;
+const SC_Z: u32 = 29;
+const SC_BACKSPACE: u32 = 42;
+const SC_DELETE: u32 = 76;
+
+// ── the viewport ────────────────────────────────────────────────────────────
+
+/**
+ * The game's rectangle, as a widget.
+ *
+ * This is the extension point the behavior architecture exists for, and it is the
+ * smallest honest use of it: four methods, no engine knowledge. The widget **owns
+ * its own rect** — `arrange` is handed the rectangle the row gave it and keeps it,
+ * so the frame's camera and the scene's clip read the same numbers the UI drew at.
+ * Before the tree, those numbers were recomputed by hand in two places from four
+ * constants.
+ *
+ * The caption is built with a `TextBuilder` the behavior owns rather than with a
+ * widget's text, because it is a *caption about this widget*, not content:
+ * rebuilding it in `arrange` costs nothing and does not disturb the dirty flags of
+ * a tree that has just finished laying out.
+ */
+class ViewportBehavior implements WidgetBehavior {
+  x: i32 = 0;
+  y: i32 = 0;
+  w: i32 = 0;
+  h: i32 = 0;
+  private label: TextBuilder = new TextBuilder(64);
+
+  measure(ui: Ui, id: i32): void {
+    // Nothing intrinsic: the row's flex gives it the width that is left, and the
+    // cross axis stretches. A self-measuring viewport would fight the split.
+    ui.setSize(id, 0, 0);
+    ui.applyFloors(id);
+  }
+
+  arrange(ui: Ui, id: i32, x: i32, y: i32, w: i32, h: i32): void {
+    if (x == this.x && y == this.y && w == this.w && h == this.h) return;
+    this.x = x;
+    this.y = y;
+    this.w = w;
+    this.h = h;
+    const b: TextBuilder = this.label;
+    b.clear();
+    b.str("viewport ");
+    b.int(w);
+    b.str("x");
+    b.int(h);
+    b.str("  world ");
+    b.int(WORLD_W);
+    b.str("x");
+    b.int(WORLD_H);
+  }
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    const page = ui.tree.page[id];
+    const div: i32 = page.chromeCell(Chrome.Divider);
+    // The frame — four rules, and the only place the viewport's edge is drawn.
+    // The right-hand rule is also the line between the viewport and the inspector,
+    // which is why the inspector draws none of its own.
+    p.hline(this.x, this.y, this.w, div, page);
+    p.hline(this.x, this.y + this.h - 1, this.w, div, page);
+    p.vline(this.x, this.y, this.h, div, page);
+    p.vline(this.x + this.w - 1, this.y, this.h, div, page);
+
+    // **Clipped to the panel**: this text is longer than a narrow viewport, and
+    // unclipped it drew straight over the inspector — the same bug the game
+    // scene's own clip exists to prevent, in the UI layer. It is the framework's
+    // clip now, not a hand-trimmed string.
+    p.pushClip(this.x, this.y, this.w, this.h);
+    p.textBytes(this.label.bytes, 0, this.label.len, this.x + PANEL_PAD, this.y + BAR_PAD,
+                MUTED, REGULAR, 0, this.y, this.y + this.h, page);
+    p.popClip();
+  }
+
+  handle(ui: Ui, id: i32, ev: UiEvent): bool {
+    return false;
+  }
+}
+
+// ── the scene tree ──────────────────────────────────────────────────────────
+
+/**
+ * The list's model: item `i` is the node at position `i` of the flattened tree.
+ *
+ * A `ListSource` writes into the frame's `TextPool` and never returns a `String`,
+ * which is what makes filling forty rows during an arrange allocate nothing. The
+ * indentation is *text*, not layout: the list has no opinion about hierarchy, and
+ * a model that pushed rows around would be a second layout engine.
+ */
+class SceneModel extends ListSource {
+  app: Editor;
+
+  constructor(app: Editor) {
+    super();
+    this.app = app;
+  }
+
+  count(): i32 {
+    return this.app.orderCount;
+  }
+
+  text(index: i32, out: TextPool): void {
+    const depth: i32 = this.app.depthAt(index);
+    // One space per level: the old tree spent 8 px per level, which at an 18 px
+    // cell was under half a character. One mono space is the closest integer.
+    for (let i: i32 = 0; i < depth; i++) out.str(" ");
+    out.str(this.app.nameAt(index));
+  }
+}
+
+/**
+ * The list, plus a selection underline.
+ *
+ * `ListBehavior` already recycles rows, clips its own subtree and maps the wheel;
+ * the only thing a scene tree adds is that the selected row is marked. Drawing it
+ * from the *list's* own paint — rather than from the app, which no longer draws —
+ * is what keeps the underline inside the list's clip and in step with the rows the
+ * arrange just placed.
+ */
+class SceneTreeBehavior extends ListBehavior {
+  /** The **item index** that is selected, or -1. */
+  selected: i32 = -1;
+
+  paint(ui: Ui, id: i32, p: Painter): void {
+    if (this.selected < 0) return;
+    const t: WidgetTree = ui.tree;
+    let row: i32 = t.firstChild[id];
+    while (row >= 0) {
+      if (t.itemIndex[row] == this.selected) {
+        const page = t.page[row];
+        p.hline(t.x[row], t.y[row] + t.h[row] - 1, t.w[row],
+                page.chromeCell(Chrome.White), page);
+        return;
+      }
+      row = t.nextSibling[row];
+    }
+  }
+}
+
+// ── the handlers ────────────────────────────────────────────────────────────
+//
+// Handlers are objects with a method, not closures: a closure stored by the
+// framework and called back from another module traps on this compiler
+// (`docs/modules/ui.md` §14 has the measurement). A one-line class is the shape an
+// app writes, and it is an ordinary object, so it may hold `this`.
+
+/** A click on a row of the scene tree: `ui.lastItem` is the item that was hit. */
+class SelectRow implements ClickTarget {
+  app: Editor;
+
+  constructor(app: Editor) {
+    this.app = app;
+  }
+
+  click(): void {
+    this.app.selectItem(this.app.ui.lastItem);
+  }
+}
+
+/** The X field changed: apply what it holds, live, as one merged edit. */
+class EditX implements ChangeTarget {
+  app: Editor;
+
+  constructor(app: Editor) {
+    this.app = app;
+  }
+
+  change(value: i32): void {
+    this.app.applyField();
+  }
+}
+
+/** Return in the X field: apply, then normalise what the field shows. */
+class SubmitX implements ClickTarget {
+  app: Editor;
+
+  constructor(app: Editor) {
+    this.app = app;
+  }
+
+  click(): void {
+    this.app.commitField();
+  }
+}
+
 // ── the app ─────────────────────────────────────────────────────────────────
 
 class Editor extends AppShell {
@@ -96,16 +291,47 @@ class Editor extends AppShell {
   history: History = History.create(200);
   palette: Palette = Palette.create(this.history);
 
+  // --- the tree ----------------------------------------------------------
+  //
+  // Built in the constructor, resized on every `onResize`. One `Ui` holds the
+  // tree, the font book and the frame's hit list; the shell's `Painter` is what
+  // the tree paints into.
+  book: FontBook = fontBook();
+  ui: Ui = new Ui(new WidgetTree(fontBook()));
+
+  private main: i32 = -1;
+  private sceneList: i32 = -1;
+  private sceneTree: SceneTreeBehavior = new SceneTreeBehavior();
+  private sceneModel: SceneModel = new SceneModel(this);
+  private viewport: ViewportBehavior = new ViewportBehavior();
+
+  private undoLabel: i32 = -1;
+  private field: i32 = -1;
+  private inspName: i32 = -1;
+  private inspY: i32 = -1;
+  private inspZ: i32 = -1;
+  private inspFrame: i32 = -1;
+  private inspParent: i32 = -1;
+  private inspVisible: i32 = -1;
+  private inspHint: i32 = -1;
+  private consoleUndo: i32 = -1;
+  private consoleLast: i32 = -1;
+  private consoleKeys: i32 = -1;
+  private statusLeft: i32 = -1;
+  private statusRight: i32 = -1;
+
+  // --- the flattened tree, for the list ----------------------------------
+  //
+  // A list addresses its rows by index and the document addresses its nodes by
+  // id; these arrays are the map. Rebuilt only when the document's *shape*
+  // changes — never per frame, and never by a `Document.ids()` call in a paint.
+  orderIds: i32[] = new Array<i32>(256);
+  private orderDepths: i32[] = new Array<i32>(256);
+  orderCount: i32 = 0;
+  private orderDirty: bool = true;
+  private selectedIndex: i32 = -1;
+
   // --- the game viewport --------------------------------------------------
-  /**
-   * A second scene and a second pipeline.
-   *
-   * `gameScene` is a `Scene`, so it keeps its records between frames and costs
-   * only what moved. `gamePipe` comes from the emitted graph blob, which the
-   * renderer mints as pipe 100 — distinct from preset 1, which the UI uses — so
-   * bucket 0 and bucket 1 are genuinely two draw calls with two pipelines and two
-   * atlases of different sizes.
-   */
   gameScene: Scene = Scene.create(WORLD_W, WORLD_H, 64);
   gamePipe: i32 = -1;
   gameTexture: i32 = -1;
@@ -115,46 +341,43 @@ class Editor extends AppShell {
   private t: f32 = 0.0;
 
   // --- interaction --------------------------------------------------------
-  private hits: Hits = new Hits();
-  /** The node the inspector is showing. */
+  /** The node the inspector is showing, and the document selected. */
   selected: i32 = ROOT_ID;
-  /** The property the field edits; only X for now, which the brief asks for. */
-  private fieldValue: string = "";
-  private editing: bool = false;
-  /** Frames drawn, for the status bar's record count and a sanity check. */
+  /** Whether the field held focus last frame, for the blur commit. */
+  private fieldWasFocused: bool = false;
+  /** Whether the console's history lines need rebuilding. */
+  private consoleDirty: bool = true;
+  /** Frames drawn, for the status bar and a sanity check. */
   private drawn: i32 = 0;
   private lastUndo: string = "";
+  private built: bool = false;
 
   constructor() {
-    super("tension-editor", DEFAULT_THEME, 240);
+    super("tension-editor", fontBook().pages[0], 240);
+    this.build(1280, 720);
   }
 
   // ── the shell's hooks ───────────────────────────────────────────────────
 
   /**
-   * Two textures, one pipeline each.
+   * Three pages of type, and two textures on two pipelines.
    *
-   * The UI atlas comes out of the volume (`assets/ui.iwi`, baked by
-   * `npm run assets`). The game's is **generated here** — four solid colour cells
-   * — because this pass is about the composite, not an asset pipeline
-   * (`Pass 4` loads a real one). It is still a real texture at a real, *different*
-   * size, which is the harder case: the renderer rebinds `u_tex_size` per span, and
-   * a game atlas the same size as the UI's would not prove that.
+   * The pages come out of the volume (`assets/ui.N.iwi`, baked from real outlines
+   * by `npm run assets`) and `loadFontBook` uploads them as the layers of one
+   * texture array — which is what lets a single record name its page. The game's
+   * atlas is **generated here**, four solid colour cells, because this pass is
+   * about the composite and not an asset pipeline. It is still a real texture at a
+   * real, *different* size, which is the harder case: the renderer rebinds
+   * `u_tex_size` per span.
    */
   protected loadAssets(canvas: Canvas, pipe: i32): bool {
-    const atlas = canvas.loadTextureFromRes("/ui.iwi");
-    if (atlas <= 0) {
-      print("tension-editor: /ui.iwi did not load: " + atlas.toString() +
+    const bound: i32 = loadFontBook(canvas, pipe);
+    if (bound != 0) {
+      print("tension-editor: the UI pages did not load: " + bound.toString() +
         " (run `npm run assets`)");
       return false;
     }
-    if (canvas.bindTexture(pipe, 0, atlas) != 0) {
-      print("tension-editor: binding the UI atlas refused");
-      return false;
-    }
 
-    // The game's pipeline: the same graph the host emitted, through a *second*
-    // pipeline id. `tension dev` writes `src/graph.generated.ts` on build.
     this.gamePipe = canvas.pipelineGraph(Bytes.ofArray(DEFAULT_2D_BLOB));
     if (this.gamePipe < 0) {
       print("tension-editor: the game pipeline refused: " + this.gamePipe.toString());
@@ -181,9 +404,132 @@ class Editor extends AppShell {
     return 1;
   }
 
+  /**
+   * A new window size: the root's rectangle, and nothing else.
+   *
+   * `WidgetTree.resize` marks the root for an arrange and stops there. No widget
+   * is re-measured by a resize — that is the property the two passes exist for —
+   * and the split re-clamps its divider out of its own `arrange`, so a window
+   * narrowed past a pane's floor cannot leave the divider outside the frame.
+   */
   protected onResize(width: i32, height: i32): void {
-    // Nothing to recompute yet: every panel is a fixed size and the viewport is
-    // whatever is left, computed at draw time from `this.width`/`this.height`.
+    this.ui.tree.resize(width, height);
+  }
+
+  // ── the tree, once ──────────────────────────────────────────────────────
+
+  /**
+   * Build the whole widget tree.
+   *
+   * Called once, from the constructor. Everything here is authoring: no measure,
+   * no paint, no input. The sizes are the design's; the *type* is the page's, so a
+   * bar's height is `BAR_H` (a line plus air) while a panel's inset is
+   * `page.pad(...)`'s business.
+   */
+  private build(w: i32, h: i32): void {
+    const ui: Ui = this.ui;
+    const root: i32 = ui.root(w, h);
+    const col: i32 = ui.column(root, { flex: 1 });
+
+    // ── the menu bar ──────────────────────────────────────────────────────
+    const menu: i32 = ui.row(col, { minH: BAR_H, pad: BAR_PAD, gap: ITEM_GAP });
+    // Clipped to its own box: this is what replaces the old `fit()` helper. The
+    // undo label can be longer than the window, and a clipped child is the same
+    // answer as a truncated string with none of the arithmetic.
+    ui.clips(menu);
+    ui.label(menu, "File", { colour: MUTED });
+    ui.label(menu, "Edit", { colour: MUTED });
+    ui.label(menu, "View", { colour: MUTED });
+    ui.label(menu, "Run", { colour: MUTED });
+    ui.spacer(menu, 1);
+    this.undoLabel = ui.label(menu, "", { colour: LINK });
+    ui.rule(col);
+
+    // ── the body: sidebar | viewport + inspector ─────────────────────────
+    //
+    // One split, because there is one divider the user drags. The inspector is a
+    // *fixed* 360 inside the right-hand pane rather than a second pane, which is
+    // the difference between "the split is the sidebar's edge" and "a resize
+    // resets two dividers".
+    const main: i32 = ui.split(col, Axis.X, { flex: 1 });
+    this.main = main;
+    ui.divider(main, SIDEBAR_W);
+
+    const sidebar: i32 = ui.column(main, { minW: SIDEBAR_W, pad: PANEL_PAD, gap: 2 });
+    ui.clips(sidebar);
+    ui.label(sidebar, "SCENE", { colour: HEADING, weight: BOLD });
+    this.sceneList = ui.list(sidebar, this.sceneModel, TREE_ROWS, { flex: 1 });
+    // The list, drawn by a behavior that also marks the selection. `setBehavior`
+    // is the extension point: everything `ui.list` set up (the recycled rows, the
+    // clip, the scroll state) stays, and only the paint changes.
+    ui.setBehavior(this.sceneList, this.sceneTree);
+    // The tree's names are identifiers, so they are set in the mono face.
+    this.setFont(this.sceneList, FONT_MONO, SIZE_14);
+
+    const body: i32 = ui.row(main, { flex: 1 });
+    const vp: i32 = ui.node(body, this.viewport, { flex: 1 });
+    ui.flex(vp, 1);
+
+    const inspector: i32 = ui.column(body, { minW: INSPECTOR_W, pad: PANEL_PAD, gap: 2 });
+    ui.clips(inspector);
+    ui.label(inspector, "INSPECTOR", { colour: HEADING, weight: BOLD });
+    this.inspName = ui.label(inspector, "", { colour: HEADING, weight: BOLD });
+    ui.rule(inspector);
+    const fieldRow: i32 = ui.row(inspector, { gap: 12 });
+    ui.label(fieldRow, "x", { colour: MUTED });
+    this.field = ui.field(fieldRow, "", { minW: 140, pad: 2, flex: 1 });
+    this.inspY = ui.label(inspector, "", { colour: MUTED });
+    this.inspZ = ui.label(inspector, "", { colour: MUTED });
+    this.inspFrame = ui.label(inspector, "", { colour: MUTED });
+    this.inspParent = ui.label(inspector, "", { colour: MUTED });
+    this.inspVisible = ui.label(inspector, "", { colour: MUTED });
+    ui.rule(inspector);
+    this.inspHint = ui.label(inspector, "", { colour: MUTED });
+    ui.rule(col);
+
+    // ── the console ───────────────────────────────────────────────────────
+    const consoleCol: i32 = ui.column(col, { minH: CONSOLE_H, pad: PANEL_PAD, gap: 2 });
+    ui.clips(consoleCol);
+    ui.label(consoleCol, "CONSOLE", { colour: HEADING, weight: BOLD });
+    this.consoleUndo = ui.label(consoleCol, "", { colour: MUTED });
+    this.consoleLast = ui.label(consoleCol, "", { colour: MUTED });
+    this.consoleKeys = ui.label(consoleCol, "", { colour: MUTED });
+    // Code is monospaced: the console's columns were aligned in the old build and a
+    // proportional face would undo that silently.
+    ui.font(this.consoleUndo, FONT_MONO, SIZE_14);
+    ui.font(this.consoleLast, FONT_MONO, SIZE_14);
+    ui.font(this.consoleKeys, FONT_MONO, SIZE_14);
+    ui.rule(col);
+
+    // ── the status bar ────────────────────────────────────────────────────
+    const status: i32 = ui.row(col, { minH: BAR_H, pad: BAR_PAD, gap: 12 });
+    ui.clips(status);
+    this.statusLeft = ui.label(status, "", { colour: MUTED });
+    ui.spacer(status, 1);
+    this.statusRight = ui.label(status, "", { colour: MUTED });
+
+    // ── the bindings ──────────────────────────────────────────────────────
+    //
+    // A click on a *row* bubbles to the list, because a label consumes nothing and
+    // a list is where its rows' clicks belong. `ui.onClick` on the list is
+    // therefore "a row was clicked", and `ui.lastItem` says which one.
+    ui.onClick(this.sceneList, new SelectRow(this));
+    ui.onChange(this.field, new EditX(this));
+    ui.onSubmit(this.field, new SubmitX(this));
+
+    this.syncOrder();
+    this.syncConsole();
+  }
+
+  /** Give a list (and the rows it will recycle) one page. */
+  private setFont(list: i32, family: i32, size: i32): void {
+    const t: WidgetTree = this.ui.tree;
+    this.ui.font(list, family, size);
+    let row: i32 = t.firstChild[list];
+    while (row >= 0) {
+      this.ui.font(row, family, size);
+      row = t.nextSibling[row];
+    }
   }
 
   // ── setup ───────────────────────────────────────────────────────────────
@@ -191,38 +537,26 @@ class Editor extends AppShell {
   /**
    * The document's opening scene, and the game's boxes — **once**.
    *
-   * `loadAssets` runs at startup *and* after every canvas rebuild, because a
-   * canvas is fixed for its lifetime and reopening one destroys its textures
-   * (`app/shell.ts`). Rebuilding the scene with it is what a caller does by
-   * accident: the first run of this file shipped nine nodes instead of five and
-   * twelve boxes instead of six, because a window that the compositor had resized
-   * to fit the screen triggered one rebuild. The flag is the fix, and the
-   * duplication is the reason it is a flag rather than a comment.
+   * `loadAssets` runs at startup *and* after every canvas rebuild, because a canvas
+   * is fixed for its lifetime and reopening one destroys its textures. The flag is
+   * the fix, and the duplication is the reason it is a flag.
    */
-  private built: bool = false;
-
-  /** The document's opening scene, and the game's boxes. */
   private buildScene(): void {
     if (this.built) return;
     this.built = true;
     this.palette = registerEditorCommands(Palette.create(this.history));
 
-    // A document with something in it: an empty tree proves nothing about a tree.
     const world = this.doc.node(ROOT_ID);
     world.name = "World";
     this.spawn("room", ROOT_ID, 40.0, 60.0);
     this.spawn("hero", ROOT_ID, 300.0, 240.0);
     this.spawn("lantern", ROOT_ID, 620.0, 120.0);
     this.spawn("crate", ROOT_ID, 760.0, 420.0);
-    // The history starts empty: the opening scene is the document's initial
-    // state, not an edit a user has to undo past.
     this.history.clear();
     this.selected = ROOT_ID;
-    // The inspector's subject and the document's selection are one thing at
-    // startup; they diverge only when a node is deleted out from under them.
     this.doc.select(ROOT_ID, true);
+    this.orderDirty = true;
 
-    // The game's boxes: two frames (a cell each), scattered, drifting.
     const cells: Frame[] = [
       new Frame(0, <u16>0, <u16>0, <u16>BOX, <u16>BOX),
       new Frame(0, <u16>BOX, <u16>0, <u16>BOX, <u16>BOX),
@@ -242,11 +576,9 @@ class Editor extends AppShell {
 
   private spawn(name: string, parent: i32, x: f32, y: f32): void {
     const args = new Args();
-    args.id = 0;                       // ALLOCATE_ID: the document picks the id
+    args.id = 0;
     args.parent = parent;
     args.text = name;
-    // Through the palette, not `doc.spawn`: the opening scene is built the way a
-    // user's edit would be, so a bug in `AddNode` shows up here too.
     this.palette.run(this.doc, "node.add", args);
     const ids = this.doc.ids();
     const created = ids[ids.length - 1];
@@ -256,7 +588,7 @@ class Editor extends AppShell {
 
   // ── the frame ───────────────────────────────────────────────────────────
 
-  /** Animate the boxes and read input. */
+  /** Animate the boxes, dispatch input, then run the shortcuts. */
   protected update(): void {
     this.t += 1.0;
     for (let i: i32 = 0; i < this.boxes.length; i++) {
@@ -269,55 +601,52 @@ class Editor extends AppShell {
       if (y > <f32>(FIELD_H - BOX)) { y = <f32>(FIELD_H - BOX); this.boxDy[i] = -this.boxDy[i]; }
       b.moveTo(x, y);
     }
-    this.handleInput();
-  }
 
-  /** One frame of records: the game into bucket 0, the UI into bucket 1. */
-  protected draw(p: Painter): void {
-    this.drawn++;
-    this.hits.begin();
-
-    // Frame the boxes: a camera at the origin shows the world's top-left corner,
-    // and six boxes drifting across 1600x1200 spend most of their time outside a
-    // 1238x655 window. Tracking the centroid is also what a real viewport does,
-    // and it exercises `setCamera` on every frame rather than once.
-    const vpPreview = this.viewport();
-    this.cameraToBoxes(vpPreview);
-
-    // **The composite.** The game scene is clipped to the viewport and submitted
-    // first; the shell submits the painter into bucket 1 afterwards, and the
-    // renderer draws the buckets in ascending order. The clip is what keeps a box
-    // from painting over the inspector.
-    const vp = this.viewport();
-    this.gameScene.setViewport(vp.x, vp.y, vp.w, vp.h);
-    const committed = this.gameScene.commit(this.canvas!, this.gamePipe, 0);
-    if (committed < 0) {
-      print("tension-editor: the game scene refused: " + committed.toString());
+    // **One dispatch per frame**, and `readText` inside it is the frame's only read
+    // of the typed stream — the queue has one consumer or it has two.
+    if (this.inputReady && this.input.read()) {
+      this.ui.frame(this.input);
+    } else {
+      this.ui.frame(null);
     }
 
-    this.drawMenu(p);
-    this.drawTree(p);
-    this.drawViewportFrame(p, vp);
-    this.drawInspector(p);
-    this.drawConsole(p);
-    this.drawStatus(p);
+    this.commitOnBlur();
+    // A focused field owns the keyboard, so the commands stand down: a Backspace
+    // meant for a number is not a request to delete a node.
+    if (this.ui.focusId < 0) this.shortcuts();
+  }
+
+  /** One frame: layout, the game into bucket 0, the tree into bucket 1. */
+  protected draw(p: Painter): void {
+    this.drawn++;
+    this.syncOrder();
+    this.syncConsole();
+    this.updateStatus();
+    this.ui.tree.layout();
+    this.styleRows();
+
+    // Frame the boxes and clip the scene to the viewport the *arrange* just gave
+    // it. The tree is laid out first because the rect is its answer, not ours.
+    const vp = this.viewport;
+    if (vp.w > 0 && vp.h > 0) {
+      this.cameraToBoxes(vp);
+      this.gameScene.setViewport(vp.x, vp.y, vp.w, vp.h);
+      const committed = this.gameScene.commit(this.canvas!, this.gamePipe, 0);
+      if (committed < 0) {
+        print("tension-editor: the game scene refused: " + committed.toString());
+      }
+    }
+
+    this.ui.tree.paint(p, this.ui.hits);
   }
 
   /**
    * Frame the first box, clamped to the world.
    *
-   * **The first box, not the centroid.** The centroid was the first attempt and it
-   * failed the thing it was for: six boxes spread over a 900x560 field have a
-   * centroid in the middle of it, and a 238-px-wide viewport centred there
-   * contained *nothing* — an editor that opens onto an empty panel. Tracking one
-   * node keeps something on screen at every size, and boxes near the edge still
-   * demonstrate the clip.
-   *
-   * A real editor tracks the selection; that is Pass 4's business.
-   *
-   * Clamped because a camera panned past the world's edge shows the void.
+   * A real editor tracks the selection; pointing the camera at the scene tree's
+   * selection is the obvious next step and not this pass's.
    */
-  private cameraToBoxes(vp: Rect): void {
+  private cameraToBoxes(vp: ViewportBehavior): void {
     if (this.boxes.length == 0) return;
     const lead = this.boxes[0];
     const cx: f32 = lead.x + <f32>BOX * 0.5 - <f32>vp.w * 0.5;
@@ -328,243 +657,224 @@ class Editor extends AppShell {
                              clamp(cy, 0.0, maxY > 0.0 ? maxY : 0.0));
   }
 
-  // ── layout, in one place ────────────────────────────────────────────────
+  // ── the status bar ──────────────────────────────────────────────────────
 
-  /** The rectangle the game draws in: what the panels leave. */
-  private viewport(): Rect {
-    const w: i32 = this.width < MIN_W ? MIN_W : this.width;
-    return new Rect(SIDEBAR_W + RULE_W, MENU_H,
-                    w - SIDEBAR_W - INSPECTOR_W - RULE_W * 2, this.mainH());
-  }
-
-  /** The height a main row has, after the menu, the console and the status bar. */
-  private mainH(): i32 {
-    const h: i32 = this.height < MIN_H ? MIN_H : this.height;
-    return h - MENU_H - CONSOLE_H - STATUS_H;
-  }
-
-  // ── the panels ──────────────────────────────────────────────────────────
-
-  private drawMenu(p: Painter): void {
-    rule(p, 0, MENU_H, this.width, CHROME_DIVIDER);
-    let x: i32 = px(8);
-    const items: string[] = ["File", "Edit", "View", "Run"];
-    for (let i: i32 = 0; i < items.length; i++) {
-      x = drawText(p, items[i], x, (MENU_H - CELL_H) / 2, MUTED, REGULAR);
-      x = drawText(p, "   ", x, 0, MUTED, REGULAR);
+  /**
+   * The status bar, from the frame's text pool.
+   *
+   * Composed with `TextPool` because it changes every frame: the record count and
+   * the frame number are the two numbers a UI must not turn into a `String` sixty
+   * times a second. `ui.textPool` copies the window into the label's own buffer, so
+   * the pool can be rewound immediately afterwards.
+   */
+  private updateStatus(): void {
+    const pool: TextPool = this.ui.pool;
+    pool.begin();
+    pool.int(this.doc.liveCount);
+    pool.str(" nodes   ");
+    pool.int(this.doc.selectionCount);
+    pool.str(" selected   ");
+    pool.int(this.lastRecords);
+    pool.str(" ui rec");
+    if (this.lastDropped > 0) {
+      pool.str("  ");
+      pool.int(this.lastDropped);
+      pool.str(" dropped");
     }
-    // The undo label doubles as the command palette's last action, which is the
-    // cheapest honest way to show that an edit went through the history.
-    const columns: i32 = this.width / CELL_W - 24;
-    const label: string = fit(this.lastUndo, columns);
-    if (label.length > 0) {
-      const w: i32 = label.length * CELL_W;
-      drawText(p, label, this.width - w - px(12), (MENU_H - CELL_H) / 2, LINK, REGULAR);
-    }
+    this.ui.textPool(this.statusLeft);
+
+    pool.begin();
+    pool.str("frame ");
+    pool.int(this.drawn);
+    pool.str("   game ");
+    pool.int(this.gameScene.aliveCount());
+    pool.str(" boxes");
+    this.ui.textPool(this.statusRight);
   }
 
-  /** The scene tree: one row per node, indented by depth, selected underlined. */
-  private drawTree(p: Painter): void {
-    const top: i32 = MENU_H + px(8);
-    vrule(p, SIDEBAR_W, MENU_H, this.mainH(), CHROME_DIVIDER);
-    drawText(p, "SCENE", px(10), top, HEADING, BOLD);
+  /** The console's three history lines, rebuilt only when the history moved. */
+  private syncConsole(): void {
+    if (!this.consoleDirty) return;
+    this.consoleDirty = false;
+    this.ui.text(this.consoleUndo, "undo: " + this.history.undoCount.toString() +
+      "   redo: " + this.history.redoCount.toString());
+    const reachable: string = this.history.canUndo ? this.history.undoLabel()
+      : (this.history.canRedo ? "redo " + this.history.redoLabel() : "(nothing)");
+    this.ui.text(this.consoleLast, "last: " + reachable);
+    this.ui.text(this.consoleKeys,
+      "keys: ctrl+z undo   ctrl+y redo   ctrl+a add   del remove");
+  }
 
-    const rowsTop: i32 = top + LINE_STEP;
-    const rows: i32 = (this.mainH() - (rowsTop - MENU_H) - px(4)) / LINE_STEP;
+  // ── the scene tree's model ──────────────────────────────────────────────
+
+  /**
+   * Flatten the document, rebuild the list, and re-point the selection.
+   *
+   * `orderDirty` is set by every edit that changes the tree's *shape* — add,
+   * remove, undo, redo — and never by a frame. `Document.ids()` allocates, and a
+   * paint is not where that belongs.
+   */
+  private syncOrder(): void {
+    if (!this.orderDirty) return;
+    this.orderDirty = false;
     const ids = this.doc.ids();
-
-    // Keep the selection on screen: the tree is longer than the panel as soon as
-    // a user adds a handful of nodes.
-    let first: i32 = 0;
-    let selectedRow: i32 = 0;
+    this.orderCount = ids.length;
     for (let i: i32 = 0; i < ids.length; i++) {
-      if (ids[i] == this.selected) selectedRow = i;
+      this.orderIds[i] = ids[i];
+      this.orderDepths[i] = this.depthOf(ids[i]);
     }
-    if (selectedRow >= rows) first = selectedRow - rows + 1;
+    this.selectedIndex = -1;
+    for (let i: i32 = 0; i < this.orderCount; i++) {
+      if (this.orderIds[i] == this.selected) this.selectedIndex = i;
+    }
+    this.sceneTree.selected = this.selectedIndex;
+    this.ui.items(this.sceneList, this.orderCount);
+    this.ui.refresh(this.sceneList);
+    this.syncInspector();
+  }
 
-    for (let r: i32 = 0; r < rows; r++) {
-      const i: i32 = first + r;
-      if (i >= ids.length) break;
-      const id: i32 = ids[i];
-      const depth: i32 = this.depthOf(id);
-      const y: i32 = rowsTop + r * LINE_STEP;
-      const selected: bool = id == this.selected;
-      const indent: i32 = px(10) + depth * px(8);
+  depthAt(index: i32): i32 {
+    return index >= 0 && index < this.orderCount ? this.orderDepths[index] : 0;
+  }
 
-      // A row is the whole panel width, so clicking anywhere on the line selects.
-      this.hits.add(0, y, SIDEBAR_W, LINE_STEP, id);
+  nameAt(index: i32): string {
+    return index >= 0 && index < this.orderCount
+      ? this.doc.nameOf(this.orderIds[index]) : "";
+  }
 
-      const columns: i32 = (SIDEBAR_W - indent - px(10)) / CELL_W;
-      const name: string = fit(this.doc.nameOf(id), columns);
-      drawText(p, name, indent, y, selected ? HEADING : NORMAL, selected ? BOLD : REGULAR);
-      if (selected) p.hline(indent, y + CELL_H, SIDEBAR_W - indent - px(10), CHROME_WHITE);
+  /**
+   * Colour the rows: the selected one is white and bold, the rest body text.
+   *
+   * Done after the arrange, because a row's *item* is what the arrange decides — a
+   * recycled row was showing some other node a frame ago. A row whose item did not
+   * change is not touched, so this walks forty widgets and writes nothing on a
+   * frame where the selection held still.
+   */
+  private styleRows(): void {
+    const t: WidgetTree = this.ui.tree;
+    let row: i32 = t.firstChild[this.sceneList];
+    while (row >= 0) {
+      const selected: bool = t.itemIndex[row] >= 0 && t.itemIndex[row] == this.selectedIndex;
+      // White for the selected row because `(NORMAL, BOLD)` is not a baked pair —
+      // an unbaked pair is a missing stripe, and its glyphs are skipped outright.
+      const colour: i32 = selected ? HEADING : NORMAL;
+      const weight: i32 = selected ? BOLD : REGULAR;
+      if (t.colour[row] != colour || t.weight[row] != weight) {
+        t.colour[row] = colour;
+        t.weight[row] = weight;
+        t.markPaint(row);
+      }
+      row = t.nextSibling[row];
     }
   }
 
-  /** The viewport's frame — four rules, and where the scene is clipped. */
-  private drawViewportFrame(p: Painter, vp: Rect): void {
-    rule(p, vp.x, vp.y, vp.w, CHROME_DIVIDER);
-    rule(p, vp.x, vp.y + vp.h - 1, vp.w, CHROME_DIVIDER);
-    vrule(p, vp.x, vp.y, vp.h, CHROME_DIVIDER);
-    vrule(p, vp.x + vp.w - 1, vp.y, vp.h, CHROME_DIVIDER);
-    // The world's extent, so the clip is visible as a *clip* rather than as a
-    // scene that happens to end. **Clipped to the panel**: this text is longer
-    // than a narrow viewport, and unclipped it drew straight over the inspector —
-    // the same bug the game scene's own clip exists to prevent, in the UI layer.
-    const label: string = "viewport " + vp.w.toString() + "x" + vp.h.toString() +
-      "  world " + WORLD_W.toString() + "x" + WORLD_H.toString();
-    p.setClip(vp.x, vp.y, vp.w, vp.h);
-    drawText(p, label, vp.x + px(6), vp.y + px(4), MUTED, REGULAR);
-    p.clearClip();
+  /** Select the row a click landed on, commit what the field held, and tell the doc. */
+  selectItem(index: i32): void {
+    if (index < 0 || index >= this.orderCount) return;
+    const id: i32 = this.orderIds[index];
+    if (id == this.selected) return;
+    // The field belonged to the *old* node, so it commits before the selection
+    // moves — otherwise leaving the field by clicking a row would write the old
+    // text onto the new node's X.
+    if (this.fieldWasFocused) this.commitField();
+    this.selected = id;
+    this.selectedIndex = index;
+    this.sceneTree.selected = index;
+    this.doc.clearSelection();
+    this.doc.select(id, true);
+    this.syncInspector();
   }
 
-  /** The inspector: the selected node's properties, with X editable. */
-  private drawInspector(p: Painter): void {
-    const x0: i32 = this.width - INSPECTOR_W;
-    vrule(p, x0, MENU_H, this.mainH(), CHROME_DIVIDER);
-    const top: i32 = MENU_H + px(8);
-    drawText(p, "INSPECTOR", x0 + px(10), top, HEADING, BOLD);
+  // ── the inspector ───────────────────────────────────────────────────────
 
-    let y: i32 = top + LINE_STEP;
+  /** Re-read the selected node into the inspector's labels and its field. */
+  private syncInspector(): void {
     const id: i32 = this.selected;
     if (!this.doc.alive(id)) {
-      drawText(p, "nothing selected", x0 + px(10), y, MUTED, REGULAR);
+      this.ui.text(this.inspName, "");
+      this.ui.text(this.inspY, "");
+      this.ui.text(this.inspZ, "");
+      this.ui.text(this.inspFrame, "");
+      this.ui.text(this.inspParent, "");
+      this.ui.text(this.inspVisible, "");
+      this.ui.text(this.field, "");
+      this.ui.text(this.inspHint, "nothing selected");
       return;
     }
     const node = this.doc.node(id);
-    drawText(p, "node " + id.toString() + "  " + node.name, x0 + px(10), y, NORMAL, BOLD);
-    y += LINE_STEP;
-    rule(p, x0 + px(10), y - px(4), INSPECTOR_W - px(20), CHROME_DIVIDER);
-
-    // The editable field. Its row is a hit target, and while it is focused the
-    // row shows the value being typed rather than the document's.
-    const fieldY: i32 = y + LINE_STEP;
-    drawText(p, "x", x0 + px(10), y, MUTED, REGULAR);
-    const shown: string = this.editing ? this.fieldValue + "_" : node.x.toString();
-    const fieldX: i32 = x0 + px(10) + CELL_W * 3;
-    if (this.editing) {
-      // A caret cell behind the text: the atlas has one precisely for this.
-      p.fill(fieldX - px(2), y - px(2), (shown.length + 1) * CELL_W, CELL_H + px(4),
-             CHROME_SELECTION);
-      drawText(p, shown, fieldX, y, HEADING, BOLD);
-    } else {
-      drawText(p, shown, fieldX, y, LINK, REGULAR);
-    }
-    this.hits.add(x0 + px(10), y, INSPECTOR_W - px(20), LINE_STEP, HIT_FIELD);
-
-    y = fieldY;
-    drawText(p, "y " + node.y.toString(), x0 + px(10), y, MUTED, REGULAR);
-    y += LINE_STEP;
-    drawText(p, "z " + node.z.toString(), x0 + px(10), y, MUTED, REGULAR);
-    y += LINE_STEP;
-    drawText(p, "frame " + node.frame.toString(), x0 + px(10), y, MUTED, REGULAR);
-    y += LINE_STEP;
-    drawText(p, "parent " + node.parent.toString(), x0 + px(10), y, MUTED, REGULAR);
-    y += LINE_STEP;
-    drawText(p, "visible " + (node.visible ? "yes" : "no"), x0 + px(10), y, MUTED, REGULAR);
-
-    y += LINE_STEP * 2;
-    rule(p, x0 + px(10), y - px(6), INSPECTOR_W - px(20), CHROME_DIVIDER);
-    drawText(p, this.editing ? "type a number, Enter applies" : "click x to edit",
-             x0 + px(10), y, MUTED, REGULAR);
+    this.ui.text(this.inspName, "node " + id.toString() + "  " + node.name);
+    this.ui.text(this.inspY, "y " + node.y.toString());
+    this.ui.text(this.inspZ, "z " + node.z.toString());
+    this.ui.text(this.inspFrame, "frame " + node.frame.toString());
+    this.ui.text(this.inspParent, "parent " + node.parent.toString());
+    this.ui.text(this.inspVisible, "visible " + (node.visible ? "yes" : "no"));
+    // The field shows the canonical value whenever the selection moves. While a
+    // user types, `applyField` keeps the document in step and nothing re-reads the
+    // value back into the field — a field that rewrites itself under the caret is a
+    // field that moves the caret.
+    this.ui.text(this.field, node.x.toString());
+    this.ui.text(this.inspHint, "click x to edit");
   }
 
-  /** The console: the command log, newest last. */
-  private drawConsole(p: Painter): void {
-    const y0: i32 = this.height - STATUS_H - CONSOLE_H;
-    rule(p, 0, y0, this.width, CHROME_DIVIDER);
-    drawText(p, "CONSOLE", px(10), y0 + px(6), HEADING, BOLD);
+  // ── editing ─────────────────────────────────────────────────────────────
 
-    let y: i32 = y0 + px(6) + LINE_STEP;
-    const lines: string[] = [];
-    lines.push("undo: " + this.history.undoCount.toString() +
-      "   redo: " + this.history.redoCount.toString());
-    // What the user can reach: the undo they would run next, else the redo.
-    const reachable: string = this.history.canUndo ? this.history.undoLabel()
-      : (this.history.canRedo ? "redo " + this.history.redoLabel() : "(nothing)");
-    lines.push("last: " + reachable);
-    lines.push("keys: ctrl+z undo   ctrl+y redo   ctrl+a add   del remove");
-    const columns: i32 = (this.width - px(20)) / CELL_W;
-    for (let i: i32 = 0; i < lines.length; i++) {
-      drawText(p, fit(lines[i], columns), px(10), y, MUTED, REGULAR);
-      y += LINE_STEP;
-    }
+  /**
+   * Apply what the field holds, live, as one undoable edit.
+   *
+   * `SetX.merge` collapses a burst of same-node edits, so a typed `12.5` is one
+   * history entry whose `before` is the value from before the first keystroke —
+   * which is what a drag does, and why `merge` exists at all.
+   */
+  applyField(): void {
+    const id: i32 = this.selected;
+    if (!this.doc.alive(id)) return;
+    const text: string = this.ui.textOf(this.field);
+    if (!looksNumeric(text)) return;
+    const value: f32 = <f32>parseDecimal(text);
+    if (value == this.doc.xOf(id)) return;
+    this.history.exec(this.doc, new SetX(id, value));
+    this.afterEdit("set x");
   }
 
-  /** The status bar: what the frame cost, and what is selected. */
-  private drawStatus(p: Painter): void {
-    const y: i32 = this.height - STATUS_H;
-    rule(p, 0, y, this.width, CHROME_DIVIDER);
-    const textY: i32 = y + (STATUS_H - CELL_H) / 2;
-    const state: string = this.doc.liveCount.toString() + " nodes   " +
-      this.doc.selectionCount.toString() + " selected   " +
-      this.lastRecords.toString() + " ui rec" +
-      (this.lastDropped > 0 ? "  " + this.lastDropped.toString() + " dropped" : "");
-    drawText(p, state, px(10), textY, MUTED, REGULAR);
-
-    const right: string = "frame " + this.drawn.toString() +
-      "   game " + this.gameScene.aliveCount().toString() + " boxes";
-    const w: i32 = right.length * CELL_W;
-    const leftW: i32 = state.length * CELL_W;
-    // Only when both halves fit: a status bar that overprints itself is worse
-    // than one showing less.
-    if (leftW + w + px(30) <= this.width) {
-      drawText(p, right, this.width - w - px(10), textY, MUTED, REGULAR);
-    }
+  /** Return, or leaving the field: apply, then show what the document holds. */
+  commitField(): void {
+    this.applyField();
+    const id: i32 = this.selected;
+    if (this.doc.alive(id)) this.ui.text(this.field, this.doc.node(id).x.toString());
   }
 
-  // ── input ───────────────────────────────────────────────────────────────
+  /**
+   * A focus loss commits.
+   *
+   * The edge is tracked here rather than in a handler because focus lives in the
+   * dispatcher: there is no "blur" event to bind, and inventing one for this app
+   * would be a second source of truth about who holds the keyboard.
+   */
+  private commitOnBlur(): void {
+    const now: bool = this.ui.isFocused(this.field);
+    if (this.fieldWasFocused && !now) this.commitField();
+    this.fieldWasFocused = now;
+  }
 
-  /** Clicks, keys, and the one editable field. */
-  private handleInput(): void {
-    if (!this.inputReady || !this.input.read()) return;
+  /** What the menu and the console report after an edit. */
+  private afterEdit(what: string): void {
+    this.lastUndo = what + ": " + (this.history.canUndo ? this.history.undoLabel() : "");
+    this.ui.text(this.undoLabel, this.lastUndo);
+    this.consoleDirty = true;
+  }
+
+  // ── the keyboard ────────────────────────────────────────────────────────
+
+  /**
+   * The shortcuts, from the raw snapshot.
+   *
+   * They are deliberately not widget events: `ctrl+z` is not addressed to the scene
+   * tree or to the inspector, it is addressed to the *application*. The framework
+   * dispatches keys to the focused widget, which is the right rule for a field and
+   * the wrong one for a command, so the commands read the snapshot here.
+   */
+  private shortcuts(): void {
     const state = this.input;
-
-    // ── a click ───────────────────────────────────────────────────────────
-    if (state.buttonPressed(1)) {
-      const hit: i32 = this.hits.at(state.mouseX, state.mouseY);
-      if (hit == HIT_FIELD) {
-        this.editing = true;
-        this.fieldValue = "";
-      } else if (hit >= 0) {
-        this.editing = false;
-        this.selected = hit;
-        this.doc.clearSelection();
-        this.doc.select(hit, true);
-      } else {
-        // A click on a panel that is not a target drops the field's focus, which
-        // is what every form does and what stops a stray keystroke editing.
-        this.editing = false;
-      }
-    }
-
-    // ── the typed field ───────────────────────────────────────────────────
-    //
-    // `textInput()` is the UTF-8 stream the input capability gained for exactly
-    // this: a scancode table can spell `[a-z0-9]` and cannot spell a minus sign
-    // or a decimal point the way a keyboard's own layout does.
-    if (this.editing) {
-      const typed: string = state.textInput();
-      for (let i: i32 = 0; i < typed.length; i++) {
-        const c: i32 = typed.charCodeAt(i);
-        if ((c >= 48 && c <= 57) || c == 45 || c == 46) {
-          this.fieldValue += typed.charAt(i);
-        }
-      }
-      if (state.pressed(SC_BACKSPACE) && this.fieldValue.length > 0) {
-        this.fieldValue = this.fieldValue.slice(0, this.fieldValue.length - 1);
-      }
-      if (state.pressed(SC_RETURN) || state.pressed(SC_KP_ENTER)) {
-        this.commitField();
-      }
-      if (state.pressed(SC_ESCAPE)) {
-        this.editing = false;
-        this.fieldValue = "";
-      }
-      return;                            // a focused field owns the keyboard
-    }
-
-    // ── the shortcuts ─────────────────────────────────────────────────────
     if (state.ctrl && state.pressed(SC_Z)) {
       if (this.history.undo(this.doc)) this.afterEdit("undo");
       this.syncSelection();
@@ -581,6 +891,7 @@ class Editor extends AppShell {
       args.text = "node";
       if (this.palette.run(this.doc, "node.add", args)) {
         this.selected = this.lastId();
+        this.orderDirty = true;
         this.afterEdit("add");
       }
       return;
@@ -590,30 +901,11 @@ class Editor extends AppShell {
         const args = Args.forNode(this.selected);
         if (this.palette.run(this.doc, "node.remove", args)) {
           this.selected = ROOT_ID;
+          this.orderDirty = true;
           this.afterEdit("remove");
         }
       }
     }
-  }
-
-  /** Apply the typed value through the history — the pass's one editable field. */
-  private commitField(): void {
-    if (this.fieldValue.length == 0) {
-      this.editing = false;
-      return;
-    }
-    const parsed: f64 = parseDecimal(this.fieldValue);
-    this.editing = false;
-    this.fieldValue = "";
-    // `SetX` through the history, not `doc.setX`: the setter would move the number
-    // and leave nothing to undo, which is the rule the editor core is built on.
-    this.history.exec(this.doc, new SetX(this.selected, <f32>parsed));
-    this.afterEdit("set x");
-  }
-
-  /** What the menu and the console report after an edit. */
-  private afterEdit(what: string): void {
-    this.lastUndo = what + ": " + (this.history.canUndo ? this.history.undoLabel() : "");
   }
 
   /** After an undo, the selected id may be gone; fall back to the root. */
@@ -623,6 +915,8 @@ class Editor extends AppShell {
       this.doc.clearSelection();
       this.doc.select(this.selected, true);
     }
+    this.orderDirty = true;
+    this.syncOrder();
   }
 
   private lastId(): i32 {
@@ -644,59 +938,35 @@ class Editor extends AppShell {
   }
 }
 
-// ── small types ─────────────────────────────────────────────────────────────
+// ── small functions ─────────────────────────────────────────────────────────
 
-/** A rectangle, because the layout returns one twice and four ints is a bug. */
-class Rect {
-  x: i32;
-  y: i32;
-  w: i32;
-  h: i32;
-  constructor(x: i32, y: i32, w: i32, h: i32) {
-    this.x = x;
-    this.y = y;
-    this.w = w;
-    this.h = h;
+/**
+ * Whether a field's text is a number this app will apply.
+ *
+ * A field whose text is `-` or `.` is *mid-typing*, not a value: applying it as 0
+ * would jump the node to the origin between two keystrokes. `parseDecimal` answers
+ * 0 for anything it cannot read, so the caller must be able to tell "zero" from
+ * "not a number" — which is this.
+ */
+function looksNumeric(text: string): bool {
+  let i: i32 = 0;
+  if (text.length > 0 && text.charCodeAt(0) == 45) i = 1;   // '-'
+  if (i >= text.length) return false;
+  let digits: i32 = 0;
+  let points: i32 = 0;
+  while (i < text.length) {
+    const c: i32 = text.charCodeAt(i);
+    if (c == 46) {                                          // '.'
+      points++;
+      if (points > 1) return false;
+    } else if (c >= 48 && c <= 57) {
+      digits++;
+    } else {
+      return false;
+    }
+    i++;
   }
-}
-
-/** The `Hits` id for the inspector's field: node ids are 0.. so this is free. */
-const HIT_FIELD: i32 = -2;
-
-/**
- * Scancodes (SDL numbering), the same table `apps/docs` uses.
- *
- * The record carries a held-key bitmap for physical keys and a separate UTF-8
- * stream for *typed* text (`input.ts`, `Snapshot.textInput`). The stream is what
- * the field below reads; these are the keys that are commands rather than text.
- */
-const SC_A: u32 = 4;
-const SC_Y: u32 = 28;
-const SC_Z: u32 = 29;
-const SC_RETURN: u32 = 40;
-const SC_ESCAPE: u32 = 41;
-const SC_BACKSPACE: u32 = 42;
-const SC_DELETE: u32 = 76;
-const SC_KP_ENTER: u32 = 88;
-
-/**
- * A decimal from the field's text — `-12`, `3.5`, `.5`.
- *
- * Hand-rolled because `parseFloat` is not in this runtime's standard library
- * surface, and a value the user typed must not quietly become `NaN`: an
- * unparseable string answers 0, which the caller can see rather than discovering
- * a node at `NaN` two undos later.
- */
-/**
- * `text` cut to `columns` characters, or the whole of it.
- *
- * Every panel here is a fixed width while the text is not — a `--tns` path in the
- * console, a node name a user typed. Unclipped, the status bar's two halves drew
- * through each other at 920 px (`58frame 6` was `586 ui rec` and `frame 6…`), so
- * the panels measure before they draw, the way `apps/docs`' status bar does.
- */
-function fit(text: string, columns: i32): string {
-  return text.length <= columns ? text : text.slice(0, columns);
+  return digits > 0;
 }
 
 function clamp(v: f32, lo: f32, hi: f32): f32 {
@@ -705,10 +975,16 @@ function clamp(v: f32, lo: f32, hi: f32): f32 {
   return v;
 }
 
+/**
+ * A decimal from the field's text — `-12`, `3.5`, `.5`.
+ *
+ * Hand-rolled because `parseFloat` is not in this runtime's standard library
+ * surface; `looksNumeric` is what decides whether the answer may be applied.
+ */
 function parseDecimal(text: string): f64 {
   let sign: f64 = 1.0;
   let i: i32 = 0;
-  if (text.length > 0 && text.charCodeAt(0) == 45) {   // '-'
+  if (text.length > 0 && text.charCodeAt(0) == 45) {
     sign = -1.0;
     i = 1;
   }
@@ -718,7 +994,7 @@ function parseDecimal(text: string): f64 {
   let seen: bool = false;
   while (i < text.length) {
     const c: i32 = text.charCodeAt(i);
-    if (c == 46) {                                     // '.'
+    if (c == 46) {
       i++;
       break;
     }
@@ -745,12 +1021,8 @@ function parseDecimal(text: string): f64 {
  *
  * Deliberately *generated*: this pass proves a composite, and adding an asset
  * pipeline to it would make a failure ambiguous between the two. The size is not
- * arbitrary — 128x32 against the UI atlas's 576x1024 means the renderer has to
- * rebind `u_tex_size` between the two spans, which is the part of the bucket
- * mechanism that two same-sized atlases would not test.
- *
- * The header is the one `examples/2d/box-physics/src/atlas.ts` documents and
- * `apps/docs/tools/make-font.mjs` writes: 74 bytes, `IWI1`, RGBA8 interleaved.
+ * arbitrary — 128x32 against the UI pages means the renderer has to rebind
+ * `u_tex_size` between spans, which two same-sized atlases would not test.
  */
 function gameAtlas(): Bytes {
   const W: i32 = 128;
@@ -778,12 +1050,11 @@ function gameAtlas(): Bytes {
   }
   image.setU64(66, <u64>pixels);
 
-  // Four cells, one colour each, opaque. A view over the buffer's `dataStart`,
-  // which is the rule `bytes.ts` sets: never `changetype` of a typed array.
-  // **Little-endian, so the word is `A<<24 | B<<16 | G<<8 | R`.** Writing the
-  // RGB triple as if it were a big-endian word is the mistake that shipped first:
-  // the boxes came out purple, olive and magenta, which looks like a pipeline bug
-  // and is an endianness one.
+  // Four cells, one colour each, opaque. **Little-endian, so the word is
+  // `A<<24 | B<<16 | G<<8 | R`.** Writing the RGB triple as if it were a
+  // big-endian word is the mistake that shipped first: the boxes came out
+  // purple, olive and magenta, which looks like a pipeline bug and is an
+  // endianness one.
   const colors: i32[] = [0xE6, 0x2D, 0x37, 0x28, 0x73, 0xEB, 0x23, 0xBE, 0x55, 0xE0, 0xA0, 0x20];
   const words: u32[] = new Array<u32>(4);
   for (let c: i32 = 0; c < 4; c++) {
@@ -796,9 +1067,8 @@ function gameAtlas(): Bytes {
   for (let cell: i32 = 0; cell < 4; cell++) {
     const base: i32 = cell * 32;
     for (let y: i32 = 0; y < 32; y++) {
-      const row: i32 = (y * W + base) ;
+      const row: i32 = (y * W + base);
       for (let x: i32 = 0; x < 32; x++) {
-        // Little-endian RGBA in memory, so the word is A<<24 | B<<16 | G<<8 | R.
         px32[row + x] = words[cell];
       }
     }
