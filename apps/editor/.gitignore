@@ -10,6 +10,12 @@ build/
 # which is this directory for `tension dev`).
 saves/
 
+# Screenshots taken while checking this app on a machine. Binary blobs that grow
+# with every UI change and that no build or test reads, so they stay out of the
+# history: a capture belongs in a review comment, not in a commit. `npm run
+# assets` writes the atlas previews to `assets/`, which is ignored above.
+screenshots/
+
 # The self-contained app `tension build` writes.
 dist/
 

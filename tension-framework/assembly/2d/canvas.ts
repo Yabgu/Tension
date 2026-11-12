@@ -201,14 +201,32 @@ export class Canvas {
    * `open`.
    */
   static windowedOrOffscreen(width: i32, height: i32, title: string = "Tension"): Canvas {
-    if (!platform.hasSurface()) {
-      // The refusal is deliberately ignored: the fallback below is the point of
-      // this helper, and `Canvas.open` decides from the host's post-attempt
-      // state, not from this call's rc.
-      Canvas.createGpuWindow(width, height, title);
-    }
+    // The refusal is deliberately ignored: the fallback below is the point of
+    // this helper, and `Canvas.open` decides from the host's post-attempt
+    // state, not from this call's rc.
+    Canvas.openWindow(width, height, title);
     const flags: i32 = platform.hasSurface() ? OPEN_WINDOWED : OPEN_OFFSCREEN;
     return Canvas.open(width, height, flags);
+  }
+
+  /**
+   * Create the host window this app presents to, if there is none.
+   *
+   * Split out of `windowedOrOffscreen` because the size of the window has to be
+   * known *before* anything is laid out, and only the host knows it: a request
+   * that cannot fit the display is fitted to the display's work area (the host's
+   * `fit_to_work_area`), so a layout computed from the request can be a layout
+   * for a window that does not exist. Measured: 1920x1080 requested on a
+   * 1920x1080 display opens at 1888x968, because the title bar and borders have
+   * to live somewhere.
+   *
+   * Idempotent — a second call finds the window and creates nothing — so a
+   * caller that opened a window itself, or the shell that creates it up front,
+   * can still go through `windowedOrOffscreen` afterwards.
+   */
+  static openWindow(width: i32, height: i32, title: string = "Tension"): void {
+    if (platform.windowInfo().width != 0) return;
+    Canvas.createGpuWindow(width, height, title);
   }
 
   /**

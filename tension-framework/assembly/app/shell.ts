@@ -173,6 +173,23 @@ export abstract class AppShell {
     this.title = request.title;
     this.width = request.width > 0 ? request.width : 1;
     this.height = request.height > 0 ? request.height : 1;
+
+    // Create the window first, then take the size from the **window**: the host
+    // fits a request that cannot fit the display (a client area the size of the
+    // work area leaves no room for its own title bar), and a layout built on the
+    // request would be a layout for a window that does not exist. Opening the
+    // canvas before this read is what made a fitted window draw at the requested
+    // size and rebuild on the next frame, paying for two GPU devices to arrive
+    // at the size the window had all along.
+    if (!this.headless) {
+      Canvas.openWindow(this.width, this.height, this.title);
+      const actual: WindowInfo = windowInfo();
+      if (actual.width > 0 && actual.height > 0) {
+        this.width = <i32>actual.width;
+        this.height = <i32>actual.height;
+      }
+    }
+
     // Before the canvas: a layout is arithmetic on the window size, so computing
     // it first means `loadAssets` can already read a column count.
     this.onResize(this.width, this.height);
