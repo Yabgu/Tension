@@ -294,7 +294,21 @@ void test_mirror_writes_only_dirty_slots() {
     Recorder recorder;
     const size_t first = loader->mirror_to_region(recorder.write(), 0x1000, 0x2000);
     check_eq(first, TENSION_OGRE_JOB_RECORD_BYTES, "one job record written");
-    check(!loader->has_dirty(), "nothing is dirty afterwards");
+
+    // **Settle the worker before claiming the mirror is clean.** `queue` starts a
+    // load on another thread, and its completion dirties the job's record — so
+    // "nothing is dirty afterwards" was a race against that thread: it passed on
+    // an idle machine and failed under the full suite, where four suites compete
+    // for cores and the worker's completion landed between the two mirrors
+    // (`got 64, want 0`, measured).
+    //
+    // `wait_for_idle` makes the worker's state settled; one more mirror absorbs
+    // whatever completion it produced; and only then is the *next* mirror's
+    // silence a property of the mirror rather than of the scheduler.
+    check(loader->wait_for_idle(5000), "the worker goes idle");
+    loader->mirror_to_region(recorder.write(), 0x1000, 0x2000);
+
+    check(!loader->has_dirty(), "nothing is dirty once the worker is idle");
     const size_t second = loader->mirror_to_region(recorder.write(), 0x1000, 0x2000);
     check_eq(second, 0, "a clean mirror writes nothing");
 

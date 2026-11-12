@@ -1,0 +1,18 @@
+{
+  "$schema": "../../packages/cli/schema/tension.config.json",
+  "entry": "src/main.ts",
+  "renderer": "2d",
+  "window": {
+    "width": 1920,
+    "height": 1080,
+    "title": "Tension Editor"
+  },
+  "memory": {
+    "initialPages": 320
+  },
+  "assets": {
+    "dir": "assets",
+    "volume": "build/assets.tns"
+  },
+  "capabilities": ["input"]
+}

@@ -267,6 +267,27 @@ export class Scene {
   width: i32;
   height: i32;
 
+  // --- the viewport and the camera -----------------------------------------
+  //
+  // A scene drawn inside a sub-rectangle of the canvas — an editor's game panel,
+  // a split-screen half, a minimap. Two numbers do all of it:
+  //
+  //   * the **viewport** is where the scene appears and what it is clipped to;
+  //   * the **camera** is the world point at the viewport's top-left corner.
+  //
+  // So a node at world `(wx, wy)` lands on the canvas at
+  // `wx - cameraX + viewportX`. With no viewport set the rectangle is the whole
+  // canvas and the camera is the origin, which is why every existing caller is
+  // unaffected: the arithmetic reduces to the identity.
+  private viewportX: i32 = 0;
+  private viewportY: i32 = 0;
+  private viewportW: i32 = 0;
+  private viewportH: i32 = 0;
+  /** False when the scene is clipped to the canvas rather than to a sub-rect. */
+  private hasViewport: bool = false;
+  private cameraX: f32 = 0.0;
+  private cameraY: f32 = 0.0;
+
   // --- node capacity -------------------------------------------------------
   capacity: i32;
 
@@ -370,6 +391,90 @@ export class Scene {
   resize(width: i32, height: i32): void {
     this.width = width > 0 ? width : 0;
     this.height = height > 0 ? height : 0;
+  }
+
+  /**
+   * Clip the scene to a rectangle of the canvas, and place it there.
+   *
+   * Every record this scene emits lands inside `(x, y, w, h)`: a node outside is
+   * culled, and one straddling the edge is **trimmed**, by shortening its source
+   * rect — which works because a record's `w`/`h` are the destination quad *and*
+   * the source texel rect, so at 1:1 the two are the same pixels (`ui/painter.ts`
+   * states the same rule for glyphs).
+   *
+   * This is what stops a game panel bleeding into the panel beside it. Without it
+   * a scene culls against the whole canvas, so a sprite at the canvas edge is
+   * drawn under whatever UI sits there.
+   *
+   * Marking every node dirty is not laziness: a *static* node's packed bytes
+   * change when the clip does, and retention would otherwise keep serving the old
+   * record. It costs one pass over the nodes, once per viewport change — the
+   * editor sets it on resize, not per frame.
+   */
+  setViewport(x: i32, y: i32, width: i32, height: i32): void {
+    const nx: i32 = x;
+    const ny: i32 = y;
+    const nw: i32 = width > 0 ? width : 0;
+    const nh: i32 = height > 0 ? height : 0;
+    if (this.hasViewport && nx == this.viewportX && ny == this.viewportY &&
+        nw == this.viewportW && nh == this.viewportH) {
+      return;
+    }
+    this.viewportX = nx;
+    this.viewportY = ny;
+    this.viewportW = nw;
+    this.viewportH = nh;
+    this.hasViewport = true;
+    this.markAllDirty();
+  }
+
+  /** Clip to the whole canvas again, and put the camera back at the origin. */
+  clearViewport(): void {
+    if (!this.hasViewport && this.cameraX == 0.0 && this.cameraY == 0.0) return;
+    this.hasViewport = false;
+    this.viewportX = 0;
+    this.viewportY = 0;
+    this.viewportW = 0;
+    this.viewportH = 0;
+    this.cameraX = 0.0;
+    this.cameraY = 0.0;
+    this.markAllDirty();
+  }
+
+  /**
+   * Pan: the world point drawn at the viewport's top-left corner.
+   *
+   * Positive `x` moves the camera right, so the scene appears to move **left** —
+   * the direction a drag on the world moves it. Scroll a level by setting this to
+   * its origin; leave it at zero and the scene's own coordinates are canvas
+   * coordinates plus the viewport's offset.
+   */
+  setCamera(x: f32, y: f32): void {
+    if (this.cameraX == x && this.cameraY == y) return;
+    this.cameraX = x;
+    this.cameraY = y;
+    this.markAllDirty();
+  }
+
+  get camX(): f32 {
+    return this.cameraX;
+  }
+
+  get camY(): f32 {
+    return this.cameraY;
+  }
+
+  /** The clip rectangle in canvas pixels; the canvas itself when none is set. */
+  clipX(): i32 { return this.hasViewport ? this.viewportX : 0; }
+  clipY(): i32 { return this.hasViewport ? this.viewportY : 0; }
+  clipW(): i32 { return this.hasViewport ? this.viewportW : this.width; }
+  clipH(): i32 { return this.hasViewport ? this.viewportH : this.height; }
+
+  /** Every live node's record is stale — a clip or camera change. */
+  private markAllDirty(): void {
+    for (let i: i32 = 0; i < this.highWater; i++) {
+      if (this.alives[i] != 0) this.flags[i] |= DIRTY_ALL;
+    }
   }
 
   // --- frames --------------------------------------------------------------
@@ -589,7 +694,14 @@ export class Scene {
   }
 
   /**
-   * Pack and hand the result to `canvas` in bucket 0.
+   * Pack and hand the result to `canvas`, in `bucket` (0 by default).
+   *
+   * **Buckets are draw order, ascending.** Each is one draw call and one
+   * pipeline, so a composite is: the game in bucket 0 with its pipeline, the UI in
+   * bucket 1 with another, one `present`. That is what lets an editor draw a scene
+   * under its own chrome without a second canvas, and it is why a bucket refuses a
+   * second pipe (`render2d/device.rs` — a bucket that mixed two pipelines could
+   * not be one draw).
    *
    * Returns the records submitted, or the verb's errno. A refusal from `submit`
    * is the adapter's — `-ENOENT` for an unknown pipe, `-ENOSPC` for a staging
@@ -597,10 +709,10 @@ export class Scene {
    * the reason every other verb passes its errno through: the number is the
    * diagnosis.
    */
-  commit(canvas: Canvas, pipe: i32): i32 {
+  commit(canvas: Canvas, pipe: i32, bucket: i32 = 0): i32 {
     const count = this.pack();
     if (count <= 0) return 0;
-    return canvas.submit(pipe, this.records, 0);
+    return canvas.submit(pipe, this.records, bucket);
   }
 
   /**
@@ -745,21 +857,75 @@ export class Scene {
     const w: i32 = this.ws[i] != 0 ? this.ws[i] : f.w;
     const h: i32 = this.hs[i] != 0 ? this.hs[i] : f.h;
     if (w <= 0 || h <= 0) return true;              // nothing to draw
-    const x: f32 = this.xs[i];
-    const y: f32 = this.ys[i];
-    return x >= <f32>this.width || y >= <f32>this.height ||
-           x + <f32>w <= 0.0 || y + <f32>h <= 0.0;
+    // Screen space: the node's world position, panned by the camera and placed
+    // at the viewport's origin. With neither set this is the node's own
+    // coordinates against the canvas, which is what it always was.
+    const x: i32 = this.screenX(i);
+    const y: i32 = this.screenY(i);
+    const left: i32 = this.clipX();
+    const top: i32 = this.clipY();
+    return x >= left + this.clipW() || y >= top + this.clipH() ||
+           x + w <= left || y + h <= top;
   }
 
-  /** Write node `i`'s bytes into record `slot`. */
+  /** Node `i`'s canvas x: world position, panned, then placed in the viewport. */
+  private screenX(i: i32): i32 {
+    return <i32>Math.round(<f32>this.xs[i] - this.cameraX) + this.clipX();
+  }
+
+  /** The vertical counterpart of `screenX`. */
+  private screenY(i: i32): i32 {
+    return <i32>Math.round(<f32>this.ys[i] - this.cameraY) + this.clipY();
+  }
+
+  /**
+   * Write node `i`'s bytes into record `slot`, panning and clipping it.
+   *
+   * The trim is the viewport's other half. `isCulled` drops a node entirely
+   * outside; this one handles the straddle, by shortening the **source** rect as
+   * well as the destination — legal because the record's `w`/`h` are one pair
+   * used for both, so at 1:1 a source offset is a destination offset. A record
+   * written untrimmed would paint outside the viewport and over whatever the next
+   * bucket draws there.
+   */
   private writeRecord(i: i32, slot: i32): void {
     const f = this.frameTable[this.frames[i]];
-    const w: u16 = this.ws[i] != 0 ? this.ws[i] : f.w;
-    const h: u16 = this.hs[i] != 0 ? this.hs[i] : f.h;
+    let w: i32 = this.ws[i] != 0 ? this.ws[i] : f.w;
+    let h: i32 = this.hs[i] != 0 ? this.hs[i] : f.h;
+    let x: i32 = this.screenX(i);
+    let y: i32 = this.screenY(i);
+    let srcX: i32 = f.srcX;
+    let srcY: i32 = f.srcY;
+
+    const left: i32 = this.clipX();
+    const top: i32 = this.clipY();
+    const right: i32 = left + this.clipW();
+    const bottom: i32 = top + this.clipH();
+
+    if (x < left) {
+      const cut: i32 = left - x;
+      srcX += cut;
+      x = left;
+      w -= cut;
+    }
+    if (y < top) {
+      const cut: i32 = top - y;
+      srcY += cut;
+      y = top;
+      h -= cut;
+    }
+    if (x + w > right) w = right - x;
+    if (y + h > bottom) h = bottom - y;
+    // `isCulled` should have dropped this node; the check stays because a
+    // rounded position can put a one-pixel sliver on the wrong side of the edge
+    // and a zero- or negative-width record is not a draw.
+    if (w <= 0 || h <= 0) {
+      this.flags[i] = 0;
+      return;
+    }
+
     this.written++;
-    this.records.writeAt(slot,
-                         <i32>Math.round(this.xs[i]), <i32>Math.round(this.ys[i]),
-                         f.srcX, f.srcY, w, h, f.tex,
+    this.records.writeAt(slot, x, y, <u16>srcX, <u16>srcY, <u16>w, <u16>h, f.tex,
                          this.sortKeys[i], this.groupIds[i], this.zs[i]);
     this.flags[i] = 0;
   }

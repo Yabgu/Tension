@@ -53,6 +53,26 @@ function recSort(scene: Scene, slot: i32): u32 {
   return view[slot].sortKey;
 }
 
+function recW(scene: Scene, slot: i32): i32 {
+  let view = scene.buffer().view();
+  return view[slot].w;
+}
+
+function recH(scene: Scene, slot: i32): i32 {
+  let view = scene.buffer().view();
+  return view[slot].h;
+}
+
+function recSrcX(scene: Scene, slot: i32): i32 {
+  let view = scene.buffer().view();
+  return view[slot].srcX;
+}
+
+function recSrcY(scene: Scene, slot: i32): i32 {
+  let view = scene.buffer().view();
+  return view[slot].srcY;
+}
+
 const A: Frame = new Frame(0, 0, 0, 32, 32);
 const B: Frame = new Frame(0, 32, 0, 32, 32);
 
@@ -107,6 +127,66 @@ function caseSpawnAndOrder(): void {
 }
 
 // ── 6. culling frees the slot, and coming back repacks ─────────────────────
+// ── 4b. the viewport: place, clip, and trim the straddle ───────────────────
+//
+// The composite's half of the contract (`docs/modules/2d.md` §3). A scene drawn
+// into a sub-rect has to do three things the canvas-wide path never did: move its
+// records to the rect's origin, drop what is outside it, and *trim* what crosses
+// the edge — because a record written untrimmed paints over whatever the next
+// bucket draws there.
+function caseViewport(): void {
+  // A viewport at (20,40) 80 wide: canvas x runs 20..100, so a world x maps to
+  // `world + 20` while the camera is at the origin.
+  const scene = Scene.create(640, 360, 64);
+  const inside = scene.spawn(A);
+  const straddles = scene.spawn(A);
+  const outside = scene.spawn(A);
+  inside.moveTo(10, 10);         // -> screen 30, fully inside
+  straddles.moveTo(75, 10);      // -> screen 95, and 32 wide: 5 px visible
+  outside.moveTo(200, 10);       // -> screen 220, past the right edge
+
+  scene.setViewport(20, 40, 80, 60);
+
+  checkEq(2, scene.pack(), "a node outside the viewport costs no record");
+
+  // Placement: world (10,10) inside a viewport at (20,40) is canvas (30,50).
+  checkEq(30, recX(scene, 0), "a node is placed at the viewport's origin");
+  checkEq(50, recY(scene, 0), "on both axes");
+
+  // The straddle is trimmed to the edge rather than drawn past it.
+  checkEq(95, recX(scene, 1), "the straddling node starts where it was");
+  checkEq(5, recW(scene, 1), "and is cut to the viewport's right edge");
+  checkEq(32, recH(scene, 1), "with no vertical cut");
+  checkEq(0, recSrcX(scene, 1), "and no source offset: the cut was on the right");
+
+  // A cut on the *left* moves the source, which is what makes it the same pixels.
+  straddles.moveTo(-12, 10);     // -> screen 8: 12 px outside, so 20 visible
+  checkEq(2, scene.pack(), "the moved node still draws");
+  checkEq(20, recX(scene, 1), "a node crossing the left edge starts at the edge");
+  checkEq(20, recW(scene, 1), "with the visible width");
+  checkEq(12, recSrcX(scene, 1), "and the source skipped by the same amount");
+
+  // The camera pans the world; the viewport still places it.
+  scene.setCamera(5, 2);
+  checkEq(2, scene.pack(), "panning does not cull what is still visible");
+  checkEq(25, recX(scene, 0), "the camera moves the record left by its x");
+  checkEq(48, recY(scene, 0), "and up by its y");
+
+  // A camera that pans the whole scene away leaves nothing to draw.
+  scene.setCamera(500, 0);
+  checkEq(0, scene.pack(), "a camera past the scene draws nothing");
+
+  // Clearing puts the scene back on the canvas: world coordinates, no camera.
+  // The clip is the canvas itself, so the node still hanging off the left edge is
+  // trimmed to it rather than written at a negative x — the same pixels the GPU
+  // would have drawn, from a record that says what it draws.
+  scene.clearViewport();
+  checkEq(3, scene.pack(), "clearing the viewport draws the whole canvas again");
+  checkEq(10, recX(scene, 0), "at the node's own coordinates");
+  checkEq(0, recX(scene, 1), "and a node off the canvas edge is trimmed to it");
+  checkEq(20, recW(scene, 1), "to the visible width");
+}
+
 function caseCulling(): void {
   const scene = Scene.create(640, 360, 64);
   const a = scene.spawn(A);
@@ -216,6 +296,7 @@ export function _start_game(): void {
   }
   caseSpawnAndOrder();
   caseCulling();
+  caseViewport();
   caseDestroy();
   caseBudget();
   caseTime();

@@ -1,0 +1,22 @@
+{
+  "name": "@yabgu_gm/tension-editor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "The Tension editor: a guest app that edits a scene document, with a command palette, an undo history and a live game viewport.",
+  "scripts": {
+    "assets": "node ../../tension-framework/tools/font/make-font.mjs",
+    "dev": "tension dev",
+    "start": "tension dev",
+    "build": "tension build",
+    "doctor": "tension doctor"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tension": "file:../../packages/cli",
+    "@yabgu_gm/tensionscript": "^0.14.1"
+  },
+  "dependencies": {
+    "@yabgu_gm/tension-core": "file:../../packages/core",
+    "tension-framework": "file:../../tension-framework"
+  }
+}

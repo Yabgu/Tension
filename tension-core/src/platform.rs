@@ -1538,6 +1538,17 @@ impl HostWindow {
             .build()
             .map_err(|e| PlatformError::Sdl(e.to_string()))?;
 
+        // **Text input is not enabled automatically in SDL3.** Without this call
+        // the pump never produces `SDL_EVENT_TEXT_INPUT`, so the
+        // `TENSION_EVENT_TEXT` family translates nothing at all — measured: the
+        // editor's inspector field received every key *down* and no text, while the
+        // earlier pass that added the family had only verified that the verb answers
+        // 0 when nothing has been typed (trivially true when nothing *can* be).
+        //
+        // Started here, at creation, for the reason the window record is published
+        // here: it is the one place every creator passes through.
+        video.text_input().start(&window);
+
         let window = HostWindow {
             window,
             event_pump,

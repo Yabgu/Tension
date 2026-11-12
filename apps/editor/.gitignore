@@ -1,0 +1,17 @@
+# The UI atlas: baked by `npm run assets` from the framework's font tool, and a
+# product rather than a source. A committed copy would be a second source of
+# truth for the cell geometry `assembly/ui/theme.ts` declares.
+assets/
+
+# The wasm, the packed volume and the resolved asconfig `tension dev` writes.
+build/
+
+# The self-contained app `tension build` writes.
+dist/
+
+node_modules/
+
+# Emitted by `tension dev` from the host's own graph. The editor uses it for the
+# **game** pipeline (the UI takes preset 1), so this one is load-bearing — and
+# still not committed, because it is versioned with the runtime.
+src/graph.generated.ts

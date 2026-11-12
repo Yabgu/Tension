@@ -122,6 +122,19 @@ export abstract class AppShell {
   /** After a frame is presented. The default does nothing. */
   protected afterFrame(): void {}
 
+  /**
+   * The bucket this shell submits its painter into. **0 unless an app composites.**
+   *
+   * Buckets are draw order, ascending, and each is one draw call and one pipeline
+   * — so an app that draws a scene *under* its own UI here needs two: the scene
+   * into a lower bucket with its pipeline, the UI into a higher one. Submitting
+   * both into 0 is refused by the renderer rather than silently merged ("a bucket
+   * that already belongs to another pipe"), which is how this was found.
+   */
+  protected get uiBucket(): i32 {
+    return 0;
+  }
+
   // ── lifecycle ───────────────────────────────────────────────────────────
 
   /**
@@ -290,7 +303,7 @@ export abstract class AppShell {
       const p = this.painter;
       p.reset();
       this.draw(p);
-      const accepted = p.submit(this.canvas!, this.pipe);
+      const accepted = p.submit(this.canvas!, this.pipe, this.uiBucket);
       this.lastRecords = p.count;
       this.lastDropped = p.dropped;
       if (accepted < p.count) {

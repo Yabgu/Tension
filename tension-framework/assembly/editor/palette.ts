@@ -76,9 +76,22 @@ export class CommandInfo {
 export class AddNodeFactory implements CommandFactory {
   id(): string { return "node.add"; }
   title(): string { return "Add Node"; }
+  /**
+   * Always allocates: **`args.id` is ignored.**
+   *
+   * It has to be. `Args.id` means "the node this command acts on", and `run`
+   * resolves it from the selection when it is absent — which for a *create* is
+   * nonsense: the field would name the node being made, and the selection would
+   * silently become its id. That is what shipped first: `node.add` inserted at
+   * the selected node's id, found it alive, refused, and left an undo entry that
+   * undid nothing.
+   *
+   * A user does not choose ids. The document hands them out, and a caller that
+   * genuinely needs a specific one constructs `AddNode` directly.
+   */
   make(args: Args): Command {
     const name = args.text.length > 0 ? args.text : "node";
-    return new AddNode(args.id, args.parent, name);
+    return new AddNode(ALLOCATE_ID, args.parent, name);
   }
 }
 

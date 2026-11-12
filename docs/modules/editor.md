@@ -182,8 +182,69 @@ caught: dropping `z` from `RemoveNode`'s snapshot fails "with every field it had
 and making `SetX.merge` return false fails four assertions (the drag becomes 32
 entries and one undo lands on the last frame instead of the start).
 
-## 6. What is not here
+## 6. The shell — `apps/editor`
 
-No canvas, no window, no shell (Pass 3), no viewport (Pass 4). Nothing in this
-directory imports `Canvas`, `Scene` or the session — which is what lets the whole of
-it be tested with no display, and what makes the shell that follows purely drawing.
+Pass 3 puts the core on screen. The app is `apps/editor`: an `AppShell` subclass,
+the `tension-ui` painter, and no loop of its own.
+
+```
+ 0        32                                                         1920
+ +---------+---------------------------------------------------------+
+ | menu: File  Edit  View  Run                             (32 px)    |   0
+ +---------+--------------------------------+------------------------+
+ | scene   |  game viewport                 | inspector              |
+ | tree    |  (bucket 0, its own pipeline)  | (selected node)        |
+ | 320 px  |                                | 360 px                 |
+ +---------+--------------------------------+------------------------+
+ | console (240 px)                                                    |
+ +---------------------------------------------------------------------+
+ | status: nodes, selection, records, frame              (32 px)       |
+ +---------------------------------------------------------------------+
+```
+
+**The composite is the point.** The game is a second `Scene` with its own pipeline
+(pipe 100, from the emitted graph blob) and its own texture (a generated 128x32
+atlas); the UI is the painter on preset 1 with the 576x1024 font atlas. The game
+commits into canvas **bucket 0**, the painter into **bucket 1**, and one `present`
+draws them in order. Buckets are the mechanism: each is one draw call and one
+pipeline, which is why submitting both into 0 is refused rather than merged.
+
+The scene is clipped to the viewport with `Scene.setViewport`, so a box near the
+panel's edge is trimmed at it instead of painting over the inspector — and the
+*atlas sizes differ*, which is the harder half of the proof: the renderer rebinds
+`u_tex_size` per span.
+
+Three things the shell taught, each of which was a bug first:
+
+- **`loadAssets` runs again on every canvas rebuild.** Building the scene there
+  gave nine nodes instead of five and twelve boxes instead of six, because a
+  compositor that resized the window at startup triggered one rebuild. The scene
+  is built once, behind a flag.
+- **`SDL3` does not enable text input by itself.** `SDL_StartTextInput` is what
+  makes the pump produce `SDL_EVENT_TEXT_INPUT`; without it the TEXT family
+  translates nothing and the inspector's field received every key *down* and no
+  text. The host now starts it at window creation — and that is a correction to an
+  earlier pass, whose text-input verb had only ever been verified against "nothing
+  was typed", a claim that is trivially true when nothing *can* be.
+- **`node.add` must ignore `Args.id`.** `Args.id` is "the node this command acts
+  on", and `Palette.run` resolves it from the selection — so a create command that
+  read it inserted at the *selected node's* id, found it alive, refused, and left
+  an undo entry that undid nothing. A user does not choose ids.
+
+Interaction: a click in the tree selects; a click on the inspector's `x` row
+focuses it; typing goes through `Snapshot.textInput()` (UTF-8, so a minus and a
+decimal point are the keyboard's); `Enter` dispatches `SetX` through the history;
+`Ctrl+Z`/`Ctrl+Y` undo and redo; `Ctrl+A` adds under the selection; `Delete`
+removes.
+
+**A rig note for anyone scripting it:** `xdotool key` presses and releases inside
+one frame, and the key set is a *level* sampled once per frame — so a scripted key
+must be held (`keydown`, ~150 ms, `keyup`), exactly as a scripted click must use
+`mousedown`/`mouseup`. A human keypress is 50-150 ms and is always seen.
+
+## 7. What is not here
+
+Play mode (Pass 4), save and live reload (Pass 5). The **core** — `document.ts`,
+`command.ts`, `palette.ts`, `json.ts` — still imports no `Canvas`, no `Scene` and
+nothing from the session; the shell is the only file that does, which is what keeps
+the whole of the logic testable with no display.
