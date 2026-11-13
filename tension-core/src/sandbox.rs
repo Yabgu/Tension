@@ -70,17 +70,36 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
-use wasmtime::{Engine, Module, ResourceLimiter};
+use wasmtime::{Engine, Module, ResourceLimiter, Store};
 
 use crate::host::guest::Kind;
 use crate::host::{GuestHost, HostConfig};
+use crate::HostState;
 
 /// How often the watchdog advances the engine's epoch. **PROVISIONAL.**
 pub(crate) const TICK: Duration = Duration::from_millis(20);
 
 /// Epoch ticks a sandboxed guest may run before it traps, so a run may last
 /// about `TICK * TICKS_BEFORE_TRAP`. **PROVISIONAL.**
+///
+/// The bound is **per call** since slice 4b, not per guest: wasmtime's deadline
+/// is absolute (`now + delta`), so arming it once at `open` capped a guest's
+/// lifetime at ~178 ms and a driven rendering guest died on its ninth frame.
+/// [`arm`] is called before every call into a sandboxed guest instead.
 pub(crate) const TICKS_BEFORE_TRAP: u64 = 8;
+
+/// Arm a sandboxed store's deadline for the call that follows.
+///
+/// One function because the alternative — a `set_epoch_deadline` at each call
+/// site — is four chances to forget one, and forgetting one is silent: the guest
+/// simply inherits whatever was left of the previous bound.
+///
+/// The root guest never comes through here: its store is armed with
+/// `NEVER_TRAPS` once (`host/guest.rs`), because the process's own guest owns
+/// its loop and must not be interrupted at all.
+fn arm(store: &mut Store<HostState>) {
+    store.set_epoch_deadline(TICKS_BEFORE_TRAP);
+}
 
 /// How deep nesting may go. Depth 1 is the editor's own game; 5 is refused.
 pub(crate) const MAX_DEPTH: u32 = 4;
@@ -465,6 +484,7 @@ impl Sandbox {
             kind: declared,
             ..
         } = self;
+        arm(&mut guest.host.store);
         let created = guest.host.linker.instantiate(&mut guest.host.store, module)?;
         let entry = created.get_typed_func::<(), ()>(&mut guest.host.store, "_start_game")?;
         // Resolved **before** the call, so a rendering declaration can be refused
@@ -486,6 +506,9 @@ impl Sandbox {
             .ok();
         *game_running = probe;
         *declared = kind;
+        // Armed again, for the entrypoint: instantiation is itself a call, and a
+        // module whose start section is slow must not eat the entrypoint's bound.
+        arm(&mut guest.host.store);
         entry.call(&mut guest.host.store, ())?;
         *instance = Some(created);
         Ok(())
@@ -532,7 +555,12 @@ impl Sandbox {
     ///
     /// `false` when it exports no `_game_running`: a guest that cannot answer is
     /// not asking to be driven.
-    pub(crate) fn wants_frames(&mut self) -> Result<bool> {
+    ///
+    /// Does **not** arm the deadline. `frame` arms once per frame call and then
+    /// retries as often as the guest needs; arming on each retry would be the bug
+    /// this change is about, one level down — a guest that yields forever without
+    /// presenting would reset its own bound on every yield and never trap.
+    fn probe_running(&mut self) -> Result<bool> {
         match self.game_running.clone() {
             Some(probe) => Ok(probe.call(&mut self.guest.host.store, ())? != 0),
             None => Ok(false),
@@ -587,6 +615,14 @@ impl Sandbox {
         if self.kind() == RunKind::Batch {
             return Ok(false);
         }
+        // **One arming per frame call, and that is the frame's whole budget.**
+        // The epoch threads through the store, so a stale absolute deadline caps
+        // the guest's *lifetime* rather than one call: armed once at `open`, a
+        // driven rendering guest trapped on its ninth frame, 178 ms in (measured,
+        // `driven_rendering_guest_outlives_one_deadline`). Re-arming here means a
+        // guest lives as long as it is driven, while everything below stays
+        // bounded — a yield loop, a runaway call inside a frame, or the entrypoint.
+        arm(&mut self.guest.host.store);
         let drive = self.task_wake.clone();
         loop {
             let before = self.frames_presented();
@@ -603,7 +639,7 @@ impl Sandbox {
             if self.frames_presented() != before {
                 return Ok(true);
             }
-            if !self.wants_frames()? {
+            if !self.probe_running()? {
                 return Ok(false);
             }
         }
@@ -1094,6 +1130,17 @@ mod tests {
         );
     }
 
+    /// A guest that is *always* willing to be driven and never presents: every
+    /// `__taskWake` returns immediately, `_game_running` stays 1. Driving it calls
+    /// the guest forever, so only the epoch can end the frame call.
+    const YIELDS_FOREVER: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "_start_game"))
+          (func (export "__taskWake") (param i32 i32))
+          (func (export "_game_running") (result i32) (i32.const 1)))
+    "#;
+
     /// A guest that exports the frame contract: `_game_running` answers 1 until
     /// its counter reaches zero, and `__taskWake` is the per-iteration hook.
     const ADOPTED: &str = r#"
@@ -1468,5 +1515,68 @@ mod tests {
             Some(-9),
             "a frame after stop is -EBADF: the run is gone, not silently alive"
         );
+    }
+
+    /// **The bug this change fixes, as a test.** A rendering guest driven frame
+    /// by frame must live as long as it is driven.
+    ///
+    /// The epoch deadline is absolute: `open` armed it once, so a guest died
+    /// `TICK * TICKS_BEFORE_TRAP` (~178 ms) after opening no matter how well it
+    /// behaved — measured at nine frames, then a trap. The window is deliberately
+    /// longer than that old bound and each frame sleeps, so this fails on the old
+    /// code at frame 9 and passes only if the deadline is re-armed per frame.
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn driven_rendering_guest_outlives_one_deadline() {
+        const FRAMES: u32 = 24;
+        let scratch = Scratch::new("outlive");
+        let config = config(scratch.write("guest.wat", &render_guest(4, 0, 4)));
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox
+            .start(RunKind::Rendering)
+            .expect("the entrypoint returns");
+
+        let started = std::time::Instant::now();
+        for frame in 0..FRAMES {
+            // Past the old lifetime bound, so a regression cannot hide behind a
+            // fast machine: 24 frames x 16 ms is ~384 ms of guest lifetime.
+            std::thread::sleep(Duration::from_millis(16));
+            let outcome = sandbox.frame();
+            assert!(
+                matches!(outcome, Ok(true)),
+                "frame {frame} must complete, got {outcome:?}"
+            );
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed > Duration::from_millis(200),
+            "the run must cross the old ~178 ms lifetime bound to prove anything, took {elapsed:?}"
+        );
+        assert_eq!(sandbox.frames_presented(), FRAMES);
+    }
+
+    /// The other half of the same change: re-arming per frame must **not** hand a
+    /// guest the ability to dodge its bound. A guest that yields forever without
+    /// presenting has one frame call's budget, and a frame call is bounded.
+    #[test]
+    fn a_guest_that_never_presents_still_traps_within_one_frame() {
+        const BOUND: Duration = Duration::from_secs(5);
+        let scratch = Scratch::new("yields-forever");
+        let config = config(scratch.write("guest.wat", YIELDS_FOREVER));
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox
+            .start(RunKind::Rendering)
+            .expect("the entrypoint returns");
+
+        let started = std::time::Instant::now();
+        let outcome = sandbox.frame();
+        let elapsed = started.elapsed();
+        let error = outcome.expect_err("a yield loop must trap, not spin");
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("wasm trap:"),
+            "the trap is the epoch's, not an incidental error: {message}"
+        );
+        assert!(elapsed < BOUND, "a frame call must be bounded, took {elapsed:?}");
     }
 }
