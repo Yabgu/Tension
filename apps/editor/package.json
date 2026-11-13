@@ -7,7 +7,7 @@
   "scripts": {
     "assets": "node scripts/assets.mjs",
     "dev": "tension dev",
-    "start": "tension dev --exit-on-close",
+    "start": "tension dev",
     "build": "tension build",
     "doctor": "tension doctor"
   },

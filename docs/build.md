@@ -440,6 +440,46 @@ tree ends up with a suite that skips under one flag and fails under the other �
 which is exactly what happened for one pass, when a second, GPU-only flag
 coexisted with this one.
 
+### What `tension dev` does, and when it stops
+
+`tension dev` builds, runs, watches `src/` and `assets/`, and restarts the process
+when a source changes. Its lifetime is the part worth stating, because the
+plausible behaviours differ by who is asking:
+
+| invocation | watches | when the window closes |
+| --- | --- | --- |
+| `tension dev` | yes | **the command exits**, status 0 |
+| `tension dev --watch` | yes | the supervisor stays; Ctrl-C to stop |
+| `tension dev --no-watch` | no | the command exits when the game does, with its status |
+
+**The default is the app-like one**: this runs an app, and an app is over when
+its window is. Before 2026-11-13 the default was the other way round — the
+watcher survived a close and the user was left with a supervisor that looked
+hung, until Ctrl-C. `--exit-on-close` opted out of that. The inversion is now
+the default, the flag is **removed** rather than kept as an alias (a parser that
+accepts an option and ignores it is the thing `cli.js`'s header says it exists to
+prevent), and `--watch` is how a development loop asks for the old behaviour.
+
+A window close that exits **0** ends the command. A non-zero exit is a crash and
+keeps the watcher under either flag, for the same reason a failed build does: the
+edit that fixes it should restart the game on save.
+
+**Per-app choices, as they stand:**
+
+- `apps/editor` and `apps/docs` — no flag. Closing the window quits the app.
+- The 2D examples — no `dev` script at all: they run `tension-core` directly
+  (`"start": "tension-core build/game.wasm --windowed"`), which has no watcher
+  and already exits with the game. The OGRE and solver examples run
+  `scripts/run-example.mjs`, which is likewise a one-shot.
+- `docs/spikes/records-budget.md`'s measurement uses `tension dev --no-watch`,
+  which is still exactly the one-shot it was.
+
+**Not supported today: a guest refusing a close.** The host latches the request
+(`tension-core/src/platform.rs:2060-2072`, "Latched, not an edge"): once the user
+asks, the window closes. An unsaved-changes dialog needs a contract in which the
+guest sees the request and answers keep-running. Shape and constraints:
+[`docs/backlog/guest-rejectable-close.md`](backlog/guest-rejectable-close.md).
+
 ## 6. Tests
 
 `node scripts/test.mjs` is the runner. Twenty-six suites (the `SUITES` table in

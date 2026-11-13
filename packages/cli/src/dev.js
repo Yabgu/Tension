@@ -95,9 +95,15 @@ async function stopHost(child) {
 /**
  * The dev loop.
  *
- * Returns a promise that resolves when the loop ends (Ctrl-C, `--no-watch` and
- * the game exiting, `--exit-on-close` and the game closing its own window, or a
- * failed first build under `--build-only`).
+ * Returns a promise that resolves when the loop ends: Ctrl-C, `--no-watch` and
+ * the game exiting, the window closing (the default), or a failed first build
+ * under `--build-only`.
+ *
+ * **Closing the window ends the command unless `--watch` was passed.** That is
+ * the default because `tension dev` runs an app, and an app is over when its
+ * window is: a supervisor that outlived it looked like a hang. `--watch` is the
+ * development loop, where surviving the close is what lets a game be edited and
+ * re-run on the next save.
  */
 export async function dev(ctx, options = {}) {
   const opts = {
@@ -105,11 +111,10 @@ export async function dev(ctx, options = {}) {
     watch: options.watch !== false,
     buildOnly: Boolean(options.buildOnly),
     debug: Boolean(options.debug),
-    // Off by default: an example that closes its window is usually a run the
-    // author is about to edit and re-run, so the watcher stays. Opted into by
-    // the editor, whose window closing means the editor is done (see
-    // `apps/editor/package.json`).
-    exitOnClose: Boolean(options.exitOnClose),
+    // `--watch`: keep the supervisor alive after a clean window close. Off by
+    // default — the default is the app-like behaviour, where the window closing
+    // ends the process.
+    stayAfterClose: Boolean(options.stayAfterClose),
     extra: options.extra ?? [],
   };
 
@@ -155,15 +160,14 @@ export async function dev(ctx, options = {}) {
       // exited" would make every save look like a crash.
       if (!wasCurrent || state.stopping || state.restarting) return;
       if (signal === 'SIGTERM' || signal === 'SIGKILL') return;
-      // `--exit-on-close`: the host exited 0, which on the close path means the
-      // window was closed and the runtime tore itself down cleanly. There is
-      // nothing left to supervise, so the loop ends here.
+      // **The default: a clean exit ends the command.** The host exits 0 on the
+      // close path — measured at 429-483 ms after a settled window close — so an
+      // exit 0 is "the app is over", and there is nothing left to supervise.
       //
-      // Only 0. A non-zero host exit is a crash, and a crash keeps the watcher
-      // for the same reason a failed build does: the author fixes the file and
-      // the loop restarts on save. Without a watcher the branch below is
-      // already resolved on exit, so this only applies under `watch`.
-      if (opts.exitOnClose && opts.watch && code === 0) {
+      // Only 0, and only without `--watch`. A non-zero host exit is a crash and
+      // keeps the supervisor either way, for the same reason a failed build
+      // does: the author fixes the file and the loop restarts on save.
+      if (code === 0 && !opts.stayAfterClose) {
         step('tension: the game closed.');
         requestExit?.(0);
         return;
@@ -308,14 +312,14 @@ export async function dev(ctx, options = {}) {
     };
     // The host's own exit reaches `shutdown` through here. Assigned before any
     // await on this path, so a child exit after this point always finds it; a
-    // child that exits before it is set (`--exit-on-close` off) never asks.
+    // child that exits before it is set (`--watch`) never asks.
     requestExit = (code) => { void shutdown(code); };
     for (const signal of ['SIGINT', 'SIGTERM']) {
       process.once(signal, () => { shutdown(0); });
     }
-    // Without `--exit-on-close` nothing else resolves the promise: the loop runs
-    // until a signal, and a game that closes on its own leaves the watcher
-    // running, which is the point of a dev loop over an example.
+    // Under `--watch` nothing else resolves the promise: the loop runs until a
+    // signal, and a game that closes on its own leaves the watcher running,
+    // which is the point of a development loop.
   });
 }
 

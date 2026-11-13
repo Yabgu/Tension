@@ -189,20 +189,30 @@ test('an unknown option is refused, not ignored', () => {
   );
 });
 
-// `--exit-on-close` is what the editor's start script passes; a flag accepted by
-// the parser but missing from the help would be documented nowhere, and a flag
-// in the help but refused by the parser would be a lie. The dev loop itself
-// needs a window to prove (see the commit), so this checks the surface.
-test('--exit-on-close is a known dev option and is documented', (t) => {
+// The two watcher flags are the whole of the dev command's lifetime policy, so
+// the surface is checked in both directions: accepted by the parser, and
+// described in the help. A flag in one place and not the other is either an
+// undocumented option or a lie.
+test('--watch and --no-watch are known dev options and are documented', (t) => {
   const dir = scratch(t);
-  // Accepted: the run gets as far as looking for a project, and fails there.
+  for (const flag of ['--watch', '--no-watch']) {
+    // Accepted: the run gets as far as looking for a project, and fails there.
+    assert.throws(
+      () => execFileSync(process.execPath, [cli, 'dev', flag, '--dir', dir],
+        { encoding: 'utf8', stdio: 'pipe' }),
+      /no project here/,
+    );
+  }
+  const help = execFileSync(process.execPath, [cli, 'dev', '--help'], { encoding: 'utf8' });
+  assert.match(help, /--watch\s+keep watching after the window closes/);
+  assert.match(help, /--no-watch\s+build and run once/);
+  // The removed flag must be *refused*, not silently accepted: an option that
+  // parses and does nothing is exactly what this parser exists to prevent.
   assert.throws(
     () => execFileSync(process.execPath, [cli, 'dev', '--exit-on-close', '--dir', dir],
       { encoding: 'utf8', stdio: 'pipe' }),
-    /no project here/,
+    /unknown option: '--exit-on-close'/,
   );
-  const help = execFileSync(process.execPath, [cli, 'dev', '--help'], { encoding: 'utf8' });
-  assert.match(help, /--exit-on-close/);
 });
 
 test('a directory with no package.json is not a project', (t) => {
