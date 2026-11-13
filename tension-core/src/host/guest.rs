@@ -207,6 +207,11 @@ impl GuestHost {
             }
             crate::session::link_session(&mut linker)?;
             crate::scheduler::link_scheduler(&mut linker)?;
+            // The platform namespace, with the nested answers: no window, and
+            // `surface_width`/`window_info` reporting the viewport rect the run
+            // was given. Registered here rather than in `main` because a nested
+            // guest has no `main`.
+            crate::host::platform_abi::link_platform(&mut linker, Kind::Nested)?;
             store.data_mut().session = session.take();
         }
 

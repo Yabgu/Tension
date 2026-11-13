@@ -78,6 +78,7 @@ pub mod dev;
 pub mod module_cache;
 pub mod guest;
 pub mod io;
+pub mod platform_abi;
 pub mod res;
 /// `tension::2d`. Named `two_d` because a module cannot be named `2d`; gated
 /// because without the in-core renderer the verbs come from the DSO.

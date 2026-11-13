@@ -426,7 +426,16 @@ impl Sandbox {
     /// compiles it once. The store gets the memory budget and the epoch deadline
     /// before it is instantiated — the only order that works, because instantiation
     /// is where the initial memory is allocated.
-    pub(crate) fn open(config: &HostConfig, parent_depth: u32) -> Result<Self> {
+    /// `viewport` is the rectangle the caller will draw this guest into, origin
+    /// (0,0) — the outer guest's viewport, not the window. It is what
+    /// `tension::platform.surface_width`/`window_info` answer with inside the
+    /// sandbox, and it is a parameter here rather than a constant because only
+    /// the caller knows the size.
+    pub(crate) fn open(
+        config: &HostConfig,
+        parent_depth: u32,
+        viewport: (u32, u32),
+    ) -> Result<Self> {
         let depth = parent_depth + 1;
         if depth > MAX_DEPTH {
             bail!(
@@ -447,6 +456,9 @@ impl Sandbox {
         // The nested store's depth, so a verb it calls computes the right
         // grandchild depth without threading the number through every call.
         host.store.data_mut().guest_depth = depth;
+        // The rectangle it may draw into. Set before instantiation: a guest may
+        // ask `surface_width` from its start section.
+        host.store.data_mut().nested_viewport = Some(viewport);
 
         let watchdog = Watchdog::start(&config.engine);
         Ok(Self {
@@ -504,10 +516,47 @@ impl Sandbox {
         *task_wake = created
             .get_typed_func::<(i32, i32), ()>(&mut guest.host.store, "__taskWake")
             .ok();
+        // The half-adoption rule, both directions (`main.rs`, the coexistence
+        // rule): a host-driven guest must export *both* hooks, because the loop
+        // would have no way to resume a task, and a guest that exports only
+        // `_game_running` would be spun on. Refused here rather than driven.
+        if probe.is_some() && task_wake.is_none() {
+            bail!(
+                "the guest exports `_game_running` but not `__taskWake`: a host-driven guest \
+                 must export both (the loop would have no way to resume a task), so this is \
+                 refused rather than spun on"
+            );
+        }
         *game_running = probe;
         *declared = kind;
-        // Armed again, for the entrypoint: instantiation is itself a call, and a
-        // module whose start section is slow must not eat the entrypoint's bound.
+
+        // The arena as the session left it, before the guest's first instruction
+        // (`docs/session.md` §8, step 2). `main` does this for the process's own
+        // guest; a sandbox must too, or the canaries and the control block are
+        // unverified for the guest that most needs the check.
+        if let Some(session) = guest.host.store.data().session.as_ref() {
+            session.verify_post_instantiate(&guest.host.store)?;
+        }
+
+        // **TensionScript's runtime initializer.** The SDK builds with
+        // `--exportStart __start`, so it is an export rather than a start
+        // section — a start section would run guest code before the arena was
+        // verified. Calling it is what makes string literals, the class
+        // vtables and the runtime's own globals resolve: a guest that calls
+        // `print("...")` without it passes an address nothing ever wrote,
+        // which is an out-of-bounds trap inside `print` with no output at all.
+        //
+        // Measured: skipping this trapped `examples/2d/box-physics` and
+        // `hello-sprites` at their first `print` (`memory fault at wasm address
+        // 0x414e4554` — the bytes of the string read as a pointer), and it is
+        // invisible to every WAT fixture, which has no initializer.
+        arm(&mut guest.host.store);
+        if let Ok(init) = created.get_typed_func::<(), ()>(&mut guest.host.store, "__start") {
+            init.call(&mut guest.host.store, ())?;
+        }
+
+        // Armed again, for the entrypoint: initialization is itself a call, and a
+        // guest whose initializer is slow must not eat the entrypoint's bound.
         arm(&mut guest.host.store);
         entry.call(&mut guest.host.store, ())?;
         *instance = Some(created);
@@ -752,12 +801,12 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
-            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
             len = path.len()
         )
@@ -770,13 +819,13 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
             (local $id i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4096) (local.get $id))
             (i32.store (i32.const 4100) (call $out (local.get $id) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4104)
@@ -792,11 +841,11 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
             len = path.len()
         )
@@ -813,7 +862,7 @@ mod tests {
     fn nested_guest_boots_and_calls_entrypoint() {
         let scratch = Scratch::new("boots");
         let config = config(scratch.write("guest.wat", SIMPLE));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.start(RunKind::Batch).expect("the entrypoint returns");
 
         // Depth is the nesting level, and the claim on input is the outer
@@ -834,7 +883,7 @@ mod tests {
     fn batch_guest_finishes_and_returns_output() {
         let scratch = Scratch::new("batch");
         let config = config(scratch.write("guest.wat", BATCH));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         let outcome = sandbox.run_batch().expect("the guest runs to completion");
         assert_eq!(outcome.out, b"hello");
     }
@@ -849,7 +898,7 @@ mod tests {
 
         let scratch = Scratch::new("spin");
         let config = config(scratch.write("guest.wat", SPIN));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
 
         let started = std::time::Instant::now();
         let outcome = sandbox.start(RunKind::Batch);
@@ -884,7 +933,7 @@ mod tests {
     fn limiter_refuses_a_guest_over_budget() {
         let scratch = Scratch::new("hungry");
         let config = config(scratch.write("guest.wat", HUNGRY));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         // Two pages: the guest's own declaration asks for four, so the refusal
         // happens at instantiation, before any code runs.
         sandbox.guest.host.store.data_mut().memory_budget = MemoryBudget::of_bytes(2 * 65536);
@@ -896,7 +945,7 @@ mod tests {
         // Negative control: the *same module* with no budget boots. Without this
         // the refusal below could be the module's own fault — a typo in the WAT,
         // a missing export — and the test would still be green.
-        let mut unbudgeted = Sandbox::open(&config, 0).expect("the control sandbox opens");
+        let mut unbudgeted = Sandbox::open(&config, 0, (0, 0)).expect("the control sandbox opens");
         unbudgeted
             .run_batch()
             .expect("without a budget, the same guest boots");
@@ -923,11 +972,11 @@ mod tests {
         let config = config(path.clone());
         let cache = Arc::clone(&config.module_cache);
 
-        let mut first = Sandbox::open(&config, 0).expect("the first sandbox opens");
+        let mut first = Sandbox::open(&config, 0, (0, 0)).expect("the first sandbox opens");
         first.run_batch().expect("the first guest runs");
         assert_eq!(cache.compiles(), 1, "the first guest compiles the module once");
 
-        let mut second = Sandbox::open(&config, 0).expect("the second sandbox opens");
+        let mut second = Sandbox::open(&config, 0, (0, 0)).expect("the second sandbox opens");
         second.run_batch().expect("the second guest runs");
         assert_eq!(
             cache.compiles(),
@@ -948,7 +997,7 @@ mod tests {
         // fingerprint does even when the modification time does not.
         let changed = format!("{SIMPLE}\n;; a longer file, so the fingerprint changes\n");
         scratch.write("guest.wat", &changed);
-        let mut third = Sandbox::open(&config, 0).expect("the third sandbox opens");
+        let mut third = Sandbox::open(&config, 0, (0, 0)).expect("the third sandbox opens");
         third.run_batch().expect("the third guest runs");
         assert_eq!(
             cache.compiles(),
@@ -969,7 +1018,7 @@ mod tests {
         // compiles the outer guest, so a baseline taken after it would count one
         // module already and the arithmetic would be off by exactly that one.
         let before = cache.compiles();
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the first pass runs");
         let after_first = cache.compiles();
         assert_eq!(
@@ -1007,7 +1056,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &run_twice(&target));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
 
         let first = sandbox.read_i32(4096).expect("the first id landed");
@@ -1036,7 +1085,7 @@ mod tests {
         let config = config(outer);
 
         // Depth 4 is the last level that may exist, so this sandbox is legal...
-        let mut sandbox = Sandbox::open(&config, MAX_DEPTH - 1).expect("depth 4 opens");
+        let mut sandbox = Sandbox::open(&config, MAX_DEPTH - 1, (0, 0)).expect("depth 4 opens");
         sandbox.run_batch().expect("the guest runs");
         assert_eq!(sandbox.guest().store().data().guest_depth, MAX_DEPTH);
 
@@ -1050,7 +1099,7 @@ mod tests {
 
         // Negative control: the same guest one level up starts a run normally,
         // so the -ELOOP above is the depth rule and not a broken fixture.
-        let mut shallower = Sandbox::open(&config, MAX_DEPTH - 2).expect("depth 3 opens");
+        let mut shallower = Sandbox::open(&config, MAX_DEPTH - 2, (0, 0)).expect("depth 3 opens");
         shallower.run_batch().expect("the guest runs");
         let started = shallower.read_i32(4096).expect("the return value landed");
         assert!(
@@ -1066,7 +1115,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &run_then_read_out(&target));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
 
         let id = sandbox.read_i32(4096).expect("the run id landed");
@@ -1099,13 +1148,13 @@ mod tests {
             &format!(
                 r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
             (local $id i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4096) (local.get $id))
             (i32.store (i32.const 4100) (call $out (local.get $id) (i32.const 100) (i32.const 2)))
             (i32.store (i32.const 4104) (call $out (i32.const 99) (i32.const 0) (i32.const 0)))))
@@ -1114,7 +1163,7 @@ mod tests {
             ),
         );
         let config = config(outer);
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
         assert!(sandbox.read_i32(4096).unwrap() > 0, "the target started");
 
@@ -1240,18 +1289,18 @@ mod tests {
             &format!(
                 r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
-            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 2) (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
                 len = path.len()
             ),
         );
         let config = config(outer);
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         assert_eq!(
@@ -1279,17 +1328,17 @@ mod tests {
             &format!(
                 r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
                 len = path.len()
             ),
         );
         let config = config(outer);
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1327,7 +1376,7 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "frame" (func $frame (param i32) (result i32)))
           (import "tension::dev" "read" (func $read (param i32 i32 i32) (result i32)))
           (import "tension::dev" "stop" (func $stop (param i32) (result i32)))
@@ -1336,7 +1385,7 @@ mod tests {
           (func (export "_start_game")
             (local $id i32)
             (local $i i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 2) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4096) (local.get $id))
             (block $done
               (loop $again
@@ -1362,7 +1411,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1386,7 +1435,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1420,7 +1469,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1445,7 +1494,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &outer_render(&game, 1));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let probed = sandbox.read_i32(4104).expect("the probe returned");
@@ -1468,13 +1517,13 @@ mod tests {
             &format!(
                 r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "frame" (func $frame (param i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{game}")
           (func (export "_start_game")
             (local $id i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4096) (local.get $id))
             (i32.store (i32.const 4100) (call $frame (local.get $id)))
             (i32.store (i32.const 4104) (call $frame (local.get $id)))))
@@ -1483,7 +1532,7 @@ mod tests {
             ),
         );
         let config = config(outer);
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1514,7 +1563,7 @@ mod tests {
         let outer = scratch.write("outer.wat", &outer_render(&game, 2));
         let config = config(outer);
 
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
         let id = sandbox.read_i32(4096).unwrap();
@@ -1544,7 +1593,7 @@ mod tests {
         const FRAMES: u32 = 24;
         let scratch = Scratch::new("outlive");
         let config = config(scratch.write("guest.wat", &render_guest(4, 0, 4)));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox
             .start(RunKind::Rendering)
             .expect("the entrypoint returns");
@@ -1576,7 +1625,7 @@ mod tests {
         const BOUND: Duration = Duration::from_secs(5);
         let scratch = Scratch::new("yields-forever");
         let config = config(scratch.write("guest.wat", YIELDS_FOREVER));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox
             .start(RunKind::Rendering)
             .expect("the entrypoint returns");
@@ -1607,7 +1656,7 @@ mod tests {
     fn a_nested_guest_may_import_the_session_and_the_scheduler() {
         let scratch = Scratch::new("session-guest");
         let config = config(scratch.write("guest.wat", SESSION_GUEST));
-        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
         sandbox
             .start(RunKind::Batch)
             .expect("a nested guest with session and scheduler imports instantiates");
@@ -1618,6 +1667,116 @@ mod tests {
         assert!(
             sandbox.guest().host.store.data().session.is_some(),
             "the session is in the store, so a verb can reach it through Caller::data()"
+        );
+    }
+
+    /// A guest that asks the platform namespace what it is drawing into.
+    ///
+    /// Stores at 4096: `surface_width`, `surface_height`, `create_window`'s
+    /// refusal, `set_window_title`'s answer, and `window_info`'s own status.
+    /// `window_info` writes its record at 8192.
+    const PLATFORM_QUESTIONS: &str = r#"
+        (module
+          (import "tension::platform" "surface_width" (func $w (result i32)))
+          (import "tension::platform" "surface_height" (func $h (result i32)))
+          (import "tension::platform" "create_window" (func $create (param i32 i32) (result i32)))
+          (import "tension::platform" "set_window_title" (func $title (param i32 i32) (result i32)))
+          (import "tension::platform" "window_info" (func $info (param i32 i32) (result i32)))
+          (memory (export "memory") 2)
+          (data (i32.const 0) "nested")
+          (func (export "_start_game")
+            (i32.store (i32.const 4096) (call $w))
+            (i32.store (i32.const 4100) (call $h))
+            (i32.store (i32.const 4104) (call $create (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 4108) (call $title (i32.const 0) (i32.const 6)))
+            (i32.store (i32.const 4112) (call $info (i32.const 1) (i32.const 8192)))))
+    "#;
+
+    /// **A nested guest's screen is the viewport, and it has no window.**
+    ///
+    /// This is what makes a nested guest that uses the framework instantiate at
+    /// all: the framework imports the platform verbs at module level, so the
+    /// namespace has to resolve even for a guest that will never open a window.
+    /// The answers then have to be *right*, not merely present:
+    ///
+    /// * width/height are the viewport the run was given, not the outer window's
+    /// * `create_window` refuses `-ENOTSUP` (the window is a process singleton)
+    /// * `set_window_title` is a no-op success (refusing would force every
+    ///   nested guest to branch on "am I nested" for a cosmetic call)
+    /// * `window_info` reports the viewport at origin (0,0)
+    #[test]
+    fn a_nested_guest_sees_the_viewport_and_has_no_window() {
+        let scratch = Scratch::new("platform");
+        let config = config(scratch.write("guest.wat", PLATFORM_QUESTIONS));
+        let mut sandbox =
+            Sandbox::open(&config, 0, (640, 360)).expect("the sandbox opens");
+        sandbox
+            .start(RunKind::Batch)
+            .expect("a guest that imports the platform namespace instantiates");
+
+        assert_eq!(sandbox.read_i32(4096), Some(640), "surface_width is the viewport");
+        assert_eq!(sandbox.read_i32(4100), Some(360), "surface_height is the viewport");
+        assert_eq!(
+            sandbox.read_i32(4104),
+            Some(-95),
+            "create_window is -ENOTSUP: there is no window, and there cannot be"
+        );
+        assert_eq!(
+            sandbox.read_i32(4108),
+            Some(0),
+            "set_window_title succeeds and does nothing: the title is the outer editor's"
+        );
+        assert_eq!(sandbox.read_i32(4112), Some(0), "window_info answers");
+
+        // The record: `struct_size` first, then width at +4 and height at +8.
+        // There is no x/y in the record at all — the wire carries a size, and a
+        // viewport's origin is (0,0) by definition, so "origin (0,0)" needs no
+        // field to say it.
+        assert_eq!(sandbox.read_i32(8192), Some(40), "struct_size");
+        assert_eq!(sandbox.read_i32(8196), Some(640), "record width is the viewport");
+        assert_eq!(sandbox.read_i32(8200), Some(360), "record height is the viewport");
+        assert_eq!(sandbox.read_i32(8204), Some(640), "pixel width equals logical: dpi 1.0");
+    }
+
+    /// A guest with an initializer: `__start` sets the flag at 4096, and
+    /// `_start_game` copies it to 4100 and then clears it, so the second word
+    /// proves the *order* (initializer first) and not merely that both ran.
+    const WITH_INITIALIZER: &str = r#"
+        (module
+          (memory (export "memory") 1)
+          (func (export "__start") (i32.store (i32.const 4096) (i32.const 1)))
+          (func (export "_start_game")
+            (i32.store (i32.const 4100) (i32.load (i32.const 4096)))
+            (i32.store (i32.const 4096) (i32.const 0))))
+    "#;
+
+    /// **The guest's runtime initializer runs before its entrypoint.**
+    ///
+    /// `main` calls `__start` for the process's own guest — the SDK builds with
+    /// `--exportStart __start` so it is an export, not a start section, and the
+    /// arena can be verified before any guest code runs. The sandbox did not,
+    /// and no WAT fixture noticed because a fixture has nothing to initialize.
+    ///
+    /// A real guest does: measured, `examples/2d/box-physics` and
+    /// `hello-sprites` both trapped at their first `print` with
+    /// `memory fault at wasm address 0x414e4554` — the bytes of a string literal
+    /// read as a pointer, because the runtime never resolved its own statics.
+    #[test]
+    fn a_nested_guest_runs_its_initializer_before_its_entrypoint() {
+        let scratch = Scratch::new("initializer");
+        let config = config(scratch.write("guest.wat", WITH_INITIALIZER));
+        let mut sandbox = Sandbox::open(&config, 0, (0, 0)).expect("the sandbox opens");
+        sandbox.start(RunKind::Batch).expect("the guest runs");
+
+        assert_eq!(
+            sandbox.read_i32(4100),
+            Some(1),
+            "the entrypoint saw what `__start` wrote: the initializer ran first"
+        );
+        assert_eq!(
+            sandbox.read_i32(4096),
+            Some(0),
+            "the entrypoint ran after it, not before"
         );
     }
 }

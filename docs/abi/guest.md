@@ -115,11 +115,11 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `run` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
-| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:219` |
-| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:249` |
-| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:276` |
-| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:317` |
+| `run` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:225` |
+| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:255` |
+| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:282` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:323` |
 
 ## `tension::input` — capability
 
@@ -148,15 +148,15 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1178` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1201` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1206` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1224` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1381` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1425` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1471` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1501` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1531` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:101` |
+| `surface_width` | `(void) → i32` | `tension-core/src/host/platform_abi.rs:124` |
+| `surface_height` | `(void) → i32` | `tension-core/src/host/platform_abi.rs:129` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:147` |
+| `close_window` | `(i32) → i32` | `tension-core/src/host/platform_abi.rs:312` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:360` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/host/platform_abi.rs:434` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:467` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:503` |
 
 ## `tension::res`
 

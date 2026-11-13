@@ -184,13 +184,18 @@ function proveHookRejectsStaleCommit() {
     // Now enable the hook the way a developer does, and move a citation: three
     // lines above the first `tension::platform` registration, `guest.md` left
     // alone. This is the slice-3 failure, reproduced.
+    //
+    // The registration lives in `host/platform_abi.rs` since 4b-3 (it used to be
+    // inline in `main.rs`, registered for the process's own guest only). The
+    // check follows the code rather than the file name: a fixture pinned to a
+    // path the code has moved out of tests nothing.
     must(['config', 'core.hooksPath', '.githooks']);
-    const main = join(root, 'tension-core', 'src', 'main.rs');
-    const text = readFileSync(main, 'utf8');
+    const registrations = join(root, 'tension-core', 'src', 'host', 'platform_abi.rs');
+    const text = readFileSync(registrations, 'utf8');
     const anchor = text.indexOf('"tension::platform",');
-    if (anchor < 0) throw new Error('main.rs has no tension::platform registration to shift');
+    if (anchor < 0) throw new Error('host/platform_abi.rs has no tension::platform registration to shift');
     const lineStart = text.lastIndexOf('\n', anchor) + 1;
-    writeFileSync(main, `${text.slice(0, lineStart)}// three lines\n// of shift\n// above the block\n${text.slice(lineStart)}`);
+    writeFileSync(registrations, `${text.slice(0, lineStart)}// three lines\n// of shift\n// above the block\n${text.slice(lineStart)}`);
     must(['add', '-A']);
 
     const rejected = run(['commit', '-q', '-m', 'stale abi']);

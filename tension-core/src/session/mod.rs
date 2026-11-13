@@ -1926,6 +1926,7 @@ mod lifecycle {
                 // `dev.run`, and an engine of their own would be a second
                 // compiled-code cache. Both are the defaults for exactly that reason.
                 guest_depth: 0,
+                nested_viewport: None,
                 runs: Default::default(),
                 next_run_id: 1,
                 engine: Default::default(),
@@ -2373,6 +2374,7 @@ mod verbs {
                 // `dev.run`, and an engine of their own would be a second
                 // compiled-code cache. Both are the defaults for exactly that reason.
                 guest_depth: 0,
+                nested_viewport: None,
                 runs: Default::default(),
                 next_run_id: 1,
                 engine: Default::default(),

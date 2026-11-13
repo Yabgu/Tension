@@ -93,11 +93,17 @@ const DEFAULT_BUDGET: usize = 64 * 1024 * 1024;
 /// Registered for **every** guest, the process's own included: the editor is the
 /// guest that calls these, and a nested guest may also (bounded by [`MAX_DEPTH`]).
 pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
-    // run(path_ptr, path_len, flags) -> run_id | -errno
+    // run(path_ptr, path_len, flags, width, height) -> run_id | -errno
     linker.func_wrap(
         "tension::dev",
         "run",
-        |mut caller: Caller<'_, HostState>, ptr: i32, len: i32, flags: i32| -> i32 {
+        |mut caller: Caller<'_, HostState>,
+         ptr: i32,
+         len: i32,
+         flags: i32,
+         width: u32,
+         height: u32|
+         -> i32 {
             let path = match guest_path(&mut caller, ptr, len) {
                 Ok(path) => path,
                 Err(errno) => return errno,
@@ -162,7 +168,7 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 post_test_events: false,
             };
 
-            let mut sandbox = match Sandbox::open(&config, state.guest_depth) {
+            let mut sandbox = match Sandbox::open(&config, state.guest_depth, (width, height)) {
                 Ok(sandbox) => sandbox,
                 Err(error) => {
                     logging::log(Level::Warn, "dev", &format!("run refused: {error:#}"));
