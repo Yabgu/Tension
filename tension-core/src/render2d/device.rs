@@ -201,6 +201,13 @@ pub struct Render2dState {
 
     // ── the session ───────────────────────────────────────────────────────
     canvas: Option<Canvas>,
+    /// How many frames a **capture** state has been asked to present.
+    ///
+    /// The frame-complete signal for a nested guest: `dev.frame` drives the guest
+    /// and returns only once this has advanced, so a mid-frame yield (a
+    /// `session_wait`, an AI completion) cannot hand the host a half-built frame.
+    /// Unused in `Present` mode, where `buckets.clear()` is the same information.
+    captured_frames: u32,
     swapchain_owner: Option<RendererId>,
     presented_once: bool,
     window_closed: bool,
@@ -231,6 +238,40 @@ impl Render2dState {
             mode: Mode::Capture,
             ..Self::default()
         }
+    }
+
+    /// Frames this capture state has presented. The frame-complete signal.
+    pub fn captured_frames(&self) -> u32 {
+        self.captured_frames
+    }
+
+    /// Bytes of staged records, across every bucket, in bucket order.
+    ///
+    /// The frame as a nested guest built it. `dev.read` copies this; nothing here
+    /// sorts, because sorting is the presenter's job (`present` orders by the
+    /// graph's keys) and a capture state never presents.
+    pub fn captured_bytes(&self) -> usize {
+        self.buckets.values().map(|b| b.records.len()).sum::<usize>() * RECORD_SIZE as usize
+    }
+
+    /// Copy the staged records into `out`, returning how many bytes were written.
+    ///
+    /// Writes nothing and returns the length when `out` is too small — the
+    /// caller checks first (`captured_bytes`), and a partial copy here would be
+    /// the truncation the whole-frame rule forbids.
+    pub fn capture_into(&self, out: &mut [u8]) -> usize {
+        let need = self.captured_bytes();
+        if out.len() < need {
+            return 0;
+        }
+        let mut at = 0;
+        for bucket in self.buckets.values() {
+            for record in &bucket.records {
+                out[at..at + RECORD_SIZE as usize].copy_from_slice(record);
+                at += RECORD_SIZE as usize;
+            }
+        }
+        at
     }
 
     /// Which mode this state is in.
@@ -508,6 +549,7 @@ impl Render2dState {
         self.textures.clear();
         self.atlases.clear();
         self.buckets.clear();
+        self.captured_frames = 0;
         self.bound_texture = 0;
         self.presented_once = false;
         self.window_closed = false;
@@ -638,6 +680,9 @@ impl Render2dState {
     /// same way a presenting frame does.
     pub fn present(&mut self, host_window: &mut Option<HostWindow>) -> Result<i32, Render2dError> {
         if self.is_capture() {
+            // The frame is the staged records; they stay. This counter is the
+            // only thing that changes, and it is what `dev.frame` waits for.
+            self.captured_frames = self.captured_frames.wrapping_add(1);
             return Ok(0);
         }
         let Render2dState {

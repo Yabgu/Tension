@@ -71,6 +71,8 @@ const EACCES: i32 = -13;
 const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
 const ENOSPC: i32 = -28;
+/// A guest trapped while being driven.
+const EFAULT: i32 = -14;
 
 /// `run` flags. **Not exhaustive**: `RUN_SURFACE` is reserved for the
 /// texture-rendering path (`docs/backlog/buffer-rendering.md`), which is a later
@@ -235,6 +237,73 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                     logging::log(Level::Warn, "dev", &format!("stop refused: no run {id}"));
                     EBADF
                 }
+            }
+        },
+    )?;
+
+    // frame(run_id) -> 1 still running | 0 complete | -errno
+    //
+    // The completeness rule is the sandbox's (`Sandbox::frame`): a frame returns
+    // only once the inner guest presented, so a mid-frame yield cannot hand back
+    // a torn frame.
+    linker.func_wrap(
+        "tension::dev",
+        "frame",
+        |mut caller: Caller<'_, HostState>, id: i32| -> i32 {
+            let state = caller.data_mut();
+            let Some(run) = state.runs.get_mut(&id) else {
+                return EBADF;
+            };
+            match run.sandbox.frame() {
+                Ok(true) => 1,
+                Ok(false) => 0,
+                Err(error) => {
+                    // A trap is reported, and the run stays in the registry: the
+                    // records it built before trapping are real.
+                    logging::log(Level::Error, "dev", &format!("frame {id} failed: {error:#}"));
+                    EFAULT
+                }
+            }
+        },
+    )?;
+
+    // read(run_id, ptr, cap) -> byte length (cap <= 0, a probe) | bytes written | -errno
+    //
+    // Probe-then-fill for the *length*, whole-frame refusal for the fill: the
+    // same pair `out` uses, with the same reason. A partial frame is worse than
+    // no frame — it draws the first half of a scene and looks like a renderer
+    // bug.
+    linker.func_wrap(
+        "tension::dev",
+        "read",
+        |mut caller: Caller<'_, HostState>, id: i32, ptr: i32, cap: i32| -> i32 {
+            let (len, records) = {
+                let state = caller.data();
+                let Some(run) = state.runs.get(&id) else {
+                    return EBADF;
+                };
+                let len = run.sandbox.records_len();
+                if cap <= 0 {
+                    return len as i32;
+                }
+                if (cap as usize) < len {
+                    // Whole frame or nothing.
+                    return ENOSPC;
+                }
+                let mut out = vec![0u8; len];
+                run.sandbox.records_into(&mut out);
+                (len, out)
+            };
+            match caller.get_export("memory").and_then(|e| e.into_memory()) {
+                Some(memory) => {
+                    let start = ptr as usize;
+                    if memory.data_size(&caller) < start + len {
+                        return EINVAL;
+                    }
+                    memory.data_mut(&mut caller)[start..start + len].copy_from_slice(&records);
+                    len as i32
+                }
+                None => EBADF,
             }
         },
     )?;

@@ -386,6 +386,9 @@ pub(crate) struct Sandbox {
     /// resolves its own (`main.rs:1737`): a lookup on the frame path would turn a
     /// static property of the binary into a runtime surprise.
     game_running: Option<wasmtime::TypedFunc<(), i32>>,
+    /// The guest's `__taskWake(ids, count)`, the per-iteration hook `frame`
+    /// drives. `None` for a guest that exports no adoption contract.
+    task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
     /// The instantiated guest, once `start` has run.
     ///
     /// Kept for the same reason `HostState` keeps an arena handle: a test, and
@@ -435,6 +438,7 @@ impl Sandbox {
             module,
             kind: RunKind::Batch,
             game_running: None,
+            task_wake: None,
             instance: None,
             watchdog,
         })
@@ -457,6 +461,7 @@ impl Sandbox {
             module,
             instance,
             game_running,
+            task_wake,
             kind: declared,
             ..
         } = self;
@@ -476,6 +481,9 @@ impl Sandbox {
                  \"the nested rendering guest\")"
             );
         }
+        *task_wake = created
+            .get_typed_func::<(i32, i32), ()>(&mut guest.host.store, "__taskWake")
+            .ok();
         *game_running = probe;
         *declared = kind;
         entry.call(&mut guest.host.store, ())?;
@@ -504,12 +512,26 @@ impl Sandbox {
         self.kind
     }
 
+    /// The capture renderer's frame counter, for `dev.frame`'s completeness rule.
+    pub(crate) fn frames_presented(&self) -> u32 {
+        self.guest.host.store.data().render2d.captured_frames()
+    }
+
+    /// The guest's captured records, as the host will copy them.
+    pub(crate) fn records_len(&self) -> usize {
+        self.guest.host.store.data().render2d.captured_bytes()
+    }
+
+    /// Copy the captured records into `out`. Returns 0 when `out` is too small —
+    /// the caller checks `records_len` first, and truncation is never an option.
+    pub(crate) fn records_into(&self, out: &mut [u8]) -> usize {
+        self.guest.host.store.data().render2d.capture_into(out)
+    }
+
     /// Whether the guest says it still wants frames.
     ///
     /// `false` when it exports no `_game_running`: a guest that cannot answer is
-    /// not asking to be driven. `dev.frame` is the caller, and nothing calls it
-    /// until that verb lands.
-    #[allow(dead_code)]
+    /// not asking to be driven.
     pub(crate) fn wants_frames(&mut self) -> Result<bool> {
         match self.game_running.clone() {
             Some(probe) => Ok(probe.call(&mut self.guest.host.store, ())? != 0),
@@ -542,6 +564,49 @@ impl Sandbox {
                 data[offset + 3],
             ])
         })
+    }
+
+    /// Drive one frame, and do not return until it is **complete**.
+    ///
+    /// "Complete" means the inner guest called `present` since the last frame —
+    /// not that one call into the guest happened. That distinction is the whole
+    /// point: a guest that yields mid-frame (`session_wait`, an AI completion, a
+    /// task park) has built part of a frame, and handing the host those records
+    /// would be a torn frame. So this drives, checks, drives again.
+    ///
+    /// The drive step is `__taskWake(0, 0)` — the adopted contract's
+    /// per-iteration hook, the same one the root host's loop calls
+    /// (`main.rs:1927`). A guest that blocks inside its entrypoint instead of
+    /// returning is not driven at all: the watchdog traps it.
+    ///
+    /// Returns `true` when a frame completed, `false` when the guest said it is
+    /// done. A trap is `Err`.
+    pub(crate) fn frame(&mut self) -> Result<bool> {
+        // A batch run *is* complete once its entrypoint returns — the probe
+        // below would say so anyway, but only for a guest that exports it.
+        if self.kind() == RunKind::Batch {
+            return Ok(false);
+        }
+        let drive = self.task_wake.clone();
+        loop {
+            let before = self.frames_presented();
+            match drive.as_ref() {
+                Some(wake) => {
+                    wake.call(&mut self.guest.host.store, (0, 0))?;
+                }
+                None => {
+                    // No per-iteration hook: nothing can advance this guest, so
+                    // asking again would spin. Its entrypoint is all it had.
+                    return Ok(false);
+                }
+            }
+            if self.frames_presented() != before {
+                return Ok(true);
+            }
+            if !self.wants_frames()? {
+                return Ok(false);
+            }
+        }
     }
 
     /// The guest this sandbox holds.
@@ -655,8 +720,8 @@ mod tests {
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
-            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
             len = path.len()
         )
@@ -676,9 +741,9 @@ mod tests {
           (func (export "_start_game")
             (local $id i32)
             (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
-            (i32.store (i32.const 64) (local.get $id))
-            (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 0) (i32.const 0)))
-            (i32.store (i32.const 72)
+            (i32.store (i32.const 4096) (local.get $id))
+            (i32.store (i32.const 4100) (call $out (local.get $id) (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 4104)
               (call $out (local.get $id) (i32.const 100) (i32.const 16)))))
         "#,
             len = path.len()
@@ -695,7 +760,7 @@ mod tests {
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
             len = path.len()
         )
@@ -909,8 +974,8 @@ mod tests {
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
 
-        let first = sandbox.read_i32(64).expect("the first id landed");
-        let second = sandbox.read_i32(68).expect("the second id landed");
+        let first = sandbox.read_i32(4096).expect("the first id landed");
+        let second = sandbox.read_i32(4100).expect("the second id landed");
         assert!(first > 0 && second > 0, "both runs started: {first}, {second}");
         assert_ne!(first, second, "two runs are two handles, not one reused");
 
@@ -940,7 +1005,7 @@ mod tests {
         assert_eq!(sandbox.guest().store().data().guest_depth, MAX_DEPTH);
 
         // ...and the run it asks for would be the fifth.
-        let refused = sandbox.read_i32(64).expect("the return value landed");
+        let refused = sandbox.read_i32(4096).expect("the return value landed");
         assert_eq!(refused, -40, "-ELOOP, not -EINVAL or a generic failure");
         assert!(
             sandbox.guest().store().data().runs.is_empty(),
@@ -951,7 +1016,7 @@ mod tests {
         // so the -ELOOP above is the depth rule and not a broken fixture.
         let mut shallower = Sandbox::open(&config, MAX_DEPTH - 2).expect("depth 3 opens");
         shallower.run_batch().expect("the guest runs");
-        let started = shallower.read_i32(64).expect("the return value landed");
+        let started = shallower.read_i32(4096).expect("the return value landed");
         assert!(
             started > 0,
             "the same fixture at depth 3 starts a run: {started}"
@@ -968,15 +1033,15 @@ mod tests {
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
 
-        let id = sandbox.read_i32(64).expect("the run id landed");
+        let id = sandbox.read_i32(4096).expect("the run id landed");
         assert!(id > 0, "the target guest started: {id}");
 
         // The probe: `cap = 0` asks how many bytes there are, without writing.
-        let probed = sandbox.read_i32(68).expect("the probe returned");
+        let probed = sandbox.read_i32(4100).expect("the probe returned");
         assert_eq!(probed, 5, "the probe answers the length of `hello`");
 
         // The fill: the same length, having actually written the bytes.
-        let filled = sandbox.read_i32(72).expect("the fill returned");
+        let filled = sandbox.read_i32(4104).expect("the fill returned");
         assert_eq!(filled, 5, "the fill writes and reports the same length");
 
         // And the bytes are the guest's own output, at the offset it asked for.
@@ -1005,9 +1070,9 @@ mod tests {
           (func (export "_start_game")
             (local $id i32)
             (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
-            (i32.store (i32.const 64) (local.get $id))
-            (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 100) (i32.const 2)))
-            (i32.store (i32.const 72) (call $out (i32.const 99) (i32.const 0) (i32.const 0)))))
+            (i32.store (i32.const 4096) (local.get $id))
+            (i32.store (i32.const 4100) (call $out (local.get $id) (i32.const 100) (i32.const 2)))
+            (i32.store (i32.const 4104) (call $out (i32.const 99) (i32.const 0) (i32.const 0)))))
         "#,
                 len = path.len()
             ),
@@ -1015,15 +1080,15 @@ mod tests {
         let config = config(outer);
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
         sandbox.run_batch().expect("the guest runs");
-        assert!(sandbox.read_i32(64).unwrap() > 0, "the target started");
+        assert!(sandbox.read_i32(4096).unwrap() > 0, "the target started");
 
         assert_eq!(
-            sandbox.read_i32(68),
+            sandbox.read_i32(4100),
             Some(-28),
             "a 2-byte buffer for 5 bytes of output is -ENOSPC, not a truncation"
         );
         assert_eq!(
-            sandbox.read_i32(72),
+            sandbox.read_i32(4104),
             Some(-9),
             "an unknown run id is -EBADF, not a length of zero"
         );
@@ -1043,6 +1108,67 @@ mod tests {
           (func (export "_game_running") (result i32) (global.get $left)))
     "#;
 
+    /// A rendering guest: opens a capture canvas, submits `count` records to
+    /// `bucket` and presents, one frame per `__taskWake`.
+    ///
+    /// `pages` is settable so the over-budget case can present a record block
+    /// larger than one page.
+    #[cfg(feature = "render2d-core")]
+    fn render_guest(count: u32, bucket: u32, pages: u32) -> String {
+        // `submit_header`: records_ptr = 64, records_count, record_stride = 28,
+        // flags = 0 — little-endian, 12 bytes, as `SubmitHeader::parse` reads it.
+        let header = [
+            64u8, 0, 0, 0,
+            count as u8, (count >> 8) as u8, 0, 0,
+            28, 0, 0, 0,
+        ];
+        let data: String = header.iter().map(|b| format!("\\{:02x}", b)).collect();
+        format!(
+            r#"
+        (module
+          (import "tension::2d" "open" (func $open (param i32 i32 i32) (result i32)))
+          (import "tension::2d" "submit" (func $submit (param i32 i32 i32 i32) (result i32)))
+          (import "tension::2d" "present" (func $present (param i32) (result i32)))
+          (memory (export "memory") {pages})
+          (data (i32.const 0) "{data}")
+          (func (export "_start_game") (drop (call $open (i32.const 16) (i32.const 16) (i32.const 0))))
+          (func (export "__taskWake") (param i32 i32)
+            (drop (call $submit (i32.const 1) (i32.const 7) (i32.const 0) (i32.const {bucket})))
+            (drop (call $present (i32.const 1))))
+          (func (export "_game_running") (result i32) (i32.const 1)))
+        "#
+        )
+    }
+
+    /// The same guest, but `__taskWake` yields on its first call — no submit, no
+    /// present — and does the frame's work on the second. Models a mid-frame
+    /// yield (`session_wait`, an AI completion) exactly: work happened, the frame
+    /// did not complete.
+    #[cfg(feature = "render2d-core")]
+    fn yielding_render_guest() -> String {
+        let header = [64u8, 0, 0, 0, 2, 0, 0, 0, 28, 0, 0, 0];
+        let data: String = header.iter().map(|b| format!("\\{:02x}", b)).collect();
+        format!(
+            r#"
+        (module
+          (import "tension::2d" "open" (func $open (param i32 i32 i32) (result i32)))
+          (import "tension::2d" "submit" (func $submit (param i32 i32 i32 i32) (result i32)))
+          (import "tension::2d" "present" (func $present (param i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{data}")
+          (global $driven (mut i32) (i32.const 0))
+          (func (export "_start_game") (drop (call $open (i32.const 16) (i32.const 16) (i32.const 0))))
+          (func (export "__taskWake") (param i32 i32)
+            (global.set $driven (i32.add (global.get $driven) (i32.const 1)))
+            (if (i32.gt_u (global.get $driven) (i32.const 1))
+              (then
+                (drop (call $submit (i32.const 1) (i32.const 7) (i32.const 0) (i32.const 0)))
+                (drop (call $present (i32.const 1))))))
+          (func (export "_game_running") (result i32) (i32.const 1)))
+        "#
+        )
+    }
+
     #[test]
     fn declared_rendering_kind_refuses_a_guest_without_game_running() {
         let scratch = Scratch::new("kind-refuse");
@@ -1058,8 +1184,8 @@ mod tests {
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
-            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
+            (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
                 len = path.len()
             ),
@@ -1069,14 +1195,14 @@ mod tests {
         sandbox.run_batch().expect("the outer guest runs");
 
         assert_eq!(
-            sandbox.read_i32(64),
+            sandbox.read_i32(4096),
             Some(-22),
             "a rendering run on a guest with no `_game_running` is refused, not started"
         );
         // **The negative control that makes the refusal meaningful**: the same
         // module as a batch run is accepted, so the refusal is the declared kind
         // and not the module or the path.
-        let as_batch = sandbox.read_i32(68).unwrap();
+        let as_batch = sandbox.read_i32(4100).unwrap();
         assert!(as_batch > 0, "the same guest runs as a batch: {as_batch}");
     }
 
@@ -1097,7 +1223,7 @@ mod tests {
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+            (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
                 len = path.len()
             ),
@@ -1106,9 +1232,241 @@ mod tests {
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
         sandbox.run_batch().expect("the outer guest runs");
 
-        let id = sandbox.read_i32(64).unwrap();
+        let id = sandbox.read_i32(4096).unwrap();
         assert!(id > 0, "a batch run of an adopted guest is accepted: {id}");
         let run = &sandbox.guest().store().data().runs[&id];
         assert_eq!(run.sandbox.kind(), RunKind::Batch);
+    }
+
+    /// An outer guest that runs `target` as a rendering run, drives `frames`
+    /// frames, and stores: 64 = run id, 68 = last frame's return, 72 = probe of
+    /// `dev.read`, 76 = fill's return, 80 = bucket-0 record count, 84 = stop's
+    /// return, 88 = a frame after stop.
+    #[cfg(feature = "render2d-core")]
+    fn outer_render(target: &str, frames: u32) -> String {
+        outer_render_with_stop(target, frames, true)
+    }
+
+    /// The same fixture, with the `stop` at the end optional.
+    ///
+    /// A test that inspects the registry after the run must not stop it — the
+    /// registry is what a stop empties — so `stop = false` records a zero where
+    /// stop's return would be and leaves the run in place.
+    #[cfg(feature = "render2d-core")]
+    fn outer_render_with_stop(target: &str, frames: u32, stop: bool) -> String {
+        let path = target.to_string();
+        let tail = if stop {
+            r#"(i32.store (i32.const 4116) (call $stop (local.get $id)))
+            (i32.store (i32.const 4120) (call $frame (local.get $id)))"#
+                .to_string()
+        } else {
+            "(i32.store (i32.const 4116) (i32.const 0))\n            \
+             (i32.store (i32.const 4120) (i32.const 0))"
+                .to_string()
+        };
+        format!(
+            r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "frame" (func $frame (param i32) (result i32)))
+          (import "tension::dev" "read" (func $read (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "stop" (func $stop (param i32) (result i32)))
+          (memory (export "memory") 2)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (local $id i32)
+            (local $i i32)
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
+            (i32.store (i32.const 4096) (local.get $id))
+            (block $done
+              (loop $again
+                (br_if $done (i32.ge_u (local.get $i) (i32.const {frames})))
+                (i32.store (i32.const 4100) (call $frame (local.get $id)))
+                (local.set $i (i32.add (local.get $i) (i32.const 1)))
+                (br $again)))
+            (i32.store (i32.const 4104) (call $read (local.get $id) (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 4108) (call $read (local.get $id) (i32.const 8192) (i32.const 200)))
+            (i32.store (i32.const 4112) (i32.load (i32.const 8192)))
+            (i32.store (i32.const 4124) (call $read (local.get $id) (i32.const 8192) (i32.const 10)))
+            {tail}))
+        "#,
+            len = path.len()
+        )
+    }
+
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn nested_records_land_in_bucket_zero() {
+        let scratch = Scratch::new("bucket0");
+        let game = scratch.write("game.wat", &render_guest(2, 0, 1));
+        let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(4096).unwrap();
+        assert!(id > 0, "the rendering run started: {id}");
+        let run = &sandbox.guest().store().data().runs[&id];
+
+        // Two 28-byte records, in bucket 0, staged for the host to copy.
+        assert_eq!(run.sandbox.records_len(), 2 * 28);
+        assert_eq!(sandbox.read_i32(4104), Some(2 * 28), "the probe reports 56 bytes");
+        assert_eq!(sandbox.read_i32(4108), Some(2 * 28), "the fill writes 56 bytes");
+
+        // And the frame really completed, rather than the run being complete.
+        assert_eq!(sandbox.read_i32(4100), Some(1), "frame 1 reports: still running");
+    }
+
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn frame_does_not_return_on_a_mid_frame_yield() {
+        let scratch = Scratch::new("yield");
+        let game = scratch.write("game.wat", &yielding_render_guest());
+        let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(4096).unwrap();
+        assert!(id > 0, "the rendering run started");
+
+        // The guest's first drive yielded: work happened, no `present`. So the
+        // frame the host got back is the *second* drive's — complete, not torn.
+        assert_eq!(
+            sandbox.read_i32(4100),
+            Some(1),
+            "one `dev.frame` call completed a frame despite the guest yielding inside it"
+        );
+        assert_eq!(
+            sandbox.read_i32(4104),
+            Some(2 * 28),
+            "the records read are the complete frame, not the half-built one"
+        );
+
+        // And the run is not reported complete: a yielding guest is still running.
+        let run = &sandbox.guest().store().data().runs[&id];
+        assert_eq!(run.sandbox.frames_presented(), 1, "exactly one present, not two");
+    }
+
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn over_budget_frame_is_refused_whole_with_enospc() {
+        let scratch = Scratch::new("overbudget");
+        // 4097 records: one past `MAX_RECORDS`, so the inner `submit` refuses the
+        // whole frame rather than keeping the first 4096.
+        let game = scratch.write("game.wat", &render_guest(4097, 0, 2));
+        let outer = scratch.write("outer.wat", &outer_render_with_stop(&game, 1, false));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(4096).unwrap();
+        let run = &sandbox.guest().store().data().runs[&id];
+        assert_eq!(
+            run.sandbox.records_len(),
+            0,
+            "the refused frame left nothing staged: no partial frame"
+        );
+        assert_eq!(
+            sandbox.read_i32(4104),
+            Some(0),
+            "with nothing staged, a probe answers zero — there is no frame to read"
+        );
+    }
+
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn dev_read_probes_then_fills() {
+        let scratch = Scratch::new("read");
+        let game = scratch.write("game.wat", &render_guest(2, 0, 1));
+        let outer = scratch.write("outer.wat", &outer_render(&game, 1));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let probed = sandbox.read_i32(4104).expect("the probe returned");
+        let filled = sandbox.read_i32(4108).expect("the fill returned");
+        assert_eq!(probed, 56, "the probe answers the frame's byte length");
+        assert_eq!(filled, probed, "the fill writes exactly what the probe promised");
+        assert_eq!(
+            sandbox.read_i32(4124),
+            Some(-28),
+            "a 10-byte buffer for a 56-byte frame is -ENOSPC, never a truncated frame"
+        );
+    }
+
+    #[test]
+    fn batch_frame_reports_already_complete() {
+        let scratch = Scratch::new("batchframe");
+        let game = scratch.write("game.wat", BATCH);
+        let outer = scratch.write(
+            "outer.wat",
+            &format!(
+                r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (import "tension::dev" "frame" (func $frame (param i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{game}")
+          (func (export "_start_game")
+            (local $id i32)
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (i32.store (i32.const 4096) (local.get $id))
+            (i32.store (i32.const 4100) (call $frame (local.get $id)))
+            (i32.store (i32.const 4104) (call $frame (local.get $id)))))
+        "#,
+                len = game.len()
+            ),
+        );
+        let config = config(outer);
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(4096).unwrap();
+        assert!(id > 0, "the batch run started");
+        assert_eq!(
+            sandbox.read_i32(4100),
+            Some(0),
+            "the first frame of a batch run reports complete"
+        );
+        assert_eq!(
+            sandbox.read_i32(4104),
+            Some(0),
+            "and it stays complete: the guest is not re-run"
+        );
+        let run = &sandbox.guest().store().data().runs[&id];
+        assert_eq!(
+            run.sandbox.guest().out(),
+            b"hello",
+            "driving a finished batch run did not run the guest again"
+        );
+    }
+
+    #[cfg(feature = "render2d-core")]
+    #[test]
+    fn stop_between_frames_interrupts_a_rendering_guest() {
+        let scratch = Scratch::new("stop");
+        let game = scratch.write("game.wat", &render_guest(2, 0, 1));
+        let outer = scratch.write("outer.wat", &outer_render(&game, 2));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(4096).unwrap();
+        assert!(id > 0, "the rendering run started");
+        // Stopping between frames is the whole story: nothing is executing, so
+        // there is no thread to interrupt and no cancellation protocol to
+        // implement.
+        assert_eq!(sandbox.read_i32(4116), Some(0), "stop succeeds between frames");
+        assert_eq!(
+            sandbox.read_i32(4120),
+            Some(-9),
+            "a frame after stop is -EBADF: the run is gone, not silently alive"
+        );
     }
 }
