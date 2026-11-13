@@ -169,10 +169,18 @@ pub fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             match result {
                 Ok(handle) => {
                     let kind = if windowed { "window" } else { "offscreen" };
+                    // A capture state has no device to report; saying "device
+                    // up" there would be the one log line a reader checks to
+                    // answer "is this the nested guest or the outer one".
+                    let what = if render2d.is_capture() {
+                        "capture canvas"
+                    } else {
+                        "GPU device up"
+                    };
                     logging::log(
                         Level::Info,
                         "2d",
-                        &format!("open: GPU device up, {kind} {width}x{height} target"),
+                        &format!("open: {what}, {kind} {width}x{height} target"),
                     );
                     handle
                 }
@@ -193,9 +201,14 @@ pub fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "close",
         |mut caller: Caller<'_, HostState>, handle: i32| -> i32 {
             let state = caller.data_mut();
+            let capture = state.render2d.is_capture();
             match state.render2d.close(handle) {
                 Ok(value) => {
-                    logging::log(Level::Info, "2d", "close: device released");
+                    logging::log(
+                        Level::Info,
+                        "2d",
+                        if capture { "close: capture canvas released" } else { "close: device released" },
+                    );
                     value
                 }
                 Err(error) => {

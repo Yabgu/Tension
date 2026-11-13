@@ -40,5 +40,5 @@ pub mod iwi;
 pub mod pipeline;
 pub mod record;
 
-pub use device::{Canvas, Render2dState, RendererId};
+pub use device::{Canvas, Mode, Render2dState, RendererId};
 pub use error::Render2dError;

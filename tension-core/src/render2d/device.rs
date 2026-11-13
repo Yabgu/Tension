@@ -126,6 +126,42 @@ struct Bucket {
     records: Vec<[u8; RECORD_SIZE as usize]>,
 }
 
+/// How a [`Render2dState`] relates to a GPU.
+///
+/// **`Capture` is preparation, and it is inert until the record path lands.**
+/// Nothing constructs a capture state yet: the nested guest that will hold one
+/// is Pass 2's, and the host verb that copies its records out is a later slice.
+/// The mode exists now because *where* the frame is cleared decides whether a
+/// nested guest's records can be read at all, and that decision belongs to the
+/// state rather than to the caller.
+///
+/// The two modes differ in exactly three places, and nowhere else:
+///
+/// * `open_offscreen` — `Capture` records the canvas and creates no GPU device,
+///   so a guest that can never present still gets a handle.
+/// * `submit` — `Capture` does not require a device or a compiled pipeline,
+///   because neither can exist without one; the record's `pipe_id` is carried
+///   through for the host to resolve against its own device.
+/// * `present` — `Capture` leaves the staged records in place. In the presenting
+///   mode the staging is scratch, consumed by the draw; to a capturing host it
+///   *is* the frame, and clearing it there would throw the frame away one call
+///   after it was built.
+///
+/// **The set is open, not closed.** A third variant (working name `Render`) is
+/// reserved for the buffer-rendering path, where the inner guest draws into its
+/// own offscreen target on the shared device and the outer guest binds that as a
+/// texture page. That path is not implemented here and has its own backlog entry;
+/// the note is here so a later slice *adds* a variant instead of re-deciding what
+/// `present` means.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// The ordinary canvas: a device, a target, draws, and a present.
+    #[default]
+    Present,
+    /// Staging only: records accumulate and stay, and nothing is drawn.
+    Capture,
+}
+
 /// The 2D renderer's whole state.
 ///
 /// Field order is drop order, and the ordering is load-bearing: the GPU device
@@ -134,6 +170,10 @@ struct Bucket {
 /// reason.
 #[derive(Default)]
 pub struct Render2dState {
+    /// How this state relates to a GPU. `Present` for every existing caller;
+    /// see [`Mode`] for what `Capture` changes and why it is not exercised yet.
+    mode: Mode,
+
     // ── the canvas and its GPU objects ────────────────────────────────────
     target: Option<Texture<'static>>,
     sampler: Option<Sampler>,
@@ -180,6 +220,29 @@ pub struct Render2dState {
 }
 
 impl Render2dState {
+    /// A state that stages records and never draws.
+    ///
+    /// No device, no window, no video subsystem: this is what a nested guest's
+    /// renderer is, because the guest that owns the window is the outer one.
+    /// The records it stages are the host's to read, which is why
+    /// [`Render2dState::present`] keeps them in this mode.
+    pub fn capture() -> Self {
+        Self {
+            mode: Mode::Capture,
+            ..Self::default()
+        }
+    }
+
+    /// Which mode this state is in.
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Whether this state stages instead of drawing.
+    pub fn is_capture(&self) -> bool {
+        self.mode == Mode::Capture
+    }
+
     /// The open canvas, if any.
     pub fn canvas(&self) -> Option<Canvas> {
         self.canvas
@@ -252,6 +315,20 @@ impl Render2dState {
         height: u32,
         shared: &std::sync::Arc<crate::platform::HostShared>,
     ) -> Result<i32, Render2dError> {
+        if self.is_capture() {
+            // A capture canvas cannot own the window: the window and its device
+            // are the outer guest's, and this state exists so the inner one can
+            // draw without touching either. Refused rather than silently
+            // treated as offscreen, because a guest that asked for a window and
+            // got one invisibly is a bug that would surface as "nothing is
+            // drawn" three layers away. Whether `open(windowed)` inside a
+            // nested guest should *become* an offscreen capture canvas is a
+            // decision for the slice that maps a guest's flags onto capture
+            // mode, not for this one.
+            return Err(Render2dError::Unsupported(
+                "open: a capture canvas cannot own the window".to_string(),
+            ));
+        }
         self.validate_open(width, height)?;
         // Refuse before creating anything, so a refusal leaves no window behind
         // for the next caller to trip over.
@@ -346,6 +423,14 @@ impl Render2dState {
     /// run never creates a window at all.
     pub fn open_offscreen(&mut self, width: u32, height: u32) -> Result<i32, Render2dError> {
         self.validate_open(width, height)?;
+        if self.is_capture() {
+            // A capture canvas is a rectangle and a handle, nothing else. The
+            // guest that draws into it is nested, and a second GPU device in
+            // this process would be a second presenter for one window — the
+            // singleton list in `host/mod.rs` exists to forbid exactly that.
+            self.canvas = Some(Canvas { width, height, windowed: false });
+            return Ok(1);
+        }
         let video = ensure_video()?;
         let device = Device::new(ShaderFormat::SPIRV, false)
             .map_err(|error| Render2dError::NoDevice(format!("CreateGPUDevice: {error}")))?;
@@ -480,13 +565,20 @@ impl Render2dState {
         stride: u32,
         bucket: u32,
     ) -> Result<u32, Render2dError> {
-        if self.device.is_none() {
-            return Err(Render2dError::NoDevice("no canvas is open".to_string()));
-        }
-        if !self.pipelines.contains(pipe_id) {
-            return Err(Render2dError::NotFound(format!(
-                "submit: unknown pipe_id {pipe_id}"
-            )));
+        // In capture mode there is no device by construction (`open_offscreen`
+        // makes none), so neither of the two device-dependent checks below can
+        // hold. A capture stage carries the guest's `pipe_id` through untouched
+        // and the host resolves it against the device that actually draws —
+        // which is the only device in the process.
+        if !self.is_capture() {
+            if self.device.is_none() {
+                return Err(Render2dError::NoDevice("no canvas is open".to_string()));
+            }
+            if !self.pipelines.contains(pipe_id) {
+                return Err(Render2dError::NotFound(format!(
+                    "submit: unknown pipe_id {pipe_id}"
+                )));
+            }
         }
         if records.is_empty() || count == 0 {
             return Err(Render2dError::Invalid("submit: empty submission".to_string()));
@@ -538,7 +630,16 @@ impl Render2dState {
 
     /// Draw every bucket recorded since the last call, then clear the staging
     /// state.
+    ///
+    /// In [`Mode::Capture`] this draws nothing and clears nothing: the staged
+    /// records are the frame, and the host reads them after this call. The
+    /// capacity rule above `submit` — the whole frame is refused rather than
+    /// truncated — applies in both modes, so a capture that overflows fails the
+    /// same way a presenting frame does.
     pub fn present(&mut self, host_window: &mut Option<HostWindow>) -> Result<i32, Render2dError> {
+        if self.is_capture() {
+            return Ok(0);
+        }
         let Render2dState {
             device,
             target,
