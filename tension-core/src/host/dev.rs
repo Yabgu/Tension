@@ -59,7 +59,7 @@ use wasmtime::{Caller, Linker};
 
 use crate::host::HostConfig;
 use crate::logging::{self, Level};
-use crate::sandbox::{GuestRun, Sandbox, MAX_DEPTH};
+use crate::sandbox::{GuestRun, RunKind, Sandbox, MAX_DEPTH};
 #[cfg(test)]
 use crate::sandbox::MemoryBudget;
 use crate::HostState;
@@ -72,6 +72,15 @@ const ENOENT: i32 = -2;
 const EBADF: i32 = -9;
 const ENOSPC: i32 = -28;
 
+/// `run` flags. **Not exhaustive**: `RUN_SURFACE` is reserved for the
+/// texture-rendering path (`docs/backlog/buffer-rendering.md`), which is a later
+/// pass. A caller that passes an unknown flag is refused rather than having it
+/// ignored, and a later value is an addition rather than a contradiction.
+pub(crate) const RUN_BATCH: i32 = 1 << 0;
+/// Ask to be driven frame by frame. Refused unless the guest exports
+/// `_game_running` (see [`crate::sandbox::RunKind`]).
+pub(crate) const RUN_RENDERING: i32 = 1 << 1;
+
 /// The memory a sandboxed run gets by default. **PROVISIONAL**, like the tick and
 /// the depth cap: 64 MiB is generous for a 2D game and small enough that a fork
 /// bomb hits a wall quickly.
@@ -82,14 +91,29 @@ const DEFAULT_BUDGET: usize = 64 * 1024 * 1024;
 /// Registered for **every** guest, the process's own included: the editor is the
 /// guest that calls these, and a nested guest may also (bounded by [`MAX_DEPTH`]).
 pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
-    // run(path_ptr, path_len) -> run_id | -errno
+    // run(path_ptr, path_len, flags) -> run_id | -errno
     linker.func_wrap(
         "tension::dev",
         "run",
-        |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| -> i32 {
+        |mut caller: Caller<'_, HostState>, ptr: i32, len: i32, flags: i32| -> i32 {
             let path = match guest_path(&mut caller, ptr, len) {
                 Ok(path) => path,
                 Err(errno) => return errno,
+            };
+
+            // The kind has to be exactly one of the two, or the caller has not
+            // said what it wants and the run would have to guess.
+            let kind = match flags {
+                RUN_BATCH => RunKind::Batch,
+                RUN_RENDERING => RunKind::Rendering,
+                other => {
+                    logging::log(
+                        Level::Warn,
+                        "dev",
+                        &format!("run refused: flags {other:#x} name no single kind"),
+                    );
+                    return EINVAL;
+                }
             };
 
             let state = caller.data();
@@ -145,47 +169,47 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             };
             sandbox.guest_mut().budget(DEFAULT_BUDGET);
 
-            // **Run to completion, here and now.** See the module docs: this is
-            // the synchronous model, and `stop` cannot interrupt it.
-            let outcome = sandbox.run_batch();
+            // Entry, then the kind check. A `Rendering` declaration on a module
+            // with no `_game_running` is refused **here**, before it occupies a
+            // run id, so a caller never gets back a handle to a run that cannot
+            // be driven.
+            let started = match kind {
+                // A batch run is "entry, then done", which is `run_batch`; going
+                // through it keeps one definition of that lifetime rather than a
+                // second `start` call site with the same meaning.
+                RunKind::Batch => sandbox.run_batch().map(|_| ()),
+                RunKind::Rendering => sandbox.start(kind),
+            };
+            if let Err(error) = &started {
+                let message = format!("{error:#}");
+                let refused = message.contains("rendering run needs a guest");
+                logging::log(
+                    Level::Warn,
+                    "dev",
+                    &format!("run refused: {message}"),
+                );
+                return if refused { EINVAL } else { ENOENT };
+            }
             let state = caller.data_mut();
             let id = state.next_run_id;
             state.next_run_id += 1;
+            let out_len = sandbox.guest().out().len();
             state.runs.insert(id, GuestRun { depth, sandbox });
 
-            match outcome {
-                Ok(batch) => {
-                    // The budget is logged, not just applied: a bound nobody can
-                    // observe is a bound nobody can trust, and this is the line a
-                    // reader checks when a guest is refused for memory.
-                    let budget = state
-                        .runs
-                        .get(&id)
-                        .and_then(|run| run.sandbox.guest().budget_limit());
-                    logging::log(
-                        Level::Info,
-                        "dev",
-                        &format!(
-                            "run {id}: {} byte(s) of output at depth {depth}, \
-                             budget {}",
-                            batch.out.len(),
-                            budget.map_or("unlimited".to_string(), |b| format!("{b} bytes")),
-                        ),
-                    );
-                    id
-                }
-                Err(error) => {
-                    // A guest that trapped still occupies a run id: its output up
-                    // to the trap is real, and the caller asked for output. The
-                    // failure is logged; whether it matters is the caller's call.
-                    logging::log(
-                        Level::Error,
-                        "dev",
-                        &format!("run {id} failed: {error:#}"),
-                    );
-                    id
-                }
-            }
+            // The budget is logged, not just applied: a bound nobody can observe
+            // is a bound nobody can trust, and this is the line a reader checks
+            // when a guest is refused for memory.
+            let budget = sandbox_budget(&state.runs, id);
+            logging::log(
+                Level::Info,
+                "dev",
+                &format!(
+                    "run {id}: {} at depth {depth}, {out_len} byte(s) of output, budget {}",
+                    kind.as_str(),
+                    budget.map_or("unlimited".to_string(), |b| format!("{b} bytes")),
+                ),
+            );
+            id
         },
     )?;
 
@@ -262,6 +286,14 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
     )?;
 
     Ok(())
+}
+
+/// The budget a run was given, for the log line above.
+fn sandbox_budget(
+    runs: &std::collections::HashMap<i32, GuestRun>,
+    id: i32,
+) -> Option<usize> {
+    runs.get(&id).and_then(|run| run.sandbox.guest().budget_limit())
 }
 
 /// Read a guest string, refusing what cannot be a path.

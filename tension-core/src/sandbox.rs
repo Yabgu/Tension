@@ -85,6 +85,39 @@ pub(crate) const TICKS_BEFORE_TRAP: u64 = 8;
 /// How deep nesting may go. Depth 1 is the editor's own game; 5 is refused.
 pub(crate) const MAX_DEPTH: u32 = 4;
 
+/// What the caller says it wants from a run.
+///
+/// **A declaration that is checked against the module, not a control-flow
+/// switch.** This is the same rule the host applies to its own guest
+/// (`main.rs`, the coexistence rule): a guest either exports `_game_running` and
+/// opts into being driven, or exports nothing and owns its own loop. Asking for
+/// [`RunKind::Rendering`] on a module with no `_game_running` is refused at
+/// `run`, with that reason — because the alternative is the failure the host
+/// already refuses one level up: the guest returns from `_start_game`, never
+/// gets driven, and *exits 0 having done nothing, which reads as success*.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum RunKind {
+    /// Run to completion. The entrypoint is the whole program.
+    ///
+    /// Always accepted: a guest with no frame hook is exactly a batch guest, and
+    /// one that does export `_game_running` may still be run as a batch — its
+    /// entrypoint runs, and the caller chose not to drive it further.
+    Batch,
+    /// Entry, then frames driven by the host.
+    ///
+    /// Refused unless the module exports `_game_running`, for the reason above.
+    Rendering,
+}
+
+impl RunKind {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            RunKind::Batch => "batch",
+            RunKind::Rendering => "rendering",
+        }
+    }
+}
+
 /// A sandboxed guest's linear-memory ceiling.
 ///
 /// Implements [`ResourceLimiter`] so the refusal happens inside `memory.grow`
@@ -220,7 +253,7 @@ impl Drop for Watchdog {
 /// # This shape is for SYNCHRONOUS execution
 ///
 /// **`GuestState` is `!Send`, and so is `Sandbox`.** A nested guest runs on the
-/// thread that called [`Sandbox::run_batch`] or [`Sandbox::call_entrypoint`] —
+/// thread that called [`Sandbox::run_batch`] or [`Sandbox::start`] —
 /// the main thread — inside the host's own call. Nothing here has been made
 /// thread-safe and nothing here should be assumed to be.
 ///
@@ -342,7 +375,18 @@ pub(crate) struct BatchOutcome {
 pub(crate) struct Sandbox {
     guest: GuestState,
     module: Module,
-    /// The instantiated guest, once `call_entrypoint` has run.
+    /// The kind this run was declared as. Kept because `frame` consults it: a
+    /// batch run is complete as soon as its entrypoint returns, and a rendering
+    /// run is not.
+    kind: RunKind,
+    /// The guest's `_game_running()`, resolved once after instantiation.
+    ///
+    /// `None` for a guest that does not export it — every batch guest, and every
+    /// pre-adoption guest. Resolved eagerly for the same reason the root host
+    /// resolves its own (`main.rs:1737`): a lookup on the frame path would turn a
+    /// static property of the binary into a runtime surprise.
+    game_running: Option<wasmtime::TypedFunc<(), i32>>,
+    /// The instantiated guest, once `start` has run.
     ///
     /// Kept for the same reason `HostState` keeps an arena handle: a test, and
     /// slice 4's record path, need to read the guest's memory *after* a call, and
@@ -389,32 +433,91 @@ impl Sandbox {
                 input: InputBridge::nested(),
             },
             module,
+            kind: RunKind::Batch,
+            game_running: None,
             instance: None,
             watchdog,
         })
     }
 
-    /// Instantiate the guest and call its `_start_game`, exactly as the host does
-    /// for the process's own guest.
+    /// Instantiate the guest, call its `_start_game`, and ask whether it wants
+    /// frames — exactly the sequence the host performs for the process's own
+    /// guest (`main.rs:1726-1750`, minus the window).
     ///
-    /// Returns `-ELOOP`-class errors as `Err`; a trap (the watchdog's epoch, an
-    /// `unreachable`, a bad call) comes back as `Err` too, with wasmtime's own
-    /// message attached.
-    pub(crate) fn call_entrypoint(&mut self) -> Result<()> {
+    /// **The declared kind is checked here, against the module.** Asking for
+    /// [`RunKind::Rendering`] on a guest with no `_game_running` is refused with
+    /// the same reason the root host gives for refusing a half-adoption: the
+    /// guest would return from its entrypoint, never be driven, and exit having
+    /// done nothing while looking successful.
+    ///
+    /// A trap comes back as `Err`, with wasmtime's own message attached.
+    pub(crate) fn start(&mut self, kind: RunKind) -> Result<()> {
         let Self {
             guest,
             module,
             instance,
+            game_running,
+            kind: declared,
             ..
         } = self;
         let created = guest.host.linker.instantiate(&mut guest.host.store, module)?;
         let entry = created.get_typed_func::<(), ()>(&mut guest.host.store, "_start_game")?;
+        // Resolved **before** the call, so a rendering declaration can be refused
+        // without having run the guest's entrypoint first: refusing after would
+        // mean a side effect the caller was told would not happen.
+        let probe = created
+            .get_typed_func::<(), i32>(&mut guest.host.store, "_game_running")
+            .ok();
+        if kind == RunKind::Rendering && probe.is_none() {
+            bail!(
+                "a rendering run needs a guest that exports `_game_running`; this module does not, \
+                 so it would return from `_start_game`, never be driven, and exit having done \
+                 nothing. Run it as a batch, or adopt the frame contract (`docs/modules/2d.md`, \
+                 \"the nested rendering guest\")"
+            );
+        }
+        *game_running = probe;
+        *declared = kind;
         entry.call(&mut guest.host.store, ())?;
         *instance = Some(created);
         Ok(())
     }
 
-    /// The guest's exported `memory`, after `call_entrypoint`.
+    /// Launch as a batch guest and return what it printed.
+    ///
+    /// The slice-3 entry point, now expressed in terms of [`Sandbox::start`] so
+    /// there is one place that decides what a run's lifetime is.
+    pub(crate) fn run_batch(&mut self) -> Result<BatchOutcome> {
+        self.start(RunKind::Batch)?;
+        Ok(BatchOutcome {
+            out: self.guest.out().to_vec(),
+        })
+    }
+
+    /// The kind this run was declared as.
+    ///
+    /// Read by the reshape tests and, from the next slice, by `frame`'s
+    /// batch/rendering split. Nothing on the `dev.run` path needs it: the verb
+    /// already knows which kind it asked for.
+    #[allow(dead_code)]
+    pub(crate) fn kind(&self) -> RunKind {
+        self.kind
+    }
+
+    /// Whether the guest says it still wants frames.
+    ///
+    /// `false` when it exports no `_game_running`: a guest that cannot answer is
+    /// not asking to be driven. `dev.frame` is the caller, and nothing calls it
+    /// until that verb lands.
+    #[allow(dead_code)]
+    pub(crate) fn wants_frames(&mut self) -> Result<bool> {
+        match self.game_running.clone() {
+            Some(probe) => Ok(probe.call(&mut self.guest.host.store, ())? != 0),
+            None => Ok(false),
+        }
+    }
+
+    /// The guest's exported `memory`, after `start`.
     ///
     /// A test reads what a guest wrote here; slice 4's `read` will copy records
     /// through the same handle.
@@ -438,18 +541,6 @@ impl Sandbox {
                 data[offset + 2],
                 data[offset + 3],
             ])
-        })
-    }
-
-    /// Run a batch guest to completion and return what it printed.
-    ///
-    /// "Batch" is the whole shape of a Pass 2 nested guest: it runs, it prints,
-    /// it returns. There is no frame loop and no record path yet — those need
-    /// `dev.frame`, which is slice 4.
-    pub(crate) fn run_batch(&mut self) -> Result<BatchOutcome> {
-        self.call_entrypoint()?;
-        Ok(BatchOutcome {
-            out: self.guest.out().to_vec(),
         })
     }
 
@@ -560,12 +651,12 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len})))
-            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len})))))
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
+            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
             len = path.len()
         )
@@ -578,13 +669,13 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
             (local $id i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len})))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
             (i32.store (i32.const 64) (local.get $id))
             (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 72)
@@ -600,11 +691,11 @@ mod tests {
         format!(
             r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
-            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len})))))
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
         "#,
             len = path.len()
         )
@@ -622,7 +713,7 @@ mod tests {
         let scratch = Scratch::new("boots");
         let config = config(scratch.write("guest.wat", SIMPLE));
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
-        sandbox.call_entrypoint().expect("the entrypoint returns");
+        sandbox.start(RunKind::Batch).expect("the entrypoint returns");
 
         // Depth is the nesting level, and the claim on input is the outer
         // guest's, not this one's.
@@ -660,7 +751,7 @@ mod tests {
         let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
 
         let started = std::time::Instant::now();
-        let outcome = sandbox.call_entrypoint();
+        let outcome = sandbox.start(RunKind::Batch);
         let elapsed = started.elapsed();
 
         let error = outcome.expect_err("an infinite loop must trap, not return");
@@ -706,11 +797,11 @@ mod tests {
         // a missing export — and the test would still be green.
         let mut unbudgeted = Sandbox::open(&config, 0).expect("the control sandbox opens");
         unbudgeted
-            .call_entrypoint()
+            .run_batch()
             .expect("without a budget, the same guest boots");
 
         let error = sandbox
-            .call_entrypoint()
+            .start(RunKind::Batch)
             .expect_err("a guest over its memory budget must be refused");
         let message = format!("{error:#}").to_lowercase();
         println!("limiter: refused with: {message}");
@@ -732,11 +823,11 @@ mod tests {
         let cache = Arc::clone(&config.module_cache);
 
         let mut first = Sandbox::open(&config, 0).expect("the first sandbox opens");
-        first.call_entrypoint().expect("the first guest runs");
+        first.run_batch().expect("the first guest runs");
         assert_eq!(cache.compiles(), 1, "the first guest compiles the module once");
 
         let mut second = Sandbox::open(&config, 0).expect("the second sandbox opens");
-        second.call_entrypoint().expect("the second guest runs");
+        second.run_batch().expect("the second guest runs");
         assert_eq!(
             cache.compiles(),
             1,
@@ -757,7 +848,7 @@ mod tests {
         let changed = format!("{SIMPLE}\n;; a longer file, so the fingerprint changes\n");
         scratch.write("guest.wat", &changed);
         let mut third = Sandbox::open(&config, 0).expect("the third sandbox opens");
-        third.call_entrypoint().expect("the third guest runs");
+        third.run_batch().expect("the third guest runs");
         assert_eq!(
             cache.compiles(),
             2,
@@ -907,13 +998,13 @@ mod tests {
             &format!(
                 r#"
         (module
-          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
           (data (i32.const 0) "{path}")
           (func (export "_start_game")
             (local $id i32)
-            (local.set $id (call $run (i32.const 0) (i32.const {len})))
+            (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))
             (i32.store (i32.const 64) (local.get $id))
             (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 100) (i32.const 2)))
             (i32.store (i32.const 72) (call $out (i32.const 99) (i32.const 0) (i32.const 0)))))
@@ -936,5 +1027,88 @@ mod tests {
             Some(-9),
             "an unknown run id is -EBADF, not a length of zero"
         );
+    }
+
+    /// A guest that exports the frame contract: `_game_running` answers 1 until
+    /// its counter reaches zero, and `__taskWake` is the per-iteration hook.
+    const ADOPTED: &str = r#"
+        (module
+          (import "tension::io" "print" (func $print (param i32 i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "hello")
+          (global $left (mut i32) (i32.const 2))
+          (func (export "_start_game") (call $print (i32.const 0) (i32.const 5)))
+          (func (export "__taskWake") (param i32 i32)
+            (global.set $left (i32.sub (global.get $left) (i32.const 1))))
+          (func (export "_game_running") (result i32) (global.get $left)))
+    "#;
+
+    #[test]
+    fn declared_rendering_kind_refuses_a_guest_without_game_running() {
+        let scratch = Scratch::new("kind-refuse");
+        let target = scratch.write("game.wat", BATCH); // no `_game_running`
+        // The outer guest asks for a rendering run on it and stores the errno.
+        let path = format!("{target}");
+        let outer = scratch.write(
+            "outer.wat",
+            &format!(
+                r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 2)))
+            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+        "#,
+                len = path.len()
+            ),
+        );
+        let config = config(outer);
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        assert_eq!(
+            sandbox.read_i32(64),
+            Some(-22),
+            "a rendering run on a guest with no `_game_running` is refused, not started"
+        );
+        // **The negative control that makes the refusal meaningful**: the same
+        // module as a batch run is accepted, so the refusal is the declared kind
+        // and not the module or the path.
+        let as_batch = sandbox.read_i32(68).unwrap();
+        assert!(as_batch > 0, "the same guest runs as a batch: {as_batch}");
+    }
+
+    #[test]
+    fn batch_kind_accepts_a_guest_with_no_frame_hook() {
+        // The other half of the rule: `Batch` is always accepted, including for a
+        // guest that *does* export `_game_running` — the caller simply chose not
+        // to drive it.
+        let scratch = Scratch::new("kind-accept");
+        let target = scratch.write("game.wat", ADOPTED);
+        let path = format!("{target}");
+        let outer = scratch.write(
+            "outer.wat",
+            &format!(
+                r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len}) (i32.const 1)))))
+        "#,
+                len = path.len()
+            ),
+        );
+        let config = config(outer);
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the outer guest runs");
+
+        let id = sandbox.read_i32(64).unwrap();
+        assert!(id > 0, "a batch run of an adopted guest is accepted: {id}");
+        let run = &sandbox.guest().store().data().runs[&id];
+        assert_eq!(run.sandbox.kind(), RunKind::Batch);
     }
 }
