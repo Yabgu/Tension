@@ -48,9 +48,26 @@ pub fn link_io(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let end = start + len.max(0) as usize;
             let start = start.min(bytes.len());
             let end = end.min(bytes.len());
-            let text = String::from_utf8_lossy(&bytes[start..end]);
-            print!("{text}");
-            let _ = io::stdout().flush();
+            // A sandboxed guest's output is captured rather than printed: the
+            // host reads it right after the entrypoint returns (`dev.out` in
+            // Pass 3), and a nested run that interleaved with the editor's own
+            // terminal would be the one thing a nested run must not do.
+            let text = String::from_utf8_lossy(&bytes[start..end]).into_owned();
+            let captured = {
+                // The memory borrow above ends here, so `data_mut` is free.
+                let state = caller.data_mut();
+                match state.captured_out.as_mut() {
+                    Some(out) => {
+                        out.extend_from_slice(text.as_bytes());
+                        true
+                    }
+                    None => false,
+                }
+            };
+            if !captured {
+                print!("{text}");
+                let _ = io::stdout().flush();
+            }
         },
     )?;
 

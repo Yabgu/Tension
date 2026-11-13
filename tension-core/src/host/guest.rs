@@ -31,6 +31,30 @@ use std::sync::Arc;
 
 use wasmtime::{Linker, Module, Store};
 
+/// The root store's epoch deadline: "never", but not `u64::MAX`.
+///
+/// wasmtime stores the deadline as `current_epoch + delta`
+/// (`wasmtime-24.0.13/src/runtime/store.rs:2652`), so `u64::MAX` overflows —
+/// and panics — once the engine's epoch has advanced at all. That is not
+/// hypothetical: the moment a sandbox's watchdog ticks against the same engine,
+/// the next `GuestHost` built on it would panic in its constructor. An unchanged
+/// tree with two sandboxes in one test found it.
+///
+/// Half the range is 2^63 ticks. At the watchdog's tick that is longer than the
+/// process will live, and reaching it would need 2^63 increments of a counter
+/// only a running sandbox advances.
+const NEVER_TRAPS: u64 = u64::MAX / 2;
+
+/// Which kind of guest a bundle holds. See [`GuestHost::build`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Kind {
+    /// The process's own guest: real audio, real AI, a renderer that presents.
+    Root,
+    /// A sandboxed guest: none of the process singletons, captures its output,
+    /// and runs under a budget and an epoch deadline.
+    Nested,
+}
+
 use crate::host::{link_io, link_res, HostConfig};
 use crate::session;
 use crate::{check_guest_module, HostState};
@@ -68,26 +92,59 @@ impl GuestHost {
     /// the session, then the linker — because the session's `install` needs a
     /// store and a linker that already exist.
     pub(crate) fn new(config: &HostConfig) -> anyhow::Result<Self> {
-        // The guest's bytes, read once and used for both the load-time checks and
-        // the module itself. `Module::new` takes the text format as well as the
-        // binary one, so a hand-written `.wat` fixture loads the way a compiled
-        // `game.wasm` does (§7 Appendix B's smoke path).
-        let guest_bytes = std::fs::read(&config.guest_path)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", config.guest_path))?;
-        // A malformed guest is reported with the file's name in front of
-        // wasmtime's own parse error: `Module::new` does not know where the bytes
-        // came from, and "expected a module" with no path in it is a bad
-        // diagnostic.
-        let module = Module::new(&config.engine, &guest_bytes)
-            .map_err(|e| anyhow::anyhow!("{}: {e}", config.guest_path))?;
-        check_guest_module(&module, &guest_bytes, &config.guest_path)?;
+        Self::build(config, Kind::Root)
+    }
+
+    /// Build one guest of either kind.
+    ///
+    /// `Kind::Nested` is a **sandboxed** guest: silent audio, stub AI, a
+    /// capture-mode renderer, a captured-output sink and a memory budget
+    /// ([`crate::HostState::new_nested`]). The module comes from the same cache,
+    /// so a second run of one guest compiles once; what differs is the store's
+    /// contents and its bounds, not the compilation.
+    pub(crate) fn build(config: &HostConfig, kind: Kind) -> anyhow::Result<Self> {
+        // The module comes from the process's cache: one compile per file per
+        // process, keyed by size and modification time so a rebuild is a miss.
+        // A hit returns the module the load-time check already passed — same
+        // fingerprint, same bytes — which is why the check runs only on a miss
+        // and the bytes are only read there.
+        //
+        // `Module::new` takes the text format as well as the binary one, so a
+        // hand-written `.wat` fixture loads the way a compiled `game.wasm` does
+        // (§7 Appendix B's smoke path).
+        let loaded = config.module_cache.load(&config.engine, &config.guest_path)?;
+        if let Some(bytes) = &loaded.bytes {
+            // A malformed guest is reported with the file's name in front of
+            // wasmtime's own parse error: `Module::new` does not know where the
+            // bytes came from, and "expected a module" with no path in it is a
+            // bad diagnostic.
+            check_guest_module(&loaded.module, bytes, &config.guest_path)?;
+        }
+        let module = loaded.module;
 
         // The posting face is built **before** the store because the AI backend
         // is a producer too: its worker posts AI completions through the same
         // any-thread path the adapters use, so it needs the `Arc` at construction
         // — not a borrow of the store it will wake.
         let posting = Arc::new(session::posting::PostingSide::default());
-        let mut store = Store::new(&config.engine, HostState::new(config, Arc::clone(&posting)));
+        let state = match kind {
+            Kind::Root => HostState::new(config, Arc::clone(&posting)),
+            Kind::Nested => HostState::new_nested(config, Arc::clone(&posting)),
+        };
+        let mut store = Store::new(&config.engine, state);
+        // The limiter is installed for **every** store, with the budget being the
+        // part that differs: unlimited for the process's own guest, a real ceiling
+        // for a sandbox. Installing it only on sandboxes would leave the field
+        // unread on the path that matters most, and a `ResourceLimiter` that says
+        // "yes" costs one branch per growth.
+        store.limiter(|state| &mut state.memory_budget);
+
+        // **Required, not optional.** The engine enables epoch interruption
+        // (`main`, where the engine is configured), and wasmtime traps a store
+        // that runs code with no deadline set: "by default a store will trap
+        // immediately with an epoch deadline of 0". This one never expires; a
+        // sandbox installs a real deadline over it (`Sandbox::open`).
+        store.set_epoch_deadline(NEVER_TRAPS);
 
         // tension::session ----------------------------------------------------
         // The session owns the arena memory, so it is created before anything is

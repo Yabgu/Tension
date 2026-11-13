@@ -1323,6 +1323,10 @@ mod tests {
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),
+                // A unit-test store is not sandboxed: no capture sink and no
+                // memory ceiling, which is what the outer guest gets.
+                captured_out: None,
+                memory_budget: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),
                 session: None,

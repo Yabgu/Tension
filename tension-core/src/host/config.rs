@@ -40,6 +40,13 @@ pub struct HostConfig {
     /// exists to avoid. Immutable, `Clone`, and identical for every guest the
     /// process runs — so it is configuration, not per-guest state.
     pub engine: Engine,
+    /// The process's compiled-module cache.
+    ///
+    /// **Shared, not per guest**, for the same reason the engine is: the second
+    /// guest is usually the same module, and compiling it again per run would put
+    /// a Cranelift pass behind every press of a button. See
+    /// [`super::module_cache`] for the key and the counting.
+    pub module_cache: std::sync::Arc<super::module_cache::ModuleCache>,
     /// The argv the guest reads through `tension::io arg()` / `arg_count()`.
     pub args: Vec<String>,
     /// The guest module on disk. Read once by `GuestHost::new`.

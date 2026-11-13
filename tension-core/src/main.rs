@@ -83,6 +83,7 @@ mod dwarf;
 /// `host::link_res`, and the namespaces still inline in `main` until they
 /// move). A sandboxed store links through these instead of through `main`.
 mod host;
+mod sandbox;
 pub(crate) mod leb;
 /// The session component: it owns the arena memory the guest imports and the
 /// two verbs that open and close a session (`docs/session.md` §2–§7).
@@ -272,6 +273,20 @@ pub(crate) struct HostState {
     /// after the store and installed before instantiation, once. A verb that
     /// finds it `None` returns `-EBADF` rather than panicking.
     pub(crate) session: Option<session::Session>,
+    /// Where a sandboxed guest's `tension::io.print` goes, or `None` to write to
+    /// the terminal as every non-sandboxed run does.
+    ///
+    /// **Capture rather than a callback** because the host has to read the
+    /// output synchronously, right after the guest's entrypoint returns, and
+    /// because Pass 3's `tension::dev.out` is exactly this buffer handed to the
+    /// outer guest. A sandboxed guest that printed to the terminal would
+    /// interleave with the editor's own output, which is the one thing a
+    /// nested run must not do.
+    pub(crate) captured_out: Option<Vec<u8>>,
+    /// The linear-memory ceiling a sandboxed guest runs under, as the store's
+    /// `ResourceLimiter`. Unlimited for the process's own guest: it is not
+    /// sandboxed, and a budget nobody asked for would be a policy, not a bound.
+    pub(crate) memory_budget: sandbox::MemoryBudget,
 }
 
 impl HostState {
@@ -292,14 +307,58 @@ impl HostState {
         config: &crate::host::HostConfig,
         posting: std::sync::Arc<session::posting::PostingSide>,
     ) -> Self {
+        Self::build(config, posting, false)
+    }
+
+    /// The same state, built for a **sandboxed** guest.
+    ///
+    /// Three differences, and each is the singleton list in `host/mod.rs` rather
+    /// than a preference:
+    ///
+    /// * **No audio device.** A cpal `Stream` is `!Send` on ALSA and the session
+    ///   is first-wins for its format. A nested guest gets the silent adapter:
+    ///   the guest's audio verbs succeed, nothing is heard, and no file is
+    ///   written. Refusing `audio_init` instead would make Play Mode unable to
+    ///   run a game that uses sound.
+    /// * **No AI backend.** The stub adapter answers with the contract's
+    ///   refusals; a second real backend would re-load the model weights.
+    /// * **A capture-mode renderer.** `Render2dState::capture()` opens no GPU
+    ///   device; the device and the window belong to the outer guest.
+    ///
+    /// Plus the two things a sandbox needs: a captured-output sink and a default
+    /// (unlimited) budget, which `Sandbox::open` then sets.
+    pub(crate) fn new_nested(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+    ) -> Self {
+        Self::build(config, posting, true)
+    }
+
+    fn build(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+        nested: bool,
+    ) -> Self {
+        let audio = if nested {
+            audio::AudioSession::new(Box::new(audio::silent::SilentAdapter::new()))
+        } else {
+            audio::AudioSession::new(default_adapter())
+        };
+        let ai = if nested {
+            ai::AiSession::new(Box::new(ai::stub::StubAdapter::new(ai::AiSink::new(
+                std::sync::Arc::clone(&posting),
+            ))))
+        } else {
+            ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting)))
+        };
         HostState {
             args: config.args.clone(),
             pending_line: None,
             res: std::sync::Arc::clone(&config.res),
             write_root: config.write_root.clone(),
             write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
-            audio: audio::AudioSession::new(default_adapter()),
-            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
+            audio,
+            ai,
             solver: solver::SolverHost::default(),
             posting,
             scheduler: scheduler::Scheduler::new(),
@@ -316,10 +375,16 @@ impl HostState {
             shared: tension_core::platform::HostShared::new(),
             host_window: None,
             host_surface: None,
-            render2d: Default::default(),
+            render2d: if nested {
+                render2d::Render2dState::capture()
+            } else {
+                Default::default()
+            },
             window_closed: false,
             adapters: Vec::new(),
             session: None,
+            captured_out: if nested { Some(Vec::new()) } else { None },
+            memory_budget: sandbox::MemoryBudget::default(),
         }
     }
 }
@@ -958,6 +1023,18 @@ fn main() -> anyhow::Result<()> {
     // runs shares it (see `host::HostConfig`).
     let mut engine_config = Config::new();
     engine_config.debug_info(cli.debug);
+    // **Epoch interruption, for the sandbox's watchdog.** It is an engine-level
+    // switch: wasm compiled by this engine carries deadline checks that a
+    // watchdog thread's `increment_epoch` can reach, which is what makes an
+    // infinite nested guest stoppable at all. A store that does not set a
+    // deadline traps immediately, so every store built here sets one —
+    // `GuestHost::new` gives the process's own guest `u64::MAX` (never fires) and
+    // `Sandbox::open` gives a nested guest a real one.
+    //
+    // A few instructions per loop iteration is the cost, paid by every guest.
+    // That is the price of being able to stop one, and it is the only mechanism
+    // wasmtime offers that a guest cannot opt out of.
+    engine_config.epoch_interruption(true);
     let engine = Engine::new(&engine_config)?;
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
@@ -1010,6 +1087,9 @@ fn main() -> anyhow::Result<()> {
     // Everything the run is configured with, named once. Nothing here changes
     // after this point, and a second guest is given the same one.
     let config = host::HostConfig {
+        // One compile cache per process, shared by every guest: the editor's
+        // Play Mode runs the same compiled module on every press of a button.
+        module_cache: std::sync::Arc::new(host::module_cache::ModuleCache::default()),
         engine,
         args: cli.args,
         guest_path: cli.wasm_path,

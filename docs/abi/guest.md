@@ -104,12 +104,12 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `audio_init` | `(i32, i32) → i32` | `tension-core/src/audio/mod.rs:179` |
-| `audio_play` | `(i32, i32, i32, f32, i32) → i32` | `tension-core/src/audio/mod.rs:187` |
-| `audio_stop` | `(i32) → i32` | `tension-core/src/audio/mod.rs:196` |
-| `audio_set_gain` | `(i32, f32) → i32` | `tension-core/src/audio/mod.rs:204` |
-| `audio_voice_state` | `(i32) → i32` | `tension-core/src/audio/mod.rs:212` |
-| `audio_shutdown` | `(void) → i32` | `tension-core/src/audio/mod.rs:220` |
+| `audio_init` | `(i32, i32) → i32` | `tension-core/src/audio/mod.rs:183` |
+| `audio_play` | `(i32, i32, i32, f32, i32) → i32` | `tension-core/src/audio/mod.rs:191` |
+| `audio_stop` | `(i32) → i32` | `tension-core/src/audio/mod.rs:200` |
+| `audio_set_gain` | `(i32, f32) → i32` | `tension-core/src/audio/mod.rs:208` |
+| `audio_voice_state` | `(i32) → i32` | `tension-core/src/audio/mod.rs:216` |
+| `audio_shutdown` | `(void) → i32` | `tension-core/src/audio/mod.rs:224` |
 
 ## `tension::input` — capability
 
@@ -128,25 +128,25 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | import | signature | registered at |
 |---|---|---|
 | `print` | `(i32, i32)` | `tension-core/src/host/io.rs:38` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:64` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:79` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/host/io.rs:94` |
-| `arg_count` | `(void) → i32` | `tension-core/src/host/io.rs:147` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/host/io.rs:153` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:81` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:96` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/host/io.rs:111` |
+| `arg_count` | `(void) → i32` | `tension-core/src/host/io.rs:164` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/host/io.rs:170` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1065` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1088` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1093` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1111` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1268` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1312` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1358` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1388` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1418` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1145` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1168` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1173` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1191` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1348` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1392` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1438` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1468` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1498` |
 
 ## `tension::res`
 

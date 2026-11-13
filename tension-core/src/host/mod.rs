@@ -74,6 +74,7 @@
 //! above; none is a candidate for a `link_*` that takes only a linker.
 
 pub mod config;
+pub mod module_cache;
 pub mod guest;
 pub mod io;
 pub mod res;
