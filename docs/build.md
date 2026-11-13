@@ -591,6 +591,46 @@ in `tension-core/tests/support/ci.rs`. `render2d_open` and part of
 `render2d_parity` run anywhere. `node scripts/parity-2d.mjs` is the separate
 command that compares the two 2D backends.
 
+### 6.2 The projection a gate report cites
+
+Two runs of the full suite over **one unchanged tree** differ by thousands of
+lines: wall times, cargo's interleaving, `/tmp` names, cache states, and cargo's
+`test name ... ok` lines that a suite's own stdout lands in the middle of. A
+byte-identical log is therefore not a gate — it is a gate that is always red.
+`scripts/project-gate.mjs` is the written definition of what *is* compared:
+
+- the suites that started, in order (`==> starting <title>`)
+- the verdicts, in order (`==> <title>: PASSED|FAILED|SKIPPED`)
+- one line per `test result:` plus the totals — **cite this figure**, not a count
+  of `test name ... ok` lines: measured, the name count reads two to four low on
+  one tree because of the interleaving above, while the `test result:` lines are
+  identical across runs
+- every compiler warning as (message, location) with a count, sorted, excluding
+  cargo's own `generated N warnings` tally, which repeats the diagnostics it
+  totals and would double-count them
+
+```bash
+node scripts/test.mjs --jobs 1 > gate.log 2>&1
+node scripts/project-gate.mjs gate.log > gate.proj     # the four sections
+node scripts/project-gate.mjs --diff before.proj gate.proj
+```
+
+`--diff` exits 1 when a suite, verdict or cargo result changed, and 0 when only
+warning locations moved — those are allowed to move when lines do, and are
+printed either way so the shift is in the record rather than in someone's
+memory. Everything outside the four sections (prose from a suite, the sample
+values in an example's report, `Blocking waiting for file lock`) is **residual**:
+the author enumerates it in the report. The projection of a log is a pure
+function of that log, so a gate report can be recomputed from the artefact later
+and two readers get the same answer.
+
+**Scope, stated once because it caused a false alarm.** The warning figure is
+every diagnostic in the *whole run*: 85 occurrences (18 distinct) at `8161229`.
+Of those, 72 sit inside the five suites that run `cargo test` — the same twelve
+diagnostics re-emitted per invocation, plus test-target-only ones — and the rest
+come from other suites' build steps. A *single* `cargo build --release` of
+`tension-core` prints twelve; the two numbers differ by scope, not by regression.
+
 ## 7. The ABI doc generator
 
 `scripts/gen-abi-doc.mjs` renders `docs/abi/adapter.md` and `docs/abi/guest.md`
@@ -609,6 +649,23 @@ someone regenerates.
 
 - **Today's mitigation:** regenerate per commit. Pass 4 had to split its commits
   for exactly this reason, and `npm run docs:abi` is one command.
+- **The measured failure of that mitigation (2026-11-13).** The Pass 1 slice 3
+  commit (`64a59f6`) *did* regenerate `guest.md` — nine rows — but from a
+  `main.rs` taken before its last edit: five lines were then added above the
+  `tension::platform` registrations, so all nine platform rows became five lines
+  stale inside the same commit. `abi-docs` was red on that commit while the
+  `docs` suite (the assets build, a different suite) was green, and the gate line
+  in the commit message read "26/26" — a figure from an earlier state. Verified
+  afterwards per commit with `gen-abi-doc.mjs --check` in a detached worktree:
+  current at `987d16a`, `fa69cbd`, `e9fd7da`, `bbd3c44`; stale at `64a59f6`;
+  current again from `e35f681`.
+- **The rule, and its mechanism.** A commit that touches `docs/abi/*.md` quotes
+  the check's own output line — `abi-docs: docs/abi/guest.md is current
+  (guest)` — in the message, not a summary, and takes it from a run made
+  **after** the final source edit. The check is 0.3 s, so it is cheap enough to
+  be the last thing before `git commit`, which is the only placement that would
+  have caught this: the failure was ordering *inside* a commit, not a forgotten
+  command.
 - **The long-term fix** is to stop emitting line numbers: cite the slot by name
   and the table by its anchor, not by `:1336`. That is a change to the generator's
   output, deliberately deferred (`docs/guard-discipline.md` — the same "presence
