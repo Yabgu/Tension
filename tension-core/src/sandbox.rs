@@ -220,6 +220,47 @@ impl Drop for Watchdog {
 }
 
 /// One sandboxed guest: its host bundle, its claim on input, and its depth.
+///
+/// # This shape is for SYNCHRONOUS execution
+///
+/// **`GuestState` is `!Send`, and so is `Sandbox`.** A nested guest runs on the
+/// thread that called [`Sandbox::run_batch`] or [`Sandbox::call_entrypoint`] —
+/// the main thread — inside the host's own call. Nothing here has been made
+/// thread-safe and nothing here should be assumed to be.
+///
+/// That is not an accident of this wrapper: it is the type it wraps. `HostState`
+/// is `!Send` for six independent reasons, which the compiler names if a
+/// `Send` bound is applied to it:
+///
+/// * `Box<dyn AudioAdapter>` — the trait has no `Send` bound, so the *type* is
+///   `!Send` even when the value is the silent adapter.
+/// * `Box<dyn AiAdapter>` — same.
+/// * `Render2dState` — through `sdl3`'s own no-Send marker
+///   (`PhantomData<*mut ()>`, `sdl3-0.22.0/src/sdl3/sdl.rs:180`) reached by its
+///   `VideoSubsystem` field, and through `*mut SDL_GPUTexture`. A **capture**
+///   renderer holds no device, but the type is `!Send` regardless of the value.
+/// * `HostWindow` — `*mut c_void` over `SDL_Window`.
+/// * `Render2dState` again, through `AdapterCall`'s `*const TensionAdapter`.
+///
+/// There is no `unsafe impl Send` anywhere on that path. The five in the tree
+/// (`FrozenApi`, `AdapterCtx`, `HostHandle`, `ResourceSet`, `NativeComparator`)
+/// all cover narrower things and none of them covers `HostState`, the SDL
+/// device, or a cpal stream.
+///
+/// **What changes when threading lands** — named here so it is designed rather
+/// than discovered. A background guest needs its state to be `Send`, which means
+/// either a `HostState` split (a device/singleton half that stays on the main
+/// thread, and a data half that moves) or a nested-only state type that never
+/// holds `Render2dState` at all — the capture records are plain bytes and could
+/// live in a `Send` buffer beside it. Both are shape changes to this wrapper,
+/// which is exactly why the wrapper is one type and not the plan's field list
+/// spread through `HostState`.
+///
+/// **What slice 2 does not deliver:** a nested guest that does not block the
+/// editor. The editor's frame is chrome + the nested frame, run in sequence. That
+/// is acceptable for the demo — a 2D game's frame is small — but it is a
+/// different user-facing property from "the UI stays responsive", and it should
+/// be named as such rather than assumed.
 pub(crate) struct GuestState {
     host: GuestHost,
     input: InputBridge,
