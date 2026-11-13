@@ -54,13 +54,18 @@ Build the guest, run it, and restart it when src/ or assets/ change.
 options:
   --headless          run with no window (the guest gets --headless)
   --no-watch          build and run once; exit when the game exits
+  --exit-on-close     exit when the host closes its own window (a clean exit)
   --build-only        build, print the command line, and exit
   --debug             compile with --debug --sourceMap
   --dir <path>        the project directory (default: the working directory)
   -h, --help          print this help
 
 A restart loses state: the runtime is one .wasm per process, so a change
-restarts the process. A build that fails leaves the running game alone.`;
+restarts the process. A build that fails leaves the running game alone.
+
+By default the watcher survives a game that closes its own window, so an
+example can be edited and re-run on save. --exit-on-close ends the loop
+instead; the editor sets it, because closing the editor window is quitting.`;
 
 const HELP_BUILD = `usage: tension build [options]
 
@@ -201,6 +206,7 @@ export async function main(argv) {
         const options = parse(rest, {
           '--headless': flag('headless'),
           '--no-watch': flag('noWatch'),
+          '--exit-on-close': flag('exitOnClose'),
           '--build-only': flag('buildOnly'),
           '--debug': flag('debug'),
           '--dir': 'dir',
@@ -212,6 +218,7 @@ export async function main(argv) {
         return await dev(ctx, {
           headless: options.headless,
           watch: !options.noWatch,
+          exitOnClose: Boolean(options.exitOnClose),
           buildOnly: options.buildOnly,
           debug: options.debug,
           extra: options.extra,

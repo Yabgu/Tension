@@ -189,6 +189,22 @@ test('an unknown option is refused, not ignored', () => {
   );
 });
 
+// `--exit-on-close` is what the editor's start script passes; a flag accepted by
+// the parser but missing from the help would be documented nowhere, and a flag
+// in the help but refused by the parser would be a lie. The dev loop itself
+// needs a window to prove (see the commit), so this checks the surface.
+test('--exit-on-close is a known dev option and is documented', (t) => {
+  const dir = scratch(t);
+  // Accepted: the run gets as far as looking for a project, and fails there.
+  assert.throws(
+    () => execFileSync(process.execPath, [cli, 'dev', '--exit-on-close', '--dir', dir],
+      { encoding: 'utf8', stdio: 'pipe' }),
+    /no project here/,
+  );
+  const help = execFileSync(process.execPath, [cli, 'dev', '--help'], { encoding: 'utf8' });
+  assert.match(help, /--exit-on-close/);
+});
+
 test('a directory with no package.json is not a project', (t) => {
   const dir = scratch(t);
   assert.throws(
