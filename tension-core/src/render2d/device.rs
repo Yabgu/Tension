@@ -43,7 +43,7 @@ use sdl3::pixels::Color;
 use crate::platform::HostWindow;
 use crate::render2d::error::Render2dError;
 use crate::render2d::iwi::decode_iwi;
-use crate::render2d::pipeline::PipelineCache;
+use crate::render2d::pipeline::{PipelineCache, PIPE_PRESET_MAX, PIPE_PRESET_MIN};
 use crate::render2d::record::{self, InfoRecord, RECORD_SIZE};
 
 /// `TENSION_2D_MAX_ATLAS_PAGES` — the layer count of a pipeline's texture array.
@@ -167,6 +167,58 @@ pub enum Mode {
 /// Field order is drop order, and the ordering is load-bearing: the GPU device
 /// holds a claim on the host's window, so the device must be gone before the
 /// window is. `HostState` declares this field before `host_window` for the same
+/// The GPU work a **capture** state recorded instead of performing.
+///
+/// A capture state has no device (the device belongs to the outer guest), so
+/// every verb that would build a GPU object instead **reserves its id and
+/// records what to build**. The records the guest submits then carry ids that
+/// are already correct *within this run*, which is what lets the same record
+/// bytes be replayed against the outer device later: the replay allocates the
+/// GPU objects, and the ids it hands back are the ones the records already name.
+///
+/// Empty in `Present` mode, where the work is done rather than recorded.
+pub struct Deferred {
+    /// Texture id -> the IWI the guest handed to `texture_load`, and its target
+    /// format. The bytes are kept **undecoded** as well as validated: a replay
+    /// on another device loads them through the same path `texture_load` uses,
+    /// so anything the decode would reject is rejected by both.
+    pub textures: BTreeMap<u32, (Vec<u8>, i32)>,
+    /// Pipeline id -> what it was made from.
+    pub pipelines: BTreeMap<u32, DeferredPipeline>,
+    /// Blob hash -> id, so a guest that re-sets the same graph gets the same id,
+    /// exactly as `PipelineCache::by_blob` gives it in a present state.
+    pub by_blob: BTreeMap<u64, u32>,
+    /// `(pipe_id, slot, texture_id)` in call order — `set_texture`, recorded.
+    pub bindings: Vec<(u32, u32, u32)>,
+    /// The next id for a runtime-compiled graph, from
+    /// [`crate::render2d::pipeline::PIPE_RAW_MIN`].
+    pub next_pipe: u32,
+}
+
+impl Default for Deferred {
+    fn default() -> Self {
+        Self {
+            textures: BTreeMap::new(),
+            pipelines: BTreeMap::new(),
+            by_blob: BTreeMap::new(),
+            bindings: Vec::new(),
+            // Not 0: an id below `PIPE_RAW_MIN` is a preset id in this ABI, and
+            // a compiled graph claiming one would collide with a preset.
+            next_pipe: crate::render2d::pipeline::PIPE_RAW_MIN,
+        }
+    }
+}
+
+/// What a deferred pipeline was built from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeferredPipeline {
+    /// A built-in preset (`set_pipeline` with `blob_len < 100`).
+    Preset(u16),
+    /// A guest's graph blob, kept byte for byte so the replay compiles the same
+    /// graph rather than a re-hash of it.
+    Blob(Vec<u8>),
+}
+
 /// reason.
 #[derive(Default)]
 pub struct Render2dState {
@@ -198,9 +250,16 @@ pub struct Render2dState {
     buckets: BTreeMap<u32, Bucket>,
     /// The texture a pipeline with no explicit pages samples at page 0.
     bound_texture: u32,
+    /// What a capture state recorded instead of building. Empty in `Present`.
+    deferred: Deferred,
 
     // ── the session ───────────────────────────────────────────────────────
     canvas: Option<Canvas>,
+    /// The records of the last frame a capture state completed, in bucket order.
+    ///
+    /// A snapshot taken at `present`, so the staging buckets can start the next
+    /// frame empty while the host still reads a whole frame.
+    captured: Vec<u8>,
     /// How many frames a **capture** state has been asked to present.
     ///
     /// The frame-complete signal for a nested guest: `dev.frame` drives the guest
@@ -251,7 +310,7 @@ impl Render2dState {
     /// sorts, because sorting is the presenter's job (`present` orders by the
     /// graph's keys) and a capture state never presents.
     pub fn captured_bytes(&self) -> usize {
-        self.buckets.values().map(|b| b.records.len()).sum::<usize>() * RECORD_SIZE as usize
+        self.captured.len()
     }
 
     /// Copy the staged records into `out`, returning how many bytes were written.
@@ -264,14 +323,13 @@ impl Render2dState {
         if out.len() < need {
             return 0;
         }
-        let mut at = 0;
-        for bucket in self.buckets.values() {
-            for record in &bucket.records {
-                out[at..at + RECORD_SIZE as usize].copy_from_slice(record);
-                at += RECORD_SIZE as usize;
-            }
-        }
-        at
+        out[..need].copy_from_slice(&self.captured);
+        need
+    }
+
+    /// What this capture state recorded, for the host that will replay it.
+    pub fn deferred(&self) -> &Deferred {
+        &self.deferred
     }
 
     /// Which mode this state is in.
@@ -550,6 +608,7 @@ impl Render2dState {
         self.atlases.clear();
         self.buckets.clear();
         self.captured_frames = 0;
+        self.captured.clear();
         self.bound_texture = 0;
         self.presented_once = false;
         self.window_closed = false;
@@ -573,6 +632,23 @@ impl Render2dState {
 
     /// Resolve a built-in preset id (`blob_len < 100`, the DSO's encoding).
     pub fn set_preset(&mut self, preset: u16) -> Result<u32, Render2dError> {
+        if self.is_capture() {
+            // Same validation the present path applies, then record instead of
+            // build. A capture state cannot check that the preset exists in this
+            // build beyond `1`, and it does not need to: the replay builds it and
+            // reports there, with the run's id already in the guest's records.
+            if !(PIPE_PRESET_MIN..=PIPE_PRESET_MAX).contains(&preset) {
+                return Err(Render2dError::NotFound(
+                    "set_pipeline: preset id outside 1..99".to_string(),
+                ));
+            }
+            let id = u32::from(preset);
+            self.deferred
+                .pipelines
+                .entry(id)
+                .or_insert(DeferredPipeline::Preset(preset));
+            return Ok(id);
+        }
         let device = self.device()?.clone();
         self.pipelines.preset(&device, preset)
     }
@@ -583,6 +659,34 @@ impl Render2dState {
     /// in this process, so this is parse → validate → lower → compile → build,
     /// in one call, with the compiler's own errno on failure.
     pub fn set_pipeline_blob(&mut self, blob: &[u8]) -> Result<u32, Render2dError> {
+        if self.is_capture() {
+            if blob.is_empty() {
+                return Err(Render2dError::Invalid(
+                    "set_pipeline: empty blob".to_string(),
+                ));
+            }
+            // The same three cases the present path resolves, minus the build:
+            // already recorded, a graph the build ships (pinned id), or a new
+            // runtime id. Keeping the order means a guest sees the same ids in
+            // either mode, which is what makes the record bytes replayable.
+            let hash = crate::render2d::pipeline::graph_hash(blob);
+            if let Some(id) = self.deferred.by_blob.get(&hash) {
+                return Ok(*id);
+            }
+            let id = match crate::render2d::pipeline::builtin_pipe_id(hash) {
+                Some(pinned) => pinned,
+                None => {
+                    let id = self.deferred.next_pipe;
+                    self.deferred.next_pipe += 1;
+                    id
+                }
+            };
+            self.deferred.by_blob.insert(hash, id);
+            self.deferred
+                .pipelines
+                .insert(id, DeferredPipeline::Blob(blob.to_vec()));
+            return Ok(id);
+        }
         let device = self.device()?.clone();
         self.pipelines.blob(&device, blob)
     }
@@ -673,15 +777,32 @@ impl Render2dState {
     /// Draw every bucket recorded since the last call, then clear the staging
     /// state.
     ///
-    /// In [`Mode::Capture`] this draws nothing and clears nothing: the staged
-    /// records are the frame, and the host reads them after this call. The
-    /// capacity rule above `submit` — the whole frame is refused rather than
-    /// truncated — applies in both modes, so a capture that overflows fails the
-    /// same way a presenting frame does.
+    /// In [`Mode::Capture`] this draws nothing and **snapshots** the frame: the
+    /// staged records are copied into `captured` and the staging buckets are
+    /// cleared, so the next frame starts empty exactly as it does in a
+    /// presenting state. Clearing is what makes a long-run guest possible at
+    /// all — staged records that were never cleared accumulated across frames
+    /// and hit the bucket capacity after ~89 frames of a 46-node scene
+    /// (measured: `submit failed on frame 89` on `examples/2d/box-physics`).
+    ///
+    /// The capacity rule above `submit` — the whole frame is refused rather
+    /// than truncated — applies in both modes, so a capture that overflows
+    /// fails the same way a presenting frame does.
     pub fn present(&mut self, host_window: &mut Option<HostWindow>) -> Result<i32, Render2dError> {
         if self.is_capture() {
-            // The frame is the staged records; they stay. This counter is the
-            // only thing that changes, and it is what `dev.frame` waits for.
+            // Snapshot, then clear: the frame the host will read is the one just
+            // completed, and the buckets are ready for the next one.
+            self.captured.clear();
+            let need: usize = self.buckets.values().map(|b| b.records.len()).sum::<usize>()
+                * RECORD_SIZE as usize;
+            self.captured.reserve(need);
+            for bucket in self.buckets.values() {
+                for record in &bucket.records {
+                    self.captured
+                        .extend_from_slice(&record[..RECORD_SIZE as usize]);
+                }
+            }
+            self.buckets.clear();
             self.captured_frames = self.captured_frames.wrapping_add(1);
             return Ok(0);
         }
@@ -992,7 +1113,9 @@ impl Render2dState {
         source: &[u8],
         target_format: i32,
     ) -> Result<u32, Render2dError> {
-        let device = self.device()?.clone();
+        // The format check comes before the device, and the device only where it
+        // is used: a capture state has none, and asking for one first would make
+        // every `texture_load` in a sandbox `-ENODEV` regardless of the bytes.
         if target_format != TEX_RGBA8 {
             // The other three formats exist in the wire (`tension_2d.h`) and
             // need a conversion this build cannot do: it holds decoded RGBA8
@@ -1001,12 +1124,29 @@ impl Render2dState {
                 "texture_load: only RGBA8 targets are served at v1".to_string(),
             ));
         }
-        if self.textures.len() >= MAX_TEXTURES {
+        if self.textures.len().max(self.deferred.textures.len()) >= MAX_TEXTURES {
             return Err(Render2dError::Full(
                 "texture_load: texture table full".to_string(),
             ));
         }
 
+        // **Capture mode records the load.** The IWI is still decoded here, so a
+        // texture this build cannot serve is refused in a sandbox exactly as it
+        // is in the presenter — the refusal path exists before the replay path,
+        // which is the point of doing it now rather than in 4b-6. The bytes are
+        // kept undecoded for the replay to load through this same function on
+        // the outer device.
+        if self.is_capture() {
+            decode_iwi(source)?;
+            let id = self.deferred.textures.len() as u32 + 1;
+            self.deferred
+                .textures
+                .insert(id, (source.to_vec(), target_format));
+            self.bound_texture = id;
+            return Ok(id);
+        }
+
+        let device = self.device()?.clone();
         let image = decode_iwi(source)?;
         let texture = upload_rgba(&device, &image.rgba, image.width, image.height)?;
 
@@ -1034,6 +1174,29 @@ impl Render2dState {
         slot: u32,
         texture_id: u32,
     ) -> Result<i32, Render2dError> {
+        // Capture mode records the binding against the ids it issued: the
+        // pipeline and texture both exist there as deferred entries, not as GPU
+        // objects, so the same three refusals have to be answered from those.
+        if self.is_capture() {
+            if !self.deferred.pipelines.contains_key(&pipe_id) {
+                return Err(Render2dError::NotFound(format!(
+                    "set_texture: unknown pipe_id {pipe_id}"
+                )));
+            }
+            if slot as usize >= MAX_ATLAS_PAGES {
+                return Err(Render2dError::Invalid(format!(
+                    "set_texture: page {slot} outside 0..{}",
+                    MAX_ATLAS_PAGES - 1
+                )));
+            }
+            if !self.deferred.textures.contains_key(&texture_id) {
+                return Err(Render2dError::NotFound(format!(
+                    "set_texture: unknown texture id {texture_id}"
+                )));
+            }
+            self.deferred.bindings.push((pipe_id, slot, texture_id));
+            return Ok(0);
+        }
         let device = self.device()?.clone();
         if !self.pipelines.contains(pipe_id) {
             return Err(Render2dError::NotFound(format!(
@@ -1557,4 +1720,65 @@ fn ensure_video() -> Result<sdl3::VideoSubsystem, Render2dError> {
 /// Kept so a caller that only has a `PlatformError` can name its errno.
 pub fn platform_errno(error: &crate::platform::PlatformError) -> i32 {
     Render2dError::NoDevice(error.to_string()).errno()
+}
+
+#[cfg(test)]
+mod capture_tests {
+    //! Capture mode's verbs, with no device to fall back on.
+    //!
+    //! Every assertion here would be an `-ENODEV` if the capture branch were
+    //! missing, which is exactly the failure this mode exists to avoid: a nested
+    //! guest has no GPU, and a verb that reaches for one gives it nothing to draw
+    //! with.
+
+    use super::*;
+
+    #[test]
+    fn a_capture_state_resolves_pipelines_without_a_device() {
+        let mut state = Render2dState::capture();
+        // A preset keeps its own id, as it does when built.
+        assert_eq!(state.set_preset(1).expect("preset 1 resolves"), 1);
+        // An out-of-range preset is refused, not silently given an id.
+        assert!(state.set_preset(0).is_err());
+        assert!(state.set_preset(200).is_err());
+
+        // A graph blob gets a runtime id from `PIPE_RAW_MIN`, and the same blob
+        // twice gets the same id — the dedupe a present state does by hash.
+        let blob = b"not a real graph, but a stable one".to_vec();
+        let first = state.set_pipeline_blob(&blob).expect("a blob resolves");
+        assert!(first >= crate::render2d::pipeline::PIPE_RAW_MIN, "got {first}");
+        assert_eq!(state.set_pipeline_blob(&blob).expect("again"), first);
+
+        // Recorded, so the host can replay it.
+        assert!(matches!(
+            state.deferred().pipelines.get(&first),
+            Some(DeferredPipeline::Blob(b)) if *b == blob
+        ));
+    }
+
+    #[test]
+    fn a_capture_state_refuses_a_texture_it_could_not_serve() {
+        let mut state = Render2dState::capture();
+        // Not an IWI: the same refusal the presenting path gives, answered here
+        // without a device — which is the point of doing it before 4b-6.
+        assert!(
+            state.texture_load(b"definitely not an IWI container", 0).is_err(),
+            "a non-IWI texture is refused in capture mode too"
+        );
+        // And the table is not polluted by the refusal.
+        assert_eq!(state.deferred().textures.len(), 0);
+    }
+
+    #[test]
+    fn a_capture_state_validates_bindings_against_what_it_recorded() {
+        let mut state = Render2dState::capture();
+        let pipe = state.set_pipeline_blob(b"another graph").expect("a blob");
+        // No texture has been loaded, so there is nothing to bind.
+        assert!(state.set_texture(pipe, 0, 1).is_err());
+        // An unknown pipeline is refused by id.
+        assert!(state.set_texture(9999, 0, 1).is_err());
+        // A page beyond the cap is refused before any lookup.
+        assert!(state.set_texture(pipe, MAX_ATLAS_PAGES as u32, 1).is_err());
+        assert!(state.deferred().bindings.is_empty());
+    }
 }
