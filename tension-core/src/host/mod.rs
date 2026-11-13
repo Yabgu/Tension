@@ -13,6 +13,12 @@
 
 pub mod io;
 pub mod res;
+/// `tension::2d`. Named `two_d` because a module cannot be named `2d`; gated
+/// because without the in-core renderer the verbs come from the DSO.
+#[cfg(feature = "render2d-core")]
+pub mod two_d;
 
 pub use io::link_io;
 pub use res::link_res;
+#[cfg(feature = "render2d-core")]
+pub use two_d::link_2d;
