@@ -440,6 +440,53 @@ tree ends up with a suite that skips under one flag and fails under the other �
 which is exactly what happened for one pass, when a second, GPU-only flag
 coexisted with this one.
 
+### What `tension dev` does, and when it stops
+
+`tension dev` builds, runs, watches `src/` and `assets/`, and restarts the process
+when a source changes. Its lifetime is the part worth stating, because the
+plausible behaviours differ by who is asking:
+
+| invocation | watches | when the window closes |
+| --- | --- | --- |
+| `tension dev` | yes | **the command exits**, status 0 |
+| `tension dev --watch` | yes | the supervisor stays; Ctrl-C to stop |
+| `tension dev --no-watch` | no | the command exits when the game does, with its status |
+
+**For a new app, that table is the whole story.** `tension init` writes a `start`
+script with no flag, which is the first row: the process ends when the window
+does. Reach for `--watch` when you are iterating and want the supervisor to
+survive a close; reach for `--no-watch` when you are scripting and want the
+game's own exit status. Nothing else needs to be passed, and no flag is needed to
+get the app-like behaviour.
+
+**The default is the app-like one**: this runs an app, and an app is over when
+its window is. Before 2026-11-13 the default was the other way round — the
+watcher survived a close and the user was left with a supervisor that looked
+hung, until Ctrl-C. `--exit-on-close` opted out of that. The inversion is now
+the default, the flag is **removed** rather than kept as an alias (a parser that
+accepts an option and ignores it is the thing `cli.js`'s header says it exists to
+prevent), and `--watch` is how a development loop asks for the old behaviour.
+
+A window close that exits **0** ends the command. A non-zero exit is a crash and
+keeps the watcher under either flag, for the same reason a failed build does: the
+edit that fixes it should restart the game on save.
+
+**Per-app choices, as they stand:**
+
+- `apps/editor` and `apps/docs` — no flag. Closing the window quits the app.
+- The 2D examples — no `dev` script at all: they run `tension-core` directly
+  (`"start": "tension-core build/game.wasm --windowed"`), which has no watcher
+  and already exits with the game. The OGRE and solver examples run
+  `scripts/run-example.mjs`, which is likewise a one-shot.
+- `docs/spikes/records-budget.md`'s measurement uses `tension dev --no-watch`,
+  which is still exactly the one-shot it was.
+
+**Not supported today: a guest refusing a close.** The host latches the request
+(`tension-core/src/platform.rs:2060-2072`, "Latched, not an edge"): once the user
+asks, the window closes. An unsaved-changes dialog needs a contract in which the
+guest sees the request and answers keep-running. Shape and constraints:
+[`docs/backlog/guest-rejectable-close.md`](backlog/guest-rejectable-close.md).
+
 ## 6. Tests
 
 `node scripts/test.mjs` is the runner. Twenty-six suites (the `SUITES` table in
@@ -591,6 +638,46 @@ in `tension-core/tests/support/ci.rs`. `render2d_open` and part of
 `render2d_parity` run anywhere. `node scripts/parity-2d.mjs` is the separate
 command that compares the two 2D backends.
 
+### 6.2 The projection a gate report cites
+
+Two runs of the full suite over **one unchanged tree** differ by thousands of
+lines: wall times, cargo's interleaving, `/tmp` names, cache states, and cargo's
+`test name ... ok` lines that a suite's own stdout lands in the middle of. A
+byte-identical log is therefore not a gate — it is a gate that is always red.
+`scripts/project-gate.mjs` is the written definition of what *is* compared:
+
+- the suites that started, in order (`==> starting <title>`)
+- the verdicts, in order (`==> <title>: PASSED|FAILED|SKIPPED`)
+- one line per `test result:` plus the totals — **cite this figure**, not a count
+  of `test name ... ok` lines: measured, the name count reads two to four low on
+  one tree because of the interleaving above, while the `test result:` lines are
+  identical across runs
+- every compiler warning as (message, location) with a count, sorted, excluding
+  cargo's own `generated N warnings` tally, which repeats the diagnostics it
+  totals and would double-count them
+
+```bash
+node scripts/test.mjs --jobs 1 > gate.log 2>&1
+node scripts/project-gate.mjs gate.log > gate.proj     # the four sections
+node scripts/project-gate.mjs --diff before.proj gate.proj
+```
+
+`--diff` exits 1 when a suite, verdict or cargo result changed, and 0 when only
+warning locations moved — those are allowed to move when lines do, and are
+printed either way so the shift is in the record rather than in someone's
+memory. Everything outside the four sections (prose from a suite, the sample
+values in an example's report, `Blocking waiting for file lock`) is **residual**:
+the author enumerates it in the report. The projection of a log is a pure
+function of that log, so a gate report can be recomputed from the artefact later
+and two readers get the same answer.
+
+**Scope, stated once because it caused a false alarm.** The warning figure is
+every diagnostic in the *whole run*: 85 occurrences (18 distinct) at `8161229`.
+Of those, 72 sit inside the five suites that run `cargo test` — the same twelve
+diagnostics re-emitted per invocation, plus test-target-only ones — and the rest
+come from other suites' build steps. A *single* `cargo build --release` of
+`tension-core` prints twelve; the two numbers differ by scope, not by regression.
+
 ## 7. The ABI doc generator
 
 `scripts/gen-abi-doc.mjs` renders `docs/abi/adapter.md` and `docs/abi/guest.md`
@@ -609,6 +696,42 @@ someone regenerates.
 
 - **Today's mitigation:** regenerate per commit. Pass 4 had to split its commits
   for exactly this reason, and `npm run docs:abi` is one command.
+- **The measured failure of that mitigation (2026-11-13).** The Pass 1 slice 3
+  commit (`64a59f6`) *did* regenerate `guest.md` — nine rows — but from a
+  `main.rs` taken before its last edit: five lines were then added above the
+  `tension::platform` registrations, so all nine platform rows became five lines
+  stale inside the same commit. `abi-docs` was red on that commit while the
+  `docs` suite (the assets build, a different suite) was green, and the gate line
+  in the commit message read "26/26" — a figure from an earlier state. Verified
+  afterwards per commit with `gen-abi-doc.mjs --check` in a detached worktree:
+  current at `987d16a`, `fa69cbd`, `e9fd7da`, `bbd3c44`; stale at `64a59f6`;
+  current again from `e35f681`.
+- **The rule, and its mechanism.** A commit that touches `docs/abi/*.md` quotes
+  the check's own output line — `abi-docs: docs/abi/guest.md is current
+  (guest)` — in the message, not a summary, and takes it from a run made
+  **after** the final source edit. The check is 0.3 s, so it is cheap enough to
+  be the last thing before `git commit`, which is the only placement that would
+  have caught this: the failure was ordering *inside* a commit, not a forgotten
+  command.
+- **And in mechanism, because a rule about remembering is not a mechanism.**
+  `.githooks/pre-commit` runs `scripts/gen-abi-doc.mjs --check` whenever a staged
+  path is under `tension-core/`, `docs/abi/`, `tension-ogre/src/`,
+  `tension-input/src/` or `tension-2d/reference/` — the trees a citation can
+  move in. Enable once per clone:
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+  The hook also refuses when a staged file it would read still has unstaged
+  changes: the generator reads the working tree, so a pass in that state would
+  be an answer about a tree nobody is committing. `--no-verify` skips it; the
+  `abi-docs` suite does not, which is why CI catches the drift whether or not a
+  clone enabled the hook. `scripts/test-abi-docs.mjs` proves the hook fires by
+  building a scratch repository with the generator's inputs, shifting a citation
+  above the `tension::platform` block, and asserting git refuses the commit — and
+  accepts it after regeneration. The proof is real in both directions: with the
+  hook replaced by `exit 0`, that check fails.
 - **The long-term fix** is to stop emitting line numbers: cite the slot by name
   and the table by its anchor, not by `:1336`. That is a change to the generator's
   output, deliberately deferred (`docs/guard-discipline.md` — the same "presence

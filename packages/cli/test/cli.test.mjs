@@ -189,6 +189,32 @@ test('an unknown option is refused, not ignored', () => {
   );
 });
 
+// The two watcher flags are the whole of the dev command's lifetime policy, so
+// the surface is checked in both directions: accepted by the parser, and
+// described in the help. A flag in one place and not the other is either an
+// undocumented option or a lie.
+test('--watch and --no-watch are known dev options and are documented', (t) => {
+  const dir = scratch(t);
+  for (const flag of ['--watch', '--no-watch']) {
+    // Accepted: the run gets as far as looking for a project, and fails there.
+    assert.throws(
+      () => execFileSync(process.execPath, [cli, 'dev', flag, '--dir', dir],
+        { encoding: 'utf8', stdio: 'pipe' }),
+      /no project here/,
+    );
+  }
+  const help = execFileSync(process.execPath, [cli, 'dev', '--help'], { encoding: 'utf8' });
+  assert.match(help, /--watch\s+keep watching after the window closes/);
+  assert.match(help, /--no-watch\s+build and run once/);
+  // The removed flag must be *refused*, not silently accepted: an option that
+  // parses and does nothing is exactly what this parser exists to prevent.
+  assert.throws(
+    () => execFileSync(process.execPath, [cli, 'dev', '--exit-on-close', '--dir', dir],
+      { encoding: 'utf8', stdio: 'pipe' }),
+    /unknown option: '--exit-on-close'/,
+  );
+});
+
 test('a directory with no package.json is not a project', (t) => {
   const dir = scratch(t);
   assert.throws(

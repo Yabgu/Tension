@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-85 imports across 12 modules: 53 registered by the host in 9 modules, 32 by 3 capability adapters.
+90 imports across 13 modules: 58 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -29,7 +29,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/main.rs:1042` |
+| `abort` | `(i32, i32, i32, i32)` | `tension-core/src/host/io.rs:23` |
 
 ## `ogre` — capability
 
@@ -104,12 +104,22 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `audio_init` | `(i32, i32) → i32` | `tension-core/src/audio/mod.rs:179` |
-| `audio_play` | `(i32, i32, i32, f32, i32) → i32` | `tension-core/src/audio/mod.rs:187` |
-| `audio_stop` | `(i32) → i32` | `tension-core/src/audio/mod.rs:196` |
-| `audio_set_gain` | `(i32, f32) → i32` | `tension-core/src/audio/mod.rs:204` |
-| `audio_voice_state` | `(i32) → i32` | `tension-core/src/audio/mod.rs:212` |
-| `audio_shutdown` | `(void) → i32` | `tension-core/src/audio/mod.rs:220` |
+| `audio_init` | `(i32, i32) → i32` | `tension-core/src/audio/mod.rs:183` |
+| `audio_play` | `(i32, i32, i32, f32, i32) → i32` | `tension-core/src/audio/mod.rs:191` |
+| `audio_stop` | `(i32) → i32` | `tension-core/src/audio/mod.rs:200` |
+| `audio_set_gain` | `(i32, f32) → i32` | `tension-core/src/audio/mod.rs:208` |
+| `audio_voice_state` | `(i32) → i32` | `tension-core/src/audio/mod.rs:216` |
+| `audio_shutdown` | `(void) → i32` | `tension-core/src/audio/mod.rs:224` |
+
+## `tension::dev`
+
+| import | signature | registered at |
+|---|---|---|
+| `run` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:225` |
+| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:255` |
+| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:282` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:323` |
 
 ## `tension::input` — capability
 
@@ -127,41 +137,41 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/main.rs:1057` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1083` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/main.rs:1098` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/main.rs:1113` |
-| `arg_count` | `(void) → i32` | `tension-core/src/main.rs:1166` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1172` |
+| `print` | `(i32, i32)` | `tension-core/src/host/io.rs:38` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:81` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:96` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/host/io.rs:111` |
+| `arg_count` | `(void) → i32` | `tension-core/src/host/io.rs:164` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/host/io.rs:170` |
 
 ## `tension::platform`
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1638` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1661` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1666` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1684` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1841` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1885` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1931` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1961` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1991` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:101` |
+| `surface_width` | `(void) → i32` | `tension-core/src/host/platform_abi.rs:124` |
+| `surface_height` | `(void) → i32` | `tension-core/src/host/platform_abi.rs:129` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:147` |
+| `close_window` | `(i32) → i32` | `tension-core/src/host/platform_abi.rs:312` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:360` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/host/platform_abi.rs:434` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:467` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/host/platform_abi.rs:503` |
 
 ## `tension::res`
 
 | import | signature | registered at |
 |---|---|---|
-| `res_mount` | `(i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1232` |
-| `res_write` | `(i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1261` |
-| `res_open` | `(i32, i32) → i32` | `tension-core/src/main.rs:1295` |
-| `res_close` | `(i32) → i32` | `tension-core/src/main.rs:1338` |
-| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1365` |
-| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/main.rs:1444` |
-| `res_tell` | `(i32) → i64` | `tension-core/src/main.rs:1471` |
-| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/main.rs:1498` |
-| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/main.rs:1533` |
-| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1579` |
+| `res_mount` | `(i32, i32, i32, i32) → i32` | `tension-core/src/host/res.rs:51` |
+| `res_write` | `(i32, i32, i32, i32) → i32` | `tension-core/src/host/res.rs:80` |
+| `res_open` | `(i32, i32) → i32` | `tension-core/src/host/res.rs:114` |
+| `res_close` | `(i32) → i32` | `tension-core/src/host/res.rs:157` |
+| `res_read` | `(i32, i32, i32) → i32` | `tension-core/src/host/res.rs:184` |
+| `res_seek` | `(i32, i64, i32) → i64` | `tension-core/src/host/res.rs:263` |
+| `res_tell` | `(i32) → i64` | `tension-core/src/host/res.rs:290` |
+| `res_stat` | `(i32, i32, i32) → i32` | `tension-core/src/host/res.rs:317` |
+| `res_stat_fd` | `(i32, i32) → i32` | `tension-core/src/host/res.rs:352` |
+| `res_readdir` | `(i32, i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/res.rs:398` |
 
 ## `tension::solver`
 

@@ -53,14 +53,22 @@ Build the guest, run it, and restart it when src/ or assets/ change.
 
 options:
   --headless          run with no window (the guest gets --headless)
-  --no-watch          build and run once; exit when the game exits
+  --watch             keep watching after the window closes: the dev loop
+  --no-watch          build and run once; no watcher; exit with the game
   --build-only        build, print the command line, and exit
   --debug             compile with --debug --sourceMap
   --dir <path>        the project directory (default: the working directory)
   -h, --help          print this help
 
 A restart loses state: the runtime is one .wasm per process, so a change
-restarts the process. A build that fails leaves the running game alone.`;
+restarts the process. A build that fails leaves the running game alone.
+
+Closing the window ends the command: this runs the app, and the app is over
+when its window is. Saving still rebuilds and restarts while it runs.
+
+--watch is the dev loop: the supervisor survives a window close, so a game that
+quit on its own can be edited and re-run on save. Ctrl-C stops it.
+--no-watch is the one-shot: no watcher at all, exit with the game's status.`;
 
 const HELP_BUILD = `usage: tension build [options]
 
@@ -200,6 +208,7 @@ export async function main(argv) {
       case 'dev': {
         const options = parse(rest, {
           '--headless': flag('headless'),
+          '--watch': flag('watch'),
           '--no-watch': flag('noWatch'),
           '--build-only': flag('buildOnly'),
           '--debug': flag('debug'),
@@ -211,7 +220,11 @@ export async function main(argv) {
         const ctx = await context(options.dir);
         return await dev(ctx, {
           headless: options.headless,
+          // Silent on both is the default: watch the sources, stop when the
+          // window closes. `--watch` opts into surviving the close;
+          // `--no-watch` opts out of watching at all.
           watch: !options.noWatch,
+          stayAfterClose: Boolean(options.watch) && !options.noWatch,
           buildOnly: options.buildOnly,
           debug: options.debug,
           extra: options.extra,

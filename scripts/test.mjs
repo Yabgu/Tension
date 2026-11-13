@@ -521,11 +521,20 @@ const SUITES = {
     // without libclang the default-feature build fails before a single test runs.
     //
     // Set TENSION_AI=1 to include the ai-gated tests on a machine that has it.
+    //
+    // **`render2d-core` is named explicitly, and that is a fix rather than a
+    // preference.** `--no-default-features` was a way of saying "no `ai`", and
+    // it also dropped the in-core 2D renderer, so the gated cargo tests have
+    // only ever exercised the DSO escape hatch — the build this tree no longer
+    // ships. Naming the feature tests the shipped configuration, and it is what
+    // lets the nested record path (`tension::dev` + `tension::2d`) be tested at
+    // all: a sandboxed guest has no capability adapters, so without the in-core
+    // renderer it has no `tension::2d` to submit to.
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
-        ? ['--features', 'ai']
-        : ['--no-default-features', '--features', 'audio']),
+        ? ['--features', 'ai', 'render2d-core']
+        : ['--no-default-features', '--features', 'audio,render2d-core']),
     ], { env: suiteEnv() }),
   },
 };

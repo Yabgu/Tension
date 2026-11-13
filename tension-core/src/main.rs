@@ -63,13 +63,12 @@
 //! See the `debug` module for why a TensionScript guest carries no source
 //! lines even with both.
 
-use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::platform;
 use tension_core::render2d;
 use tension_core::res::{self, ResourceSet, Stat};
-use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
+use wasmtime::{Caller, Config, Engine, ExternType, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
 /// installing the imports it registers (`docs/architecture.md` §6). The run
@@ -80,6 +79,11 @@ mod audio;
 mod scheduler;
 mod debug;
 mod dwarf;
+/// The guest-facing imports, one module per namespace (`host::link_io`,
+/// `host::link_res`, and the namespaces still inline in `main` until they
+/// move). A sandboxed store links through these instead of through `main`.
+mod host;
+mod sandbox;
 pub(crate) mod leb;
 /// The session component: it owns the arena memory the guest imports and the
 /// two verbs that open and close a session (`docs/session.md` §2–§7).
@@ -115,9 +119,14 @@ fn default_adapter() -> Box<dyn audio::AudioAdapter> {
 /// State stored alongside the Wasm store: the game's CLI arguments, plus the
 /// line parked by a `read_line` probe (`cap <= 0`) and not yet consumed.
 /// `read_line` is the ABI's only stateful call; see the doc header.
-struct HostState {
-    args: Vec<String>,
-    pending_line: Option<Vec<u8>>,
+///
+/// **`pub(crate)`, fields included**, because the `host` module builds it
+/// (`HostState::new`) and every verb moved into `host::*` reads it through
+/// `Caller::data()`. It was private to this file while every verb was here; the
+/// visibility change is a consequence of the move, not a redesign.
+pub(crate) struct HostState {
+    pub(crate) args: Vec<String>,
+    pub(crate) pending_line: Option<Vec<u8>>,
     /// The mount table: `--res` paks (flat) followed by whatever a guest
     /// mounted, in load order. Each owns its bytes (1x memory) and the guest's
     /// fd space indexes it, so an fd's high bits are a mount index whichever
@@ -128,25 +137,25 @@ struct HostState {
     /// capability that parses the image on a worker thread). The same
     /// arrangement `control` uses, for the same reason — one table, two
     /// consumers, and neither owns it.
-    res: std::sync::Arc<std::sync::Mutex<res::MountTable>>,
+    pub(crate) res: std::sync::Arc<std::sync::Mutex<res::MountTable>>,
     /// The one directory a guest may write into, or `None` when the root the
     /// host tried to take could not be resolved (a `--write-root` that does not
     /// exist). `None` makes `res_write` answer `-EROFS` for every path rather
     /// than falling back to something writable: a save that landed somewhere
     /// unexpected is worse than a save that failed and said so.
-    write_root: Option<res::WriteRoot>,
+    pub(crate) write_root: Option<res::WriteRoot>,
     /// The open files a guest holds on the write root, keyed by a local handle.
     ///
     /// Separate from `res` for one reason: a pak's reader is the library's
     /// (a table of contents over mapped bytes) and a real file's is
     /// `std::fs::File`, which owns a cursor. The guest's fd says which table it
     /// belongs to in its high bits (`FD_WRITE_TAG`).
-    write_files: std::sync::Arc<std::sync::Mutex<res::WriteFiles>>,
-    audio: audio::AudioSession,
-    ai: ai::AiSession,
+    pub(crate) write_files: std::sync::Arc<std::sync::Mutex<res::WriteFiles>>,
+    pub(crate) audio: audio::AudioSession,
+    pub(crate) ai: ai::AiSession,
     /// The `tension::solver` host side: wasm-source bindings keyed by the
     /// shim's solver id (solver/mod.rs). Per store, like everything here.
-    solver: solver::SolverHost,
+    pub(crate) solver: solver::SolverHost,
     /// The posting face: the queues an adapter thread writes into through
     /// `post_event`, and the source of what the epoch publishes (`docs/session.md`
     /// §3–§5). Shared with the adapter host by `Arc`, and separate from
@@ -155,19 +164,19 @@ struct HostState {
     /// The arena memory, reachable without the session. The epoch runs *inside*
     /// a verb, and the verbs take the session out of the store — so `guest_write`
     /// and the epoch's own arena writes look here, not through `session`.
-    arena: Option<Memory>,
+    pub(crate) arena: Option<Memory>,
     /// How deep the session is inside callback invocations. Host-side, not in
     /// the arena: it is the re-entrancy guard a callback's `session_wait` hits
     /// (`docs/session.md` §7), and a guest that writes the arena cannot clear it.
-    depth: u32,
+    pub(crate) depth: u32,
     /// Deferred submissions: what a `queue_*` verb copied out of a callback, and
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
     /// and never cleared by a trap (R7) — a fault leaves the work where it is.
-    pending: session::apply::PendingQueue,
+    pub(crate) pending: session::apply::PendingQueue,
     /// The window-control queue: what a layer posts through `post_control`,
     /// what the guest posts through `tension::platform.control`, and what the
     /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
-    control: std::sync::Arc<platform::ControlBus>,
+    pub(crate) control: std::sync::Arc<platform::ControlBus>,
     /// The event dispatcher and the published window record (ABI v7). Shared
     /// with `AdapterHost` by `Arc`, and with the window, which dispatches from
     /// inside `pump` — the one place events are drained, reached from both the
@@ -176,7 +185,7 @@ struct HostState {
     /// Built before anything can register a layer, because a capability's
     /// `link` is where registration happens and `link` runs before the guest
     /// can create a window.
-    shared: std::sync::Arc<platform::HostShared>,
+    pub(crate) shared: std::sync::Arc<platform::HostShared>,
     /// The in-core 2D renderer: GPU device, the one canvas, and who holds the
     /// swapchain.
     ///
@@ -190,7 +199,7 @@ struct HostState {
     /// before the `SDL_Window` is. `main`'s teardown takes the window out first,
     /// and this ordering is what makes a path that skips teardown — a panic, a
     /// future early return — still correct rather than a use-after-free.
-    render2d: render2d::Render2dState,
+    pub(crate) render2d: render2d::Render2dState,
     /// The host-owned window, when the guest asked for one (`create_window`).
     ///
     /// Lives in the store rather than beside it because `host_loop` needs to
@@ -204,7 +213,7 @@ struct HostState {
     /// same call). There is no startup window and no flag that makes one, so a
     /// run with no windowed renderer and no `create_window` never opens SDL's
     /// video subsystem at all.
-    host_window: Option<platform::HostWindow>,
+    pub(crate) host_window: Option<platform::HostWindow>,
     /// The cell `host_surface` serves from, shared with `AdapterHost` by `Arc`.
     ///
     /// **Why it is here and not only in `AdapterHost`.** Before the programmatic
@@ -214,18 +223,18 @@ struct HostState {
     /// run, and the guest thread is the one that must publish — so the store
     /// holds a handle to the same cell the adapters read. `None` until the
     /// adapter host is built (a run with no capability never needs it).
-    host_surface: Option<std::sync::Arc<std::sync::Mutex<Option<adapter::PublishedSurface>>>>,
+    pub(crate) host_surface: Option<std::sync::Arc<std::sync::Mutex<Option<adapter::PublishedSurface>>>>,
     /// Set by the pump when the user closes the window. The loop breaks on it,
     /// the same way it breaks when the guest closes its session.
-    window_closed: bool,
+    pub(crate) window_closed: bool,
     /// The loaded adapters, in registration order: what the epoch's publish
     /// phase calls, and in what order (`docs/session.md` §3).
-    adapters: Vec<adapter::AdapterCall>,
-    posting: std::sync::Arc<session::posting::PostingSide>,
+    pub(crate) adapters: Vec<adapter::AdapterCall>,
+    pub(crate) posting: std::sync::Arc<session::posting::PostingSide>,
     /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
     /// writes and the epoch's completion path will read. Bounded, per family,
     /// and — at pre0 — recorded but unread.
-    scheduler: scheduler::Scheduler,
+    pub(crate) scheduler: scheduler::Scheduler,
     /// The guest's `__taskWake(idsPtr, count)`, resolved after instantiation
     /// when the module exports it (std 0.6.0 and later). `None` for a guest
     /// that has no push path — the pull path still delivers those.
@@ -234,36 +243,193 @@ struct HostState {
     /// lookup after instantiation; resolving lazily at the first wake would put
     /// a lookup on the completion path and make a missing export a runtime
     /// surprise rather than a startup fact.
-    task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    pub(crate) task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
     /// The guest's `__taskFail(idsPtr, statusesPtr, count)`: resume a task with
     /// a status and no payload — §4.4's lost completion and §5.1's refused park.
     /// `None` for a guest built before std 0.6.1, which has no such export; the
     /// host then has no way to fail a task, and says so rather than parking it.
-    task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
+    pub(crate) task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
     /// Per-class drop totals already attributed (0.7.0c). The posting queues'
     /// counters are cumulative, so the host keeps its own baseline: a drop is
     /// the *delta* since the last iteration, and without this every iteration
     /// after the first would re-wake the same victims.
-    drop_seen: [u64; session::arena::CLASS_COUNT],
+    pub(crate) drop_seen: [u64; session::arena::CLASS_COUNT],
     /// Tasks the epoch matched, or the park found already completed, waiting to
     /// be resumed. Drained by the host loop; empty for every pre-adoption
     /// guest, because nothing parked.
-    wake_batch: Vec<scheduler::Wake>,
+    pub(crate) wake_batch: Vec<scheduler::Wake>,
     /// The guest's `__taskResume(idsPtr, classesPtr, payloadsPtr, count)`: resume
     /// with the delivered class and payload (std 0.6.1). Preferred over
     /// `__taskWake`, which resumes with whatever the record already holds.
-    task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
+    pub(crate) task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
     /// The guest's `_game_running()`: 1 while the guest still wants frames.
     /// `None` means the guest has not adopted the host-owned loop, which is
     /// every example until 0.7.0b — so the loop must not start for it.
-    game_running: Option<wasmtime::TypedFunc<(), i32>>,
+    pub(crate) game_running: Option<wasmtime::TypedFunc<(), i32>>,
     /// The session: it owns the arena memory and the open/close verbs.
     ///
     /// `Option` because the memory can only be created *from* a store, and this
     /// struct is what that store is built with — the session is created right
     /// after the store and installed before instantiation, once. A verb that
     /// finds it `None` returns `-EBADF` rather than panicking.
-    session: Option<session::Session>,
+    pub(crate) session: Option<session::Session>,
+    /// Where a sandboxed guest's `tension::io.print` goes, or `None` to write to
+    /// the terminal as every non-sandboxed run does.
+    ///
+    /// **Capture rather than a callback** because the host has to read the
+    /// output synchronously, right after the guest's entrypoint returns, and
+    /// because Pass 3's `tension::dev.out` is exactly this buffer handed to the
+    /// outer guest. A sandboxed guest that printed to the terminal would
+    /// interleave with the editor's own output, which is the one thing a
+    /// nested run must not do.
+    pub(crate) captured_out: Option<Vec<u8>>,
+    /// The linear-memory ceiling a sandboxed guest runs under, as the store's
+    /// `ResourceLimiter`. Unlimited for the process's own guest: it is not
+    /// sandboxed, and a budget nobody asked for would be a policy, not a bound.
+    pub(crate) memory_budget: sandbox::MemoryBudget,
+    /// How deep this guest sits: 0 for the process's own, `d + 1` for a guest it
+    /// started. Distinct from `depth`, which counts session callback re-entry
+    /// inside one guest — two different nesting stories that happen to share a
+    /// word.
+    pub(crate) guest_depth: u32,
+    /// The rectangle a **nested** guest may draw into, as `dev.run` was told it:
+    /// the outer guest's viewport, origin (0,0).
+    ///
+    /// `None` for the process's own guest, which draws into the window and asks
+    /// the window for its size. This is what `tension::platform.surface_width`
+    /// and `window_info` answer with for a nested guest — the viewport, not the
+    /// window, because the record's one `w`/`h` is both the dest rect and the
+    /// source texel rect, so the size has to be the one the records are drawn at.
+    pub(crate) nested_viewport: Option<(u32, u32)>,
+    /// The runs this guest has started, keyed by the id `dev.run` returned.
+    ///
+    /// **A map rather than one slot**, because two runs must coexist: the editor
+    /// can restart a game before the previous run's output has been read, and a
+    /// single slot would either refuse the second or throw the first away.
+    ///
+    /// The table lives here rather than beside the sandbox module because its
+    /// owner is the *guest* that called `dev.run` — a nested guest that starts
+    /// its own runs gets its own table, one level down.
+    pub(crate) runs: std::collections::HashMap<i32, sandbox::GuestRun>,
+    /// The next run id. Starts at 1 so that 0 is never a valid handle and an
+    /// uninitialised variable cannot look like one.
+    pub(crate) next_run_id: i32,
+    /// The engine, for a verb that has to stand a guest up.
+    ///
+    /// A `Clone` handle to the same engine the config holds — not a second
+    /// engine, which would be a second compiled-code cache. `dev.run` needs it
+    /// because a verb's only context is `Caller::data()`.
+    pub(crate) engine: wasmtime::Engine,
+    /// The process's compiled-module cache, same reason and same `Arc`.
+    pub(crate) module_cache: std::sync::Arc<host::module_cache::ModuleCache>,
+}
+
+impl HostState {
+    /// The per-guest state payload, built from the run's configuration.
+    ///
+    /// **Everything here is either this guest's or a singleton.** The fields
+    /// taken from `config` are per guest (argv, the mount table handle, the
+    /// write root); the ones built inline are the singletons `host/mod.rs`
+    /// lists — the audio device, the AI backend, the window event bus. They are
+    /// constructed here because `HostState` is where the verbs reach them, and
+    /// that is the F1 constraint rather than an endorsement: a second guest must
+    /// share them, and today it would build a second.
+    ///
+    /// `render2d` defaults to "no device, no canvas" whether or not the feature
+    /// is on: with it off nothing reads the field, and leaving it out behind a
+    /// `cfg` would make the struct two shapes for no benefit.
+    pub(crate) fn new(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+    ) -> Self {
+        Self::build(config, posting, false)
+    }
+
+    /// The same state, built for a **sandboxed** guest.
+    ///
+    /// Three differences, and each is the singleton list in `host/mod.rs` rather
+    /// than a preference:
+    ///
+    /// * **No audio device.** A cpal `Stream` is `!Send` on ALSA and the session
+    ///   is first-wins for its format. A nested guest gets the silent adapter:
+    ///   the guest's audio verbs succeed, nothing is heard, and no file is
+    ///   written. Refusing `audio_init` instead would make Play Mode unable to
+    ///   run a game that uses sound.
+    /// * **No AI backend.** The stub adapter answers with the contract's
+    ///   refusals; a second real backend would re-load the model weights.
+    /// * **A capture-mode renderer.** `Render2dState::capture()` opens no GPU
+    ///   device; the device and the window belong to the outer guest.
+    ///
+    /// Plus the two things a sandbox needs: a captured-output sink and a default
+    /// (unlimited) budget, which `Sandbox::open` then sets.
+    pub(crate) fn new_nested(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+    ) -> Self {
+        Self::build(config, posting, true)
+    }
+
+    fn build(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+        nested: bool,
+    ) -> Self {
+        let audio = if nested {
+            audio::AudioSession::new(Box::new(audio::silent::SilentAdapter::new()))
+        } else {
+            audio::AudioSession::new(default_adapter())
+        };
+        let ai = if nested {
+            ai::AiSession::new(Box::new(ai::stub::StubAdapter::new(ai::AiSink::new(
+                std::sync::Arc::clone(&posting),
+            ))))
+        } else {
+            ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting)))
+        };
+        HostState {
+            args: config.args.clone(),
+            pending_line: None,
+            res: std::sync::Arc::clone(&config.res),
+            write_root: config.write_root.clone(),
+            write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
+            audio,
+            ai,
+            solver: solver::SolverHost::default(),
+            posting,
+            scheduler: scheduler::Scheduler::new(),
+            wake_batch: Vec::new(),
+            task_wake: None,
+            task_resume: None,
+            task_fail: None,
+            drop_seen: [0; session::arena::CLASS_COUNT],
+            game_running: None,
+            arena: None,
+            depth: 0,
+            pending: session::apply::PendingQueue::new(),
+            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
+            shared: tension_core::platform::HostShared::new(),
+            host_window: None,
+            host_surface: None,
+            render2d: if nested {
+                render2d::Render2dState::capture()
+            } else {
+                Default::default()
+            },
+            window_closed: false,
+            adapters: Vec::new(),
+            session: None,
+            captured_out: if nested { Some(Vec::new()) } else { None },
+            memory_budget: sandbox::MemoryBudget::default(),
+            // A nested guest's depth is set by whoever opened it; the value here
+            // is the root's, and `Sandbox::open` overwrites it for a sandbox.
+            guest_depth: 0,
+            nested_viewport: None,
+            runs: std::collections::HashMap::new(),
+            next_run_id: 1,
+            engine: config.engine.clone(),
+            module_cache: std::sync::Arc::clone(&config.module_cache),
+        }
+    }
 }
 
 /// Guest fds are `(pak index << 16) | that pak's fd`, so a guest handle stays
@@ -456,37 +622,6 @@ struct Cli {
     post_test_events: bool,
     wasm_path: String,
     args: Vec<String>,
-}
-
-/// The window width a guest sees, or 0 for "the host owns no window".
-///
-/// **This answers the window question, not the Vulkan question.** Whether a
-/// `VkInstance` and a `VkSurfaceKHR` exist is a renderer's business and is
-/// deliberately invisible here: a guest asking how big its window is must not
-/// depend on whether something has claimed the surface for swapchain work. The
-/// two were conflated in the first cut — the guest read 0 for a window that was
-/// plainly open — which is exactly the ambiguity `has_surface()` exists to
-/// prevent on the Rust side, re-created one layer up.
-///
-/// 0 is unambiguous because a real window is never 0 wide: `parse_window_size`
-/// refuses it at the CLI and `apply_control` clamps to 1.
-fn surface_width(caller: &Caller<'_, HostState>) -> u32 {
-    caller
-        .data()
-        .host_window
-        .as_ref()
-        .map(|window| window.published_size().0)
-        .unwrap_or(0)
-}
-
-/// The height, with the same "0 means no window" contract as [`surface_width`].
-fn surface_height(caller: &Caller<'_, HostState>) -> u32 {
-    caller
-        .data()
-        .host_window
-        .as_ref()
-        .map(|window| window.published_size().1)
-        .unwrap_or(0)
 }
 
 /// Parse the arguments that follow the program name.
@@ -895,26 +1030,29 @@ fn main() -> anyhow::Result<()> {
     // what lldb's `plugin.jit-loader.gdb.enable on` picks up. Registration
     // happens as the module is compiled, before `_start_game` runs, so a
     // debugger that launches this process can have breakpoints in place first.
-    let mut config = Config::new();
-    config.debug_info(cli.debug);
-    let engine = Engine::new(&config)?;
-
-    // The guest's bytes, read once and used for both the load-time checks and
-    // the module itself. `Module::new` takes the text format as well as the
-    // binary one, so a hand-written `.wat` fixture loads the way a compiled
-    // `game.wasm` does (§7 Appendix B's smoke path).
-    let guest_bytes =
-        std::fs::read(&cli.wasm_path).map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
-    // A malformed guest is reported with the file's name in front of wasmtime's
-    // own parse error: `Module::new` does not know where the bytes came from,
-    // and "expected a module" with no path in it is a bad diagnostic.
-    let module = Module::new(&engine, &guest_bytes)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
-    check_guest_module(&module, &guest_bytes, &cli.wasm_path)?;
+    // The engine is built once, from the engine configuration, and moves into
+    // the config: it owns the compiled-code cache, and every guest this process
+    // runs shares it (see `host::HostConfig`).
+    let mut engine_config = Config::new();
+    engine_config.debug_info(cli.debug);
+    // **Epoch interruption, for the sandbox's watchdog.** It is an engine-level
+    // switch: wasm compiled by this engine carries deadline checks that a
+    // watchdog thread's `increment_epoch` can reach, which is what makes an
+    // infinite nested guest stoppable at all. A store that does not set a
+    // deadline traps immediately, so every store built here sets one —
+    // `GuestHost::new` gives the process's own guest `u64::MAX` (never fires) and
+    // `Sandbox::open` gives a nested guest a real one.
+    //
+    // A few instructions per loop iteration is the cost, paid by every guest.
+    // That is the price of being able to stop one, and it is the only mechanism
+    // wasmtime offers that a guest cannot opt out of.
+    engine_config.epoch_interruption(true);
+    let engine = Engine::new(&engine_config)?;
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
-    // at runtime. `load_file` keeps one copy of each pak (`tension-res/DESIGN.md` §9.2).
+    // at runtime. `load_file` keeps one copy of each pak
+    // (`tension-res/DESIGN.md` §9.2).
     let mut resource_sets = res::MountTable::new();
     for path in &cli.res_paths {
         let set = ResourceSet::load_file(path)
@@ -958,1081 +1096,53 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Everything the run is configured with, named once. Nothing here changes
+    // after this point, and a second guest is given the same one.
+    let config = host::HostConfig {
+        // One compile cache per process, shared by every guest: the editor's
+        // Play Mode runs the same compiled module on every press of a button.
+        module_cache: std::sync::Arc::new(host::module_cache::ModuleCache::default()),
+        engine,
+        args: cli.args,
+        guest_path: cli.wasm_path,
+        res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
+        write_root,
+        capabilities: cli.capability_paths,
+        session_open: cli.session_open,
+        session_callbacks: cli.session_callbacks,
+        post_test_events: cli.post_test_events,
+    };
+
     // §7.2: the paks merge into one namespace, so two of them providing the
     // same path is a load-time error rather than a silent first-match. The
     // check costs one enumeration per pak, and nothing at lookup time.
     {
-        let all = resource_sets.sets();
-        if let Err(err) = check_pak_conflicts(&all) {
+        let mounts = config
+            .res
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(err) = check_pak_conflicts(&mounts.sets()) {
             eprintln!("tension-core: {err}");
             std::process::exit(2);
         }
     }
 
-    // The posting face is built **before** the store because the AI backend is
-    // a producer too: its worker posts AI completions through the same
-    // any-thread path the adapters use, so it needs the `Arc` at construction —
-    // not a borrow of the store it will wake.
-    let posting = std::sync::Arc::new(session::posting::PostingSide::default());
-
-    let mut store = Store::new(
-        &engine,
-        HostState {
-            args: cli.args,
-            pending_line: None,
-            res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
-            write_root,
-            write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
-            audio: audio::AudioSession::new(default_adapter()),
-            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
-            solver: solver::SolverHost::default(),
-            posting,
-            scheduler: scheduler::Scheduler::new(),
-            wake_batch: Vec::new(),
-            task_wake: None,
-            task_resume: None,
-            task_fail: None,
-            drop_seen: [0; session::arena::CLASS_COUNT],
-            game_running: None,
-            arena: None,
-            depth: 0,
-            pending: session::apply::PendingQueue::new(),
-            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
-            shared: tension_core::platform::HostShared::new(),
-                host_window: None,
-            host_surface: None,
-            // The in-core 2D renderer's device, canvas and swapchain guard. Default
-            // (all `None`) whether or not the feature is on: with it off nothing
-            // reads this, and leaving it out behind a `cfg` would make the struct
-            // two shapes for no benefit.
-            render2d: Default::default(),
-            window_closed: false,
-            adapters: Vec::new(),
-            session: None,
-        },
-    );
-
-    // tension::session ----------------------------------------------------
-    // The session owns the arena memory, so it is created before anything is
-    // linked and its arena is prepared before instantiation: the guest's data
-    // segments land on a band the session already zeroed and canary-laid, which
-    // is what makes `verify_post_instantiate` below a complete check.
-    //
-    // **For a guest that imports nothing from `session`, there is no session to
-    // create.** The arena is the session's, so a guest with no session import has
-    // no arena — and the pre-session examples (io, audio, ai, res, solver) are
-    // exactly that: they predate the session, define their own memory, and reach
-    // the host ABI through `get_export("memory")` like every other guest. The
-    // session's constructor requires a memory *import*, which is a rule about
-    // owning an arena; applying it to a guest with no session is the same scope
-    // error the start-section check had, so it is scoped the same way. A session
-    // guest is unaffected: the import is what identifies one.
-    let guest_is_session_guest = module.imports().any(|import| import.module() == "session");
-    let mut session = if guest_is_session_guest {
-        let mut session = session::Session::create_from_module(&mut store, &module)?;
-        session.prepare_arena(&mut store)?;
-        Some(session)
-    } else {
-        None
-    };
-    let mut linker: Linker<HostState> = Linker::new(&engine);
-
-    // tension::io ABI -----------------------------------------------------
-    // AS `stub` runtime traps through `env.abort`(msg_ptr, file_ptr, line, col).
-    linker.func_wrap(
-        "env",
-        "abort",
-        |mut caller: Caller<'_, HostState>, msg: i32, file: i32, line: i32, col: i32| -> () {
-            let m = read_as_string(&mut caller, msg);
-            let f = read_as_string(&mut caller, file);
-            logging::log(
-                Level::Error,
-                "core",
-                &format!("game aborted: {m} (in {f}, line {line}, col {col})"),
-            );
-            std::process::exit(1);
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::io",
-        "print",
-        |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
-            let mem = caller
-                .get_export("memory")
-                .and_then(|e| e.into_memory())
-                .expect("game must export a memory named 'memory'");
-            let bytes = mem.data(&caller);
-            let start = ptr as usize;
-            let end = start + len.max(0) as usize;
-            let start = start.min(bytes.len());
-            let end = end.min(bytes.len());
-            let text = String::from_utf8_lossy(&bytes[start..end]);
-            print!("{text}");
-            let _ = io::stdout().flush();
-        },
-    )?;
-
-    // tension::io log imports -------------------------------------------
-    // The guest's logging: `log(level, name_ptr, name_len, msg_ptr, msg_len)`
-    // and `log_structured(...)` with a JSON payload in place of the message.
-    // Both hand a record to the host logger, which owns the layout — the guest
-    // never touches the terminal, exactly as with `print`. A level the guest
-    // invents is clamped, not refused, and a record that does not fit the
-    // guest's memory is dropped: a log call must not trap.
-    linker.func_wrap(
-        "tension::io",
-        "log",
-        |mut caller: Caller<'_, HostState>,
-         level: i32,
-         name_ptr: i32,
-         name_len: i32,
-         msg_ptr: i32,
-         msg_len: i32| {
-            let name = guest_text(&mut caller, name_ptr, name_len).unwrap_or_default();
-            let message = guest_text(&mut caller, msg_ptr, msg_len).unwrap_or_default();
-            logging::log(logging::Level::from_abi_code(level), &name, &message);
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::io",
-        "log_structured",
-        |mut caller: Caller<'_, HostState>,
-         level: i32,
-         name_ptr: i32,
-         name_len: i32,
-         json_ptr: i32,
-         json_len: i32| {
-            let name = guest_text(&mut caller, name_ptr, name_len).unwrap_or_default();
-            let payload = guest_text(&mut caller, json_ptr, json_len).unwrap_or_default();
-            logging::emit(logging::Level::from_abi_code(level), &name, "", Some(&payload));
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::io",
-        "read_line",
-        |mut caller: Caller<'_, HostState>, ptr: i32, cap: i32| -> i32 {
-            // Ensure a line is pending: read from stdin if nothing is
-            // buffered. EOF with nothing pending means no line is available.
-            {
-                let state = caller.data_mut();
-                if state.pending_line.is_none() {
-                    let mut line = String::new();
-                    let n = io::stdin().lock().read_line(&mut line).unwrap_or(0);
-                    if n == 0 {
-                        return -1; // EOF, nothing pending
-                    }
-                    while line.ends_with('\n') || line.ends_with('\r') {
-                        line.pop();
-                    }
-                    state.pending_line = Some(line.into_bytes());
-                }
-            }
-            // Probe (cap <= 0): return the pending line's length without
-            // consuming it. Probes are idempotent until a consuming call.
-            if cap <= 0 {
-                let state = caller.data();
-                return state
-                    .pending_line
-                    .as_ref()
-                    .expect("pending_line ensured above")
-                    .len() as i32;
-            }
-            // Consume (cap > 0): take the line, write min(cap, len) bytes
-            // (clamped to guest memory, same pattern as `arg`), return len.
-            let line = caller
-                .data_mut()
-                .pending_line
-                .take()
-                .expect("pending_line ensured above");
-            let to_write = line.len().min(cap as usize);
-            if to_write > 0 {
-                let mem = caller
-                    .get_export("memory")
-                    .and_then(|e| e.into_memory())
-                    .expect("game must export a memory named 'memory'");
-                let data = mem.data_mut(&mut caller);
-                let start = ptr as usize;
-                let start = start.min(data.len());
-                let end = (start + to_write).min(data.len());
-                data[start..end].copy_from_slice(&line[..(end - start)]);
-            }
-            line.len() as i32
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::io",
-        "arg_count",
-        |caller: Caller<'_, HostState>| -> i32 { caller.data().args.len() as i32 },
-    )?;
-
-    linker.func_wrap(
-        "tension::io",
-        "arg",
-        |mut caller: Caller<'_, HostState>, i: i32, ptr: i32, cap: i32| -> i32 {
-            if i < 0 {
-                return -1;
-            }
-            let arg = match caller.data().args.get(i as usize) {
-                Some(a) => a.clone(),
-                None => return -1,
-            };
-            let bytes = arg.as_bytes();
-            let need = bytes.len();
-            if cap > 0 {
-                let to_write = (need as i32).min(cap) as usize;
-                if to_write > 0 {
-                    let mem = caller
-                        .get_export("memory")
-                        .and_then(|e| e.into_memory())
-                        .expect("game must export a memory named 'memory'");
-                    let data = mem.data_mut(&mut caller);
-                    let start = ptr as usize;
-                    let start = start.min(data.len());
-                    let end = (start + to_write).min(data.len());
-                    data[start..end].copy_from_slice(&bytes[..(end - start)]);
-                }
-            }
-            need as i32
-        },
-    )?;
-
-    // tension::res ABI ----------------------------------------------------
-    // The read-only resource VFS (tension-res, ECMA-208 SIDF). Every call is
-    // strict: a path that does not resolve in any loaded pak is -ENOENT, and
-    // the framework layer is what turns that into null/[] for the guest (§7).
-    //
-    // `res_write` is the one verb that is not the VFS: it lands on the real
-    // filesystem under `--write-root`, because a pak is an immutable archive and
-    // an editor that cannot save is a viewer. The sandbox is `res::WriteRoot`'s,
-    // and every refusal there is -EROFS.
-    // `res_mount(prefix_ptr, prefix_len, path_ptr, path_len) -> mount index`
-    //
-    // The generic mount. A guest that wants a packed volume visible at
-    // `resources/models/x.mesh` says so once, here, and every `tension::res`
-    // verb sees it from then on — including `res_read_file`, which is what lets
-    // one volume serve both a guest's own readers and a capability's loader.
-    //
-    // **The host owns this table.** Before it, a mount existed only inside the
-    // Ogre capability: `ogre.mount_tns` kept its own prefix table, resolved
-    // paths by its own rule and read the disk with its own reader, so any guest
-    // that wanted a volume needed the Ogre adapter loaded, and the same volume
-    // had to be passed to the host (`--res`) *and* to the adapter (`--tns`) to be
-    // visible to both. One table removes the second implementation and the
-    // second copy of the bytes.
-    //
-    // Refusals: an empty prefix or path, a prefix with a trailing `/` or a
-    // leading `/` (-EINVAL — a prefix is a name, not a path), a duplicate prefix
-    // (-EEXIST), a file that does not exist (-ENOENT), and a volume that does not
-    // parse (-EIO). Returns the mount's index in the table, which is also what
-    // an fd's high bits name.
-    linker.func_wrap(
-        "tension::res",
-        "res_mount",
-        |mut caller: Caller<'_, HostState>, prefix_ptr: i32, prefix_len: i32,
-         path_ptr: i32, path_len: i32|
-         -> i32 {
-            let Some(prefix) = guest_path(&mut caller, prefix_ptr, prefix_len) else {
-                return EINVAL;
-            };
-            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
-                return EINVAL;
-            };
-            let table = mount_table(&caller);
-            let mut guard = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            match guard.mount(&prefix, &path) {
-                Ok(index) => {
-                    drop(guard);
-                    crate::logging::log(
-                        crate::logging::Level::Info,
-                        "res",
-                        &format!("mounted \"{prefix}/\" from {path} (mount {index})"),
-                    );
-                    index as i32
-                }
-                Err(error) => error.code(),
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_write",
-        |mut caller: Caller<'_, HostState>,
-         path_ptr: i32,
-         path_len: i32,
-         data_ptr: i32,
-         data_len: i32|
-         -> i32 {
-            if data_len < 0 {
-                return EINVAL;
-            }
-            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
-                return EINVAL;
-            };
-            if data_len == 0 {
-                // An empty file is a legitimate save (a cleared document), so the
-                // zero-length case is a real write rather than a refusal.
-            }
-            let Some(bytes) = read_guest_span(&mut caller, data_ptr as u32, data_len as u32) else {
-                return EINVAL;
-            };
-            match caller.data().write_root.as_ref() {
-                Some(root) => match root.write(&path, &bytes) {
-                    Ok(written) => written as i32,
-                    Err(error) => error.code(),
-                },
-                // No root: a host whose `--write-root` did not resolve. Refused
-                // rather than silently writing to the working directory, which
-                // is the flag's absence meaning something else.
-                None => -30, // EROFS
-            }
-        },
-    )?;
-    linker.func_wrap(
-        "tension::res",
-        "res_open",
-        |mut caller: Caller<'_, HostState>, path_ptr: i32, path_len: i32| -> i32 {
-            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
-                return EINVAL;
-            };
-            let table = mount_table(&caller);
-            let open = {
-                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                mounts.resolve(&path, |set, relative| set.open_fd(relative))
-            };
-            match open {
-                Ok((index, fd)) => return pack_fd(index, fd),
-                // **Not in any pak: try what the guest itself wrote.** The paks
-                // are immutable and `res_write` lands on the filesystem, so
-                // without this an editor could save a document and never load it
-                // back — the write succeeded and the read looked in archives that
-                // never held it.
-                Err(error) if error.code() == ENOENT => {}
-                // Only a *miss* falls through. A malformed path (`-EINVAL`) or a
-                // volume that failed to read is reported, because the fallback
-                // exists for "not there", not for "the question was wrong".
-                Err(error) => return error.code(),
-            }
-            // Both handles are *cloned* out of the store rather than borrowed:
-            // `WriteRoot` is a canonical `PathBuf` and the files table is an
-            // `Arc`, so this is one path copy and one refcount bump — and it
-            // keeps the borrow checker's answer simple instead of reaching for
-            // a pointer that the store's own `data_mut` calls could invalidate.
-            let files = std::sync::Arc::clone(&caller.data().write_files);
-            let root = caller.data().write_root.clone();
-            let Some(root) = root else {
-                return ENOENT; // no write root means nothing was ever written
-            };
-            let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            match files.open(&root, &path) {
-                Ok(local) => (FD_WRITE_TAG << FD_SET_SHIFT) | (local & FD_LOCAL_MASK),
-                Err(error) => error.code(),
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_close",
-        |caller: Caller<'_, HostState>, fd: i32| -> i32 {
-            if is_write_fd(fd) {
-                let files = write_files(&caller);
-                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                return match files.close(fd & FD_LOCAL_MASK) {
-                    Ok(()) => 0,
-                    Err(error) => error.code(),
-                };
-            }
-            let Some((index, local)) = fd_index(fd) else {
-                return EBADF;
-            };
-            let table = mount_table(&caller);
-            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(mount) = mounts.get(index) else {
-                return EBADF;
-            };
-            match mount.set.close_fd(local) {
-                Ok(()) => 0,
-                Err(e) => e.code(),
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_read",
-        |mut caller: Caller<'_, HostState>, fd: i32, ptr: i32, len: i32| -> i32 {
-            if len < 0 {
-                return EINVAL;
-            }
-            if is_write_fd(fd) {
-                // Same loop, different reader. The write-root file owns a cursor,
-                // so a short read leaves the position exactly where the next call
-                // should continue — which is what `res_read`'s contract is and
-                // what a pak's offset argument gives it for free.
-                let files = write_files(&caller);
-                let want = len as usize;
-                let mut copied: usize = 0;
-                let mut chunk = [0u8; 4096];
-                while copied < want {
-                    let step = (want - copied).min(chunk.len());
-                    let outcome = {
-                        let mut files =
-                            files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                        files.read(fd & FD_LOCAL_MASK, &mut chunk[..step])
-                    };
-                    match outcome {
-                        Ok(0) => break,
-                        Ok(n) => {
-                            if !write_guest(&mut caller, ptr + copied as i32, &chunk[..n]) {
-                                return EINVAL;
-                            }
-                            copied += n;
-                            if n < step {
-                                break;
-                            }
-                        }
-                        Err(error) => return error.code(),
-                    }
-                }
-                return copied as i32;
-            }
-            let Some((index, local)) = fd_index(fd) else {
-                return EBADF;
-            };
-            let want = len as usize;
-            let mut copied: usize = 0;
-            let mut chunk = [0u8; 4096];
-            // Cloned before the loop: `write_guest` takes `&mut caller` below,
-            // so the table must not be borrowed from the store across it.
-            let table = mount_table(&caller);
-            while copied < want {
-                let step = (want - copied).min(chunk.len());
-                let outcome = {
-                    let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    match mounts.get(index) {
-                        Some(mount) => mount.set.read_fd(local, &mut chunk[..step]),
-                        None => return EBADF,
-                    }
-                };
-                match outcome {
-                    Ok(0) => break,
-                    Ok(n) => {
-                        if !write_guest(&mut caller, ptr + copied as i32, &chunk[..n]) {
-                            return EINVAL;
-                        }
-                        copied += n;
-                        if n < step {
-                            break;
-                        }
-                    }
-                    // Bytes already handed over are the guest's; the error is
-                    // only reported when nothing was delivered.
-                    Err(e) => {
-                        return if copied > 0 { copied as i32 } else { e.code() };
-                    }
-                }
-            }
-            copied as i32
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_seek",
-        |caller: Caller<'_, HostState>, fd: i32, off: i64, whence: i32| -> i64 {
-            if is_write_fd(fd) {
-                let files = write_files(&caller);
-                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                return match files.seek(fd & FD_LOCAL_MASK, off, whence) {
-                    Ok(pos) => pos,
-                    Err(error) => error.code() as i64,
-                };
-            }
-            let Some((index, local)) = fd_index(fd) else {
-                return EBADF as i64;
-            };
-            let table = mount_table(&caller);
-            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(mount) = mounts.get(index) else {
-                return EBADF as i64;
-            };
-            match mount.set.seek_fd(local, off, whence) {
-                Ok(pos) => pos,
-                Err(e) => e.code() as i64,
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_tell",
-        |caller: Caller<'_, HostState>, fd: i32| -> i64 {
-            if is_write_fd(fd) {
-                let files = write_files(&caller);
-                let mut files = files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                return match files.tell(fd & FD_LOCAL_MASK) {
-                    Ok(pos) => pos,
-                    Err(error) => error.code() as i64,
-                };
-            }
-            let Some((index, local)) = fd_index(fd) else {
-                return EBADF as i64;
-            };
-            let table = mount_table(&caller);
-            let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            let Some(mount) = mounts.get(index) else {
-                return EBADF as i64;
-            };
-            match mount.set.tell_fd(local) {
-                Ok(pos) => pos,
-                Err(e) => e.code() as i64,
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_stat",
-        |mut caller: Caller<'_, HostState>, path_ptr: i32, path_len: i32, out_ptr: i32| -> i32 {
-            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
-                return EINVAL;
-            };
-            let table = mount_table(&caller);
-            let stat = {
-                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                mounts.resolve(&path, |set, relative| set.stat(relative))
-            };
-            // Same fallback as `res_open`, and needed for the same reason: a guest
-            // that asks what it just saved must be told the truth, or it cannot
-            // know whether a load has anything to read.
-            let stat = match stat {
-                Err(error) if error.code() == -2 => match caller.data().write_root.clone() {
-                    Some(root) => root.stat(&path).map(|stat| (0usize, stat)),
-                    None => Err(error),
-                },
-                other => other,
-            };
-            match stat {
-                Ok((_, stat)) => {
-                    if write_stat(&mut caller, out_ptr, &stat) {
-                        0
-                    } else {
-                        EINVAL
-                    }
-                }
-                Err(e) => e.code(),
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_stat_fd",
-        |mut caller: Caller<'_, HostState>, fd: i32, out_ptr: i32| -> i32 {
-            if is_write_fd(fd) {
-                let files = write_files(&caller);
-                let outcome = {
-                    let mut files =
-                        files.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    files.stat(fd & FD_LOCAL_MASK)
-                };
-                return match outcome {
-                    Ok(stat) => {
-                        if write_stat(&mut caller, out_ptr, &stat) {
-                            0
-                        } else {
-                            EINVAL
-                        }
-                    }
-                    Err(error) => error.code(),
-                };
-            }
-            let Some((index, local)) = fd_index(fd) else {
-                return EBADF;
-            };
-            let table = mount_table(&caller);
-            let outcome = {
-                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                match mounts.get(index) {
-                    Some(mount) => mount.set.stat_fd(local),
-                    None => return EBADF,
-                }
-            };
-            match outcome {
-                Ok(stat) => {
-                    if write_stat(&mut caller, out_ptr, &stat) {
-                        0
-                    } else {
-                        EINVAL
-                    }
-                }
-                Err(e) => e.code(),
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::res",
-        "res_readdir",
-        |mut caller: Caller<'_, HostState>,
-         path_ptr: i32,
-         path_len: i32,
-         index: i32,
-         name_ptr: i32,
-         name_cap: i32,
-         out_ptr: i32|
-         -> i32 {
-            if index < 0 {
-                return EINVAL;
-            }
-            let Some(path) = guest_path(&mut caller, path_ptr, path_len) else {
-                return EINVAL;
-            };
-            let table = mount_table(&caller);
-            let listed = {
-                let mounts = table.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                mounts.resolve(&path, |set, relative| set.read_dir_at(relative, index as u32))
-            };
-            let entry = match listed {
-                Ok((_, Some(entry))) => entry,
-                Ok((_, None)) => return 0, // past the last child
-                Err(e) => return e.code(),
-            };
-            if !write_stat(&mut caller, out_ptr, &entry.stat) {
-                return EINVAL;
-            }
-            let bytes = entry.name.as_bytes();
-            let cap = name_cap.max(0) as usize;
-            if cap > 0 {
-                let n = bytes.len().min(cap);
-                if !write_guest(&mut caller, name_ptr, &bytes[..n]) {
-                    return EINVAL;
-                }
-            }
-            // The `arg` convention: min(cap, len) written, full length back.
-            bytes.len() as i32
-        },
-    )?;
+    // One guest: engine handle, module, store, linker, session. The session is
+    // created but not installed — the capabilities' region requirements have to
+    // be known first, and they are not loaded until below.
+    let guest = host::GuestHost::new(&config)?;
+    let host::GuestHost {
+        module,
+        mut store,
+        mut linker,
+        mut session,
+    } = guest;
 
     // tension::platform ABI -----------------------------------------------
     //
-    // The guest's half of the control bus. Three imports, registered beside
-    // `tension::io` because they are core services, not capabilities: a guest
-    // with no renderer and no capability still has a window to talk about.
-    //
-    // `control` constructs the message and posts it with source GUEST — the
-    // stamp is applied by the bus, so the value here is irrelevant and is set
-    // only so the struct is fully initialised.
-    //
-    // All three are ordinary imports with `flags = 0` in the adapter sense,
-    // which does not apply to them: the flag machinery lives in the *adapter*
-    // dispatch (`adapter/ffi.rs`), gated on `HostState::depth`, and a core
-    // import never goes through it. So these work from a scheduler-triggered
-    // frame as well as a normal one — verified by reading the resume path,
-    // which sets no depth.
-    linker.func_wrap(
-        "tension::platform",
-        "control",
-        |mut caller: Caller<'_, HostState>, kind: u32, a0: i32, a1: i32, a2: i32, a3: i32| -> i32 {
-            let msg = platform::TensionCtrlMsg {
-                kind,
-                visibility: platform::CTRL_OBSERVABLE,
-                arg0: a0,
-                arg1: a1,
-                arg2: a2,
-                arg3: a3,
-                source: platform::CTRL_SRC_GUEST,
-                reserved: 0,
-            };
-            let bus = std::sync::Arc::clone(&caller.data().control);
-            match bus.post_guest(&msg) {
-                Ok(()) => 0,
-                Err(platform::ControlError::UnknownKind) => -22, // EINVAL
-                Err(platform::ControlError::Malformed) => -22,
-                Err(platform::ControlError::Full) => -28,       // ENOSPC
-            }
-        },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "surface_width",
-        |caller: Caller<'_, HostState>| -> u32 { surface_width(&caller) },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "surface_height",
-        |caller: Caller<'_, HostState>| -> u32 { surface_height(&caller) },
-    )?;
-
-    // The programmatic window API (ABI v7).
-    //
-    // These are the guest's whole window surface now that `--window` is gone:
-    // an application that wants a window asks for one, and the host creates it
-    // with the flags its target implies. Everything else about a window is
-    // either read (`window_info`) or, from E1b, mutated.
-    //
-    // **`create_window` is the only place `SDL_CreateWindow` is reached from a
-    // guest call**, and it runs on the interpreter thread — the same thread the
-    // host loop pumps on, which is what SDL requires and what `SDL_GPU`'s claim
-    // requires too. No queue, no deferral: a guest that creates a window and
-    // immediately claims it must be able to.
-    linker.func_wrap(
-        "tension::platform",
-        "create_window",
-        |mut caller: Caller<'_, HostState>, cfg_ptr: u32, cfg_len: u32| -> i32 {
-            const CONFIG_BYTES: u32 = 56;
-            const EINVAL: i32 = -22;
-            const EBUSY: i32 = -16;
-            const EIO: i32 = -5;
-            const MAX_TITLE: u32 = 4096;
-
-            if cfg_len < CONFIG_BYTES {
-                return EINVAL;
-            }
-            let Some(bytes) = read_guest_span(&mut caller, cfg_ptr, CONFIG_BYTES) else {
-                return EINVAL;
-            };
-            let u32_at = |at: usize| -> u32 {
-                u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-            };
-            let i32_at = |at: usize| -> i32 {
-                i32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
-            };
-
-            // `struct_size` is the caller's own build. A shorter struct than this
-            // host reads would leave fields the caller never wrote, so it is a
-            // refusal rather than a default.
-            if u32_at(0) < CONFIG_BYTES {
-                return EINVAL;
-            }
-            let Some(target) = platform::WindowTarget::from_u32(u32_at(4)) else {
-                return EINVAL;
-            };
-            let Some(mode) = platform::WindowMode::from_u32(u32_at(16)) else {
-                return EINVAL;
-            };
-            let flags = u32_at(20);
-            if flags & !platform::window_flags::KNOWN != 0 {
-                return EINVAL;
-            }
-            let title_ptr = u32_at(48);
-            let title_len = u32_at(52);
-            if title_len > MAX_TITLE {
-                return EINVAL;
-            }
-            let title = if title_len == 0 {
-                String::new()
-            } else {
-                let Some(raw) = read_guest_span(&mut caller, title_ptr, title_len) else {
-                    return EINVAL;
-                };
-                match String::from_utf8(raw) {
-                    Ok(text) => text,
-                    Err(_) => return EINVAL,
-                }
-            };
-
-            let config = platform::WindowConfig {
-                target,
-                width: u32_at(8),
-                height: u32_at(12),
-                mode,
-                flags,
-                x: i32_at(24),
-                y: i32_at(28),
-                min_width: u32_at(32),
-                min_height: u32_at(36),
-                max_width: u32_at(40),
-                max_height: u32_at(44),
-                title,
-            };
-
-            let data = caller.data_mut();
-            if data.host_window.is_some() {
-                // Said here rather than in `platform::create_window` so the
-                // errno is the guest's `-EBUSY` and not a generic `-EIO`.
-                return EBUSY;
-            }
-            match platform::create_window(&mut data.host_window, &config, &data.shared) {
-                Ok(id) => {
-                    crate::logging::log(
-                        Level::Info,
-                        "core",
-                        &format!(
-                            "create_window: {}x{} target={:?} on '{}' (SDL {})",
-                            config.width,
-                            config.height,
-                            config.target,
-                            data.host_window
-                                .as_ref()
-                                .map(|w| w.driver().to_string())
-                                .unwrap_or_default(),
-                            data.host_window
-                                .as_ref()
-                                .map(|w| w.sdl_version())
-                                .unwrap_or_default()
-                        ),
-                    );
-                    // A Vulkan window's surface is what a renderer adopts, and
-                    // it is created — and published — here, before the guest can
-                    // call `ogre::init`. Failing to make it fails the whole
-                    // create: a window that cannot carry the surface its target
-                    // promised is worse than no window, because the guest would
-                    // go on to init a renderer into nothing.
-                    if config.target == platform::WindowTarget::Vulkan {
-                        let made = data
-                            .host_window
-                            .as_mut()
-                            .map(|window| {
-                                window.surface().map(|surface| {
-                                    (surface, window.instance_extensions().to_vec())
-                                })
-                            })
-                            .unwrap_or_else(|| {
-                                Err(platform::PlatformError::Sdl(
-                                    "the window vanished during creation".to_string(),
-                                ))
-                            });
-                        match made {
-                            Ok((surface, extensions)) => {
-                                if let Some(cell) = data.host_surface.as_ref() {
-                                    *cell.lock().expect("the surface mutex is never poisoned") =
-                                        Some(adapter::PublishedSurface { surface, extensions });
-                                }
-                                crate::logging::log(
-                                    Level::Info,
-                                    "core",
-                                    &format!(
-                                        "create_window: surface published ({}x{}, instance 0x{:x})",
-                                        surface.width, surface.height, surface.instance
-                                    ),
-                                );
-                            }
-                            Err(error) => {
-                                data.host_window = None;
-                                crate::logging::log(
-                                    Level::Warn,
-                                    "core",
-                                    &format!("create_window: no Vulkan surface: {error}"),
-                                );
-                                return EIO;
-                            }
-                        }
-                    }
-                    id as i32
-                }
-                Err(platform::PlatformError::Busy(_)) => EBUSY,
-                Err(error) => {
-                    crate::logging::log(
-                        Level::Warn,
-                        "core",
-                        &format!("create_window refused: {error}"),
-                    );
-                    EIO
-                }
-            }
-        },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "close_window",
-        |mut caller: Caller<'_, HostState>, id: u32| -> i32 {
-            const ENODEV: i32 = -19;
-            const EBUSY: i32 = -16;
-            let data = caller.data_mut();
-            if id != platform::WINDOW_ID {
-                return ENODEV;
-            }
-            // A renderer adopted this window and built a swapchain on it. Tearing
-            // it down underneath is the crash the teardown order exists to
-            // prevent, so the guest closes the canvas first and the window second.
-            if let Some(owner) = data.render2d.owner() {
-                crate::logging::log(
-                    Level::Warn,
-                    "core",
-                    &format!(
-                        "close_window refused: the swapchain is held by {}; close it first",
-                        owner.name()
-                    ),
-                );
-                return EBUSY;
-            }
-            // Dropping the window destroys the surface and the instance first,
-            // in that order (`HostWindow::drop`); clearing the cell is what makes
-            // a renderer that reads afterwards see "no window" rather than a
-            // handle into freed state.
-            if data.host_window.take().is_some() {
-                crate::logging::log(Level::Info, "core", "close_window: window closed");
-            }
-            if let Some(cell) = data.host_surface.as_ref() {
-                *cell.lock().expect("the surface mutex is never poisoned") = None;
-            }
-            // The published record goes with it: `host_window_info` answers a
-            // zeroed record for "no window", and a stale one would let a layer
-            // believe the window it is reading about still exists.
-            match data.shared.window.lock() {
-                Ok(mut cell) => *cell = None,
-                Err(poisoned) => *poisoned.into_inner() = None,
-            }
-            0
-        },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "window_info",
-        |mut caller: Caller<'_, HostState>, id: u32, out_ptr: u32| -> i32 {
-            const EINVAL: i32 = -22;
-            // One window per process, so an unknown id is a caller bug rather
-            // than a lookup miss. **No window is not an error**: it writes a
-            // zeroed record and returns 0, which is what makes `width > 0` the
-            // whole headless guard in a guest's update loop.
-            //
-            // The record is encoded by `platform::encode_window_info`, the same
-            // function the adapter slot `host_window_info` writes through. It
-            // used to be a hand-built `[u32; 9]` here plus a separate last word,
-            // while the adapter had this struct -- one layout, two encoders, and
-            // a field added to either would have drifted silently.
-            let info = if id == platform::WINDOW_ID {
-                caller.data().host_window.as_ref().map(|window| window.info())
-            } else {
-                return EINVAL;
-            };
-            let rec = platform::encode_window_info(info.as_ref());
-            if !write_guest(&mut caller, out_ptr as i32, &rec) {
-                return EINVAL;
-            }
-            0
-        },
-    )?;
-
-    // ── the window mutators (E1b) ─────────────────────────────────────────
-    //
-    // Three imports beside `window_info`, and imports rather than adapter
-    // slots for the same reason it is one: this is the guest's own window, and
-    // no second party has to agree about the shape of the call. An adapter that
-    // needs to know the result reads `host_window_info`, which the pump
-    // republishes every frame — so a renderer still learns about a toggle
-    // without a second path to the window.
-    //
-    // **Synchronous, like `create_window`.** They run on the interpreter
-    // thread, which is the thread the host pumps on and the only one SDL's
-    // window API permits. The alternative — a control message — would defer the
-    // change by a frame and turn "did the driver accept it" into something the
-    // guest could only poll for.
-    //
-    // Names are snake_case to match every neighbour (`create_window`,
-    // `window_info`); the SDK's camelCase surface is `platform.setFullscreen`
-    // and friends, which is a wrapper and not the wire.
-    linker.func_wrap(
-        "tension::platform",
-        "set_fullscreen",
-        |mut caller: Caller<'_, HostState>, mode: u32| -> i32 {
-            const EINVAL: i32 = -22;
-            const ENODEV: i32 = -19;
-            const EIO: i32 = -5;
-            // The three modes this ABI defines. A fourth number is a caller
-            // built against a newer header, and guessing at it would give it a
-            // window it did not ask for.
-            let Some(mode) = platform::WindowMode::from_u32(mode) else {
-                return EINVAL;
-            };
-            let data = caller.data_mut();
-            let Some(window) = data.host_window.as_mut() else {
-                return ENODEV;
-            };
-            match window.set_fullscreen(mode) {
-                Ok(()) => 0,
-                Err(error) => {
-                    crate::logging::log(
-                        Level::Warn,
-                        "core",
-                        &format!("set_fullscreen({mode:?}) refused: {error}"),
-                    );
-                    EIO
-                }
-            }
-        },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "set_window_size",
-        |mut caller: Caller<'_, HostState>, width: u32, height: u32| -> i32 {
-            const EINVAL: i32 = -22;
-            const ENODEV: i32 = -19;
-            const EIO: i32 = -5;
-            // A zero dimension is refused rather than clamped here: the host
-            // floors it too, so that a core module cannot ask SDL for nothing,
-            // but a guest sending 0 has a caller bug and should be told.
-            if width == 0 || height == 0 {
-                return EINVAL;
-            }
-            let data = caller.data_mut();
-            let Some(window) = data.host_window.as_mut() else {
-                return ENODEV;
-            };
-            match window.set_window_size(width, height) {
-                Ok(()) => 0,
-                Err(error) => {
-                    crate::logging::log(
-                        Level::Warn,
-                        "core",
-                        &format!("set_window_size({width}x{height}) refused: {error}"),
-                    );
-                    EIO
-                }
-            }
-        },
-    )?;
-    linker.func_wrap(
-        "tension::platform",
-        "set_window_title",
-        |mut caller: Caller<'_, HostState>, title_ptr: u32, title_len: u32| -> i32 {
-            const EINVAL: i32 = -22;
-            const ENODEV: i32 = -19;
-            const EIO: i32 = -5;
-            const MAX_TITLE: u32 = 4096;
-            // The bound `create_window` uses, for the same reason: the title is
-            // copied into the window, and an unbounded length is an allocation
-            // a guest chooses.
-            if title_len > MAX_TITLE {
-                return EINVAL;
-            }
-            let title = if title_len == 0 {
-                String::new()
-            } else {
-                let Some(raw) = read_guest_span(&mut caller, title_ptr, title_len) else {
-                    return EINVAL;
-                };
-                match String::from_utf8(raw) {
-                    Ok(text) => text,
-                    // A title is UTF-8 on the wire, like every other string
-                    // this host accepts; bytes that are not are a caller bug,
-                    // not something to lossily repair.
-                    Err(_) => return EINVAL,
-                }
-            };
-            let data = caller.data_mut();
-            let Some(window) = data.host_window.as_mut() else {
-                return ENODEV;
-            };
-            match window.set_window_title(&title) {
-                Ok(()) => 0,
-                Err(error) => {
-                    crate::logging::log(
-                        Level::Warn,
-                        "core",
-                        &format!("set_window_title refused: {error}"),
-                    );
-                    EIO
-                }
-            }
-        },
-    )?;
+    // Registered for both kinds of guest by one function; the nested answers
+    // are the viewport rect, not the window record (`host/platform_abi.rs`).
+    host::platform_abi::link_platform(&mut linker, host::guest::Kind::Root)?;
 
     // tension::audio ABI --------------------------------------------------
     audio::link_audio(&mut linker)?;
@@ -2072,14 +1182,6 @@ fn main() -> anyhow::Result<()> {
     // this host instead of failing at instantiation with "unknown import".
     scheduler::link_scheduler(&mut linker)?;
 
-    // tension::2d ---------------------------------------------------------
-    //
-    // In-core only when the `render2d-core` feature is on. Off, the ten verbs
-    // come from the capability DSO exactly as they did before this pass, and
-    // nothing here is compiled.
-    #[cfg(feature = "render2d-core")]
-    link_2d(&mut linker)?;
-
         // The window ----------------------------------------------------------
     //
     // **There is none at startup, and there is no flag that makes one.** The
@@ -2094,7 +1196,7 @@ fn main() -> anyhow::Result<()> {
     // layout — safe with no arena in sight (§7.2). Nothing loads unless
     // `--capability` (or `TENSION_CAPABILITY_PATH`) asks for it, so a plain run
     // is byte-for-byte the run it always was.
-    let capability_paths = resolve_capability_paths(&cli.capability_paths)?;
+    let capability_paths = resolve_capability_paths(&config.capabilities)?;
     let mut adapters: Vec<adapter::LoadedAdapter> = Vec::with_capacity(capability_paths.len());
     for path in &capability_paths {
         // With the in-core backend compiled in, a 2D DSO on the command line is
@@ -2258,8 +1360,8 @@ fn main() -> anyhow::Result<()> {
     // arena is READY before `_start_game`, and a guest that then called
     // `session_open` itself would be refused with `-EBUSY`, which is exactly why
     // the real path does not do this.
-    if cli.session_open || cli.session_callbacks.is_some() {
-        let (on_batch, on_event) = cli.session_callbacks.unwrap_or((0, 0));
+    if config.session_open || config.session_callbacks.is_some() {
+        let (on_batch, on_event) = config.session_callbacks.unwrap_or((0, 0));
         // The record the guest would have written, built here because the host
         // is doing the opening; its slots are resolved against the guest's own
         // exported table, which is what makes them callable.
@@ -2328,7 +1430,7 @@ fn main() -> anyhow::Result<()> {
     // something to deliver when it waits. Posted through the posting face
     // directly — this is the host, not an adapter — and before the guest runs,
     // so the wait finds them queued rather than having to race a producer.
-    if cli.post_test_events {
+    if config.post_test_events {
         let posting = store.data().posting.clone();
         for index in 0..3u32 {
             match posting.post(
@@ -2527,465 +1629,6 @@ fn read_guest_span(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> Op
         return None;
     }
     Some(data[start..end].to_vec())
-}
-
-/// The copy is the point, not an implementation detail: the guest pointer is not
-/// kept past the call (`tension_adapter.h` rule 6), and the renderer sorts and
-/// re-reads records after the verb has returned.
-#[cfg(feature = "render2d-core")]
-fn guest_bytes(caller: &mut Caller<'_, HostState>, ptr: u32, len: u32) -> Result<Vec<u8>, i32> {
-    use render2d::error::{EINVAL, ENOSPC};
-    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
-        return Err(render2d::error::EBADF);
-    };
-    let data = mem.data(&*caller);
-    let start = ptr as usize;
-    let end = start.checked_add(len as usize).ok_or(EINVAL)?;
-    if end > data.len() {
-        return Err(ENOSPC);
-    }
-    Ok(data[start..end].to_vec())
-}
-
-/// Write a span into guest memory, refusing a buffer shorter than the write.
-///
-/// The DSO's `write_guest` (`adapter.cpp:108`): `-ENOSPC` when the caller's
-/// capacity cannot hold the bytes, `-EBADF` when there is no memory to write to.
-#[cfg(feature = "render2d-core")]
-fn put_guest_bytes(
-    caller: &mut Caller<'_, HostState>,
-    ptr: u32,
-    cap: u32,
-    src: &[u8],
-) -> Result<(), i32> {
-    use render2d::error::{ENOSPC, EINVAL};
-    if src.len() > cap as usize {
-        return Err(ENOSPC);
-    }
-    let Some(mem) = caller.get_export("memory").and_then(|e| e.into_memory()) else {
-        return Err(render2d::error::EBADF);
-    };
-    let data = mem.data_mut(&mut *caller);
-    let start = ptr as usize;
-    let end = start.checked_add(src.len()).ok_or(EINVAL)?;
-    if end > data.len() {
-        return Err(ENOSPC);
-    }
-    data[start..end].copy_from_slice(src);
-    Ok(())
-}
-
-/// Refuse a verb whose handle is not the open canvas.
-///
-/// One helper because the rule is one rule: the DSO's handle is 1 or 0
-/// (`adapter.cpp:44-46`), and a verb that names anything else is `-EINVAL`.
-/// `info` is the exception — it answers `-ENODEV` for a missing canvas, which is
-/// the DSO's own split (`adapter.cpp:359-363`) and information a guest uses: "no
-/// canvas" and "wrong handle" are different mistakes.
-#[cfg(feature = "render2d-core")]
-fn check_handle(state: &HostState, handle: i32) -> Option<i32> {
-    if handle == 1 && state.render2d.canvas().is_some() {
-        None
-    } else {
-        Some(render2d::error::EINVAL)
-    }
-}
-
-/// Log a refusal at the level the DSO used, so a reader comparing the two
-/// backends sees the same lines.
-#[cfg(feature = "render2d-core")]
-fn log_refusal(verb: &str, error: &render2d::Render2dError) {
-    logging::log(
-        Level::Error,
-        "2d",
-        &format!("{verb} refused ({})", error.message()),
-    );
-}
-
-/// Register the ten `tension::2d` verbs as `func_wrap`s.
-///
-/// # Why these live in the binary
-///
-/// A `func_wrap` closure takes `Caller<'_, HostState>`, and `HostState` is the
-/// binary's. The library owns the mechanism ([`render2d::Render2dState`]: the
-/// device, the window claim, the frame stager, the tables, the swapchain guard);
-/// this owns the guest-facing names. That is the split `platform` already makes,
-/// and it is what lets the tests drive the mechanism with no wasm in sight.
-///
-/// # The signatures
-///
-/// `adapter.cpp:440-486`'s registration table, verb for verb. The arity and the
-/// parameter count are part of the contract: a guest built against the DSO must
-/// not see a different shape, so `submit` still takes
-/// `(handle, pipe_id, hdr_ptr, bucket)` even though an in-core call could pass a
-/// slice.
-///
-/// # The one verb that is still `-ENOSYS`
-///
-/// `shader_compile_raw` never had a body in the DSO either
-/// (`adapter.cpp:248-253`): the wire has the door, and no build has a GLSL to
-/// SPIR-V translator behind it. The in-core path *could* serve it —
-/// [`render2d::pipeline`] reaches Naga — but that would be a new capability, not
-/// a port, and Pass B is a port. It stays `-ENOSYS` and says so.
-#[cfg(feature = "render2d-core")]
-fn link_2d(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
-    use render2d::error::{ENOSPC, ENOSYS, EINVAL};
-    use render2d::record::{SubmitHeader, RECORD_SIZE};
-
-    linker.func_wrap(
-        "tension::2d",
-        "open",
-        |mut caller: Caller<'_, HostState>, width: i32, height: i32, flags: i32| -> i32 {
-            // The DSO's validation, unchanged (`adapter.cpp:117-131`): bit 0 is
-            // the only flag, and a canvas is never zero-sized.
-            const OPEN_WINDOWED: i32 = 1;
-            if flags & !OPEN_WINDOWED != 0 {
-                logging::log(Level::Warn, "2d", &format!("open: unknown flag bits {flags:#x}"));
-                return EINVAL;
-            }
-            if width <= 0 || height <= 0 {
-                logging::log(
-                    Level::Warn,
-                    "2d",
-                    &format!("open: {width}x{height} is not a canvas size"),
-                );
-                return EINVAL;
-            }
-
-            let state = caller.data_mut();
-            let HostState {
-                render2d,
-                host_window,
-                shared,
-                ..
-            } = state;
-
-            let windowed = flags & OPEN_WINDOWED != 0;
-            let result = if windowed {
-                render2d.open_windowed(host_window, width as u32, height as u32, shared)
-            } else {
-                render2d.open_offscreen(width as u32, height as u32)
-            };
-
-            match result {
-                Ok(handle) => {
-                    let kind = if windowed { "window" } else { "offscreen" };
-                    logging::log(
-                        Level::Info,
-                        "2d",
-                        &format!("open: GPU device up, {kind} {width}x{height} target"),
-                    );
-                    handle
-                }
-                Err(error) => {
-                    logging::log(
-                        Level::Error,
-                        "2d",
-                        &format!("open refused ({})", error.message()),
-                    );
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::2d",
-        "close",
-        |mut caller: Caller<'_, HostState>, handle: i32| -> i32 {
-            let state = caller.data_mut();
-            match state.render2d.close(handle) {
-                Ok(value) => {
-                    logging::log(Level::Info, "2d", "close: device released");
-                    value
-                }
-                Err(error) => {
-                    logging::log(
-                        Level::Warn,
-                        "2d",
-                        &format!("close refused ({})", error.message()),
-                    );
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    // set_pipeline(handle, blob_ptr, blob_len).
-    //
-    // The DSO's `blob_len < 100` convention for "this is a preset id" is kept:
-    // it is the wire's encoding, not an implementation detail, and a guest that
-    // passes a 1..99 length is naming a preset (`adapter.cpp:243-246`).
-    linker.func_wrap(
-        "tension::2d",
-        "set_pipeline",
-        |mut caller: Caller<'_, HostState>, handle: i32, blob_ptr: i32, blob_len: i32| -> i32 {
-            {
-                let state = caller.data();
-                if let Some(errno) = check_handle(state, handle) {
-                    return errno;
-                }
-            }
-
-            let result = if blob_ptr != 0 {
-                if blob_len <= 0 {
-                    return EINVAL;
-                }
-                match guest_bytes(&mut caller, blob_ptr as u32, blob_len as u32) {
-                    Ok(blob) => caller.data_mut().render2d.set_pipeline_blob(&blob),
-                    Err(errno) => {
-                        return if errno == ENOSPC { EINVAL } else { errno };
-                    }
-                }
-            } else {
-                if !(render2d::pipeline::PIPE_PRESET_MIN as i32
-                    ..=render2d::pipeline::PIPE_PRESET_MAX as i32)
-                    .contains(&blob_len)
-                {
-                    return render2d::error::ENOENT;
-                }
-                caller.data_mut().render2d.set_preset(blob_len as u16)
-            };
-
-            match result {
-                Ok(pipe_id) => {
-                    logging::log(
-                        Level::Debug,
-                        "2d",
-                        &format!("set_pipeline -> pipe {pipe_id}"),
-                    );
-                    pipe_id as i32
-                }
-                Err(error) => {
-                    log_refusal("set_pipeline", &error);
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    // shader_compile_raw(handle, src_ptr, src_len, fmt, out_ptr): still -ENOSYS.
-    linker.func_wrap(
-        "tension::2d",
-        "shader_compile_raw",
-        |_: Caller<'_, HostState>, _a: i32, _b: i32, _c: i32, _d: i32, _e: i32| -> i32 {
-            // The wire has the door; this build has no GLSL -> SPIR-V verb
-            // behind it (`docs/modules/2d.md` §4). An honest -ENOSYS beats a
-            // half-door, and the module comment says why the port did not open
-            // this one.
-            logging::log(
-                Level::Debug,
-                "2d",
-                "shader_compile_raw: no shader translator in this build",
-            );
-            ENOSYS
-        },
-    )?;
-
-    // submit(handle, pipe_id, hdr_ptr, bucket).
-    linker.func_wrap(
-        "tension::2d",
-        "submit",
-        |mut caller: Caller<'_, HostState>, handle: i32, pipe_id: i32, hdr_ptr: i32, bucket: i32| -> i32 {
-            {
-                let state = caller.data();
-                if let Some(errno) = check_handle(state, handle) {
-                    return errno;
-                }
-            }
-
-            // One read for the header, one for the array: the guest pointer is
-            // not kept past this call.
-            let header_bytes = match guest_bytes(&mut caller, hdr_ptr as u32, 12) {
-                Ok(bytes) => bytes,
-                Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
-            };
-            let Some(header) = SubmitHeader::parse(&header_bytes) else {
-                return EINVAL;
-            };
-
-            if header.flags != 0 || header.records_count == 0 {
-                return EINVAL;
-            }
-            if u32::from(header.record_stride) != RECORD_SIZE {
-                return EINVAL;
-            }
-            if bucket < 0 {
-                return EINVAL;
-            }
-            let bytes = u64::from(header.records_count) * u64::from(header.record_stride);
-            if bytes > u64::from(u32::MAX) {
-                return EINVAL;
-            }
-
-            let records =
-                match guest_bytes(&mut caller, header.records_ptr, bytes as u32) {
-                    Ok(bytes) => bytes,
-                    Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
-                };
-
-            let state = caller.data_mut();
-            match state.render2d.submit(
-                pipe_id as u32,
-                &records,
-                header.records_count,
-                u32::from(header.record_stride),
-                bucket as u32,
-            ) {
-                Ok(accepted) => accepted as i32,
-                Err(error) => {
-                    log_refusal("submit", &error);
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    linker.func_wrap(
-        "tension::2d",
-        "present",
-        |mut caller: Caller<'_, HostState>, handle: i32| -> i32 {
-            let state = caller.data_mut();
-            let HostState {
-                render2d,
-                host_window,
-                ..
-            } = state;
-            if handle != 1 || render2d.canvas().is_none() {
-                return EINVAL;
-            }
-            match render2d.present(host_window) {
-                Ok(value) => value,
-                Err(error) => {
-                    // A cancelled present is not a failure: it is the one
-                    // message that the user closed the window, and the DSO
-                    // logged it at error level too so an example's output shows
-                    // why the frame stopped.
-                    log_refusal("present", &error);
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    // texture_load(handle, src_ptr, src_len, target_format).
-    linker.func_wrap(
-        "tension::2d",
-        "texture_load",
-        |mut caller: Caller<'_, HostState>, handle: i32, src_ptr: i32, src_len: i32, format: i32| -> i32 {
-            {
-                let state = caller.data();
-                if let Some(errno) = check_handle(state, handle) {
-                    return errno;
-                }
-            }
-            let source = match guest_bytes(&mut caller, src_ptr as u32, src_len as u32) {
-                Ok(bytes) => bytes,
-                Err(errno) => return if errno == ENOSPC { EINVAL } else { errno },
-            };
-            match caller.data_mut().render2d.texture_load(&source, format) {
-                Ok(texture_id) => texture_id as i32,
-                Err(error) => {
-                    log_refusal("texture_load", &error);
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    // set_texture(handle, pipe_id, slot, texture_id).
-    linker.func_wrap(
-        "tension::2d",
-        "set_texture",
-        |mut caller: Caller<'_, HostState>, handle: i32, pipe_id: i32, slot: i32, texture_id: i32| -> i32 {
-            {
-                let state = caller.data();
-                if let Some(errno) = check_handle(state, handle) {
-                    return errno;
-                }
-            }
-            if pipe_id <= 0 || slot < 0 || texture_id <= 0 {
-                return EINVAL;
-            }
-            let state = caller.data_mut();
-            match state
-                .render2d
-                .set_texture(pipe_id as u32, slot as u32, texture_id as u32)
-            {
-                Ok(value) => value,
-                Err(error) => {
-                    log_refusal("set_texture", &error);
-                    error.errno()
-                }
-            }
-        },
-    )?;
-
-    // info(handle, out_ptr, cap).
-    linker.func_wrap(
-        "tension::2d",
-        "info",
-        |mut caller: Caller<'_, HostState>, handle: i32, out_ptr: i32, cap: i32| -> i32 {
-            {
-                let state = caller.data();
-                if handle != 1 || state.render2d.canvas().is_none() {
-                    // `info` is the one verb that distinguishes this: a guest
-                    // probing whether it has a canvas wants `-ENODEV`, not
-                    // `-EINVAL` (`adapter.cpp:359-363`).
-                    return render2d::error::ENODEV;
-                }
-            }
-            let info = match caller.data().render2d.info() {
-                Ok(info) => info,
-                Err(error) => return error.errno(),
-            };
-            let bytes = info.to_bytes();
-            if (cap as usize) < bytes.len() {
-                return ENOSPC;
-            }
-            match put_guest_bytes(&mut caller, out_ptr as u32, cap as u32, &bytes) {
-                Ok(()) => bytes.len() as i32,
-                Err(errno) => errno,
-            }
-        },
-    )?;
-
-    // screenshot(handle, ptr, cap).
-    linker.func_wrap(
-        "tension::2d",
-        "screenshot",
-        |mut caller: Caller<'_, HostState>, handle: i32, ptr: i32, cap: i32| -> i32 {
-            {
-                let state = caller.data();
-                if let Some(errno) = check_handle(state, handle) {
-                    return errno;
-                }
-                let needed = state.render2d.width() as usize * state.render2d.height() as usize * 4;
-                if (cap as usize) < needed {
-                    return ENOSPC;
-                }
-            }
-            let frame = match caller.data_mut().render2d.screenshot() {
-                Ok(frame) => frame,
-                Err(error) => {
-                    log_refusal("screenshot", &error);
-                    return error.errno();
-                }
-            };
-            let written = frame.len();
-            match put_guest_bytes(&mut caller, ptr as u32, cap as u32, &frame) {
-                Ok(()) => written as i32,
-                Err(errno) => errno,
-            }
-        },
-    )?;
-
-    logging::log(
-        Level::Debug,
-        "2d",
-        "link: ten verbs registered in core",
-    );
-    Ok(())
 }
 
 /// Whether a `--capability` path names the 2D adapter.
@@ -3446,7 +2089,7 @@ const HOST_RESUME_CHUNK: usize = 3;
 /// process; a healthy loop returns on an event long before it expires.
 const HOST_LOOP_SLICE_MS: i32 = 16;
 
-fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
+pub(crate) fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
     let mut imports_session = false;
     let mut imports_memory = false;
     for import in module.imports() {
