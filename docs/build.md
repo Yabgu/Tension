@@ -452,6 +452,13 @@ plausible behaviours differ by who is asking:
 | `tension dev --watch` | yes | the supervisor stays; Ctrl-C to stop |
 | `tension dev --no-watch` | no | the command exits when the game does, with its status |
 
+**For a new app, that table is the whole story.** `tension init` writes a `start`
+script with no flag, which is the first row: the process ends when the window
+does. Reach for `--watch` when you are iterating and want the supervisor to
+survive a close; reach for `--no-watch` when you are scripting and want the
+game's own exit status. Nothing else needs to be passed, and no flag is needed to
+get the app-like behaviour.
+
 **The default is the app-like one**: this runs an app, and an app is over when
 its window is. Before 2026-11-13 the default was the other way round — the
 watcher survived a close and the user was left with a supervisor that looked
