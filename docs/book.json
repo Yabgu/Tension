@@ -46,6 +46,7 @@
         { "title": "Known issues", "page": "known-issues.md" },
         { "title": "Known limitations", "page": "known-limitations.md" },
         { "title": "Backlog: byte-offset decoders", "page": "backlog/byte-offset-decoders.md" },
+        { "title": "Backlog: buffer rendering", "page": "backlog/buffer-rendering.md" },
         { "title": "Spike: the record budget", "page": "spikes/records-budget.md" }
       ]
     }
