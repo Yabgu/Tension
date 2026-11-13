@@ -163,7 +163,7 @@ impl GuestHost {
         // it is scoped the same way. A session guest is unaffected: the import is
         // what identifies one.
         let guest_is_session_guest = module.imports().any(|import| import.module() == "session");
-        let session = if guest_is_session_guest {
+        let mut session = if guest_is_session_guest {
             let mut session = session::Session::create_from_module(&mut store, &module)?;
             session.prepare_arena(&mut store)?;
             Some(session)
@@ -191,6 +191,24 @@ impl GuestHost {
         // exists for — and for a nested guest too, which is why the depth cap is
         // in the verb rather than in this registration.
         crate::host::link_dev(&mut linker)?;
+
+        // The process's own guest is installed by `main`, which owns the
+        // capability adapters and needs the arena prepared before they register
+        // their regions. A **nested** guest has no `main`: without this, the
+        // session was created and never installed, so every framework guest died
+        // at instantiation with `unknown import: session::close` (measured on
+        // `examples/2d/box-physics`). Nothing about `Kind::Root` changes here.
+        if kind == Kind::Nested {
+            if let Some(session) = session.as_mut() {
+                session.install(&mut store, &mut linker)?;
+                // Kept where a verb can reach it without holding the session,
+                // which the verbs take out of the store.
+                store.data_mut().arena = Some(session.memory());
+            }
+            crate::session::link_session(&mut linker)?;
+            crate::scheduler::link_scheduler(&mut linker)?;
+            store.data_mut().session = session.take();
+        }
 
         Ok(Self {
             module,

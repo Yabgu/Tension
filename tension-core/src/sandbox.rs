@@ -1130,6 +1130,19 @@ mod tests {
         );
     }
 
+    /// A guest that imports what a **framework** guest imports from the core
+    /// service namespaces — a memory the host provides, a session verb, and the
+    /// scheduler's park. No capability adapters, no window: this is the smallest
+    /// module whose instantiation says "a nested guest may have a session".
+    const SESSION_GUEST: &str = r#"
+        (module
+          (import "env" "memory" (memory 128))
+          (export "memory" (memory 0))
+          (import "session" "close" (func $close (result i32)))
+          (import "scheduler" "park" (func $park (param i64 i32 i32)))
+          (func (export "_start_game")))
+    "#;
+
     /// A guest that is *always* willing to be driven and never presents: every
     /// `__taskWake` returns immediately, `_game_running` stays 1. Driving it calls
     /// the guest forever, so only the epoch can end the frame call.
@@ -1578,5 +1591,33 @@ mod tests {
             "the trap is the epoch's, not an incidental error: {message}"
         );
         assert!(elapsed < BOUND, "a frame call must be bounded, took {elapsed:?}");
+    }
+
+    /// **The session reaches a nested guest.** `GuestHost::build` has always
+    /// created the session and left the install to the caller — `main`, for the
+    /// process's own guest. A nested guest has no `main`, so the arena was made
+    /// and never installed and every framework guest died at instantiation:
+
+    ///     unknown import: `session::close` has not been defined
+    ///
+    /// measured on `examples/2d/box-physics` before this test existed. A
+    /// session-less guest (most fixtures) cannot see the difference, which is why
+    /// slice 2's mechanism looked complete.
+    #[test]
+    fn a_nested_guest_may_import_the_session_and_the_scheduler() {
+        let scratch = Scratch::new("session-guest");
+        let config = config(scratch.write("guest.wat", SESSION_GUEST));
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox
+            .start(RunKind::Batch)
+            .expect("a nested guest with session and scheduler imports instantiates");
+
+        // The session is installed, not merely linked: the arena the guest's
+        // memory import resolves to is reachable from the store, which is what
+        // the verbs and the epoch's own writes depend on.
+        assert!(
+            sandbox.guest().host.store.data().session.is_some(),
+            "the session is in the store, so a verb can reach it through Caller::data()"
+        );
     }
 }
