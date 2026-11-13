@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-85 imports across 12 modules: 53 registered by the host in 9 modules, 32 by 3 capability adapters.
+88 imports across 13 modules: 56 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -111,6 +111,14 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | `audio_voice_state` | `(i32) → i32` | `tension-core/src/audio/mod.rs:216` |
 | `audio_shutdown` | `(void) → i32` | `tension-core/src/audio/mod.rs:224` |
 
+## `tension::dev`
+
+| import | signature | registered at |
+|---|---|---|
+| `run` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:86` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:193` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:224` |
+
 ## `tension::input` — capability
 
 | import | signature | verb | flags | registered at |
@@ -138,15 +146,15 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1145` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1168` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1173` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1191` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1348` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1392` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1438` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1468` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1498` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1178` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1201` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1206` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1224` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1381` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1425` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1471` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1501` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1531` |
 
 ## `tension::res`
 

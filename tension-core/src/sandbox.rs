@@ -64,14 +64,6 @@
 //! with no measurement behind them yet; they are configuration-shaped so the
 //! numbers can move without moving the mechanism.
 
-// Built ahead of its caller. `tension::dev.run` is slice 3, and until it exists
-// nothing in the binary opens a sandbox — so every item here that only the host
-// would call reads as dead to the compiler. Rather than invent a caller (which
-// slice 3 would delete) or hide the fact, the module says so once:
-// **slice 3 removes this attribute**, and from the moment a verb calls in, an
-// allow left here would hide real dead code.
-#![allow(dead_code)]
-
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
@@ -154,6 +146,9 @@ impl ResourceLimiter for MemoryBudget {
 /// **Provisional**, like the rest of the timing story: an input bridge that is
 /// always "not mine" is honest for a slice in which nothing can move ownership.
 pub(crate) struct InputBridge {
+    /// Set by slice 5's ownership flip. Nothing writes it yet, and that is the
+    /// point: a nested guest's claim exists and is false.
+    #[allow(dead_code)]
     owns: bool,
 }
 
@@ -165,6 +160,7 @@ impl InputBridge {
     }
 
     /// Whether this guest currently receives input events.
+    #[allow(dead_code)]
     pub(crate) fn owns_input(&self) -> bool {
         self.owns
     }
@@ -264,17 +260,17 @@ impl Drop for Watchdog {
 pub(crate) struct GuestState {
     host: GuestHost,
     input: InputBridge,
-    depth: u32,
 }
 
 impl GuestState {
-    /// How deep this guest sits. The process's own guest is 0; the first sandbox
-    /// is 1.
-    pub(crate) fn depth(&self) -> u32 {
-        self.depth
-    }
-
     /// This guest's claim on the input adapter.
+    ///
+    /// Not read by anything but a test today: `dev.run` cannot move ownership
+    /// until slice 5 introduces `owner: Option<run_id>`. Kept rather than
+    /// deleted because the *claim* is what slice 5 flips, and a struct that
+    /// appears from nowhere in the slice that needs it is a shape nobody
+    /// reviewed.
+    #[allow(dead_code)]
     pub(crate) fn input(&self) -> &InputBridge {
         &self.input
     }
@@ -289,11 +285,50 @@ impl GuestState {
             .unwrap_or(&[])
     }
 
-    /// The guest's store, for a slice that needs to reach it directly (the run
-    /// registry will).
+    /// The guest's store, for a slice that needs to reach it directly.
+    ///
+    /// Read by the sandbox's own tests, which assert on the store's `HostState`
+    /// (`guest_depth`, the capture renderer, the budget). A verb reaches the same
+    /// state through `Caller::data()`, so nothing in the host calls this yet.
+    #[allow(dead_code)]
     pub(crate) fn store(&self) -> &wasmtime::Store<crate::HostState> {
         &self.host.store
     }
+
+    /// The ceiling this guest runs under, or `None` for unlimited.
+    pub(crate) fn budget_limit(&self) -> Option<usize> {
+        self.host.store.data().memory_budget.limit()
+    }
+
+    /// Set the linear-memory ceiling this guest runs under.
+    ///
+    /// Separate from `Sandbox::open` because the caller knows the budget and the
+    /// sandbox does not: `dev.run` applies one policy, a test applies another,
+    /// and neither belongs baked into the constructor.
+    pub(crate) fn budget(&mut self, bytes: usize) {
+        // (`MemoryBudget::of_bytes` rounds down to a page; the run verb logs the
+        // result, which is why `limit()` is read there rather than here.)
+        self.host.store.data_mut().memory_budget = MemoryBudget::of_bytes(bytes);
+    }
+}
+
+/// One entry in the host's run table: a sandboxed guest and what became of it.
+///
+/// **`HashMap<i32, GuestRun>`, not a single slot.** Two runs must be able to
+/// coexist — the editor's Play Mode can restart a game before the previous one's
+/// output has been read, and a registry with one slot would either refuse the
+/// second or silently discard the first's output. The id is the guest's handle;
+/// the table is the host's.
+///
+/// **A run stays in the table after it finishes**, because its output is the
+/// thing the caller came for (`dev.out`) and the caller may read it more than
+/// once — a probe, then a fill. Removing it at completion would make every read
+/// a race against the guest's own exit.
+pub(crate) struct GuestRun {
+    /// The depth this run's guest executes at. `dev.run` from a guest at depth
+    /// `d` produces a run at `d + 1`, which is what [`MAX_DEPTH`] bounds.
+    pub(crate) depth: u32,
+    pub(crate) sandbox: Sandbox,
 }
 
 /// What happened to a batch run.
@@ -307,6 +342,14 @@ pub(crate) struct BatchOutcome {
 pub(crate) struct Sandbox {
     guest: GuestState,
     module: Module,
+    /// The instantiated guest, once `call_entrypoint` has run.
+    ///
+    /// Kept for the same reason `HostState` keeps an arena handle: a test, and
+    /// slice 4's record path, need to read the guest's memory *after* a call, and
+    /// an `Instance` is only obtainable from `instantiate`.
+    instance: Option<wasmtime::Instance>,
+    /// Held for its `Drop`, which stops and joins the ticker. Never read.
+    #[allow(dead_code)]
     watchdog: Watchdog,
 }
 
@@ -335,14 +378,18 @@ impl Sandbox {
         host.store.limiter(|state| &mut state.memory_budget);
         host.store.set_epoch_deadline(TICKS_BEFORE_TRAP);
 
+        // The nested store's depth, so a verb it calls computes the right
+        // grandchild depth without threading the number through every call.
+        host.store.data_mut().guest_depth = depth;
+
         let watchdog = Watchdog::start(&config.engine);
         Ok(Self {
             guest: GuestState {
                 host,
                 input: InputBridge::nested(),
-                depth,
             },
             module,
+            instance: None,
             watchdog,
         })
     }
@@ -355,12 +402,43 @@ impl Sandbox {
     /// message attached.
     pub(crate) fn call_entrypoint(&mut self) -> Result<()> {
         let Self {
-            guest, module, ..
+            guest,
+            module,
+            instance,
+            ..
         } = self;
-        let instance = guest.host.linker.instantiate(&mut guest.host.store, module)?;
-        let entry = instance.get_typed_func::<(), ()>(&mut guest.host.store, "_start_game")?;
+        let created = guest.host.linker.instantiate(&mut guest.host.store, module)?;
+        let entry = created.get_typed_func::<(), ()>(&mut guest.host.store, "_start_game")?;
         entry.call(&mut guest.host.store, ())?;
+        *instance = Some(created);
         Ok(())
+    }
+
+    /// The guest's exported `memory`, after `call_entrypoint`.
+    ///
+    /// A test reads what a guest wrote here; slice 4's `read` will copy records
+    /// through the same handle.
+    #[allow(dead_code)]
+    pub(crate) fn memory(&mut self) -> Option<wasmtime::Memory> {
+        let instance = self.instance?;
+        instance
+            .get_export(&mut self.guest.host.store, "memory")
+            .and_then(|export| export.into_memory())
+    }
+
+    /// One `i32` the guest left at `offset`, for a test's assertions.
+    #[allow(dead_code)]
+    pub(crate) fn read_i32(&mut self, offset: usize) -> Option<i32> {
+        let memory = self.memory()?;
+        let data = memory.data(&self.guest.host.store);
+        (offset + 4 <= data.len()).then(|| {
+            i32::from_le_bytes([
+                data[offset],
+                data[offset + 1],
+                data[offset + 2],
+                data[offset + 3],
+            ])
+        })
     }
 
     /// Run a batch guest to completion and return what it printed.
@@ -378,6 +456,11 @@ impl Sandbox {
     /// The guest this sandbox holds.
     pub(crate) fn guest(&self) -> &GuestState {
         &self.guest
+    }
+
+    /// The guest, mutably — for setting its budget before it runs.
+    pub(crate) fn guest_mut(&mut self) -> &mut GuestState {
+        &mut self.guest
     }
 }
 
@@ -470,6 +553,63 @@ mod tests {
               br $forever)))
     "#;
 
+    /// Calls `tension::dev.run` twice on the path baked in at byte 0, storing
+    /// both returned ids at 64 and 68. Two runs from one guest, so the run table
+    /// has to hold both at once.
+    fn run_twice(path: &str) -> String {
+        format!(
+            r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len})))
+            (i32.store (i32.const 68) (call $run (i32.const 0) (i32.const {len})))))
+        "#,
+            len = path.len()
+        )
+    }
+
+    /// Runs a guest, then asks `tension::dev.out` for its output twice — a probe
+    /// (`cap = 0`) and then a fill — storing at 64 the run id, at 68 the probed
+    /// length, at 72 the fill's return value, and at 100 the output bytes.
+    fn run_then_read_out(path: &str) -> String {
+        format!(
+            r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (local $id i32)
+            (local.set $id (call $run (i32.const 0) (i32.const {len})))
+            (i32.store (i32.const 64) (local.get $id))
+            (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 0) (i32.const 0)))
+            (i32.store (i32.const 72)
+              (call $out (local.get $id) (i32.const 100) (i32.const 16)))))
+        "#,
+            len = path.len()
+        )
+    }
+
+    /// Calls `tension::dev.run` once and stores the return value at 64 — the
+    /// errno, when the call is refused.
+    fn run_once(path: &str) -> String {
+        format!(
+            r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (i32.store (i32.const 64) (call $run (i32.const 0) (i32.const {len})))))
+        "#,
+            len = path.len()
+        )
+    }
+
     /// Four pages of linear memory, against a budget of two.
     const HUNGRY: &str = r#"
         (module
@@ -486,7 +626,10 @@ mod tests {
 
         // Depth is the nesting level, and the claim on input is the outer
         // guest's, not this one's.
-        assert_eq!(sandbox.guest().depth(), 1);
+        // The depth that *governs* : the value `dev.run` reads when it computes
+        // a grandchild's depth. It lives in the store's state, not in a struct
+        // field, so this asserts the thing a verb would see.
+        assert_eq!(sandbox.guest().store().data().guest_depth, 1);
         assert!(!sandbox.guest().input().owns_input());
         // A nested guest must not own a GPU device: the window and the device are
         // the outer guest's, and a second one is what the singleton list forbids.
@@ -619,6 +762,179 @@ mod tests {
             cache.compiles(),
             2,
             "a changed file must recompile: the counter has to be live"
+        );
+    }
+
+    #[test]
+    fn restart_reinstantiates_from_cached_module() {
+        let scratch = Scratch::new("restart");
+        let target = scratch.write("game.wat", BATCH);
+        let outer = scratch.write("outer.wat", &run_twice(&target));
+        let config = config(outer);
+        let cache = Arc::clone(&config.module_cache);
+
+        // Measured from before the sandbox opens: `Sandbox::open` itself
+        // compiles the outer guest, so a baseline taken after it would count one
+        // module already and the arithmetic would be off by exactly that one.
+        let before = cache.compiles();
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the first pass runs");
+        let after_first = cache.compiles();
+        assert_eq!(
+            after_first - before,
+            2,
+            "the first pass compiles two modules: the outer guest and the one it runs"
+        );
+
+        // Run the same outer guest again. It calls `dev.run` twice more, so the
+        // target guest is instantiated twice more — and compiled zero more times.
+        sandbox.run_batch().expect("the second pass runs");
+        assert_eq!(
+            cache.compiles(),
+            after_first,
+            "restarting must reuse the compiled module: neither guest recompiles"
+        );
+
+        // The two runs of the second pass are distinct entries: a restart is a
+        // fresh store, not a reset of the previous one.
+        let table = &sandbox.guest().store().data().runs;
+        assert_eq!(table.len(), 4, "four runs in total, two per pass");
+
+        // And the guests really did run: a run id is a handle to output.
+        let outs: Vec<usize> = table
+            .values()
+            .map(|run| run.sandbox.guest().out().len())
+            .collect();
+        assert_eq!(outs, vec![5, 5, 5, 5], "each run printed `hello`");
+    }
+
+    #[test]
+    fn two_runs_coexist_in_the_registry() {
+        let scratch = Scratch::new("coexist");
+        let target = scratch.write("game.wat", BATCH);
+        let outer = scratch.write("outer.wat", &run_twice(&target));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the guest runs");
+
+        let first = sandbox.read_i32(64).expect("the first id landed");
+        let second = sandbox.read_i32(68).expect("the second id landed");
+        assert!(first > 0 && second > 0, "both runs started: {first}, {second}");
+        assert_ne!(first, second, "two runs are two handles, not one reused");
+
+        let table = &sandbox.guest().store().data().runs;
+        assert_eq!(table.len(), 2, "both runs are still in the registry");
+        assert!(
+            table.contains_key(&first) && table.contains_key(&second),
+            "the registry is keyed by the ids the guest was given"
+        );
+        // Ids start at 1, so no valid handle is ever 0 — an uninitialised
+        // variable cannot be mistaken for a run.
+        assert_eq!(sandbox.guest().store().data().next_run_id, 3);
+    }
+
+    #[test]
+    fn depth_five_is_refused_with_eloop() {
+        let scratch = Scratch::new("depth");
+        // The guest this test lets itself spawn is irrelevant: the refusal has to
+        // happen before it is opened.
+        let target = scratch.write("game.wat", SIMPLE);
+        let outer = scratch.write("outer.wat", &run_once(&target));
+        let config = config(outer);
+
+        // Depth 4 is the last level that may exist, so this sandbox is legal...
+        let mut sandbox = Sandbox::open(&config, MAX_DEPTH - 1).expect("depth 4 opens");
+        sandbox.run_batch().expect("the guest runs");
+        assert_eq!(sandbox.guest().store().data().guest_depth, MAX_DEPTH);
+
+        // ...and the run it asks for would be the fifth.
+        let refused = sandbox.read_i32(64).expect("the return value landed");
+        assert_eq!(refused, -40, "-ELOOP, not -EINVAL or a generic failure");
+        assert!(
+            sandbox.guest().store().data().runs.is_empty(),
+            "a refused run must not leave an entry behind"
+        );
+
+        // Negative control: the same guest one level up starts a run normally,
+        // so the -ELOOP above is the depth rule and not a broken fixture.
+        let mut shallower = Sandbox::open(&config, MAX_DEPTH - 2).expect("depth 3 opens");
+        shallower.run_batch().expect("the guest runs");
+        let started = shallower.read_i32(64).expect("the return value landed");
+        assert!(
+            started > 0,
+            "the same fixture at depth 3 starts a run: {started}"
+        );
+    }
+
+    #[test]
+    fn dev_out_probes_then_fills() {
+        let scratch = Scratch::new("out");
+        let target = scratch.write("game.wat", BATCH);
+        let outer = scratch.write("outer.wat", &run_then_read_out(&target));
+        let config = config(outer);
+
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the guest runs");
+
+        let id = sandbox.read_i32(64).expect("the run id landed");
+        assert!(id > 0, "the target guest started: {id}");
+
+        // The probe: `cap = 0` asks how many bytes there are, without writing.
+        let probed = sandbox.read_i32(68).expect("the probe returned");
+        assert_eq!(probed, 5, "the probe answers the length of `hello`");
+
+        // The fill: the same length, having actually written the bytes.
+        let filled = sandbox.read_i32(72).expect("the fill returned");
+        assert_eq!(filled, 5, "the fill writes and reports the same length");
+
+        // And the bytes are the guest's own output, at the offset it asked for.
+        let memory = sandbox.memory().expect("the guest exports a memory");
+        let store = sandbox.guest().store();
+        let bytes: Vec<u8> = memory.data(&store)[100..105].to_vec();
+        assert_eq!(bytes, b"hello", "the fill wrote the guest's output");
+    }
+
+    #[test]
+    fn dev_out_refuses_an_unknown_run_and_a_short_buffer() {
+        let scratch = Scratch::new("out-err");
+        let target = scratch.write("game.wat", BATCH);
+        // Runs the target, then makes the two refusals `dev.out` can produce:
+        // a buffer too small for the output, and an id that is not a run.
+        let path = format!("{target}");
+        let outer = scratch.write(
+            "outer.wat",
+            &format!(
+                r#"
+        (module
+          (import "tension::dev" "run" (func $run (param i32 i32) (result i32)))
+          (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
+          (memory (export "memory") 1)
+          (data (i32.const 0) "{path}")
+          (func (export "_start_game")
+            (local $id i32)
+            (local.set $id (call $run (i32.const 0) (i32.const {len})))
+            (i32.store (i32.const 64) (local.get $id))
+            (i32.store (i32.const 68) (call $out (local.get $id) (i32.const 100) (i32.const 2)))
+            (i32.store (i32.const 72) (call $out (i32.const 99) (i32.const 0) (i32.const 0)))))
+        "#,
+                len = path.len()
+            ),
+        );
+        let config = config(outer);
+        let mut sandbox = Sandbox::open(&config, 0).expect("the sandbox opens");
+        sandbox.run_batch().expect("the guest runs");
+        assert!(sandbox.read_i32(64).unwrap() > 0, "the target started");
+
+        assert_eq!(
+            sandbox.read_i32(68),
+            Some(-28),
+            "a 2-byte buffer for 5 bytes of output is -ENOSPC, not a truncation"
+        );
+        assert_eq!(
+            sandbox.read_i32(72),
+            Some(-9),
+            "an unknown run id is -EBADF, not a length of zero"
         );
     }
 }

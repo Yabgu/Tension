@@ -186,6 +186,11 @@ impl GuestHost {
         // and no suite runs at debug level.
         #[cfg(feature = "render2d-core")]
         crate::host::link_2d(&mut linker)?;
+        // `tension::dev`: a guest that runs another guest. Registered for every
+        // guest, the process's own included — the editor is the caller this
+        // exists for — and for a nested guest too, which is why the depth cap is
+        // in the verb rather than in this registration.
+        crate::host::link_dev(&mut linker)?;
 
         Ok(Self {
             module,

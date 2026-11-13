@@ -74,6 +74,7 @@
 //! above; none is a candidate for a `link_*` that takes only a linker.
 
 pub mod config;
+pub mod dev;
 pub mod module_cache;
 pub mod guest;
 pub mod io;
@@ -85,6 +86,7 @@ pub mod two_d;
 
 pub(crate) use config::HostConfig;
 pub(crate) use guest::GuestHost;
+pub use dev::link_dev;
 pub use io::link_io;
 pub use res::link_res;
 #[cfg(feature = "render2d-core")]

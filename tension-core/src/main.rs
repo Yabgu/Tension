@@ -287,6 +287,32 @@ pub(crate) struct HostState {
     /// `ResourceLimiter`. Unlimited for the process's own guest: it is not
     /// sandboxed, and a budget nobody asked for would be a policy, not a bound.
     pub(crate) memory_budget: sandbox::MemoryBudget,
+    /// How deep this guest sits: 0 for the process's own, `d + 1` for a guest it
+    /// started. Distinct from `depth`, which counts session callback re-entry
+    /// inside one guest — two different nesting stories that happen to share a
+    /// word.
+    pub(crate) guest_depth: u32,
+    /// The runs this guest has started, keyed by the id `dev.run` returned.
+    ///
+    /// **A map rather than one slot**, because two runs must coexist: the editor
+    /// can restart a game before the previous run's output has been read, and a
+    /// single slot would either refuse the second or throw the first away.
+    ///
+    /// The table lives here rather than beside the sandbox module because its
+    /// owner is the *guest* that called `dev.run` — a nested guest that starts
+    /// its own runs gets its own table, one level down.
+    pub(crate) runs: std::collections::HashMap<i32, sandbox::GuestRun>,
+    /// The next run id. Starts at 1 so that 0 is never a valid handle and an
+    /// uninitialised variable cannot look like one.
+    pub(crate) next_run_id: i32,
+    /// The engine, for a verb that has to stand a guest up.
+    ///
+    /// A `Clone` handle to the same engine the config holds — not a second
+    /// engine, which would be a second compiled-code cache. `dev.run` needs it
+    /// because a verb's only context is `Caller::data()`.
+    pub(crate) engine: wasmtime::Engine,
+    /// The process's compiled-module cache, same reason and same `Arc`.
+    pub(crate) module_cache: std::sync::Arc<host::module_cache::ModuleCache>,
 }
 
 impl HostState {
@@ -385,6 +411,13 @@ impl HostState {
             session: None,
             captured_out: if nested { Some(Vec::new()) } else { None },
             memory_budget: sandbox::MemoryBudget::default(),
+            // A nested guest's depth is set by whoever opened it; the value here
+            // is the root's, and `Sandbox::open` overwrites it for a sandbox.
+            guest_depth: 0,
+            runs: std::collections::HashMap::new(),
+            next_run_id: 1,
+            engine: config.engine.clone(),
+            module_cache: std::sync::Arc::clone(&config.module_cache),
         }
     }
 }
