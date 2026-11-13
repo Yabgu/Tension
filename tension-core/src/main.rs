@@ -68,7 +68,7 @@ use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::platform;
 use tension_core::render2d;
 use tension_core::res::{self, ResourceSet, Stat};
-use wasmtime::{Caller, Config, Engine, ExternType, Linker, Memory, Module, Store};
+use wasmtime::{Caller, Config, Engine, ExternType, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
 /// installing the imports it registers (`docs/architecture.md` §6). The run
@@ -118,9 +118,14 @@ fn default_adapter() -> Box<dyn audio::AudioAdapter> {
 /// State stored alongside the Wasm store: the game's CLI arguments, plus the
 /// line parked by a `read_line` probe (`cap <= 0`) and not yet consumed.
 /// `read_line` is the ABI's only stateful call; see the doc header.
-struct HostState {
-    args: Vec<String>,
-    pending_line: Option<Vec<u8>>,
+///
+/// **`pub(crate)`, fields included**, because the `host` module builds it
+/// (`HostState::new`) and every verb moved into `host::*` reads it through
+/// `Caller::data()`. It was private to this file while every verb was here; the
+/// visibility change is a consequence of the move, not a redesign.
+pub(crate) struct HostState {
+    pub(crate) args: Vec<String>,
+    pub(crate) pending_line: Option<Vec<u8>>,
     /// The mount table: `--res` paks (flat) followed by whatever a guest
     /// mounted, in load order. Each owns its bytes (1x memory) and the guest's
     /// fd space indexes it, so an fd's high bits are a mount index whichever
@@ -131,25 +136,25 @@ struct HostState {
     /// capability that parses the image on a worker thread). The same
     /// arrangement `control` uses, for the same reason — one table, two
     /// consumers, and neither owns it.
-    res: std::sync::Arc<std::sync::Mutex<res::MountTable>>,
+    pub(crate) res: std::sync::Arc<std::sync::Mutex<res::MountTable>>,
     /// The one directory a guest may write into, or `None` when the root the
     /// host tried to take could not be resolved (a `--write-root` that does not
     /// exist). `None` makes `res_write` answer `-EROFS` for every path rather
     /// than falling back to something writable: a save that landed somewhere
     /// unexpected is worse than a save that failed and said so.
-    write_root: Option<res::WriteRoot>,
+    pub(crate) write_root: Option<res::WriteRoot>,
     /// The open files a guest holds on the write root, keyed by a local handle.
     ///
     /// Separate from `res` for one reason: a pak's reader is the library's
     /// (a table of contents over mapped bytes) and a real file's is
     /// `std::fs::File`, which owns a cursor. The guest's fd says which table it
     /// belongs to in its high bits (`FD_WRITE_TAG`).
-    write_files: std::sync::Arc<std::sync::Mutex<res::WriteFiles>>,
-    audio: audio::AudioSession,
-    ai: ai::AiSession,
+    pub(crate) write_files: std::sync::Arc<std::sync::Mutex<res::WriteFiles>>,
+    pub(crate) audio: audio::AudioSession,
+    pub(crate) ai: ai::AiSession,
     /// The `tension::solver` host side: wasm-source bindings keyed by the
     /// shim's solver id (solver/mod.rs). Per store, like everything here.
-    solver: solver::SolverHost,
+    pub(crate) solver: solver::SolverHost,
     /// The posting face: the queues an adapter thread writes into through
     /// `post_event`, and the source of what the epoch publishes (`docs/session.md`
     /// §3–§5). Shared with the adapter host by `Arc`, and separate from
@@ -158,19 +163,19 @@ struct HostState {
     /// The arena memory, reachable without the session. The epoch runs *inside*
     /// a verb, and the verbs take the session out of the store — so `guest_write`
     /// and the epoch's own arena writes look here, not through `session`.
-    arena: Option<Memory>,
+    pub(crate) arena: Option<Memory>,
     /// How deep the session is inside callback invocations. Host-side, not in
     /// the arena: it is the re-entrancy guard a callback's `session_wait` hits
     /// (`docs/session.md` §7), and a guest that writes the arena cannot clear it.
-    depth: u32,
+    pub(crate) depth: u32,
     /// Deferred submissions: what a `queue_*` verb copied out of a callback, and
     /// what the next epoch's apply phase drains. Host-side, never in the arena,
     /// and never cleared by a trap (R7) — a fault leaves the work where it is.
-    pending: session::apply::PendingQueue,
+    pub(crate) pending: session::apply::PendingQueue,
     /// The window-control queue: what a layer posts through `post_control`,
     /// what the guest posts through `tension::platform.control`, and what the
     /// host loop drains once per frame. Shared with `AdapterHost` by `Arc`.
-    control: std::sync::Arc<platform::ControlBus>,
+    pub(crate) control: std::sync::Arc<platform::ControlBus>,
     /// The event dispatcher and the published window record (ABI v7). Shared
     /// with `AdapterHost` by `Arc`, and with the window, which dispatches from
     /// inside `pump` — the one place events are drained, reached from both the
@@ -179,7 +184,7 @@ struct HostState {
     /// Built before anything can register a layer, because a capability's
     /// `link` is where registration happens and `link` runs before the guest
     /// can create a window.
-    shared: std::sync::Arc<platform::HostShared>,
+    pub(crate) shared: std::sync::Arc<platform::HostShared>,
     /// The in-core 2D renderer: GPU device, the one canvas, and who holds the
     /// swapchain.
     ///
@@ -193,7 +198,7 @@ struct HostState {
     /// before the `SDL_Window` is. `main`'s teardown takes the window out first,
     /// and this ordering is what makes a path that skips teardown — a panic, a
     /// future early return — still correct rather than a use-after-free.
-    render2d: render2d::Render2dState,
+    pub(crate) render2d: render2d::Render2dState,
     /// The host-owned window, when the guest asked for one (`create_window`).
     ///
     /// Lives in the store rather than beside it because `host_loop` needs to
@@ -207,7 +212,7 @@ struct HostState {
     /// same call). There is no startup window and no flag that makes one, so a
     /// run with no windowed renderer and no `create_window` never opens SDL's
     /// video subsystem at all.
-    host_window: Option<platform::HostWindow>,
+    pub(crate) host_window: Option<platform::HostWindow>,
     /// The cell `host_surface` serves from, shared with `AdapterHost` by `Arc`.
     ///
     /// **Why it is here and not only in `AdapterHost`.** Before the programmatic
@@ -217,18 +222,18 @@ struct HostState {
     /// run, and the guest thread is the one that must publish — so the store
     /// holds a handle to the same cell the adapters read. `None` until the
     /// adapter host is built (a run with no capability never needs it).
-    host_surface: Option<std::sync::Arc<std::sync::Mutex<Option<adapter::PublishedSurface>>>>,
+    pub(crate) host_surface: Option<std::sync::Arc<std::sync::Mutex<Option<adapter::PublishedSurface>>>>,
     /// Set by the pump when the user closes the window. The loop breaks on it,
     /// the same way it breaks when the guest closes its session.
-    window_closed: bool,
+    pub(crate) window_closed: bool,
     /// The loaded adapters, in registration order: what the epoch's publish
     /// phase calls, and in what order (`docs/session.md` §3).
-    adapters: Vec<adapter::AdapterCall>,
-    posting: std::sync::Arc<session::posting::PostingSide>,
+    pub(crate) adapters: Vec<adapter::AdapterCall>,
+    pub(crate) posting: std::sync::Arc<session::posting::PostingSide>,
     /// The scheduler's host half (0.7.0a-pre0): the park tables `scheduler::park`
     /// writes and the epoch's completion path will read. Bounded, per family,
     /// and — at pre0 — recorded but unread.
-    scheduler: scheduler::Scheduler,
+    pub(crate) scheduler: scheduler::Scheduler,
     /// The guest's `__taskWake(idsPtr, count)`, resolved after instantiation
     /// when the module exports it (std 0.6.0 and later). `None` for a guest
     /// that has no push path — the pull path still delivers those.
@@ -237,36 +242,86 @@ struct HostState {
     /// lookup after instantiation; resolving lazily at the first wake would put
     /// a lookup on the completion path and make a missing export a runtime
     /// surprise rather than a startup fact.
-    task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
+    pub(crate) task_wake: Option<wasmtime::TypedFunc<(i32, i32), ()>>,
     /// The guest's `__taskFail(idsPtr, statusesPtr, count)`: resume a task with
     /// a status and no payload — §4.4's lost completion and §5.1's refused park.
     /// `None` for a guest built before std 0.6.1, which has no such export; the
     /// host then has no way to fail a task, and says so rather than parking it.
-    task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
+    pub(crate) task_fail: Option<wasmtime::TypedFunc<(i32, i32, i32), ()>>,
     /// Per-class drop totals already attributed (0.7.0c). The posting queues'
     /// counters are cumulative, so the host keeps its own baseline: a drop is
     /// the *delta* since the last iteration, and without this every iteration
     /// after the first would re-wake the same victims.
-    drop_seen: [u64; session::arena::CLASS_COUNT],
+    pub(crate) drop_seen: [u64; session::arena::CLASS_COUNT],
     /// Tasks the epoch matched, or the park found already completed, waiting to
     /// be resumed. Drained by the host loop; empty for every pre-adoption
     /// guest, because nothing parked.
-    wake_batch: Vec<scheduler::Wake>,
+    pub(crate) wake_batch: Vec<scheduler::Wake>,
     /// The guest's `__taskResume(idsPtr, classesPtr, payloadsPtr, count)`: resume
     /// with the delivered class and payload (std 0.6.1). Preferred over
     /// `__taskWake`, which resumes with whatever the record already holds.
-    task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
+    pub(crate) task_resume: Option<wasmtime::TypedFunc<(i32, i32, i32, i32), ()>>,
     /// The guest's `_game_running()`: 1 while the guest still wants frames.
     /// `None` means the guest has not adopted the host-owned loop, which is
     /// every example until 0.7.0b — so the loop must not start for it.
-    game_running: Option<wasmtime::TypedFunc<(), i32>>,
+    pub(crate) game_running: Option<wasmtime::TypedFunc<(), i32>>,
     /// The session: it owns the arena memory and the open/close verbs.
     ///
     /// `Option` because the memory can only be created *from* a store, and this
     /// struct is what that store is built with — the session is created right
     /// after the store and installed before instantiation, once. A verb that
     /// finds it `None` returns `-EBADF` rather than panicking.
-    session: Option<session::Session>,
+    pub(crate) session: Option<session::Session>,
+}
+
+impl HostState {
+    /// The per-guest state payload, built from the run's configuration.
+    ///
+    /// **Everything here is either this guest's or a singleton.** The fields
+    /// taken from `config` are per guest (argv, the mount table handle, the
+    /// write root); the ones built inline are the singletons `host/mod.rs`
+    /// lists — the audio device, the AI backend, the window event bus. They are
+    /// constructed here because `HostState` is where the verbs reach them, and
+    /// that is the F1 constraint rather than an endorsement: a second guest must
+    /// share them, and today it would build a second.
+    ///
+    /// `render2d` defaults to "no device, no canvas" whether or not the feature
+    /// is on: with it off nothing reads the field, and leaving it out behind a
+    /// `cfg` would make the struct two shapes for no benefit.
+    pub(crate) fn new(
+        config: &crate::host::HostConfig,
+        posting: std::sync::Arc<session::posting::PostingSide>,
+    ) -> Self {
+        HostState {
+            args: config.args.clone(),
+            pending_line: None,
+            res: std::sync::Arc::clone(&config.res),
+            write_root: config.write_root.clone(),
+            write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
+            audio: audio::AudioSession::new(default_adapter()),
+            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
+            solver: solver::SolverHost::default(),
+            posting,
+            scheduler: scheduler::Scheduler::new(),
+            wake_batch: Vec::new(),
+            task_wake: None,
+            task_resume: None,
+            task_fail: None,
+            drop_seen: [0; session::arena::CLASS_COUNT],
+            game_running: None,
+            arena: None,
+            depth: 0,
+            pending: session::apply::PendingQueue::new(),
+            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
+            shared: tension_core::platform::HostShared::new(),
+            host_window: None,
+            host_surface: None,
+            render2d: Default::default(),
+            window_closed: false,
+            adapters: Vec::new(),
+            session: None,
+        }
+    }
 }
 
 /// Guest fds are `(pak index << 16) | that pak's fd`, so a guest handle stays
@@ -898,26 +953,17 @@ fn main() -> anyhow::Result<()> {
     // what lldb's `plugin.jit-loader.gdb.enable on` picks up. Registration
     // happens as the module is compiled, before `_start_game` runs, so a
     // debugger that launches this process can have breakpoints in place first.
-    let mut config = Config::new();
-    config.debug_info(cli.debug);
-    let engine = Engine::new(&config)?;
-
-    // The guest's bytes, read once and used for both the load-time checks and
-    // the module itself. `Module::new` takes the text format as well as the
-    // binary one, so a hand-written `.wat` fixture loads the way a compiled
-    // `game.wasm` does (§7 Appendix B's smoke path).
-    let guest_bytes =
-        std::fs::read(&cli.wasm_path).map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
-    // A malformed guest is reported with the file's name in front of wasmtime's
-    // own parse error: `Module::new` does not know where the bytes came from,
-    // and "expected a module" with no path in it is a bad diagnostic.
-    let module = Module::new(&engine, &guest_bytes)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", cli.wasm_path))?;
-    check_guest_module(&module, &guest_bytes, &cli.wasm_path)?;
+    // The engine is built once, from the engine configuration, and moves into
+    // the config: it owns the compiled-code cache, and every guest this process
+    // runs shares it (see `host::HostConfig`).
+    let mut engine_config = Config::new();
+    engine_config.debug_info(cli.debug);
+    let engine = Engine::new(&engine_config)?;
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
-    // at runtime. `load_file` keeps one copy of each pak (`tension-res/DESIGN.md` §9.2).
+    // at runtime. `load_file` keeps one copy of each pak
+    // (`tension-res/DESIGN.md` §9.2).
     let mut resource_sets = res::MountTable::new();
     for path in &cli.res_paths {
         let set = ResourceSet::load_file(path)
@@ -961,87 +1007,44 @@ fn main() -> anyhow::Result<()> {
         }
     };
 
+    // Everything the run is configured with, named once. Nothing here changes
+    // after this point, and a second guest is given the same one.
+    let config = host::HostConfig {
+        engine,
+        args: cli.args,
+        guest_path: cli.wasm_path,
+        res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
+        write_root,
+        capabilities: cli.capability_paths,
+        session_open: cli.session_open,
+        session_callbacks: cli.session_callbacks,
+        post_test_events: cli.post_test_events,
+    };
+
     // §7.2: the paks merge into one namespace, so two of them providing the
     // same path is a load-time error rather than a silent first-match. The
     // check costs one enumeration per pak, and nothing at lookup time.
     {
-        let all = resource_sets.sets();
-        if let Err(err) = check_pak_conflicts(&all) {
+        let mounts = config
+            .res
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Err(err) = check_pak_conflicts(&mounts.sets()) {
             eprintln!("tension-core: {err}");
             std::process::exit(2);
         }
     }
 
-    // The posting face is built **before** the store because the AI backend is
-    // a producer too: its worker posts AI completions through the same
-    // any-thread path the adapters use, so it needs the `Arc` at construction —
-    // not a borrow of the store it will wake.
-    let posting = std::sync::Arc::new(session::posting::PostingSide::default());
-
-    let mut store = Store::new(
-        &engine,
-        HostState {
-            args: cli.args,
-            pending_line: None,
-            res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
-            write_root,
-            write_files: std::sync::Arc::new(std::sync::Mutex::new(res::WriteFiles::new())),
-            audio: audio::AudioSession::new(default_adapter()),
-            ai: ai::AiSession::new(default_ai_adapter(std::sync::Arc::clone(&posting))),
-            solver: solver::SolverHost::default(),
-            posting,
-            scheduler: scheduler::Scheduler::new(),
-            wake_batch: Vec::new(),
-            task_wake: None,
-            task_resume: None,
-            task_fail: None,
-            drop_seen: [0; session::arena::CLASS_COUNT],
-            game_running: None,
-            arena: None,
-            depth: 0,
-            pending: session::apply::PendingQueue::new(),
-            control: std::sync::Arc::new(tension_core::platform::ControlBus::new()),
-            shared: tension_core::platform::HostShared::new(),
-                host_window: None,
-            host_surface: None,
-            // The in-core 2D renderer's device, canvas and swapchain guard. Default
-            // (all `None`) whether or not the feature is on: with it off nothing
-            // reads this, and leaving it out behind a `cfg` would make the struct
-            // two shapes for no benefit.
-            render2d: Default::default(),
-            window_closed: false,
-            adapters: Vec::new(),
-            session: None,
-        },
-    );
-
-    // tension::session ----------------------------------------------------
-    // The session owns the arena memory, so it is created before anything is
-    // linked and its arena is prepared before instantiation: the guest's data
-    // segments land on a band the session already zeroed and canary-laid, which
-    // is what makes `verify_post_instantiate` below a complete check.
-    //
-    // **For a guest that imports nothing from `session`, there is no session to
-    // create.** The arena is the session's, so a guest with no session import has
-    // no arena — and the pre-session examples (io, audio, ai, res, solver) are
-    // exactly that: they predate the session, define their own memory, and reach
-    // the host ABI through `get_export("memory")` like every other guest. The
-    // session's constructor requires a memory *import*, which is a rule about
-    // owning an arena; applying it to a guest with no session is the same scope
-    // error the start-section check had, so it is scoped the same way. A session
-    // guest is unaffected: the import is what identifies one.
-    let guest_is_session_guest = module.imports().any(|import| import.module() == "session");
-    let mut session = if guest_is_session_guest {
-        let mut session = session::Session::create_from_module(&mut store, &module)?;
-        session.prepare_arena(&mut store)?;
-        Some(session)
-    } else {
-        None
-    };
-    let mut linker: Linker<HostState> = Linker::new(&engine);
-
-    host::link_io(&mut linker)?;
-    host::link_res(&mut linker)?;
+    // One guest: engine handle, module, store, linker, session. The session is
+    // created but not installed — the capabilities' region requirements have to
+    // be known first, and they are not loaded until below.
+    let guest = host::GuestHost::new(&config)?;
+    let host::GuestHost {
+        module,
+        mut store,
+        mut linker,
+        mut session,
+    } = guest;
 
     // tension::platform ABI -----------------------------------------------
     //
@@ -1496,14 +1499,6 @@ fn main() -> anyhow::Result<()> {
     // this host instead of failing at instantiation with "unknown import".
     scheduler::link_scheduler(&mut linker)?;
 
-    // tension::2d ---------------------------------------------------------
-    //
-    // In-core only when the `render2d-core` feature is on. Off, the ten verbs
-    // come from the capability DSO exactly as they did before this pass, and
-    // nothing here is compiled.
-    #[cfg(feature = "render2d-core")]
-    host::link_2d(&mut linker)?;
-
         // The window ----------------------------------------------------------
     //
     // **There is none at startup, and there is no flag that makes one.** The
@@ -1518,7 +1513,7 @@ fn main() -> anyhow::Result<()> {
     // layout — safe with no arena in sight (§7.2). Nothing loads unless
     // `--capability` (or `TENSION_CAPABILITY_PATH`) asks for it, so a plain run
     // is byte-for-byte the run it always was.
-    let capability_paths = resolve_capability_paths(&cli.capability_paths)?;
+    let capability_paths = resolve_capability_paths(&config.capabilities)?;
     let mut adapters: Vec<adapter::LoadedAdapter> = Vec::with_capacity(capability_paths.len());
     for path in &capability_paths {
         // With the in-core backend compiled in, a 2D DSO on the command line is
@@ -1682,8 +1677,8 @@ fn main() -> anyhow::Result<()> {
     // arena is READY before `_start_game`, and a guest that then called
     // `session_open` itself would be refused with `-EBUSY`, which is exactly why
     // the real path does not do this.
-    if cli.session_open || cli.session_callbacks.is_some() {
-        let (on_batch, on_event) = cli.session_callbacks.unwrap_or((0, 0));
+    if config.session_open || config.session_callbacks.is_some() {
+        let (on_batch, on_event) = config.session_callbacks.unwrap_or((0, 0));
         // The record the guest would have written, built here because the host
         // is doing the opening; its slots are resolved against the guest's own
         // exported table, which is what makes them callable.
@@ -1752,7 +1747,7 @@ fn main() -> anyhow::Result<()> {
     // something to deliver when it waits. Posted through the posting face
     // directly — this is the host, not an adapter — and before the guest runs,
     // so the wait finds them queued rather than having to race a producer.
-    if cli.post_test_events {
+    if config.post_test_events {
         let posting = store.data().posting.clone();
         for index in 0..3u32 {
             match posting.post(
@@ -2411,7 +2406,7 @@ const HOST_RESUME_CHUNK: usize = 3;
 /// process; a healthy loop returns on an event long before it expires.
 const HOST_LOOP_SLICE_MS: i32 = 16;
 
-fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
+pub(crate) fn check_guest_module(module: &Module, bytes: &[u8], path: &str) -> anyhow::Result<()> {
     let mut imports_session = false;
     let mut imports_memory = false;
     for import in module.imports() {

@@ -138,15 +138,15 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1062` |
-| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1085` |
-| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1090` |
-| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1108` |
-| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1265` |
-| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1309` |
-| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1355` |
-| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1385` |
-| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1415` |
+| `control` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/main.rs:1060` |
+| `surface_width` | `(void) → i32` | `tension-core/src/main.rs:1083` |
+| `surface_height` | `(void) → i32` | `tension-core/src/main.rs:1088` |
+| `create_window` | `(i32, i32) → i32` | `tension-core/src/main.rs:1106` |
+| `close_window` | `(i32) → i32` | `tension-core/src/main.rs:1263` |
+| `window_info` | `(i32, i32) → i32` | `tension-core/src/main.rs:1307` |
+| `set_fullscreen` | `(i32) → i32` | `tension-core/src/main.rs:1353` |
+| `set_window_size` | `(i32, i32) → i32` | `tension-core/src/main.rs:1383` |
+| `set_window_title` | `(i32, i32) → i32` | `tension-core/src/main.rs:1413` |
 
 ## `tension::res`
 
