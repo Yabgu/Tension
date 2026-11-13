@@ -666,6 +666,25 @@ someone regenerates.
   be the last thing before `git commit`, which is the only placement that would
   have caught this: the failure was ordering *inside* a commit, not a forgotten
   command.
+- **And in mechanism, because a rule about remembering is not a mechanism.**
+  `.githooks/pre-commit` runs `scripts/gen-abi-doc.mjs --check` whenever a staged
+  path is under `tension-core/`, `docs/abi/`, `tension-ogre/src/`,
+  `tension-input/src/` or `tension-2d/reference/` — the trees a citation can
+  move in. Enable once per clone:
+
+  ```bash
+  git config core.hooksPath .githooks
+  ```
+
+  The hook also refuses when a staged file it would read still has unstaged
+  changes: the generator reads the working tree, so a pass in that state would
+  be an answer about a tree nobody is committing. `--no-verify` skips it; the
+  `abi-docs` suite does not, which is why CI catches the drift whether or not a
+  clone enabled the hook. `scripts/test-abi-docs.mjs` proves the hook fires by
+  building a scratch repository with the generator's inputs, shifting a citation
+  above the `tension::platform` block, and asserting git refuses the commit — and
+  accepts it after regeneration. The proof is real in both directions: with the
+  hook replaced by `exit 0`, that check fails.
 - **The long-term fix** is to stop emitting line numbers: cite the slot by name
   and the table by its anchor, not by `:1336`. That is a change to the generator's
   output, deliberately deferred (`docs/guard-discipline.md` — the same "presence

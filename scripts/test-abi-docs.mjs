@@ -19,7 +19,8 @@
 //
 // Usage: node scripts/test-abi-docs.mjs
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { REPO, which } from './lib/toolchain.mjs';
@@ -117,7 +118,114 @@ if (listed.status !== 0) {
   }
 }
 
-// ── 3. the docs are not empty ───────────────────────────────────────────────
+// ── 3. the hook fires ───────────────────────────────────────────────────────
+//
+// The drift check above is what CI runs. The *hook* runs at the moment a commit
+// is made, and the failure it exists for was an ordering mistake inside one
+// commit (regenerate, then edit above the block again), which no amount of care
+// in a commit message prevents. A hook nobody tested is a hook that may simply
+// not fire, so this builds a small repository holding the generator's inputs,
+// makes a commit that shifts a citation without regenerating, and asserts git
+// refuses it — through `core.hooksPath`, the mechanism a developer's clone uses,
+// not by calling the script the hook calls.
+
+try {
+  const proof = proveHookRejectsStaleCommit();
+  if (proof.ok) console.log(`ok      ${proof.message}`);
+  else fail(proof.message);
+} catch (error) {
+  fail(`the pre-commit hook could not be exercised: ${error.message}`);
+}
+
+/// Build a throwaway repo from this tree's generator inputs and prove the hook
+/// rejects a stale tree, then accepts the same tree once regenerated.
+function proveHookRejectsStaleCommit() {
+  const root = mkdtempSync(join(tmpdir(), 'tension-hook-'));
+  try {
+    // Only what the generator reads, plus the hook itself. A full checkout would
+    // be slower and would test git rather than the hook.
+    const copies = [
+      ['scripts/gen-abi-doc.mjs', 'scripts/gen-abi-doc.mjs'],
+      ['scripts/lib', 'scripts/lib'],
+      ['scripts/hooks', 'scripts/hooks'],
+      ['.githooks', '.githooks'],
+      ['tension-core/include', 'tension-core/include'],
+      ['tension-core/src', 'tension-core/src'],
+      ['docs/abi', 'docs/abi'],
+      ['tension-ogre/src/adapter.cpp', 'tension-ogre/src/adapter.cpp'],
+      ['tension-input/src/adapter.cpp', 'tension-input/src/adapter.cpp'],
+      ['tension-2d/reference/adapter.cpp', 'tension-2d/reference/adapter.cpp'],
+    ];
+    for (const [from, to] of copies) {
+      cpSync(join(REPO, from), join(root, to), { recursive: true });
+    }
+
+    const run = (args, options = {}) => spawnSync('git', args, { cwd: root, encoding: 'utf8', ...options });
+    const must = (args) => {
+      const result = run(args);
+      if (result.status !== 0) {
+        throw new Error(`\`git ${args.join(' ')}\` failed: ${(result.stderr ?? '').trim()}`);
+      }
+      return result;
+    };
+
+    must(['init', '-q']);
+    must(['config', 'user.email', 'hook-test@example.invalid']);
+    must(['config', 'user.name', 'hook test']);
+    // The copy must be current before the negative case means anything.
+    const baseline = spawnSync(node, [join(root, 'scripts', 'gen-abi-doc.mjs'), '--check'],
+      { cwd: root, encoding: 'utf8' });
+    if (baseline.status !== 0) {
+      throw new Error(`the copied tree is already stale: ${baseline.stdout.trim()}`);
+    }
+    must(['add', '-A']);
+    must(['commit', '-q', '-m', 'baseline']);
+
+    // Now enable the hook the way a developer does, and move a citation: three
+    // lines above the first `tension::platform` registration, `guest.md` left
+    // alone. This is the slice-3 failure, reproduced.
+    must(['config', 'core.hooksPath', '.githooks']);
+    const main = join(root, 'tension-core', 'src', 'main.rs');
+    const text = readFileSync(main, 'utf8');
+    const anchor = text.indexOf('"tension::platform",');
+    if (anchor < 0) throw new Error('main.rs has no tension::platform registration to shift');
+    const lineStart = text.lastIndexOf('\n', anchor) + 1;
+    writeFileSync(main, `${text.slice(0, lineStart)}// three lines\n// of shift\n// above the block\n${text.slice(lineStart)}`);
+    must(['add', '-A']);
+
+    const rejected = run(['commit', '-q', '-m', 'stale abi']);
+    if (rejected.status === 0) {
+      return { ok: false, message: 'the hook accepted a commit with stale ABI docs' };
+    }
+    const complaint = `${rejected.stdout ?? ''}${rejected.stderr ?? ''}`;
+    if (!/stale/.test(complaint)) {
+      return { ok: false, message: `the commit was refused, but not by the hook: ${complaint.trim().slice(0, 200)}` };
+    }
+
+    // And the same tree, regenerated, commits: the hook refuses staleness, not
+    // the change.
+    const regenerate = spawnSync(node, [join(root, 'scripts', 'gen-abi-doc.mjs')],
+      { cwd: root, encoding: 'utf8' });
+    if (regenerate.status !== 0) {
+      throw new Error(`regenerating in the scratch repo failed: ${(regenerate.stderr ?? '').trim()}`);
+    }
+    must(['add', '-A']);
+    const accepted = run(['commit', '-q', '-m', 'shifted and regenerated']);
+    if (accepted.status !== 0) {
+      return { ok: false, message: `the hook refused a regenerated commit: ${(accepted.stderr ?? '').trim()}` };
+    }
+
+    return {
+      ok: true,
+      message: 'the pre-commit hook refuses a commit that shifts an ABI citation ' +
+        'without regenerating, and accepts it once regenerated',
+    };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+// ── 4. the docs are not empty ───────────────────────────────────────────────
 
 for (const name of ['adapter', 'guest']) {
   const path = join(REPO, 'docs', 'abi', `${name}.md`);
