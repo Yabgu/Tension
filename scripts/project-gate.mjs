@@ -26,6 +26,15 @@
 //                lands mid-line (`... -> 0test name ... ok`). Measured: two runs
 //                of the `core` suite on one tree differ by three *names* that
 //                way, while the `test result:` lines are identical.
+//
+//                **Compared by content, not by position.** A `test result:` line
+//                carries no identity: one per test binary, binaries in name
+//                order, so adding one test file renumbers everything after it.
+//                Compared by index this reported 28 hard differences for a
+//                `passed 629 -> 630` change (gate finding 7); as a multiset
+//                difference it reports the line that appeared and the line that
+//                left. Suites and verdicts stay ordered — there, position *is*
+//                the fact.
 //   warnings     every compiler warning, as (message, location) with a count,
 //                sorted. Locations are allowed to shift when lines move — a
 //                gate compares the list and explains the shifts; a changed
@@ -178,7 +187,7 @@ export function render(p) {
   return `${out.join('\n')}\n`;
 }
 
-/** Line-by-line comparison of two projections, split into hard and soft. */
+/** Comparison of two projections, split into hard and soft. */
 export function compare(before, after) {
   const hard = [];
   const soft = [];
@@ -191,9 +200,19 @@ export function compare(before, after) {
   section(before.suites, after.suites, 'suite');
   section(before.verdicts, after.verdicts, 'verdict');
 
+  // Cargo results are compared **by content, not by position**. A `test result:`
+  // line carries no identity: libtest prints one per test binary, the binaries
+  // run in name order, and one added test file renumbers every line after it.
+  // Compared by index (which is what this did until gate finding 7), adding a
+  // single test reported 28 hard differences for a change of exactly
+  // `passed 629 -> 630`. A multiset difference says what actually changed: the
+  // line that appeared, and the line that left. Order still matters where it
+  // carries meaning — the suites and the verdicts above.
   const cargoText = (p) => p.cargo.map((r) => `${r.ok ? 'ok ' : 'BAD'} ` +
     `passed=${r.passed} failed=${r.failed} ignored=${r.ignored}`);
-  section(cargoText(before), cargoText(after), 'cargo-result');
+  for (const line of diffLines(cargoText(before), cargoText(after))) {
+    hard.push(`cargo-result: ${line}`);
+  }
 
   const warningText = (p) => p.warnings.map((w) => `${w.count}x ${w.location}  ${w.message}`);
   for (const line of diffLines(warningText(before), warningText(after))) soft.push(line);

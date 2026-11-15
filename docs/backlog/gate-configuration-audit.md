@@ -130,10 +130,29 @@ something a future round should choose between deliberately:
 
    The cost is habituation, and that is worse than noise: a reviewer who learns
    that "28 hard differences" means "a test was added" will read past a real
-   28-line change the same way. The fix is one line — strip the ordinal, or route
-   the cargo section through `diffLines` like warnings — and it is deliberately
-   **not** taken here: it is a gate change, and gate changes get their own round
-   with their own declaration.
+   28-line change the same way.
+
+   **Fixed** in `fix(gate): diff cargo results by content, not by index`, the
+   round after it was found, because the scheduler slice adds tests and each one
+   would otherwise have read as a 28-line breakage. `compare()` now routes the
+   cargo section through `diffLines` — the multiset difference the warning
+   section already used. Suites and verdicts stay index-compared, because there
+   position *is* the fact.
+
+   Measured before and after, on the same two projections (`fc8655a` ->
+   `9b49bb2`, one test file added):
+
+       28 hard differences   ->   1:  +ok  passed=1 failed=0 ignored=0
+
+   and the synthetic cases were checked separately: one test file added at the
+   head of the order reads as one `+` line; one test *removed* reads as a
+   `-passed=3` / `+passed=2` pair; a FAILED verdict still exits 1 with the
+   verdict line named. The projection itself is unchanged by the fix — a saved
+   log re-projects byte-for-byte identically — so a green tree's projection
+   before and after this commit is the same artefact.
+
+   Reading either operand of a `--diff` is unaffected: a raw log still projects,
+   and a rendered projection still re-reads as itself.
 
 ## What a green gate means, now that finding 4 is known
 
