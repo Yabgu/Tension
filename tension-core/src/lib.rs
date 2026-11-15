@@ -28,6 +28,10 @@ pub mod platform;
 pub mod render2d;
 pub mod res;
 pub mod shadergen_registry;
+// The engine features cooperative threads are built on. In the library for
+// `platform`'s reason: the `stack_switching` proof is an integration test, and a
+// continuation is an engine property, not an entry point's.
+pub mod threads;
 pub mod world;
 
 /// Register the process-wide services the C ABI expects to be present.
