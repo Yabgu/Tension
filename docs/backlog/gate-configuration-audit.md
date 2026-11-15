@@ -1,7 +1,7 @@
 # Backlog: the gate's configuration audit
 
-**Status:** backlog, and a class of defect rather than a task list. Four findings
-in Pass 2 were the same bug at four scales: **the gate tested a configuration
+**Status:** backlog, and a class of defect rather than a task list. Five findings
+in Pass 2 were the same bug at five scales: **the gate tested a configuration
 other than the one that ships, on an environment other than the one a reviewer
 runs, and reported a figure that depended on its own cache.** Each was found
 late, each was green in CI's shape and red (or silently inert) in reality, and
@@ -21,7 +21,13 @@ nondeterministic measurement is only half a gate:
 > depends on the state of a build cache cannot distinguish a real change from a
 > cold-cache artefact, so it cannot be a freeze figure.
 
-## The four findings so far
+Finding 5 adds a fourth:
+
+> **and the gate must be able to say what it exercised.** An assertion added to a
+> fixture that already passed changes no verdict, no count and no warning, so the
+> projection cannot distinguish it from a commit that added nothing.
+
+## The five findings so far
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
    `cargo test --no-default-features --features audio`; the flag was meant to say
@@ -55,9 +61,34 @@ nondeterministic measurement is only half a gate:
    verdict that depends on the interpreter: it makes "nothing changed" a claim
    nobody can check. *Shape: the gate's own measurement is not deterministic.*
 
-The four are one statement: **a gate that does not run the shipped
-configuration, on the reviewer's environment, and measure it deterministically,
-is a gate for a different product.**
+5. **An assertion added inside an existing fixture is invisible to the gate.**
+   In 4b-6, `RecordBuffer.place` gained five checks in
+   `tension-framework/tests/guest-buffers.ts` — the move, the clip, the count,
+   the dropped count, and `flags` travelling with a moved record. The gate ran
+   that fixture and the fixture failed if the checks failed, so the check *was*
+   executed; but the projection's four sections (suites, verdicts, `test result:`
+   counts, warnings) are all unchanged by an assertion added to a fixture that
+   already ran and already passed. **A commit that added a check and a commit
+   that added nothing project identically.** That is the gate auditing itself:
+   findings 1–4 are the gate not exercising the product, and this one is the
+   gate not being able to say what it exercised. *Shape: the gate's coverage
+   grew and its report could not tell.*
+
+The five are one statement: **a gate that does not run the shipped
+configuration, on the reviewer's environment, measure it deterministically, and
+report what it exercised, is a gate for a different product.**
+
+Finding 5 has no cheap fix and is not scheduled. Two shapes exist and both cost
+something a future round should choose between deliberately:
+
+- **assertion counts per fixture.** Each fixture prints its own total (several
+  already do: "61 checks passed", "OK", a FAIL count) and the projection adds a
+  section for them. The cost is a convention every fixture must follow, and a
+  fixture that prints nothing is invisible in a *different* way.
+- **diff the test sources.** A commit that touches a `tests/` or `fixtures/`
+  file under a suite whose verdict did not change is reported for review. Cheaper
+  and requires no convention, but it reports source churn rather than assertions
+  — a comment edit trips it and a fixture that grows a loop does not.
 
 ## What a green gate means, now that finding 4 is known
 

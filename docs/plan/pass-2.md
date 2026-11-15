@@ -104,11 +104,19 @@ does). Measured on the development Linux box:
   reports and what `dev.read` returns; the "~2,410" figure would be a 60x40 grid,
   a different scene. Page usage: the nested guest uses **3 of the 15** pages it is
   given (pages 1–3 of the array), the outer keeps page 0 for its own atlas.
+  **The demo proves the pipeline, not the budget**: 46 records is 1.5% of the
+  cap, and the 2,000-record case is not exercised by the editor yet. The budget
+  itself was measured by the 4b-4 probe (2,410 records, 654 spare) through the
+  sandbox, not through this composite.
 - **Frame cost: 17.3 ms/frame (about 58 fps)** for the whole editor frame, measured as
   the slope between a 1-frame and a 240-frame run (median of five). A bare editor
   frame with no nested guest measures 17.4 ms, so **the nested guest's own cost is
   below the measurement's noise on this rig** — the sandbox is synchronous, and the
   cost is there, but the 320x180 guest is far cheaper than a 1600x900 composite.
+  **The synchronous model is not stressed at this size.** The figure says "a
+  320x180 guest costs less than the frame around it", not "the model holds for a
+  heavy guest"; a guest whose own frame is 10 ms would add 10 ms to the editor's,
+  and nothing here measures that.
 - **Restart** is a fresh `Store` from the cached `Module`: run 2 reports the same
   46 records, the same 3 pages, a new pipeline id (1001 against 1000), and the
   same pixel-identical frame.
@@ -120,6 +128,30 @@ nested scene keeps the dimensions it was started with, because the run's viewpor
 is fixed at `dev.run` and a canvas is fixed for its handle's life. Handling it
 means stopping and restarting the run on a resize (or the buffer-rendering path in
 4c, where the inner guest owns a render target); it is **4b-7** by preference.
+
+
+## The compile gap, stated plainly
+
+4b-6 proves the **run** half of "click Run and the example appears in the
+viewport". It does not prove the **compile** half, and the difference is worth
+naming because the goal named compile:
+
+- The wasm the demo runs is `examples/2d/isometric/build/game.wasm`, produced
+  before the editor started by `npm run build` in that example
+  (`build-2d-guest.mjs` -> `tensionscript`). `build/` is gitignored, so it is a
+  build product, not a bundled asset.
+- Nothing inside the editor compiles anything. `apps/editor` imports no compiler,
+  the guest SDK has no compile verb, and `dev.run` takes a **path** — resolved
+  from an absolute name or under the process's write root — so what it starts is
+  a module that already existed on disk.
+- The editor's `--game=<wasm>` argument is that path. A user cannot yet choose an
+  example from inside Play; the harness names one file.
+
+So the demo today is: *a pre-built guest runs inside the editor, driven frame by
+frame, and its pixels are the guest's own.* The compile half is **Pass 3** (the
+compiler daemon), which the plan's opening section already lists as not started
+and unspecified in this tree. Until it exists, "the demo works" means the run
+path works end to end — not that the editor compiles a project.
 
 
 ## The F1 constraint
