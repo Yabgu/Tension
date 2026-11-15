@@ -301,7 +301,7 @@ fn table_func(table: &Table, caller: &mut Caller<'_, HostState>, index: i32) -> 
     if index < 0 {
         return None;
     }
-    match table.get(&mut *caller, index as u32)? {
+    match table.get(&mut *caller, u64::from(index as u32))? {
         Ref::Func(Some(func)) => Some(func),
         _ => None,
     }

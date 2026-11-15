@@ -174,11 +174,16 @@ impl ResourceLimiter for MemoryBudget {
         _current: usize,
         desired: usize,
         _maximum: Option<usize>,
-    ) -> Result<bool> {
+    ) -> wasmtime::Result<bool> {
         Ok(self.limit.is_none_or(|limit| desired <= limit))
     }
 
-    fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> Result<bool> {
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
         // Tables are bounded by the module's own declarations in this tree —
         // no guest grows one at run time (the session's function table is
         // fixed at instantiation). Refusing here would be a limit with no

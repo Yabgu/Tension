@@ -1461,15 +1461,18 @@ fn main() -> anyhow::Result<()> {
     // the adapter teardown below (C3). With `?` here, a trap returned before it
     // and left the adapters — and any thread they own — to the DSO's own static
     // destructor, which is the only teardown they got.
-    let guest_result = if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start_game") {
-        func.call(&mut store, ())
-    } else if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
-        func.call(&mut store, ())
-    } else {
-        Err(anyhow::anyhow!(
-            "game.wasm did not export `_start_game` or `_start`"
-        ))
-    };
+    // One `anyhow` result for all three arms: since wasmtime 50 a call answers
+    // `wasmtime::Error`, which converts into `anyhow::Error` but not implicitly.
+    let guest_result: anyhow::Result<()> =
+        if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start_game") {
+            func.call(&mut store, ()).map_err(anyhow::Error::from)
+        } else if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
+            func.call(&mut store, ()).map_err(anyhow::Error::from)
+        } else {
+            Err(anyhow::anyhow!(
+                "game.wasm did not export `_start_game` or `_start`"
+            ))
+        };
 
     // Tear the adapters down on the trapping path *before* the error propagates.
     // `shutdown` (stop and join threads) then `destroy` (free), reverse of link

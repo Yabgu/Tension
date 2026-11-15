@@ -56,7 +56,7 @@ name = "tension-core"
 path = "src/main.rs"
 
 [dependencies]
-wasmtime = "=24.0.13"
+wasmtime = "=50.0.1"
 anyhow = "1.0.104"
 # The host owns the window. `sdl3` is core infrastructure now, not a capability
 # dependency, so it is unconditional: a feature-gated window would make two core

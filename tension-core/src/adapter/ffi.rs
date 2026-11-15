@@ -773,9 +773,14 @@ pub(crate) fn with_store_installed<R>(
 pub fn import_closure(
     host: HostHandle,
     import: RegisteredImport,
-) -> impl Fn(Caller<'_, HostState>, &[Val], &mut [Val]) -> anyhow::Result<()> + Send + Sync + 'static
+) -> impl Fn(Caller<'_, HostState>, &[Val], &mut [Val]) -> wasmtime::Result<()> + Send + Sync + 'static
 {
-    move |mut caller: Caller<'_, HostState>, params: &[Val], results: &mut [Val]| -> anyhow::Result<()> {
+    // The body speaks `anyhow`, the error type every host module here uses, and
+    // it is converted once at this boundary. Since wasmtime 50 `wasmtime::Error`
+    // is its own type (`wasmtime-internal-core`'s `error` module) rather than a
+    // re-export of `anyhow::Error`, and trait coherence forbids a
+    // `From<anyhow::Error>`, so `Error::from_anyhow` is the conversion.
+    let inner = move |mut caller: Caller<'_, HostState>, params: &[Val], results: &mut [Val]| -> anyhow::Result<()> {
         // Pack the wasm values into the C array, checking each against the
         // declared signature. A mismatch here would mean the linker accepted a
         // call the adapter did not declare, which is a core bug, not a guest one.
@@ -906,6 +911,9 @@ pub fn import_closure(
             ));
         }
         Ok(())
+    };
+    move |caller, params, results| {
+        inner(caller, params, results).map_err(wasmtime::Error::from_anyhow)
     }
 }
 
