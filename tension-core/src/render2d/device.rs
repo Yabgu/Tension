@@ -31,7 +31,7 @@
 //!
 //! SPDX-License-Identifier: MIT
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use sdl3::gpu::{
     Buffer, BufferUsageFlags, Device, Filter, LoadOp, Sampler, SamplerAddressMode,
@@ -48,6 +48,37 @@ use crate::render2d::record::{self, InfoRecord, RECORD_SIZE};
 
 /// `TENSION_2D_MAX_ATLAS_PAGES` — the layer count of a pipeline's texture array.
 pub const MAX_ATLAS_PAGES: usize = 16;
+
+/// The first page a nested guest's atlases land on, in the outer device's array.
+///
+/// **Measured, not chosen for symmetry.** The outer guest is the one that owns
+/// the window and draws its own content into the same window, and the editor
+/// binds its own generated atlas at page 0 of its game pipeline
+/// (`apps/editor/src/main.ts`). Play mode hides chrome; it does not re-bind or
+/// rebuild that pipeline, so page 0 has to keep holding what it held before the
+/// nested guest started. So the nested guest gets `1..16`.
+///
+/// The demand side, also measured: `box-physics` binds 1 page, `isometric` binds
+/// 3 (its three painted islands), the editor's own atlas is 1. Fifteen pages is
+/// four times the largest of those; the number is a floor for the outer, not a
+/// ceiling for the nested guest.
+pub const NESTED_PAGE_BASE: u32 = 1;
+
+/// The outer device's page for a nested guest's page — `base + page`, checked.
+///
+/// A page arithmetic that is not enforced at the boundary fails at frame 400,
+/// when a guest finally loads its sixteenth atlas, not at frame 1 where the
+/// mistake was made. So the bound is here, in one function every replay and every
+/// forwarded record goes through, and not in a comment beside a `+`.
+pub fn nested_page(page_base: u32, page: u32) -> Result<u32, Render2dError> {
+    match page_base.checked_add(page) {
+        Some(both) if (both as usize) < MAX_ATLAS_PAGES => Ok(both),
+        _ => Err(Render2dError::Invalid(format!(
+            "page arithmetic: nested page {page} at base {page_base} exceeds the \
+             {MAX_ATLAS_PAGES}-page array"
+        ))),
+    }
+}
 /// Records the stager holds across all buckets.
 pub const MAX_RECORDS: usize = 4096;
 /// Buckets (draw calls) one frame may have.
@@ -219,6 +250,26 @@ pub enum DeferredPipeline {
     Blob(Vec<u8>),
 }
 
+/// What [`Render2dState::replay_deferred`] did, in the outer device's ids.
+///
+/// The ids are returned rather than assumed to match the capture's. They usually
+/// do — the replay walks the recorded pipelines in ascending id, which is the
+/// order the capture handed them out — but a presenting state that compiled a
+/// graph of its own takes runtime ids from the same range, so "usually" is not a
+/// guarantee, and the caller submitting records needs the id the device actually
+/// has.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Replay {
+    /// Nested pipeline id -> the id on this device.
+    pub pipelines: BTreeMap<u32, u32>,
+    /// Nested texture id -> the id on this device.
+    pub textures: BTreeMap<u32, u32>,
+    /// `(pipeline id on this device, page, texture id on this device)`, in the
+    /// order they were bound — the recorded bindings first, then any implicit
+    /// page the replay had to make explicit.
+    pub pages: Vec<(u32, u32, u32)>,
+}
+
 /// reason.
 #[derive(Default)]
 pub struct Render2dState {
@@ -327,9 +378,163 @@ impl Render2dState {
         need
     }
 
+    /// Copy the staged records into `out` with each record's page moved to the
+    /// outer device's numbering.
+    ///
+    /// [`Self::capture_into`] is the frame *as the guest built it* — the bytes a
+    /// test inspects or a log quotes. This is the same frame *as the outer device
+    /// will draw it*, and it is what `dev.read` hands the outer guest: that guest
+    /// submits the bytes to a device on which pages `0..page_base` already hold
+    /// its own atlases, so a nested record still naming page 0 would draw the
+    /// wrong texture.
+    ///
+    /// An error rather than a truncated copy, for the reason `submit` refuses a
+    /// frame it cannot hold: half a frame looks like a renderer bug.
+    pub fn forward_into(&self, out: &mut [u8], page_base: u32) -> Result<usize, Render2dError> {
+        // `nested_page` decides whether the base is legal; the cast is safe after
+        // it, because a legal base is below `MAX_ATLAS_PAGES`.
+        nested_page(page_base, 0)?;
+        let base = page_base as u16;
+        let need = self.captured_bytes();
+        if out.len() < need {
+            return Err(Render2dError::Full(format!(
+                "forward: {} bytes of records do not fit in {} — whole frame or nothing",
+                need,
+                out.len()
+            )));
+        }
+        // Refuse before writing: the caller's buffer is left as it was, so a
+        // refused frame cannot be mistaken for a truncated one.
+        if let Some(page) = record::unfit_page(&self.captured, base, MAX_ATLAS_PAGES as u16) {
+            return Err(Render2dError::Invalid(format!(
+                "forward: nested page {page} at base {base} exceeds the \
+                 {MAX_ATLAS_PAGES}-page array"
+            )));
+        }
+        out[..need].copy_from_slice(&self.captured);
+        record::offset_pages(&mut out[..need], base, MAX_ATLAS_PAGES as u16);
+        Ok(need)
+    }
+
     /// What this capture state recorded, for the host that will replay it.
     pub fn deferred(&self) -> &Deferred {
         &self.deferred
+    }
+
+    /// Build what a nested guest recorded on **this** device, and bind its pages.
+    ///
+    /// This is the other half of [`Render2dState::capture`]. A capture state
+    /// reserved ids for objects it could not build; this one builds them, in the
+    /// order the capture handed the ids out (ascending, which is the guest's call
+    /// order), and reports the ids the device actually gave them — the caller
+    /// submits the forwarded records with those.
+    ///
+    /// **Pages move by `page_base`.** A nested guest's page 0 is not the outer
+    /// device's page 0: the outer guest draws its own content through the same
+    /// pipeline array, so it keeps `0..page_base` and the nested guest gets
+    /// `page_base..MAX_ATLAS_PAGES`. Records are moved by
+    /// [`Render2dState::forward_into`], bindings here, both through
+    /// [`nested_page`] so the bound is enforced once.
+    ///
+    /// **The outer's implicit page 0 survives.** A presenting state's page 0 of
+    /// a pipeline with no explicit atlas means "the last texture the outer
+    /// loaded". Binding a nested texture to such a pipeline would make the
+    /// array explicit and drop that meaning, so the outer's own implicit
+    /// texture is bound to page 0 first — the same texture, now written down.
+    /// A pipeline the outer already bound explicitly is left alone.
+    ///
+    /// **The outer's implicit *source* is restored.** `texture_load` sets
+    /// `bound_texture` as a side effect; replaying a nested texture must not
+    /// change which texture the outer's own unbound pipelines sample.
+    pub fn replay_deferred(
+        &mut self,
+        deferred: &Deferred,
+        page_base: u32,
+    ) -> Result<Replay, Render2dError> {
+        if self.is_capture() {
+            return Err(Render2dError::Invalid(
+                "replay: this state captures; replay onto the canvas that draws".to_string(),
+            ));
+        }
+        // The base itself has to be a page, before anything is built: a base of
+        // 16 would build a whole deferred scene and then fail on its first bind.
+        nested_page(page_base, 0)?;
+        self.device()?;
+
+        let mut replay = Replay::default();
+
+        // 1. Pipelines, ascending id: the order the capture resolved them in, so
+        //    a runtime id the guest's records already name lands where it landed.
+        for (recorded, what) in &deferred.pipelines {
+            let built = match what {
+                DeferredPipeline::Preset(preset) => self.set_preset(*preset)?,
+                DeferredPipeline::Blob(blob) => self.set_pipeline_blob(blob)?,
+            };
+            replay.pipelines.insert(*recorded, built);
+        }
+
+        // 2. Textures, ascending id — the capture assigned them in load order,
+        //    so ascending is "the order the guest loaded them", and the last one
+        //    is the implicit page-0 source.
+        let outer_implicit = self.bound_texture;
+        for (recorded, (bytes, format)) in &deferred.textures {
+            let id = self.texture_load(bytes, *format)?;
+            replay.textures.insert(*recorded, id);
+        }
+        self.bound_texture = outer_implicit;
+
+        // 3. The pages to bind. Recorded bindings first, in call order — the
+        //    order matters only for the atlas's size, which the first page fixes.
+        let mut wanted: Vec<(u32, u32, u32)> = Vec::with_capacity(deferred.bindings.len());
+        for (pipe, slot, texture) in &deferred.bindings {
+            let Some(outer_pipe) = replay.pipelines.get(pipe).copied() else {
+                return Err(Render2dError::NotFound(format!(
+                    "replay: binding names pipeline {pipe}, which was never recorded"
+                )));
+            };
+            let Some(outer_texture) = replay.textures.get(texture).copied() else {
+                return Err(Render2dError::NotFound(format!(
+                    "replay: binding names texture {texture}, which was never recorded"
+                )));
+            };
+            wanted.push((outer_pipe, nested_page(page_base, *slot)?, outer_texture));
+        }
+
+        // The implicit page. A nested guest that never called `set_texture`
+        // samples "the atlas I just loaded" at page 0 — in a capture state as in
+        // a presenting one. Reapplied at `page_base` for every pipeline the frame
+        // uses that has no recorded binding, because that is what the presenting
+        // path would have done one page lower.
+        let implicit = deferred
+            .textures
+            .keys()
+            .next_back()
+            .and_then(|id| replay.textures.get(id))
+            .copied();
+        if let Some(implicit) = implicit {
+            let bound: BTreeSet<u32> = wanted.iter().map(|(pipe, _, _)| *pipe).collect();
+            for outer_pipe in replay.pipelines.values() {
+                if !bound.contains(outer_pipe) {
+                    wanted.push((*outer_pipe, nested_page(page_base, 0)?, implicit));
+                }
+            }
+        }
+
+        // 4. Bind, preserving the outer's page 0 on the first touch of a pipeline
+        //    it draws through implicitly.
+        let mut touched: BTreeSet<u32> = BTreeSet::new();
+        for (outer_pipe, page, outer_texture) in wanted {
+            if touched.insert(outer_pipe)
+                && !self.atlases.contains_key(&outer_pipe)
+                && self.bound_texture != 0
+            {
+                let outer_page_zero = self.bound_texture;
+                self.set_texture(outer_pipe, 0, outer_page_zero)?;
+            }
+            self.set_texture(outer_pipe, page, outer_texture)?;
+            replay.pages.push((outer_pipe, page, outer_texture));
+        }
+        Ok(replay)
     }
 
     /// Which mode this state is in.
@@ -1816,5 +2021,299 @@ mod capture_tests {
         // A page beyond the cap is refused before any lookup.
         assert!(state.set_texture(pipe, MAX_ATLAS_PAGES as u32, 1).is_err());
         assert!(state.deferred().bindings.is_empty());
+    }
+
+    /// `nested_record_tex_is_offset_by_the_page_base`.
+    ///
+    /// The frame leaves a capture state as the guest built it (page numbers the
+    /// guest chose) and reaches the outer guest with the outer device's page
+    /// numbers. Both halves are asserted on the same frame, because a forward
+    /// that returned the input unchanged would pass an assertion made on only one
+    /// of them.
+    #[test]
+    fn nested_record_tex_is_offset_by_the_page_base() {
+        let mut state = Render2dState::capture();
+        let mut records = [0u8; 2 * RECORD_SIZE as usize];
+        records[record::OFF_TEX..record::OFF_TEX + 2].copy_from_slice(&0u16.to_le_bytes());
+        let second = RECORD_SIZE as usize + record::OFF_TEX;
+        records[second..second + 2].copy_from_slice(&3u16.to_le_bytes());
+        state
+            .submit(1, &records, 2, RECORD_SIZE, 0)
+            .expect("a capture state stages records for any pipe");
+        state.present(&mut None).expect("capture presents");
+
+        let mut raw = vec![0u8; state.captured_bytes()];
+        state.capture_into(&mut raw);
+        assert_eq!(record::record_page(&raw[..28]), Some(0), "as the guest built it");
+        assert_eq!(record::record_page(&raw[28..]), Some(3), "as the guest built it");
+
+        let mut moved = vec![0u8; state.captured_bytes()];
+        state
+            .forward_into(&mut moved, NESTED_PAGE_BASE)
+            .expect("base 1 fits");
+        assert_eq!(record::record_page(&moved[..28]), Some(1), "0 moved to the base");
+        assert_eq!(record::record_page(&moved[28..]), Some(4), "3 moved by the base");
+
+        // The bound is enforced at the boundary, not clamped: page 3 at base 13
+        // is 16, one past the last layer of the array. The buffer is left alone,
+        // because the caller submits a frame whole or not at all.
+        let mut too_far = vec![0u8; state.captured_bytes()];
+        let error = state
+            .forward_into(&mut too_far, MAX_ATLAS_PAGES as u32 - 3)
+            .expect_err("16 is not a page");
+        assert_eq!(error.errno(), crate::render2d::error::EINVAL);
+        assert!(
+            too_far.iter().all(|byte| *byte == 0),
+            "a refused forward writes nothing"
+        );
+    }
+
+    /// The page base is a checked constant, not a comment beside a `+`.
+    #[test]
+    fn the_page_base_is_checked_at_the_boundary() {
+        assert_eq!(nested_page(0, 0), Ok(0));
+        assert_eq!(nested_page(NESTED_PAGE_BASE, 0), Ok(1));
+        assert_eq!(nested_page(NESTED_PAGE_BASE, MAX_ATLAS_PAGES as u32 - 2), Ok(15));
+        // One past the last layer, at the base itself and at the top page.
+        assert!(nested_page(MAX_ATLAS_PAGES as u32, 0).is_err());
+        assert!(nested_page(NESTED_PAGE_BASE, MAX_ATLAS_PAGES as u32 - 1).is_err());
+        // And a u16 page cannot wrap the base into a legal value.
+        assert!(nested_page(NESTED_PAGE_BASE, u32::MAX).is_err());
+    }
+}
+
+#[cfg(test)]
+mod replay_tests {
+    //! The nested guest's frame, on the device that actually draws.
+    //!
+    //! 4b-4 taught a capture state to *record* GPU work instead of performing
+    //! it. These are the tests for the other half — `replay_deferred` builds
+    //! what was recorded, [`Render2dState::forward_into`] moves a record's page
+    //! to the outer device's numbering, and the pixels prove the two agree.
+    //!
+    //! # Why the three GPU tests take a lock
+    //!
+    //! `sdl3::init()` declares main-thread status once per process and refuses
+    //! every later thread (`sdl3-0.22.0/src/sdl3/sdl.rs:71-84`), and `cargo
+    //! test` runs each `#[test]` on its own thread. The declaration is released
+    //! when the last `Sdl` handle drops (`:219`), so the tests serialize on
+    //! [`SDL`] and each drops its canvas before releasing — one dev
+    //! initialization at a time rather than one `harness = false` binary, so
+    //! the three claims keep their own names.
+    //!
+    //! A machine with no GPU skips: the refusal has to *name* the device
+    //! (`NoDevice`), and anything else fails. Same policy as
+    //! `tests/render2d_open.rs`, same one skip flag.
+
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serializes SDL initialization. See the module comment.
+    static SDL: Mutex<()> = Mutex::new(());
+
+    /// A solid-colour 8x8 IWI — the canvas's own size, so a record whose `w`/`h`
+    /// are the canvas maps the whole texture and every pixel of the frame is
+    /// one colour.
+    fn solid(color: [u8; 4]) -> Vec<u8> {
+        let mut pixels = Vec::with_capacity(8 * 8 * 4);
+        for _ in 0..8 * 8 {
+            pixels.extend_from_slice(&color);
+        }
+        crate::render2d::iwi::iwi_bytes(8, 8, 4, &pixels)
+    }
+
+    /// A full-canvas sprite on one page of one pipeline.
+    fn sprite(page: u16) -> [u8; RECORD_SIZE as usize] {
+        let mut record = [0u8; RECORD_SIZE as usize];
+        // x, y are already 0 — the canvas's top-left.
+        record[record::OFF_W..record::OFF_W + 2].copy_from_slice(&8u16.to_le_bytes());
+        record[record::OFF_H..record::OFF_H + 2].copy_from_slice(&8u16.to_le_bytes());
+        record[record::OFF_TEX..record::OFF_TEX + 2].copy_from_slice(&page.to_le_bytes());
+        // A non-zero key, so the record is not equal to an empty one under the
+        // graph's ordering.
+        record[record::OFF_SORT_KEY..record::OFF_SORT_KEY + 4]
+            .copy_from_slice(&1u32.to_le_bytes());
+        record
+    }
+
+    /// An offscreen 8x8 canvas with preset 1 built, or a printed skip.
+    fn canvas() -> Option<Render2dState> {
+        let mut state = Render2dState::default();
+        if let Err(error) = state.open_offscreen(8, 8) {
+            match error {
+                Render2dError::NoDevice(message) => {
+                    eprintln!("skipped: no usable GPU device here: {message}");
+                    return None;
+                }
+                other => panic!("open_offscreen: {other}"),
+            }
+        }
+        state.set_preset(1).expect("preset 1");
+        Some(state)
+    }
+
+    /// Every pixel of the last presented frame, or a panic naming the first that
+    /// differs.
+    fn frame_is(state: &mut Render2dState, color: [u8; 4], what: &str) {
+        let frame = state.screenshot().expect("screenshot");
+        if let Some(first) = frame.chunks_exact(4).position(|px| px != color) {
+            panic!(
+                "{what}: pixel {first} is {:?}, want {color:?} — the frame did not draw the \
+                 texture that page holds",
+                &frame[first * 4..first * 4 + 4]
+            );
+        }
+    }
+
+    /// A capture state that loaded one texture, bound it at page 0 of preset 1 if
+    /// `bind` is set, and presented one full-canvas record naming page 0.
+    fn nested(bind: bool) -> Render2dState {
+        let mut capture = Render2dState::capture();
+        let pipe = capture.set_preset(1).expect("preset 1 in capture mode");
+        let texture = capture
+            .texture_load(&solid([255, 0, 0, 255]), TEX_RGBA8)
+            .expect("a valid IWI in capture mode");
+        if bind {
+            capture.set_texture(pipe, 0, texture).expect("bind page 0");
+        }
+        capture
+            .submit(pipe, &sprite(0), 1, RECORD_SIZE, 0)
+            .expect("the capture state stages the frame");
+        capture.present(&mut None).expect("a capture presents");
+        capture
+    }
+
+    /// The bytes a nested frame leaves for the outer guest, with the outer
+    /// device's page numbers in them.
+    fn forwarded(capture: &Render2dState) -> Vec<u8> {
+        let mut bytes = vec![0u8; capture.captured_bytes()];
+        capture
+            .forward_into(&mut bytes, NESTED_PAGE_BASE)
+            .expect("the page base fits");
+        bytes
+    }
+
+    /// `nested_iwi_lands_at_outer_page_base`.
+    ///
+    /// The outer draws blue from page 0; the nested guest loads red and binds it
+    /// at its own page 0. After the replay, the forwarded record names page 1 and
+    /// the frame is **red**: page 0 was not touched and the nested atlas is one
+    /// page up. A replay that skipped either step draws the outer's blue here.
+    #[test]
+    fn nested_iwi_lands_at_outer_page_base() {
+        let _serial = SDL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(mut outer) = canvas() else { return };
+
+        let blue = outer
+            .texture_load(&solid([0, 0, 255, 255]), TEX_RGBA8)
+            .expect("the outer's own texture");
+        outer.set_texture(1, 0, blue).expect("the outer binds page 0");
+
+        let capture = nested(true);
+        let replay = outer
+            .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
+            .expect("the replay builds the nested scene");
+
+        assert_eq!(
+            replay.pipelines.get(&1),
+            Some(&1),
+            "preset 1 resolves to the id the records name"
+        );
+        assert_eq!(replay.textures.len(), 1, "one texture was recorded and loaded");
+        assert_eq!(
+            replay.pages,
+            vec![(1, NESTED_PAGE_BASE, 2)],
+            "the recorded page 0 is bound one page up, as the outer's texture 2"
+        );
+
+        let records = forwarded(&capture);
+        outer
+            .submit(1, &records, 1, RECORD_SIZE, 0)
+            .expect("the outer submits the forwarded frame");
+        outer.present(&mut None).expect("present");
+        frame_is(&mut outer, [255, 0, 0, 255], "nested_iwi_lands_at_outer_page_base");
+    }
+
+    /// `nested_guest_implicit_page_zero_is_reapplied_at_base`.
+    ///
+    /// The same frame, but the nested guest never calls `set_texture`: its record
+    /// names page 0 and means "the atlas I just loaded", which is what a
+    /// presenting state would serve. The replay has to make that explicit **at
+    /// the base** — not at 0, where the outer's blue lives.
+    #[test]
+    fn nested_guest_implicit_page_zero_is_reapplied_at_base() {
+        let _serial = SDL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(mut outer) = canvas() else { return };
+
+        let blue = outer
+            .texture_load(&solid([0, 0, 255, 255]), TEX_RGBA8)
+            .expect("the outer's own texture");
+        outer.set_texture(1, 0, blue).expect("the outer binds page 0");
+
+        let capture = nested(false);
+        assert!(
+            capture.deferred().bindings.is_empty(),
+            "the guest bound nothing, which is the case under test"
+        );
+        let replay = outer
+            .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
+            .expect("the replay reapplies the implicit page");
+
+        assert_eq!(
+            replay.pages,
+            vec![(1, NESTED_PAGE_BASE, 2)],
+            "the implicit page 0 is bound at the base, not at 0"
+        );
+
+        let records = forwarded(&capture);
+        outer
+            .submit(1, &records, 1, RECORD_SIZE, 0)
+            .expect("submit");
+        outer.present(&mut None).expect("present");
+        frame_is(
+            &mut outer,
+            [255, 0, 0, 255],
+            "nested_guest_implicit_page_zero_is_reapplied_at_base",
+        );
+    }
+
+    /// The other half of the implicit rule: making a nested page explicit must
+    /// not cost the **outer** its implicit page 0.
+    ///
+    /// Here the outer loads blue and binds nothing — it relies on the implicit
+    /// page, as every v1 caller does. The nested guest binds its own page 0. The
+    /// replay has to write the outer's page 0 down (blue) before binding red at
+    /// page 1, or the outer's own record would sample an unbound layer. The frame
+    /// is blue: the outer's record, reading page 0, still gets the outer's
+    /// texture.
+    #[test]
+    fn the_replay_keeps_the_outer_implicit_page_zero() {
+        let _serial = SDL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(mut outer) = canvas() else { return };
+
+        outer
+            .texture_load(&solid([0, 0, 255, 255]), TEX_RGBA8)
+            .expect("the outer's own texture, never bound");
+
+        let capture = nested(true);
+        let replay = outer
+            .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
+            .expect("the replay builds the nested scene");
+        assert_eq!(
+            replay.pages,
+            vec![(1, NESTED_PAGE_BASE, 2)],
+            "the report names the nested page only; the outer's page 0 is not part of it"
+        );
+
+        // The outer's own record: page 0, exactly as it wrote it before Play.
+        outer
+            .submit(1, &sprite(0), 1, RECORD_SIZE, 0)
+            .expect("submit");
+        outer.present(&mut None).expect("present");
+        frame_is(
+            &mut outer,
+            [0, 0, 255, 255],
+            "the_replay_keeps_the_outer_implicit_page_zero",
+        );
     }
 }

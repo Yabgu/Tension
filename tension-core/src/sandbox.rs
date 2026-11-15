@@ -594,10 +594,38 @@ impl Sandbox {
         self.guest.host.store.data().render2d.captured_bytes()
     }
 
-    /// Copy the captured records into `out`. Returns 0 when `out` is too small —
-    /// the caller checks `records_len` first, and truncation is never an option.
-    pub(crate) fn records_into(&self, out: &mut [u8]) -> usize {
-        self.guest.host.store.data().render2d.capture_into(out)
+    /// Copy the captured records into `out`, translated to the outer device's
+    /// pages, returning how many bytes were written.
+    ///
+    /// **The copy is the translation.** These bytes are what an outer guest
+    /// submits to the canvas it draws on, and that canvas already holds its own
+    /// atlases in pages `0..NESTED_PAGE_BASE`; a nested record left naming page
+    /// 0 would sample the outer's atlas. So the page base is applied here, on
+    /// the boundary, rather than by every caller — `capture_into` keeps the
+    /// frame as the guest built it, for tests and logs.
+    ///
+    /// An error, not a short write: a page past the array's last layer is a
+    /// refused frame, and the caller reports its errno.
+    pub(crate) fn records_into(
+        &self,
+        out: &mut [u8],
+    ) -> Result<usize, crate::render2d::Render2dError> {
+        self.guest
+            .host
+            .store
+            .data()
+            .render2d
+            .forward_into(out, crate::render2d::NESTED_PAGE_BASE)
+    }
+
+    /// What this run's renderer recorded instead of building, for the host that
+    /// will replay it onto the device that draws.
+    ///
+    /// Read by `HostState`'s replay call (4b-6's `dev` wiring); a test drives it
+    /// directly until then.
+    #[allow(dead_code)]
+    pub(crate) fn deferred(&self) -> &crate::render2d::Deferred {
+        self.guest.host.store.data().render2d.deferred()
     }
 
     /// Whether the guest says it still wants frames.
@@ -1350,7 +1378,8 @@ mod tests {
     /// An outer guest that runs `target` as a rendering run, drives `frames`
     /// frames, and stores: 64 = run id, 68 = last frame's return, 72 = probe of
     /// `dev.read`, 76 = fill's return, 80 = bucket-0 record count, 84 = stop's
-    /// return, 88 = a frame after stop.
+    /// return, 88 = a frame after stop, 96 = the first forwarded record's `tex`
+    /// (8208 = 8192 + `TENSION_2D_OFF_TEX`).
     #[cfg(feature = "render2d-core")]
     fn outer_render(target: &str, frames: u32) -> String {
         outer_render_with_stop(target, frames, true)
@@ -1396,6 +1425,7 @@ mod tests {
             (i32.store (i32.const 4104) (call $read (local.get $id) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4108) (call $read (local.get $id) (i32.const 8192) (i32.const 200)))
             (i32.store (i32.const 4112) (i32.load (i32.const 8192)))
+            (i32.store (i32.const 4128) (i32.load (i32.const 8208)))
             (i32.store (i32.const 4124) (call $read (local.get $id) (i32.const 8192) (i32.const 10)))
             {tail}))
         "#,
@@ -1425,6 +1455,18 @@ mod tests {
 
         // And the frame really completed, rather than the run being complete.
         assert_eq!(sandbox.read_i32(4100), Some(1), "frame 1 reports: still running");
+
+        // **The page was translated on the way out.** The guest submitted these
+        // records with `tex = 0` (they are zeros in its memory), and the outer
+        // device reserves page 0 for its own atlas — so `dev.read` hands them
+        // over naming page `NESTED_PAGE_BASE`. This is the assertion that would
+        // catch a forward that copies without translating: the bytes are the
+        // same length, and the frame draws the wrong texture.
+        assert_eq!(
+            sandbox.read_i32(4128),
+            Some(crate::render2d::NESTED_PAGE_BASE as i32),
+            "the read record names the outer device's page, not the nested guest's"
+        );
     }
 
     #[cfg(feature = "render2d-core")]

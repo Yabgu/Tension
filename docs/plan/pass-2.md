@@ -52,11 +52,28 @@ is marked so it is not quoted as evidence.
 - **4b-4 — capture mode for the real verbs.** `2cf7fae` (numbered in its own
   body). `set_preset`, `set_pipeline_blob`, `texture_load`, `set_texture`
   reserve ids and record their arguments instead of building GPU objects.
-- **4b-5 — replay onto the outer device.** Open. Allocate the recorded
+- **4b-5 — replay onto the outer device.** **Done.** Allocate the recorded
   pipelines, textures and bindings on the device that actually draws, and offset
   a record's `tex` by the page base the nested guest was given.
+  `Render2dState::replay_deferred(&Deferred, page_base)` builds pipelines in
+  ascending id, loads each recorded IWI through the presenter's own
+  `texture_load`, and binds every recorded page at `page_base + slot`;
+  `forward_into` applies the same base to the records as they leave the sandbox.
+  `NESTED_PAGE_BASE = 1` (the outer keeps page 0), `nested_page` is the checked
+  bound (`-EINVAL`, never a clamp), and the implicit page-0 binding is reapplied
+  at the base while the *outer's* implicit page 0 is written down first. Five
+  tests: the three declared plus `the_replay_keeps_the_outer_implicit_page_zero`
+  and `the_page_base_is_checked_at_the_boundary`, with `nested_records_land_in_
+  bucket_zero` extended to assert the page the outer guest actually receives. A
+  warm gate is 26/26 with cargo **620** passed / 0 failed (declared 615 → 618; the
+  two extra are the boundary check and the outer-implicit-page-0 guard), warnings
+  85 in 18 distinct rows.
 - **4b-6 — the editor.** Open. Play runs the nested guest, frames drive it, the
-  records land in the editor's frame, Stop and Esc return.
+  records land in the editor's frame, Stop and Esc return. Sizing, measured:
+  `assembly/dev.ts` does not exist (`dev.run`/`frame`/`read`/`out` are imports
+  with no SDK wrapper); the editor's Play is chrome-only (`Mode.Play` hides
+  chrome, `apps/editor/src/main.ts`); isometric has to be adopted (exports added,
+  loop restructured) before it can be the demo guest.
 
 ## The F1 constraint
 

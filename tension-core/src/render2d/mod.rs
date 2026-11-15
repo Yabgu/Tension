@@ -42,5 +42,7 @@ pub mod iwi;
 pub mod pipeline;
 pub mod record;
 
-pub use device::{Canvas, Mode, Render2dState, RendererId};
+pub use device::{
+    Canvas, Deferred, Mode, NESTED_PAGE_BASE, Render2dState, RendererId, Replay, nested_page,
+};
 pub use error::Render2dError;

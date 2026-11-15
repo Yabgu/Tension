@@ -14,6 +14,13 @@ The rule this file exists to state:
 > (a vendored llama.cpp build, a real GPU), the gate must say so and the
 > exclusion must be a decision written down, not an accident of flags.
 
+Finding 4 adds a third clause, because a deterministic verdict over a
+nondeterministic measurement is only half a gate:
+
+> **and the gate's own measurements must be deterministic.** A number that
+> depends on the state of a build cache cannot distinguish a real change from a
+> cold-cache artefact, so it cannot be a freeze figure.
+
 ## The four findings so far
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
@@ -51,6 +58,49 @@ The rule this file exists to state:
 The four are one statement: **a gate that does not run the shipped
 configuration, on the reviewer's environment, and measure it deterministically,
 is a gate for a different product.**
+
+## What a green gate means, now that finding 4 is known
+
+Finding 4 has two possible answers. This file records which one the gate uses,
+so that the next reviewer does not have to infer it from an exit code.
+
+**Chosen: the warning section is advisory and is reported separately, never as a
+hard figure.** The gate takes one pass/fail decision — the suites, the verdicts
+and the `test result:` counts — and warnings are printed beside it as context.
+This is already what `scripts/project-gate.mjs --diff` does: it exits 1 on
+suites, verdicts or cargo and exits 0 on a warnings-only difference. What this
+file fixes is the *reporting* rule that goes with it:
+
+- a commit's declared delta must not promise a warning number it cannot keep;
+  the honest form is "warnings unchanged, modulo the cold-cache OGRE probe rows
+  (finding 4)";
+- anyone citing a warning count states the cache state it was measured on —
+  `warm` means the adapter build directory already held the stbi probe,
+  `cold` means it did not. The two figures for one unchanged tree are 85 in 18
+  distinct rows and 87 in 20;
+- a warning count never blocks a commit on its own. A *new* message on a line
+  the change touched is a review question, not a gate verdict.
+
+The alternative — force a cold build on every gate run so that one number exists
+— was rejected: it buys determinism by paying a full adapter rebuild per run,
+and the cold path is itself the thing whose warnings we do not control
+(`third_party/`). Marking the section advisory is the cheaper true statement.
+
+Findings 1–3 are unaffected: a version-dependent verdict and a configuration
+that ships different from the one tested are hard failures, and stay hard.
+
+## Artefacts outside the gate's view
+
+`third_party/assemblyscript/` was deleted on `ui-nested-guest` (27,332,969
+bytes, 1,294 files). It was untracked — `.gitmodules` had lost the entry in
+`b771bfd` — so the deletion appears in no diff and no commit records it. What
+remains is `.git/modules/third_party/assemblyscript/`, inert git metadata: it
+holds that checkout's objects and packed refs, is read by nothing, and will not
+be removed by deleting or recreating the parent directory. If a future
+`git submodule` or `git status` report mentions it, that directory is the
+reason. Removing it is safe (`rm -rf .git/modules/third_party/assemblyscript`)
+and was left alone deliberately: it is repository internals, not a working-tree
+artefact, and this round removed only what the user named.
 
 ## Every invocation the gate makes, with its flags
 

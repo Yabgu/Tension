@@ -29,6 +29,26 @@ pub const RECORD_SIZE: u32 = 28;
 /// `TENSION_2D_OFF_SORT_KEY` — the low-level key, read without the table too.
 pub const OFF_SORT_KEY: usize = 20;
 
+/// `TENSION_2D_OFF_TEX` — the atlas page a record samples.
+///
+/// The presenting device reads this on the GPU (the fragment stage indexes a
+/// `texture2DArray` with it), so the CPU only touches it for one reason: a
+/// nested guest's page numbers are its own, and the frame forwarded to the outer
+/// device has to name *that* device's pages. See [`offset_pages`].
+pub const OFF_TEX: usize = 16;
+
+/// `TENSION_2D_OFF_X` / `_Y` — the sprite's top-left, in canvas pixels.
+pub const OFF_X: usize = 0;
+/// See [`OFF_X`].
+pub const OFF_Y: usize = 4;
+
+/// `TENSION_2D_OFF_W` / `_H` — the sprite's on-screen size, in pixels. The graph
+/// also uses them as the source rect's size, which is why a record has one pair
+/// of dimensions rather than two.
+pub const OFF_W: usize = 12;
+/// See [`OFF_W`].
+pub const OFF_H: usize = 14;
+
 /// The dtype codes `tension-core graph emit-default` writes in its key table.
 ///
 /// The numbers are the wire's (`TENSION_DTYPE_*`), plus 6 for `u32`. Only the
@@ -69,6 +89,56 @@ pub const SORT_KEYS: &[SortKey] = &[
     SortKey { offset: 24, kind: KeyKind::U16, scale: 1.0 },
     SortKey { offset: 26, kind: KeyKind::U8, scale: 1.0 },
 ];
+
+/// The page one record samples, or `None` for a record shorter than the field.
+pub fn record_page(record: &[u8]) -> Option<u16> {
+    (record.len() >= OFF_TEX + 2).then(|| read_u16(record, OFF_TEX))
+}
+
+/// Move every record's page from a nested guest's numbering to the outer
+/// device's: `page -> page + base`.
+///
+/// This is the whole of the nested guest's page arithmetic. The outer device
+/// reserves pages `0..base` for its own atlases, so a nested frame that names
+/// page 0 means "one past what the outer already bound" — a record left at 0
+/// would draw the outer's atlas, which is the one bug that looks like a texture
+/// pipeline defect and is a subtraction.
+///
+/// Returns the first page that does not fit in `pages` (the array's layer
+/// count), or `None` when every record moved. **Refused, never clamped**: a
+/// page clamped to the last layer draws the wrong atlas for the rest of the
+/// frame, and a page past the count reads undefined contents — both are worse
+/// than a refused frame, and both survive a visual review.
+pub fn offset_pages(records: &mut [u8], base: u16, pages: u16) -> Option<u16> {
+    // Every record is checked before any is moved: a refused frame leaves the
+    // caller's buffer as it was, because the caller either submits the frame or
+    // drops it whole — a half-translated buffer is the truncation this refuses.
+    if let Some(page) = unfit_page(records, base, pages) {
+        return Some(page);
+    }
+    for record in records.chunks_exact_mut(RECORD_SIZE as usize) {
+        let moved = read_u16(record, OFF_TEX) + base;
+        record[OFF_TEX..OFF_TEX + 2].copy_from_slice(&moved.to_le_bytes());
+    }
+    None
+}
+
+/// The first page in `records` that moving by `base` would push past `pages`.
+///
+/// The check without the mutation, for a caller that has to refuse **before** it
+/// writes into its own buffer (the forwarding path). [`offset_pages`] is the
+/// same check applied to the bytes; a second spelling of the bound is how the two
+/// drift.
+pub fn unfit_page(records: &[u8], base: u16, pages: u16) -> Option<u16> {
+    for record in records.chunks_exact(RECORD_SIZE as usize) {
+        let page = read_u16(record, OFF_TEX);
+        match page.checked_add(base) {
+            Some(moved) if moved < pages => {}
+            _ => return Some(page),
+        }
+    }
+    None
+}
 
 /// The `sort_key` of one record, for callers that only need the first level.
 pub fn record_sort_key(record: &[u8]) -> u32 {

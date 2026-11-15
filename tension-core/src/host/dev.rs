@@ -297,7 +297,18 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                     return ENOSPC;
                 }
                 let mut out = vec![0u8; len];
-                run.sandbox.records_into(&mut out);
+                // The copy moves each record's page from the nested guest's
+                // numbering to the outer device's (`Sandbox::records_into`), so a
+                // page that does not fit is refused with its errno rather than
+                // truncated into a frame that draws the wrong atlas.
+                if let Err(error) = run.sandbox.records_into(&mut out) {
+                    logging::log(
+                        Level::Error,
+                        "dev",
+                        &format!("read {id}: records refused: {error}"),
+                    );
+                    return error.errno();
+                }
                 (len, out)
             };
             match caller.get_export("memory").and_then(|e| e.into_memory()) {
