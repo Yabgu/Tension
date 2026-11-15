@@ -219,6 +219,31 @@ alone until the mechanism exists, because a rename with no behaviour change hide
 the stub in review and `GuestContext` is a design decision the backlog withholds
 (`docs/backlog/threading.md` §5).
 
+**The round trip, proven** (`tests/cooperative_round_trip.rs`, one test). A
+context is created, suspends, is resumed, and completes, across **three separate
+host calls into one living store**: after `spawn` the body has not run; the first
+`step` runs it to `suspend` and control returns to the host; the second `step`
+runs it past that point and returns; a third `step` answers `-1` because a
+finished context leaves the table. Mutation-checked three ways — `threads::
+enable()` off, no slot clear on completion, no store-back of the parked handle —
+and each one fails at the assertion that names it ("continuation already
+consumed", twice, for the two table mutations).
+
+**The continuation lives in a wasm table, and that is forced.** wasmtime 50.1
+cannot hand a continuation to the host: `ContRef` is `pub struct ContRef;`, an
+empty stub ("A placeholder until continuation objects are fully integrated with
+the GC system", #10248), `Val::ref_()` answers `None` for it, and no `WasmTy`
+implementation exists, so a host function cannot even declare a continuation
+parameter. The host's whole view of a context is an `i32`. The test pins this as
+a tripwire: when #10248 lands the assertion fails, and that is the day a
+host-side context table becomes possible and this decision should be revisited
+rather than inherited.
+
+What this round does **not** do: no scheduler loop, no dispatcher, no
+cancellation policy, no `join`, no run-table rename, and `threads::enable()` is
+still not called by the process engine. The next slice is the scheduler proper,
+and its scope is a decision, not an assumption.
+
 ## The F1 constraint
 
 F1 is "press F1 in the editor and the docs open as a second guest". It has

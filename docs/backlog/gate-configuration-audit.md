@@ -27,7 +27,7 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The six findings so far
+## The seven findings so far
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
    `cargo test --no-default-features --features audio`; the flag was meant to say
@@ -111,6 +111,29 @@ something a future round should choose between deliberately:
    recorded rather than silenced because the same lint will fire for the next
    feature-gated dependency, and a reader who meets it should know it is the
    gate's configuration talking, not the tree's.
+
+7. **`project-gate --diff` compares cargo results by position, so one added test
+   renumbers every line after it.** Measured on `ui-threading`: adding a single
+   test executable (`tests/cooperative_round_trip.rs`, one test) produced
+   **28 "hard differences"** for a change of exactly `passed 629 -> 630` and
+   `result lines 42 -> 43`. The new line landed at index 7 (test binaries run in
+   name order, and `cooperative_round_trip` sorts early), so indices 8-43 each
+   differed by one — and `compare()` in `scripts/project-gate.mjs` walks the two
+   lists by index. A multiset check confirms the honest delta: the 42 old lines
+   appear unchanged, plus one `passed=1` line.
+
+   *Shape: the diff reports **position**, which carries no meaning, instead of
+   **content**, which does.* The warning section already gets this right — it
+   goes through `diffLines`, a multiset difference. The cargo section does not,
+   and `--diff` exits non-zero on any hard difference, so a legitimate one-test
+   commit reads as a 28-line breakage.
+
+   The cost is habituation, and that is worse than noise: a reviewer who learns
+   that "28 hard differences" means "a test was added" will read past a real
+   28-line change the same way. The fix is one line — strip the ordinal, or route
+   the cargo section through `diffLines` like warnings — and it is deliberately
+   **not** taken here: it is a gate change, and gate changes get their own round
+   with their own declaration.
 
 ## What a green gate means, now that finding 4 is known
 
