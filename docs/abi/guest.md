@@ -91,14 +91,14 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `session_create` | `(i32, i32) → i32` | `tension-core/src/ai/mod.rs:810` |
-| `session_add` | `(i32, i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:849` |
-| `session_generate` | `(i32) → i32` | `tension-core/src/ai/mod.rs:859` |
-| `session_read` | `(i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:867` |
-| `session_state` | `(i32) → i32` | `tension-core/src/ai/mod.rs:884` |
-| `session_cancel` | `(i32) → i32` | `tension-core/src/ai/mod.rs:892` |
-| `session_reset` | `(i32) → i32` | `tension-core/src/ai/mod.rs:900` |
-| `session_close` | `(i32) → i32` | `tension-core/src/ai/mod.rs:908` |
+| `session_create` | `(i32, i32) → i32` | `tension-core/src/ai/mod.rs:818` |
+| `session_add` | `(i32, i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:857` |
+| `session_generate` | `(i32) → i32` | `tension-core/src/ai/mod.rs:867` |
+| `session_read` | `(i32, i32, i32) → i32` | `tension-core/src/ai/mod.rs:875` |
+| `session_state` | `(i32) → i32` | `tension-core/src/ai/mod.rs:892` |
+| `session_cancel` | `(i32) → i32` | `tension-core/src/ai/mod.rs:900` |
+| `session_reset` | `(i32) → i32` | `tension-core/src/ai/mod.rs:908` |
+| `session_close` | `(i32) → i32` | `tension-core/src/ai/mod.rs:916` |
 
 ## `tension::audio`
 

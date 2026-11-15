@@ -53,7 +53,7 @@
 
 import { availableParallelism } from 'node:os';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { REPO, WIN, baseEnv, which } from './lib/toolchain.mjs';
 import { inherit } from './lib/proc.mjs';
@@ -119,6 +119,21 @@ function execute(command, args = [], options = {}) {
     child.on('error', (error) => resolve({ status: 1, output: `${output}${error.message}\n` }));
     child.on('close', (status) => resolve({ status: status ?? 1, output }));
   });
+}
+
+/// Every `*.test.mjs` in `dir`, sorted, as the absolute paths `node --test` wants.
+///
+/// Exists because the two shorter forms are both environment-dependent in a way
+/// a gate cannot afford: a directory path stopped resolving on Node 24, and a
+/// glob depends on Node's own `--test` glob support (added in its v21–v22 line;
+/// `execute()` spawns without a shell, so nothing else expands it). Reading the
+/// directory is the same answer on every version.
+function testFiles(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.test.mjs'))
+    .sort()
+    .map((name) => join(dir, name));
 }
 
 // ── the suites ──────────────────────────────────────────────────────────────
@@ -274,7 +289,32 @@ const SUITES = {
     title: 'tension CLI',
     needs: [],
     holds: [],
-    run: () => execute(node, ['--test', join(repo, 'packages', 'cli', 'test')]),
+    // **The test files, named, not a directory.** `node --test <dir>` resolved a
+    // directory to its test files on the Node this was written against and
+    // stopped on Node 24, where an argument is a module path:
+    //
+    //     node --test packages/cli/test
+    //     Error: Cannot find module '.../packages/cli/test'  (MODULE_NOT_FOUND)
+    //
+    // The gate was red on Node 24 for an invocation reason and green on a box
+    // running an older Node. A glob would fix that laptop and re-introduce the
+    // same dependence one version later (Node grew `--test` glob support in its
+    // v21–v22 line, and `execute()` spawns without a shell, so the pattern
+    // reaches Node unexpanded). Enumerating the directory is version-independent
+    // and still picks up a second test file the day one is added.
+    run: () => {
+      const files = testFiles(join(repo, 'packages', 'cli', 'test'));
+      if (files.length === 0) {
+        // Not a skip: a suite with no test files is the failure this fix is
+        // about (a path that resolved to nothing used to look like a passing
+        // suite on a version where the directory form worked).
+        return Promise.resolve({
+          status: 1,
+          output: 'no *.test.mjs under packages/cli/test — the suite would assert nothing\n',
+        });
+      }
+      return execute(node, ['--test', ...files]);
+    },
   },
 
   // The documentation build: Markdown and the SDK's doc comments into a binary

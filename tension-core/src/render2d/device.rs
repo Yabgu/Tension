@@ -1770,6 +1770,42 @@ mod capture_tests {
     }
 
     #[test]
+    fn a_capture_state_records_a_texture_it_could_serve() {
+        // The **positive** half of the pair above, and the one 4b-5 replays
+        // against. The negative test proves a non-container is refused; on its
+        // own it would let a capture state that refuses *everything* pass, and
+        // 4b-5 would then be built on a proof that only says "broken bytes are
+        // rejected".
+        let mut state = Render2dState::capture();
+        let bytes = crate::render2d::iwi::iwi_bytes(2, 1, 4, &[1, 2, 3, 4, 5, 6, 7, 8]);
+
+        let id = state
+            .texture_load(&bytes, TEX_RGBA8)
+            .expect("a valid IWI loads in capture mode");
+        assert_eq!(id, 1, "the first texture gets id 1");
+
+        // The bytes are kept **byte for byte**, undecoded, because the replay
+        // hands them to the outer device's own `texture_load`: a copy that
+        // normalized them here would be a second decoder with no test.
+        let (recorded, format) = state
+            .deferred()
+            .textures
+            .get(&id)
+            .expect("the texture is recorded for the replay");
+        assert_eq!(recorded, &bytes, "the recorded bytes are the guest's bytes");
+        assert_eq!(*format, TEX_RGBA8);
+
+        // And the binding is recorded against the page the guest named, at the
+        // index the guest named — not at 0 by default. 4b-5 offsets a record's
+        // `tex` by the nested guest's page base, so a slot recorded one place
+        // and applied one page earlier would draw the atlas from the wrong page.
+        let pipe = state.set_pipeline_blob(b"a graph for the binding").expect("a blob");
+        assert_eq!(state.set_texture(pipe, 2, id).expect("bind page 2"), 0);
+        let recorded = state.deferred().bindings.last().expect("a binding");
+        assert_eq!(*recorded, (pipe, 2, id));
+    }
+
+    #[test]
     fn a_capture_state_validates_bindings_against_what_it_recorded() {
         let mut state = Render2dState::capture();
         let pipe = state.set_pipeline_blob(b"another graph").expect("a blob");

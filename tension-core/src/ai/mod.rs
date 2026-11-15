@@ -301,8 +301,16 @@ impl StreamGate {
 }
 
 /// Headless deterministic adapter. The no-feature fallback, the test adapter,
-/// and the reference implementation of the contract.
-#[cfg(any(not(feature = "ai"), test))]
+/// the reference implementation of the contract, and **the adapter a nested
+/// guest always gets**.
+///
+/// Compiled in every configuration, like `audio::silent`: a nested guest's
+/// backend is not a fallback for a missing feature, it is the rule the
+/// singleton list in `host/mod.rs` states — the outer guest already holds the
+/// model, and a second real backend would load the weights twice. Gating this
+/// off under `feature = "ai"` is what made the default build refuse to compile
+/// (`E0433` at `main.rs`, `HostState::build`) while every gate invocation, which
+/// passes `--no-default-features`, stayed green.
 pub mod stub;
 /// Real adapter (llama.cpp via `llama-cpp-2`), in-process.
 #[cfg(feature = "ai")]

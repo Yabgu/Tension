@@ -45,8 +45,10 @@
         { "title": "Session findings", "page": "session-findings.md" },
         { "title": "Known issues", "page": "known-issues.md" },
         { "title": "Known limitations", "page": "known-limitations.md" },
+        { "title": "Plan: Pass 2, the nested guest", "page": "plan/pass-2.md" },
         { "title": "Backlog: byte-offset decoders", "page": "backlog/byte-offset-decoders.md" },
         { "title": "Backlog: buffer rendering", "page": "backlog/buffer-rendering.md" },
+        { "title": "Backlog: gate configuration audit", "page": "backlog/gate-configuration-audit.md" },
         { "title": "Backlog: guest-rejectable close", "page": "backlog/guest-rejectable-close.md" },
         { "title": "Spike: the record budget", "page": "spikes/records-budget.md" }
       ]

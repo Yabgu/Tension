@@ -287,38 +287,45 @@ pub fn decode_iwi(src: &[u8]) -> Result<DecodedImage, Render2dError> {
     })
 }
 
+/// Build a minimal valid IWI: `components` interleaved 8-bit channels.
+///
+/// Shared with `device::capture_tests`, which needs a container this build
+/// *serves* in order to prove the capture path decodes one and keeps its bytes.
+/// One writer, so the container a capture state records is the container the
+/// decoder tests already prove round-trips — not a second fixture that could
+/// drift from the first.
+#[cfg(test)]
+pub(crate) fn iwi_bytes(width: u32, height: u32, components: u16, pixels: &[u8]) -> Vec<u8> {
+    let table = BASE_HEADER_BYTES + usize::from(components) * COMPONENT_BYTES;
+    let mut bytes = vec![0u8; table];
+    bytes[0..4].copy_from_slice(b"IWI1");
+    bytes[4..8].copy_from_slice(&width.to_le_bytes());
+    bytes[8..12].copy_from_slice(&height.to_le_bytes());
+    // 12..16 metaBytes = 0
+    // 16..24 storageLayout = interleaved, tightly packed
+    // 24..32 payloadEncoding = zero (raw)
+    // 32 colorSpace = sRGB, 33 reserved = 0
+    bytes[34..36].copy_from_slice(&components.to_le_bytes());
+    for i in 0..components {
+        let at = BASE_HEADER_BYTES + usize::from(i) * COMPONENT_BYTES;
+        bytes[at] = i as u8 + 1; // R, G, B, A
+        bytes[at + 1] = CLASS_UNORM;
+        bytes[at + 2..at + 4].copy_from_slice(&(i * 8).to_le_bytes());
+        bytes[at + 4..at + 6].copy_from_slice(&8u16.to_le_bytes());
+    }
+    bytes.extend_from_slice(pixels);
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::render2d::error::{EINVAL, ENOSYS};
 
-    /// Build a minimal valid IWI: `components` interleaved 8-bit channels.
-    fn iwi(width: u32, height: u32, components: u16, pixels: &[u8]) -> Vec<u8> {
-        let table = BASE_HEADER_BYTES + usize::from(components) * COMPONENT_BYTES;
-        let mut bytes = vec![0u8; table];
-        bytes[0..4].copy_from_slice(b"IWI1");
-        bytes[4..8].copy_from_slice(&width.to_le_bytes());
-        bytes[8..12].copy_from_slice(&height.to_le_bytes());
-        // 12..16 metaBytes = 0
-        // 16..24 storageLayout = interleaved, tightly packed
-        // 24..32 payloadEncoding = zero (raw)
-        // 32 colorSpace = sRGB, 33 reserved = 0
-        bytes[34..36].copy_from_slice(&components.to_le_bytes());
-        for i in 0..components {
-            let at = BASE_HEADER_BYTES + usize::from(i) * COMPONENT_BYTES;
-            bytes[at] = i as u8 + 1; // R, G, B, A
-            bytes[at + 1] = CLASS_UNORM;
-            bytes[at + 2..at + 4].copy_from_slice(&(i * 8).to_le_bytes());
-            bytes[at + 4..at + 6].copy_from_slice(&8u16.to_le_bytes());
-        }
-        bytes.extend_from_slice(pixels);
-        bytes
-    }
-
     #[test]
     fn decodes_rgba_passthrough() {
         let pixels = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        let image = decode_iwi(&iwi(2, 1, 4, &pixels)).expect("valid");
+        let image = decode_iwi(&iwi_bytes(2, 1, 4, &pixels)).expect("valid");
         assert_eq!((image.width, image.height), (2, 1));
         assert_eq!(image.rgba, pixels);
     }
@@ -326,13 +333,13 @@ mod tests {
     #[test]
     fn expands_rgb_to_opaque_rgba() {
         let pixels = [10u8, 20, 30];
-        let image = decode_iwi(&iwi(1, 1, 3, &pixels)).expect("valid");
+        let image = decode_iwi(&iwi_bytes(1, 1, 3, &pixels)).expect("valid");
         assert_eq!(image.rgba, vec![10, 20, 30, 255]);
     }
 
     #[test]
     fn metadata_between_the_table_and_the_pixels_is_skipped() {
-        let mut bytes = iwi(1, 1, 4, &[9, 8, 7, 6]);
+        let mut bytes = iwi_bytes(1, 1, 4, &[9, 8, 7, 6]);
         // metaBytes lives at 12; the metadata blob follows the component table,
         // so inserting it means shifting the payload rather than appending.
         let payload_at = bytes.len() - 4;
@@ -360,7 +367,7 @@ mod tests {
 
     #[test]
     fn no_components_is_malformed() {
-        let mut bytes = iwi(1, 1, 3, &[1, 2, 3]);
+        let mut bytes = iwi_bytes(1, 1, 3, &[1, 2, 3]);
         bytes[34..36].copy_from_slice(&0u16.to_le_bytes());
         let error = decode_iwi(&bytes).expect_err("no components");
         assert_eq!(error.errno(), EINVAL);
@@ -368,7 +375,7 @@ mod tests {
 
     #[test]
     fn planar_is_unsupported() {
-        let mut bytes = iwi(1, 1, 3, &[1, 2, 3]);
+        let mut bytes = iwi_bytes(1, 1, 3, &[1, 2, 3]);
         // storageLayout.flags is the little-endian u32 at 16; bit 0 is PLANAR.
         bytes[16] = 1;
         let error = decode_iwi(&bytes).expect_err("planar");
@@ -377,7 +384,7 @@ mod tests {
 
     #[test]
     fn a_non_raw_payload_encoding_is_unsupported() {
-        let mut bytes = iwi(1, 1, 3, &[1, 2, 3]);
+        let mut bytes = iwi_bytes(1, 1, 3, &[1, 2, 3]);
         bytes[24..27].copy_from_slice(b"lz4");
         let error = decode_iwi(&bytes).expect_err("compressed");
         assert_eq!(error.errno(), ENOSYS);
@@ -385,7 +392,7 @@ mod tests {
 
     #[test]
     fn a_shifted_component_is_refused() {
-        let mut bytes = iwi(1, 1, 3, &[1, 2, 3]);
+        let mut bytes = iwi_bytes(1, 1, 3, &[1, 2, 3]);
         // Move the second component off its slot.
         let at = BASE_HEADER_BYTES + COMPONENT_BYTES + 2;
         bytes[at..at + 2].copy_from_slice(&16u16.to_le_bytes());
@@ -395,7 +402,7 @@ mod tests {
 
     #[test]
     fn a_sixteen_bit_component_is_unsupported() {
-        let mut bytes = iwi(1, 1, 3, &[1, 2, 3, 4, 5, 6]);
+        let mut bytes = iwi_bytes(1, 1, 3, &[1, 2, 3, 4, 5, 6]);
         let at = BASE_HEADER_BYTES + 4;
         bytes[at..at + 2].copy_from_slice(&16u16.to_le_bytes());
         let error = decode_iwi(&bytes).expect_err("16-bit");
@@ -404,7 +411,7 @@ mod tests {
 
     #[test]
     fn declared_pixels_beyond_the_file_are_truncated() {
-        let mut bytes = iwi(2, 2, 4, &[0u8; 16]);
+        let mut bytes = iwi_bytes(2, 2, 4, &[0u8; 16]);
         bytes.truncate(bytes.len() - 1);
         let error = decode_iwi(&bytes).expect_err("short file");
         assert_eq!(error.errno(), EINVAL);
