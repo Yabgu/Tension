@@ -80,6 +80,11 @@ pub mod guest;
 pub mod io;
 pub mod platform_abi;
 pub mod res;
+/// `tension::threads`: the cooperative-thread contract's surface, every verb a
+/// `-ENOTSUP` stub. Registered like `tension::io` — unconditionally, for every
+/// guest — because an import a guest links against cannot depend on a mechanism
+/// existing.
+pub mod threads;
 /// `tension::2d`. Named `two_d` because a module cannot be named `2d`; gated
 /// because without the in-core renderer the verbs come from the DSO.
 #[cfg(feature = "render2d-core")]
@@ -90,5 +95,6 @@ pub(crate) use guest::GuestHost;
 pub use dev::link_dev;
 pub use io::link_io;
 pub use res::link_res;
+pub use threads::link_threads;
 #[cfg(feature = "render2d-core")]
 pub use two_d::link_2d;

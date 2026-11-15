@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-91 imports across 13 modules: 59 registered by the host in 10 modules, 32 by 3 capability adapters.
+97 imports across 14 modules: 65 registered by the host in 11 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -183,6 +183,17 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | `solver_state` | `(i32, i32, i32, i32) → i32` | `tension-core/src/solver/mod.rs:576` |
 | `solver_set_state` | `(i32, f64, i32, i32) → i32` | `tension-core/src/solver/mod.rs:612` |
 | `solver_destroy` | `(i32)` | `tension-core/src/solver/mod.rs:623` |
+
+## `tension::threads`
+
+| import | signature | registered at |
+|---|---|---|
+| `self` | `(void) → i32` | `tension-core/src/host/threads.rs:79` |
+| `context_of` | `(i32) → i32` | `tension-core/src/host/threads.rs:84` |
+| `spawn` | `(i32, i32) → i32` | `tension-core/src/host/threads.rs:91` |
+| `join` | `(i32, i32) → i32` | `tension-core/src/host/threads.rs:98` |
+| `post` | `(i32, i32) → i32` | `tension-core/src/host/threads.rs:105` |
+| `await_task` | `(i32, i32) → i32` | `tension-core/src/host/threads.rs:112` |
 
 ## Memory
 

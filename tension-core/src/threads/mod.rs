@@ -52,3 +52,31 @@ pub fn enable(config: &mut Config) -> &mut Config {
     config.wasm_stack_switching(true);
     config
 }
+
+/// A context handle: the number a `tension::threads` verb takes or returns.
+///
+/// It is the wire's `i32`, and it is one type rather than a bare `i32` because
+/// the day `run_id` and a thread's id are both in flight, the compiler should be
+/// the thing that notices they were swapped. `bits`/`from_bits` are the boundary
+/// conversions; there is no arithmetic on a handle.
+///
+/// **No store allocates one yet.** The run table is `HashMap<i32, GuestRun>`
+/// today (`sandbox.rs`), and the contract's target shape is
+/// `HashMap<CtxHandle, GuestContext>` — see `host/threads.rs`'s module doc for
+/// why the table was not reshaped in the stub commit.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub struct CtxHandle(i32);
+
+impl CtxHandle {
+    /// The handle a verb was handed, or was asked for.
+    #[inline]
+    pub const fn from_bits(bits: i32) -> Self {
+        Self(bits)
+    }
+
+    /// The handle as a verb sends it.
+    #[inline]
+    pub const fn bits(self) -> i32 {
+        self.0
+    }
+}

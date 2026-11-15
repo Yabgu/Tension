@@ -191,6 +191,11 @@ impl GuestHost {
         // exists for — and for a nested guest too, which is why the depth cap is
         // in the verb rather than in this registration.
         crate::host::link_dev(&mut linker)?;
+        // `tension::threads`: the contract's surface with no mechanism behind
+        // it. Registered here, for every guest, for `link_dev`'s reason — a
+        // guest's imports must resolve at instantiation — and because a nested
+        // guest is exactly the guest that will want a thread first.
+        crate::host::link_threads(&mut linker)?;
 
         // The process's own guest is installed by `main`, which owns the
         // capability adapters and needs the arena prepared before they register
