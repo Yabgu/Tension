@@ -12,6 +12,7 @@ export * from "./input";
 export * from "./anim";
 export * from "./physics";
 export * from "./2d";
+export * from "./dev";
 export * from "./ui";
 export * from "./editor";
 export * from "./app/shell";

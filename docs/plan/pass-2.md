@@ -68,12 +68,59 @@ is marked so it is not quoted as evidence.
   warm gate is 26/26 with cargo **620** passed / 0 failed (declared 615 → 618; the
   two extra are the boundary check and the outer-implicit-page-0 guard), warnings
   85 in 18 distinct rows.
-- **4b-6 — the editor.** Open. Play runs the nested guest, frames drive it, the
-  records land in the editor's frame, Stop and Esc return. Sizing, measured:
-  `assembly/dev.ts` does not exist (`dev.run`/`frame`/`read`/`out` are imports
-  with no SDK wrapper); the editor's Play is chrome-only (`Mode.Play` hides
-  chrome, `apps/editor/src/main.ts`); isometric has to be adopted (exports added,
-  loop restructured) before it can be the demo guest.
+- **4b-6 — the editor.** **Done.** Play runs a nested guest, frames drive it, its
+  records land in the editor's frame, Stop and Esc return. The SDK wrapper is new
+  (`tension-framework/assembly/dev.ts`: `Dev.run` → `DevRun.{frame, readFrame,
+  frameBytes, out, pipe, stop}`, `OutBuffer`, no `Bytes` import, no `adopt`);
+  `RecordBuffer.place(x, y, w, h)` moves a forwarded frame onto the viewport and
+  drops what does not fit; `examples/2d/isometric` adopted the frame contract
+  (exports `__taskWake` + `_game_running`, the blocking `while` loop replaced by
+  one `present` per hook, the two facing passes and the offscreen path unchanged);
+  `apps/editor` calls `dev.run(RUN_RENDERING, viewport)` in Play and submits the
+  frame into bucket 0 under `run.pipe(1)`.
+  **A nested guest's pipeline is a second object**, not the one of the same id:
+  a pipeline owns one texture array and the two guests' arrays differ in size
+  (measured — the editor's UI pages are 640×500, the isometric scene's 128×128,
+  and a shared preset 1 refused every nested page with `-EINVAL`). So the replay
+  builds it fresh, and the id is a translation asked for by `dev.pipe`. Three new
+  tests in `device.rs` pin it: `a_capture_repaint_keeps_the_frame`,
+  `a_preset_the_outer_already_draws_gets_a_second_pipeline`,
+  `a_differently_sized_outer_atlas_is_not_written_into_the_nested_pipeline`.
+  The demo's measured acceptance is in the section below.
+
+## 4b's acceptance, measured
+
+The demo is `apps/editor` at 1600x900 headless with `--game=<isometric>` and
+`--play=N` (a harness path that calls the same `runAct(Act.Play)` the Run button
+does). Measured on the development Linux box:
+
+- **Textured, and provably the guest's frame.** The editor publishes the viewport
+  rectangle its nested frame occupied and the demo harness compares it pixel for
+  pixel against the standalone guest's own `front` frame: **29,120 px compared,
+  0 differ**, on the first run and again after a restart. The clip is exercised:
+  46 records submitted, 46 kept (the scene fits the 1600x822 viewport).
+- **Records/frame: 46**, against a cap of 3,064 — headroom 3,018. This is the
+  isometric scene's own count (6x6 ground, 46 records), which is what the guest
+  reports and what `dev.read` returns; the "~2,410" figure would be a 60x40 grid,
+  a different scene. Page usage: the nested guest uses **3 of the 15** pages it is
+  given (pages 1–3 of the array), the outer keeps page 0 for its own atlas.
+- **Frame cost: 17.3 ms/frame (about 58 fps)** for the whole editor frame, measured as
+  the slope between a 1-frame and a 240-frame run (median of five). A bare editor
+  frame with no nested guest measures 17.4 ms, so **the nested guest's own cost is
+  below the measurement's noise on this rig** — the sandbox is synchronous, and the
+  cost is there, but the 320x180 guest is far cheaper than a 1600x900 composite.
+- **Restart** is a fresh `Store` from the cached `Module`: run 2 reports the same
+  46 records, the same 3 pages, a new pipeline id (1001 against 1000), and the
+  same pixel-identical frame.
+- **Stop / Esc** return to edit mode and restore the chrome; the run reports its
+  frame count, its last error (0), and the canvas is closed in order.
+
+**Resize while playing is out of scope** and is a known limit, not a bug: the
+nested scene keeps the dimensions it was started with, because the run's viewport
+is fixed at `dev.run` and a canvas is fixed for its handle's life. Handling it
+means stopping and restarting the run on a resize (or the buffer-rendering path in
+4c, where the inner guest owns a render target); it is **4b-7** by preference.
+
 
 ## The F1 constraint
 

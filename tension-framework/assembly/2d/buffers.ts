@@ -153,6 +153,53 @@ export class RecordBuffer {
     return at;
   }
 
+  /**
+   * Place a frame that was built somewhere else: move every record by `(x, y)`
+   * and drop the ones this rectangle does not fully contain.
+   *
+   * This is what a **nested guest's frame** needs and nothing else does. The
+   * guest drew into its own rectangle and wrote pixel coordinates in that space;
+   * the host that forwards the frame (`DevRun.readFrame`) knows the page base but
+   * not where the viewport is, because only the layout does. So the placement
+   * happens here, once, instead of every record's coordinates being trusted to
+   * be canvas coordinates.
+   *
+   * Dropped rather than clamped: a record half outside the viewport is a sprite
+   * that should be cut, and the renderer has no scissor for one bucket — so the
+   * honest clip is to not draw it. The count is the buffer's, so a caller that
+   * submits afterwards submits what survived.
+   *
+   * Returns how many records remain.
+   */
+  place(x: i32, y: i32, w: i32, h: i32): i32 {
+    const at = this.view();
+    const x1 = x + w;
+    const y1 = y + h;
+    let kept: i32 = 0;
+    for (let i: i32 = 0; i < this.count; i++) {
+      const px = x + at[i].x;
+      const py = y + at[i].y;
+      if (px < x || py < y || px + <i32>at[i].w > x1 || py + <i32>at[i].h > y1) continue;
+      if (kept == i) {
+        at[i].x = px;
+        at[i].y = py;
+      } else {
+        at[kept].setRect(px, py, at[i].srcX, at[i].srcY, at[i].w, at[i].h, at[i].tex,
+                         at[i].sortKey, at[i].groupId, at[i].z);
+        // `setRect` writes every field the layout gives meaning to and leaves
+        // `flags` alone (the adapter assigns no bit a meaning), so a moved record
+        // is the one place `flags` has to travel separately — otherwise a
+        // clipped frame would silently clear it.
+        at[kept].flags = at[i].flags;
+      }
+      kept++;
+    }
+    const dropped = this.count - kept;
+    this.count = kept;
+    this.dropped += dropped;
+    return kept;
+  }
+
   /** The data address, for `Canvas.submit`. Framework use; see `Bytes.address`. */
   address(): usize {
     return this.bytes.address();
@@ -249,6 +296,35 @@ export class Pixels {
       }
     }
     return n;
+  }
+
+  /**
+   * How many distinct RGB values a sampled grid over `w`x`h` holds, capped.
+   *
+   * A **texture** test, not a colour test: a flat-filled rectangle has a handful
+   * of distinct colours however many pixels it covers, while a sampled atlas has
+   * dozens. `step` is the sampling stride in both axes — 4 on a 1600x800 region is
+   * ~80,000 samples, against a linear scan of at most `cap` colours.
+   *
+   * The cap is the answer for "more than I care to count": a caller distinguishes
+   * "flat" from "textured" with it, and a larger number says nothing extra.
+   */
+  distinctIn(x: i32, y: i32, w: i32, h: i32, step: i32, cap: i32): i32 {
+    let at = changetype<@unmanaged [Rgba *]>(this.bytes.address());
+    const seen = new Array<u32>();
+    const s = step > 0 ? step : 1;
+    const x0 = max<i32>(0, x), y0 = max<i32>(0, y);
+    const x1 = min<i32>(this.width, x + w), y1 = min<i32>(this.height, y + h);
+    for (let py: i32 = y0; py < y1; py += s) {
+      for (let px: i32 = x0; px < x1; px += s) {
+        const i = py * this.width + px;
+        const rgb = <u32>at[i].r | (<u32>at[i].g << 8) | (<u32>at[i].b << 16);
+        if (seen.includes(rgb)) continue;
+        seen.push(rgb);
+        if (seen.length >= cap) return seen.length;
+      }
+    }
+    return seen.length;
   }
 
   /** The data address, for `Canvas.screenshot`. Framework use; see `Bytes.address`. */

@@ -202,7 +202,56 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let id = state.next_run_id;
             state.next_run_id += 1;
             let out_len = sandbox.guest().out().len();
-            state.runs.insert(id, GuestRun { depth, sandbox });
+
+            // **The nested frame's GPU work is completed here.** A capture state
+            // reserved ids for pipelines and textures it could not build (4b-4);
+            // the device that draws is the outer guest's, and this verb is the
+            // only place both states are in reach, so the replay happens on the
+            // boundary rather than in a verb of its own. `replay_deferred` builds
+            // the recorded objects and binds each recorded page at
+            // `NESTED_PAGE_BASE`; the ids it returns are kept on the run for a
+            // caller that needs to map a runtime-compiled graph's id.
+            //
+            // A refusal is **logged, not fatal**: an outer guest with no canvas
+            // (a headless editor, a test) still gets a run it can drive and read —
+            // the records carry pages the outer cannot serve, which its own
+            // submit will refuse and say so.
+            let replay = {
+                let deferred = sandbox.deferred();
+                if !deferred.pipelines.is_empty() || !deferred.textures.is_empty() {
+                    match state
+                        .render2d
+                        .replay_deferred(deferred, crate::render2d::NESTED_PAGE_BASE)
+                    {
+                        Ok(replay) => {
+                            logging::log(
+                                Level::Info,
+                                "dev",
+                                &format!(
+                                    "run {id}: replayed {} pipeline(s), {} texture(s), {} page(s) \
+                                     onto the drawing device",
+                                    replay.pipelines.len(),
+                                    replay.textures.len(),
+                                    replay.pages.len()
+                                ),
+                            );
+                            replay
+                        }
+                        Err(error) => {
+                            logging::log(
+                                Level::Warn,
+                                "dev",
+                                &format!("run {id}: replay refused: {error}"),
+                            );
+                            crate::render2d::Replay::default()
+                        }
+                    }
+                } else {
+                    crate::render2d::Replay::default()
+                }
+            };
+
+            state.runs.insert(id, GuestRun { depth, sandbox, replay });
 
             // The budget is logged, not just applied: a bound nobody can observe
             // is a bound nobody can trust, and this is the line a reader checks
@@ -367,6 +416,29 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                     len as i32
                 }
                 None => EBADF,
+            }
+        },
+    )?;
+
+    // pipe(run_id, nested_pipe) -> the pipeline id on this device | -errno
+    //
+    // A nested guest's pipeline is **not** the pipeline of the same id here: the
+    // replay builds it fresh, because a pipeline owns one texture array and the
+    // two guests' atlases have different sizes (measured: the editor's font pages
+    // are 640x500 and the isometric scene's are 128x128, which a shared preset 1
+    // refused with -EINVAL). So the id a caller submits a forwarded frame under is
+    // a translation, and this is where it is asked for.
+    linker.func_wrap(
+        "tension::dev",
+        "pipe",
+        |caller: Caller<'_, HostState>, id: i32, nested: i32| -> i32 {
+            let state = caller.data();
+            let Some(run) = state.runs.get(&id) else {
+                return EBADF;
+            };
+            match run.replay.pipelines.get(&(nested as u32)) {
+                Some(pipe) => *pipe as i32,
+                None => ENOENT,
             }
         },
     )?;

@@ -51,12 +51,12 @@
 // procedurally generated boxes.
 
 import {
-  ALIGN_CENTER, AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget,
-  Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History, iwiHeaderBytes, JsonError, LINK,
-  ListBehavior, ListSource, loadFontBook, MUTED, NORMAL, Painter, Palette, print, PropKind,
-  REGULAR, registerEditorCommands, resReadFile, resWriteFile, ROOT_ID, Scene, SetProperty,
-  SIZE_14, Sprite, State, TextBuffer, TextBuilder, TextPool, Ui, UiEvent, UiEventKind,
-  WidgetBehavior, WidgetTree, writeIwiHeader,
+  ALIGN_CENTER, AppShell, arg, argCount, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome,
+  ClickTarget, Dev, DevRun, Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History,
+  iwiHeaderBytes, JsonError, LINK, ListBehavior, ListSource, loadFontBook, MUTED, NORMAL, Painter,
+  Palette, Pixels, print, PropKind, RecordBuffer, REGULAR, registerEditorCommands, resReadFile,
+  resWriteFile, ROOT_ID, RUN_RENDERING, Scene, SetProperty, SIZE_14, Sprite, State, TextBuffer,
+  TextBuilder, TextPool, Ui, UiEvent, UiEventKind, WidgetBehavior, WidgetTree, writeIwiHeader,
 } from "tension-framework";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
@@ -85,6 +85,29 @@ const BAR_H: i32 = 34;
 const ITEM_GAP: i32 = 10;
 /** How many recycled row widgets the scene tree owns. */
 const TREE_ROWS: i32 = 40;
+
+/**
+ * The record budget the nested guest's frame may use inside this editor's frame.
+ *
+ * The renderer's staging buffer is 4,096 records **summed across every bucket**
+ * (`render2d/device.rs`, `MAX_RECORDS`), and the editor's own chrome takes what
+ * it takes — measured 904 records for a Play-mode status bar at a 1600x822
+ * viewport. 3,064 is the rest, and it is a hard 3,064 rather than "whatever is
+ * left" because a buffer sized from a runtime number turns a refusal into an
+ * allocation.
+ */
+const NESTED_CAP: i32 = 3064;
+
+/**
+ * The pipeline the **nested guest** draws with — its own id, not this canvas's.
+ *
+ * The isometric guest calls `set_pipeline(preset 1)`, so 1 is what its records
+ * mean. The id to submit under is a different number: this editor's UI is preset
+ * 1 as well, with 640x500 font pages against the scene's 128x128, and one array
+ * has one size — so the host builds the nested guest a pipeline of its own when
+ * the run starts, and `DevRun.pipe(1)` is where that id comes from.
+ */
+const PLAY_PIPE: i32 = 1;
 
 /** A dropdown's metrics, in pixels. */
 const MENU_ITEM_H: i32 = 31;
@@ -250,6 +273,14 @@ class ViewportBehavior implements WidgetBehavior {
   h: i32 = 0;
   /** `Mode.Play` draws the banner; `Mode.Edit` draws the caption alone. */
   mode: i32 = Mode.Edit;
+  /**
+   * Whether the "PLAYING" band is drawn.
+   *
+   * Off while a nested guest is drawing: the band is a caption for the
+   * *placeholder* ("this is what Play looks like"), and over a real game it is a
+   * panel of chrome across the top of the scene.
+   */
+  showBanner: bool = true;
   private label: TextBuilder = new TextBuilder(64);
   /** "PLAYING …" as UTF-8, encoded once. A banner per frame would allocate. */
   private banner: Uint8Array = new Uint8Array(64);
@@ -297,7 +328,7 @@ class ViewportBehavior implements WidgetBehavior {
     p.vline(this.x, this.y, this.h, div, page);
     p.vline(this.x + this.w - 1, this.y, this.h, div, page);
 
-    if (this.mode == Mode.Play) {
+    if (this.mode == Mode.Play && this.showBanner) {
       // The banner is a band of `Surface` plus one bright line. Not a scrim: a
       // full-panel fill is ~1,500 records and the frame's budget is 4,096 for
       // everything (`ui/theme.ts`), so the honest way to say "playing" is to say
@@ -595,6 +626,47 @@ class Editor extends AppShell {
   private startY: i32[] = [120, 380, 200, 480, 460, 60];
   private t: f32 = 0.0;
 
+  // --- the nested guest ----------------------------------------------------
+  //
+  // Play runs a *guest* in the viewport: `dev.run` starts it, `dev.frame` drives
+  // it, `dev.read` hands back the frame it built on its own capture canvas, and
+  // that frame goes into bucket 0 where the placeholder scene used to go. The
+  // work it recorded (its pipeline, its atlas pages) was completed on this
+  // process's device by the host when the run started (`host/dev.rs`), so the
+  // records it writes already name the pages this canvas holds.
+  /** The run, or `null` when Play is not running one. */
+  private playRun: DevRun | null = null;
+  /** The nested frame, placed into the viewport and submitted as bucket 0. */
+  private playRecords: RecordBuffer = RecordBuffer.create(NESTED_CAP);
+  /** The path `--game=` named, or "" for "no nested guest". */
+  private gamePath: string = "";
+  /** The pipeline the nested frame is submitted under: `DevRun.pipe(PLAY_PIPE)`. */
+  private playPipe: i32 = 0;
+  /** Frames `dev.frame` advanced, and frames whose records arrived. */
+  private playFrames: i32 = 0;
+  private playReads: i32 = 0;
+  /** Records in the last forwarded frame, before and after the viewport clip. */
+  private playGot: i32 = 0;
+  private playKept: i32 = 0;
+  private playDropped: i32 = 0;
+  /** The worst `dev.frame`/`dev.read` answer seen, 0 while every call succeeded. */
+  private playErr: i32 = 0;
+  /**
+   * `--play[=N]`: enter Play on the first frame and report after `N` frames.
+   *
+   * The demo harness, not the feature. A headless run has no pointer to click
+   * the Run button with, and the button's work *is* `runAct(Act.Play)` — so this
+   * calls that same path, which is the point: there is one way into Play.
+   */
+  private playBudget: i32 = 0;
+  private playFramesAtStart: i32 = 0;
+  /** 0 = the demo has not restarted yet, 1 = it is on its second run. */
+  private restartPhase: i32 = 0;
+  /** `--restart`: run, stop, run again — the acceptance's restart claim. */
+  private restartDemo: bool = false;
+  /** Which run the report is about, since a restart makes two. */
+  private playRuns: i32 = 0;
+
   // --- interaction --------------------------------------------------------
   /** The node the inspector is showing, and the document selected. */
   selected: i32 = ROOT_ID;
@@ -655,6 +727,25 @@ class Editor extends AppShell {
     this.log("ready: " + this.doc.liveCount.toString() + " nodes");
     print("tension-editor: ui pipe " + pipe.toString() + " / game pipe " +
       this.gamePipe.toString() + ", " + this.boxes.length.toString() + " boxes");
+
+    // The demo's two arguments, read once here rather than per frame: `arg`
+    // allocates a string per call, and a frame that parsed its own argv would
+    // allocate sixty times a second.
+    for (let i: i32 = 0; i < argCount(); i++) {
+      const value = arg(i);
+      if (value.startsWith("--game=")) this.gamePath = value.slice(7);
+      if (value == "--play") this.playBudget = 120;
+      if (value == "--restart") this.restartDemo = true;
+      if (value.startsWith("--play=")) {
+        const n = I32.parseInt(value.slice(7));
+        this.playBudget = n > 0 ? n : 120;
+      }
+    }
+    if (this.playBudget > 0) {
+      // The same call the Run button and the Run menu make. Not a second path.
+      this.playFramesAtStart = this.frames;
+      this.runAct(Act.Play);
+    }
     return true;
   }
 
@@ -968,11 +1059,26 @@ class Editor extends AppShell {
     // it. The tree is laid out first because the rect is its answer, not ours.
     const vp = this.viewport;
     if (vp.w > 0 && vp.h > 0) {
-      this.cameraToBoxes(vp);
-      this.gameScene.setViewport(vp.x, vp.y, vp.w, vp.h);
-      const committed = this.gameScene.commit(this.canvas!, this.gamePipe, 0);
-      if (committed < 0) {
-        print("tension-editor: the game scene refused: " + committed.toString());
+      if (this.mode == Mode.Play) {
+        // **The nested guest's frame replaces the placeholder**, in the same
+        // bucket the placeholder used: one submit, one draw call, the same
+        // composite. The placeholder is not drawn at all in this branch — a
+        // scene under a scene would be two pipelines in one bucket, which the
+        // renderer refuses.
+        //
+        // Started here rather than in `setMode` because the rectangle is the
+        // *layout's* answer: Play can be entered before the first arrange (the
+        // Run button on frame 1, `--play`), and a run started at 0x0 would draw
+        // into nothing.
+        if (this.playRun == null) this.startNested();
+        if (this.playRun != null) this.driveNested(vp);
+      } else {
+        this.cameraToBoxes(vp);
+        this.gameScene.setViewport(vp.x, vp.y, vp.w, vp.h);
+        const committed = this.gameScene.commit(this.canvas!, this.gamePipe, 0);
+        if (committed < 0) {
+          print("tension-editor: the game scene refused: " + committed.toString());
+        }
       }
     }
 
@@ -1199,6 +1305,198 @@ class Editor extends AppShell {
     }
   }
 
+  /**
+   * One nested frame: drive the run, read what it drew, put it in the viewport.
+   *
+   * The order is the contract's. `dev.frame` returns only once the guest
+   * presented (`Sandbox::frame`, the completeness rule), so the bytes `dev.read`
+   * hands back are a whole frame and never a mid-frame snapshot. `readFrame`
+   * checks the buffer before the host writes, so `-ENOSPC` is a refusal rather
+   * than half a scene.
+   *
+   * **The placement is here, and only here.** The nested guest wrote pixel
+   * coordinates in its own rectangle; the page numbers already arrived
+   * translated (`Sandbox::records_into`). What this call adds is where that
+   * rectangle sits — `RecordBuffer.place` moves every record by the viewport's
+   * origin and drops the ones the viewport does not fully contain.
+   *
+   * **Synchronous, and that is the cost.** The sandbox runs on this thread inside
+   * this call, so the editor's frame is chrome + the nested guest's whole frame. A
+   * guest that spends 5 ms in a frame spends it inside the editor's.
+   */
+  private driveNested(vp: ViewportBehavior): void {
+    const run = this.playRun!;
+    const advanced = run.frame();
+    if (advanced < 0) {
+      if (this.playErr == 0) print("tension-editor: dev.frame -> " + advanced.toString());
+      this.playErr = advanced;
+      return;
+    }
+    this.playFrames++;
+
+    const bytes = run.readFrame(this.playRecords);
+    if (bytes < 0) {
+      if (this.playErr == 0) print("tension-editor: dev.read -> " + bytes.toString());
+      this.playErr = bytes;
+      return;
+    }
+    if (bytes == 0) return;
+    this.playReads++;
+    this.playGot = bytes / 28;
+
+    // **One pixel inside the frame.** The viewport's own border is four rules
+    // drawn at its edges (bucket 1, after this), so a frame placed exactly at the
+    // edge has its outermost row and column painted over by chrome. Insetting by
+    // one keeps the scene whole and keeps the border a border.
+    this.playRecords.place(vp.x + 1, vp.y + 1, vp.w - 2, vp.h - 2);
+    this.playKept = this.playRecords.count;
+    this.playDropped = this.playRecords.dropped;
+    const accepted = this.canvas!.submit(this.playPipe, this.playRecords, 0);
+    if (accepted < 0 && this.playErr == 0) {
+      print("tension-editor: submit(nested) -> " + accepted.toString());
+      this.playErr = accepted;
+    }
+  }
+
+  /**
+   * Start the nested guest, if one was named.
+   *
+   * `RUN_RENDERING` is refused by the host for a module with no `_game_running`,
+   * before the run takes an id, so a guest that cannot be driven is a refusal
+   * here rather than a hang at the first frame.
+   *
+   * The viewport rectangle is the one `arrange` last computed — the same numbers
+   * the UI drew at, which is why the guest is told them rather than the window's.
+   * A run whose viewport is 0x0 draws into nothing, so Play waits for a frame.
+   */
+  private startNested(): void {
+    if (this.playRun != null) return;
+    if (this.gamePath.length == 0) {
+      this.log("play: no --game=<wasm>; the placeholder scene stays");
+      print("tension-editor: play has no nested guest (pass --game=<wasm>)");
+      return;
+    }
+    const vp = this.viewport;
+    if (vp.w <= 0 || vp.h <= 0) {
+      this.log("play: the viewport has no size yet");
+      return;
+    }
+    this.playFrames = 0;
+    this.playReads = 0;
+    this.playGot = 0;
+    this.playKept = 0;
+    this.playDropped = 0;
+    this.playErr = 0;
+    const run = Dev.run(this.gamePath, RUN_RENDERING, vp.w, vp.h);
+    if (!run.isValid()) {
+      this.log("play: dev.run refused (" + run.lastError().toString() + ")");
+      print("tension-editor: dev.run(" + this.gamePath + ") -> " + run.lastError().toString());
+      return;
+    }
+    // **The pipeline is a translation, so it is asked for, not assumed.** The
+    // nested guest's id 1 is its own; the id this canvas draws it with was issued
+    // when the host replayed its recorded work (`host/dev.rs`).
+    const pipe = run.pipe(PLAY_PIPE);
+    if (pipe < 0) {
+      this.log("play: the nested pipeline did not survive the replay (" + pipe.toString() + ")");
+      print("tension-editor: dev.pipe(" + PLAY_PIPE.toString() + ") -> " + pipe.toString());
+      run.stop();
+      return;
+    }
+    this.playPipe = pipe;
+    this.playRun = run;
+    this.playRuns++;
+    this.viewport.showBanner = false;
+    print("tension-editor: play run " + run.id.toString() + " <- " + this.gamePath +
+      " into " + vp.w.toString() + "x" + vp.h.toString() + " at " + vp.x.toString() +
+      "," + vp.y.toString() + ", nested pipe " + PLAY_PIPE.toString() + " -> " + pipe.toString());
+  }
+
+  /** Stop the nested guest, if one is running, and say what it did. */
+  private stopNested(): void {
+    const run = this.playRun;
+    if (run == null) return;
+    this.playRun = null;
+    const stopped = run.stop();
+    this.viewport.showBanner = true;
+    print(
+      "tension-editor: play stopped (run " + run.id.toString() + " -> " + stopped.toString() +
+        "): " + this.playFrames.toString() + " frame(s), " + this.playReads.toString() +
+        " read, " + this.playGot.toString() + " record(s) last frame, " +
+        this.playKept.toString() + " kept after the viewport clip, " +
+        this.playDropped.toString() + " dropped, last error " + this.playErr.toString(),
+    );
+  }
+
+  /**
+   * The demo's report, once per run: what the frame cost and what it contained.
+   *
+   * Headless only, and only when `--play` asked for it — a report is the thing
+   * a script reads, not the thing a user wants printed over their editor.
+   *
+   * **The distinct-colour count is the "is it textured" assertion.** A record
+   * says *which page* to sample, and a page that never arrived draws its cell as
+   * whatever the array holds — so a flat count means the atlas is missing and a
+   * large one means it is there. `nonBlack` alone cannot tell those apart.
+   */
+  private reportPlay(vp: ViewportBehavior, which: i32): void {
+    const frames = this.playFrames;
+    const span = this.frames - this.playFramesAtStart;
+    print("DEMO run=" + which.toString() + " frames=" + frames.toString() +
+      " editor_frames=" + span.toString());
+    print("DEMO records_per_frame=" + this.playGot.toString() +
+      " kept=" + this.playKept.toString() + " dropped=" + this.playDropped.toString() +
+      " cap=" + NESTED_CAP.toString() +
+      " headroom=" + (NESTED_CAP - this.playGot).toString());
+    print("DEMO viewport=" + vp.w.toString() + "x" + vp.h.toString() +
+      " at=" + vp.x.toString() + "," + vp.y.toString());
+
+    const shot = new Pixels(this.width, this.height);
+    const wrote = this.canvas!.screenshot(shot);
+    if (wrote < 0) {
+      print("DEMO screenshot=" + wrote.toString() + " (no readback on this device)");
+      return;
+    }
+    const ink = shot.nonBlackIn(vp.x, vp.y, vp.w, vp.h);
+    const colours = shot.distinctIn(vp.x, vp.y, vp.w, vp.h, 4, 512);
+    print("DEMO viewport_nonblack=" + ink.toString() + " distinct_rgb=" + colours.toString() +
+      " canvas=" + this.width.toString() + "x" + this.height.toString());
+    print("DEMO ui_records=" + this.lastRecords.toString() +
+      " ui_dropped=" + this.lastDropped.toString());
+
+    // **The frame leaves as hex, so a reader can compare it to the guest's own.**
+    // The rectangle is the union of the placed records' bounds — where the nested
+    // scene actually is — and the rows are the *viewport's* pixels, so the bytes
+    // are directly comparable with the standalone guest's frame at the same
+    // coordinates. A texture that did not arrive, a page bound one layer off, or
+    // a clip that shifted the scene all show up as a difference; a count of
+    // distinct colours would not tell them apart.
+    const at = this.playRecords.view();
+    let ex: i32 = 0;
+    let ey: i32 = 0;
+    for (let i: i32 = 0; i < this.playRecords.count; i++) {
+      const right = at[i].x - (vp.x + 1) + <i32>at[i].w;
+      const bottom = at[i].y - (vp.y + 1) + <i32>at[i].h;
+      if (right > ex) ex = right;
+      if (bottom > ey) ey = bottom;
+    }
+    print("DEMO rect=" + ex.toString() + "x" + ey.toString());
+    const chunk: i32 = 128;
+    for (let row: i32 = 0; row < ey; row++) {
+      const y = vp.y + 1 + row;
+      for (let base: i32 = 0; base < ex * 4; base += chunk) {
+        let line = "NESTED" + which.toString() + " " + row.toString() + " " + base.toString() + " ";
+        const end: i32 = min<i32>(base + chunk, ex * 4);
+        for (let i: i32 = base; i < end; i += 4) {
+          const px = vp.x + 1 + (i >> 2);
+          line += hex2(shot.channelAt(px, y, 0)) + hex2(shot.channelAt(px, y, 1)) +
+            hex2(shot.channelAt(px, y, 2)) + hex2(shot.channelAt(px, y, 3));
+        }
+        print(line);
+      }
+    }
+  }
+
   /** Enter or leave play mode: hide the chrome, and say so in three places. */
   private setMode(m: i32): void {
     if (this.mode == m) {
@@ -1214,9 +1512,42 @@ class Editor extends AppShell {
     this.ui.hidden(this.inspector, playing);
     this.ui.hidden(this.consoleCol, playing);
     this.viewport.mode = m;
+    // The nested guest exists only while Play does: entering starts it, leaving
+    // stops it. A run left alive across the mode change would keep its textures
+    // and pages on the device with nothing drawing them.
+    if (playing) {
+      this.startNested();
+    } else {
+      this.stopNested();
+    }
     const what: string = playing ? "play" : "stop";
     this.log("run: " + what + " (mode " + m.toString() + ")");
     print("tension-editor: run: " + what);
+  }
+
+  /**
+   * After a presented frame: the demo's exit, when `--play` asked for one.
+   *
+   * The budget counts frames *in Play*, not frames of the editor, so the setup
+   * frames (assets, first layout) are not part of the measurement.
+   */
+  protected afterFrame(): void {
+    if (this.playBudget <= 0 || this.mode != Mode.Play) return;
+    if (this.frames - this.playFramesAtStart < this.playBudget) return;
+    this.reportPlay(this.viewport, this.playRuns);
+    // **Stop, or restart, through the same actions Esc, Stop and Restart use**, so
+    // the report describes the normal paths rather than harness-only ones.
+    if (this.restartDemo && this.restartPhase == 0) {
+      // Restart from inside Play: a new store from the cached module, the same
+      // scene, and the same page arithmetic — the acceptance's claim.
+      this.restartPhase = 1;
+      this.playFramesAtStart = this.frames;
+      this.runAct(Act.Restart);
+      return;
+    }
+    this.playBudget = 0;
+    this.runAct(Act.Stop);
+    this.stopLoop("the play demo's frame budget ended");
   }
 
   /** Put the boxes back where they started, and play. */
@@ -1227,6 +1558,15 @@ class Editor extends AppShell {
     this.t = 0.0;
     this.log("run: restart");
     print("tension-editor: run: restart");
+    if (this.mode == Mode.Play) {
+      // A restart from inside Play is a *new* run: the old store is gone and the
+      // scene is read again from the cached module, which is the property the
+      // demo's restart claim is about. `setMode(Play)` alone would answer
+      // "already playing" and leave the finished run in place.
+      this.stopNested();
+      this.startNested();
+      return;
+    }
     this.setMode(Mode.Play);
   }
 
@@ -1494,6 +1834,15 @@ class Editor extends AppShell {
       this.openMenu = -1;
       return;
     }
+    // **Esc leaves Play.** It comes before the focus check because a player has no
+    // focused field to protect: in Play the chrome is hidden, and a key that did
+    // nothing because some widget still held the focus would be a trap. `Act.Stop`
+    // is the same action the Stop button and the Run menu take, so the run is
+    // stopped and its report printed by one path.
+    if (state.pressed(SC_ESCAPE) && this.mode == Mode.Play) {
+      this.runAct(Act.Stop);
+      return;
+    }
     // Undo, redo, save and load run **even while a field has the focus**. They are
     // commands about the document, and a user who just typed a number reaches for
     // Ctrl+Z without leaving the field — measured: with the old rule the keystroke
@@ -1600,6 +1949,11 @@ function looksNumeric(text: string): bool {
     i++;
   }
   return digits > 0;
+}
+
+/** Two lowercase hex digits — the demo's frame dump, in `examples/2d`'s spelling. */
+function hex2(v: u8): string {
+  return (v < 16 ? "0" : "") + v.toString(16);
 }
 
 function clamp(v: f32, lo: f32, hi: f32): f32 {

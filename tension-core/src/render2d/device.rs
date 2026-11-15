@@ -252,12 +252,16 @@ pub enum DeferredPipeline {
 
 /// What [`Render2dState::replay_deferred`] did, in the outer device's ids.
 ///
-/// The ids are returned rather than assumed to match the capture's. They usually
-/// do — the replay walks the recorded pipelines in ascending id, which is the
-/// order the capture handed them out — but a presenting state that compiled a
-/// graph of its own takes runtime ids from the same range, so "usually" is not a
-/// guarantee, and the caller submitting records needs the id the device actually
-/// has.
+/// **The pipeline ids are new, and the caller must use them.** A nested guest's
+/// pipeline is a second object with its own texture array — the outer's preset 1
+/// and the nested guest's preset 1 hold different atlases, and an array has one
+/// size — so the replay builds it fresh rather than resolving the id the capture
+/// used. A caller that submits a forwarded frame under the *nested* id instead of
+/// the mapped one draws through the outer's pipeline, with the outer's atlas.
+///
+/// Textures map the same way: the replay loads the recorded bytes through the
+/// presenter's own `texture_load`, and the id that answers is the one the drawing
+/// device issued.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Replay {
     /// Nested pipeline id -> the id on this device.
@@ -464,11 +468,21 @@ impl Render2dState {
         let mut replay = Replay::default();
 
         // 1. Pipelines, ascending id: the order the capture resolved them in, so
-        //    a runtime id the guest's records already name lands where it landed.
+        //    the ids it reports stay in that order.
+        //
+        //    **Each one is a new object, never the pipeline of the same id this
+        //    device already holds.** A pipeline owns one texture array and an
+        //    array has one size, so a nested guest whose atlas differs from the
+        //    outer's (the editor's font pages are 640x500, the isometric scene's
+        //    128x128) cannot share the array: reusing preset 1 would refuse every
+        //    page of the nested frame with `-EINVAL`. Ownership is the whole
+        //    point of the replay, and it is why the ids it hands back are new —
+        //    the caller asks for them (`Replay::pipelines`) rather than assuming.
+        let device = self.device()?.clone();
         for (recorded, what) in &deferred.pipelines {
             let built = match what {
-                DeferredPipeline::Preset(preset) => self.set_preset(*preset)?,
-                DeferredPipeline::Blob(blob) => self.set_pipeline_blob(blob)?,
+                DeferredPipeline::Preset(preset) => self.pipelines.fresh_preset(&device, *preset)?,
+                DeferredPipeline::Blob(blob) => self.pipelines.fresh_blob(&device, blob)?,
             };
             replay.pipelines.insert(*recorded, built);
         }
@@ -522,14 +536,44 @@ impl Render2dState {
 
         // 4. Bind, preserving the outer's page 0 on the first touch of a pipeline
         //    it draws through implicitly.
+        //
+        //    **Only when the sizes agree.** An array texture has one size for all
+        //    its pages, so an outer implicit texture that is a different size
+        //    cannot be page 0 of this array at all — `set_texture` would refuse it,
+        //    and the refusal would take the whole nested frame with it. Skipping is
+        //    the honest answer: the two never shared this pipeline, which is the
+        //    normal case (the editor's own content is on its graph pipe, the nested
+        //    guest's on a preset), and it is visible in the log when it is not.
         let mut touched: BTreeSet<u32> = BTreeSet::new();
         for (outer_pipe, page, outer_texture) in wanted {
             if touched.insert(outer_pipe)
                 && !self.atlases.contains_key(&outer_pipe)
                 && self.bound_texture != 0
             {
-                let outer_page_zero = self.bound_texture;
-                self.set_texture(outer_pipe, 0, outer_page_zero)?;
+                let outer_zero = self.bound_texture;
+                let same_size = match (self.textures.get(&outer_zero), self.textures.get(&outer_texture))
+                {
+                    (Some(outer), Some(nested)) => {
+                        outer.width == nested.width && outer.height == nested.height
+                    }
+                    _ => false,
+                };
+                if same_size {
+                    self.set_texture(outer_pipe, 0, outer_zero)?;
+                } else if let (Some(outer), Some(nested)) =
+                    (self.textures.get(&outer_zero), self.textures.get(&outer_texture))
+                {
+                    crate::logging::log(
+                        crate::logging::Level::Warn,
+                        "2d",
+                        &format!(
+                            "replay: pipeline {outer_pipe} keeps no outer page 0 — the outer's \
+                             texture is {}x{} and the nested page is {}x{}, and one array has one \
+                             size",
+                            outer.width, outer.height, nested.width, nested.height
+                        ),
+                    );
+                }
             }
             self.set_texture(outer_pipe, page, outer_texture)?;
             replay.pages.push((outer_pipe, page, outer_texture));
@@ -995,6 +1039,18 @@ impl Render2dState {
     /// fails the same way a presenting frame does.
     pub fn present(&mut self, host_window: &mut Option<HostWindow>) -> Result<i32, Render2dError> {
         if self.is_capture() {
+            // **A repaint keeps the frame.** A presenting state re-presents what
+            // is already in its target when nothing was submitted, which is what
+            // lets a guest draw once and then loop on `present` to hold the
+            // window. A capture state has no target, so its equivalent is to
+            // keep the snapshot it already took: clearing there would hand the
+            // host an empty frame one call after a complete one, and a nested
+            // guest written for a window (draw once, present to hold) would go
+            // blank inside the editor for a reason nothing in its code says.
+            if self.buckets.is_empty() && !self.captured.is_empty() {
+                self.captured_frames = self.captured_frames.wrapping_add(1);
+                return Ok(0);
+            }
             // Snapshot, then clear: the frame the host will read is the one just
             // completed, and the buckets are ready for the next one.
             self.captured.clear();
@@ -2023,6 +2079,34 @@ mod capture_tests {
         assert!(state.deferred().bindings.is_empty());
     }
 
+    #[test]
+    fn a_capture_repaint_keeps_the_frame() {
+        // A presenting state re-presents its target when nothing was submitted;
+        // a capture state's equivalent is keeping the snapshot. Without this, a
+        // nested guest written the way every windowed 2D guest is written (draw
+        // once, present to hold) hands its host an empty frame one call after a
+        // complete one.
+        let mut state = Render2dState::capture();
+        let mut record = [0u8; RECORD_SIZE as usize];
+        record[record::OFF_TEX..record::OFF_TEX + 2].copy_from_slice(&1u16.to_le_bytes());
+        state
+            .submit(1, &record, 1, RECORD_SIZE, 0)
+            .expect("a capture state stages records for any pipe");
+        state.present(&mut None).expect("the frame completes");
+        assert_eq!(state.captured_bytes(), RECORD_SIZE as usize);
+        assert_eq!(state.captured_frames(), 1);
+
+        // A repaint: no records staged, and the frame the host already has is
+        // still there to read.
+        state.present(&mut None).expect("a repaint completes a frame");
+        assert_eq!(
+            state.captured_bytes(),
+            RECORD_SIZE as usize,
+            "a present with nothing staged must not erase the captured frame"
+        );
+        assert_eq!(state.captured_frames(), 2, "and it is still a completed frame");
+    }
+
     /// `nested_record_tex_is_offset_by_the_page_base`.
     ///
     /// The frame leaves a capture state as the guest built it (page numbers the
@@ -2214,21 +2298,25 @@ mod replay_tests {
             .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
             .expect("the replay builds the nested scene");
 
-        assert_eq!(
-            replay.pipelines.get(&1),
-            Some(&1),
-            "preset 1 resolves to the id the records name"
+        let pipe = *replay
+            .pipelines
+            .get(&1)
+            .expect("the nested preset 1 was built on this device");
+        assert!(
+            pipe >= crate::render2d::pipeline::PIPE_RAW_MIN,
+            "the replay builds its own pipeline, so the id is in the runtime range: got {pipe}"
         );
+        assert_ne!(pipe, 1, "and it is not the id the capture used — preset 1 belongs to the UI");
         assert_eq!(replay.textures.len(), 1, "one texture was recorded and loaded");
         assert_eq!(
             replay.pages,
-            vec![(1, NESTED_PAGE_BASE, 2)],
+            vec![(pipe, NESTED_PAGE_BASE, 2)],
             "the recorded page 0 is bound one page up, as the outer's texture 2"
         );
 
         let records = forwarded(&capture);
         outer
-            .submit(1, &records, 1, RECORD_SIZE, 0)
+            .submit(pipe, &records, 1, RECORD_SIZE, 0)
             .expect("the outer submits the forwarded frame");
         outer.present(&mut None).expect("present");
         frame_is(&mut outer, [255, 0, 0, 255], "nested_iwi_lands_at_outer_page_base");
@@ -2259,21 +2347,116 @@ mod replay_tests {
             .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
             .expect("the replay reapplies the implicit page");
 
+        let pipe = *replay.pipelines.get(&1).expect("the nested preset 1");
         assert_eq!(
             replay.pages,
-            vec![(1, NESTED_PAGE_BASE, 2)],
+            vec![(pipe, NESTED_PAGE_BASE, 2)],
             "the implicit page 0 is bound at the base, not at 0"
         );
 
         let records = forwarded(&capture);
         outer
-            .submit(1, &records, 1, RECORD_SIZE, 0)
+            .submit(pipe, &records, 1, RECORD_SIZE, 0)
             .expect("submit");
         outer.present(&mut None).expect("present");
         frame_is(
             &mut outer,
             [255, 0, 0, 255],
             "nested_guest_implicit_page_zero_is_reapplied_at_base",
+        );
+    }
+
+    /// `a_preset_the_outer_already_draws_gets_a_second_pipeline`.
+    ///
+    /// **The editor's exact case, measured before it worked.** The editor's UI is
+    /// preset 1 with 640x500 font pages; the nested isometric scene is preset 1
+    /// with 128x128 pages. A replay that resolved preset 1 to the id the UI already
+    /// holds sent every nested page into the UI's array and was refused
+    /// (`-EINVAL`, "every page of one pipeline shares the array's size"), so the
+    /// demo drew nothing. Here the outer's page is 2x1 and the nested's is 8x8: the
+    /// replay has to give the nested guest a pipeline of its own, and the outer's
+    /// own record must still draw the outer's atlas through the *same* page 0.
+    #[test]
+    fn a_preset_the_outer_already_draws_gets_a_second_pipeline() {
+        let _serial = SDL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(mut outer) = canvas() else { return };
+
+        // The outer's UI: preset 1, its own small atlas at page 0.
+        let blue = outer
+            .texture_load(&solid([0, 0, 255, 255]), TEX_RGBA8)
+            .expect("the outer's own texture");
+        outer.set_texture(1, 0, blue).expect("the outer binds preset 1 page 0");
+
+        let capture = nested(true);
+        let replay = outer
+            .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
+            .expect("the nested guest's preset 1 must not be refused by the outer's");
+        let pipe = *replay.pipelines.get(&1).expect("a pipeline for the nested preset 1");
+        assert_ne!(pipe, 1, "a second pipeline, not the UI's");
+        assert_eq!(
+            replay.pages,
+            vec![(pipe, NESTED_PAGE_BASE, 2)],
+            "the nested page went to the nested pipeline, not into the UI's array"
+        );
+
+        // The nested frame draws the nested atlas...
+        let records = forwarded(&capture);
+        outer.submit(pipe, &records, 1, RECORD_SIZE, 0).expect("submit nested");
+        outer.present(&mut None).expect("present");
+        frame_is(
+            &mut outer,
+            [255, 0, 0, 255],
+            "a_preset_the_outer_already_draws_gets_a_second_pipeline (nested)",
+        );
+
+        // ...and the outer's own record still draws its own, from the same page 0.
+        outer.submit(1, &sprite(0), 1, RECORD_SIZE, 0).expect("submit outer");
+        outer.present(&mut None).expect("present");
+        frame_is(
+            &mut outer,
+            [0, 0, 255, 255],
+            "a_preset_the_outer_already_draws_gets_a_second_pipeline (outer)",
+        );
+    }
+
+    /// `a_differently_sized_outer_atlas_is_not_written_into_the_nested_pipeline`.
+    ///
+    /// The outer's implicit texture is a small generated atlas (the editor's
+    /// 128x32 box cells); the nested scene's pages are 1024x1024. One array has
+    /// one size, so the outer's texture cannot be page 0 of the nested pipeline —
+    /// and binding it there would refuse the whole replay. The replay skips the
+    /// preservation, binds the nested page at the base, and the frame draws.
+    #[test]
+    fn a_differently_sized_outer_atlas_is_not_written_into_the_nested_pipeline() {
+        let _serial = SDL.lock().unwrap_or_else(|poison| poison.into_inner());
+        let Some(mut outer) = canvas() else { return };
+
+        // The outer's own atlas: 2x1, one page, never bound explicitly.
+        let mut small = Vec::with_capacity(36 + 4 * 6 + 8);
+        small.extend_from_slice(&crate::render2d::iwi::iwi_bytes(2, 1, 4, &[9, 8, 7, 6, 5, 4, 3, 2]));
+        outer
+            .texture_load(&small, TEX_RGBA8)
+            .expect("the outer's small atlas");
+
+        // The nested frame's page is 8x8, like the canvas.
+        let capture = nested(true);
+        let replay = outer
+            .replay_deferred(capture.deferred(), NESTED_PAGE_BASE)
+            .expect("a size mismatch on the outer's implicit page must not refuse the replay");
+        let pipe = *replay.pipelines.get(&1).expect("the nested preset 1");
+        assert_eq!(
+            replay.pages,
+            vec![(pipe, NESTED_PAGE_BASE, 2)],
+            "only the nested page is bound: the outer's 2x1 could not be page 0 of an 8x8 array"
+        );
+
+        let records = forwarded(&capture);
+        outer.submit(pipe, &records, 1, RECORD_SIZE, 0).expect("submit");
+        outer.present(&mut None).expect("present");
+        frame_is(
+            &mut outer,
+            [255, 0, 0, 255],
+            "a_differently_sized_outer_atlas_is_not_written_into_the_nested_pipeline",
         );
     }
 
@@ -2301,7 +2484,7 @@ mod replay_tests {
             .expect("the replay builds the nested scene");
         assert_eq!(
             replay.pages,
-            vec![(1, NESTED_PAGE_BASE, 2)],
+            vec![(*replay.pipelines.get(&1).unwrap(), NESTED_PAGE_BASE, 2)],
             "the report names the nested page only; the outer's page 0 is not part of it"
         );
 

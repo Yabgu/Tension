@@ -85,6 +85,70 @@ function fail(what: string): void {
   failures++;
 }
 
+// --- the adopted loop ------------------------------------------------------
+//
+// The hold used to be this guest's own `while (keep < 18000) { present }` loop.
+// It is the host's now: a guest that exports `__taskWake` and `_game_running` is
+// driven frame by frame, which is what lets the editor run this scene inside its
+// own viewport (`docs/modules/2d.md` §7.5).
+//
+// **What adoption changes, and what it does not.** The two facing passes stay in
+// `_start_game`, in the same order, writing the same records — so the offscreen
+// path the suites assert on is byte-identical. What moves is only the tail: the
+// repaint loop that held the window open becomes one `present` per hook call.
+//
+// `surfaceWidth() > 0` is the one question this guest asks about its situation,
+// and it is the host's own definition of it: a root guest with a window answers
+// the window's size, a nested guest answers the viewport its host gave
+// `dev.run`, and a guest with nothing to draw into answers 0. So the same test
+// decides both things it needs to decide — whether to hold, and (through the
+// screenshot's `-ENODEV`) whether it has a device at all.
+
+/** The canvas the hold presents to. 0 while the guest owns no loop. */
+let heldHandle: i32 = 0;
+/** 1 while the host should keep driving this guest. `_game_running` reads it. */
+let holding: bool = false;
+/** Frames the hook presented since the hold began, for the exit line. */
+let heldFrames: i32 = 0;
+
+/**
+ * One frame of the hold: repaint, and leave the loop when the window goes.
+ *
+ * The host calls this once per `dev.frame` (nested) or once per scheduler wake
+ * (root). `ids`/`count` are ignored: this guest parks no tasks, so a wake is
+ * nothing but a frame tick.
+ */
+export function __taskWake(ids: i32, count: i32): void {
+  if (!holding) return;
+  // The close button, asked directly: `present`'s `-ECANCELED` only fires when
+  // its own pump drained SDL's quit event, and the host pumps the same queue.
+  if (platform.windowInfo().closeRequested) {
+    endHold("the window was closed");
+    return;
+  }
+  const presented = gfx.present(heldHandle);
+  if (presented != 0) {
+    // `-ECANCELED`: the window is gone, so there is nothing left to present.
+    endHold("present answered " + presented.toString());
+    return;
+  }
+  heldFrames++;
+}
+
+/** 1 while the guest wants frames; the host's exit condition. */
+export function _game_running(): i32 {
+  return holding ? 1 : 0;
+}
+
+/** Leave the hold, release the canvas, and say how it went. */
+function endHold(why: string): void {
+  holding = false;
+  gfx.close(heldHandle);
+  heldHandle = 0;
+  print("hold ended after " + heldFrames.toString() + " frame(s): " + why);
+  print(failures == 0 ? "OK: three pages, two slices, one composite" : "FAILED");
+}
+
 // --- hex emission ----------------------------------------------------------
 //
 // The guest has no file writer and the runner has no view into guest memory, so
@@ -347,7 +411,17 @@ export function _start_game(): void {
       failures++;
       break;
     }
+    // **A guest with no device cannot read its own frame back.** A nested guest
+    // draws into a capture canvas — records, no GPU (`Render2dState::capture`) —
+    // so `screenshot` answers `-ENODEV` there by design. That is not a failure:
+    // the assertions this block makes are for the offscreen run, whose frames
+    // the harness reads; a nested run's frame is read by its host through
+    // `dev.read`, and the host is the one that can see it.
     const written = gfx.screenshot(handle, frameBuf, <i32>FRAME_BYTES);
+    if (written == -19) {
+      print("  " + name + ": no device (nested); the host reads this frame, not the guest");
+      continue;
+    }
     if (written != <i32>FRAME_BYTES) {
       print("FAIL: screenshot(" + name + ") -> " + written.toString());
       failures++;
@@ -375,26 +449,16 @@ export function _start_game(): void {
     emitFrame(name, frame, FRAME_BYTES);
   }
 
-  // Windowed: hold the last frame until the window is closed. Both facings were
-  // submitted already, so the target holds `front`; repainting it is the whole
-  // loop. `tension::2d` re-presents without clearing when nothing is submitted,
-  // and answers `-ECANCELED` once the window is gone.
-  //
-  // **`closeRequested` is asked directly.** `present`'s `-ECANCELED` only fires
-  // when its own pump drained SDL's quit event, and the host pumps the same
-  // queue in `RuntimeSession.wait` — so a loop that waits on `present` alone is
-  // depending on which pump won. It happens to win on this rig's in-core host;
-  // it was measured not to under `tension dev`, where the same loop needed this
-  // read. Both are checked, and the cost is one host call per frame.
-  if (wantsWindow() && failures == 0) {
-    print("windowed: close the window to exit");
-    let keep: i32 = 0;
-    while (keep < 18000) {
-      if (platform.windowInfo().closeRequested) break; // the X button
-      if (gfx.present(handle) != 0) break; // -ECANCELED: the window is gone
-      RuntimeSession.wait(16);
-      keep++;
-    }
+  // Windowed, or nested: somebody is showing this scene, so the frame loop is
+  // the host's from here (`__taskWake` / `_game_running` above). `surfaceWidth`
+  // is the window's size for a root guest and the viewport's for a nested one;
+  // 0 means nothing is showing it, and then this guest's own two passes *are*
+  // the whole run — the offscreen path, unchanged.
+  if (failures == 0 && platform.surfaceWidth() > 0) {
+    heldHandle = handle;
+    holding = true;
+    print("holding: the host drives the frame loop (" + heldFrames.toString() + " so far)");
+    return;
   }
 
   gfx.close(handle);

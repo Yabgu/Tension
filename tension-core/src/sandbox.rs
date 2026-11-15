@@ -381,6 +381,16 @@ pub(crate) struct GuestRun {
     /// `d` produces a run at `d + 1`, which is what [`MAX_DEPTH`] bounds.
     pub(crate) depth: u32,
     pub(crate) sandbox: Sandbox,
+    /// What this run's recorded GPU work became on the host's device.
+    ///
+    /// Filled by `dev.run`, read by `dev.pipe`: the nested guest's pipeline id is
+    /// not the id it lands on — the replay builds a pipeline of its own, because
+    /// a pipeline owns one texture array and the two guests' atlases have
+    /// different sizes — so the id a caller submits under has to be asked for.
+    ///
+    /// Empty when the run recorded nothing or the host had no canvas to replay
+    /// onto; `dev.pipe` then answers `-ENOENT` rather than a plausible wrong id.
+    pub(crate) replay: crate::render2d::Replay,
 }
 
 /// What happened to a batch run.

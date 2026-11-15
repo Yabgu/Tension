@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-90 imports across 13 modules: 58 registered by the host in 10 modules, 32 by 3 capability adapters.
+91 imports across 13 modules: 59 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -116,10 +116,11 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | import | signature | registered at |
 |---|---|---|
 | `run` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
-| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:225` |
-| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:255` |
-| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:282` |
-| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:334` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:274` |
+| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:304` |
+| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:331` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:383` |
+| `pipe` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:431` |
 
 ## `tension::input` — capability
 
