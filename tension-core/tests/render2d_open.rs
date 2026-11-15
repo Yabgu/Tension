@@ -395,20 +395,20 @@ fn verbs(probe: &mut Probe) {
     // ── texture_load ──────────────────────────────────────────────────────
     // A 1x1 RGBA IWI, built here rather than loaded: the point is the decode
     // and the upload, and a fixture file would hide which byte was wrong.
-    let mut iwi = vec![0u8; 78];
+    // Layout: `IwiFile.h` — 36-byte base header, four 6-byte components, pixels.
+    let mut iwi = vec![0u8; 60 + 4];
     iwi[0..4].copy_from_slice(b"IWI1");
     iwi[4..8].copy_from_slice(&1u32.to_le_bytes());
     iwi[8..12].copy_from_slice(&1u32.to_le_bytes());
-    iwi[13..15].copy_from_slice(&4u16.to_le_bytes());
-    iwi[15..17].copy_from_slice(&32u16.to_le_bytes());
+    iwi[34..36].copy_from_slice(&4u16.to_le_bytes());
     for component in 0..4u16 {
-        let at = 18 + component as usize * 6;
-        iwi[at] = component as u8;
+        let at = 36 + component as usize * 6;
+        iwi[at] = component as u8 + 1; // R, G, B, A
+        iwi[at + 1] = 2; // UNORM
         iwi[at + 2..at + 4].copy_from_slice(&(component * 8).to_le_bytes());
         iwi[at + 4..at + 6].copy_from_slice(&8u16.to_le_bytes());
     }
-    iwi[66..74].copy_from_slice(&4u64.to_le_bytes());
-    iwi[74..78].copy_from_slice(&[10, 20, 30, 255]);
+    iwi[60..64].copy_from_slice(&[10, 20, 30, 255]);
 
     match state.texture_load(&iwi, 1) {
         Ok(id) => probe.equal("texture_load returns texture 1", id, 1),
@@ -422,9 +422,9 @@ fn verbs(probe: &mut Probe) {
         Some(2),
     );
     // 80 bytes, so the length check passes and the magic check is what
-    // decides. The C++ reader checks length first (`texture.cpp:71-74`), and a
-    // short buffer is `-EINVAL` there too — refusing a truncated *container*
-    // before refusing an unknown *format* is the ordering the DSO had.
+    // decides. The parser checks length first (`IwiFile.cpp`, `ParseStructural`),
+    // and a short buffer is `-EINVAL` there too — refusing a truncated
+    // *container* before refusing an unknown *format* is the ordering the DSO had.
     let mut png = vec![0u8; 80];
     png[0..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
     probe.equal(

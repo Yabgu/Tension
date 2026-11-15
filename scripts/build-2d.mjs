@@ -296,6 +296,12 @@ writeFileSync(
 console.log(`${RUNNER}: embedded ${join(out, 'shaders_spv.h')}`);
 
 const reference = join(src, 'reference');
+const imageviewer = join(repo, 'third_party', 'ImageViewer');
+const iwi_source = join(imageviewer, 'src', 'format', 'IwiFile.cpp');
+if (!existsSync(iwi_source)) {
+  die('third_party/ImageViewer is not initialised — run\n' +
+      '  git submodule update --init third_party/ImageViewer');
+}
 const artifact = join(out, WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
 const link = run(cxx, [
   '-std=c++17', '-O2', '-g', '-fPIC', '-Wall', '-Wextra',
@@ -303,10 +309,13 @@ const link = run(cxx, [
   `-I${reference}`,
   `-I${out}`,
   `-I${join(repo, 'tension-core', 'include')}`,
+  `-I${join(imageviewer, 'src', 'format')}`,
+  `-I${join(imageviewer, 'src', 'imageviewer')}`,
   ...sdl.cflags,
   join(reference, 'adapter.cpp'),
   join(reference, 'render.cpp'),
   join(reference, 'texture.cpp'),
+  iwi_source,
   '-shared',
   '-o', artifact,
   ...sdl.libs,

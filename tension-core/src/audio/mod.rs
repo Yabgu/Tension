@@ -56,6 +56,10 @@ pub mod headless;
 /// sound device.
 #[cfg(feature = "audio")]
 pub mod real;
+/// Accepts everything, plays nothing. The adapter a sandboxed guest gets: it
+/// must not open a device (the `cpal` stream is `!Send` on ALSA and the session
+/// is a process singleton) and must not write a WAV file either.
+pub mod silent;
 
 /// Maximum number of concurrently live voices.
 pub const MAX_VOICES: usize = 32;

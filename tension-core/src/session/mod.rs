@@ -1918,6 +1918,19 @@ mod lifecycle {
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),
+                // A unit-test store is not sandboxed: no capture sink and no
+                // memory ceiling, which is what the outer guest gets.
+                captured_out: None,
+                memory_budget: Default::default(),
+                // A guest-that-runs-guests table, empty: these stores never call
+                // `dev.run`, and an engine of their own would be a second
+                // compiled-code cache. Both are the defaults for exactly that reason.
+                guest_depth: 0,
+                nested_viewport: None,
+                runs: Default::default(),
+                next_run_id: 1,
+                engine: Default::default(),
+                module_cache: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),
                 session: None,
@@ -2353,6 +2366,19 @@ mod verbs {
                 host_window: None,
                 host_surface: None,
                 render2d: Default::default(),
+                // A unit-test store is not sandboxed: no capture sink and no
+                // memory ceiling, which is what the outer guest gets.
+                captured_out: None,
+                memory_budget: Default::default(),
+                // A guest-that-runs-guests table, empty: these stores never call
+                // `dev.run`, and an engine of their own would be a second
+                // compiled-code cache. Both are the defaults for exactly that reason.
+                guest_depth: 0,
+                nested_viewport: None,
+                runs: Default::default(),
+                next_run_id: 1,
+                engine: Default::default(),
+                module_cache: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),
                 session: None,

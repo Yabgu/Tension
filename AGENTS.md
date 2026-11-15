@@ -5,11 +5,15 @@ come first; the rest is the Windows build cheat-sheet.
 
 ## Hard rules
 
-1. **`third_party/ogre-next` is read-only.** Never edit, generate into, format,
-   or delete anything there — including its build trees (`ogre-next-build*`,
-   `ogre-next-install`) and the `ogre-next` submodule. `.gitignore` may cover
-   paths there, but the tree itself is off limits. Build OGRE only through
-   `npm run bootstrap` (`scripts/bootstrap.mjs`).
+1. **`third_party/` checkouts are read-only.** Never edit, generate into,
+   format, or delete anything under `third_party/ogre-next` or
+   `third_party/ImageViewer` — including OGRE's build trees (`ogre-next-build*`,
+   `ogre-next-install`) and either submodule. `.gitignore` may cover paths
+   there, but the trees themselves are off limits. Build OGRE only through
+   `npm run bootstrap` (`scripts/bootstrap.mjs`); ImageViewer is consumed as
+   source (its `src/format/IwiFile.cpp` is compiled into the host by
+   `tension-core/build.rs`), so take a format change upstream and bump the
+   submodule pin here.
 2. **TensionScript is a sibling repo, not a submodule.** The language lives at
    `~/work/TensionScript` (the canonical checkout). Tension consumes the
    compiler as the published `@yabgu_gm/tensionscript` npm package, which each
@@ -42,7 +46,7 @@ come first; the rest is the Windows build cheat-sheet.
      record is reached as `records[i].x`, a pixel as `px.r`; hand-written
      offsets belong only in a byte-level control (see
      `examples/2d/isometric/src/bindings.ts`) or where the layout is packed and
-     cannot be a struct (the IWI header, `TS6408`).
+     cannot be a struct (`TS6408`).
    - **No `addr + i * RECORD_SIZE` in guest code.** Records are
      `@unmanaged [T *]` — the compiler supplies the stride.
    - **No free writer function, no named padding.** A record fills itself
@@ -128,6 +132,18 @@ the offsets and the stride. Worked examples:
 `examples/2d/isometric` (real art, hand-written records — the control) and
 `examples/2d/isometric-framework` (the same scene via the library, frames
 byte-identical).
+
+**The IWI container has one authority: ImageViewer.**
+`third_party/ImageViewer/src/format/IwiFile.h` defines the on-disk header and
+`IwiFile.cpp` implements the grammar behind a C ABI. The host
+(`tension-core/src/render2d/iwi.rs`) and the C++ bisect adapter
+(`tension-2d/reference/texture.cpp`) call that API; neither carries a parser.
+A guest writing a texture at run time uses `writeIwiHeader`
+(`assembly/2d/iwi.ts`), and the Node asset tools use `tools/lib/iwi.mjs`; both
+mirror the C header because wasm and Node cannot call it, so the container
+layout is stated in exactly those two mirrors and nowhere else. A change to the
+format goes upstream first (`IwiFile.h`), then the submodule pin here moves,
+then the two mirrors follow.
 
 **The 2D verbs are declared once, in the SDK**
 (`assembly/2d/verbs.ts`): `tension-2d/include/tension_2d.h` has no `schema/`
@@ -409,10 +425,11 @@ grep -rnE '^\s*@(managed|unmanaged) struct' tension-framework/assembly examples/
 
 The first two may hit only where a comment names the reason: a byte-level
 control (`examples/2d/isometric/src/bindings.ts`, the independent oracle) or a
-packed format that cannot be a struct (the IWI header). `RECORD_SIZE` should
-appear where a buffer is *sized*, never inside an index. The last should be
-empty — a declaration carries no storage annotation. A `usize` in a signature is
-a raw byte span (a blob, a pixel buffer), never a run of records.
+packed format that cannot be a struct (name the format and the diagnostic in
+the comment). `RECORD_SIZE` should appear where a buffer is *sized*, never
+inside an index. The last should be empty — a declaration carries no storage
+annotation. A `usize` in a signature is a raw byte span (a blob, a pixel
+buffer), never a run of records.
 
 Then run the example: the pixel assertions are where a wire mistake is caught,
 and they are the reason the layout needs no test of its own.

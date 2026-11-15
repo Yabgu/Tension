@@ -26,6 +26,7 @@ yet.
 | The OGRE host-surface probe does not run on Windows | v7 | it reaches the adapter with `libc::dlopen`, which has no Windows equivalent; the test is Unix-gated and reports itself skipped | a `LoadLibraryExA` shim in the test, and `dso_path()` learning the `.dll` spelling | — |
 | The GL3+ fallback needs an X11 display | — | GL3+ is the non-Vulkan fallback and it is GLX-only; a Wayland window has no adoptable handle | an EGL backend, or `SDL_VIDEODRIVER=x11` on XWayland | vision §6 |
 | One window per process | ABI v6 | one `HostSurface` in the ABI | a surface set | vision §5.4 |
+| Nested guest texture binding shares the outer guest's 16 atlas pages | the atlas (v1) | a page is a layer of one per-pipeline array, so each bound guest surface takes one | a per-surface pipeline, or a wider layer count | — |
 | Win32 header path is a checked-in overlay | `ci/linsys2.md` | Ogre's tree has no `WIN32` platform define for the Vulkan window | upstream, or the overlay grows | — |
 | The isometric suites fail on this rig | — | `vkCreateGraphicsPipelines` fails under `dzn` | the same ICD | CI |
 
@@ -122,6 +123,24 @@ image. The value exists so a backend that can render offscreen implements one
 contract instead of inventing a second one — it is not a claim that this backend
 can. A guest that asks for `offscreen` and an explicit GPU renderer is refused
 with `-EINVAL`, exactly as `headless` over a GPU renderer is.
+
+## The 16 atlas pages are shared between outer and nested guests
+
+The 2D renderer binds a pipeline's textures as a `texture2DArray` of
+`MAX_ATLAS_PAGES` layers (`tension-core/src/render2d/device.rs:50`), and the
+record's `tex` field is the layer index. That cap is a property of the array, not
+of a guest: an embedded guest surface bound as an outer texture consumes one of
+the **outer** guest's sixteen pages, so embedding three live surfaces leaves
+thirteen for the host. A future pass that wants more either raises the layer
+count — a data-format change, since it is sampled as a layer index — or gives each
+surface its own pipeline, paying one draw call per surface.
+
+**Not yet hit.** Pass 4's Play Mode is the record path: the nested guest submits
+records that the host copies into the editor's frame, and those records sample
+the shared IWI atlas, which is already there. The cap becomes real when texture
+rendering lands — the path where the inner guest renders into a target the outer
+guest binds as a page. Shape, constraints and the open feasibility question are
+in [`docs/backlog/buffer-rendering.md`](backlog/buffer-rendering.md).
 
 ## The hardware floor is a 2017-or-newer GPU
 

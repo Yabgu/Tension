@@ -206,6 +206,102 @@ fn main() {
         println!("cargo:rustc-link-arg-tests=-lm");
     }
 
+    // ── ImageViewer's .iwi format library ─────────────────────────────────
+    //
+    // The container grammar lives once, in ImageViewer's `src/format/IwiFile.*`,
+    // and every reader in this tree goes through its C ABI. Compile that one
+    // translation unit here rather than letting each consumer grow a parser:
+    // the header on disk has already changed once, and every hand copy of it
+    // had to change with it.
+    //
+    // The ABI is `extern "C"` and the implementation uses only libc — measured
+    // with `nm -u`: `memcpy` and `free`, nothing else. That is what lets the
+    // archive cross the MSVC-host / MinGW-compiler boundary the same way
+    // `libtension_solver.a` does. `-fno-exceptions`, `-fno-rtti`,
+    // `-fno-stack-protector` and `-fno-asynchronous-unwind-tables` are the
+    // reason: with them the object names no C++ runtime, no libgcc helper and
+    // no unwinder symbol. No `-Wall` either — the file is upstream's, and its
+    // warnings are for upstream to fix, not for a build log here to repeat.
+    let imageviewer = manifest
+        .parent()
+        .expect("tension-core lives next to third_party")
+        .join("third_party")
+        .join("ImageViewer");
+    let iwi_source = imageviewer.join("src").join("format").join("IwiFile.cpp");
+    let iwi_header = imageviewer.join("src").join("format").join("IwiFile.h");
+    let plugin_header = imageviewer
+        .join("src")
+        .join("imageviewer")
+        .join("ImagePluginDef.h");
+    let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    if !iwi_source.exists() {
+        panic!(
+            "{} is missing — initialise the submodule with `git submodule update --init \
+             third_party/ImageViewer`",
+            iwi_source.display()
+        );
+    }
+    println!("cargo:rerun-if-changed={}", iwi_source.display());
+    println!("cargo:rerun-if-changed={}", iwi_header.display());
+    println!("cargo:rerun-if-changed={}", plugin_header.display());
+
+    // A GNU-compatible driver on every platform, matching the rest of this
+    // tree's C++ targets (`scripts/build-2d.mjs`, `scripts/build-native.mjs`).
+    // `TENSION_CXX` names a different one when a machine needs it.
+    let cxx = std::env::var("TENSION_CXX")
+        .or_else(|_| std::env::var("CXX"))
+        .unwrap_or_else(|_| {
+            if cfg!(windows) {
+                "g++".to_string()
+            } else {
+                "c++".to_string()
+            }
+        });
+    let iwi_obj = out_dir.join("iw_iwi_file.o");
+    let mut command = Command::new(&cxx);
+    command
+        .args([
+            "-std=c++17",
+            "-O2",
+            "-fPIC",
+            "-fno-exceptions",
+            "-fno-rtti",
+            "-fno-stack-protector",
+            "-fno-asynchronous-unwind-tables",
+        ])
+        .arg("-I")
+        .arg(imageviewer.join("src").join("format"))
+        .arg("-I")
+        .arg(imageviewer.join("src").join("imageviewer"))
+        .arg("-c")
+        .arg(&iwi_source)
+        .arg("-o")
+        .arg(&iwi_obj);
+    prefer_tool_own_dir(&mut command, &cxx);
+    run_or_panic(
+        command,
+        &format!("compiling ImageViewer's IWI format library {}", iwi_source.display()),
+    );
+
+    let iwi_archive = out_dir.join("libiw_iwi_file.a");
+    let _ = std::fs::remove_file(&iwi_archive);
+    let mut ar = Command::new("ar");
+    ar.args(["rcs"]).arg(&iwi_archive).arg(&iwi_obj);
+    prefer_tool_own_dir(&mut ar, "ar");
+    run_or_panic(
+        ar,
+        &format!("archiving ImageViewer's format library into {}", iwi_archive.display()),
+    );
+    if target.contains("msvc") {
+        // `-liwi_iwi_file` resolves to `iw_iwi_file.lib` under link.exe. The
+        // archive is GNU `ar` format, which link.exe reads (the solver archive
+        // is linked the same way).
+        std::fs::copy(&iwi_archive, out_dir.join("iw_iwi_file.lib"))
+            .expect("copy the IwiFile archive to the name MSVC's linker expects");
+    }
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    println!("cargo:rustc-link-lib=static=iw_iwi_file");
+
     // ── the P7 sample plugin ──────────────────────────────────────────────
     //
     // The shim has no plugin load-from-disk (`tension-solver/DESIGN.md` §11), so the P7

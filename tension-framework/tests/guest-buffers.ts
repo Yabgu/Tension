@@ -116,6 +116,37 @@ export function _start_game(): void {
     check(records.count == CAPACITY, "the buffer's count changed under collection");
   }
 
+  // ── placing a forwarded frame ────────────────────────────────────────────
+  //
+  // `place` is how a nested guest's frame reaches the editor's canvas: the guest
+  // wrote coordinates in its own rectangle, and the host that forwards the frame
+  // knows the page base but not where the viewport is. Two things are asserted,
+  // and both are the kind of mistake a frame shows only as a sprite in the wrong
+  // place: the move (every kept record is offset by the same amount) and the clip
+  // (anything the rectangle cannot show is dropped, not clamped).
+  const placed = RecordBuffer.create(6);
+  const small = new Frame(0, <u16>0, <u16>0, <u16>4, <u16>4);
+  placed.pushFrame(0, 0, small, 1, 0, 0);      // -> (10, 20), kept
+  placed.pushFrame(100, 100, small, 2, 0, 0);  // far outside, dropped
+  placed.pushFrame(12, 22, small, 3, 0, 0);    // below the bottom edge, dropped
+  placed.pushFrame(2, 2, small, 4, 0, 0);      // -> (12, 22), kept: its last row is 26
+  // `flags` is the one field `setRect` does not write (the adapter gives no bit a
+  // meaning), so a move that forgets it would silently clear it.
+  const placedView = placed.view();
+  placedView[0].flags = 7;
+  placedView[3].flags = 9;
+
+  const kept = placed.place(10, 20, 16, 16);
+  check(kept == 2, "place kept the two records inside the rectangle (got " + kept.toString() + ")");
+  check(placed.count == 2, "the buffer's count is what survived");
+  check(placed.dropped == 2, "the two outside it are counted as dropped");
+  check(placedView[0].x == 10 && placedView[0].y == 20, "a kept record moved by the origin");
+  check(placedView[1].x == 12 && placedView[1].y == 22, "and so did the one behind it");
+  check(placedView[0].sortKey == 1 && placedView[1].sortKey == 4,
+        "compaction kept the records in submission order");
+  check(placedView[0].flags == 7 && placedView[1].flags == 9,
+        "a move carries `flags`, which `setRect` does not write");
+
   // ── the pixel buffer ─────────────────────────────────────────────────────
   const pixels = Pixels.create(8, 4);
   check(pixels.byteLength() == 8 * 4 * 4, "Pixels sizes itself from its geometry");

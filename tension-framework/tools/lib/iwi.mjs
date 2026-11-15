@@ -1,16 +1,23 @@
 // The IWI writer: the one container the 2D renderer's decoder accepts.
 //
-// `tension-core/src/render2d/iwi.rs` parses a 74-byte header and interleaved
-// 8-bit components. That file's tests build the same header inline; this is the
-// build-time writer for the docs UI's atlas, and it replaces the copy that grew
-// up in the starter template's `tools/make-atlas.mjs`.
+// The format authority is ImageViewer's `src/format/IwiFile.h`. Node cannot
+// call that C ABI without a native addon, so this file mirrors the layout —
+// but the *reader* side does call it (`tension-core/src/render2d/iwi.rs`), which
+// means the framework/example tests are a cross-check of this writer against
+// the authoritative parser rather than two copies agreeing with each other.
 //
-// The header is written field by field rather than as a struct because it is a
-// *packed* C layout: `componentCount` is a `u16` at offset 13, `bitsPerPixel` a
-// `u16` at 15, and each component record at 18+ is `u8, u8, u16, u16` — several
-// fields sit on odd offsets. Nothing in Node would align them the way C does,
-// and TensionScript's `@abi.align` refuses to lower alignment for the same
-// reason (`TS6408`). The byte stores are the honest spelling.
+// The header on disk (`IwiFile.h`):
+//
+//    0   4  magic "IWI1"          16  4  storage flags (0 = interleaved)
+//    4   4  width                20  4  row stride (0 = tightly packed)
+//    8   4  height               24  8  payload encoding (zero = raw)
+//   12   4  metaBytes            32  1  colorSpace (0 = sRGB)
+//                               33  1  reserved
+//                               34  2  componentCount
+//                               36  *  N x 6-byte component records
+//
+// A component record is `{semantic u8, class u8, bitOffset u16, bitWidth u16}`.
+// Pixels follow the table (and any metadata), tightly packed and interleaved.
 //
 // **Four components, not three.** The starter's sprite sheet is opaque RGB. A
 // font is not: a glyph pixel is either ink or nothing, and the panel behind it
@@ -18,10 +25,47 @@
 // RGBA8 with alpha 255, which is exactly the wrong answer here, so the alpha has
 // to survive the file.
 
-const HEADER_BYTES = 74;
+/** `IWI_FILE_BASE_HEADER_BYTES`: the fixed prefix and the component-table offset. */
+export const IWI_BASE_HEADER_BYTES = 36;
+/** `IWI_FILE_COMPONENT_BYTES`: one component record's stride. */
+export const IWI_COMPONENT_BYTES = 6;
 
-/** Component semantics, from ImageViewer's `ImageColorSemantic`. */
+/** Component semantics, from ImageViewer's `IWComponentSemantic`. */
 const SEMANTIC = { red: 1, green: 2, blue: 3, alpha: 4 };
+/** `IW_COMPONENT_CLASS_UNORM` — an unsigned normalized 8-bit sample. */
+const COMPONENT_CLASS_UNORM = 2;
+
+function encodeIwi(width, height, components, pixels) {
+  const pixelBytes = width * height * components.length;
+  if (pixels.length !== pixelBytes) {
+    throw new Error(
+      `encodeIwi: expected ${pixelBytes} bytes of ${components.length}-component pixels, ` +
+      `got ${pixels.length}`,
+    );
+  }
+
+  const header = Buffer.alloc(
+    IWI_BASE_HEADER_BYTES + components.length * IWI_COMPONENT_BYTES,
+  );
+  header.write('IWI1', 0, 'ascii');
+  header.writeUInt32LE(width, 4);
+  header.writeUInt32LE(height, 8);
+  // metaBytes = 0 (12), storage flags = 0 (16), stride = 0 (20),
+  // payloadEncoding = zero, i.e. "raw" (24..31).
+  header[32] = 0; // colorSpace: sRGB
+  header[33] = 0; // reserved
+  header.writeUInt16LE(components.length, 34);
+
+  for (let i = 0; i < components.length; i++) {
+    const at = IWI_BASE_HEADER_BYTES + i * IWI_COMPONENT_BYTES;
+    header[at] = components[i];
+    header[at + 1] = COMPONENT_CLASS_UNORM;
+    header.writeUInt16LE(i * 8, at + 2);
+    header.writeUInt16LE(8, at + 4);
+  }
+
+  return Buffer.concat([header, Buffer.from(pixels)]);
+}
 
 /**
  * Encode an RGBA8 raster as IWI.
@@ -32,36 +76,51 @@ const SEMANTIC = { red: 1, green: 2, blue: 3, alpha: 4 };
  * @returns {Buffer}
  */
 export function encodeIwiRgba(width, height, rgba) {
-  const expected = width * height * 4;
-  if (rgba.length !== expected) {
-    throw new Error(`encodeIwi: expected ${expected} bytes of RGBA, got ${rgba.length}`);
+  return encodeIwi(
+    width,
+    height,
+    [SEMANTIC.red, SEMANTIC.green, SEMANTIC.blue, SEMANTIC.alpha],
+    rgba,
+  );
+}
+
+/**
+ * Read the header `IwiFile.h` defines, for a verifier that needs the geometry.
+ *
+ * Grammar and policy belong to the C implementation; this is only the field
+ * walk a build script does before it hands the bytes to the renderer.
+ *
+ * @param {Buffer|Uint8Array} bytes
+ */
+export function readIwiHeader(bytes) {
+  const buf = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (buf.length < IWI_BASE_HEADER_BYTES) {
+    throw new Error(`readIwiHeader: ${buf.length} bytes is shorter than the header`);
+  }
+  if (buf.subarray(0, 4).toString('ascii') !== 'IWI1') {
+    throw new Error('readIwiHeader: not an IWI container (magic mismatch)');
+  }
+  const width = buf.readUInt32LE(4);
+  const height = buf.readUInt32LE(8);
+  const metaBytes = buf.readUInt32LE(12);
+  const componentCount = buf.readUInt16LE(34);
+  const pixelOffset = IWI_BASE_HEADER_BYTES + componentCount * IWI_COMPONENT_BYTES + metaBytes;
+
+  let bitsPerPixel = 0;
+  for (let i = 0; i < componentCount; i++) {
+    bitsPerPixel += buf.readUInt16LE(IWI_BASE_HEADER_BYTES + i * IWI_COMPONENT_BYTES + 4);
   }
 
-  const header = Buffer.alloc(HEADER_BYTES);
-  header.write('IWI1', 0, 'ascii');
-  header.writeUInt32LE(width, 4);
-  header.writeUInt32LE(height, 8);
-  header[12] = 0; // colorSpace: sRGB
-  header.writeUInt16LE(4, 13); // componentCount
-  header.writeUInt16LE(32, 15); // bitsPerPixel
-  header[17] = 0; // storageLayout: interleaved
-
-  // Four component descriptors: {semantic u8, class u8, bitOffset u16, bitWidth u16}.
-  // Class 2 is UNORM — an unsigned normalized integer, which is what 8-bit
-  // colour is.
-  const components = [SEMANTIC.red, SEMANTIC.green, SEMANTIC.blue, SEMANTIC.alpha];
-  for (let i = 0; i < components.length; i++) {
-    const at = 18 + i * 6;
-    header[at] = components[i];
-    header[at + 1] = 2;
-    header.writeUInt16LE(i * 8, at + 2);
-    header.writeUInt16LE(8, at + 4);
-  }
-  // The remaining four slots stay zero: no more components, and a reader that
-  // walks `componentCount` never reaches them.
-  header.writeBigUInt64LE(BigInt(rgba.length), 66);
-
-  return Buffer.concat([header, Buffer.from(rgba)]);
+  return {
+    width,
+    height,
+    componentCount,
+    bitsPerPixel,
+    colorSpace: bytes[32],
+    metaBytes,
+    pixelOffset,
+    pixelBytes: Math.ceil((width * height * bitsPerPixel) / 8),
+  };
 }
 
 /**

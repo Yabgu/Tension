@@ -15,7 +15,9 @@
 //! * [`pipeline`] — [`pipeline::PipelineCache`]: preset, guest graph, and the
 //!   one-call compile that replaced `-ENOSYS` + two `compile_graph` calls.
 //! * [`record`] — the 28-byte sprite record and the graph's ordering of them.
-//! * [`iwi`] — the IWI container reader.
+//! * [`iwi`] — the IWI policy and FFI wrapper: ImageViewer's `IwiFile.h` parses
+//!   the container, this module applies the renderer's capability policy and
+//!   maps the result onto this crate's errnos.
 //! * [`error`] — the refusals and the errnos they become, variant for variant
 //!   from the C++ path so a guest that handled them before handles them after.
 //!
@@ -40,5 +42,7 @@ pub mod iwi;
 pub mod pipeline;
 pub mod record;
 
-pub use device::{Canvas, Render2dState, RendererId};
+pub use device::{
+    Canvas, Deferred, Mode, NESTED_PAGE_BASE, Render2dState, RendererId, Replay, nested_page,
+};
 pub use error::Render2dError;

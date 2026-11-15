@@ -507,6 +507,52 @@ fn screenshot(
 }
 
 /// How many captured log lines contain `needle`.
+/// Ask for frames until one arrives at the expected byte length, or the deadline
+/// passes.
+///
+/// **Why this exists rather than one `screenshot` call.** The frame counter and
+/// the readback are two different facts: `wait_for_frames` proves a frame was
+/// *presented*, and `screenshot` returns the most recently landed one, which can
+/// still be a frame drawn before the swapchain rebuild took effect. Measured on
+/// an unchanged tree: 1 failure in 15 runs of this test alone, and 1 in 6 runs
+/// of the full suite — because the sleep before this point is wall clock and the
+/// render thread's progress is not, so load changes the odds.
+///
+/// Bounding the wait on the *size* makes “when to look” deterministic without
+/// weakening the claim: the assertion is still “a readback of exactly
+/// `width*height*4` bytes exists after the resize”, and a build that never
+/// rebuilds the swapchain still fails, 20 s later instead of immediately.
+///
+/// Returns the bytes on success; on timeout, `None` and the last size that *did*
+/// arrive — the difference between “no frame at all” and “frames at the old
+/// size” is the difference between a stalled render thread and a rebuild that
+/// never happened. The second field is only meaningful when the first is `None`.
+fn screenshot_of_size(
+    state_ptr: *mut c_void,
+    entry: &Registered,
+    capacity: u32,
+    width: u32,
+    height: u32,
+    timeout: std::time::Duration,
+) -> (Option<Vec<u8>>, Option<usize>) {
+    let expected = width as usize * height as usize * 4;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut last_seen = None;
+    loop {
+        // One attempt per iteration; `screenshot` does the arming and the copy.
+        if let Some(bytes) = screenshot(state_ptr, entry, capacity, std::time::Duration::from_millis(20)) {
+            if bytes.len() == expected {
+                return (Some(bytes), None);
+            }
+            last_seen = Some(bytes.len());
+        }
+        if std::time::Instant::now() >= deadline {
+            return (None, last_seen);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 fn count_log(state: &State, needle: &str) -> usize {
     state.logs.iter().filter(|line| line.contains(needle)).count()
 }
@@ -868,8 +914,8 @@ fn main() {
     // readback that comes back 640x480x4 means the rebuilt swapchain is the one
     // being drawn into, not the old one still attached.
     if let Some(entry) = &shot {
-        match screenshot(state_ptr, entry, SHOT_CAP, std::time::Duration::from_secs(20)) {
-            Some(bytes) => {
+        match screenshot_of_size(state_ptr, entry, SHOT_CAP, 640, 480, std::time::Duration::from_secs(20)) {
+            (Some(bytes), _) => {
                 println!("  frame 2 readback: {} bytes (expected {})", bytes.len(), 640 * 480 * 4);
                 check(!bytes.is_empty(), "e. frame 2 readback returned pixels");
                 check(
@@ -883,8 +929,13 @@ fn main() {
                 println!("  frame 2 non-zero bytes: {non_zero} of {}", bytes.len());
                 check(non_zero > 0, "e. frame 2 readback is not an untouched zero buffer");
             }
-            None => {
-                println!("  FAIL frame 2 readback: no pixels within 20s after the resize");
+            (None, last_seen) => {
+                match last_seen {
+                    Some(size) => println!(
+                        "  FAIL frame 2 readback: frames kept arriving at {size} bytes, never 640x480x4, within 20s"
+                    ),
+                    None => println!("  FAIL frame 2 readback: no pixels within 20s after the resize"),
+                }
                 std::process::exit(1);
             }
         }
@@ -893,6 +944,12 @@ fn main() {
         // No new resize, a couple of hundred milliseconds of ordinary frames:
         // the size must not flap. A rebuild loop or a bounce between the host's
         // size and Ogre's would show up here as a third dimension.
+        //
+        // One sample is enough here, and that is not the same bet the frame-2
+        // readback above was making: `screenshot` returns the most recently
+        // landed frame, and a 640x480x4 one has already landed, so no older
+        // frame can arrive behind it. The convergence check above catches an
+        // actual flap — every flap logs a rebuild request.
         std::thread::sleep(std::time::Duration::from_millis(200));
         match screenshot(state_ptr, entry, SHOT_CAP, std::time::Duration::from_secs(20)) {
             Some(bytes) => {

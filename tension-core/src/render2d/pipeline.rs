@@ -368,6 +368,67 @@ impl PipelineCache {
         }
         Ok(())
     }
+
+    /// Build a preset for **another guest's** frame, under an id of its own.
+    ///
+    /// A pipeline owns one texture array, and an array has one size, so a nested
+    /// guest's atlas cannot share a pipeline with the outer guest's even when both
+    /// name preset 1. Reusing the id would mean reusing the array — which is
+    /// exactly the refusal measured in the editor: the UI's font pages are
+    /// 640x500 and the nested scene's are 128x128, so binding the second into the
+    /// first is `-EINVAL`, and the whole nested frame goes with it.
+    ///
+    /// So a replay builds its own object. The shaders are the preset's, compiled
+    /// again into a second pipeline (~one object, not one shader compile: `naga`
+    /// parsed them once), and the id comes from the runtime range because that is
+    /// the range no preset or pinned graph claims.
+    ///
+    /// **Not registered in `by_blob`**, deliberately: that table answers "which
+    /// id does this graph have *in this guest's* numbering", and a pipeline built
+    /// for another guest is not this guest's to find.
+    pub fn fresh_preset(
+        &mut self,
+        device: &sdl3::gpu::Device,
+        preset_id: u16,
+    ) -> Result<u32, Render2dError> {
+        if !(PIPE_PRESET_MIN..=PIPE_PRESET_MAX).contains(&preset_id) {
+            return Err(Render2dError::NotFound(
+                "replay: preset id outside 1..99".to_string(),
+            ));
+        }
+        if preset_id != 1 {
+            return Err(Render2dError::Unsupported(format!(
+                "replay: preset '{preset_id}' is not built into this adapter"
+            )));
+        }
+        self.reserve_slot()?;
+        let (vs, fs) = preset_spirv()?;
+        let pipeline = build_pipeline(device, vs, fs)?;
+        let id = self.next_runtime_pipe;
+        self.pipelines.insert(id, pipeline);
+        self.next_runtime_pipe += 1;
+        Ok(id)
+    }
+
+    /// The graph-blob counterpart of [`Self::fresh_preset`].
+    pub fn fresh_blob(
+        &mut self,
+        device: &sdl3::gpu::Device,
+        blob: &[u8],
+    ) -> Result<u32, Render2dError> {
+        if blob.is_empty() {
+            return Err(Render2dError::Invalid(
+                "replay: empty graph blob".to_string(),
+            ));
+        }
+        self.reserve_slot()?;
+        let (vs, fs) = compile_blob(blob)?;
+        let pipeline = build_pipeline(device, &vs, &fs)?;
+        let id = self.next_runtime_pipe;
+        self.pipelines.insert(id, pipeline);
+        self.next_runtime_pipe += 1;
+        Ok(id)
+    }
 }
 
 #[cfg(test)]

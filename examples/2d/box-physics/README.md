@@ -46,6 +46,6 @@ Output:
 
 - `src/math.ts`: 2D scalar math primitives (vectors, dot products, cross products, angle normalization).
 - `src/physics.ts`: `Body`, `Contact`, SAT collision detection, polygon clipping, and `PhysicsWorld` with sequential impulse solver.
-- `src/atlas.ts`: Generates 1024x1024 RGBA8 IWI1 texture atlas containing pre-rasterized rotated box frames and tile textures.
+- `src/atlas.ts`: Generates a 1024x1024 RGBA8 IWI texture atlas containing pre-rasterized rotated box frames and tile textures.
 - `src/main.ts`: Main game entry (`_start_game`), scene setup, simulation loop, canvas submission, screenshot assertion, and window presentation.
 - `test.mjs`: Test harness asserting physics invariants, non-penetration, rotational displacement, and rendered frame contents.

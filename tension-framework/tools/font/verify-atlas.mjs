@@ -27,6 +27,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { readIwiHeader } from '../lib/iwi.mjs';
+
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 const argv = process.argv.slice(2);
@@ -128,15 +130,15 @@ for (const page of manifest.pages) {
     continue;
   }
   const bytes = readFileSync(file);
-  if (bytes.subarray(0, 4).toString('ascii') !== 'IWI1') {
-    fail(`page ${page.slot}: ${file} is not an IWI container`);
+  let header;
+  try {
+    header = readIwiHeader(bytes);
+  } catch (error) {
+    fail(`page ${page.slot}: ${file}: ${error.message}`);
     continue;
   }
-  const width = bytes.readUInt32LE(4);
-  const height = bytes.readUInt32LE(8);
-  const components = bytes.readUInt16LE(13);
-  const bitsPerPixel = bytes.readUInt16LE(15);
-  const pixelBytes = Number(bytes.readBigUInt64LE(66));
+  const { width, height, componentCount: components, bitsPerPixel, pixelBytes, pixelOffset } =
+    header;
 
   if (components !== 4 || bitsPerPixel !== 32) {
     fail(`page ${page.slot}: ${components} components at ${bitsPerPixel} bpp — the ` +
@@ -147,11 +149,11 @@ for (const page of manifest.pages) {
          `${atlas.width}x${atlas.height}. Every page of one pipeline shares the ` +
          `texture's dimensions, so this is not a cosmetic mismatch.`);
   }
-  if (bytes.length !== 74 + pixelBytes || pixelBytes !== width * height * 4) {
+  if (bytes.length !== pixelOffset + pixelBytes || pixelBytes !== width * height * 4) {
     fail(`page ${page.slot}: ${bytes.length} bytes does not match ` +
-         `${width}x${height}x4 + a 74-byte header`);
+         `${width}x${height}x4 + a ${pixelOffset}-byte header`);
   }
-  images.push({ page, width, height, pixels: bytes.subarray(74) });
+  images.push({ page, width, height, pixels: bytes.subarray(pixelOffset) });
 }
 
 if (images.length === manifest.pages.length) {

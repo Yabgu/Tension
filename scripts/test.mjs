@@ -10,7 +10,7 @@
 //   5. tension-core       cargo test
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
-//   8. line endings       no CRLF in a text file
+//   8. line endings       text files are UTF-8 with LF (batch files may be CRLF)
 //   9. dependency pins    one naga version, not two
 //  10. isometric (CI)    the three 2D problems, from synthetic pages
 //  11. isometric frame   the framework library reproduces the scene byte for byte
@@ -53,7 +53,7 @@
 
 import { availableParallelism } from 'node:os';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { REPO, WIN, baseEnv, which } from './lib/toolchain.mjs';
 import { inherit } from './lib/proc.mjs';
@@ -121,6 +121,21 @@ function execute(command, args = [], options = {}) {
   });
 }
 
+/// Every `*.test.mjs` in `dir`, sorted, as the absolute paths `node --test` wants.
+///
+/// Exists because the two shorter forms are both environment-dependent in a way
+/// a gate cannot afford: a directory path stopped resolving on Node 24, and a
+/// glob depends on Node's own `--test` glob support (added in its v21–v22 line;
+/// `execute()` spawns without a shell, so nothing else expands it). Reading the
+/// directory is the same answer on every version.
+function testFiles(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((name) => name.endsWith('.test.mjs'))
+    .sort()
+    .map((name) => join(dir, name));
+}
+
 // ── the suites ──────────────────────────────────────────────────────────────
 //
 // `needs`  suites that must have passed before this one starts. A failed
@@ -179,11 +194,22 @@ function execute(command, args = [], options = {}) {
 // guard can fire and the tag is not needed.
 
 const SUITES = {
+  // This suite is the repository's only guard against a CRLF or non-UTF-8 file,
+  // so it checks the guard first. The gate used to skip a file it could not
+  // decode and then report green; `test-eol-gate.mjs` runs it against a fixture
+  // tree where each rule is violated once, so a gate that stops looking fails
+  // here rather than passing there.
   eol: {
     title: 'line endings',
     needs: [],
     holds: [],
-    run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
+    run: async () => {
+      const gate = await execute(node, [join(repo, 'scripts', 'test-eol-gate.mjs')]);
+      if (gate.status !== 0) return gate;
+      const tree = await execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]);
+      // Both, so a passing run still shows the fixture count beside the tree count.
+      return { status: tree.status, output: gate.output + tree.output };
+    },
   },
 
   // A dependency-hygiene check rather than a test: cargo links two naga copies
@@ -263,7 +289,32 @@ const SUITES = {
     title: 'tension CLI',
     needs: [],
     holds: [],
-    run: () => execute(node, ['--test', join(repo, 'packages', 'cli', 'test')]),
+    // **The test files, named, not a directory.** `node --test <dir>` resolved a
+    // directory to its test files on the Node this was written against and
+    // stopped on Node 24, where an argument is a module path:
+    //
+    //     node --test packages/cli/test
+    //     Error: Cannot find module '.../packages/cli/test'  (MODULE_NOT_FOUND)
+    //
+    // The gate was red on Node 24 for an invocation reason and green on a box
+    // running an older Node. A glob would fix that laptop and re-introduce the
+    // same dependence one version later (Node grew `--test` glob support in its
+    // v21–v22 line, and `execute()` spawns without a shell, so the pattern
+    // reaches Node unexpanded). Enumerating the directory is version-independent
+    // and still picks up a second test file the day one is added.
+    run: () => {
+      const files = testFiles(join(repo, 'packages', 'cli', 'test'));
+      if (files.length === 0) {
+        // Not a skip: a suite with no test files is the failure this fix is
+        // about (a path that resolved to nothing used to look like a passing
+        // suite on a version where the directory form worked).
+        return Promise.resolve({
+          status: 1,
+          output: 'no *.test.mjs under packages/cli/test — the suite would assert nothing\n',
+        });
+      }
+      return execute(node, ['--test', ...files]);
+    },
   },
 
   // The documentation build: Markdown and the SDK's doc comments into a binary
@@ -521,11 +572,20 @@ const SUITES = {
     // without libclang the default-feature build fails before a single test runs.
     //
     // Set TENSION_AI=1 to include the ai-gated tests on a machine that has it.
+    //
+    // **`render2d-core` is named explicitly, and that is a fix rather than a
+    // preference.** `--no-default-features` was a way of saying "no `ai`", and
+    // it also dropped the in-core 2D renderer, so the gated cargo tests have
+    // only ever exercised the DSO escape hatch — the build this tree no longer
+    // ships. Naming the feature tests the shipped configuration, and it is what
+    // lets the nested record path (`tension::dev` + `tension::2d`) be tested at
+    // all: a sandboxed guest has no capability adapters, so without the in-core
+    // renderer it has no `tension::2d` to submit to.
     run: () => execute('cargo', [
       'test', '--manifest-path', 'tension-core/Cargo.toml',
       ...(process.env.TENSION_AI === '1'
-        ? ['--features', 'ai']
-        : ['--no-default-features', '--features', 'audio']),
+        ? ['--features', 'ai', 'render2d-core']
+        : ['--no-default-features', '--features', 'audio,render2d-core']),
     ], { env: suiteEnv() }),
   },
 };

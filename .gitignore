@@ -139,3 +139,22 @@ examples/2d/isometric/screenshots/back.png
 examples/2d/isometric/screenshots/front.png
 examples/2d/isometric-framework/screenshots/framework-back.png
 examples/2d/isometric-framework/screenshots/framework-front.png
+
+# Images: where one may live, and why (the full reasoning is in
+# docs/spikes/records-budget.md, "The number is the evidence").
+#
+#   1. A screenshot that captures a MEASUREMENT is a test fixture in the test
+#      tree, and a test must read or assert it. Being under tests/ is necessary,
+#      not sufficient: a fixture no test touches is an orphan blob.
+#   2. A UT/E2E reference image is a test-tree fixture the test diffs against.
+#   3. A texture, font or other asset (license or generated provenance) lives in
+#      the asset tree. It is input, not evidence; no test asserts it.
+#   4. A screenshot as a doc illustration, or one with no asserting test, is
+#      committed nowhere. The number in prose is the record.
+#   5. Pre-existing PNGs on `main` (tension-framework/assets/preview/ui.N.png,
+#      examples/2d/isometric/screenshots/preview.png, the framework preview)
+#      predate this rule and stay as they are; they are not a precedent.
+#
+# So a spike's captures are ignored, and a measurement that must be guarded is
+# asserted as a number (parse the output, compare to a constant), not as pixels.
+docs/spikes/*.png

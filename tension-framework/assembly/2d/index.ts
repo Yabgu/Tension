@@ -48,6 +48,7 @@
 // opinion.
 
 export * from "./types";
+export * from "./iwi";
 export * from "./buffers";
 export * from "./scene";
 export * from "./constants";

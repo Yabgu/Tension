@@ -1,0 +1,15 @@
+#!/bin/sh
+# Git's entry point for the ABI freshness check. The logic is in JavaScript,
+# next to the generator it drives; this file exists because git only runs an
+# executable, and because a shell script is the one thing every platform agrees
+# on. See scripts/hooks/pre-commit.mjs for what it does and why.
+#
+# Enable it per clone, once:
+#
+#   git config core.hooksPath .githooks
+#
+# The setting is local config, not a tracked file, so a fresh clone that skips
+# that line runs no checks — which is why the check also lives in the `abi-docs`
+# suite (`scripts/test-abi-docs.mjs`), so CI catches it whether or not anyone
+# enabled the hook locally.
+exec node "$(git rev-parse --show-toplevel)/scripts/hooks/pre-commit.mjs"

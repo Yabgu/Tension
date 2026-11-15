@@ -1,3 +1,6 @@
 [submodule "third_party/ogre-next"]
 	path = third_party/ogre-next
 	url = https://github.com/OGRECave/ogre-next.git
+[submodule "third_party/ImageViewer"]
+	path = third_party/ImageViewer
+	url = https://github.com/Yabgu/ImageViewer
