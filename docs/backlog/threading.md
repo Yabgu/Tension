@@ -122,9 +122,9 @@ Verbs, each a stub until its mechanism exists. The two errno classes are the
 honest part of the sketch: a guest can tell "not yet" from "never".
 
 **Status: implemented as stubs on `ui-threading`.** `tension-core/src/host/
-threads.rs` registers all six for every guest; each answers `-ENOTSUP` (-95), and
-`tension-core/tests/threads_stub.rs` is a guest that imports all six and traps
-unless each one does. `-ENOSYS` (-38) is **reserved and returned by nothing**:
+threads.rs` registers all seven for every guest; each answers `-ENOTSUP` (-95),
+and `tension-core/tests/threads_stub.rs` is a guest that imports every one and
+traps unless each answers it. `-ENOSYS` (-38) is **reserved and returned by nothing**:
 no verb in this surface can ask for a parallel context, so a code no path returns
 would claim a reachability it does not have. The run table is still
 `HashMap<i32, GuestRun>`; `HashMap<CtxHandle, GuestContext>` remains the target
@@ -139,6 +139,20 @@ verbs already speak.
 | `join` | `(ctx, timeout) -> i32` | `0` joined, `-ENOTSUP` |
 | `post` | `(ctx, msg) -> i32` | queued, or `-ENOTSUP` |
 | `await_task` | `(task, timeout) -> i32` | the task's status, or `-ENOTSUP` |
+| `step` | `(ctx) -> i32` | `1` alive, `0` complete, `-errno` trapped |
+
+**`step` is the seventh verb and it is not `join`.** `join` for a parallel context
+means "block until done"; for a cooperative one it means "step until done" — two
+mechanisms behind one word, which is how a verb ends up whose behaviour depends on
+the kind of its argument. So the ABI gets the primitive (`step`) and `join`
+becomes a framework-side loop over it. `step`'s three answers are fixed; its body
+answers `-ENOTSUP` until two things exist: a guest-side step hook (a step resumes
+a continuation, which only the guest can do — `ContRef` is a stub in wasmtime
+50.1, #10248), and an engine that compiles stack switching (see
+`docs/plan/pass-2.md`, "one engine, not two").
+
+The queue that decides *which* context to step is real: `threads::queue::
+ThreadQueue` in the library, proven by `tests/cooperative_scheduler.rs`.
 
 `-ENOTSUP` for the cooperative half while it is unbuilt, `-ENOSYS` for the
 parallel half — the same distinction the 2D adapter makes between "a preset this

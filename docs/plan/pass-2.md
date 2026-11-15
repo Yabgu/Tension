@@ -239,10 +239,71 @@ a tripwire: when #10248 lands the assertion fails, and that is the day a
 host-side context table becomes possible and this decision should be revisited
 rather than inherited.
 
-What this round does **not** do: no scheduler loop, no dispatcher, no
-cancellation policy, no `join`, no run-table rename, and `threads::enable()` is
-still not called by the process engine. The next slice is the scheduler proper,
-and its scope is a decision, not an assumption.
+What that round did **not** do: no scheduler loop, no dispatcher, no
+cancellation policy, no `join`, no run-table rename, and `threads::enable()` was
+still not called by the process engine.
+
+### The first scheduler
+
+`threads::queue::ThreadQueue` owns **order** — a `Vec<CtxHandle>` in insertion
+order, a frame counter, and a trace — and nothing else. A step is a closure,
+because *how* a context advances is guest-side (the previous section's
+constraint). The host is what can be deterministic about order; the guest owns
+the interleaving. That split is the contract's, arrived at by measurement.
+
+One drain = one frame: every live context stepped once, in insertion order, and
+a context that completes or traps leaves the queue. No priority, no starvation
+rule, no budget. A guest cannot push during a drain — `drain` holds the queue for
+the whole call, so the step closure has no handle to spawn through, which makes
+"the frame's membership is fixed when the frame begins" a type-level guarantee
+rather than a convention.
+
+`tests/cooperative_scheduler.rs` (five tests) drives two contexts in one store
+through a guest with four slots and four bodies, and asserts **two** traces: the
+queue's (`f<frame> <ctx> alive|complete|trapped`) and the guest's own byte log,
+written by the bodies as they run. Both are byte-identical across two independent
+runs; the guest log reads `ABABCA` — alternating, not one body run to exhaustion.
+A trapped context is removed and the context after it is still stepped in the
+same frame. Mutation-checked: reversing the drain to LIFO fails three tests;
+letting a completed context stay in the queue fails four and now fails *fast*
+(the drain loop in the scenario is bounded, because that mutation originally hung
+the test past 60 s — a scheduler whose queue never empties must fail a test, not
+the gate).
+
+**A slot index is not a handle.** The guest hands out table slots, and a freed
+slot comes back with the same number — asserted, not assumed. `CtxHandle`
+therefore cannot be a table index; the rename slice needs a monotonic handle and
+a separate slot map.
+
+### One engine, not two
+
+`threads::enable()` is still **not** called anywhere in the binary, and this is
+the round that found out why "on the sandbox engine only" is not expressible
+today: the process builds **one** engine and shares it with every guest
+(`HostConfig::engine`), and that doc names the cost of doing otherwise — "an
+engine owns the compiled-code cache; one engine per guest would compile a shared
+module twice, which is precisely the cost `tension::dev.compile` exists to
+avoid". A `Module` is engine-bound, so a second engine is also a second module
+cache, and every nested guest recompiles.
+
+So the choice is the user's, and it is a real one:
+
+* **two engines** — a sandbox engine with the three flags, its own code cache,
+  and a module compiled twice per nested guest. Enables the mechanism exactly
+  where it is wanted and nowhere else;
+* **one engine, flags on** — cheapest, and turns the proposals on for the
+  process's own guest too, which the previous round rejected for a good reason
+  (a sketch is not a reason to enable a proposal for every guest);
+* **defer** — leave both stub-answered until the scheduler's shape forces it.
+
+Nothing in this branch depends on the answer yet: the queue and the round trip
+are proven on a test engine, which is what `enable()` takes.
+
+`step`, the seventh verb, is registered and answers `-ENOTSUP` for the same two
+reasons: a step resumes a continuation, which needs a guest-side hook (next
+slice), on an engine that has the flags (above). Its contract — `1` alive, `0`
+complete, `-errno` trapped — is in the ABI doc now, so the Dispatcher slice can
+be written against it.
 
 ## The F1 constraint
 

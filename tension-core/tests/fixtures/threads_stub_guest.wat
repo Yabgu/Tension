@@ -19,6 +19,7 @@
   (import "tension::threads" "join"       (func $join       (param i32 i32) (result i32)))
   (import "tension::threads" "post"       (func $post       (param i32 i32) (result i32)))
   (import "tension::threads" "await_task" (func $await_task (param i32 i32) (result i32)))
+  (import "tension::threads" "step"       (func $step       (param i32) (result i32)))
 
   (func (export "_start_game")
     (block $wrong
@@ -28,6 +29,7 @@
       (br_if $wrong (i32.ne (call $join (i32.const 1) (i32.const 0)) (i32.const -95)))
       (br_if $wrong (i32.ne (call $post (i32.const 1) (i32.const 0)) (i32.const -95)))
       (br_if $wrong (i32.ne (call $await_task (i32.const 1) (i32.const 0)) (i32.const -95)))
+      (br_if $wrong (i32.ne (call $step (i32.const 1)) (i32.const -95)))
       (return))
     ;; A verb answered something other than -ENOTSUP: the surface exists but the
     ;; contract it documents does not hold.

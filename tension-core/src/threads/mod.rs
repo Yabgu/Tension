@@ -40,6 +40,10 @@
 //! cannot be exercised there. `tests/stack_switching.rs` therefore **records the
 //! platform it ran on** rather than assuming Linux, and the gate reports it.
 
+pub mod queue;
+
+pub use queue::{Step, ThreadQueue, Traced};
+
 use wasmtime::Config;
 
 /// Enable the three proposals a cooperative thread needs on `config`.

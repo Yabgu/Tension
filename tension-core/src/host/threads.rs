@@ -19,6 +19,18 @@
 //!
 //! # The two errno classes
 //!
+//! The seventh verb, `step`, is here too, and it is the one whose contract is
+//! already written down: `1` still alive, `0` complete, a negative errno trapped.
+//! It answers `-ENOTSUP` today for a reason that is measured rather than
+//! provisional — a step has to **resume** a continuation, and the host cannot:
+//! `ContRef` is a stub in wasmtime 50.1 (`tests/cooperative_round_trip.rs`), so
+//! the mechanism lives guest-side behind an exported step hook, and no engine in
+//! this binary carries the stack-switching flags yet (see the note below). The
+//! queue that decides *which* context to step is real and tested
+//! (`threads::queue`, `tests/cooperative_scheduler.rs`); the verb that lets a
+//! guest ask for a step waits on the two things named above, and neither is this
+//! module's to invent.
+//!
 //! `-ENOTSUP` (**-95**) is this module's answer, and it means "this build does
 //! not carry the mechanism yet" — the same code, and the same meaning, the 2D
 //! adapter uses for "a preset this build does not carry".
@@ -113,6 +125,32 @@ pub fn link_threads(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "tension::threads",
         "await_task",
         |_: Caller<'_, HostState>, _task: i32, _timeout: i32| -> i32 { ENOTSUP },
+    )?;
+
+    // step(ctx) -> 1 alive | 0 complete | -errno trapped
+    //
+    // **The contract is fixed; the mechanism is not here yet.** A step resumes a
+    // continuation, and only the guest can: wasmtime 50.1 hands the host no
+    // continuation (`ContRef` is an empty stub, #10248), which is why
+    // `tests/cooperative_round_trip.rs` keeps the context in a wasm table and
+    // why the run queue steps through a guest export rather than an engine call.
+    // Two things are missing before this can answer `1` or `0`:
+    //
+    // 1. the guest-side step hook (the convention `__thread_step(idx) -> i32`,
+    //    which `tests/cooperative_scheduler.rs` exercises directly and which
+    //    becomes an adoption contract like `_game_running`/`__taskWake`); and
+    // 2. an engine that compiles stack switching. The process builds exactly one
+    //    engine and shares it with every guest (`HostConfig::engine`), so
+    //    "enable it for sandboxed guests only" is not expressible today — that is
+    //    the engine-ownership decision, not a flag this module can set.
+    //
+    // Answering `-ENOTSUP` rather than a made-up `1` is the whole point: a guest
+    // that branches on this number must not be told a context advanced when
+    // nothing ran.
+    linker.func_wrap(
+        "tension::threads",
+        "step",
+        |_: Caller<'_, HostState>, _ctx: i32| -> i32 { ENOTSUP },
     )?;
 
     Ok(())
