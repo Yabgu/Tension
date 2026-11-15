@@ -154,6 +154,71 @@ and unspecified in this tree. Until it exists, "the demo works" means the run
 path works end to end — not that the editor compiles a project.
 
 
+## The threading branch
+
+`ui-threading` opened from the merge of `ui-nested-guest` into `main`
+(`4da7cd7`). It exists because the synchronous model has a stated cost limit
+(`docs/backlog/threading.md` §1) and the fix needs an engine that can suspend a
+guest. Pass 3 waits behind it.
+
+**The upgrade.** wasmtime `24.0.13` -> `50.0.1` (`003f1a7`); Rust `1.90.0` ->
+`1.100.0`, because 50.x requires 1.97.0. Seven compile errors, all of them one
+shape: since wasmtime 50 `wasmtime::Error` is its own type rather than a
+re-export of `anyhow::Error`, so every boundary between the two now says which it
+means. Two counters widened (`ResourceLimiter::table_growing` takes `usize`,
+`Table::get` takes `u64`). The predicted `epoch_deadline_callback` break
+(wasmtime#14386) **does not apply**: this tree never registers a deadline
+callback, it arms `set_epoch_deadline` and relies on the default trap.
+`cargo test` measured **623 passed / 0 failed before and after** — identical
+counts over 40 `test result:` lines, which is the strongest statement a
+26-release jump allows.
+
+**`resume_throw` is proven, not assumed** (`1f74656`). Five tests in
+`tests/stack_switching.rs`: a continuation parks and is resumed again; a thrown
+cancellation reaches a `try_table` handler inside the guest with its payload
+intact; an uncaught one escapes to the host boundary as `thrown Wasm exception`;
+a host call inside a continuation (wasmtime#13322's shape, including re-entering
+the guest) does not corrupt the store; and a consumed continuation traps with
+`continuation already consumed`, which is the mechanism behind "cancel is
+throw-and-discard, never cancel-and-resume". Mutation-checked: with the flag off,
+all five fail.
+
+**Platform: `x86_64-unknown-linux-gnu` only.** Stack switching is x86_64-only in
+wasmtime 50, and the test **fails rather than skips** on any other target, naming
+arch and OS in the failure. A skip would let "the foundation is proven" become
+true on a machine the contract never runs on.
+
+**wasmtime#13322 does not apply, and not in the window the brief assumed.**
+Measured: opened 2026-05-07, closed **2026-09-28** by wasmtime#14439 ("Two
+regression tests"), which attributes the fix to wasmtime#11717 ("Continuation
+trapping semantics", merged 2026-07-28). Both precede 50.0.0 (2026-10-20), so
+50.0.1 carries them; the repro's shape is one of the five passing tests.
+
+**The surface exists as stubs.** `tension::threads` is registered for every guest
+(`host/threads.rs`) with six verbs — `self`, `context_of`, `spawn`, `join`,
+`post`, `await_task` — and every one answers `-ENOTSUP`. `-ENOSYS` is reserved
+for the parallel half and returned by nothing, because no verb in this surface
+can ask for a parallel context and a code no path returns would lie about being
+reachable. `tests/threads_stub.rs` is a guest that imports all six and traps
+unless each answers `-95`; mutation-checked by moving the constant to `-96`.
+
+**Gate, measured** (`node scripts/test.mjs --jobs 1`, declared before the run):
+26/26 PASSED, cargo **629 passed / 0 failed over 42 result lines** (was 623 over
+40: five stack-switching tests, one stub test), abi-docs regenerated to 97
+imports across 14 modules, bundle 82 pages / 3,755 blocks, docs green. Warnings
+measured **86 in 19 distinct rows**, one more than the warm baseline of 85/18, and
+the extra row is named rather than waved at: Rust 1.100 brought cargo's
+`unused_dependencies` lint, which fires on `arc-swap` because the gate's prepare
+step builds with `--no-default-features` and `arc-swap` is used only by
+`audio::real` (`cfg(feature = "audio")`). That is **gate finding 6** — finding 1's
+shape one layer down, and recorded rather than silenced.
+
+The run table is still `HashMap<i32, GuestRun>`. The target shape is
+`HashMap<CtxHandle, GuestContext>`; the key type and the value type are left
+alone until the mechanism exists, because a rename with no behaviour change hides
+the stub in review and `GuestContext` is a design decision the backlog withholds
+(`docs/backlog/threading.md` §5).
+
 ## The F1 constraint
 
 F1 is "press F1 in the editor and the docs open as a second guest". It has
@@ -163,6 +228,9 @@ reason the texture path in 4c matters beyond the editor's own viewport.
 
 ## Deferred
 
+- **The threading mechanism itself** (a scheduler, a dispatcher, the
+  cooperative-vs-parallel fork): the surface is stubbed, the mechanism is not
+  started, and the fork is the user's decision (`docs/backlog/threading.md` §5).
 - **4c — arbitrary guest-authored textures and buffer rendering.** A guest
   handing raw pixels to the device, and an inner guest rendering into a host
   surface. Two shapes, both recorded in `docs/backlog/buffer-rendering.md`:
@@ -170,7 +238,10 @@ reason the texture path in 4c matters beyond the editor's own viewport.
   device — the only viable path for 3D, no CPU copy) and **surface rendering**
   (offscreen render, read back, hand the pixels over — stills only; 5.76 MB per
   1600x900 frame). Status there: backlog, scheduled nowhere.
-- **Passes 3, 4 and 5**, above.
+- **Pass 3 (the compiler daemon and the docs playground)** — deferred behind
+  the threading branch, and specified nowhere in this tree yet. The split
+  proposal is written up in this session's report; no code has been written.
+- **Passes 4 and 5**, above.
 
 **4c is not "the demo's textures".** The demo's atlas loads, page ids and their
 replay onto the outer device are 4b-5 and 4b-6. The v1 record path (the inner

@@ -121,6 +121,16 @@ whether or not anything uses it, so a guest's imports resolve at instantiation.
 Verbs, each a stub until its mechanism exists. The two errno classes are the
 honest part of the sketch: a guest can tell "not yet" from "never".
 
+**Status: implemented as stubs on `ui-threading`.** `tension-core/src/host/
+threads.rs` registers all six for every guest; each answers `-ENOTSUP` (-95), and
+`tension-core/tests/threads_stub.rs` is a guest that imports all six and traps
+unless each one does. `-ENOSYS` (-38) is **reserved and returned by nothing**:
+no verb in this surface can ask for a parallel context, so a code no path returns
+would claim a reachability it does not have. The run table is still
+`HashMap<i32, GuestRun>`; `HashMap<CtxHandle, GuestContext>` remains the target
+shape, and `threads::CtxHandle` exists in the library as the vocabulary these
+verbs already speak.
+
 | verb | signature | returns |
 | --- | --- | --- |
 | `self` | `() -> i32` | this context's id |

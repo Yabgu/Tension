@@ -27,7 +27,7 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The five findings so far
+## The six findings so far
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
    `cargo test --no-default-features --features audio`; the flag was meant to say
@@ -90,6 +90,28 @@ something a future round should choose between deliberately:
   and requires no convention, but it reports source churn rather than assertions
   — a comment edit trips it and a fixture that grows a loop does not.
 
+6. **A feature-gated dependency looks unused in the configuration the gate
+   builds.** Found on `ui-threading`, on the first gate run after Rust 1.90.0 ->
+   1.100.0: cargo 1.100 brought `unused_dependencies` (warning by default), and
+   the gate's `Preparing` step builds the debug host with
+   `--no-default-features` — no features at all — under which
+   `arc-swap` is genuinely unreferenced, because its only user is
+   `audio::real`, which is `cfg(feature = "audio")`. The measured effect is one
+   new warning row (`Cargo.toml:76 unused dependency arc-swap`) and nothing
+   else: 85 in 18 distinct rows -> 86 in 19. *Shape: finding 1 again, one layer
+   down. The dependency is not unused; the configuration the gate compiled is one
+   the dependency set was not sized for, and no `Cargo.toml` can be true for
+   every feature subset.*
+
+   This one is **not** a defect in the tree and should not be "fixed" by removing
+   the dependency. Its two honest answers are finding 1's (make the prepare step
+   build the shipped feature set, which changes what the guest suites run
+   against and is a gate change with its own risk) or an explicit
+   `[lints.cargo] unused-dependencies = "allow"` with the reason beside it. It is
+   recorded rather than silenced because the same lint will fire for the next
+   feature-gated dependency, and a reader who meets it should know it is the
+   gate's configuration talking, not the tree's.
+
 ## What a green gate means, now that finding 4 is known
 
 Finding 4 has two possible answers. This file records which one the gate uses,
@@ -132,6 +154,41 @@ be removed by deleting or recreating the parent directory. If a future
 reason. Removing it is safe (`rm -rf .git/modules/third_party/assemblyscript`)
 and was left alone deliberately: it is repository internals, not a working-tree
 artefact, and this round removed only what the user named.
+
+## The platform a feature was exercised on
+
+Finding 4 says the gate's own measurements must be deterministic. There is a
+sibling: a green gate must also say **where** it was green. Until the threading
+branch, no test in this tree asserted a property that only one platform can have,
+so the question never came up. It does now.
+
+Stack switching — the mechanism a cooperative thread is made of — is **x86_64
+only** in wasmtime 50. `Config::wasm_stack_switching(true)` is refused elsewhere,
+so a test that exercised it would have to either fail or skip on aarch64 and
+Windows. **It fails, and the failure names the platform**:
+
+    this platform (aarch64 macos) cannot compile stack switching: ...
+    The cooperative-thread contract is x86_64-Linux only in wasmtime 50;
+    a machine that refuses this config cannot prove it.
+
+The rule that follows, and the reason this is a section rather than a footnote:
+
+> A test whose **subject** is a platform-limited feature must fail on the wrong
+> platform, not skip. A skip is a green gate asserting nothing about the thing the
+> test was written for.
+
+This is deliberately different from the 2D suites, which exit 0 when a machine
+has no usable GPU or no display. That skip is honest because the *subject* there
+is the renderer's behaviour given a device, and a machine without one has not
+refused the claim — it has no opinion. A machine without stack switching **has**
+refused the claim: the contract cannot exist there at all.
+
+The cost is named rather than hidden: **the gate is x86_64-only while the
+proposal is.** An aarch64 or Windows contributor gets a red gate on this branch,
+not a quietly smaller guarantee. If that becomes unacceptable, the fix is a
+declared matrix (the test reports "not applicable on this target" through a
+mechanism the gate *counts*), not a skip — but no such mechanism exists today,
+and inventing one is not worth it for a branch with one platform.
 
 ## Every invocation the gate makes, with its flags
 
