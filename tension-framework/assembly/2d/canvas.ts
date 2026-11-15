@@ -322,8 +322,9 @@ export class Canvas {
    * detail it cannot vary. `loadTextureAs` is the visible door for the day a
    * second format exists. It is not deprecated and not called from here.
    *
-   * v1 reads **IWI** (`IWI1`) with interleaved 8-bit RGB or RGBA; anything else
-   * is `-ENOSYS`, not a guess (`tension_2d.h:216-222`).
+   * v1 reads **IWI** (ImageViewer's `IwiFile.h`) with interleaved 8-bit RGB or
+   * RGBA; a valid file using another layout is `-ENOSYS`, not a guess
+   * (`tension_2d.h:216-222`).
    */
   loadTexture(bytes: Bytes): i32 {
     return this.loadTextureAs(bytes, TEX_RGBA8);

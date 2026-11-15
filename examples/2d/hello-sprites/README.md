@@ -54,9 +54,10 @@ made. See [`docs/known-limitations.md`](../../../docs/known-limitations.md).
 2. **Opens the canvas at 640×360.** `open(width, height, flags)` — the size is
    the guest's choice, and `info` echoes it back so the readback buffer is sized
    from what the adapter says rather than from the guest's memory of the call.
-3. **Builds an atlas** — a 256×256 IWI container, written byte by byte in
-   `main.ts`. A guest has no file reader (`tension::io` is text only), so the
-   texture is constructed in memory and handed over by pointer.
+3. **Builds an atlas** — a 256×256 IWI container, built in `main.ts` through
+   the framework's `writeIwiHeader`. A guest has no file reader (`tension::io`
+   is text only), so the texture is constructed in memory and handed over by
+   pointer.
 4. **Sets the pipeline** from the `default_2d` graph blob. The blob is
    generated into `src/graph.generated.ts` by the build, from the same
    `.t2dg` the adapter's hash table was compiled against. A different blob is

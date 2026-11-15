@@ -29,11 +29,13 @@ import {
   Canvas,
   ConfigBuilder,
   Frame,
+  iwiHeaderBytes,
   PIPE_PRESET_MIN,
   Pixels,
   print,
   RuntimeSession,
   Scene,
+  writeIwiHeader,
 } from "tension-framework";
 import * as platform from "tension-framework/assembly/platform";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
@@ -95,16 +97,20 @@ const CELL_COLOURS: u8[][] = [
 
 // --- the atlas -------------------------------------------------------------
 
-/// Build the IWI container `IWImageIO.ixx` writes: magic, a 74-byte header, then
-/// interleaved pixels.
+/// Build the IWI container ImageViewer's `IwiFile.h` defines: the 36-byte base
+/// header, one 6-byte record per channel, then interleaved pixels.
 ///
 /// Written here rather than shipped as a file because a guest has no file
 /// reader (`tension::io` is text only), and because building it exercises the
 /// path that matters: the guest writes bytes, the adapter reads them back
 /// through `guest_read`.
+///
+/// The header itself comes from the framework (`writeIwiHeader`), which mirrors
+/// the C API the host parses with. A guest keeps no private copy of the
+/// offsets: the container layout has changed once already.
 function buildAtlas(): Bytes {
   const pixels = ATLAS_SIZE * ATLAS_SIZE * 3;
-  const total = 74 + pixels;
+  const total = iwiHeaderBytes(3) + pixels;
   // A heap buffer with a runtime size, reachable only through `Bytes`. The old
   // spelling was `memory.data(total, 8)` returning a `usize` this function then
   // offset by hand, so "the atlas" was a number that meant the buffer only as
@@ -112,44 +118,9 @@ function buildAtlas(): Bytes {
   const image = Bytes.allocate(total);
   image.fill(0);
 
-  // The 74-byte IWI1 header, byte by byte — the one record in this tree that
-  // cannot be a struct, and worth saying why so nobody tries.
-  //
-  // It is a *packed* C layout: `componentCount` is a `u16` at offset 13 and
-  // `bitsPerPixel` a `u16` at 15, neither on a 2-byte boundary, and each of the
-  // four component records at 18+ is `u8, u8, u16, u16` with the same problem.
-  // TensionScript lays a record out at natural alignment and `@abi.align` can
-  // only *raise* it — asking for less is refused:
-  //
-  //   TS6408: '@abi.align(1)' is less than the field type's natural alignment
-  //           (2); asking for less is a lie, so it is refused
-  //
-  // So a struct here would silently move every field after `colorSpace` by a
-  // byte, and the adapter's decoder would read a 1024-tall atlas as garbage.
-  // The format is ImageViewer's, not ours; the stores stay.
-  image.setByteAt(0, 0x49); // I
-  image.setByteAt(1, 0x57); // W
-  image.setByteAt(2, 0x49); // I
-  image.setByteAt(3, 0x31); // 1
-  image.setU32(4, ATLAS_SIZE); // width
-  image.setU32(8, ATLAS_SIZE); // height
-  image.setByteAt(12, 0); // colorSpace: sRGB
-  image.setU16(13, 3); // componentCount
-  image.setU16(15, 24); // bitsPerPixel
-  image.setByteAt(17, 0); // storageLayout: interleaved
-
-  // Eight 6-byte component descriptors; the first three are R, G, B (UNORM,
-  // 8 bits each, at 0/8/16), the rest are the reserved slots and stay zero.
-  for (let i = 0; i < 8; i++) {
-    const at = 18 + i * 6;
-    if (i < 3) {
-      image.setByteAt(at + 0, <u8>(i + 1)); // semantic R=1, G=2, B=3
-      image.setByteAt(at + 1, 2); // class UNORM
-      image.setU16(at + 2, <u16>(i * 8)); // bitOffset
-      image.setU16(at + 4, 8); // bitWidth
-    }
-  }
-  image.setU64(66, <u64>pixels);
+  // `writeIwiHeader` fills the base header and the three component records and
+  // answers the first pixel byte. Nothing below repeats 36, 54 or `i * 6`.
+  const pixelAt = writeIwiHeader(image, ATLAS_SIZE, ATLAS_SIZE, 3);
 
   // Paint the cells. Cell k covers (k%4, k/4) * 64, and cells 10..15 keep the
   // zero they were filled with -- black, which no sprite samples.
@@ -159,7 +130,7 @@ function buildAtlas(): Bytes {
       const cell = (y / CELL) * cellsPerRow + (x / CELL);
       if (cell < <u32>CELL_COLOURS.length) {
         const c = CELL_COLOURS[cell];
-        const o = 74 + <i32>((y * ATLAS_SIZE + x) * 3);
+        const o = pixelAt + <i32>((y * ATLAS_SIZE + x) * 3);
         image.setByteAt(o + 0, c[0]);
         image.setByteAt(o + 1, c[1]);
         image.setByteAt(o + 2, c[2]);

@@ -21,34 +21,16 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { scene, buildPages, PAGE, PAGE_COUNT, PIECES } from './pages.mjs';
+import { encodeIwiRgba } from '../../../tension-framework/tools/lib/iwi.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
 const pageDir = (exampleDir) => join(exampleDir, 'assets', 'textures');
 
-/// The IWI1 container the adapter decodes: a 74-byte header and raw RGBA.
-/// Byte-for-byte the writer `examples/2d/isometric/build.mjs` uses, because the
-/// adapter has one reader and a second dialect would be a bug waiting to be
-/// found by a frame that renders as noise.
-function iwi(rgba, width, height) {
-  const header = Buffer.alloc(74);
-  header.write('IWI1', 0, 'latin1');
-  header.writeUInt32LE(width, 4);
-  header.writeUInt32LE(height, 8);
-  header.writeUInt8(0, 12);      // colorSpace: sRGB
-  header.writeUInt16LE(4, 13);   // componentCount
-  header.writeUInt16LE(32, 15);  // bitsPerPixel
-  header.writeUInt8(0, 17);      // storageLayout: interleaved
-  for (let i = 0; i < 4; i++) {
-    const at = 18 + i * 6;
-    header.writeUInt8(i + 1, at);   // semantics R,G,B,A
-    header.writeUInt8(2, at + 1);   // componentClass UNORM
-    header.writeUInt16LE(i * 8, at + 2);
-    header.writeUInt16LE(8, at + 4);
-  }
-  header.writeBigUInt64LE(BigInt(width) * BigInt(height) * 4n, 66);
-  return Buffer.concat([header, rgba]);
-}
+/// The container writer is the framework's (`tools/lib/iwi.mjs`), which mirrors
+/// ImageViewer's `IwiFile.h` — the same file the adapter parses. A local copy
+/// would be a second dialect waiting to be found by a frame that renders as
+/// noise.
 
 /// Sheet x for a piece: pages are laid out in one row, which is what makes
 /// `Tileset.frameForPixel` able to derive a page from a coordinate.
@@ -235,7 +217,7 @@ export function emit(exampleDir) {
   mkdirSync(join(exampleDir, 'src'), { recursive: true });
 
   for (let i = 0; i < PAGE_COUNT; i++) {
-    writeFileSync(join(pageDir(exampleDir), s.pages[i].name), iwi(pages[i], PAGE, PAGE));
+    writeFileSync(join(pageDir(exampleDir), s.pages[i].name), encodeIwiRgba(PAGE, PAGE, pages[i]));
   }
   writeFileSync(join(exampleDir, 'src', 'scene.generated.ts'), sceneTable(s));
   return s;

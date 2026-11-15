@@ -7,14 +7,15 @@
 //
 //   node tools/make-atlas.mjs
 //
-// The format is IWI, the one container the 2D renderer's decoder accepts: a
-// 74-byte header and interleaved 8-bit components. Three components, not four,
-// because a sprite sheet that never uses alpha does not need a fourth channel
-// and the decoder expands 24-bit to RGBA8 itself.
+// The format is IWI, the container ImageViewer's `src/format/IwiFile.h`
+// defines and the 2D renderer's decoder parses: a 36-byte base header, one
+// 6-byte component record per channel, then interleaved 8-bit pixels. Three
+// components, not four, because a sprite sheet that never uses alpha does not
+// need a fourth channel and the decoder expands 24-bit to RGBA8 itself.
 //
-// The header layout is `tension-core/src/render2d/iwi.rs`'s, and it is written
-// field by field — the component records land at offsets 18, 24, 30 … with a
-// `u16` at an odd offset, so it cannot be a struct with natural alignment.
+// This template is copied out of the repository, so it carries its own writer
+// rather than importing `tension-framework/tools/lib/iwi.mjs`. The layout is
+// the same one that file mirrors; `IwiFile.h` is the authority.
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -58,27 +59,28 @@ for (let cell = 0; cell < CELLS; cell++) {
   }
 }
 
-const header = Buffer.alloc(74);
+const COMPONENTS = 3;
+const header = Buffer.alloc(36 + COMPONENTS * 6);
 header.write('IWI1', 0, 'ascii');
 header.writeUInt32LE(width, 4);
 header.writeUInt32LE(height, 8);
-header[12] = 0; // colorSpace: sRGB
-header.writeUInt16LE(3, 13); // componentCount
-header.writeUInt16LE(24, 15); // bitsPerPixel
-header[17] = 0; // storageLayout: interleaved
+// metaBytes = 0 (12), storage flags = 0 (16), stride = 0 (20),
+// payloadEncoding = zero, i.e. "raw" (24..31).
+header[32] = 0; // colorSpace: sRGB
+header[33] = 0; // reserved
+header.writeUInt16LE(COMPONENTS, 34);
 
 // Three component descriptors, in R, G, B order: semantic 1/2/3, class UNORM
-// (2), bitOffset i*8, bitWidth 8. The five reserved slots stay zero.
-for (let i = 0; i < 3; i++) {
-  const at = 18 + i * 6;
+// (2), bitOffset i*8, bitWidth 8.
+for (let i = 0; i < COMPONENTS; i++) {
+  const at = 36 + i * 6;
   header[at] = i + 1;
   header[at + 1] = 2;
   header.writeUInt16LE(i * 8, at + 2);
   header.writeUInt16LE(8, at + 4);
 }
-header.writeBigUInt64LE(BigInt(pixels.length), 66);
 
 const out = join(dirname(fileURLToPath(import.meta.url)), '..', 'assets', 'sprites.iwi');
 mkdirSync(dirname(out), { recursive: true });
 writeFileSync(out, Buffer.concat([header, pixels]));
-console.log(`wrote ${out} — ${width}x${height}, ${CELLS} cells, ${74 + pixels.length} bytes`);
+console.log(`wrote ${out} — ${width}x${height}, ${CELLS} cells, ${header.length + pixels.length} bytes`);

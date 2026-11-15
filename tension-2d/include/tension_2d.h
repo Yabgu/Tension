@@ -201,10 +201,13 @@ int32_t tension_2d_present(int32_t handle);
  *   -ENODEV   no device
  *   -ENOMEM   allocation failed
  *
- * v1 reads **IWI** (`IWI1`, the format `IWImageIO.ixx` writes) with interleaved
- * 8-bit RGB or RGBA components. PNG and JPEG need ImageViewer's plugin DSOs and
- * arrive with `iw_decode_to_format` (`docs/modules/2d.md` §8); until then they are
- * -ENOSYS, not a guess.
+ * v1 reads **IWI** — the container ImageViewer's
+ * `third_party/ImageViewer/src/format/IwiFile.h` defines — with interleaved
+ * 8-bit RGB or RGBA components. The reader is that library's C API plus this
+ * build's policy; a valid file using another layout (planar, 16-bit, a
+ * compressed payload) is `-ENOSYS`. PNG and JPEG need ImageViewer's plugin DSOs
+ * and arrive with `iw_decode_to_format` (`docs/modules/2d.md` §8); until then
+ * they are -ENOSYS, not a guess.
  */
 int32_t tension_2d_texture_load(int32_t handle, int32_t src_ptr, int32_t src_len,
                                 int32_t target_format);

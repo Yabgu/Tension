@@ -1,15 +1,15 @@
 /*
  * texture.h — decoding for the 2D adapter, SDL-free.
  *
- * v1 reads **IWI** directly: the container `IWImageIO.ixx` writes, which is
- * what a pack step produces with `iwconv <in.png> <out.iwi>`.
+ * The container is **IWI**, and its grammar is ImageViewer's: this adapter
+ * calls `IwiFile.h` (`third_party/ImageViewer/src/format/`) rather than
+ * carrying a parser. The reference DSO links `IwiFile.cpp` directly, so the
+ * bisect path and the in-core renderer accept exactly the same files.
  *
- * The eventual path is ImageViewer's `iw_decode_to_format(src, len, target,
- * space, premultiply)` (`docs/modules/2d.md` §8), which would also give PNG and JPEG and
- * the colour-space and premultiplication policy. That function does not exist
- * in ImageViewer yet, so this file deliberately does the narrow thing: one
- * container, one layout family, and `-ENOSYS` for everything else rather than a
- * guess that renders wrong colours the first time someone loads a JPEG.
+ * What remains here is policy: interleaved 8-bit RGB/RGBA, raw payload, no
+ * stride, semantics R/G/B[/A] in order. Anything else is `-ENOSYS` rather than
+ * a guess that renders wrong colours the first time someone loads a planar or
+ * 16-bit file.
  *
  * SPDX-License-Identifier: MIT
  */

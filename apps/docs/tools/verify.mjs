@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import { BLOCK_FLAG, KIND, STYLE } from './lib/format.mjs';
 import { readDocs } from './lib/read-docs.mjs';
+import { readIwiHeader } from '../../../tension-framework/tools/lib/iwi.mjs';
 import { readSearch } from './lib/read-search.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -290,22 +291,22 @@ if (!existsSync(uiPath)) {
       continue;
     }
     const atlas = readFileSync(file);
-    if (atlas.subarray(0, 4).toString('ascii') !== 'IWI1') {
-      fail(`${page.file} is not an IWI container`);
+    let header;
+    try {
+      header = readIwiHeader(atlas);
+    } catch (error) {
+      fail(`${page.file}: ${error.message}`);
       continue;
     }
-    const width = atlas.readUInt32LE(4);
-    const height = atlas.readUInt32LE(8);
-    const components = atlas.readUInt16LE(13);
-    const bitsPerPixel = atlas.readUInt16LE(15);
-    const pixelBytes = Number(atlas.readBigUInt64LE(66));
+    const { width, height, componentCount: components, bitsPerPixel, pixelBytes, pixelOffset } =
+      header;
 
     if (width !== ui.atlas.width || height !== ui.atlas.height) {
       fail(`${page.file} is ${width}x${height}, the manifest says ` +
            `${ui.atlas.width}x${ui.atlas.height} (every page is a layer of one array)`);
     } else if (components !== 4 || bitsPerPixel !== 32) {
       fail(`${page.file}: the viewer needs RGBA8, this has ${components} components / ${bitsPerPixel} bpp`);
-    } else if (pixelBytes !== width * height * 4 || atlas.length !== 74 + pixelBytes) {
+    } else if (pixelBytes !== width * height * 4 || atlas.length !== pixelOffset + pixelBytes) {
       fail(`${page.file}: pixel data is ${pixelBytes} bytes, ${width * height * 4} required`);
     } else if (page.grid.cols * page.cell.w > width || page.grid.rows * page.cell.h > height ||
                (page.grid.cols + 1) * page.cell.w <= width ||

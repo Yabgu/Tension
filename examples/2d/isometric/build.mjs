@@ -34,6 +34,7 @@ import { fileURLToPath } from 'node:url';
 
 import { decodePng } from '../assets/png.mjs';
 import { LAYOUT, PAGE, PAGE_COUNT } from '../assets/build-tileset.mjs';
+import { encodeIwiRgba } from '../../../tension-framework/tools/lib/iwi.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..', '..', '..');
@@ -388,26 +389,9 @@ const lanternBehind = (() => {
 })();
 
 // ── 5. write the textures ───────────────────────────────────────────────────
-
-function iwi(rgba, width, height) {
-  const header = Buffer.alloc(74);
-  header.write('IWI1', 0, 'latin1');
-  header.writeUInt32LE(width, 4);
-  header.writeUInt32LE(height, 8);
-  header.writeUInt8(0, 12);     // colorSpace: sRGB
-  header.writeUInt16LE(4, 13);  // componentCount
-  header.writeUInt16LE(32, 15); // bitsPerPixel
-  header.writeUInt8(0, 17);     // storageLayout: interleaved
-  for (let i = 0; i < 4; i++) {
-    const at = 18 + i * 6;
-    header.writeUInt8(i + 1, at);    // semantics R,G,B,A
-    header.writeUInt8(2, at + 1);    // componentClass UNORM
-    header.writeUInt16LE(i * 8, at + 2);
-    header.writeUInt16LE(8, at + 4);
-  }
-  header.writeBigUInt64LE(BigInt(width) * BigInt(height) * 4n, 66);
-  return Buffer.concat([header, rgba]);
-}
+// The container writer is the framework's (`tools/lib/iwi.mjs`), which mirrors
+// ImageViewer's `IwiFile.h`; the adapter parses with that C API, so this is not
+// a second dialect.
 
 const OUT_TEXTURES = join(here, 'assets', 'textures');
 mkdirSync(OUT_TEXTURES, { recursive: true });
@@ -421,7 +405,7 @@ const pageFiles = [
   { slot: 2, name: 'character.iwi', bytes: pages[2] },
 ];
 for (const page of pageFiles) {
-  const blob = iwi(page.bytes, PAGE, PAGE);
+  const blob = encodeIwiRgba(PAGE, PAGE, page.bytes);
   writeFileSync(join(OUT_TEXTURES, page.name), blob);
   page.size = blob.length;
 }

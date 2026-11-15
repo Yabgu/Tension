@@ -15,6 +15,7 @@ import {
   Bytes,
   Canvas,
   ConfigBuilder,
+  iwiHeaderBytes,
   PIPE_PRESET_MIN,
   print,
   FrameStep,
@@ -63,7 +64,7 @@ const CANVAS_WIDTH: u32 = 640;
 const CANVAS_HEIGHT: u32 = 360;
 const FRAME_BYTES: u32 = CANVAS_WIDTH * CANVAS_HEIGHT * 4;
 const ATLAS_SIZE: u32 = 1024;
-const ATLAS_BYTES: u32 = 74 + ATLAS_SIZE * ATLAS_SIZE * 4;
+const ATLAS_BYTES: u32 = <u32>iwiHeaderBytes(4) + ATLAS_SIZE * ATLAS_SIZE * 4;
 
 /// Node capacity: 34 static + 12 dynamic, with room to spare.
 const MAX_NODES: i32 = 128;

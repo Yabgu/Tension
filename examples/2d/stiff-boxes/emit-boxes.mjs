@@ -14,6 +14,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { encodeIwiRgba } from '../../../tension-framework/tools/lib/iwi.mjs';
+
 const here = dirname(fileURLToPath(import.meta.url));
 const outDir = join(here, 'assets', 'textures');
 mkdirSync(outDir, { recursive: true });
@@ -21,26 +23,6 @@ mkdirSync(outDir, { recursive: true });
 const ATLAS_SIZE = 1024;
 const TILE_SIZE = 64;
 const ROTATIONS = 32;
-
-function iwi(rgba, width, height) {
-  const header = Buffer.alloc(74);
-  header.write('IWI1', 0, 'latin1');
-  header.writeUInt32LE(width, 4);
-  header.writeUInt32LE(height, 8);
-  header.writeUInt8(0, 12);      // colorSpace: sRGB
-  header.writeUInt16LE(4, 13);   // componentCount
-  header.writeUInt16LE(32, 15);  // bitsPerPixel
-  header.writeUInt8(0, 17);      // storageLayout: interleaved
-  for (let i = 0; i < 4; i++) {
-    const at = 18 + i * 6;
-    header.writeUInt8(i + 1, at);   // semantics R,G,B,A (1, 2, 3, 4)
-    header.writeUInt8(2, at + 1);   // componentClass UNORM
-    header.writeUInt16LE(i * 8, at + 2);
-    header.writeUInt16LE(8, at + 4);
-  }
-  header.writeBigUInt64LE(BigInt(width) * BigInt(height) * 4n, 66);
-  return Buffer.concat([header, rgba]);
-}
 
 // 1024x1024 RGBA buffer
 const atlas = Buffer.alloc(ATLAS_SIZE * ATLAS_SIZE * 4, 0);
@@ -298,8 +280,8 @@ for (let y = 0; y < TILE_SIZE; y++) {
   }
 }
 
-// Write the packed IWI1 file
-const iwiBuffer = iwi(atlas, ATLAS_SIZE, ATLAS_SIZE);
+// Write the packed IWI file (ImageViewer's container; see tools/lib/iwi.mjs).
+const iwiBuffer = encodeIwiRgba(ATLAS_SIZE, ATLAS_SIZE, atlas);
 const outPath = join(outDir, 'boxes.iwi');
 writeFileSync(outPath, iwiBuffer);
 console.log(`emit-boxes: wrote ${iwiBuffer.length} bytes to ${outPath}`);

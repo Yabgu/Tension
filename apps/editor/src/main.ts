@@ -52,11 +52,11 @@
 
 import {
   ALIGN_CENTER, AppShell, Args, Axis, BOLD, Bytes, Canvas, ChangeTarget, Chrome, ClickTarget,
-  Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History, JsonError, LINK,
+  Document, fontBook, FontBook, FONT_MONO, Frame, HEADING, History, iwiHeaderBytes, JsonError, LINK,
   ListBehavior, ListSource, loadFontBook, MUTED, NORMAL, Painter, Palette, print, PropKind,
   REGULAR, registerEditorCommands, resReadFile, resWriteFile, ROOT_ID, Scene, SetProperty,
   SIZE_14, Sprite, State, TextBuffer, TextBuilder, TextPool, Ui, UiEvent, UiEventKind,
-  WidgetBehavior, WidgetTree,
+  WidgetBehavior, WidgetTree, writeIwiHeader,
 } from "tension-framework";
 import { DEFAULT_2D_BLOB } from "./graph.generated";
 
@@ -1650,7 +1650,7 @@ function parseDecimal(text: string): f64 {
 // ── the game atlas ──────────────────────────────────────────────────────────
 
 /**
- * Four solid cells, 128x32, as an IWI1 container.
+ * Four solid cells, 128x32, as an IWI container (ImageViewer's format).
  *
  * Deliberately *generated*: this pass proves a composite, and adding an asset
  * pipeline to it would make a failure ambiguous between the two. The size is not
@@ -1661,27 +1661,10 @@ function gameAtlas(): Bytes {
   const W: i32 = 128;
   const H: i32 = 32;
   const pixels: i32 = W * H * 4;
-  const image = Bytes.allocate(74 + pixels);
+  const image = Bytes.allocate(iwiHeaderBytes(4) + pixels);
   image.fill(0);
 
-  image.setByteAt(0, 0x49); // I
-  image.setByteAt(1, 0x57); // W
-  image.setByteAt(2, 0x49); // I
-  image.setByteAt(3, 0x31); // 1
-  image.setU32(4, <u32>W);
-  image.setU32(8, <u32>H);
-  image.setByteAt(12, 0);              // sRGB
-  image.setU16(13, 4);                 // RGBA
-  image.setU16(15, 32);                // 32 bpp
-  image.setByteAt(17, 0);              // interleaved
-  for (let i: i32 = 0; i < 4; i++) {
-    const at = 18 + i * 6;
-    image.setByteAt(at + 0, <u8>(i + 1)); // semantic: R, G, B, A
-    image.setByteAt(at + 1, 2);           // UNORM
-    image.setU16(at + 2, <u16>(i * 8));
-    image.setU16(at + 4, 8);
-  }
-  image.setU64(66, <u64>pixels);
+  const pixelAt = writeIwiHeader(image, <u32>W, <u32>H, 4);
 
   // Four cells, one colour each, opaque. **Little-endian, so the word is
   // `A<<24 | B<<16 | G<<8 | R`.** Writing the RGB triple as if it were a
@@ -1696,7 +1679,7 @@ function gameAtlas(): Bytes {
     const b: u32 = <u32>colors[c * 3 + 2];
     words[c] = (<u32>0xFF << 24) | (b << 16) | (g << 8) | r;
   }
-  let px32 = changetype<@unmanaged [u32 *]>(image.address() + 74);
+  let px32 = changetype<@unmanaged [u32 *]>(image.address() + <usize>pixelAt);
   for (let cell: i32 = 0; cell < 4; cell++) {
     const base: i32 = cell * 32;
     for (let y: i32 = 0; y < 32; y++) {

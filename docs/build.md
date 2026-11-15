@@ -48,6 +48,14 @@ the Zig archive built from `tension-res/` — the adapter directly, the core thr
 `rustc-link-lib=static=tension_res` — which is why `tension-res` is in both stamp
 input sets (`build-stamp.mjs:1-14`).
 
+**Two submodules, both required.** `third_party/ogre-next` supplies the runtime
+payload; `third_party/ImageViewer` supplies the `.iwi` container library
+(`src/format/IwiFile.cpp`), which the core links through
+`rustc-link-lib=static=iw_iwi_file` (`tension-core/build.rs`) and the bisect DSO
+compiles in (`scripts/build-2d.mjs`). A fresh clone needs
+`git submodule update --init --recursive`; the build names the missing path and
+the command rather than failing on a missing header.
+
 ## 2. The bootstrap
 
 `node scripts/bootstrap.mjs` builds Ogre-Next from the pinned submodule into

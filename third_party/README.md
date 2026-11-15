@@ -1,4 +1,4 @@
-# third_party — Ogre-Next, from source
+# third_party — Ogre-Next and ImageViewer, from source
 
 `ogre-next/` is a submodule of [Ogre-Next](https://github.com/OGRECave/ogre-next)
 pinned at `475f783d76` (2026-09-07). Not the newest release tag: v3.0.0 is
@@ -8,8 +8,14 @@ repository ran against the master commit — the CI packages it
 system install is built from it. Moving the pin is a `git checkout <ref>`
 inside the submodule plus a commit here.
 
-`ogre-next/` is the only submodule in this tree. FreeImage used to be a second
-one; it was removed — see "FreeImage is gone" below.
+`ImageViewer/` is a submodule of
+[ImageViewer](https://github.com/Yabgu/ImageViewer) pinned at `46b13b16a0`
+(2026-11-15). Its `src/format/IwiFile.{h,cpp}` is the **one** implementation of
+the `.iwi` container; the README section below says how the host and the C++
+bisect adapter use it. Apache-2.0 — see "Licensing" below.
+
+Those are the only two submodules. FreeImage used to be a third; it was
+removed — see "FreeImage is gone" below.
 
 ## Bootstrap
 
@@ -106,6 +112,43 @@ If FreeImage is ever brought back, the flags above are the ones to re-check,
 and CDDL is the correct election for LibRawLite rather than LGPL-2.1: CDDL's
 larger-work clause avoids LGPL §6 relinking obligations for a statically
 linked library.
+
+ImageViewer is **Apache-2.0**, which is permissive and one-way compatible with
+this tree's MIT: the image format library is compiled from source into the host
+and the bisect DSO, and its licence text ships in `ImageViewer/LICENSE` inside
+the submodule. No election is involved.
+
+## ImageViewer: the .iwi format
+
+`ImageViewer/src/format/IwiFile.h` is the format's C ABI and `IwiFile.cpp` is
+the single implementation. The on-disk header is a 36-byte base header plus six
+bytes per component: magic, width, height, metadata size, an 8-byte
+storage-layout descriptor, an 8-byte payload encoding, colour space, reserved,
+component count — then the component table, optional metadata, and tightly
+packed pixels. `IwiFile.h` documents every offset; no consumer restates them.
+
+The consumers:
+
+- `tension-core/build.rs` compiles `IwiFile.cpp` with a GNU-compatible C++
+  driver (`TENSION_CXX`, `g++` on Windows, `c++` elsewhere) into
+  `libiw_iwi_file.a` and links it. The ABI is `extern "C"` and the object names
+  only libc symbols, so it crosses the MSVC-host / MinGW-compiler boundary the
+  same way `libtension_solver.a` does.
+- `tension-core/src/render2d/iwi.rs` is the policy + FFI wrapper:
+  `iwi_parse_structural` for the grammar, this build's capability checks, then
+  `iwi_decode` for RGBA8. It returns `-EINVAL` for a broken container and
+  `-ENOSYS` for a valid one this build cannot serve.
+- `tension-2d/reference/texture.cpp` calls the same API. `scripts/build-2d.mjs`
+  compiles `IwiFile.cpp` into the bisect DSO, so both 2D paths parse with the
+  same code.
+- `tension-framework/assembly/2d/iwi.ts` (guests) and
+  `tension-framework/tools/lib/iwi.mjs` (Node build tools) mirror the wire
+  header, because wasm and Node cannot call a C ABI. Those two are the only
+  mirrors, and the framework/example tests are what keep them honest.
+
+The submodule is required: after a fresh clone,
+`git submodule update --init third_party/ImageViewer` (the same step OGRE-Next
+needs). `build.rs` names the missing file and the command if it is absent.
 
 ## How the tree prefers it
 
