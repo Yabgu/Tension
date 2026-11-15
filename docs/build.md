@@ -503,7 +503,9 @@ runs a subset (`-- --list` prints the names).
 
 **Gates that are not tests of behaviour** — no build, seconds to run:
 
-- `eol` — every text file is LF (`normalize-eol.mjs --check`).
+- `eol` — every text file is UTF-8 with LF endings, batch files excepted
+  (`normalize-eol.mjs --check`); the gate is itself exercised by
+  `test-eol-gate.mjs` against a fixture tree with one violation per rule.
 - `deps` — no two naga copies (`check-naga-pin.mjs`); two copies mean two `Options`
   types and a graph that compiles with one and is compared against the other.
 - `win32-headers` — the checked-in Win32 overlay matches upstream's template,
@@ -890,7 +892,8 @@ numbers) is a future project.
 - `scripts/gen-abi-doc.mjs`, `scripts/test-abi-docs.mjs` — the ABI pages and their
   drift gate.
 - `scripts/check-ogre-capacities.mjs`, `scripts/check-naga-pin.mjs`,
-  `scripts/check-win32-headers.mjs`, `scripts/normalize-eol.mjs` — the cheap gates.
+  `scripts/check-win32-headers.mjs`, `scripts/normalize-eol.mjs`,
+  `scripts/test-eol-gate.mjs` — the cheap gates.
 - `scripts/test.mjs` — the eighteen suites and the scheduler.
 - `ci/README.md`, `ci/linsys2.md`, `ci/docker.mjs` — the two CI paths.
 - `third_party/README.md`, `third_party/patches/` — the pin, the patches, the

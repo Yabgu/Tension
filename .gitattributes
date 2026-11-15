@@ -9,6 +9,14 @@
 # too and the two platforms always agree.
 * text=auto eol=lf
 
+# The one exception: cmd.exe parses labels and `goto` on its own line-ending
+# rules and mis-handles a bare LF, so batch files are checked out as CRLF (stored
+# LF in the index, as `eol=crlf` implies). No such file is tracked today; the
+# rule is here so adding one does not silently convert it to LF. The `eol` gate
+# in `scripts/normalize-eol.mjs` allows CRLF there and nowhere else.
+*.bat            text eol=crlf
+*.cmd            text eol=crlf
+
 # Config files are text: OGRE's .cfg and .material.json are read as text.
 *.cfg            text eol=lf
 *.json           text eol=lf

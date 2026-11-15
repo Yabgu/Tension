@@ -10,7 +10,7 @@
 //   5. tension-core       cargo test
 //   6. tension-ogre unit  the adapter's C++ unit tests
 //   7. tension-res        zig build test
-//   8. line endings       no CRLF in a text file
+//   8. line endings       text files are UTF-8 with LF (batch files may be CRLF)
 //   9. dependency pins    one naga version, not two
 //  10. isometric (CI)    the three 2D problems, from synthetic pages
 //  11. isometric frame   the framework library reproduces the scene byte for byte
@@ -179,11 +179,22 @@ function execute(command, args = [], options = {}) {
 // guard can fire and the tag is not needed.
 
 const SUITES = {
+  // This suite is the repository's only guard against a CRLF or non-UTF-8 file,
+  // so it checks the guard first. The gate used to skip a file it could not
+  // decode and then report green; `test-eol-gate.mjs` runs it against a fixture
+  // tree where each rule is violated once, so a gate that stops looking fails
+  // here rather than passing there.
   eol: {
     title: 'line endings',
     needs: [],
     holds: [],
-    run: () => execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]),
+    run: async () => {
+      const gate = await execute(node, [join(repo, 'scripts', 'test-eol-gate.mjs')]);
+      if (gate.status !== 0) return gate;
+      const tree = await execute(node, [join(repo, 'scripts', 'normalize-eol.mjs'), '--check', repo]);
+      // Both, so a passing run still shows the fixture count beside the tree count.
+      return { status: tree.status, output: gate.output + tree.output };
+    },
   },
 
   // A dependency-hygiene check rather than a test: cargo links two naga copies
