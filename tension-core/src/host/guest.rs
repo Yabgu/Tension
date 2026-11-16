@@ -31,20 +31,6 @@ use std::sync::Arc;
 
 use wasmtime::{Linker, Module, Store};
 
-/// The root store's epoch deadline: "never", but not `u64::MAX`.
-///
-/// wasmtime stores the deadline as `current_epoch + delta`
-/// (`wasmtime-24.0.13/src/runtime/store.rs:2652`), so `u64::MAX` overflows —
-/// and panics — once the engine's epoch has advanced at all. That is not
-/// hypothetical: the moment a sandbox's watchdog ticks against the same engine,
-/// the next `GuestHost` built on it would panic in its constructor. An unchanged
-/// tree with two sandboxes in one test found it.
-///
-/// Half the range is 2^63 ticks. At the watchdog's tick that is longer than the
-/// process will live, and reaching it would need 2^63 increments of a counter
-/// only a running sandbox advances.
-const NEVER_TRAPS: u64 = u64::MAX / 2;
-
 /// Which kind of guest a bundle holds. See [`GuestHost::build`].
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Kind {
@@ -139,12 +125,23 @@ impl GuestHost {
         // "yes" costs one branch per growth.
         store.limiter(|state| &mut state.memory_budget);
 
-        // **Required, not optional.** The engine enables epoch interruption
-        // (`main`, where the engine is configured), and wasmtime traps a store
-        // that runs code with no deadline set: "by default a store will trap
-        // immediately with an epoch deadline of 0". This one never expires; a
-        // sandbox installs a real deadline over it (`Sandbox::open`).
-        store.set_epoch_deadline(NEVER_TRAPS);
+        // **Nothing is armed here, and that is now the correct amount.** The
+        // process world's engine does not enable `epoch_interruption`
+        // (`engines::engine_config`), so this store's guest carries no deadline
+        // checks: there is no deadline to set, and `set_epoch_deadline` on such an
+        // engine is silently inert (measured — it returns, warns about nothing,
+        // and the guest runs).
+        //
+        // What the process's own guest is guaranteed: **nothing**. It runs to
+        // completion, and a root guest that loops forever freezes the process.
+        // That is the decision, not an omission: the guest owns its loop and
+        // determines time.
+        //
+        // A nested store does get a deadline, and it is armed by
+        // `Sandbox::open` immediately after this function returns and before
+        // anything is instantiated — so no guest code ever runs on an unarmed
+        // sandbox store. That ordering is what makes leaving this call out safe
+        // for both kinds.
 
         // tension::session ----------------------------------------------------
         // The session owns the arena memory, so it is created before anything is

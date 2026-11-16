@@ -186,14 +186,23 @@ The three options were, and the user chose **(a)** on semantic grounds:
 
 **What is there now.** `tension_core::engines` holds `WorldKind`
 (`Process`/`Sandbox`, chosen by depth through `for_depth`), `World` (an engine
-plus its one reference-counted epoch `Watchdog`), `Worlds` (the process world
-built eagerly, the sandbox world on the first `dev.run`), and `engine_config` —
-the single `Config` recipe both `main` and `tests/engine_worlds.rs` use. The
-boundary is a **compile-time refusal**: a module with continuation types fails at
-`Module::new` on the process world (`cannot define continuation types when stack
-switching is disabled`). Also fixed on the way: the watchdog was per-sandbox and
-ticked a shared epoch, so a second live sandbox halved every guest's time budget
-(measured 161 ms alone, 81 ms with a second open; 160 ms after).
+plus — **sandbox world only** — its one reference-counted epoch `Watchdog`),
+`Worlds` (the process world built eagerly, the sandbox world on the first
+`dev.run`), and `engine_config` — the single `Config` recipe both `main` and
+`tests/engine_worlds.rs` use. The boundary is a **compile-time refusal**: a module
+with continuation types fails at `Module::new` on the process world (`cannot
+define continuation types when stack switching is disabled`). Also fixed on the
+way: the watchdog was per-sandbox and ticked a shared epoch, so a second live
+sandbox halved every guest's time budget (measured 161 ms alone, 81 ms with a
+second open; 160 ms after).
+
+**The epoch is the sandbox's alone** — the user's ruling the same day, superseding
+this round's "on in both". `epoch_interruption` is off in the process world, so
+the process's own guest carries **no deadline checks at all**, and `host/guest.rs`
+arms nothing. Accepted and recorded rather than softened: **a root guest that
+loops forever freezes the process, with SIGINT as the only exit.** The sandbox
+world keeps the bound because a run the host started must be stoppable by the
+host.
 
 **Still open, and next:** `step` needs a **guest-side hook** — a step resumes a
 continuation, which only the guest can do (`ContRef` is a stub in wasmtime 50.1,

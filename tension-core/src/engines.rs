@@ -14,13 +14,12 @@
 //!
 //! | world | exceptions | function references | stack switching | epoch |
 //! | --- | --- | --- | --- | --- |
-//! | [`WorldKind::Process`] | default | default | **no** | on |
-//! | [`WorldKind::Sandbox`] | on | on | **on** ([`crate::threads::enable`]) | on |
+//! | [`WorldKind::Process`] | default | default | **no** | **no** |
+//! | [`WorldKind::Sandbox`] | on | on | **on** ([`crate::threads::enable`]) | **on** |
 //!
-//! **This is the decision the user made** (2026-11-16, option (a) of
-//! `docs/plan/pass-2.md`'s "One engine, not two"): a suspended guest is a guest
-//! whose capability world has to be stated, and the honest statement is that the
-//! process's own guest does not get a capability it does not use.
+//! **Both columns are decisions the user made** (2026-11-16): option (a) of
+//! `docs/plan/pass-2.md`'s "One engine, not two" for the engines, and then the
+//! epoch polarity — the sandbox world is bounded, the process world is not.
 //!
 //! # "Can't", not "probably won't"
 //!
@@ -31,16 +30,34 @@
 //! refusal and quotes wasmtime's own error, which is why the test is a
 //! structural one rather than a declaration of intent.
 //!
-//! # The epoch, and why it is on in both
+//! # The epoch belongs to the sandbox world alone
 //!
-//! `epoch_interruption` stays on in **both** worlds. It is what a
-//! [`Watchdog`] advances to stop a guest, and a store's deadline is armed
-//! relative to it; a world that had the checks compiled out could not be bounded
-//! at all, and turning it off on the process world would change the shape of
-//! every guest the tree ships to save an unmeasured few instructions per loop
-//! iteration. `host/guest.rs` arms the process's own store `NEVER_TRAPS`, so the
-//! capability is present and unused; the sandbox arms a real deadline per call
-//! (`sandbox::arm`).
+//! **`epoch_interruption` is off in the process world and on in the sandbox
+//! world**, and the asymmetry is one match arm each (`engine_config`) rather than
+//! a shared preamble. Two consequences, and both are wanted:
+//!
+//! * **The process's own guest carries no deadline checks.** They are absent from
+//!   the compiled code, not present-and-ignored. That is what the north star says
+//!   — the guest owns the world and determines time, the host owns the machine —
+//!   and it retires a capability the tree never used while paying for it in every
+//!   loop iteration.
+//! * **A root guest that loops forever freezes the process, with no recovery.**
+//!   SIGINT is the only exit. Stated rather than softened: it is the price of the
+//!   sentence above, and it is a real price. A root guest that wants a bound
+//!   implements one itself, which is what "the guest owns its loop" means.
+//!
+//! The sandbox world keeps the epoch because a bound on a guest the *host* started
+//! is a different claim from a bound on the guest the process *is*: `dev.run`
+//! starts a guest from a button press, and a run that hangs must be stoppable by
+//! the thing that pressed it.
+//!
+//! `set_epoch_deadline` on a store whose engine has no epoch interruption is
+//! **silently inert** — measured, not assumed: no panic, no warning, the call
+//! returns and the guest runs (100,000 iterations complete on such a store even
+//! after an `increment_epoch`). That is why `host/guest.rs` no longer arms the
+//! process store at all: a call that reads as a guarantee and does nothing is
+//! worse than absent code, which is the same rule the env-var audit applies to a
+//! release binary.
 //!
 //! # Tickers are per world, and that is a fix rather than a detail
 //!
@@ -52,6 +69,8 @@
 //! trapped after 160 ms trapped after 81 ms once a second sandbox existed.
 //! [`World::ticker`] is reference-counted for exactly this reason — the ticker
 //! starts with the first sandbox in the world and stops when the last one drops.
+//! The process world has **no ticker field at all** ([`World::ticker`] answers
+//! `None`), because there is no epoch there to advance.
 //!
 //! # Adding a third world
 //!
@@ -120,24 +139,40 @@ impl WorldKind {
 /// `tests/engine_worlds.rs`; a test that configured its own engine would prove
 /// something about a runtime this tree does not ship.
 ///
+/// **The polarity lives in the arms, not in a preamble.** Adding a third world is
+/// a reviewed code change: a variant, a field on [`Worlds`], and a third arm here
+/// and in [`WorldKind::for_depth`]. A shared `config.epoch_interruption(true)`
+/// above the match would give a new world the epoch without anyone saying so,
+/// which is the one thing this function exists to prevent.
+///
 /// `debug` is the CLI's `--debug`: DWARF retention and GDB JIT registration. It
 /// is the only difference between two processes rather than two worlds.
 pub fn engine_config(kind: WorldKind, debug: bool) -> Config {
     let mut config = Config::new();
     config.debug_info(debug);
 
-    // Both worlds, for the reason in the module doc: a store's deadline is armed
-    // against the epoch, and a guest compiled without deadline checks could not
-    // be stopped at all.
-    config.epoch_interruption(true);
-
     match kind {
-        // The process's own guest gets no proposal it does not use. This is the
-        // whole of option (a): a capability is present where it is wanted and
-        // absent where it is not, and "absent" is enforced by the compiler.
+        // The process's own guest gets no proposal it does not use, and **no
+        // epoch**: `epoch_interruption` is deliberately absent here, and the
+        // absence is the decision rather than an omission. A reader who knows
+        // wasmtime will otherwise assume a bug, so it is written down twice —
+        // here and in this module's doc.
+        //
+        // What follows from it: the compiled guest carries no deadline checks at
+        // all, and no host capability can interrupt it. A root guest that loops
+        // forever freezes this process until SIGINT. That is the trade the north
+        // star asks for — the guest owns its loop and determines time — and it is
+        // named here so it cannot be read as an oversight.
         WorldKind::Process => {}
-        // Exceptions -> function references -> stack switching, in that order.
+        // **Both**, and both are needed: `threads::enable` sets the three
+        // proposals and deliberately does not touch the epoch, while a bound on a
+        // guest the host started needs the epoch *and* the proposals. The epoch is
+        // what a [`Watchdog`] advances and what `sandbox::arm` arms a deadline
+        // against; without it the arm would be inert (measured: `set_epoch_deadline`
+        // on a non-epoch engine returns normally and does nothing).
         WorldKind::Sandbox => {
+            config.epoch_interruption(true);
+            // Exceptions -> function references -> stack switching, in that order.
             crate::threads::enable(&mut config);
         }
     }
@@ -145,6 +180,11 @@ pub fn engine_config(kind: WorldKind, debug: bool) -> Config {
 }
 
 /// Advances one world's epoch every [`TICK`] while it is alive.
+///
+/// **Only a bounded world can have one.** `start` is private to this module, the
+/// only caller is [`World::ticker`], and the only world whose `ticker` field is
+/// `Some` is the sandbox world — so a ticker on the process engine is not a rule
+/// anyone has to remember, it is a construction this module cannot perform.
 ///
 /// **Refcounted by whoever holds it** ([`World::ticker`] hands out the same one
 /// to every sandbox in the world). Dropping the last handle stops and joins the
@@ -189,25 +229,45 @@ impl Drop for Watchdog {
     }
 }
 
-/// One capability world: its engine, and the single ticker that advances it.
+/// One capability world: its engine, and — for a world that is bounded — the
+/// single ticker that advances its epoch.
+///
+/// **The process world cannot hold a ticker**, and that is a type rather than a
+/// convention: the field is `Option<TickerSlot>`, `None` for a world built without
+/// an epoch, and there is no setter. A `Watchdog` needs an engine to tick; giving
+/// the process world one would be giving it a guarantee it does not have.
 pub struct World {
     kind: WorldKind,
     engine: Engine,
-    /// The one ticker for this world's epoch, or a dead handle to the last one.
-    ///
-    /// `Weak` because the lifetime is the sandboxes': the ticker lives exactly as
-    /// long as there is a guest in this world that needs bounding, and no longer.
-    /// `Mutex` because [`.ticker()`](World::ticker) is reachable from `dev.run`
-    /// and the type has to be `Sync` even though the stores are not.
-    ticker: Mutex<Weak<Watchdog>>,
+    /// `Some` only when this world's epoch is a bound.
+    ticker: Option<TickerSlot>,
+}
+
+/// The one ticker for a world's epoch, or a dead handle to the last one.
+///
+/// `Weak` because the lifetime is the sandboxes': the ticker lives exactly as long
+/// as there is a guest in this world that needs bounding, and no longer. `Mutex`
+/// because `.ticker()` is reachable from `dev.run` and the type has to be `Sync`
+/// even though the stores are not.
+struct TickerSlot {
+    live: Mutex<Weak<Watchdog>>,
 }
 
 impl World {
     fn new(kind: WorldKind, engine: Engine) -> Self {
+        // The one place the presence of a ticker is decided, and it is the same
+        // axis as the epoch itself: a world that compiled in no deadline checks
+        // has nothing to advance.
+        let ticker = match kind {
+            WorldKind::Process => None,
+            WorldKind::Sandbox => Some(TickerSlot {
+                live: Mutex::new(Weak::new()),
+            }),
+        };
         Self {
             kind,
             engine,
-            ticker: Mutex::new(Weak::new()),
+            ticker,
         }
     }
 
@@ -221,27 +281,33 @@ impl World {
         self.engine.clone()
     }
 
-    /// The ticker for this world's epoch, started on the first call.
+    /// The ticker for this world's epoch, started on the first call — or `None`
+    /// for the process world, which has no epoch and therefore nothing to tick.
     ///
     /// **One per world, shared by reference count.** Two sandboxes holding this
     /// advance one counter once per [`TICK`], which is what makes
     /// `sandbox::TICKS_BEFORE_TRAP` a wall-time budget rather than a budget that
     /// halves with every extra live guest.
     ///
+    /// `None` is not a degraded case to work around: `Sandbox::open` refuses a
+    /// config from any world but the sandbox's, so its caller never sees it — and
+    /// if it did, a sandbox in an unbounded world is exactly what must not run.
+    ///
     /// A poisoned lock is recovered rather than propagated: the critical section
     /// holds no data that a panic could have left half-written, and a guest that
     /// cannot be bounded is a worse outcome than a recovered mutex.
-    pub fn ticker(&self) -> Arc<Watchdog> {
-        let mut slot = self
-            .ticker
+    pub fn ticker(&self) -> Option<Arc<Watchdog>> {
+        let slot = self.ticker.as_ref()?;
+        let mut live = slot
+            .live
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(live) = slot.upgrade() {
-            return live;
+        if let Some(running) = live.upgrade() {
+            return Some(running);
         }
         let dog = Arc::new(Watchdog::start(&self.engine));
-        *slot = Arc::downgrade(&dog);
-        dog
+        *live = Arc::downgrade(&dog);
+        Some(dog)
     }
 }
 

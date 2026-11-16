@@ -24,8 +24,8 @@
 //!
 //! # Where it is on
 //!
-//! The **sandbox engine** calls this (`tension_core::engines::engine_config`), and
-//! the process engine does not. That is the shape the user chose on 2026-11-16,
+//! The **sandbox world** calls this (`tension_core::engines::engine_config`), and
+//! the process world does not. That is the shape the user chose on 2026-11-16,
 //! option (a) of `docs/plan/pass-2.md`'s "One engine, not two": two engines, one
 //! per capability world, so a proposal is enabled exactly where it is wanted.
 //! The consequence is enforced by the compiler rather than by policy — a module
@@ -37,6 +37,22 @@
 //! code cache) and was rejected for the reason this module is separate at all: a
 //! capability enabled on the strength of a design sketch is a capability nobody
 //! decided on.
+//!
+//! # What this does not turn on, and why the sandbox arm sets both
+//!
+//! `enable()` deliberately does **not** touch `epoch_interruption`. The two are
+//! orthogonal switches — a continuation is a compiled capability, an epoch is a
+//! bound the host imposes on a store — and conflating them would mean a future
+//! world that wants one gets the other.
+//!
+//! The sandbox's `engine_config` arm therefore sets **both**
+//! (`config.epoch_interruption(true)` and then this). The process arm sets
+//! neither: no proposals and no epoch, so a root guest runs to completion and a
+//! root guest that loops forever freezes the process. `tests/stack_switching.rs`
+//! is the live proof that the two are separable — it builds an engine with
+//! `enable()` and no epoch, never calls `set_epoch_deadline`, and its five tests
+//! pass. It runs bounded calls and needs no bound; a world that must *stop* a
+//! guest needs the epoch, which is the sandbox world's claim and nobody else's.
 //!
 //! # Platform
 //!

@@ -39,6 +39,8 @@
 //! function `main` uses. A test with a hand-built `Config` would prove something
 //! about a runtime this tree does not ship (the gate audit's own rule).
 
+use std::sync::Arc;
+
 use tension_core::engines::{engine_config, WorldKind, Worlds};
 use wasmtime::{Engine, Instance, Module, Store};
 
@@ -108,9 +110,11 @@ fn the_sandbox_world_compiles_and_runs_a_continuation() {
         .expect("the sandbox world compiles a continuation");
 
     let mut store = Store::new(&sandbox.engine(), ());
-    // Required on any engine built with `epoch_interruption`, which both worlds
-    // are: a store whose deadline is left at 0 traps immediately with `interrupt`.
-    // The process's own guest is armed the same way (`host/guest.rs`).
+    // Required **here**, because this is the sandbox world and its engine has
+    // `epoch_interruption` on: a store left at the default deadline of 0 traps
+    // immediately with `interrupt` before it runs a single instruction. The
+    // process world has no such requirement — it has no checks to trip — which is
+    // what the polarity test below proves rather than asserts.
     store.set_epoch_deadline(u64::MAX);
 
     let instance = Instance::new(&mut store, &module, &[]).expect("instantiate");
@@ -146,8 +150,10 @@ fn a_module_from_one_world_is_not_accepted_by_the_other() {
     let module = Module::new(&sandbox.engine(), CONTINUATION)
         .expect("the sandbox world compiles a continuation");
 
+    // No deadline is armed: this is the process engine, which has no epoch
+    // interruption, so there is nothing to arm. Arming one would be the inert
+    // call `host/guest.rs` deliberately no longer makes.
     let mut store = Store::new(&worlds.process().engine(), ());
-    store.set_epoch_deadline(u64::MAX);
     let error = Instance::new(&mut store, &module, &[])
         .expect_err("a module cannot cross engines");
     let message = format!("{error:#}");
@@ -173,4 +179,117 @@ fn depth_selects_the_world() {
             "a guest at depth {depth} is nested and runs in the sandbox world"
         );
     }
+}
+
+// ── the epoch polarity ─────────────────────────────────────────────────────
+
+/// A loop that runs exactly as many times as it is told, and counts.
+///
+/// **Bounded on purpose.** The polarity test must be able to complete even if the
+/// premise it tests is wrong, so the guest cannot be `SPIN`: it takes an iteration
+/// count and returns how many iterations it performed, which makes "the loop ran
+/// to the end" an assertion rather than an absence of a trap.
+///
+/// `COUNT` is one million. Measured on this machine, that call takes **0.75 ms**
+/// on the process world, so the test is instant; and it is six orders of magnitude
+/// more iterations than a per-backedge deadline check needs to fire, since the
+/// deadline is already reached before the call begins (the check is inserted at
+/// function entry and loop backedges, so a single iteration would do). One value
+/// satisfies both ends of the requirement, which is why it is not tuned further.
+const COUNTED_LOOP: &str = r#"
+(module
+  (func (export "count") (param $n i32) (result i32)
+    (local $i i32)
+    (local $acc i32)
+    (block $done
+      (loop $again
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (local.set $acc (i32.add (local.get $acc) (i32.const 1)))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $again)))
+    (local.get $acc)))
+"#;
+
+const COUNT: i32 = 1_000_000;
+
+/// The sandbox world has the checks, so a reached deadline traps.
+///
+/// Same module, same deadline, same `increment_epoch` as the test below — only the
+/// world differs. This half is what makes the other half mean "no checks were
+/// compiled in" rather than "the guest finished before anything noticed".
+#[test]
+fn the_sandbox_world_enforces_the_epoch() {
+    let worlds = worlds();
+    let sandbox = worlds.sandbox().expect("stack switching is available here");
+    let module = Module::new(&sandbox.engine(), COUNTED_LOOP).expect("the module compiles");
+
+    let mut store = Store::new(&sandbox.engine(), ());
+    // Deadline 1, then advance the epoch past it: the bound is reached before the
+    // call, so the first check to execute must fire.
+    store.set_epoch_deadline(1);
+    sandbox.engine().increment_epoch();
+
+    let instance = Instance::new(&mut store, &module, &[]).expect("instantiate");
+    let count = instance
+        .get_typed_func::<i32, i32>(&mut store, "count")
+        .expect("the export");
+    let error = count
+        .call(&mut store, COUNT)
+        .expect_err("a reached deadline must trap in the sandbox world");
+    let message = format!("{error:#}");
+    println!("the sandbox world traps:\n{message}");
+    assert!(
+        message.contains("interrupt"),
+        "the trap must be the epoch deadline: `{message}`"
+    );
+}
+
+/// The process world has no checks, so the identical sequence completes.
+///
+/// **Behavioural, not a flag assertion.** Nothing here asks wasmtime whether
+/// `epoch_interruption` is set; it asks the compiled guest to run a million
+/// iterations with the deadline already reached and the epoch already advanced,
+/// and requires the right answer back. A check anywhere in that loop — function
+/// entry, backedge, either — would have trapped it.
+#[test]
+fn the_process_world_compiles_no_epoch_checks() {
+    let worlds = worlds();
+    let module = Module::new(&worlds.process().engine(), COUNTED_LOOP).expect("the module compiles");
+
+    let mut store = Store::new(&worlds.process().engine(), ());
+    // Inert on this engine — measured: it returns, warns about nothing, and never
+    // fires. Called anyway, because the point is that the *same* sequence which
+    // traps in the sandbox world completes here.
+    store.set_epoch_deadline(1);
+    worlds.process().engine().increment_epoch();
+
+    let instance = Instance::new(&mut store, &module, &[]).expect("instantiate");
+    let count = instance
+        .get_typed_func::<i32, i32>(&mut store, "count")
+        .expect("the export");
+    assert_eq!(
+        count.call(&mut store, COUNT).expect("the process world must not trap"),
+        COUNT,
+        "every iteration must have run: the return value is the iteration count"
+    );
+}
+
+/// Only a world with an epoch owns a ticker, and the process world cannot hold
+/// one at all.
+#[test]
+fn only_the_sandbox_world_has_a_ticker() {
+    let worlds = worlds();
+    assert!(
+        worlds.process().ticker().is_none(),
+        "the process world must have no ticker: it has no epoch to advance, and a \
+         watchdog there would be a guarantee the code does not make"
+    );
+
+    let sandbox = worlds.sandbox().expect("stack switching is available here");
+    let first = sandbox.ticker().expect("the sandbox world is bounded");
+    let second = sandbox.ticker().expect("the sandbox world is bounded");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "one epoch counter, one ticker: two sandboxes in this world must share it"
+    );
 }

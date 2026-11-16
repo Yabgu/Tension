@@ -1057,16 +1057,13 @@ fn main() -> anyhow::Result<()> {
     // sandbox world is built on the first `dev.run`, because an example that
     // never nests should not pay for a second engine and a second code cache.
     //
-    // Epoch interruption is on in **both**, and that is the one thing the split
-    // did not change: it is the switch a watchdog's `increment_epoch` reaches, a
-    // store's deadline is armed against it, and a guest compiled without its
-    // deadline checks could not be stopped at all. `GuestHost::new` arms the
-    // process's own store `NEVER_TRAPS`, so the process keeps the capability and
-    // does not use it.
-    //
-    // A few instructions per loop iteration is the cost, paid by every guest.
-    // That is the price of being able to stop one, and it is the only mechanism
-    // wasmtime offers that a guest cannot opt out of.
+    // **Epoch interruption is on in the sandbox world only**, and the asymmetry
+    // lives in `engine_config`'s arms. The sandbox keeps it because a run the host
+    // started must be stoppable by the host; the process's own guest does not have
+    // it, so its compiled code carries no deadline checks at all and nothing but
+    // SIGINT can stop it. That is the trade the north star asks for — the guest
+    // owns its loop and determines time — and the cost of the sandbox's bound (a
+    // few instructions per loop iteration) is paid only where it is wanted.
     //
     // **`--debug` reaches the engine through this closure.** With it on, wasmtime
     // keeps the guest's DWARF and registers the JIT'd code with the platform

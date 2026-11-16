@@ -94,9 +94,10 @@ pub(crate) const TICKS_BEFORE_TRAP: u64 = 8;
 /// site — is four chances to forget one, and forgetting one is silent: the guest
 /// simply inherits whatever was left of the previous bound.
 ///
-/// The root guest never comes through here: its store is armed with
-/// `NEVER_TRAPS` once (`host/guest.rs`), because the process's own guest owns
-/// its loop and must not be interrupted at all.
+/// The root guest never comes through here, and it is not merely a convention any
+/// more: the process world's engine has no epoch interruption compiled in, so
+/// there is no counter to arm against and no check to fire. The process's own
+/// guest runs to completion (`host/guest.rs`).
 fn arm(store: &mut Store<HostState>) {
     store.set_epoch_deadline(TICKS_BEFORE_TRAP);
 }
@@ -463,7 +464,19 @@ impl Sandbox {
         // ticker. Shared with every other live sandbox in the world, so a second
         // run does not halve the first one's budget (measured: 81 ms against the
         // 160 ms it was promised, before this was shared).
-        let watchdog = config.world.ticker();
+        //
+        // A world without an epoch answers `None`, and `open` refuses it here
+        // rather than opening a guest that no watchdog could ever stop — the
+        // process world is exactly that world, and the refusal above already
+        // names it. Belt and braces on purpose: this is the one place a guest
+        // begins, so it is the one place the two facts must agree.
+        let Some(watchdog) = config.world.ticker() else {
+            bail!(
+                "the {} world has no epoch, so a guest opened in it could not be \
+                 stopped; a sandbox needs the sandbox world",
+                config.world.kind().name()
+            );
+        };
         Ok(Self {
             guest: GuestState {
                 host,

@@ -320,10 +320,11 @@ one engine per guest is the anti-pattern above.
 | exceptions | default | on |
 | function references | default | on |
 | stack switching | **off** | **on** (`threads::enable`) |
-| epoch interruption | on, armed `NEVER_TRAPS` | on, armed `TICKS_BEFORE_TRAP` per call |
+| epoch interruption | **off** — no deadline checks compiled in | **on**, armed `TICKS_BEFORE_TRAP` per call |
+| ticker | **none** — the type cannot hold one | one per world, reference-counted |
 | built | at startup | on the first `dev.run` |
 
-Five things worth keeping, all measured:
+Six things worth keeping, all measured:
 
 1. **The boundary is a compile-time refusal, not a policy.** A module with
    continuation types fails at `Module::new` on the process world:
@@ -345,10 +346,18 @@ Five things worth keeping, all measured:
    how a nested guest ended up in the process's capability world. It now asks the
    worlds holder for the sandbox world, and `Sandbox::open` refuses a config from
    any other world.
-5. **Epoch interruption stays on in both.** A store's deadline is armed against
-   it, `GuestHost::new` relies on it (`NEVER_TRAPS`), and turning it off on the
-   process world would change the compiled shape of every shipped guest to save
-   an unmeasured number of instructions.
+5. **The epoch is the sandbox's alone** (the user's ruling, same day, after the
+   engine split). The process world compiles **no** deadline checks — not
+   present-and-armed-`NEVER_TRAPS`, but absent from the code — and `host/guest.rs`
+   no longer arms anything. Proven behaviourally, not by a flag: the same bounded
+   loop, with the deadline already reached and the epoch already advanced, traps
+   `interrupt` on the sandbox engine and returns the right answer on the process
+   engine (`tests/engine_worlds.rs`; mutation-checked by flipping the arm).
+   **The accepted consequence, stated rather than softened: a root guest that
+   loops forever freezes the process, and SIGINT is the only exit.** That is the
+   north star — the guest owns its loop and determines time — priced honestly.
+   `set_epoch_deadline` on a non-epoch engine is silently inert (measured), which
+   is why the call is gone rather than left in place.
 
 What this deliberately does **not** do: call `threads::enable()` anywhere but the
 sandbox world, wire `step`, or give the dispatcher a shape. The scheduler's
@@ -411,8 +420,9 @@ the guest's **lifetime**; arming before each call bounds the **call**. Pass 2
 paid for this once (`5c3caf8`). `Sandbox::arm()` is the one door, and every new
 entry into a sandboxed guest must pass through it — a missing arm is silent,
 because the guest inherits whatever was left of the previous bound. The root
-guest is the deliberate exception: its store is armed `NEVER_TRAPS` once, because
-the process's own guest owns its loop.
+guest is not merely an exception but a different world: its engine has no epoch
+interruption compiled in, so there is no counter to arm and no check to fire. It
+runs to completion, and a root guest that never returns cannot be stopped.
 
 ### The gate must run the shipped configuration
 
