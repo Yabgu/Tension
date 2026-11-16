@@ -27,7 +27,14 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The seven findings so far
+## The ten findings so far
+
+Findings 1-7 were found across Pass 2. Findings 8-10 were found by a **fresh
+agent on a different machine** (rustc 1.99.1, WSL2, dzn) running the gate for
+the threading round of 2026-11-16 — which is the point: the gate had been green
+on the machine that wrote it, and the new environment surfaced three defects that
+environment had masked. See `docs/plan/handoff-to-compiler-round.md`
+("Fresh-agent machine addendum") for the measurements.
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
    `cargo test --no-default-features --features audio`; the flag was meant to say
@@ -153,6 +160,96 @@ something a future round should choose between deliberately:
 
    Reading either operand of a `--diff` is unaffected: a raw log still projects,
    and a rendered projection still re-reads as itself.
+
+8. **A stale build artifact is accepted because it exists.** Found on
+   2026-11-16. `tension-framework` failed with
+   `SPECIMEN FAIL: loading the atlas -> -38`; the atlas was valid and so was the
+   code. `findRender2d()` (`scripts/test-framework.mjs:266-272`) returns any
+   `tension-2d/build/libtension_2d.so` that exists, with **no staleness check**,
+   and the file on that machine was dated **2026-11-09** against a **2026-11-16**
+   checkout — a pre-Pass-B artifact from before the renderer moved in-core
+   (`build-2d.mjs` now links no DSO unless given `--cpp`). The gate then measured
+   a binary that no source in the tree corresponds to.
+
+   *Shape: finding 4's cousin — the measurement depended on the state of a build
+   directory rather than on the tree. Finding 4 was "the same tree projects two
+   numbers"; this is "two trees project the same number".*
+
+   **Diagnosis method, reusable:** exclude the artifact without deleting it —
+   `TENSION_2D_LIB=/nonexistent/none.so node scripts/test.mjs framework`. With
+   the stale DSO out of the way the suite passes, which isolates the artifact
+   from the code in one command. **Fix applied on that machine:** rebuilt with
+   `node scripts/build-2d.mjs --cpp`, then confirmed the specimen *ran* rather
+   than skipped (`26684 lit pixels`) — a rebuild that skipped would otherwise be
+   a false green.
+
+   **Two proposed fixes, pick one:**
+
+   - **Compare the DSO's mtime against its inputs** — refuse (naming why) any
+     `libtension_2d.so` older than the newest of `tension-2d/reference/*.cpp`,
+     its headers, and the `third_party/ImageViewer` IWI sources it links. *This is
+     the honest test: an artifact is stale relative to what it was built from.*
+   - **Refuse any file older than the checkout's HEAD commit time.** Cheaper, no
+     input list to maintain, but a proxy: checking out an older commit can leave
+     the DSO newer than `HEAD` while still disagreeing with the working tree.
+
+   **Either fix is incomplete alone.** The companion defect is below.
+
+9. **A suite can pass while its central assertion never ran.** Found on
+   2026-11-16, in the same place as finding 8 and with the same cause.
+   `runFontSpecimenFixture` prints
+   `SKIP — no tension::2d (build tension-2d, or set TENSION_2D_LIB)` and returns
+   when no DSO is found, and `tension-framework` reports `PASSED` either way.
+   Measured: with `TENSION_2D_LIB` pointed at a nonexistent path the suite passes
+   with the font specimen skipped. So the *one* assertion in that suite that
+   exercises a real GPU frame is optional in practice, and the gate's verdict
+   cannot tell "the specimen drew 26,684 lit pixels" from "the specimen never
+   ran".
+
+   This is finding 5's shape (the gate cannot say what it exercised) sharpened
+   into the worst case: not "an added assertion is invisible" but "a *skipped*
+   assertion is indistinguishable from a passed one".
+
+   *Shape: the gate's verdict is stable across two different amounts of exercise.*
+
+   Note the skip was defensible when the DSO was the only 2D renderer. It is not
+   any more: the renderer is in-core (`render2d-core`), so the DSO is the *bisect*
+   path and its absence should not silently drop the suite's GPU coverage. The
+   fix is to make a missing/refused DSO **fail** this suite (or to run the
+   specimen against the in-core renderer directly), not to skip it.
+
+10. **A crashed test binary projects as zero tests, not as unknown.** Found on
+    2026-11-16. The `tension-core` suite's lib binary **SIGSEGV**d during the
+    run. libtest therefore never printed its `test result:` summary, and the
+    projection (which counts `test result:` lines) reported:
+
+    ```
+    cargo-result-lines: 0
+    cargo-total: passed=0 failed=0 ignored=0
+    ```
+
+    145 individual tests had already printed `... ok`, and **none** had printed
+    `... FAILED`. A reader of the projection alone sees "zero tests" — which reads
+    as "nothing to report", the most benign possible interpretation of a hard
+    crash.
+
+    *Shape: a crash and a clean, empty run project identically. This is finding 5
+    one layer down: the gate cannot distinguish "the suite ran and everything
+    passed" from "the suite did not run".*
+
+    **A crash does reach the verdict** — the suite is `[FAIL]` in the summary and
+    the gate exits non-zero — so this is not a silent pass. The defect is in the
+    *projection*, which is the artefact a freezed commit cites and a `--diff`
+    compares. A `--diff` across a crashing run shows `cargo 0 lines` rather than
+    naming the crash.
+
+    **Proposed fix:** `project-gate` must treat a missing libtest summary as a
+    **failure**, not as a count of zero. Concretely: if a suite's log contains
+    `test result:` lines *before* the failure but not after, or contains
+    `SIGSEGV`/`signal:` without a matching summary, the projection emits a
+    `crashed:` section naming the binary. "Zero `test result:` lines from a suite
+    that was expected to run cargo" and "all tests passed" must never be the same
+    projection.
 
 ## What a green gate means, now that finding 4 is known
 

@@ -401,3 +401,213 @@ clean.
    the governance rule in `docs/backlog/threading.md` §5.
 
 Then, and only then, propose a slice breakdown.
+
+---
+
+# Fresh-agent machine addendum (measured 2026-11-16 on rustc 1.99.1)
+
+Written by a fresh agent on a **different machine** from the one §5's figures come
+from: Linux under WSL2 (`6.18.58.1-microsoft-standard-WSL2`), rustc **1.99.1**
+(not 1.100.0), Node **26.13.0**, one Vulkan driver (`dzn_icd.json` — Mesa dzn over
+the WSL GPU passthrough; no llvmpipe/lavapipe).
+
+Everything above this line is the record of what was known when it was written.
+This section is what is known now. Where the two disagree, this one was measured
+here and says so.
+
+**The gate is RED on this machine: 22/26, not 26/26.** Three separate causes, one
+fixed, one on `main`, one a test-harness fault. None is the threading work.
+
+## This machine's gate
+
+`node scripts/test.mjs --jobs 1` at `ui-threading` `ccb7fdf`, cold build:
+
+- **26 suites: 22 PASSED, 4 FAILED, 0 SKIPPED.**
+- **Failed, by name:** `box-physics`, `stiff-boxes`, `starter template`,
+  `tension-core`.
+- **Warnings: 85 in 18 distinct rows** (warm-ish; see finding 4 on cache states).
+- **cargo: 145 tests printed `... ok`, zero printed `... FAILED`** — and the lib
+  binary then **SIGSEGV**d, so libtest never wrote a `test result:` summary. The
+  projection reads `cargo-result-lines: 0, cargo-total: passed=0`, which is wrong
+  in the one direction that matters: a crashed test binary is reported as *zero
+  tests*, not as *unknown*. Filed as gate finding 10.
+
+**Finding 6 does not reproduce on 1.99.1.** A grep for `arc-swap`,
+`unused.dependencies` and `unused_dependencies` over the full gate log returns
+**zero** hits. That warning arrived with cargo 1.100's `unused_dependencies`
+lint; on 1.99.1 the row is absent and the count is 85/18, not the handoff's 86/19.
+A figure is only valid on the environment it was measured on, per
+`docs/backlog/gate-configuration-audit.md` — this is that rule applied to the
+handoff itself.
+
+## Cause A — the stale DSO. Root-caused, fixed, verified. Gate finding 8.
+
+**Symptom.** `tension-framework` failed with
+`SPECIMEN FAIL: loading the atlas -> -38 (the runner must mount the baked assets
+with --res)`.
+
+**Root cause.** Not the atlas. `tension-2d/build/libtension_2d.so` was dated
+**2026-11-09 23:26** against a checkout whose tracked files are all **2026-11-16
+01:10** — a pre-Pass-B artifact, from before the renderer moved in-core
+(`scripts/build-2d.mjs`: *"The renderer lives in `tension-core/src/render2d/` as
+of Pass B of the merge, so nothing here compiles C++ any more"*). `findRender2d()`
+(`scripts/test-framework.mjs:266-272`) returns **any file that exists**, with no
+staleness check, so it happily loaded a two-revisions-old binary.
+
+**Diagnosis method, worth reusing.** Exclude the artifact without deleting it:
+`TENSION_2D_LIB=/nonexistent/none.so node scripts/test.mjs framework`. With the
+stale DSO out of the way the suite passes; that isolates the artifact from the
+code in one command.
+
+**Fix applied here.** `node scripts/build-2d.mjs --cpp` (the default build no
+longer links a DSO — it prints *"in-core build — no C++ adapter linked (pass
+--cpp for the bisect DSO)"*). Artifact `ce02729b…` → `9da80f87…`. The suite then
+**PASSED**, and the specimen was confirmed to have *run* rather than skipped:
+`ok: wrote font-specimen.rgba (1209600 bytes)`, `26684 lit pixels`.
+
+**Second half of the same finding: an absent DSO makes the suite pass with the
+specimen silently skipped.** `runFontSpecimenFixture` prints
+`SKIP — no tension::2d` and returns, and the suite verdict is `PASSED` either
+way. So `tension-framework` is green both when the specimen ran and when it never
+ran at all. That is finding 5's shape (the gate cannot say what it exercised),
+and it means this suite's central GPU assertion is optional in practice.
+
+**Proposed fix (choose one; recommended: the first).**
+
+1. **Compare the DSO's mtime against its inputs.** `findRender2d()` refuses (and
+   says why) any `libtension_2d.so` older than the newest of
+   `tension-2d/reference/*.cpp`, its headers, and the `third_party/ImageViewer`
+   IWI sources it links. This is the honest test — an artifact is stale relative
+   to *what it was built from*, which a commit timestamp only approximates.
+2. **Refuse any file older than the checkout.** Compare the DSO's mtime against
+   `HEAD`'s commit time. Cheaper, no input list to maintain, but it is a proxy: a
+   `git checkout` of an older commit can leave the DSO "newer than HEAD" while
+   still disagreeing with the working tree.
+
+Either way the fix must be paired with a change to the skip, or it buys nothing:
+**a missing or refused DSO should FAIL the framework suite, not skip it**, because
+`render2d-core` is now in-core and the DSO is only the bisect path.
+
+## Cause B — `.tns` → `decode_iwi` rejects valid files. On `main`, not here.
+
+Full write-up: **`docs/backlog/bug-iwi-tns-corruption.md`**. Summary:
+
+- `box-physics`, `stiff-boxes` and `starter template` all fail with
+  `texture_load -> -38` /
+  `iwi: only 3- and 4-component colour is supported at v1`.
+- The files on disk are **valid**, checked byte by byte: starter's
+  `assets/sprites.iwi` is 128x32, **3 components**, 12,342 bytes; stiff-boxes'
+  `textures/boxes.iwi` is 1024x1024, **4 components**, 4,194,364 bytes =
+  exactly 60-byte header + 1024·1024·4.
+- The message fires only **after** a successful parse and all five earlier
+  capability checks, so the decoder is being handed a header it reads as having a
+  component count outside 3..=4 — not a bad file on disk.
+- The **DSO path reads `.tns` volumes fine** (the font specimen does exactly
+  that). So this is the **in-core Rust** `res` read → `decode_iwi` path.
+- The 11 `render2d::iwi` unit tests all pass, including
+  `decodes_rgba_passthrough` and `expands_rgb_to_opaque_rgba`, so the decoder
+  logic is sound in isolation.
+
+**Not this branch.** `git diff --stat origin/main..HEAD -- tension-core/src/render2d/`
+is empty; the threading branch never touched the 2D renderer. This is a `main`
+defect, isolated in its own round, and it **does not block threading**.
+
+## Cause C — the `replay_tests` SIGSEGV. **Not a replay bug, and not threading's.**
+
+This was expected to block the threading work. Measured, it does not: the replay
+code is not what crashes. The four isolation questions, answered:
+
+**Q4 — which tests.** All **five** in `render2d::device::replay_tests` crash
+individually (`--exact`, one at a time), not the pipeline-1000 case specifically:
+`nested_iwi_lands_at_outer_page_base`,
+`nested_guest_implicit_page_zero_is_reapplied_at_base`,
+`a_preset_the_outer_already_draws_gets_a_second_pipeline`,
+`a_differently_sized_outer_atlas_is_not_written_into_the_nested_pipeline`,
+`the_replay_keeps_the_outer_implicit_page_zero`. The sibling `capture_tests` (7
+tests) all pass — they use capture mode and create no device.
+
+**Q1 — where it crashes.** Not in the test body. Traced step by step: the test
+reaches `SDL_CreateGPUDevice`, the texture uploads, `SDL_CreateGPUShader` twice,
+`SDL_CreateGPUGraphicsPipeline` — and the crash comes **after the body finishes**,
+i.e. in **teardown of the GPU device**. A minimal probe with no replay code at all
+(`Render2dState::default()` → `open_offscreen(8, 8)` → drop) reproduces it
+identically: body completes, prints "dropped cleanly", then SIGSEGV at process
+exit. `std::mem::forget(state)` — which skips the device destructor — **does not
+crash**. Deterministic, every run; the kernel reports `RAX == RIP` (a jump to an
+unmapped address), RIP in a gap between `libdxcore.so` and `libstdc++`, and the
+WSL GPU layer is already logging `dxgkio_query_adapter_info: Ioctl failed: -22`.
+
+**The variable is the thread, not the code.** The same open-and-drop at exit 0 on
+the **main thread** (run as a `harness = false` example) and SIGSEGV on a
+**libtest worker thread**. That is the invariant this very tree documents:
+`tension-core/tests/render2d_open.rs` uses `harness = false` because
+*"`sdl3::init()` lets the first calling thread claim main-thread status and
+refuses every later one. A normal `#[test]` runs on a spawned thread"*. The
+`replay_tests` module knows this too — it serializes its tests on a `SDL` mutex —
+but a mutex makes the tests take turns; it does not make the caller the **main**
+thread. On this machine (dzn/WSL) that misuse segfaults in device teardown rather
+than returning an error.
+
+**Q2 — driver.** Not fixable by driver choice here: both `SDL_VIDEODRIVER=x11`
+and `=offscreen` crash identically (they both land on the same dzn GPU backend),
+`=wayland` is not available, and there is **no llvmpipe/lavapipe ICD** installed
+to compare against. The tree already states the underlying limitation verbatim in
+`tests/render2d_open.rs`: *"no GPU (Mesa dzn cannot create graphics pipelines; the
+pre-port C++ renderer fails the same way)"*.
+
+**Q3 — wasmtime.** **Crashes at `24.0.13` too.** Built a throwaway worktree at
+`4da7cd7` (the nested-guest merge, `wasmtime = "=24.0.13"`) and ran the same test:
+SIGSEGV. So the wasmtime 24 → 50 upgrade **did not** trigger it; it is
+pre-existing, and the old dev machine never hit it.
+
+**Consequence.** The replay machinery is not implicated, and neither is
+`ui-threading` (`git diff origin/main..HEAD -- tension-core/src/render2d/` is
+empty). The defect is: **`replay_tests` are plain `#[test]`s that initialize SDL
+on a worker thread, against a documented main-thread invariant, on a driver that
+faults at teardown.** The `canvas()` helper's skip is written for a *refusal*
+(`Render2dError::NoDevice`); dzn **succeeds** at opening and fails later, so the
+skip never fires and the process dies instead.
+
+**Not fixed here, per the round's scope.** The shape of the fix is the tree's own
+pattern — a `harness = false` binary for the device-touching replay tests, as
+`render2d_open` does — but whether that, or a driver guard, or a broader statement
+about dzn, is the right answer is the next round's decision.
+
+**Does it block threading?** By measurement, no: the readiness of `step` → 
+`__thread_step` does not depend on device teardown in a test harness. But the
+previous report called it a blocker, so the call belongs to the user, not to this
+addendum.
+
+## TensionScript state
+
+- `main` is at **`f941a1f0`**, clean, equal to `origin/main`, package version
+  **0.14.1**. The handoff §7's *"82 commits behind at `5dad4d39` / 0.10.0"*
+  describes the **old dev machine**, not a fresh clone: `5dad4d39` is exactly 82
+  commits behind `f941a1f0` there. No `*.tgz` anywhere under `~/work`.
+- A local branch **`feat/concurrency`** was created at `f941a1f0` for this round's
+  work (Backend B emission + the `spawn` contract design). **Local only — not
+  pushed.** No source in the repo was modified.
+- Confirmed still true at `f941a1f0`: `src/module.ts:221`
+  `StackSwitching = 65536` and `:334` `ContNew = 98` are **both** declared and
+  referenced nowhere (two dead constants, not one); `src/lazy/lower.ts` still
+  treats `spawn` as a syntactic no-op marker.
+
+## Two findings for the compiler round's estimate
+
+Both change §3's implied size, so they are repeated here rather than buried:
+
+1. **`defaultFeatures` (`src/compiler.ts:240`) lacks `ReferenceTypes` and
+   `ExceptionHandling`.** It is `MutableGlobals | SignExtension | NontrappingF2I |
+   BulkMemory`. Backend B needs the same three-proposal chain `threads::enable()`
+   names (exceptions → function references → stack switching), so the round must
+   enable two more proposals in codegen before it can emit `cont.new` at all.
+   That is materially more than "swap the suspension mechanism".
+2. **`ContNew = 98` (`src/module.ts:334`) is a second dead constant**, same shape
+   as `StackSwitching`.
+
+## Gate state, restated honestly
+
+The handoff's §5 line (`26/26, cargo 642/0, warnings 86/19`) was true on the
+machine that wrote it. On this one it is **22/26**, and the four failures are
+named above with their causes. A reader should treat §5 as *that machine's*
+figure and this section as *this machine's*, per the audit document's own rule.

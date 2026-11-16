@@ -49,6 +49,7 @@
         { "title": "Plan: handoff to the compiler round", "page": "plan/handoff-to-compiler-round.md" },
         { "title": "Backlog: byte-offset decoders", "page": "backlog/byte-offset-decoders.md" },
         { "title": "Backlog: buffer rendering", "page": "backlog/buffer-rendering.md" },
+        { "title": "Backlog: the in-core IWI / .tns defect", "page": "backlog/bug-iwi-tns-corruption.md" },
         { "title": "Backlog: gate configuration audit", "page": "backlog/gate-configuration-audit.md" },
         { "title": "Backlog: guest-rejectable close", "page": "backlog/guest-rejectable-close.md" },
         { "title": "Backlog: threading", "page": "backlog/threading.md" },
