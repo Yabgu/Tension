@@ -14,6 +14,12 @@
 //! only by the interpreter's `main`.
 
 pub mod logging;
+// **The engine worlds.** One engine for the process's own guest, one for
+// sandboxed guests, and the rule that keeps a capability out of the world that
+// does not state it. In the library rather than the binary because the boundary
+// is a property of an `Engine`, and `tests/engine_worlds.rs` has to prove it
+// against the same `Config` recipe `main` builds.
+pub mod engines;
 pub mod pipeline;
 pub mod pipeline_default;
 // The host's window and its Vulkan surface. In the library rather than the

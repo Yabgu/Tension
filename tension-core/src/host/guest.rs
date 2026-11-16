@@ -112,7 +112,7 @@ impl GuestHost {
         // `Module::new` takes the text format as well as the binary one, so a
         // hand-written `.wat` fixture loads the way a compiled `game.wasm` does
         // (§7 Appendix B's smoke path).
-        let loaded = config.module_cache.load(&config.engine, &config.guest_path)?;
+        let loaded = config.module_cache.load(&config.world, &config.guest_path)?;
         if let Some(bytes) = &loaded.bytes {
             // A malformed guest is reported with the file's name in front of
             // wasmtime's own parse error: `Module::new` does not know where the
@@ -131,7 +131,7 @@ impl GuestHost {
             Kind::Root => HostState::new(config, Arc::clone(&posting)),
             Kind::Nested => HostState::new_nested(config, Arc::clone(&posting)),
         };
-        let mut store = Store::new(&config.engine, state);
+        let mut store = Store::new(&config.engine(), state);
         // The limiter is installed for **every** store, with the budget being the
         // part that differs: unlimited for the process's own guest, a real ceiling
         // for a sandbox. Installing it only on sandboxes would leave the field
@@ -171,7 +171,7 @@ impl GuestHost {
             None
         };
 
-        let mut linker: Linker<HostState> = Linker::new(&config.engine);
+        let mut linker: Linker<HostState> = Linker::new(&config.engine());
         link_io(&mut linker)?;
         link_res(&mut linker)?;
         // `tension::2d`: in-core only when the feature is on. Off, the ten verbs

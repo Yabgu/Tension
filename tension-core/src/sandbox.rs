@@ -64,20 +64,15 @@
 //! with no measurement behind them yet; they are configuration-shaped so the
 //! numbers can move without moving the mechanism.
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread::JoinHandle;
-use std::time::Duration;
 
 use anyhow::{bail, Result};
-use wasmtime::{Engine, Module, ResourceLimiter, Store};
+use wasmtime::{Module, ResourceLimiter, Store};
 
 use crate::host::guest::Kind;
 use crate::host::{GuestHost, HostConfig};
 use crate::HostState;
-
-/// How often the watchdog advances the engine's epoch. **PROVISIONAL.**
-pub(crate) const TICK: Duration = Duration::from_millis(20);
+use tension_core::engines::{Watchdog, WorldKind};
 
 /// Epoch ticks a sandboxed guest may run before it traps, so a run may last
 /// about `TICK * TICKS_BEFORE_TRAP`. **PROVISIONAL.**
@@ -86,6 +81,11 @@ pub(crate) const TICK: Duration = Duration::from_millis(20);
 /// is absolute (`now + delta`), so arming it once at `open` capped a guest's
 /// lifetime at ~178 ms and a driven rendering guest died on its ninth frame.
 /// [`arm`] is called before every call into a sandboxed guest instead.
+///
+/// `TICK` lives with the ticker (`tension_core::engines::TICK`), because the
+/// period belongs to the world's watchdog and the *count* is the sandbox's
+/// policy. One ticker per world is what makes this a wall-time budget rather
+/// than one that halves with every extra live sandbox.
 pub(crate) const TICKS_BEFORE_TRAP: u64 = 8;
 
 /// Arm a sandboxed store's deadline for the call that follows.
@@ -223,54 +223,21 @@ impl InputBridge {
     }
 }
 
-/// The thread that makes the epoch a bound rather than a suggestion.
+/// The thread that makes the epoch a bound rather than a suggestion lives with
+/// the world that owns the epoch
+/// (`tension_core::engines::Watchdog`, reached through `World::ticker`).
 ///
-/// It advances the shared `Engine`'s epoch on a fixed tick. Every store sharing
-/// that engine sees the same counter, which is why the *stores* set deadlines
-/// rather than the watchdog setting them: the outer guest's deadline is
-/// `u64::MAX` (`GuestHost::new`) and never fires, while a sandboxed guest's is
-/// [`TICKS_BEFORE_TRAP`] ticks away.
+/// **Why it moved, and why `Sandbox::open` still asks for one.** The ticker
+/// advances its world's epoch, every store in that world shares one counter, so
+/// there must be exactly one ticker per world — one per sandbox was the defect: a
+/// second live sandbox doubled the tick rate and halved the budget of every guest
+/// in the world. `World::ticker` is reference-counted, so calling it here is now
+/// correct: the first sandbox starts the ticker, the rest share it, and the last
+/// one to drop stops it. Nothing about the lifetime rule changed — the ticker
+/// still cannot outlive the guests it bounds.
 ///
-/// `Drop` stops and joins the thread. A watchdog that outlived its sandbox would
-/// keep bumping a counter nobody watches, and the next sandbox's deadline would
-/// arrive early — a bug that would look like flakiness.
-pub(crate) struct Watchdog {
-    stop: Arc<AtomicBool>,
-    thread: Option<JoinHandle<()>>,
-}
-
-impl Watchdog {
-    fn start(engine: &Engine) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let flag = Arc::clone(&stop);
-        let engine = engine.clone();
-        let thread = std::thread::Builder::new()
-            .name("tension-watchdog".to_string())
-            .spawn(move || {
-                while !flag.load(Ordering::Relaxed) {
-                    std::thread::sleep(TICK);
-                    engine.increment_epoch();
-                }
-            })
-            .expect("the watchdog thread must be spawnable");
-        Self {
-            stop,
-            thread: Some(thread),
-        }
-    }
-}
-
-impl Drop for Watchdog {
-    fn drop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            // A join that cannot fail: the loop checks `stop` between sleeps and
-            // holds no lock. Ignoring the result keeps a panicking watchdog from
-            // turning a teardown into a second panic.
-            let _ = thread.join();
-        }
-    }
-}
+/// The *count* ([`TICKS_BEFORE_TRAP`]) stays here, because it is a sandbox's
+/// budget rather than the ticker's period.
 
 /// One sandboxed guest: its host bundle, its claim on input, and its depth.
 ///
@@ -429,9 +396,12 @@ pub(crate) struct Sandbox {
     /// slice 4's record path, need to read the guest's memory *after* a call, and
     /// an `Instance` is only obtainable from `instantiate`.
     instance: Option<wasmtime::Instance>,
-    /// Held for its `Drop`, which stops and joins the ticker. Never read.
+    /// The world's ticker, held for its `Drop`.
+    ///
+    /// Shared with every other sandbox in the same world: the world has one epoch
+    /// counter, so it has one ticker. Never read.
     #[allow(dead_code)]
-    watchdog: Watchdog,
+    watchdog: Arc<Watchdog>,
 }
 
 impl Sandbox {
@@ -459,6 +429,20 @@ impl Sandbox {
             );
         }
 
+        // **The world is checked, not assumed.** A sandbox runs in the sandbox
+        // world, and only there: the process world has stack switching compiled
+        // out, so a guest opened on it could not suspend even if every layer
+        // above agreed it should. Refusing here makes that a refusal a caller
+        // sees rather than a capability that quietly is not there.
+        if config.world.kind() != WorldKind::Sandbox {
+            bail!(
+                "a sandbox must open in the sandbox world, not the {} world: the process \
+                 engine has no stack switching, and its epoch is not the one a bound may \
+                 tick",
+                config.world.kind().name()
+            );
+        }
+
         let host = GuestHost::build(config, Kind::Nested)?;
         let module = host.module.clone();
         let mut host = host;
@@ -475,7 +459,11 @@ impl Sandbox {
         // ask `surface_width` from its start section.
         host.store.data_mut().nested_viewport = Some(viewport);
 
-        let watchdog = Watchdog::start(&config.engine);
+        // The **world's** ticker, not this sandbox's: one epoch counter, one
+        // ticker. Shared with every other live sandbox in the world, so a second
+        // run does not halve the first one's budget (measured: 81 ms against the
+        // 160 ms it was promised, before this was shared).
+        let watchdog = config.world.ticker();
         Ok(Self {
             guest: GuestState {
                 host,
@@ -752,10 +740,11 @@ impl Sandbox {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
     use std::path::PathBuf;
     use std::sync::atomic::AtomicUsize;
     use std::sync::Mutex;
-    use wasmtime::Config;
 
     /// A unique scratch path per test, removed on drop.
     struct Scratch {
@@ -789,18 +778,23 @@ mod tests {
         }
     }
 
-    /// A configuration for one sandbox, with the engine the host builds.
+    /// A configuration for one sandbox, in a freshly built sandbox world.
     ///
-    /// The engine configuration is the same one `main` uses, epoch interruption
-    /// included: a test against a differently-configured engine would prove
-    /// something about a runtime this tree does not ship.
+    /// The worlds are built through `engines::engine_config` — the same recipe
+    /// `main` uses — and the config's world is the sandbox one, which is what
+    /// `Sandbox::open` now requires. A test against a differently-configured
+    /// engine would prove something about a runtime this tree does not ship.
+    ///
+    /// One `Worlds` per call, so two sandboxes opened from **one** config share a
+    /// world (and therefore one ticker), which is the claim the budget test is
+    /// about.
     fn config(guest_path: String) -> HostConfig {
-        let mut engine_config = Config::new();
-        engine_config.epoch_interruption(true);
-        let engine = Engine::new(&engine_config).expect("an engine");
+        let worlds = Arc::new(tension_core::engines::Worlds::default_engines());
+        let world = worlds.sandbox().expect("the sandbox world builds here");
         HostConfig {
             module_cache: Arc::new(crate::host::module_cache::ModuleCache::default()),
-            engine,
+            world,
+            worlds,
             args: Vec::new(),
             guest_path,
             res: Arc::new(Mutex::new(tension_core::res::MountTable::new())),
@@ -969,6 +963,144 @@ mod tests {
         assert!(
             elapsed < BOUND,
             "the watchdog must stop the guest within {BOUND:?}, took {elapsed:?}"
+        );
+    }
+
+    /// The time budget two **live** sandboxes each actually get.
+    ///
+    /// [`TICKS_BEFORE_TRAP`] is a promise about wall time: [`TICK`] times the
+    /// tick count. But the watchdog advances the **engine's** epoch, and one
+    /// engine has one counter for every store on it — so while two sandboxes are
+    /// open, two tickers advance one counter and each guest's eight ticks arrive
+    /// in about half the time they were promised. A nested guest that is merely
+    /// *alive* (a second run in the editor, an idle one nobody stepped) shortens
+    /// every other nested guest's budget.
+    ///
+    /// The unit is the trap latency of a guest that does nothing but loop, so
+    /// nothing except the epoch can end it. Measured on one sandbox it is the
+    /// full budget; with a second one open it is the defect.
+    #[test]
+    fn two_live_sandboxes_each_get_the_whole_time_budget() {
+        const BOUND: Duration = Duration::from_secs(5);
+        // The budget is `TICK * TICKS_BEFORE_TRAP` = 160 ms. Half of it is 80 ms,
+        // so 120 ms separates "the machine was slow" from "the budget arrived
+        // early" with room for one whole missed tick either way.
+        const EARLY: Duration = Duration::from_millis(120);
+
+        let scratch = Scratch::new("two-budgets");
+        let path = scratch.write("guest.wat", SPIN);
+
+        // Negative control first: one sandbox, on its own, gets the full budget.
+        // Without this the assertion below could be about the machine.
+        let lone = {
+            let host_config = config(path.clone());
+            let mut sandbox = Sandbox::open(&host_config, 0, (0, 0)).expect("one sandbox opens");
+            let started = std::time::Instant::now();
+            let outcome = sandbox.start(RunKind::Batch);
+            let elapsed = started.elapsed();
+            outcome.expect_err("an infinite loop must trap, not return");
+            elapsed
+        };
+
+        // Two live sandboxes, one spinning. The second exists and does nothing:
+        // its ticker is the whole of its contribution.
+        let host_config = config(path);
+        let mut first = Sandbox::open(&host_config, 0, (0, 0)).expect("the first opens");
+        let _second = Sandbox::open(&host_config, 0, (0, 0)).expect("the second stays open");
+        let started = std::time::Instant::now();
+        let outcome = first.start(RunKind::Batch);
+        let elapsed = started.elapsed();
+        outcome.expect_err("an infinite loop must trap, not return");
+
+        println!("budget: alone {lone:?}, with a second sandbox live {elapsed:?}");
+        assert!(
+            elapsed < BOUND,
+            "the watchdog must stop the guest within {BOUND:?}, took {elapsed:?}"
+        );
+        assert!(
+            elapsed >= EARLY,
+            "a live sandbox must get its whole budget: alone it was {lone:?}, but with a \
+             second sandbox open the same guest trapped after {elapsed:?} — two tickers are \
+             advancing one epoch counter"
+        );
+    }
+
+    /// Two sandboxes in one world share **one** ticker, which is what makes the
+    /// budget above wall time rather than a share of it.
+    ///
+    /// Structural, not by timing: the handles are the same allocation. A test on
+    /// the tick *rate* would be a flakiness generator; this is the mechanism.
+    #[test]
+    fn sandboxes_in_one_world_share_one_ticker() {
+        let scratch = Scratch::new("shared-ticker");
+        let host_config = config(scratch.write("guest.wat", SIMPLE));
+        let first = Sandbox::open(&host_config, 0, (0, 0)).expect("the first opens");
+        let second = Sandbox::open(&host_config, 0, (0, 0)).expect("the second opens");
+        assert!(
+            std::sync::Arc::ptr_eq(&first.watchdog, &second.watchdog),
+            "two sandboxes in one world must hold one ticker: the world has one \
+             epoch counter, and a ticker per sandbox halves every guest's budget"
+        );
+    }
+
+    /// A sandbox refuses a config from the **process** world.
+    ///
+    /// This is the configuration `dev.run` used to build before the split: the
+    /// nested guest's config cloned the outer guest's engine. The refusal is what
+    /// makes the boundary a fact rather than a convention — a guest cannot be
+    /// opened in a world whose engine has no stack switching.
+    #[test]
+    fn a_sandbox_refuses_a_config_from_the_process_world() {
+        let scratch = Scratch::new("wrong-world");
+        let host_config = config(scratch.write("guest.wat", SIMPLE));
+        let wrong = HostConfig {
+            world: Arc::clone(host_config.worlds.process()),
+            ..host_config
+        };
+
+        let error = match Sandbox::open(&wrong, 0, (0, 0)) {
+            Ok(_) => panic!("the process world must not open a sandbox"),
+            Err(error) => error,
+        };
+        let message = format!("{error:#}");
+        assert!(
+            message.contains("sandbox world") && message.contains("process"),
+            "the refusal must name both worlds: `{message}`"
+        );
+    }
+
+    /// One file compiles **once per world**, not once per process — and the
+    /// second world's compile is what option (a) costs.
+    ///
+    /// A `Module` is bound to the engine that compiled it (`cross-`Engine`
+    /// instantiation is not currently supported`), so a cache keyed by path alone
+    /// would hand a process-world module to a sandbox store the moment both ran
+    /// the same guest — which is exactly the editor's shape: Play Mode runs the
+    /// same compiled file the outer guest may also have loaded.
+    #[test]
+    fn one_file_compiles_once_per_world() {
+        let scratch = Scratch::new("world-key");
+        let path = scratch.write("guest.wat", SIMPLE);
+        let worlds = Arc::new(tension_core::engines::Worlds::default_engines());
+        let sandbox_world = worlds.sandbox().expect("the sandbox world builds here");
+        let cache = crate::host::module_cache::ModuleCache::default();
+
+        cache.load(&sandbox_world, &path).expect("compiles in the sandbox world");
+        cache.load(&sandbox_world, &path).expect("hits in the sandbox world");
+        assert_eq!(
+            cache.compiles(),
+            1,
+            "a second load in one world must be a cache hit"
+        );
+
+        cache
+            .load(worlds.process(), &path)
+            .expect("compiles in the process world");
+        assert_eq!(
+            cache.compiles(),
+            2,
+            "the same file in the other world is a second compile, and it must be: \
+             the first world's module cannot be instantiated on this engine"
         );
     }
 

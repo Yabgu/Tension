@@ -68,7 +68,7 @@ use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::platform;
 use tension_core::render2d;
 use tension_core::res::{self, ResourceSet, Stat};
-use wasmtime::{Caller, Config, Engine, ExternType, Memory, Module, Store};
+use wasmtime::{Caller, Engine, ExternType, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
 /// installing the imports it registers (`docs/architecture.md` §6). The run
@@ -314,12 +314,13 @@ pub(crate) struct HostState {
     /// The next run id. Starts at 1 so that 0 is never a valid handle and an
     /// uninitialised variable cannot look like one.
     pub(crate) next_run_id: i32,
-    /// The engine, for a verb that has to stand a guest up.
+    /// The engine worlds, so a verb can stand a guest up **in the right one**.
     ///
-    /// A `Clone` handle to the same engine the config holds — not a second
-    /// engine, which would be a second compiled-code cache. `dev.run` needs it
-    /// because a verb's only context is `Caller::data()`.
-    pub(crate) engine: wasmtime::Engine,
+    /// Not an engine: `dev.run` must open a nested guest in the sandbox world,
+    /// which is a different engine from the one this store runs on, and a bare
+    /// `Engine` field here was exactly how the two got confused. `dev.run` needs
+    /// it because a verb's only context is `Caller::data()`.
+    pub(crate) worlds: std::sync::Arc<tension_core::engines::Worlds>,
     /// The process's compiled-module cache, same reason and same `Arc`.
     pub(crate) module_cache: std::sync::Arc<host::module_cache::ModuleCache>,
 }
@@ -426,7 +427,7 @@ impl HostState {
             nested_viewport: None,
             runs: std::collections::HashMap::new(),
             next_run_id: 1,
-            engine: config.engine.clone(),
+            worlds: std::sync::Arc::clone(&config.worlds),
             module_cache: std::sync::Arc::clone(&config.module_cache),
         }
     }
@@ -1049,29 +1050,35 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
-    // With this on, wasmtime keeps the guest's DWARF and registers the JIT'd
-    // code with the platform debugger through the GDB JIT interface — which is
-    // what lldb's `plugin.jit-loader.gdb.enable on` picks up. Registration
-    // happens as the module is compiled, before `_start_game` runs, so a
-    // debugger that launches this process can have breakpoints in place first.
-    // The engine is built once, from the engine configuration, and moves into
-    // the config: it owns the compiled-code cache, and every guest this process
-    // runs shares it (see `host::HostConfig`).
-    let mut engine_config = Config::new();
-    engine_config.debug_info(cli.debug);
-    // **Epoch interruption, for the sandbox's watchdog.** It is an engine-level
-    // switch: wasm compiled by this engine carries deadline checks that a
-    // watchdog thread's `increment_epoch` can reach, which is what makes an
-    // infinite nested guest stoppable at all. A store that does not set a
-    // deadline traps immediately, so every store built here sets one —
-    // `GuestHost::new` gives the process's own guest `u64::MAX` (never fires) and
-    // `Sandbox::open` gives a nested guest a real one.
+    // **The engine worlds.** One engine for the process's own guest, one for
+    // sandboxed guests, both built from `engines::engine_config` so the product
+    // and `tests/engine_worlds.rs` cannot disagree about what a world is. The
+    // process world is built here because the process's own guest runs in it; the
+    // sandbox world is built on the first `dev.run`, because an example that
+    // never nests should not pay for a second engine and a second code cache.
+    //
+    // Epoch interruption is on in **both**, and that is the one thing the split
+    // did not change: it is the switch a watchdog's `increment_epoch` reaches, a
+    // store's deadline is armed against it, and a guest compiled without its
+    // deadline checks could not be stopped at all. `GuestHost::new` arms the
+    // process's own store `NEVER_TRAPS`, so the process keeps the capability and
+    // does not use it.
     //
     // A few instructions per loop iteration is the cost, paid by every guest.
     // That is the price of being able to stop one, and it is the only mechanism
     // wasmtime offers that a guest cannot opt out of.
-    engine_config.epoch_interruption(true);
-    let engine = Engine::new(&engine_config)?;
+    //
+    // **`--debug` reaches the engine through this closure.** With it on, wasmtime
+    // keeps the guest's DWARF and registers the JIT'd code with the platform
+    // debugger through the GDB JIT interface — what lldb's
+    // `plugin.jit-loader.gdb.enable on` picks up. Registration happens as the
+    // module is compiled, before `_start_game` runs, so a debugger that launches
+    // this process can have breakpoints in place first. It applies to every world,
+    // so a nested guest is debuggable the same way.
+    let debug = cli.debug;
+    let worlds = std::sync::Arc::new(tension_core::engines::Worlds::new(move |kind| {
+        Ok(Engine::new(&tension_core::engines::engine_config(kind, debug))?)
+    })?);
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
@@ -1123,10 +1130,14 @@ fn main() -> anyhow::Result<()> {
     // Everything the run is configured with, named once. Nothing here changes
     // after this point, and a second guest is given the same one.
     let config = host::HostConfig {
-        // One compile cache per process, shared by every guest: the editor's
-        // Play Mode runs the same compiled module on every press of a button.
+        // One compile cache per process, shared by every guest and keyed by world:
+        // the editor's Play Mode runs the same compiled module on every press of a
+        // button, in the sandbox world, and a module cannot cross engines.
         module_cache: std::sync::Arc::new(host::module_cache::ModuleCache::default()),
-        engine,
+        // The process's own guest runs in the process world. A nested guest gets
+        // the sandbox world, chosen by `dev.run` (see `engines::WorldKind`).
+        world: std::sync::Arc::clone(worlds.process()),
+        worlds: std::sync::Arc::clone(&worlds),
         args: cli.args,
         guest_path: cli.wasm_path,
         res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),

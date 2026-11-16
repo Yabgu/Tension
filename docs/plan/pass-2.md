@@ -275,18 +275,21 @@ slot comes back with the same number — asserted, not assumed. `CtxHandle`
 therefore cannot be a table index; the rename slice needs a monotonic handle and
 a separate slot map.
 
-### One engine, not two
+### One engine, not two — **decided: two**
 
-`threads::enable()` is still **not** called anywhere in the binary, and this is
-the round that found out why "on the sandbox engine only" is not expressible
-today: the process builds **one** engine and shares it with every guest
+*Decision, 2026-11-16: option (a), two engines. Implemented in
+`tension-core/src/engines.rs` and measured; see "The decision taken" below.*
+
+`threads::enable()` was **not** called anywhere in the binary when this was
+written, and the round before found out why "on the sandbox engine only" was not
+expressible then: the process built **one** engine and shared it with every guest
 (`HostConfig::engine`), and that doc names the cost of doing otherwise — "an
 engine owns the compiled-code cache; one engine per guest would compile a shared
 module twice, which is precisely the cost `tension::dev.compile` exists to
 avoid". A `Module` is engine-bound, so a second engine is also a second module
 cache, and every nested guest recompiles.
 
-So the choice is the user's, and it is a real one:
+So the choice was the user's, and it is a real one:
 
 * **two engines** — a sandbox engine with the three flags, its own code cache,
   and a module compiled twice per nested guest. Enables the mechanism exactly
@@ -296,14 +299,60 @@ So the choice is the user's, and it is a real one:
   (a sketch is not a reason to enable a proposal for every guest);
 * **defer** — leave both stub-answered until the scheduler's shape forces it.
 
-Nothing in this branch depends on the answer yet: the queue and the round trip
-are proven on a test engine, which is what `enable()` takes.
+Nothing in this branch depends on the answer: the queue and the round trip are
+proven on a test engine, which is what `enable()` takes.
 
-`step`, the seventh verb, is registered and answers `-ENOTSUP` for the same two
-reasons: a step resumes a continuation, which needs a guest-side hook (next
-slice), on an engine that has the flags (above). Its contract — `1` alive, `0`
-complete, `-errno` trapped — is in the ABI doc now, so the Dispatcher slice can
-be written against it.
+`step`, the seventh verb, is registered and answers `-ENOTSUP` for two reasons: a
+step resumes a continuation, which needs a guest-side hook (a later slice), on an
+engine that has the flags (**now built** — see below). Its contract — `1` alive,
+`0` complete, `-errno` trapped — is in the ABI doc now, so the Dispatcher slice
+can be written against it.
+
+### The decision taken — option (a), two worlds
+
+**Two engines, one per capability world, chosen by nesting depth.** The unit is
+the **capability world**, not the guest: an engine is a frozen `Config` plus a
+compiled-code cache, so the count is the number of distinct configurations, and
+one engine per guest is the anti-pattern above.
+
+| | process world | sandbox world |
+| --- | --- | --- |
+| exceptions | default | on |
+| function references | default | on |
+| stack switching | **off** | **on** (`threads::enable`) |
+| epoch interruption | on, armed `NEVER_TRAPS` | on, armed `TICKS_BEFORE_TRAP` per call |
+| built | at startup | on the first `dev.run` |
+
+Five things worth keeping, all measured:
+
+1. **The boundary is a compile-time refusal, not a policy.** A module with
+   continuation types fails at `Module::new` on the process world:
+   `cannot define continuation types when stack switching is disabled (at offset
+   0xe)`. The same bytes compile, instantiate and run on the sandbox world.
+   `tests/engine_worlds.rs` asserts both directions.
+2. **A module cannot cross worlds**: `cross-`Engine` instantiation is not
+   currently supported`. So the module cache is keyed `(world, path)`: one cache
+   object, one compile per file **per world**, and the second world's compile is
+   the stated cost of (a) — paid once per file, not per run.
+3. **The watchdog was a real defect, not a detail.** One ticker per `Sandbox::open`
+   advanced the **shared** epoch, so two live sandboxes halved every guest's
+   budget. Measured on the pre-fix tree: 161 ms alone, **81 ms with a second
+   sandbox merely open**. The ticker now belongs to the world and is
+   reference-counted, so there is one per epoch counter; measured after, 160 ms
+   with a second sandbox live.
+4. **The sandbox world gets the sandbox engine.** `dev.rs` used to clone
+   `state.engine` — the *outer* guest's engine — into the nested config, which is
+   how a nested guest ended up in the process's capability world. It now asks the
+   worlds holder for the sandbox world, and `Sandbox::open` refuses a config from
+   any other world.
+5. **Epoch interruption stays on in both.** A store's deadline is armed against
+   it, `GuestHost::new` relies on it (`NEVER_TRAPS`), and turning it off on the
+   process world would change the compiled shape of every shipped guest to save
+   an unmeasured number of instructions.
+
+What this deliberately does **not** do: call `threads::enable()` anywhere but the
+sandbox world, wire `step`, or give the dispatcher a shape. The scheduler's
+remaining blocker is the guest-side step hook, not the engine.
 
 ## The F1 constraint
 

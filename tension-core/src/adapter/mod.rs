@@ -1334,7 +1334,7 @@ mod tests {
                 nested_viewport: None,
                 runs: Default::default(),
                 next_run_id: 1,
-                engine: Default::default(),
+                worlds: std::sync::Arc::new(tension_core::engines::Worlds::default_engines()),
                 module_cache: Default::default(),
                 window_closed: false,
                 adapters: Vec::new(),

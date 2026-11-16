@@ -27,16 +27,18 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The fourteen findings so far
+## The fifteen findings so far
 
 Findings 1-7 were found across Pass 2. Findings 8-11 were found by a **fresh
 agent on a different machine** (rustc 1.99.1, WSL2, dzn) running the gate for
 the threading round of 2026-11-16 — which is the point: the gate had been green
 on the machine that wrote it, and the new environment surfaced three defects that
 environment had masked. Findings 12 and 13 were found on that same machine while
-fixing 8, 9 and the crash it was hiding. Finding 14 was found the same day on the
-development machine (`snow`), chasing a description of the gate that turned out
-to depend on whether the shell that launched it had a display. See
+fixing 8, 9 and the crash it was hiding. Findings 14 and 15 were found the same
+day on the development machine (`snow`), chasing a description of the gate that
+turned out to depend on whether the shell that launched it had a display: 14 is
+the skip the gate could not see, and 15 is the phase that never ran at all
+because the gate does not compile the feature it needs. See
 `docs/plan/handoff-to-compiler-round.md` ("Fresh-agent machine addendum") for the
 measurements.
 
@@ -409,6 +411,55 @@ something a future round should choose between deliberately:
     `TENSION_TEST_ALLOW_SKIP` either, so "skip" was never a CI-tolerated outcome;
     it was simply invisible. Whether a skip should fail the gate is the user's
     decision, and this finding carries the evidence for it.
+
+15. **The gate builds a binary that cannot run one of its own suites' central
+    phases, so that phase has never run under `npm test` on any machine.** Found
+    2026-11-16 while counting finding 14's skips, and *not* the same defect: 14 is
+    a skip the gate could not see, and this is the gate declining to build its own
+    specimen.
+
+    Measured reason, straight from the gate's own log:
+
+    ```
+    == live: skipped — this tension-core was built without `render2d-core`
+       (the `--no-default-features` host `npm test` prepares); rebuild with
+       default features and re-run with `--live`
+    ```
+
+    `scripts/test.mjs`'s `Preparing` step builds the host with
+    `--no-default-features` (finding 1's shape, still true of the prepare step),
+    and `window-close`'s live phase needs the in-core renderer: it launches a real
+    guest, waits for a window and clicks it shut with `xdotool`. So the phase that
+    *would* have caught the close-button bug originally requires a feature the
+    gate never compiles. It has therefore never run under `npm test` — not on the
+    machine with a display, not in CI's Xvfb container, not anywhere — and the
+    suite is green because the static half (every guest loop reads
+    `closeRequested`) passed.
+
+    *Shape: pass-2.md's "the gate must run the shipped configuration", in its
+    cleanest form — the gate compiles a configuration in which one of its own
+    assertions cannot hold.*
+
+    **Two options, neither taken. Not scheduled.**
+
+    1. **Build the default-features host for this suite.** The suite gets its own
+       binary built without `--no-default-features` (a second cargo target
+       directory, or the same one with the feature on — the profiles must not
+       collide, which is the cost), and the live phase becomes reachable
+       wherever a display and `xdotool exist`. The honest version: the gate would
+       then test the configuration that ships, for the one suite whose assertion
+       is a window.
+    2. **Accept it and name it.** Keep the build as it is, and record in the
+       suite's own output that the live phase is unreachable in this gate — a
+       printed "not built for this suite" rather than a skip that reads like a
+       missing display. Cheaper, and it makes the gap visible without pretending
+       it is closed.
+
+    **What is not acceptable is the present state**, which is option 2's outcome
+    without its record: a line that names a reason a reader can mistake for the
+    machine's display. `docs/backlog/gate-configuration-audit.md` finding 14's
+    skip *count* is what surfaces it (one skip in `window close`, every run, with
+    or without a display); the *fix* is one of the two above.
 
 ## What a green gate means, now that finding 4 is known
 

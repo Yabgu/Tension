@@ -162,29 +162,43 @@ What is **not** done, and why each is blocked:
 So the remaining runtime round is not "write a WAT test"; it is "decide the
 engine shape, then wire `step` to the hook the test already exercises".
 
-### `threads::enable()` — the engine shape decision (the user's)
+### `threads::enable()` — the engine shape: **decided, option (a), done**
 
-**`threads::enable()` is not called anywhere in the binary.** This round found
-out why "on the sandbox engine only" is not expressible today: the process
-builds **one** engine and shares it with every guest (`HostConfig::engine`), and
-that type's own doc names the cost of otherwise — *"an engine owns the
-compiled-code cache; one engine per guest would compile a shared module twice,
-which is precisely the cost `tension::dev.compile` exists to avoid."* A `Module`
-is engine-bound, so a second engine is also a second module cache and a
-recompile per nested guest.
+*Decided by the user 2026-11-16 and implemented the same day:
+`tension-core/src/engines.rs`. This section was a question; it is now a record.*
 
-Three options, each with its cost, in `docs/plan/pass-2.md` ("One engine, not
-two"):
+When this handoff was written, `threads::enable()` was called by nothing in the
+binary, because "on the sandbox engine only" was not expressible: the process
+built **one** engine and shared it with every guest (`HostConfig::engine`), and
+that type's doc names the cost of otherwise — *"an engine owns the compiled-code
+cache; one engine per guest would compile a shared module twice, which is
+precisely the cost `tension::dev.compile` exists to avoid."* A `Module` is
+engine-bound, so a second engine is also a second module cache.
 
-- **(a) two engines** — a sandbox engine with the three flags and its own code
-  cache; a module compiled twice per nested guest. Enables the mechanism exactly
-  where it is wanted.
-- **(b) one engine, flags on** — cheapest, and turns the proposals on for the
-  process's own guest too, which an earlier round rejected for a good reason.
-- **(c) defer** — both answers stay stubs until the shape forces it.
+The three options were, and the user chose **(a)** on semantic grounds:
 
-**This is the user's decision.** Not the agent's, and not to be picked by
-momentum.
+- **(a) two engines** — chosen. A sandbox engine with the three flags and its own
+  code cache; a module compiled once per file per world. The mechanism exists
+  exactly where it is wanted, and nowhere else.
+- **(b) one engine, flags on** — rejected: it turns the proposals on for the
+  process's own guest, which has no use for them.
+- **(c) defer** — rejected: it leaves the capability question open behind a stub.
+
+**What is there now.** `tension_core::engines` holds `WorldKind`
+(`Process`/`Sandbox`, chosen by depth through `for_depth`), `World` (an engine
+plus its one reference-counted epoch `Watchdog`), `Worlds` (the process world
+built eagerly, the sandbox world on the first `dev.run`), and `engine_config` —
+the single `Config` recipe both `main` and `tests/engine_worlds.rs` use. The
+boundary is a **compile-time refusal**: a module with continuation types fails at
+`Module::new` on the process world (`cannot define continuation types when stack
+switching is disabled`). Also fixed on the way: the watchdog was per-sandbox and
+ticked a shared epoch, so a second live sandbox halved every guest's time budget
+(measured 161 ms alone, 81 ms with a second open; 160 ms after).
+
+**Still open, and next:** `step` needs a **guest-side hook** — a step resumes a
+continuation, which only the guest can do (`ContRef` is a stub in wasmtime 50.1,
+#10248) — so the scheduler's Dispatcher slice is now blocked on the compiler
+round, not on the engine.
 
 ### Other open items on this branch
 

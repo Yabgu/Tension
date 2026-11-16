@@ -149,9 +149,28 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             // `HostConfig`: the verb closure has the store, and these are the
             // only two pieces of the configuration it needs that are not already
             // in `HostState` (`res`, `write_root`, `args` are).
+            //
+            // **The world is the sandbox one, and that is the whole of the engine
+            // split at this seam.** Before it, this cloned `state.engine` — the
+            // engine the *outer* guest runs on — so a nested guest ran in the
+            // process's capability world: no stack switching, and a watchdog
+            // ticking a counter the process's own guest also shares. Depth decides
+            // (`WorldKind::for_depth`), and depth is `state.guest_depth + 1`.
+            let world = match state.worlds.sandbox() {
+                Ok(world) => world,
+                Err(error) => {
+                    logging::log(
+                        Level::Warn,
+                        "dev",
+                        &format!("run refused: {error:#}"),
+                    );
+                    return EINVAL;
+                }
+            };
             let config = HostConfig {
                 module_cache: Arc::clone(&state.module_cache),
-                engine: state.engine.clone(),
+                world,
+                worlds: Arc::clone(&state.worlds),
                 // A nested guest gets no arguments. Its argv is the outer
                 // guest's convenience, and handing them over would make a
                 // nested run's behaviour depend on flags it never saw.

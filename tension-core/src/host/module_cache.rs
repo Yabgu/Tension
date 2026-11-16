@@ -16,6 +16,14 @@
 //! is a miss and recompiles. That is the same rule `tension dev` applies to
 //! itself (restart on write), moved down to the compile.
 //!
+//! **And why the key carries the world as well.** A `Module` is bound to the
+//! `Engine` that compiled it (`engines.rs`), and the process now has two engines,
+//! so a module compiled in the process world cannot be instantiated in the
+//! sandbox world. One cache keyed by `(world, path)` keeps the "one compilation
+//! per guest file per world per process" promise without a second cache object:
+//! the same file compiled in both worlds counts two compiles, which is the honest
+//! figure, and every repeat inside one world still hits.
+//!
 //! **Why the hit path skips `check_guest_module`.** The check is a property of
 //! the module, not of the file, and a hit returns the *same* module the check
 //! passed on the load that compiled it — same fingerprint, therefore same bytes.
@@ -37,7 +45,9 @@ use std::sync::Mutex;
 use std::time::SystemTime;
 
 use anyhow::{Context, Result};
-use wasmtime::{Engine, Module};
+use wasmtime::Module;
+
+use tension_core::engines::{World, WorldKind};
 
 /// What a file looked like when its module was compiled.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -71,16 +81,21 @@ pub(crate) struct Loaded {
 /// in an `Arc`).
 #[derive(Default)]
 pub(crate) struct ModuleCache {
-    entries: Mutex<HashMap<PathBuf, (Fingerprint, Module)>>,
+    entries: Mutex<HashMap<(WorldKind, PathBuf), (Fingerprint, Module)>>,
     compiles: AtomicUsize,
 }
 
 impl ModuleCache {
-    /// The module for `path`, compiling it only when this file has not been
-    /// compiled yet (or has changed since).
-    pub(crate) fn load(&self, engine: &Engine, path: &str) -> Result<Loaded> {
+    /// The module for `path` **in `world`**, compiling it only when this file has
+    /// not been compiled in that world yet (or has changed since).
+    ///
+    /// The world is a parameter rather than an `Engine` because the two must not
+    /// be able to disagree: the key says which world the cached module belongs
+    /// to, and the compile uses that world's own engine.
+    pub(crate) fn load(&self, world: &World, path: &str) -> Result<Loaded> {
         let as_path = Path::new(path);
         let fingerprint = Fingerprint::of(as_path);
+        let key = (world.kind(), as_path.to_path_buf());
 
         // A file whose metadata cannot be read is not cached: the miss below
         // will fail with the read error, which names the path.
@@ -89,7 +104,7 @@ impl ModuleCache {
                 .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("module cache: the mutex was poisoned"))?;
-            if let Some((cached, module)) = entries.get(as_path) {
+            if let Some((cached, module)) = entries.get(&key) {
                 if *cached == fingerprint {
                     return Ok(Loaded {
                         module: module.clone(),
@@ -100,7 +115,7 @@ impl ModuleCache {
         }
 
         let bytes = std::fs::read(as_path).with_context(|| format!("{path}"))?;
-        let module = Module::new(engine, &bytes)
+        let module = Module::new(&world.engine(), &bytes)
             .map_err(|why| anyhow::Error::from(why).context(format!("{path}")))?;
         self.compiles.fetch_add(1, Ordering::SeqCst);
 
@@ -111,7 +126,7 @@ impl ModuleCache {
                 .entries
                 .lock()
                 .map_err(|_| anyhow::anyhow!("module cache: the mutex was poisoned"))?;
-            entries.insert(as_path.to_path_buf(), (fingerprint, module.clone()));
+            entries.insert(key, (fingerprint, module.clone()));
         }
 
         Ok(Loaded {
@@ -120,7 +135,9 @@ impl ModuleCache {
         })
     }
 
-    /// How many times this cache has compiled a module.
+    /// How many times this cache has compiled a module — per world, so a file
+    /// used by both worlds counts twice. That is the figure a reader wants: the
+    /// second world's compile is the cost option (a) pays for.
     ///
     /// Read by the sandbox test that has to prove a second store reuses the first
     /// one's compilation, and by nothing else yet — a compile counter is also the

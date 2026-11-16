@@ -93,14 +93,15 @@ same output" holds by construction. Two implementations exist on paper:
   cooperative scheduler over the compiler's async transform. It buys structured
   concurrency inside a guest and nothing at all for the editor, because every
   yield is spent inside `dev.frame` (§1).
-- *Across stores, via stack switching (WasmFX continuations).* **Not available
-  on this pin.** `tension-core/Cargo.toml` pins `wasmtime = "=24.0.13"`, and that
-  release's `Config` has no stack-switching or continuation surface at all —
-  measured: `continuation` and `stack switch` do not appear in
-  `wasmtime-24.0.13/src/config.rs`, and there is no `wasm_stack_switching` setter
-  beside `wasm_tail_call` and `wasm_threads`. So "buildable now" is true of the
-  *contract* and false of the *mechanism*: a WasmFX path waits on a wasmtime
-  bump, and the bump is its own project (the pin is exact, `=`).
+- *Across stores, via stack switching (WasmFX continuations).* **Available, and
+  built.** This paragraph originally read "not available on this pin": at the
+time `Cargo.toml` pinned `wasmtime = "=24.0.13"`, whose `Config` has no
+stack-switching surface at all (measured: neither `continuation` nor `stack
+switch` appears in `wasmtime-24.0.13/src/config.rs`). The pin is now `=50.0.1`,
+`resume_throw` is proven (`tests/stack_switching.rs`), and the sandbox engine
+carries the three proposals — `tension-core/src/engines.rs`, decided
+2026-11-16 as option (a) of `docs/plan/pass-2.md`. The process engine does not,
+and cannot compile a continuation body at all.
 
 **Parallel — shared memory, one `Store` per thread.** `SharedMemory` plus atomics
 and barriers; threads genuinely run at once. Not deterministic by construction —
@@ -148,8 +149,15 @@ the kind of its argument. So the ABI gets the primitive (`step`) and `join`
 becomes a framework-side loop over it. `step`'s three answers are fixed; its body
 answers `-ENOTSUP` until two things exist: a guest-side step hook (a step resumes
 a continuation, which only the guest can do — `ContRef` is a stub in wasmtime
-50.1, #10248), and an engine that compiles stack switching (see
-`docs/plan/pass-2.md`, "one engine, not two").
+50.1, #10248), and an engine that compiles stack switching.
+
+**The second is done.** The user chose option (a) of `docs/plan/pass-2.md`'s "One
+engine, not two" on 2026-11-16: the process runs two engines, one per capability
+world (`tension-core/src/engines.rs`), and the sandbox world has the three
+proposals while the process world does not — enforced by the compiler, so a
+module with continuation types cannot even be built there
+(`tests/engine_worlds.rs`). **The remaining blocker is the guest-side hook**, and
+that is the compiler's (`docs/plan/handoff-to-compiler-round.md` §3).
 
 The queue that decides *which* context to step is real: `threads::queue::
 ThreadQueue` in the library, proven by `tests/cooperative_scheduler.rs`.

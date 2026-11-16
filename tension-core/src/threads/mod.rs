@@ -22,15 +22,21 @@
 //!   explicitly here because `resume_throw`'s meaning is what this tree relies
 //!   on, and a default flipping must not silently change it.
 //!
-//! # Why it is not on the process engine yet
+//! # Where it is on
 //!
-//! `main.rs` builds the process's one engine with `epoch_interruption` and
-//! nothing else. Turning stack switching on there turns it on for **every**
-//! guest, including the root guest that has no use for it, before the contract's
-//! surface exists — which would be a proposal enabled on the strength of a
-//! design sketch. So this function is called today by the proof in
-//! `tests/stack_switching.rs` and by nothing else; the sandbox engine's
-//! construction is the call site that gains it when the contract lands.
+//! The **sandbox engine** calls this (`tension_core::engines::engine_config`), and
+//! the process engine does not. That is the shape the user chose on 2026-11-16,
+//! option (a) of `docs/plan/pass-2.md`'s "One engine, not two": two engines, one
+//! per capability world, so a proposal is enabled exactly where it is wanted.
+//! The consequence is enforced by the compiler rather than by policy — a module
+//! with continuation types fails to compile on the process engine
+//! (`tests/engine_worlds.rs` quotes wasmtime's refusal) — which is what makes
+//! "the process's guest cannot suspend" a fact instead of a promise.
+//!
+//! Turning it on for **every** guest would have been cheaper (one engine, one
+//! code cache) and was rejected for the reason this module is separate at all: a
+//! capability enabled on the strength of a design sketch is a capability nobody
+//! decided on.
 //!
 //! # Platform
 //!
