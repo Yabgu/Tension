@@ -12,7 +12,7 @@
 // this file is the definition of that set, written down once so it is not
 // re-litigated per commit.
 //
-// ## The four sections
+// ## The five sections
 //
 //   suites       every `==> starting <title>`, in the order the runner started
 //                them. A suite that stops running is a gate failure even if the
@@ -40,9 +40,22 @@
 //                gate compares the list and explains the shifts; a changed
 //                count or a new message is the thing to notice.
 //
+// ## The fifth section, and why it is advisory
+//
+//   skips        assertions a suite reported as skipped, by suite. A suite can
+//                exit 0 without running its central assertion (`window-close`'s
+//                live click, `replay_device`'s five GPU tests), so `PASSED`
+//                alone does not say how much the gate exercised — gate finding
+//                14, and the audit's fourth clause. It is compared **soft**, like
+//                warnings: whether a skip should fail a gate is a policy
+//                decision nobody has made, and CI's container legitimately skips
+//                (`ci/Dockerfile` has Xvfb but no window manager, so
+//                `window-close` cannot run there). The count is in the record so
+//                a freeze figure cannot claim more exercise than happened.
+//
 // ## Residual differences
 //
-// Anything outside those four sections (prose from a suite, sample values in an
+// Anything outside those sections (prose from a suite, sample values in an
 // example's report, cargo's "Blocking waiting" lines) is residual. The report
 // enumerates it by hand when a projection diff does not explain a difference;
 // this script only refuses to bury it in a big diff.
@@ -54,9 +67,9 @@
 //   node scripts/project-gate.mjs --diff a.proj b.proj     # compare two
 //
 // `--diff` exits 1 when the suites, verdicts or cargo sections differ — the
-// hard sections — and 0 when only warnings differ, which are printed either way
-// so the shift is in the record rather than in someone's memory. Either
-// argument may be a raw gate log instead of a projection.
+// hard sections — and 0 when only warnings or skip counts differ, which are
+// printed either way so the shift is in the record rather than in someone's
+// memory. Either argument may be a raw gate log instead of a projection.
 //
 // Reading a file rather than re-running anything is deliberate: the projection
 // of a log is a pure function of that log, so a gate report can be recomputed
@@ -64,6 +77,7 @@
 // same projection.
 
 import { readFileSync } from 'node:fs';
+import { isSkipLine } from './lib/gate-skips.mjs';
 
 // A suite's stdout and stderr are merged as they arrive, so a log line from the
 // runtime can land at the front of a cargo line. Stripped before matching only;
@@ -85,11 +99,12 @@ const SUMMARY = /generated \d+ warnings?/;
 
 const normalise = (line) => line.replace(STAMP, '');
 
-/** Parse a gate log into the four sections. Pure: same log, same projection. */
+/** Parse a gate log into the five sections. Pure: same log, same projection. */
 export function project(log) {
   const suites = [];
   const verdicts = [];
   const cargo = [];
+  const skips = new Map(); // suite title -> skipped assertions
   const warnings = new Map(); // `${location}\0${message}` -> { message, location, count }
   let suite = null;
   let pending = null; // a warning whose `-->` has not been read yet
@@ -105,6 +120,16 @@ export function project(log) {
 
   for (const raw of log.split(/\r?\n/)) {
     const line = normalise(raw);
+
+    // A skipped assertion belongs to the suite whose banner is open above it.
+    // Checked before the banner and warning matchers so a skip line cannot be
+    // mistaken for either, and after nothing — it is a whole-line fact.
+    if (isSkipLine(line)) {
+      flush();
+      const key = suite ?? '(no banner)';
+      skips.set(key, (skips.get(key) ?? 0) + 1);
+      continue;
+    }
 
     const banner = line.match(BANNER);
     if (banner) { flush(); suite = banner[1]; continue; }
@@ -160,7 +185,13 @@ export function project(log) {
       return a.message < b.message ? -1 : 1;
     });
 
-  return { suites, verdicts, cargo, warnings: rows };
+  return {
+    suites, verdicts, cargo,
+    skips: [...skips.entries()]
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => (a.name === b.name ? 0 : a.name < b.name ? -1 : 1)),
+    warnings: rows,
+  };
 }
 
 /** The canonical text. Sorted where nothing else fixes an order. */
@@ -180,6 +211,13 @@ export function render(p) {
     `${r.ok ? 'ok ' : 'BAD'} passed=${r.passed} failed=${r.failed} ignored=${r.ignored}`));
   out.push(`cargo-total: passed=${total('passed')} failed=${total('failed')} ` +
     `ignored=${total('ignored')}`);
+
+  // Sorted by suite name, not by the order they were seen: a projection has to be
+  // identical for two runs of one tree, and the runner's suite order changes with
+  // `--jobs`.
+  out.push(`skips: ${p.skips.reduce((n, s) => n + s.count, 0)} ` +
+    `(${p.skips.length} suite${p.skips.length === 1 ? '' : 's'})`);
+  for (const s of p.skips) out.push(`  ${s.name}: ${s.count}`);
 
   out.push(`warnings: ${p.warnings.reduce((n, w) => n + w.count, 0)} ` +
     `(${p.warnings.length} distinct)`);
@@ -216,6 +254,13 @@ export function compare(before, after) {
 
   const warningText = (p) => p.warnings.map((w) => `${w.count}x ${w.location}  ${w.message}`);
   for (const line of diffLines(warningText(before), warningText(after))) soft.push(line);
+
+  // Skips are soft for the same reason warnings are: the count depends on the
+  // machine's devices and CI's image, not only on the tree. A `--diff` names the
+  // suite whose skip count moved, so a freeze figure cannot quietly claim the
+  // specimen drew pixels when it did not run.
+  const skipText = (p) => (p.skips ?? []).map((s) => `${s.name}: ${s.count} skipped`);
+  for (const line of diffLines(skipText(before), skipText(after))) soft.push(line);
   return { hard, soft };
 }
 
@@ -239,13 +284,14 @@ function diffLines(left, right) {
 
 /** Re-read a rendered projection, so `--diff` accepts its own output. */
 export function asProjection(text) {
-  const p = { suites: [], verdicts: [], cargo: [], warnings: [] };
+  const p = { suites: [], verdicts: [], cargo: [], skips: [], warnings: [] };
   let section = null;
   for (const line of text.split('\n')) {
     if (line.startsWith('suites:')) { section = 'suites'; continue; }
     if (line.startsWith('verdicts:')) { section = 'verdicts'; continue; }
     if (line.startsWith('cargo-result-lines:')) { section = 'cargo'; continue; }
     if (line.startsWith('cargo-total:')) { section = null; continue; }
+    if (line.startsWith('skips:')) { section = 'skips'; continue; }
     if (line.startsWith('warnings:')) { section = 'warnings'; continue; }
     if (line.startsWith('gate-projection') || line.trim() === '') continue;
 
@@ -259,6 +305,11 @@ export function asProjection(text) {
         ok: c[1].trim() === 'ok',
         passed: Number(c[2]), failed: Number(c[3]), ignored: Number(c[4]),
       });
+      continue;
+    }
+    if (section === 'skips') {
+      const s = line.match(/^\s+(.+): (\d+)$/);
+      if (s) p.skips.push({ name: s[1], count: Number(s[2]) });
       continue;
     }
     if (section === 'warnings') {
@@ -296,7 +347,7 @@ function main(argv) {
 
     process.stdout.write(`gate-diff: ${beforePath} -> ${afterPath}\n`);
     if (!hard.length && !soft.length) {
-      process.stdout.write('  identical in all four sections\n');
+      process.stdout.write('  identical in all five sections\n');
       return 0;
     }
     for (const line of hard) process.stdout.write(`  HARD ${line}\n`);
@@ -306,8 +357,8 @@ function main(argv) {
         `cargo result changed\n`);
       return 1;
     }
-    process.stdout.write(`  ${soft.length} warning difference(s): a location may move when ` +
-      `lines do — explain each\n`);
+    process.stdout.write(`  ${soft.length} warning/skip difference(s): a location may move ` +
+      `when lines do, and a skip count depends on the machine — explain each\n`);
     return 0;
   }
 

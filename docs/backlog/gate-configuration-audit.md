@@ -27,14 +27,16 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The thirteen findings so far
+## The fourteen findings so far
 
 Findings 1-7 were found across Pass 2. Findings 8-11 were found by a **fresh
 agent on a different machine** (rustc 1.99.1, WSL2, dzn) running the gate for
 the threading round of 2026-11-16 — which is the point: the gate had been green
 on the machine that wrote it, and the new environment surfaced three defects that
 environment had masked. Findings 12 and 13 were found on that same machine while
-fixing 8, 9 and the crash it was hiding. See
+fixing 8, 9 and the crash it was hiding. Finding 14 was found the same day on the
+development machine (`snow`), chasing a description of the gate that turned out
+to depend on whether the shell that launched it had a display. See
 `docs/plan/handoff-to-compiler-round.md` ("Fresh-agent machine addendum") for the
 measurements.
 
@@ -357,6 +359,57 @@ something a future round should choose between deliberately:
     never there.* Fixed by spreading `fwCtx.capabilityArgs`, the same list the
     assertions above it run with.
 
+14. **A suite exits 0 while its central assertion did not run, and the gate says
+    `PASSED`.** Found on 2026-11-16 on the development machine, from a report
+    that described the gate as "26/26, the same string whether the GPU path ran
+    or was skipped". The premise was too broad — four `platform-*` suites,
+    `tension-framework` and `tension-ogre (guest)` **fail** without a display
+    (`FAIL: new: sdl: No available video device`) — and the defect underneath it
+    is narrower and worse:
+
+    - **`window-close`** runs a static half (every guest loop reads
+      `closeRequested`) and a live half (a real window is launched and clicked
+      shut with `xdotool`). The live half prints `== live: skipped — …` and
+      returns, and the suite verdict is `PASSED` either way. Measured under the
+      gate's own binary: `== live: skipped — this tension-core was built without
+      `render2d-core` (the `--no-default-features` host `npm test` prepares)`.
+      So the live click does not run in the gate on **any** machine, display or
+      not: the gate builds the one binary that cannot do it.
+    - **`core`'s `replay_device`** prints `skipped: no usable GPU device here:
+      SDL_InitSubSystem(VIDEO): No available video device` five times and then
+      `replay_device: PASS (0 ran, 5 skipped — no GPU on this machine)`, exit 0.
+      Every one of its five `#[test]` lines reads `… ok`. The only GPU-replay
+      evidence in the tree is therefore optional in practice, which is finding 9
+      one layer down: finding 9 fixed the *framework specimen's* skip, not the
+      class.
+
+    *Shape: the gate's verdict is stable across two different amounts of
+    exercise — the fourth clause of this document's rule, unenforced.*
+
+    **Fixed (accounting only)**: `scripts/lib/gate-skips.mjs` holds the three
+    spellings the tree prints (`skipped: ` from `support/ci.rs`, `SKIP — ` from
+    the fixtures and `test-framework.mjs`, `skipped — ` from `window-close` and
+    `test-ogre.mjs`); `scripts/test.mjs` counts them per suite and prints
+    `[PASS] <suite> — N skipped` plus a closing total; `scripts/project-gate.mjs`
+    renders a `skips: N (M suites)` section with the per-suite breakdown and
+    compares it **soft**, like warnings. Measured on the same log the four
+    original sections are byte-identical, so this is additive.
+
+    **The count is not zero on a machine with a display, and that is the
+    finding, not a defect in the count:** 5 skipped assertions in 2 suites —
+    `tension-ogre (guest)` 4 (`vulkan`, `windowed`, `skin-matrices`, `noskel`, all
+    opt-in through `TENSION_OGRE_*_TEST`) and `window close` 1 (the
+    `--no-default-features` reason above).
+
+    **Not fixed, deliberately: the exit code.** A skip does not fail the gate,
+    because CI's own container would go red for an honest reason —
+    `ci/Dockerfile` ships Xvfb and lavapipe and sets `DISPLAY=:99`, but no
+    `xdotool` and no window manager, so `window-close`'s live half cannot run
+    there and never has. No workflow and no CI script sets
+    `TENSION_TEST_ALLOW_SKIP` either, so "skip" was never a CI-tolerated outcome;
+    it was simply invisible. Whether a skip should fail the gate is the user's
+    decision, and this finding carries the evidence for it.
+
 ## What a green gate means, now that finding 4 is known
 
 Finding 4 has two possible answers. This file records which one the gate uses,
@@ -383,6 +436,21 @@ The alternative — force a cold build on every gate run so that one number exis
 — was rejected: it buys determinism by paying a full adapter rebuild per run,
 and the cold path is itself the thing whose warnings we do not control
 (`third_party/`). Marking the section advisory is the cheaper true statement.
+
+**The skip section is advisory for the same reason (finding 14).** The runner
+counts assertions a suite reported as skipped and prints them per suite and in
+the closing line; the projection carries a `skips: N (M suites)` section with the
+per-suite breakdown, and `--diff` treats a changed skip count as **soft**. The
+rule that follows:
+
+- a freeze figure states the skip count beside the suite count, because `26/26`
+  alone does not say how much was exercised;
+- a skip that moved between two runs of one tree is a review question about the
+  *machine* (a display, an ICD, `xdotool`) before it is a question about the tree;
+- a skip never blocks a commit on its own, and today does not fail the gate at
+  all. Whether it should is the user's decision; the evidence — CI's container
+  has Xvfb and lavapipe but no `xdotool` and no window manager, and no workflow
+  sets `TENSION_TEST_ALLOW_SKIP` — is in finding 14.
 
 Findings 1–3 are unaffected: a version-dependent verdict and a configuration
 that ships different from the one tested are hard failures, and stay hard.
@@ -487,6 +555,27 @@ Every suite runs with `suiteEnv()`, which is not `process.env`:
 - **A display.** `platform-*` and `window-close` hold the `display` tag: they
   open a real window through SDL. They need a display server, and a compositor
   changes timings. `TENSION_2D_HEADLESS=1` does not apply to them.
+
+  **On the development machine (`snow`) the gate reaches 26/26 only with a
+  display, and the invocation is part of the gate, not folklore.** Over a bare
+  ssh login this box has no usable video device — the four `platform-*` suites
+  fail with `FAIL: new: sdl: No available video device` (measured 2026-11-16,
+  `env -u DISPLAY -u WAYLAND_DISPLAY node scripts/test.mjs platform-surface
+  platform-window platform-create platform-control` → 4 failed), and the same
+  binaries pass under the Xorg session at `:10`. The gate on this machine is
+  therefore:
+
+      DISPLAY=:10.0 node scripts/test.mjs --jobs 1 > /tmp/gate.log 2>&1
+      DISPLAY=:10.0 node scripts/project-gate.mjs /tmp/gate.log
+
+  Two things this does **not** mean. (1) It is not a bug in the four suites: a
+  suite whose subject is a window must fail where windows cannot exist, and
+  `platform-*` fails rather than skips, which is the behaviour this document
+  asks for. (2) It does not make the gate machine-independent — the *rig* is
+  still an input, so a green figure is quoted with the rig it was measured on,
+  exactly as a warning count is quoted with its cache state. CI does not rely on
+  an inherited display: `ci/Dockerfile` sets `DISPLAY=:99` and runs every command
+  under `xvfb-run -a` with `VK_ICD_FILENAMES` pinned to lavapipe.
 - **A GPU / ICD.** The 2D suites create an SDL_GPU device. `SDL_VIDEODRIVER=dummy`
   is refused by name (`device.rs`), `offscreen` with a software or dzn ICD is the
   supported headless path. Which ICD is present is not asserted anywhere.

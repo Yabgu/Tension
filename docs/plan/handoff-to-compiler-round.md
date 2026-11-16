@@ -12,6 +12,58 @@ it says so, with the measurement.
 
 ---
 
+## 0. This workspace, measured on `snow` (2026-11-16) — read this first
+
+Three statements about branch state were wrong in the round that produced this
+document, and each was measured wrong on **this** machine rather than drifting.
+A cold start that inherits them will look for a base that is not there and a
+compiler checkout that is 82 commits behind. It is not.
+
+1. **`origin/main` is `4da7cd7`; the *local* `main` is not.** Local `main` is
+   `e2d2517 "UI (#59)"`, which is **33 commits ahead of `origin/main`**
+   (`git rev-list --left-right --count origin/main...main` → `33  0`). So "main is
+   frozen at `4da7cd7`" is true of `origin/main` only, and it is `origin/main`
+   that is the base of every branch here. **Do not checkout `main`** expecting
+   `4da7cd7`; do not push to either.
+   Measured: `git -C ~/work/Tension log -1 --format='%H %s' main` and the same
+   for `origin/main`.
+
+2. **TensionScript is on `feat/concurrency` at `f941a1f0`, equal to
+   `origin/main`, clean, with no tarball.** §7's "82 commits behind at
+   `5dad4d39` / version 0.10.0, with an untracked
+   `acakar-tensionscript-0.10.0.tgz`" describes **the architect's own machine's
+   checkout**, not this workspace: a fresh clone is current, and this checkout is
+   a fresh-equivalent. Measured: `git -C ~/work/TensionScript rev-parse
+   --abbrev-ref HEAD` → `feat/concurrency`; `git rev-list --count HEAD..origin/main`
+   → `0`; `git status --porcelain` → empty; `ls *.tgz` → none. The branch for the
+   threading/compiler work **is** named — `feat/concurrency`, local only,
+   unpushed, created at `f941a1f0`.
+
+3. **`origin` has four branches, not three:** `main` (`4da7cd7`), `ui`,
+   `ui-nested-guest` (`2ad9f35`), `ui-threading`. Measured: `git -C ~/work/Tension
+   branch -r`. Still no `iwi`/`image`/`viewer` branch, so §8's caution about the
+   IWI format stands unchanged.
+
+**The gate on this machine needs a display, and the invocation is the gate:**
+
+    DISPLAY=:10.0 node scripts/test.mjs --jobs 1 > /tmp/gate.log 2>&1
+
+A bare ssh login has no usable video device and four `platform-*` suites fail
+with `No available video device`. The measured freeze at `5293e3d` with that
+invocation is
+
+    suites: 26 — all PASSED
+    cargo-result-lines: 44
+    cargo-total: passed=637 failed=0 ignored=0
+    skips: 5 (2 suites)   — tension-ogre (guest): 4, window close: 1
+    warnings: 85 (18 distinct)
+
+and the five skips are named with their reasons in
+`docs/backlog/gate-configuration-audit.md` finding 14. `26/26` alone does not say
+that, which is why the projection now carries the count.
+
+---
+
 ## 1. What is done
 
 ### The nested-guest arc — merged to `main`
@@ -337,13 +389,16 @@ Expected layout for a fresh session, both clones under `~/work`:
 There are **28 stale local-only branches** on the dev machine, all superseded,
 all with deleted upstreams — see §8.
 
-**TensionScript** — **the local checkout on the dev machine is stale.** It is at
-`5dad4d39` / version **0.10.0**; `origin/main` is at **`f941a1f0`** / version
-**0.14.1**, with a `v0.14.0` tag and a `feat/debug-harness` branch. That is **82
-commits behind**. A fresh clone gets `origin/main` and is therefore current; a
-copy of the dev machine's working tree is **not**. `git pull` before reading any
-source, or `docs/scheduler-contract.md` and `src/async/lower.ts` will be read at
-a version that predates most of what this handoff describes.
+**TensionScript** — **corrected in §0; the paragraph that follows describes a
+different machine's checkout.** On this workspace the checkout is at `f941a1f0`
+(= `origin/main`, version 0.14.1) on `feat/concurrency`, clean. The paragraph
+below is kept as the record of what the architect's machine held, because a
+reader who is handed *that* working tree rather than this one needs it: it was at
+`5dad4d39` / version **0.10.0**, **82 commits behind** `origin/main`
+(`f941a1f0` / 0.14.1, with a `v0.14.0` tag and a `feat/debug-harness` branch).
+`git pull` before reading any source on a copy of that tree, or
+`docs/scheduler-contract.md` and `src/async/lower.ts` will be read at a version
+that predates most of what this handoff describes.
 
 Version pins inside Tension, for reference: `tension-framework` pins
 `@yabgu_gm/tensionscript` **0.13.2**; every example and both apps pin
@@ -373,11 +428,12 @@ by the next round. **They exist only on that one machine** — if it is replaced
 they are gone. That was a deliberate standing decision ("do not prune; the user
 decides"), not an oversight.
 
-**There is no IWI branch on either remote.** The Tension remote has three
-branches, none matching `iwi`/`image`/`viewer`; TensionScript has none either.
-So if another agent is working on the IWI format, its branch has not been pushed
-under a recognisable name yet. **Ask the user which branch it is before pushing
-anything to TensionScript**, and do not assume a name.
+**There is no IWI branch on either remote.** The Tension remote has **four**
+branches — `main` (`4da7cd7`), `ui`, `ui-nested-guest` (`2ad9f35`) and
+`ui-threading` — none matching `iwi`/`image`/`viewer`; TensionScript has none
+either. So if another agent is working on the IWI format, its branch has not been
+pushed under a recognisable name yet. **Ask the user which branch it is before
+pushing anything to TensionScript**, and do not assume a name.
 
 `.git/modules/third_party/assemblyscript/` is **inert git metadata** — a leftover
 from a submodule that was removed in `b771bfd`; `.gitmodules` lists only

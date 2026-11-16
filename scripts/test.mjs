@@ -57,6 +57,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
 import { REPO, WIN, baseEnv, which } from './lib/toolchain.mjs';
 import { inherit } from './lib/proc.mjs';
+import { countSkips } from './lib/gate-skips.mjs';
 
 const repo = REPO;
 const node = process.execPath;
@@ -928,13 +929,20 @@ function finish(name, status, output, elapsed) {
   console.log(`\n----- ${suite.title} (${(elapsed / 1000).toFixed(1)}s) -----`);
   process.stdout.write(output.endsWith('\n') || output === '' ? output : `${output}\n`);
 
+  // Assertions the suite reported as skipped. Counted, not judged: a suite that
+  // exits 0 having skipped its central assertion is green here, and this is the
+  // only place the gate can say so (gate finding 14 — `window-close`'s live
+  // click and `replay_device`'s five GPU tests). The markers live in
+  // `scripts/lib/gate-skips.mjs` so `project-gate` counts the same spelling.
+  const skips = countSkips(output);
+
   if (status === 0) {
     state.set(name, 'passed');
-    results.set(name, { ok: true });
+    results.set(name, { ok: true, skips });
     console.log(`==> ${suite.title}: PASSED`);
   } else {
     state.set(name, 'failed');
-    results.set(name, { ok: false });
+    results.set(name, { ok: false, skips });
     console.log(`==> ${suite.title}: FAILED`);
   }
 }
@@ -993,13 +1001,27 @@ const passed = order.filter((name) => state.get(name) === 'passed');
 const failed = order.filter((name) => state.get(name) === 'failed');
 const skipped = order.filter((name) => state.get(name) === 'skipped');
 
+const skippedAssertions = order
+  .map((name) => [name, results.get(name)?.skips ?? 0])
+  .filter(([, n]) => n > 0);
+const skippedTotal = skippedAssertions.reduce((n, [, count]) => n + count, 0);
+
 banner('Test Summary');
-for (const name of passed) console.log(`  [PASS] ${SUITES[name].title}`);
+for (const name of passed) {
+  const n = results.get(name)?.skips ?? 0;
+  console.log(`  [PASS] ${SUITES[name].title}${n ? ` — ${n} skipped` : ''}`);
+}
 for (const name of failed) console.log(`  [FAIL] ${SUITES[name].title}`);
 for (const name of skipped) {
   console.log(`  [SKIP] ${SUITES[name].title} — ${results.get(name).reason}`);
 }
 
+// Exit codes are unchanged by the skip section below: a skipped assertion is
+// reported, not failed. Whether a skip may fail the gate is the user's
+// decision, and the evidence for it is CI's (`.github/workflows/`,
+// `ci/Dockerfile`: the container carries Xvfb and lavapipe but no `xdotool` and
+// no window manager, and nothing sets TENSION_TEST_ALLOW_SKIP, so a skip there
+// is environmental and would redden a gate that counted it as a failure).
 if (failed.length) {
   console.error(`==> ${failed.length} test suite(s) failed.`);
   process.exit(1);
@@ -1009,3 +1031,8 @@ if (skipped.length) {
   process.exit(1);
 }
 console.log(`==> All ${passed.length} test suite(s) passed successfully.`);
+if (skippedTotal) {
+  const detail = skippedAssertions.map(([name, n]) => `${SUITES[name].title}: ${n}`).join(', ');
+  console.log(`==> ${skippedTotal} assertion(s) skipped on this machine (${detail}) — ` +
+              'a skipped assertion did not run; see gate finding 14');
+}
