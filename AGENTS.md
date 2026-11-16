@@ -167,6 +167,15 @@ The explicit path is checked first, so an operator pointing at a file is never
 overridden by the environment. `--capability ogre` is therefore
 `libtension_ogre.so` somewhere on that path.
 
+**The name form is a debug-build feature.** An environment variable that chooses
+a `dlopen`ed library is a code-injection surface, so the search is compiled out of
+release builds (`#[cfg(debug_assertions)]` around `capability_by_name` in
+`main.rs`); a release binary takes a capability only from the `--capability <path>`
+form and refuses a name with a message that says the search is not in this build.
+That is the whole env-var policy for shipped artifacts — see
+`docs/backlog/env-var-audit.md` for the rest of the surface and the open
+`TENSION_OGRE_PLUGIN_DIR` item.
+
 **`--capability 2d` is a special case since the 2D merge**: the ten imports are
 registered in core by default, and a `tension::2d` DSO named on the command line
 is *skipped* rather than loaded — the log says so. It matters only on the bisect

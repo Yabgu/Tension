@@ -17,7 +17,7 @@
 // Usage: node scripts/test-framework.mjs [path-to-tension-core] [path-to-stub-adapter]
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, extname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../tension-framework/tools/lib/png.mjs';
@@ -263,12 +263,85 @@ function runMountFixture(entry, out) {
 /// `tension::2d` is not linked in and must arrive as a DSO. Naming it when the
 /// binary *does* carry the renderer is harmless — a `tension::2d` DSO named on
 /// the command line is skipped in that build, which is the documented behaviour.
+///
+/// # Why this refuses a stale DSO instead of loading it
+///
+/// It used to return **any** file that existed. A 2026-11-09 pre-Pass-B DSO was
+/// therefore loaded against a 2026-11-16 checkout and failed with a message about
+/// the atlas rather than about the binary (gate finding 8). The renderer moved
+/// in-core in Pass B, so an artifact from before that move is not this tree's
+/// renderer at all — and nothing warned.
+///
+/// So the rule is: an artifact is usable only if it is **not older than any of
+/// the sources it was built from**. That is stricter and more honest than a
+/// commit-time cutoff, because it compares the artifact against exactly what
+/// `scripts/build-2d.mjs --cpp` compiles (`tension-2d/reference/`,
+/// `tension-2d/include/`, the ImageViewer IWI sources, and `tension-core/include/`).
+/// It is refused, not rebuilt: a silent rebuild would turn a real finding into
+/// silence, which is the failure mode gate findings 5 and 9 exist to forbid.
+///
+/// A **missing** DSO is a failure here too, not a skip (finding 9): the specimen
+/// is the suite's one assertion that draws a real frame, and a suite that passes
+/// while skipping its central assertion is green about nothing.
 function findRender2d() {
   const override = process.env.TENSION_2D_LIB;
-  if (override) return existsSync(override) ? override : null;
-  const candidate = join(repo, 'tension-2d', 'build',
+  const candidate = override ?? join(repo, 'tension-2d', 'build',
                          `libtension_2d${process.platform === 'win32' ? '.dll' : '.so'}`);
-  return existsSync(candidate) ? candidate : null;
+  if (!existsSync(candidate)) {
+    fail(RUNNER, `no tension::2d library at ${candidate}\n` +
+                 `        build it with: node scripts/build-2d.mjs --cpp\n` +
+                 `        (the specimen is this suite's only real-frame assertion; ` +
+                 `it no longer skips when the DSO is absent)`);
+  }
+  const built = statSync(candidate).mtimeMs;
+  const newest = newestRender2dSource();
+  if (newest && built < newest.mtimeMs) {
+    fail(RUNNER, `the tension::2d library is older than the sources it was built from\n` +
+                 `        artifact: ${relative(repo, candidate)} (${new Date(built).toISOString()})\n` +
+                 `        newest source: ${relative(repo, newest.path)} ` +
+                 `(${new Date(newest.mtimeMs).toISOString()})\n` +
+                 `        rebuild it with: node scripts/build-2d.mjs --cpp\n` +
+                 `        (a stale DSO measures a renderer this tree no longer has — gate finding 8)`);
+  }
+  return candidate;
+}
+
+/// The newest source `build-2d.mjs --cpp` compiles into the DSO, by mtime.
+///
+/// The roots are that script's own include paths and translation units. Walking
+/// them here rather than listing files keeps the check honest when a source is
+/// added: a new file under one of these roots is covered without editing this
+/// function. `null` when nothing is found, which cannot happen in a checkout that
+/// also has the artifact.
+function newestRender2dSource() {
+  const roots = [
+    join(repo, 'tension-2d', 'reference'),
+    join(repo, 'tension-2d', 'include'),
+    join(repo, 'tension-core', 'include'),
+    join(repo, 'third_party', 'ImageViewer', 'src', 'format'),
+    join(repo, 'third_party', 'ImageViewer', 'src', 'imageviewer'),
+  ];
+  const extensions = new Set(['.cpp', '.cc', '.c', '.h', '.hpp', '.ixx', '.inl']);
+  let newest = null;
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(path);
+      } else if (extensions.has(extname(entry.name))) {
+        const mtimeMs = statSync(path).mtimeMs;
+        if (!newest || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
+      }
+    }
+  };
+  for (const root of roots) walk(root);
+  return newest;
 }
 
 /// The input capability, for the UI gate.
@@ -288,11 +361,6 @@ function findInput() {
 
 function runFontSpecimenFixture(entry, out) {
   const render2d = findRender2d();
-  if (!render2d) {
-    console.log(`    == ${entry.replace(/\.ts$/, '')}: SKIP — no tension::2d ` +
-                `(build tension-2d, or set TENSION_2D_LIB)`);
-    return;
-  }
   compileOrFail(entry, out);
 
   const scratch = mkdtempSync(join(tmpdir(), 'tension-specimen-'));

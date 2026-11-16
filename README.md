@@ -48,8 +48,11 @@ into a layer are [`docs/architecture.md`](docs/architecture.md).
 | 2D | `tension::2d` | **host**, SDL_GPU in-process | `tension-core/src/render2d/` |
 | Input | `tension::input` | DSO adapter | `tension-input/` |
 
-`--capability <path-or-name>` loads an adapter; a name resolves as
-`<dir>/libtension_<name>.so` through `TENSION_CAPABILITY_PATH`. One capability
+`--capability <path-or-name>` loads an adapter; in a **debug build** a name
+resolves as `<dir>/libtension_<name>.so` through `TENSION_CAPABILITY_PATH`, while
+a **release build** accepts only the path form — the environment search is
+compiled out, because a variable that chooses a `dlopen`ed library is a
+code-injection surface (`docs/backlog/env-var-audit.md`). One capability
 is no longer an adapter: the 2D renderer moved into the host, because SDL_GPU has
 no way to present to a window the DSO does not own. A `tension::2d` DSO named on
 the command line is skipped, not loaded. Every import a

@@ -501,11 +501,33 @@ options:
                          that would leave is -EROFS. Defaults to the working
                          directory. Reads never see this root: paks stay the
                          read side, and a save lands on the real filesystem.
-  --capability <CAP>     load a capability adapter; repeatable. A value that
+"#;
+
+/// The `--capability` help line.
+///
+/// Split out of [`USAGE`] so each build describes only the surface it has.
+/// Advertising an environment variable that a release build does not read is the
+/// "present and ignored" smell this split exists to remove — and it keeps the
+/// variable's name out of the release binary entirely, which makes the exclusion
+/// checkable with `strings | grep` rather than only by reading the code.
+#[cfg(debug_assertions)]
+const CAPABILITY_USAGE: &str = r#"  --capability <CAP>     load a capability adapter; repeatable. A value that
                          names an existing file is that file; anything else is
-                         a name resolved as <dir>/libtension_<name>.so through
-                         TENSION_CAPABILITY_PATH (colon-separated directories)
-  --log-level <SPEC>     the log threshold: a bare LEVEL sets the default, and
+                         a capability *name* resolved as <dir>/libtension_<name>.so
+                         across TENSION_CAPABILITY_PATH (colon-separated).
+                         The name form is a **debug-build** feature: an environment
+                         variable that chooses a dlopen()ed library is a code
+                         injection surface, so a release build takes a path only.
+"#;
+
+/// Release form of the same line: the path, and nothing else.
+#[cfg(not(debug_assertions))]
+const CAPABILITY_USAGE: &str = r#"  --capability <CAP>     load a capability adapter; repeatable. The value is the
+                         library's path — a release build accepts nothing else.
+"#;
+
+/// The rest of [`USAGE`], after the capability line.
+const USAGE_TAIL: &str = r#"  --log-level <SPEC>     the log threshold: a bare LEVEL sets the default, and
                          NAME:LEVEL sets one logger (repeatable; a later flag
                          wins). LEVEL is trace|debug|info|warn|error|fatal|off.
                          e.g. --log-level=ai:debug,ogre:warn. Env fallback:
@@ -600,8 +622,10 @@ struct Cli {
     debug: bool,
     symbol_paths: Vec<PathBuf>,
     res_paths: Vec<PathBuf>,
-    /// Capability adapters to load: a path, or a bare name resolved through
-    /// `TENSION_CAPABILITY_PATH` (the CLI's `--capability` help states the rule).
+    /// Capability adapters to load: a library path, or (debug builds only) a
+    /// bare name resolved through `TENSION_CAPABILITY_PATH`. The CLI's
+    /// `--capability` help states the rule; `resolve_capability_paths` enforces
+    /// it, including the release build's refusal of the name form.
     capability_paths: Vec<String>,
     /// The directory `res_write` may write into; `None` means the working
     /// directory, resolved once at startup.
@@ -712,7 +736,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 log_file = Some(PathBuf::from(value));
             }
             "-h" | "--help" => {
-                println!("{USAGE}");
+                println!("{USAGE}{CAPABILITY_USAGE}{USAGE_TAIL}");
                 std::process::exit(0);
             }
             "-V" | "--version" => {
@@ -2222,6 +2246,20 @@ fn parse_callback_slots(value: &str) -> Result<(u32, u32), String> {
 /// `TENSION_CAPABILITY_PATH` lists, colon-separated. The explicit form is
 /// checked first, so an operator pointing at a specific file is never overridden
 /// by the environment.
+///
+/// **The name form is a debug-build feature, and that is a security decision, not
+/// an oversight.** An environment variable that names a directory of shared
+/// objects this process `dlopen`s is a code-injection surface: anything able to
+/// set the environment chooses which native code runs inside the host. A
+/// developer's shell may do that; a shipped binary may not. So the search
+/// ([`capability_by_name`]) is compiled **out** of a release build — the read is
+/// absent from the binary, not present and ignored — and a release binary takes a
+/// capability only from an explicit `--capability <path>` the operator typed.
+///
+/// Compile-time exclusion rather than a runtime `if release { ignore }`: a check
+/// can be bypassed by anything already able to influence the process, while absent
+/// code cannot run. The cost is the `cfg` split below and a release-side test that
+/// proves the name is refused.
 fn resolve_capability_paths(values: &[String]) -> anyhow::Result<Vec<PathBuf>> {
     let mut resolved = Vec::with_capacity(values.len());
     for value in values {
@@ -2230,26 +2268,56 @@ fn resolve_capability_paths(values: &[String]) -> anyhow::Result<Vec<PathBuf>> {
             resolved.push(direct);
             continue;
         }
-        let mut found = None;
-        if let Some(dirs) = std::env::var_os("TENSION_CAPABILITY_PATH") {
-            for dir in std::env::split_paths(&dirs) {
-                let candidate = dir.join(format!("libtension_{value}.so"));
-                if candidate.is_file() {
-                    found = Some(candidate);
-                    break;
-                }
-            }
-        }
-        match found {
+        match capability_by_name(value) {
             Some(path) => resolved.push(path),
-            None => anyhow::bail!(
-                "--capability {value}: no such file, and no libtension_{value}.so in \
-                 TENSION_CAPABILITY_PATH — pass the library's path, or set that variable to a \
-                 colon-separated list of directories holding it"
-            ),
+            None => anyhow::bail!("{}", unresolved_capability_message(value)),
         }
     }
     Ok(resolved)
+}
+
+/// Resolve a capability **name** through `TENSION_CAPABILITY_PATH`.
+///
+/// Debug builds only — see [`resolve_capability_paths`] for why. This function is
+/// the whole of the environment-driven search, so compiling it out here is what
+/// makes "the code path does not exist in release" a fact rather than a claim.
+#[cfg(debug_assertions)]
+fn capability_by_name(value: &str) -> Option<PathBuf> {
+    let dirs = std::env::var_os("TENSION_CAPABILITY_PATH")?;
+    std::env::split_paths(&dirs)
+        .map(|dir| dir.join(format!("libtension_{value}.so")))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Release builds have no environment-driven capability search. Same signature so
+/// the caller reads identically in both builds; the difference lives here.
+#[cfg(not(debug_assertions))]
+fn capability_by_name(_value: &str) -> Option<PathBuf> {
+    None
+}
+
+/// The refusal for a `--capability` value that resolved nowhere.
+///
+/// The debug form names the variable and how to set it; the release form does
+/// **not**, because advertising a variable a release build ignores would send an
+/// operator to a fix that cannot work (and would put the name back in the binary).
+#[cfg(debug_assertions)]
+fn unresolved_capability_message(value: &str) -> String {
+    format!(
+        "--capability {value}: no such file, and no libtension_{value}.so in \
+         TENSION_CAPABILITY_PATH — pass the library's path, or set that variable to a \
+         colon-separated list of directories holding it"
+    )
+}
+
+/// Release form: a path, and nothing else.
+#[cfg(not(debug_assertions))]
+fn unresolved_capability_message(value: &str) -> String {
+    format!(
+        "--capability {value}: no such file — this is a release build, so a capability \
+         is given only by the path of its library (the environment name search is \
+         compiled out of release builds)"
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -2665,6 +2733,13 @@ mod adapter_cli_tests {
         check_guest_module(&module, b"", "guest.wat").expect("not this check's case");
     }
 
+    /// Path resolution, debug builds: a name resolves through the variable.
+    ///
+    /// Gated because that search is compiled out of release builds (see
+    /// `resolve_capability_paths`). The release counterpart below asserts the
+    /// other half, so `cargo test --release` proves the exclusion instead of
+    /// skipping it.
+    #[cfg(debug_assertions)]
     #[test]
     fn a_capability_name_resolves_through_the_path_variable() {
         let dir = std::env::temp_dir().join("tension-capability-path-test");
@@ -2689,6 +2764,37 @@ mod adapter_cli_tests {
             error.to_string().contains("libtension_absent.so"),
             "unexpected error: {error}"
         );
+        std::env::remove_var("TENSION_CAPABILITY_PATH");
+        let _ = std::fs::remove_file(&library);
+    }
+
+    /// Path resolution, release builds: the same input must **not** resolve.
+    ///
+    /// This is what makes the compile-time exclusion a fact rather than a claim.
+    /// It runs only under `cargo test --release`; if the exclusion were ever
+    /// loosened to a runtime `if release { ignore }`, the name would resolve and
+    /// this test would fail.
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn a_capability_name_does_not_resolve_in_a_release_build() {
+        let dir = std::env::temp_dir().join("tension-capability-path-test-release");
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let library = dir.join("libtension_probe.so");
+        std::fs::write(&library, b"not a library, only a file to find").expect("write");
+
+        std::env::set_var("TENSION_CAPABILITY_PATH", &dir);
+        let error = resolve_capability_paths(&["probe".to_string()])
+            .expect_err("a release build must not resolve a capability name");
+        assert!(
+            error.to_string().contains("compiled out"),
+            "the refusal must say the search is not in this build: {error}"
+        );
+
+        // The explicit path still works — that is the whole release surface.
+        let explicit =
+            resolve_capability_paths(&[library.display().to_string()]).expect("resolves");
+        assert_eq!(explicit, vec![library.clone()]);
+
         std::env::remove_var("TENSION_CAPABILITY_PATH");
         let _ = std::fs::remove_file(&library);
     }

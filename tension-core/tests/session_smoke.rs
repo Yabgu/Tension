@@ -464,6 +464,12 @@ fn test_a_rejected_submission_is_delivered() {
 /// is looked up as `libtension_<name>.so` through `TENSION_CAPABILITY_PATH`
 /// (round-2 decision 3). A name that resolves nowhere is a named refusal, not a
 /// silent no-adapter run.
+///
+/// Debug builds only: the name search is compiled out of release builds, where
+/// `TENSION_CAPABILITY_PATH` is never read. The release counterpart below asserts
+/// that a name is refused and that the refusal names the reason, so the exclusion
+/// is proven rather than assumed.
+#[cfg(debug_assertions)]
 #[test]
 fn test_capability_name_resolves_through_the_path_variable() {
     let dir = PathBuf::from(ECHO)
@@ -492,5 +498,34 @@ fn test_capability_name_resolves_through_the_path_variable() {
     assert!(
         err.contains("libtension_no-such-capability.so"),
         "the diagnostic must name what it looked for\nstderr: {err}"
+    );
+}
+
+/// The release half of the same guarantee: with `TENSION_CAPABILITY_PATH` set,
+/// a capability **name** must still be refused, and the refusal must say the
+/// search is not in this build. If the compile-time exclusion were ever weakened
+/// to a runtime check, the name would resolve and this would fail.
+#[cfg(not(debug_assertions))]
+#[test]
+fn test_capability_name_is_refused_in_a_release_build() {
+    let dir = PathBuf::from(ECHO)
+        .parent()
+        .expect("the adapter lives in a directory")
+        .to_path_buf();
+    let guest = fixture("session_guest.wat");
+    let output = Command::new(BINARY)
+        .env("TENSION_CAPABILITY_PATH", &dir)
+        .args(["--session-open", "--capability", "echo", &guest])
+        .output()
+        .expect("the interpreter starts");
+    assert!(
+        !output.status.success(),
+        "a release build must not resolve a capability name\nstderr: {}",
+        stderr(&output)
+    );
+    let err = stderr(&output);
+    assert!(
+        err.contains("compiled out"),
+        "the refusal must say the search is not in this build\nstderr: {err}"
     );
 }

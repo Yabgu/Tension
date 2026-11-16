@@ -211,7 +211,7 @@ it) or a system `lldb`; the commands are §3's.
 | Variable | Effect |
 | --- | --- |
 | `TENSION_LOG_LEVEL`, `TENSION_LOG_FORMAT`, `TENSION_LOG_FILE` | logger fallbacks, overridden by the flags (`docs/logging.md`) |
-| `TENSION_CAPABILITY_PATH` | colon-separated dirs resolving `--capability <name>` as `libtension_<name>.so` (`main.rs:263-268`) |
+| `TENSION_CAPABILITY_PATH` | **debug builds only** — colon-separated dirs resolving `--capability <name>` as `libtension_<name>.so`; compiled out of release builds, where only the `--capability <path>` form is accepted (`main.rs`, `resolve_capability_paths`) |
 | `TENSION_RENDERER` | operator renderer override, resolved against the guest's config (`adapter.cpp:142-162`) |
 | `TENSION_OGRE_HEADLESS=1` | no window, no GPU device |
 | `TENSION_OGRE_DSO_PATH`, `TENSION_OGRE_PLUGIN_DIR`, `TENSION_OGRE_MEDIA_DIR` | adapter path, Ogre plugin and media dirs |
