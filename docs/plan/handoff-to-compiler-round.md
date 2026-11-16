@@ -611,3 +611,19 @@ The handoff's §5 line (`26/26, cargo 642/0, warnings 86/19`) was true on the
 machine that wrote it. On this one it is **22/26**, and the four failures are
 named above with their causes. A reader should treat §5 as *that machine's*
 figure and this section as *this machine's*, per the audit document's own rule.
+
+## Resolution, later the same day
+
+- **Causes A and B were one defect**: the stale DSO (gate finding 8), now refused
+  by mtime against the sources it was built from — in every suite that loads it,
+  not just `test-framework` (`scripts/lib/render2d-lib.mjs`).
+- **Cause C was not the replay path.** The five `replay_tests` passed on a
+  libtest worker thread and the *process* died in the GPU device's teardown,
+  which ran on that thread instead of the main one (gate finding 12). They are
+  `tests/replay_device.rs` now — a `harness = false` binary, the tree's own
+  pattern — and pass 5/5, exit 0.
+- **This machine's gate is 26/26.** `cargo-result-lines: 44`, `passed=637
+  failed=0 ignored=0`, `warnings: 85 (18 distinct)`. The `0` result lines
+  reported above were not "nothing to report": the crashed lib binary stopped
+  `cargo test` at its first target, so no integration target had run at all.
+- **Decision 1 returns to the user**, unblocked and undecided.

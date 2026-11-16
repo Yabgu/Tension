@@ -233,7 +233,11 @@ const hasDisplay =
 if (!askedForHeadless && hasDisplay && !process.env.TENSION_2D_CHILD) {
   console.log(`${RUNNER}: showing the framework scene — close the window to exit`);
   const shown = spawnSync(fwCtx.core, [
-    '--capability', fwCtx.dso,
+    // `prepare` resolves the capability (and refuses a stale DSO); the spawn
+    // takes the same arguments the assertion runs above did. `fwCtx.dso` never
+    // existed — this line passed `undefined`, which `spawnSync` rejects — but it
+    // only ran on a desktop with a display, so nothing caught it.
+    ...fwCtx.capabilityArgs,
     '--res', fwCtx.pak,
     fwCtx.guest,
     '--windowed',

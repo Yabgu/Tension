@@ -27,14 +27,16 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The eleven findings so far
+## The thirteen findings so far
 
 Findings 1-7 were found across Pass 2. Findings 8-11 were found by a **fresh
 agent on a different machine** (rustc 1.99.1, WSL2, dzn) running the gate for
 the threading round of 2026-11-16 — which is the point: the gate had been green
 on the machine that wrote it, and the new environment surfaced three defects that
-environment had masked. See `docs/plan/handoff-to-compiler-round.md`
-("Fresh-agent machine addendum") for the measurements.
+environment had masked. Findings 12 and 13 were found on that same machine while
+fixing 8, 9 and the crash it was hiding. See
+`docs/plan/handoff-to-compiler-round.md` ("Fresh-agent machine addendum") for the
+measurements.
 
 1. **`--no-default-features` also dropped `render2d-core`.** The `core` suite ran
    `cargo test --no-default-features --features audio`; the flag was meant to say
@@ -195,6 +197,18 @@ something a future round should choose between deliberately:
 
    **Either fix is incomplete alone.** The companion defect is below.
 
+   **Fixed** in `fix(gate): stale DSO rejection and release-build env exclusion`,
+   2026-11-16, taking the first of the two shapes: the artifact's mtime against
+   the newest source `build-2d.mjs --cpp` compiles. The walk and the refusal now
+   live in `scripts/lib/render2d-lib.mjs`, because the hole was never one
+   function — it was four copies of `existsSync` in the example suites plus the
+   one in `test-framework.mjs`, and a fix in one file would have left the rest.
+   Measured in all three states: a fresh DSO runs the specimen (26,684 lit
+   pixels), a forced 2026-11-09 mtime is **refused** naming both dates and the
+   rebuild command, and an absent DSO fails the framework suite (finding 9) while
+   the example suites fall back to the in-core renderer by design. No suite
+   relied on a stale DSO: the one that did was the one this found.
+
 9. **A suite can pass while its central assertion never ran.** Found on
    2026-11-16, in the same place as finding 8 and with the same cause.
    `runFontSpecimenFixture` prints
@@ -217,6 +231,13 @@ something a future round should choose between deliberately:
    path and its absence should not silently drop the suite's GPU coverage. The
    fix is to make a missing/refused DSO **fail** this suite (or to run the
    specimen against the in-core renderer directly), not to skip it.
+
+   **Fixed**, same commit: the framework suite asks for the artifact with
+   `required: true` and fails on absence, and the example suites ask with
+   `required: false` *on purpose* — running in-core is a supported configuration
+   for them. What is never allowed, in either case, is an artifact that exists
+   and is stale (finding 8), so "absent" and "out of date" cannot be confused
+   with each other or with "passed".
 
 10. **A crashed test binary projects as zero tests, not as unknown.** Found on
     2026-11-16. The `tension-core` suite's lib binary **SIGSEGV**d during the
@@ -285,6 +306,56 @@ something a future round should choose between deliberately:
     suite, or (b) resolve the binary the way the gate's own `Preparing` step does
     — one profile, one feature set — and fail loudly when it is absent, instead of
     silently preferring a different build of the product.
+
+12. **A GPU device torn down on a libtest worker thread SIGSEGVs, after every
+    assertion has passed.** Found 2026-11-16; it was the `tension-core` suite's
+    only red for two gate runs, and it is what finding 10 was measuring. Isolated
+    in four steps:
+
+    - **Which tests:** all five `render2d::device::replay_tests` crash run
+      individually; `capture_tests` (7) and `render2d_open` pass. Not the
+      pipeline-1000 case specifically — every one of them.
+    - **What part of them:** a minimal `open_offscreen(8, 8)` followed by a drop
+      reproduces it with no replay code in the process at all, and
+      `std::mem::forget` on the same state does **not** crash. The fault is the
+      device's *destructor*.
+    - **Which thread:** the process's main thread exits 0; a libtest worker
+      thread takes the SIGSEGV. Kernel report: `RAX == RIP`, an unmapped target,
+      plus `dxgkio_query_adapter_info: Ioctl failed: -22`.
+    - **Which wasmtime:** it crashes at **24.0.13** as well (throwaway worktree at
+      `4da7cd7`, the nested-guest merge, with the old pin), so the 50.0.1 upgrade
+      did not introduce it. The renderer was not touched by the branch either.
+      Only `dzn_icd.json` is installed on this machine (no lavapipe), but the
+      driver is not the cause: dzn opens and draws fine, and the same code on the
+      main thread exits clean.
+
+    *Shape: the tree documents this invariant and honours it in five probes.*
+    `tests/render2d_open.rs` says it outright — `sdl3::init()` lets the **first**
+    calling thread claim main-thread status and refuses every later one, so a
+    normal `#[test]` on a spawned thread fails, and `harness = false` is the fix.
+    The five tests that create the most devices of anything in the tree were
+    `#[test]`s serialized on a `Mutex`, and **a lock cannot fix thread affinity**.
+
+    **Fixed**: moved to `tests/replay_device.rs` as a `harness = false` binary in
+    the tree's own pattern. One `fn main()` on the real main thread runs the five
+    tests with their assertions unchanged, each inside `catch_unwind` so one
+    failure still reports the other four; a `NoDevice` refusal is a counted skip
+    rather than a silent return. Measured: **5/5 pass, exit 0, no SIGSEGV**, and
+    the lib test binary now completes and prints its `test result:` line (145
+    passed) — which is also the end of finding 10's "0 result lines": the count
+    moved from 0 to a real number because the binary finishes, not because the
+    projection changed.
+
+13. **An example suite passed `undefined` as a capability path.** Found while
+    fixing 8. `examples/2d/isometric-framework/test.mjs` spawned the interactive
+    run with `'--capability', fwCtx.dso`, but `prepare()` in
+    `examples/2d/synthetic/runner.mjs` never returned a `dso` — it returns
+    `capabilityArgs`. So the argument was `undefined`, which `spawnSync` rejects,
+    and the block only runs when there is a display, is not `--headless`, and
+    `TENSION_2D_CHILD` is unset: a desktop run with `npm start`, which no CI job
+    does. *Shape: a code path the gate never enters, holding a reference that was
+    never there.* Fixed by spreading `fwCtx.capabilityArgs`, the same list the
+    assertions above it run with.
 
 ## What a green gate means, now that finding 4 is known
 

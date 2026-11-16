@@ -48,6 +48,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { render2dDso } from '../../../scripts/lib/render2d-lib.mjs';
 
 const RUNNER = 'hello-sprites';
 
@@ -124,9 +125,16 @@ if (!core) {
 // The bisect path. A `--no-default-features` binary has no `tension::2d` imports
 // at all, so the guest cannot instantiate against it; the only thing that can
 // answer them is the DSO built from `tension-2d/reference/`. Pass it only when
-// one exists — an in-core run must not be handed a capability it would skip.
-const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
-const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
+// one exists — an in-core run must not be handed a capability it would skip —
+// and refuse one older than its sources (gate finding 8): a stale DSO is a
+// renderer this tree replaced, not a bisect.
+let dso = null;
+try {
+  dso = render2dDso(repo, { required: false });
+} catch (error) {
+  die(error.message);
+}
+const capabilityArgs = dso ? ['--capability', dso] : [];
 
 // ── 4. run it headless ──────────────────────────────────────────────────────
 //

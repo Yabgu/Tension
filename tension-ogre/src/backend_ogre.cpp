@@ -81,6 +81,7 @@
 #include <vector>
 
 #include "../include/tension_ogre.h"
+#include "env_override.h"
 
 #ifndef TENSION_OGRE_MEDIA_DIR
 // The build bakes this in (tension-ogre/CMakeLists.txt passes
@@ -108,10 +109,12 @@ namespace {
 /// key by (name, group) and require one.
 constexpr const char *kResourceGroup = "General";
 
-/// Where the render system plugins live: the build's answer, unless the
-/// environment disagrees (an install that moved, or a second copy for a test).
+/// Where the render system plugins live: the build's answer. A debug build also
+/// accepts an environment override (`src/env_override.h` explains why a release
+/// build has none by construction), for an install that moved or a second copy
+/// for a test.
 std::string plugin_dir() {
-    if (const char *from_env = std::getenv("TENSION_OGRE_PLUGIN_DIR")) return from_env;
+    if (const char *from_env = env::plugin_dir()) return from_env;
     return TENSION_OGRE_PLUGIN_DIR;
 }
 
@@ -261,9 +264,18 @@ class BackendOgre final : public Backend {
             // installs it, so "no X display" is a plugin-stage failure here,
             // not a window-stage one (measured; see the round's report).
             if (dir.empty()) {
+#if defined(TENSION_ENV_OVERRIDES)
                 return refuse(status, TENSION_OGRE_STAGE_PLUGIN, -EIO,
                               "no plugin directory: the build baked none in and "
                               "TENSION_OGRE_PLUGIN_DIR is unset");
+#else
+                // No variable is named here on purpose: this build reads none,
+                // and a message that named one would be the only trace of it.
+                return refuse(status, TENSION_OGRE_STAGE_PLUGIN, -EIO,
+                              "no plugin directory: this build baked none in, and a "
+                              "build that takes no configuration from the "
+                              "environment has no other source for one");
+#endif
             }
 #if defined(_WIN32)
             const std::string library = dir + "/" + plugin_name_ + ".dll";
@@ -614,7 +626,7 @@ class BackendOgre final : public Backend {
             // `Hlms/Pbs/Any` — the folder the Unlit path needs — leaves PBS with
             // no vertex shader at all, silently (`docs/modules/ogre.md` §4).
             {
-                const char *media = std::getenv("TENSION_OGRE_MEDIA_DIR");
+                const char *media = env::media_dir();
                 const std::string root = media ? std::string(media) : std::string(TENSION_OGRE_MEDIA_DIR);
                 media_root_ = root;
                 Ogre::ArchiveManager &archives = Ogre::ArchiveManager::getSingleton();

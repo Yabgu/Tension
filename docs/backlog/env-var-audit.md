@@ -1,7 +1,8 @@
 # Backlog: the environment-variable audit
 
-**Status:** audit and classification, one finding fixed (`TENSION_CAPABILITY_PATH`),
-one dangerous surface still open (`TENSION_OGRE_PLUGIN_DIR`). Written 2026-11-16.
+**Status:** audit and classification, **all three dangerous shipped reads fixed**
+(`TENSION_CAPABILITY_PATH`, `TENSION_OGRE_PLUGIN_DIR`, `TENSION_OGRE_MEDIA_DIR`).
+Written 2026-11-16.
 **Why it exists:** gate finding 8 turned on an environment variable that chose a
 library to load, and the shape — *env var → file path → load* — is a class, not an
 incident. This page walks the whole tree so the next one is found here rather than
@@ -45,27 +46,48 @@ product. Only shipped reads can be an injection surface in a release artifact.
    contains **zero** occurrences of the variable name (`strings | grep -c` == 0),
    and a release-only test asserts the name is refused.
 
-2. **`TENSION_OGRE_PLUGIN_DIR`** — `tension-ogre/src/backend_ogre.cpp:114`,
-   consumed by `root_->loadPlugin(...)` at `:397`. A directory from which OGRE
-   **`dlopen`s a render-system plugin** (`.so` / `.dll`). Same severity as the one
-   fixed: environment-selected native code.
-   **OPEN.** Proposed fix shape, same two parts:
-   - *Validation (both builds):* the resolved plugin must sit inside a directory
-     the build baked in, or be refused. A variable that merely picks *which*
-     build-time-known plugin directory to use is far weaker than one that can name
-     any directory.
-   - *Compile-time exclusion (release):* the `getenv("TENSION_OGRE_PLUGIN_DIR")`
-     arm compiles out; a release `tension-ogre` uses only the baked-in
-     `TENSION_OGRE_PLUGIN_DIR` macro path. It is already a `#define`/`#ifndef`
-     pair, so the release arm is the existing one with the override removed.
+2. **`TENSION_OGRE_PLUGIN_DIR`** — `tension-ogre/src/backend_ogre.cpp`, resolved by
+   `plugin_dir()` and consumed by `root_->loadPlugin(...)`. A directory from which
+   OGRE **`dlopen`s a render-system plugin** (`.so` / `.dll`). Same severity as the
+   one above: environment-selected native code.
+   **FIXED this round.** The read moved into `tension-ogre/src/env_override.h`,
+   where `TENSION_ENV_OVERRIDES` is defined only when `NDEBUG` is not — so a
+   release build's `plugin_dir()` is `return nullptr`, with no `getenv` and no
+   mention of the variable's name in the binary. The release path is the directory
+   CMake baked in from the Ogre prefix it linked against
+   (`TENSION_OGRE_PREFIX` for `scripts/build-ogre.mjs`) — chosen at build time by
+   whoever produced the artifact, not inherited at run time. Verified on both
+   configurations, `strings` over the staged DSO:
 
-3. **`TENSION_OGRE_MEDIA_DIR`** — `tension-ogre/src/backend_ogre.cpp:617`. A data
-   root OGRE reads material and shader archives from. **Data, not code** — it
-   cannot introduce a new library — but it does choose files the renderer parses,
-   so it is data-injection rather than harmless.
-   **OPEN.** Proposed fix shape: compile the override out of release (the baked-in
-   macro remains), or refuse a path outside the install prefix. The lower severity
-   is why it is ranked after 2.
+   ```
+   Release: TENSION_OGRE_PLUGIN_DIR 0   TENSION_OGRE_MEDIA_DIR 0
+   Debug:   TENSION_OGRE_PLUGIN_DIR 2   TENSION_OGRE_MEDIA_DIR 1
+   ```
+
+   and by a paired test (`tension-ogre/tests/env_override_test.cpp`, run by
+   `scripts/build-ogre.mjs --test`): debug asserts that a set variable resolves
+   and an empty one does not; release asserts both resolve to nothing and prints
+   `refused: compiled out of this release build`. The same source compiled in both
+   configurations is what makes the pair mean something.
+
+   **Consequence, stated rather than discovered later:** the packaged CLI
+   (`packages/cli/src/bundle.js`) exports this variable from the launcher it
+   writes, and the staged DSO bakes an absolute *build-tree* prefix. Those
+   exports are now inert for a release DSO, so a shipped bundle must be built
+   against its own prefix (`TENSION_OGRE_PREFIX=<payload>` when building the DSO
+   it ships) before it is packaged. Named as open work below, not fixed here: the
+   alternative is a path transport in the capability config, and the config TLV
+   (`tension-ogre/include/tension_ogre.h`) carries `i64` values only, so that is
+   an ABI decision rather than a patch.
+
+3. **`TENSION_OGRE_MEDIA_DIR`** — `tension-ogre/src/backend_ogre.cpp`, the media
+   root the Hlms archives load from. **Data, not code** — it cannot introduce a
+   new library — but it does choose files the renderer parses, so it is
+   data-injection rather than harmless.
+   **FIXED this round**, same shape and same header as 2 (`env::media_dir()`) so
+   the two cannot drift. Fixed rather than deferred because the change is five
+   lines beside one already being made and the surface is the same class; the
+   lower severity is why it was ranked after 2, not a reason to leave it.
 
 ### REVIEW
 
@@ -113,10 +135,11 @@ naming a DSO), `TENSION_OGRE_*_FIXTURE` (fixture `.wasm` paths),
 `TENSION_CORE`, `TENSIONSCRIPT`, `TENSIONSCRIPT_BIN` (interpreter/compiler paths).
 
 > **`TENSION_2D_LIB` is the one finding 8 was diagnosed with, and it now
-> staleness-checks its target** (`findRender2d` refuses a DSO older than the
-> sources it was built from, and fails rather than skips when the DSO is absent).
-> That is the direct precedent for the two-part fix: validate what the variable
-> names, and — for anything shipped — remove the read from release.
+> staleness-checks its target** (`scripts/lib/render2d-lib.mjs`: a DSO older than
+> the sources it was built from is refused by name, and the framework suite fails
+> rather than skips when the DSO is absent). That is the direct precedent for the
+> two-part fix: validate what the variable names, and — for anything shipped —
+> remove the read from release.
 
 **REVIEW (path, harness-only, write or read of data):**
 `TENSION_OGRE_MEDIA_DIR` is shipped (above); its harness mirrors
@@ -134,13 +157,31 @@ oversight.
 
 ## The count
 
-- **DANGEROUS in shipped artifacts: 3** — `TENSION_CAPABILITY_PATH` (fixed),
-  `TENSION_OGRE_PLUGIN_DIR` (open), `TENSION_OGRE_MEDIA_DIR` (open, data-only).
+- **DANGEROUS in shipped artifacts: 3 — all fixed.** `TENSION_CAPABILITY_PATH`,
+  `TENSION_OGRE_PLUGIN_DIR`, `TENSION_OGRE_MEDIA_DIR`: each read is compiled out
+  of a release build and the variable's name is absent from the binary
+  (`strings | grep -c` == 0), each with a test that asserts the release side.
 - **REVIEW in shipped artifacts: 1** — `TENSION_LOG_FILE`.
 - **HARMLESS in shipped artifacts: 7.**
 - **Harness/build only: the remainder** — 2 dangerous-by-path but not shipped
   (`TENSION_2D_LIB`, `TENSION_INPUT_LIB`), the OGRE/parity/fixture DSO and binary
   paths, and the switches.
+
+## Open work this audit names
+
+1. **Packaging.** `packages/cli/src/bundle.js` exports
+   `TENSION_OGRE_PLUGIN_DIR` / `TENSION_OGRE_MEDIA_DIR` from the launcher it
+   writes. With the reads compiled out of release, those exports no longer reach
+   a shipped DSO. Either the bundled DSO is built against the payload prefix
+   (`TENSION_OGRE_PREFIX`), or the capability config gains a path transport —
+   which needs an ABI decision, because the config TLV is `u32` key / `u8` tag /
+   `i64` value and has no string slot.
+2. **`TENSION_LOG_FILE`** becomes DANGEROUS the day the logger *reads* a config
+   beside it. It is a write path today.
+3. **The class, not the instance.** Every dangerous read found was
+   *env var → path → load*. A future URL, socket, or command-execution variable
+   should be added to this page when it is written, not after a fresh agent finds
+   it.
 
 ## What this audit does not claim
 

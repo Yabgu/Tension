@@ -150,7 +150,7 @@ if (mode === '--test') {
   const testDir = join(outDir, 'tests');
   const present = readdirSync(testDir);
   const required = present
-    .filter((name) => /^(config|scene|loader)_test(\.exe)?$/.test(name))
+    .filter((name) => /^(config|env|scene|loader)_test(\.exe)?$/.test(name))
     .sort();
   if (required.length === 0) {
     die(`no test binaries in ${testDir}; the CMake configure did not build them`);

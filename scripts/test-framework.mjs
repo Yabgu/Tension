@@ -17,11 +17,12 @@
 // Usage: node scripts/test-framework.mjs [path-to-tension-core] [path-to-stub-adapter]
 
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, extname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../tension-framework/tools/lib/png.mjs';
 import { REPO, npmBin } from './lib/toolchain.mjs';
+import { render2dDso } from './lib/render2d-lib.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -283,66 +284,24 @@ function runMountFixture(entry, out) {
 /// A **missing** DSO is a failure here too, not a skip (finding 9): the specimen
 /// is the suite's one assertion that draws a real frame, and a suite that passes
 /// while skipping its central assertion is green about nothing.
+///
+/// The rule itself is `scripts/lib/render2d-lib.mjs` — the example suites load
+/// the same artifact and are held to the same check, and one implementation is
+/// what stops the rule from being present here and absent there.
 function findRender2d() {
-  const override = process.env.TENSION_2D_LIB;
-  const candidate = override ?? join(repo, 'tension-2d', 'build',
-                         `libtension_2d${process.platform === 'win32' ? '.dll' : '.so'}`);
-  if (!existsSync(candidate)) {
-    fail(RUNNER, `no tension::2d library at ${candidate}\n` +
-                 `        build it with: node scripts/build-2d.mjs --cpp\n` +
-                 `        (the specimen is this suite's only real-frame assertion; ` +
-                 `it no longer skips when the DSO is absent)`);
+  try {
+    return render2dDso(repo, { required: true });
+  } catch (error) {
+    // `fail` prints and exits; the message is the module's, indented like the
+    // rest of this suite's diagnostics.
+    fail(RUNNER, error.message.split('\n').join('\n        '));
   }
-  const built = statSync(candidate).mtimeMs;
-  const newest = newestRender2dSource();
-  if (newest && built < newest.mtimeMs) {
-    fail(RUNNER, `the tension::2d library is older than the sources it was built from\n` +
-                 `        artifact: ${relative(repo, candidate)} (${new Date(built).toISOString()})\n` +
-                 `        newest source: ${relative(repo, newest.path)} ` +
-                 `(${new Date(newest.mtimeMs).toISOString()})\n` +
-                 `        rebuild it with: node scripts/build-2d.mjs --cpp\n` +
-                 `        (a stale DSO measures a renderer this tree no longer has — gate finding 8)`);
-  }
-  return candidate;
 }
 
 /// The newest source `build-2d.mjs --cpp` compiles into the DSO, by mtime.
 ///
-/// The roots are that script's own include paths and translation units. Walking
-/// them here rather than listing files keeps the check honest when a source is
-/// added: a new file under one of these roots is covered without editing this
-/// function. `null` when nothing is found, which cannot happen in a checkout that
-/// also has the artifact.
-function newestRender2dSource() {
-  const roots = [
-    join(repo, 'tension-2d', 'reference'),
-    join(repo, 'tension-2d', 'include'),
-    join(repo, 'tension-core', 'include'),
-    join(repo, 'third_party', 'ImageViewer', 'src', 'format'),
-    join(repo, 'third_party', 'ImageViewer', 'src', 'imageviewer'),
-  ];
-  const extensions = new Set(['.cpp', '.cc', '.c', '.h', '.hpp', '.ixx', '.inl']);
-  let newest = null;
-  const walk = (dir) => {
-    let entries;
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const path = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(path);
-      } else if (extensions.has(extname(entry.name))) {
-        const mtimeMs = statSync(path).mtimeMs;
-        if (!newest || mtimeMs > newest.mtimeMs) newest = { path, mtimeMs };
-      }
-    }
-  };
-  for (const root of roots) walk(root);
-  return newest;
-}
+/// The check moved to `scripts/lib/render2d-lib.mjs` when the example suites
+/// needed it too; there is one copy of the walk, and it is not this file's.
 
 /// The input capability, for the UI gate.
 ///

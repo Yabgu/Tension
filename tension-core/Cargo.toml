@@ -184,3 +184,13 @@ harness = false
 [[test]]
 name = "render2d_parity"
 harness = false
+
+# The nested guest's frame on the device that draws: replay, page forwarding
+# and the pixels that prove the two agree. Moved out of `src/render2d/device.rs`
+# where it was five `#[test]`s, and `harness = false` for a sharper reason than
+# the probes above have: the tests passed on a libtest worker thread and the
+# *process* died in the device's teardown, which ran on that thread rather than
+# the main one (gate finding 9). Needs a GPU; skips by name when there is none.
+[[test]]
+name = "replay_device"
+harness = false

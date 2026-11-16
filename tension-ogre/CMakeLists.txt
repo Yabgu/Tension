@@ -258,7 +258,13 @@ if(TENSION_OGRE_BUILD_TESTS)
         target_link_libraries(loader_test PRIVATE pthread)
     endif()
 
-    foreach(test_target config_test scene_test loader_test)
+    # Which sources of configuration this build has. Pure — `src/env_override.h`
+    # is a header — and it must be compiled in the same configuration as the
+    # adapter, because the two halves of its assertion are the two build types.
+    add_executable(env_test tests/env_override_test.cpp)
+    target_include_directories(env_test PRIVATE ${TENSION_OGRE_ROOT}/src)
+
+    foreach(test_target config_test scene_test loader_test env_test)
         if(MSVC)
             target_compile_options(${test_target} PRIVATE /W3 /utf-8 /EHsc /bigobj /D_CRT_SECURE_NO_WARNINGS)
         else()

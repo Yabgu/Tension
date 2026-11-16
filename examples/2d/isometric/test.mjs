@@ -27,6 +27,7 @@ import { deflateSync } from 'node:zlib';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { render2dDso } from '../../../scripts/lib/render2d-lib.mjs';
 
 const RUNNER = 'isometric';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -68,13 +69,20 @@ step = run('node', [join(repo, 'scripts', 'build-2d-guest.mjs')], { stdio: 'inhe
 if (!step || step.status !== 0) die('the guest did not build');
 
 // The renderer is in core since Pass B; this build produces shader modules only.
-// A `--capability` is passed only when a DSO exists, which is the bisect path.
-const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+// A `--capability` is passed only when a DSO exists, which is the bisect path —
+// and a DSO older than the sources it was built from is refused rather than
+// loaded (gate finding 8): it measures a renderer this tree no longer has.
+let dso = null;
+try {
+  dso = render2dDso(repo, { required: false });
+} catch (error) {
+  die(error.message);
+}
 if (!existsSync(join(repo, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv'))) {
   step = run('node', [join(repo, 'scripts', 'build-2d.mjs')], { stdio: 'inherit', cwd: repo });
   if (!step || step.status !== 0) die('the shader modules did not build');
 }
-const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
+const capabilityArgs = dso ? ['--capability', dso] : [];
 
 function findCore() {
   if (process.env.TENSION_CORE && existsSync(process.env.TENSION_CORE)) {

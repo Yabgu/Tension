@@ -13,6 +13,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { render2dDso } from '../../../scripts/lib/render2d-lib.mjs';
 
 const RUNNER = 'box-physics';
 
@@ -64,8 +65,17 @@ if (!core) {
 }
 
 // ── 3. run headless ─────────────────────────────────────────────────────────
-const dso = join(repo, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
-const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
+// The C++ renderer, when one is present. Absent is fine — an in-core build needs
+// no capability — but **stale is not**: `render2dDso` refuses a DSO older than
+// the sources it was built from (gate finding 8), because that artifact measures
+// a renderer this tree no longer has.
+let dso = null;
+try {
+  dso = render2dDso(repo, { required: false });
+} catch (error) {
+  die(error.message);
+}
+const capabilityArgs = dso ? ['--capability', dso] : [];
 
 const result = run(core, [...capabilityArgs, join(here, 'build', 'game.wasm')], {
   stdio: ['ignore', 'pipe', 'pipe'],

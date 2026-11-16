@@ -17,6 +17,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { emit } from './emit.mjs';
+import { render2dDso } from '../../../scripts/lib/render2d-lib.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 export const REPO = resolve(here, '..', '..', '..');
@@ -55,13 +56,20 @@ export function prepare(exampleDir, { log = console.log } = {}) {
   if (!step || step.status !== 0) throw new Error('the guest did not build');
 
   // The renderer is in core since Pass B; the build produces shader modules
-  // only. A `--capability` is passed only when a DSO exists (the bisect path).
-  const dso = join(REPO, 'tension-2d', 'build', WIN ? 'libtension_2d.dll' : 'libtension_2d.so');
+  // only. A `--capability` is passed only when a DSO exists (the bisect path),
+  // and a DSO older than the sources it was built from is refused rather than
+  // loaded: it measures a renderer this tree no longer has (gate finding 8).
+  let dso = null;
+  try {
+    dso = render2dDso(REPO, { required: false });
+  } catch (error) {
+    throw new Error(error.message);
+  }
   if (!existsSync(join(REPO, 'tension-2d', 'build', 'shaders', 'default_2d.vert.spv'))) {
     step = run('node', [join(REPO, 'scripts', 'build-2d.mjs')], { cwd: REPO, stdio: 'inherit' });
     if (!step || step.status !== 0) throw new Error('the shader modules did not build');
   }
-  const capabilityArgs = existsSync(dso) ? ['--capability', dso] : [];
+  const capabilityArgs = dso ? ['--capability', dso] : [];
   const core = findCore();
   if (!core) {
     throw new Error(`no tension-core found\n  Run \`cargo build --manifest-path tension-core/Cargo.toml\`.`);
