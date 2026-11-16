@@ -27,9 +27,9 @@ Finding 5 adds a fourth:
 > fixture that already passed changes no verdict, no count and no warning, so the
 > projection cannot distinguish it from a commit that added nothing.
 
-## The ten findings so far
+## The eleven findings so far
 
-Findings 1-7 were found across Pass 2. Findings 8-10 were found by a **fresh
+Findings 1-7 were found across Pass 2. Findings 8-11 were found by a **fresh
 agent on a different machine** (rustc 1.99.1, WSL2, dzn) running the gate for
 the threading round of 2026-11-16 — which is the point: the gate had been green
 on the machine that wrote it, and the new environment surfaced three defects that
@@ -250,6 +250,41 @@ something a future round should choose between deliberately:
     `crashed:` section naming the binary. "Zero `test result:` lines from a suite
     that was expected to run cargo" and "all tests passed" must never be the same
     projection.
+
+11. **Which renderer a 2D suite tests depends on which cargo profile exists.**
+    Found 2026-11-16, chasing a "regression" that was not one. The example suites'
+    `findCore()` (`examples/2d/*/test.mjs`) prefers `release` and falls back to
+    `debug`:
+
+    ```
+    for (const profile of ['release', 'debug']) { ... }
+    ```
+
+    The gate's `Preparing` step builds the **debug** binary with
+    `--no-default-features`, which has **no in-core 2D renderer**; such a binary
+    loads the `--capability <DSO>` the suites pass, so the suite exercises the
+    C++ bisect path. A **release** binary built with `render2d-core` answers
+    `tension::2d` itself, so the DSO is skipped and the suite exercises the
+    in-core renderer instead.
+
+    Measured: gate run 1 (no release binary present) failed `box-physics`,
+    `stiff-boxes` and `starter`; gate run 2 (a release binary had been built for
+    an unrelated change) passed all three, on the same sources. The suites changed
+    behaviour without the tree changing.
+
+    *Shape: finding 4 again — the gate's verdict depends on build-directory state
+    rather than on the tree — but through binary selection rather than cache
+    contents, which is why the warning-count rule did not catch it.*
+
+    **Cost:** worse than a flaky number. It made a stale-artifact failure
+    (`docs/backlog/bug-iwi-tns-corruption.md`) look like an in-core decoder
+    regression, and it will make the next one look like that too.
+
+    **Proposed fix:** the suite must name the renderer it intends to test, not
+    accept whichever binary happens to exist. Either (a) pin the profile per
+    suite, or (b) resolve the binary the way the gate's own `Preparing` step does
+    — one profile, one feature set — and fail loudly when it is absent, instead of
+    silently preferring a different build of the product.
 
 ## What a green gate means, now that finding 4 is known
 

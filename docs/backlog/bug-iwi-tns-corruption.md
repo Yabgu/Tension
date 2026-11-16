@@ -93,3 +93,75 @@ The round's mandate was the gate re-run and an honest record. This defect is on
 `main`, unrelated to the threading branch, and a fix belongs on a branch with its
 own gate run. Guessing at it under a "make the gate green" instruction is exactly
 the habituation `docs/backlog/gate-configuration-audit.md` warns about.
+
+---
+
+# Correction, same day: this is the stale DSO, not an in-core defect
+
+**Status changed: WITHDRAWN as an in-core `.tns`/`decode_iwi` defect.** The
+symptom was real; the attribution above was wrong. Recorded rather than deleted,
+because a wrong diagnosis in the record is itself a datum.
+
+## What the re-run showed
+
+After the fix that rebuilt the DSO, the full gate went from **22/26 to 25/26**,
+and the three suites named above — `box-physics`, `stiff-boxes`,
+`starter template` — **all passed**, without any change to `tension-core`. Since
+the decoder was not touched, "the in-core decoder is broken" cannot be the
+explanation, and a passing suite is not evidence that it was ever true.
+
+## The mechanism, established
+
+Two facts chain it:
+
+1. **The stale DSO predates the IWI authority migration.** It was built
+   2026-11-09 23:26; `5b1a171` (*"adopt ImageViewer's IwiFile as the one .iwi
+   authority"*) landed **2026-11-15 18:51**. So that artifact contains the
+   *pre-adoption* C++ IWI reader, not ImageViewer's.
+2. **That pre-adoption reader carried this exact message.** At `5b1a171^`,
+   `tension-2d/reference/texture.cpp` matches `3- and 4-component` — the string
+   this entry was built around. It is not Rust-only after all; it was moved from
+   C++ to Rust by the migration, and both spellings existed in the tree's history.
+
+So the suites were refusing valid IWIs **inside the stale DSO**, via the old C++
+reader, and the refusal text was identical to the in-core one because the in-core
+one was ported from it.
+
+## Why the first run used the DSO and the second did not
+
+The example suites' `findCore()` (`examples/2d/*/test.mjs`) prefers the **release**
+profile and falls back to debug:
+
+```
+for (const profile of ['release', 'debug']) { ... }
+```
+
+- **First run:** no release binary existed. The debug binary is built by the gate's
+  `Preparing` step with `--no-default-features`, i.e. **without** the in-core 2D
+  renderer, so `--capability <stale DSO>` was genuinely loaded and its old reader
+  refused the file.
+- **Second run:** a release binary existed (built during the env-var work, with
+  `render2d-core`). It was preferred, the in-core renderer answered
+  `tension::2d` itself, the DSO was skipped, and the current reader accepted the
+  files. Confirmed independently: with the DSO removed from disk entirely,
+  `box-physics` still passes against the debug binary that carries the in-core
+  renderer.
+
+**This is a gate-reproducibility defect in its own right**, and a new shape:
+*whether a 2D example suite exercises the in-core renderer or a DSO depends on
+which cargo profile happens to exist in `target/`.* Two runs of one unchanged tree
+can therefore disagree on the renderer under test. Filed as **gate finding 11** in
+`docs/backlog/gate-configuration-audit.md`.
+
+## What this entry is now
+
+- **Not** an in-core decoder defect. Nothing in `tension-core/src/render2d/iwi.rs`
+  needs changing on the evidence available.
+- **A second instance of finding 8** (a stale artifact silently preferred), reached
+  through a different door: the DSO was loaded not by `TENSION_2D_LIB` but by the
+  example suites' own `existsSync` test.
+- The finding-8 fix closes the `test-framework` path; the example suites'
+  `capabilityArgs = existsSync(dso) ? ['--capability', dso] : []` has **no**
+  staleness check and is the remaining hole of the same shape. Proposed: the same
+  rule, applied there — refuse a DSO older than the sources it was built from, and
+  prefer the in-core renderer when the binary carries it.
