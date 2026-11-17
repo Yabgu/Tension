@@ -17,6 +17,7 @@
 // and pretending otherwise here would move pixels inside src rects.
 
 import { Frame } from "./types";
+import { NamedTable } from "../runtime/named-table";
 // The one verb this module calls, from the SDK's single declaration site.
 // Binding is not the guest's business to repeat per example: a tileset knows
 // its pages, so it knows the slots.
@@ -29,8 +30,17 @@ export class Tileset {
   private tileSize: u32;
   /** Pages per sheet row. One row, so this is the page count. */
   private columns: u32;
-  /** Named frames, for `Composite.addLayer`. */
-  private named: Map<string, Frame>;
+  /**
+   * Named frames, for `Composite.addLayer`.
+   *
+   * A **linear** table rather than a `Map`, and the reason is measured: one entry per named
+   * frame, i.e. per atlas region an app refers to by name — 4 in the 2D guest, 24 in the
+   * editor — written once from the atlas manifest. At that size a string compare against a
+   * short array beats hashing the key and chasing a bucket, and it is what lets a program
+   * holding a tileset be GC-uniform at all (`MapEntry` is `@unmanaged`, so
+   * `Map<string, Frame>` cannot be a GC type). See `runtime/named-table.ts`.
+   */
+  private named: NamedTable<Frame>;
   /** False for a degenerate geometry; every lookup then returns an invalid frame. */
   private usable: bool;
 
@@ -40,7 +50,7 @@ export class Tileset {
     this.pageHeight = pageHeight;
     this.tileSize = tileSize;
     this.columns = <u32>max<i32>(1, pages.length);
-    this.named = new Map<string, Frame>();
+    this.named = new NamedTable<Frame>();
     this.usable = pageWidth > 0 && pageHeight > 0 && tileSize > 0 && pages.length > 0;
   }
 

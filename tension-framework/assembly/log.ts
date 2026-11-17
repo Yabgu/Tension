@@ -21,6 +21,7 @@
 // render levels, mip levels — so the logger does not claim it.
 
 import { log as hostLog, logStructured as hostLogStructured } from "./io";
+import { NamedTable } from "./runtime/named-table";
 
 /** The six levels. The discriminants are the ABI's (`tension_log_level_t`). */
 export enum LogLevel {
@@ -40,8 +41,16 @@ export enum LogLevel {
  * call.
  */
 export class Logger {
-  /** The one logger per name, so `get` is stable and allocation is one-time. */
-  private static registry: Map<string, Logger> = new Map<string, Logger>();
+  /**
+   * The one logger per name, so `get` is stable and allocation is one-time.
+   *
+   * A **linear** table rather than a `Map`: one entry per logger name, i.e. per module that
+   * logs — 3 in the 2D guest, 9 in the editor — and a name is a source-code literal, so the
+   * count is bounded by the source. A `Map<string, Logger>` cannot be a GC type
+   * (`MapEntry` is `@unmanaged`), and one of them holds a whole program on the pointer ABI.
+   * See `runtime/named-table.ts` for the measurement.
+   */
+  private static registry: NamedTable<Logger> = new NamedTable<Logger>();
 
   private name: string;
 

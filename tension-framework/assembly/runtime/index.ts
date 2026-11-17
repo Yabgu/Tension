@@ -39,6 +39,7 @@ export * from "./config";
 export * from "./callbacks";
 export { rt } from "./rt";
 export * from "./layout";
+export * from "./named-table";
 export * from "./manifest";
 export { verbs };
 
