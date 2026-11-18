@@ -24,13 +24,38 @@ come first; the rest is the Windows build cheat-sheet.
    at `third_party/TensionScript`, pinned by the gitlink. `scripts/vendor-compiler.mjs`
    builds it, runs its `publish:verify` gate, packs it into `.packs/`, and writes
    the result into the **root** `package.json` as a `file:` devDependency named
-   `…-<version>-g<sha>.tgz` (the commit suffix is what distinguishes two bumps
+   `…-<version>-g<sha>.tar` (the commit suffix is what distinguishes two bumps
    that share a version). The root is the only install point, and
-   `scripts/lib/toolchain.mjs` is the only resolver: `requireCompiler()` looks at
-   `<repo>/node_modules/.bin` **only** and then proves the installed copy is the
-   tarball `.packs/manifest.json` names — the lock's `resolved` field, the
-   installed `version`, and the binary's realpath all have to agree. A version
-   comparison alone would pass a registry `0.14.1`.
+   `scripts/lib/toolchain.mjs` is the only resolver. It answers an **invocation**
+   — the package's own `bin` entry run through `process.execPath` on every
+   platform, not the `.bin` shim — and then proves the installed copy is the
+   tarball `.packs/manifest.json` names: the lock's `resolved` field, the
+   installed `version`, and the launched file's path inside the package all have
+   to agree. A version comparison alone would pass a registry `0.14.1`.
+
+   The `bin` entry comes first for a Windows reason worth knowing: npm writes
+   `node_modules/.bin/tensionscript` as a **symlink** on POSIX and as three real
+   files on Windows, so a "is the launched file inside the package" check cannot
+   pass against the shim there. Running the package's script through Node removes
+   the shim from the question instead of special-casing it.
+
+   **`$TENSIONSCRIPT=<path>` overrides the pin** for every build and test entry
+   point — `build-framework`, `build-2d-guest`, the docs runner, `test-*`,
+   `run-example`. It prints `using $TENSIONSCRIPT=… — NOT the vendored pin` on
+   stderr and skips the provenance check, because a path outside the pin is a
+   thing nothing can be proven about. It is for bisecting a compiler, not for
+   routine builds. The tarball is **canonicalised** when it is packed (mtime 0,
+   uid/gid 0, no pax headers) so two machines packing the same commit produce the
+   same bytes and the committed lockfile's integrity is valid on every platform;
+   `scripts/test-deterministic-tar.mjs` asserts that.
+
+   **Modes come from the package's `bin` field, never from the file system.** A
+   member named by `bin` is 0755 and everything else is 0644. Reading the packed
+   mode instead looked equivalent and was not: NTFS has no execute bit, so
+   `npm pack` on Windows recorded the compiler's own entry as 0644 against Linux's
+   0755 — one header field, and `EINTEGRITY` on every install from the committed
+   lockfile. `package.json` is committed, so it is the only platform-independent
+   answer.
 
    **Never spell the compiler as a bare `tensionscript`** in a package script.
    That is a PATH lookup, and npm's PATH is the ancestor `node_modules/.bin`
@@ -54,7 +79,7 @@ come first; the rest is the Windows build cheat-sheet.
    ```
 
    That is the whole first-run story, and it is why a bare `npm install` on a fresh
-   clone does not die with `ENOENT … .packs/…tgz`. The hook is a no-op — four file
+   clone does not die with `ENOENT … .packs/…tar`. The hook is a no-op — four file
    reads and one `git rev-parse` — whenever the manifest and its tarball are
    present and agree with the declared spec, so adding a dependency to a warm tree
    costs nothing. **It never edits `package.json`**: during an install that file is

@@ -27,9 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { BLOCK_FLAG, KIND } from './lib/format.mjs';
 import { readDocs } from './lib/read-docs.mjs';
-import {
-  CompilerError, compilerInvocation, resolveCompiler,
-} from '../../../scripts/lib/toolchain.mjs';
+import { CompilerError, resolveCompiler, spawnForm } from '../../../scripts/lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, '..');
@@ -96,8 +94,9 @@ function firstExisting(candidates) {
  * shim and no shell on any platform.
  */
 function findCompiler() {
-  const { bin } = resolveCompiler(appDir);
-  return compilerInvocation(bin);
+  // `resolveCompiler` already answers `{ command, prefix, shell, path }` — the
+  // package's own bin entry run through this Node, on every platform.
+  return resolveCompiler(appDir);
 }
 
 let compiler;
@@ -231,12 +230,16 @@ for (let i = 0; i < runnable.length; i++) {
    * The check is `WebAssembly.Module.imports`, not a grep of the source: what
    * matters is the module the compiler emitted, not what the text looks like.
    */
-  const compile = (configPath) => spawnSync(compiler.command, [
-    ...compiler.prefix,
-    join(dir, 'src', 'main.ts'),
-    '--config', configPath,
-    '-o', wasmPath,
-  ], { cwd: dir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, shell: compiler.shell });
+  const compile = (configPath) => {
+    const form = spawnForm(compiler, [
+      join(dir, 'src', 'main.ts'),
+      '--config', configPath,
+      '-o', wasmPath,
+    ]);
+    return spawnSync(form.command, form.args, {
+      cwd: dir, encoding: 'utf8', timeout: RUN_TIMEOUT_MS, shell: form.shell,
+    });
+  };
 
   let compiled = compile(sessionConfig);
 

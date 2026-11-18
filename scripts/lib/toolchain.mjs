@@ -279,37 +279,122 @@ export function npmBin(dir, name) {
 export { COMPILER };
 
 /**
- * The vendored compiler's shim, or `null` when it is not installed.
+ * How to launch a compiler *file*: `{ command, prefix, shell, path }`.
+ *
+ * `path` is the script the invocation runs, which is what the provenance check
+ * needs; `command`/`prefix` are what a spawn needs.
+ *
+ * A `.js` path runs through this Node on **every** platform — no shebang, no shell,
+ * no executable bit. That is the case that matters: it is the compiler's own `bin`
+ * entry, and using it is what keeps the resolution the same on Windows and POSIX.
+ * A `.cmd`/`.bat` path is only reachable on Windows and needs a shell there; npm's
+ * shims are not executable images. Anything else is spawned directly.
+ */
+export function compilerInvocation(path, win = WIN) {
+  const common = { path };
+  // A batch file is not an executable image: Windows needs `cmd.exe` to run it,
+  // and Node refuses to spawn one directly (`EINVAL`).
+  if (win && /\.(cmd|bat)$/i.test(path)) return { ...common, command: path, prefix: [], shell: true };
+  // **A `.js` path always runs through this Node.** Windows has no shebang
+  // handling, so spawning one directly is `EFTYPE` — which is what made
+  // `$TENSIONSCRIPT=…\dist\asc.js` fail as an "escape hatch". This branch is also
+  // what the vendored pin takes on every platform.
+  if (/\.(c|m)?js$/i.test(path)) {
+    return { ...common, command: process.execPath, prefix: [path], shell: false };
+  }
+  // A bare command name on Windows can only be reached through `cmd.exe`, because
+  // what it resolves to is a `.cmd` shim. On POSIX a bare name goes to `execvp`.
+  if (win && !/[\\/]/.test(path) && !/\.[a-z0-9]+$/i.test(path)) {
+    return { ...common, command: path, prefix: [], shell: true };
+  }
+  return { ...common, command: path, prefix: [], shell: false };
+}
+
+/**
+ * Quote one argument for a shell command line.
+ *
+ * Only used on the shell path. `spawnSync(cmd, args, { shell: true })` concatenates
+ * the arguments unescaped — Node emits `DEP0190` for exactly that reason, and it is
+ * right to: an argument with a space in it silently becomes two, which for a path
+ * like `C:\Program Files\…` is a wrong command rather than an error.
+ */
+export function shellQuote(arg, win = WIN) {
+  const text = String(arg);
+  if (win) {
+    // Windows: everything inside double quotes is literal except `"` and `%`.
+    // A `.cmd` invocation is the only caller, and its arguments are file paths and
+    // flags — none contains `%` — so doubling `"` is the whole rule.
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * How to spawn an invocation with `args`: `{ command, args, shell }`.
+ *
+ * **The shell form is one string with no argument array.** Node's `DEP0190` says
+ * passing an array with `shell: true` concatenates without escaping; composing the
+ * line ourselves with {@link shellQuote} is the fix, not a silenced warning. On the
+ * direct form the array is passed through untouched, which is what makes a path
+ * with a space in it safe there.
+ */
+export function spawnForm(invocation, args = [], win = WIN) {
+  if (!invocation.shell) {
+    return { command: invocation.command, args: [...invocation.prefix, ...args], shell: false };
+  }
+  const line = [invocation.command, ...invocation.prefix, ...args]
+    .map((arg) => shellQuote(arg, win)).join(' ');
+  // `args: []`, not the array: an empty array does not trigger the deprecation, and
+  // an absent one would make Node append `process.argv` on some call shapes.
+  return { command: line, args: [], shell: true };
+}
+
+/**
+ * The vendored compiler as an invocation, or `null` when it is not installed.
+ *
+ * **The package's own `bin` entry comes first, on both platforms.** `npm` resolves
+ * a package's `bin` field into `node_modules/.bin/<name>`, and that shim is a
+ * symlink on POSIX but **three real files on Windows** — where `realpath` of
+ * `tensionscript.cmd` is `tensionscript.cmd`, so a "is the binary inside the
+ * package" check can never pass and every guest build failed with
+ * `resolves to … outside …`. Running `<pkg>/bin/tensionscript.js` through this Node
+ * needs no shim at all, which removes the inconsistency rather than describing it:
+ * the resolved file is inside the installed package on every platform.
+ *
+ * The `.bin` shim stays as a fallback for a package layout with no resolvable `bin`
+ * field — a vendored copy, or a manager that links its own — and
+ * `assertVendoredCompiler` follows it to the script it runs.
  *
  * Searches the repo root and any explicit `dirs` a caller passes — nothing else.
  * The old `tension-framework` fallback is gone: that copy no longer exists, and a
  * hint pointing at a directory nothing will ever populate is worse than none.
  */
-export function compilerBin(...dirs) {
+export function locateCompiler(...dirs) {
   const name = WIN ? 'tensionscript.cmd' : 'tensionscript';
   const seen = new Set();
   for (const dir of [REPO, ...dirs]) {
-    const bin = join(dir, 'node_modules', '.bin', name);
-    if (seen.has(bin)) continue;
-    seen.add(bin);
-    if (existsSync(bin)) return bin;
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+
+    const pkgDir = join(dir, 'node_modules', ...COMPILER.split('/'));
+    const manifestPath = join(pkgDir, 'package.json');
+    if (existsSync(manifestPath)) {
+      try {
+        const field = JSON.parse(readFileSync(manifestPath, 'utf8')).bin;
+        const entry = typeof field === 'string' ? field : field?.tensionscript;
+        if (entry) {
+          const js = join(pkgDir, entry);
+          if (existsSync(js)) return compilerInvocation(js);
+        }
+      } catch {
+        // an unreadable manifest falls through to the shim
+      }
+    }
+
+    const shim = join(dir, 'node_modules', '.bin', name);
+    if (existsSync(shim)) return compilerInvocation(shim);
   }
   return null;
-}
-
-/**
- * How to launch a compiler path: `{ command, prefix, shell }`.
- *
- * npm's shim is not an executable image on Windows — `tensionscript`,
- * `tensionscript.cmd` and `tensionscript.ps1` are written, and only the `.cmd` is
- * launchable there — so it goes through a shell. A `.js` path (which is what
- * `$TENSIONSCRIPT` usually names, and what a package's `bin` field contains) is run
- * through this Node instead, because it needs no shebang and no shell anywhere.
- */
-export function compilerInvocation(path) {
-  if (WIN && /\.(cmd|bat)$/i.test(path)) return { command: path, prefix: [], shell: true };
-  if (/\.(c|m)?js$/i.test(path)) return { command: process.execPath, prefix: [path], shell: false };
-  return { command: path, prefix: [], shell: false };
 }
 
 /** Thrown by {@link requireCompiler} and {@link assertVendoredCompiler}. */
@@ -328,8 +413,8 @@ export class CompilerError extends Error {
 const COMPILER_STEPS = compilerFixCommands(REPO);
 
 /**
- * Assert that `bin` is the compiler this tree vendored — not merely that a
- * compiler exists there.
+ * Assert that a compiler invocation (or path) is the compiler this tree vendored —
+ * not merely that a compiler exists there.
  *
  * **The check lives in `packages/cli/src/compiler-provenance.js`, not here.** That
  * package is published and cannot import this file, so the dependency runs the
@@ -339,9 +424,9 @@ const COMPILER_STEPS = compilerFixCommands(REPO);
  *
  * Returns `{ version, tarball, sha }`; throws {@link CompilerError}.
  */
-export function assertVendoredCompiler(bin) {
+export function assertVendoredCompiler(target) {
   try {
-    return assertVendoredImpl(REPO, bin);
+    return assertVendoredImpl(REPO, target);
   } catch (error) {
     if (error instanceof ProvenanceError) throw new CompilerError(error.message);
     throw error;
@@ -349,21 +434,21 @@ export function assertVendoredCompiler(bin) {
 }
 
 /**
- * The compiler to run, or a `CompilerError` naming both fixes.
+ * The compiler to run as an invocation, or a `CompilerError` naming both fixes.
  *
  * Throws rather than returning `null`: a `null` that reaches `spawn` is an ENOENT
  * three frames away from the cause, and that is the bug shape this replaces.
  */
 export function requireCompiler(...dirs) {
-  const bin = compilerBin(...dirs);
-  if (!bin) {
+  const invocation = locateCompiler(...dirs);
+  if (!invocation) {
     throw new CompilerError([
       `no vendored TensionScript compiler at ${join(REPO, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript')}`,
       ...COMPILER_STEPS,
     ].join('\n'));
   }
-  assertVendoredCompiler(bin);
-  return bin;
+  const facts = assertVendoredCompiler(invocation);
+  return { ...invocation, version: facts.version, tarball: facts.tarball };
 }
 
 /**
@@ -372,7 +457,7 @@ export function requireCompiler(...dirs) {
  * An override is for the one reader who is deliberately testing a compiler that is
  * not the pin. It cannot be silent: a machine that built with the wrong compiler
  * for a month is what an override that whispers produces. Provenance is not
- * asserted here — the path is by definition outside the pin — so the line is the
+ * asserted for it — the path is by definition outside the pin — so the line is the
  * only record, and it goes to stderr so it cannot be mistaken for build output.
  */
 export function compilerOverride() {
@@ -384,15 +469,15 @@ export function compilerOverride() {
 
 /**
  * The compiler to run: `$TENSIONSCRIPT` when set, else the asserted vendored pin.
- * Returns `{ bin, version, tarball }`; `version`/`tarball` are `null` under an
- * override, because nothing has been proven about it.
+ *
+ * **Every build and test entry point calls this**, not `requireCompiler`, so the
+ * documented escape hatch works where it is documented. `version`/`tarball` are
+ * `null` under an override, because nothing has been proven about it.
  */
 export function resolveCompiler(...dirs) {
   const override = compilerOverride();
-  if (override) return { bin: override, version: null, tarball: null };
-  const bin = requireCompiler(...dirs);
-  const facts = assertVendoredCompiler(bin);
-  return { bin, version: facts.version, tarball: facts.tarball };
+  if (override) return { ...compilerInvocation(override), version: null, tarball: null };
+  return requireCompiler(...dirs);
 }
 
 /// Directories a tool may live in without being on PATH.

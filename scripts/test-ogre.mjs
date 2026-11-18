@@ -25,7 +25,7 @@
 
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -104,10 +104,10 @@ if (process.env.TENSION_SESSION_READY === '1') {
   }
 }
 
-// The vendored compiler, resolved and proven: see `requireCompiler`.
+// The vendored compiler, resolved and proven: see `resolveCompiler`.
 let asc;
 try {
-  asc = requireCompiler(framework);
+  asc = resolveCompiler(framework);
 } catch (error) {
   if (error instanceof CompilerError) fail(RUNNER, error.message);
   throw error;
@@ -124,9 +124,10 @@ const FIXTURES = [
 ];
 
 for (const name of FIXTURES) {
-  const result = spawn(asc, [join(suite, 'tests', `${name}.ts`),
-                             '--config', asconfig,
-                             '-o', join(out, `${name}.wasm`)]);
+  const form = spawnForm(asc, [join(suite, 'tests', `${name}.ts`),
+                               '--config', asconfig,
+                               '-o', join(out, `${name}.wasm`)]);
+  const result = spawn(form.command, form.args, { shell: form.shell });
   if (result.status !== 0) {
     process.stderr.write(result.stdout + result.stderr);
     fail(RUNNER, `${name}.ts did not compile`);
@@ -584,10 +585,8 @@ if (!windowed) {
     // Compiled from the example's own directory: `tension-framework` and the
     // two capability SDKs resolve through its `node_modules`, and the `~lib`
     // prefix asc rewrites them to is relative to the working directory.
-    const compiled = spawn(asc, ['game.ts',
-                                 '--config', asconfig,
-                                 '-o', guest],
-                           { cwd: example });
+    const form = spawnForm(asc, ['game.ts', '--config', asconfig, '-o', guest]);
+    const compiled = spawn(form.command, form.args, { cwd: example, shell: form.shell });
     if (compiled.status !== 0) {
       process.stderr.write(compiled.stdout + compiled.stderr);
       fail(RUNNER, 'input-camera: game.ts did not compile');

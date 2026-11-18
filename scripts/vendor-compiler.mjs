@@ -49,7 +49,7 @@
 //
 // # What it touches
 //
-//   .packs/<name>.tgz          the artifact (gitignored: 2.1 MB per bump)
+//   .packs/<name>.tar          the artifact (gitignored: 10.4 MB per bump)
 //   .packs/manifest.json       version, sha, tarball name, integrity, time
 //   package.json               devDependencies["@yabgu_gm/tensionscript"]
 //                              (explicit entry point only)
@@ -59,9 +59,11 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { executableMembers, readTar, readTarGz, writeTar } from './lib/deterministic-tar.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -75,6 +77,27 @@ const WIN = process.platform === 'win32';
 /** Set while a vendoring run is active, so a nested install cannot re-enter. */
 export const RECURSION_MARKER = 'TENSION_COMPILER_VENDORING';
 
+/**
+ * The tarball format this script writes, recorded in the manifest.
+ *
+ * `npm pack`'s own bytes are not reproducible across platforms, so `.packs/` holds
+ * a **canonicalised** tarball (see `lib/deterministic-tar.mjs`). The version is
+ * bumped whenever the canonicalisation rule changes, and a manifest carrying an
+ * older one is repacked rather than called current — which is how a tree picks up
+ * the fix without anyone deleting `.packs/` by hand.
+ *
+ *   v1  modes came from the input's execute bit. **Wrong across platforms**: NTFS
+ *       has no execute bit, so the compiler's bin entry was 0755 on Linux and 0644
+ *       on Windows — one header field, and `EINTEGRITY` on every non-Linux install.
+ *   v2  modes come from the package's `bin` field: platform-independent by
+ *       construction, because `package.json` is committed.
+ *   v3  the artifact is an **uncompressed** `.tar`. v2's archive was identical on
+ *       both platforms while its gzip was not — Node's bundled zlib differs between
+ *       the Windows and Linux builds — so the last variable was the compressor. npm
+ *       installs a `file:` `.tar` directly (measured on Windows: exit 0).
+ */
+const TARBALL_FORMAT = 'canonical-tar-v3';
+
 function fail(message, label) {
   console.error(`${label}: ${message}`);
   const error = new Error(message);
@@ -82,11 +105,52 @@ function fail(message, label) {
   throw error;
 }
 
+/// Whether a command has to go through a shell on this platform.
+///
+/// **`npm` is a `.cmd` shim on Windows**, and Node refuses to spawn a batch file
+/// without a shell — the failure is `spawnSync npm ENOENT`, which reads as "npm is
+/// not installed" rather than "npm is not an executable image". That is what broke
+/// `npm install` on Windows in this file: the comment on `run` stated the rule and
+/// no call site applied it. Measured on Windows: with `call npm ci`, `call npm run
+/// build`, `call npm run publish:verify` and `call npm pack`, all four steps
+/// succeed — only the spawn was wrong.
+///
+/// `git` does **not** need it: Git for Windows ships `git.exe`, so it spawns
+/// directly, and keeping it out of a shell also keeps `C:\Program Files\Git\…`
+/// from being split on the space.
+///
+/// This is the same decision `scripts/build-examples.mjs` makes for its `npm()`
+/// and `packages/cli/src/util.js` encodes in `npmCommand()`; it lives here as a
+/// predicate because this file spawns both tools.
+function needsShell(command) {
+  if (!WIN) return false;
+  return command === 'npm' || /\.(cmd|bat)$/i.test(command);
+}
+
 function run(command, args, options = {}, label = 'vendor-compiler') {
-  // `shell` is opt-in and only for `npm`/`git`, which are `.cmd`/`.exe` shims on
-  // Windows that Node cannot spawn directly. An absolute path must not go
-  // through the shell: `C:\Program Files\...` would be split on the space.
-  const result = spawnSync(command, args, { encoding: 'utf8', ...options });
+  // `shell` may be forced by a caller; otherwise it is decided by the command.
+  // An absolute *executable* path must not go through the shell — a path with a
+  // space in it would be split — which is why this is not simply `WIN`.
+  const shell = options.shell ?? needsShell(command);
+
+  if (!shell) {
+    const result = spawnSync(command, args, { encoding: 'utf8', ...options, shell: false });
+    if (result.error) fail(`${command}: ${result.error.message}`, label);
+    return result;
+  }
+
+  // **One composed string on the shell path, and no argument array.** Node says so
+  // itself — `DEP0190`: "passing args to a child process with shell option true can
+  // lead to security vulnerabilities, as the arguments are not escaped, only
+  // concatenated". Silencing that would be exactly the wrong response here: this
+  // file passes paths, and a path with a space in it becoming two arguments is a
+  // wrong command rather than an error. So quote, then hand the shell one line.
+  const line = [command, ...args].map((part) => {
+    const text = String(part);
+    if (!/[\s"]/.test(text)) return text;
+    return WIN ? `"${text.replace(/"/g, '""')}"` : `'${text.replace(/'/g, `'\\''`)}'`;
+  }).join(' ');
+  const result = spawnSync(line, [], { encoding: 'utf8', ...options, shell: true });
   if (result.error) fail(`${command}: ${result.error.message}`, label);
   return result;
 }
@@ -143,10 +207,11 @@ export function vendorCompiler({
 
   // `npm pack` derives the basename from the package name: the scope's `@` and
   // `/` become `-`. So `@yabgu_gm/tensionscript` packs as
-  // `yabgu_gm-tensionscript-<version>.tgz`, and we add the commit before the
-  // extension.
+  // `yabgu_gm-tensionscript-<version>.tgz`, and the artifact we ship is that payload
+  // **uncompressed** as `<version>-g<sha>.tar` — see `lib/deterministic-tar.mjs` for
+  // why the gzip had to go.
   const baseName = `${PACKAGE.replace(/^@/, '').replace('/', '-')}-${version}`;
-  const tarballName = `${baseName}-g${sha}.tgz`;
+  const tarballName = `${baseName}-g${sha}.tar`;
   const tarballPath = join(packs, tarballName);
   const spec = `file:.packs/${tarballName}`;
 
@@ -168,6 +233,7 @@ export function vendorCompiler({
       previous = null;
     }
     if (previous &&
+        previous.format === TARBALL_FORMAT &&
         previous.version === version &&
         previous.sha === sha &&
         previous.tarball === tarballName) {
@@ -192,6 +258,8 @@ export function vendorCompiler({
         return { version, sha, tarball: tarballName, spec, built: false, specRewritten: true };
       }
       say('the tarball no longer matches its manifest integrity — repacking');
+    } else if (previous && previous.format !== TARBALL_FORMAT) {
+      say('the tarball predates the canonical format — repacking it');
     } else {
       say('the manifest does not describe this commit — repacking');
     }
@@ -226,8 +294,10 @@ export function vendorCompiler({
   if (verify.status !== 0) fail('npm run publish:verify failed — refusing to pack', label);
 
   mkdirSync(packs, { recursive: true });
-  // Pack into a scratch name first, then rename: `--pack-destination` always uses
-  // npm's own basename, so the commit suffix has to be applied afterwards.
+  // `npm pack` writes `<baseName>.tgz` — its own basename, with the commit suffix
+  // unknown to it. That file is a **scratch input**, not the artifact: it is read,
+  // canonicalised and deleted below, and `.tgz` appears nowhere in the spec, the
+  // manifest or the lockfile.
   const scratchName = `${baseName}.tgz`;
   const scratchPath = join(packs, scratchName);
   say(`packing ${version} at ${sha}`);
@@ -237,10 +307,57 @@ export function vendorCompiler({
   if (!existsSync(scratchPath)) {
     fail(`npm pack did not produce ${scratchName} in .packs (see its output above)`, label);
   }
-  renameSync(scratchPath, tarballPath);
+
+  // ── canonicalise the bytes ────────────────────────────────────────────────
+  //
+  // **`npm pack` is not reproducible across platforms.** The same commit packed on
+  // Linux and on Windows differs by ~1.6 KB of tar/gzip metadata — mtime, uid/gid,
+  // uname/gname, mode — while every member's path, size and content is identical.
+  // That matters here and nowhere else: the root `package-lock.json` records the
+  // tarball's sha512, so a committed lockfile is valid on exactly one platform and
+  // every other machine fails to install:
+  //
+  //   npm error sha512-J1IFTJfj0sgG… integrity checksum failed when using sha512:
+  //     wanted sha512-J1IFTJfj0sgG… but got sha512-w9wt1kqwCK/…
+  //
+  // So the tarball written to `.packs/` is **ours**, not npm's: same member list,
+  // same order, same contents, every piece of machine state fixed (see
+  // `lib/deterministic-tar.mjs`). Two machines packing this commit now produce the
+  // same bytes, which is the property the whole scheme needs.
+  //
+  // Note the last step: the artifact is written **uncompressed**. Canonicalising
+  // the tar made the archive identical on both platforms; the gzip around it stayed
+  // platform-dependent, because Node's bundled zlib differs between its Windows and
+  // Linux builds. Measured on the real Windows machine: both canonical tarballs
+  // decompressed to byte-identical raw streams (`cmp` clean, 10,465,280 B) while
+  // still hashing differently gzipped. A plain `.tar` removes that variable instead
+  // of pinning a compressor, and npm installs one from a `file:` spec.
+  const scratched = readFileSync(scratchPath);
+  const npmMembers = readTarGz(scratched);
+  // **Which members are executable comes from `package.json`, never from the
+  // input tarball.** npm pack on Windows records 0644 for the bin entry because
+  // NTFS has no execute bit, so reading the mode back would bake the packing
+  // platform into the artifact — the defect this whole module exists to remove.
+  // `bin` is committed metadata and is the same on every machine.
+  const executables = executableMembers(pkg.bin);
+  const canonical = writeTar(npmMembers, { executables });
+  // The repack must not change the package, only its container — so read what was
+  // written and compare it to what npm produced. Comparing in memory would only
+  // prove that `writeTar` agrees with itself; reading the *bytes* is what catches a
+  // padding or offset mistake, which is the failure that would silently truncate
+  // the last member.
+  assertSameMembers(npmMembers, readTar(canonical), label);
+  writeFileSync(tarballPath, canonical);
+  // npm's own output is not referenced by anything after this: the manifest, the
+  // root spec and the lockfile all name `tarballName`. Removing it means a stray
+  // copy under npm's basename cannot be picked up by a later glob.
+  rmSync(scratchPath, { force: true });
+  say(`canonicalised ${npmMembers.length} members (mtime 0, uid/gid 0, ` +
+      `0755 for ${executables.size} bin member(s), 0644 for the rest, uncompressed)`);
 
   const integrity = `sha512-${createHash('sha512').update(readFileSync(tarballPath)).digest('base64')}`;
   writeFileSync(manifestPath, `${JSON.stringify({
+    format: TARBALL_FORMAT,
     version,
     sha,
     tarball: tarballName,
@@ -269,6 +386,29 @@ export function vendorCompiler({
   say(`.packs/${tarballName} (${(bytes / 1048576).toFixed(2)} MB)`);
   say(`${PACKAGE} → ${spec}`);
   return { version, sha, tarball: tarballName, spec, built: true, specRewritten };
+}
+
+/**
+ * Refuse a repack whose member list differs from npm's, in any way that matters.
+ *
+ * Order, path and byte length — not just the set. A tarball is an ordered sequence
+ * and the order is part of the file; a member that moved is a member whose
+ * extraction order changed, which for a package with bin links is not cosmetic.
+ * Contents are covered by the size check plus the fact that `writeTarGz` copies
+ * entry buffers verbatim from the reader.
+ */
+function assertSameMembers(before, after, label) {
+  if (before.length !== after.length) {
+    fail(`the repack changed the member count: ${before.length} → ${after.length}`, label);
+  }
+  for (let i = 0; i < before.length; i++) {
+    const a = before[i];
+    const b = after[i];
+    if (a.name !== b.name || a.data.length !== b.data.length) {
+      fail(`the repack changed member ${i}: ${a.name} (${a.data.length} B) → ` +
+           `${b.name} (${b.data.length} B)`, label);
+    }
+  }
 }
 
 /// The environment for a child `npm`, with the recursion marker set.

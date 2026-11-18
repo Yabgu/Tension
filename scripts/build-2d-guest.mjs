@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CompilerError, compilerInvocation, resolveCompiler } from './lib/toolchain.mjs';
+import { CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { renderGraphBlobModule } from '../packages/cli/src/graph-blob.js';
 import { spawn } from './lib/proc.mjs';
 
@@ -92,20 +92,19 @@ console.log(`${RUNNER}: ${blob.length} bytes -> ${relative(exampleDir, outPath)}
 // setup step, and `requireCompiler` names both commands that fix it.
 let compiler;
 try {
-  compiler = resolveCompiler(exampleDir).bin;
+  compiler = resolveCompiler(exampleDir);
 } catch (error) {
   if (error instanceof CompilerError) die(error.message);
   throw error;
 }
-// `compilerInvocation`, not the path alone: on Windows npm's shim is a `.cmd`,
-// which Node cannot launch without a shell.
-const invocation = compilerInvocation(compiler);
-const probe = spawn(invocation.command, [...invocation.prefix, '--version'],
-                    { shell: invocation.shell });
+// The invocation, not a path: it already names the launcher and whether it needs
+// a shell (`{ command, prefix, shell }`), so nothing here re-decides the platform.
+const probeForm = spawnForm(compiler, ['--version']);
+const probe = spawn(probeForm.command, probeForm.args, { shell: probeForm.shell });
 if (!probe || probe.status !== 0) {
-  die(`the resolved compiler ${compiler} does not answer --version`);
+  die(`the resolved compiler ${compiler.path} does not answer --version`);
 }
-console.log(`${RUNNER}: ${compiler} (${probe.stdout.trim()})`);
+console.log(`${RUNNER}: ${compiler.path} (${probe.stdout.trim()})`);
 
 // `--config` is the session config, not a preference: the guest imports its
 // memory and the arena starts at address 0, which is what makes `guest_read`
@@ -132,9 +131,9 @@ mkdirSync(join(exampleDir, 'build'), { recursive: true });
 const entry = join(exampleDir, 'src', 'main.ts');
 const out = join(exampleDir, 'build', 'game.wasm');
 const compileFlags = debug ? ['--debug', '--sourceMap'] : [];
-const compile = spawn(compiler, [entry, '--config', config, ...compileFlags, '-o', out], {
-  cwd: exampleDir,
-});
+const compileForm = spawnForm(compiler, [entry, '--config', config, ...compileFlags, '-o', out]);
+const compile = spawn(compileForm.command, compileForm.args,
+                      { cwd: exampleDir, shell: compileForm.shell });
 if (!compile || compile.status !== 0) {
   console.error(compile?.stdout ?? '', compile?.stderr ?? '');
   die('the guest did not compile');

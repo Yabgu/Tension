@@ -35,6 +35,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
+import { ensureSubmodules } from './lib/submodules.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
 import { readElfDynamic, runpathEntries } from './lib/elf.mjs';
 import { EXE, WIN, capture, run, toolchainReport, tryCapture, ucrt64Bin, which } from './lib/toolchain.mjs';
@@ -920,6 +921,17 @@ function buildCore() {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 console.log(`build-native: ${process.platform}/${process.arch} (${toolchainReport()})`);
+
+// **The submodule the Rust build requires, initialised here rather than there.**
+// `git pull` does not update submodules, so a pulled tree reached `build.rs` and
+// got a panic about a missing `third_party/ImageViewer/src/format/IwiFile.cpp`.
+// Asking for a checkout is this script's job, not a build script's. A `stat` per
+// required path when it is already present, so the common case costs nothing.
+try {
+  ensureSubmodules({ say: (message) => note(message) });
+} catch (error) {
+  fail(error.message);
+}
 
 // Before anything is built: a stale pre-payload directory can shadow the
 // payload on the adapter's rpath and there is no error when it does.
