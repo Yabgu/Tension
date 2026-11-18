@@ -246,6 +246,32 @@ export function npmBin(dir, name) {
   return join(dir, 'node_modules', '.bin', WIN ? `${name}.cmd` : name);
 }
 
+/// The `tensionscript` the build should run, or `null` when none is installed.
+///
+/// **The repo root comes first, always.** The compiler is vendored once
+/// (`scripts/vendor-compiler.mjs`): the submodule is packed into `.packs/` and
+/// the root `package.json` declares that tarball, so `<repo>/node_modules/.bin`
+/// holds the one binary the whole tree is supposed to share. A package that
+/// still has its own copy has a *stale* one — npm installed it from a version
+/// range that nobody bumps now — and a nearer `.bin` wins over a parent one, so
+/// preferring the local copy is how a build ends up compiled by a compiler the
+/// tree no longer pins.
+///
+/// `dirs` are extra places to look *after* the root, for scripts whose caller
+/// historically kept one there; they exist so the lookup degrades to a clear
+/// "not installed" rather than an ENOENT.
+export function compilerBin(...dirs) {
+  const name = WIN ? 'tensionscript.cmd' : 'tensionscript';
+  const seen = new Set();
+  for (const dir of [REPO, ...dirs, join(REPO, 'tension-framework')]) {
+    const bin = join(dir, 'node_modules', '.bin', name);
+    if (seen.has(bin)) continue;
+    seen.add(bin);
+    if (existsSync(bin)) return bin;
+  }
+  return null;
+}
+
 /// Directories a tool may live in without being on PATH.
 ///
 /// Zig is the measured case: `winget install zig` places it under

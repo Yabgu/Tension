@@ -21,7 +21,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../tension-framework/tools/lib/png.mjs';
-import { REPO, npmBin } from './lib/toolchain.mjs';
+import { REPO, compilerBin } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,9 +91,10 @@ if (process.env.TENSION_SESSION_READY === '1') {
 
 mkdirSync(build, { recursive: true });
 
-const asc = npmBin(framework, 'tensionscript');
-if (!existsSync(asc)) {
-  fail(RUNNER, 'tensionscript is not installed in tension-framework/node_modules — run: npm run build:framework');
+// The vendored compiler, from the repo root: see `compilerBin`.
+const asc = compilerBin(framework);
+if (!asc) {
+  fail(RUNNER, 'tensionscript is not installed — run: npm run compiler:vendor && npm install (at the repo root)');
 }
 
 const asconfig = join(build, 'session.asconfig.json');

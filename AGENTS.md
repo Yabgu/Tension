@@ -5,24 +5,47 @@ come first; the rest is the Windows build cheat-sheet.
 
 ## Hard rules
 
-1. **`third_party/` checkouts are read-only.** Never edit, generate into,
-   format, or delete anything under `third_party/ogre-next` or
-   `third_party/ImageViewer` — including OGRE's build trees (`ogre-next-build*`,
-   `ogre-next-install`) and either submodule. `.gitignore` may cover paths
-   there, but the trees themselves are off limits. Build OGRE only through
+1. **`third_party/` checkouts are read-only source.** Never edit, generate into,
+   format, or delete anything under `third_party/ogre-next`,
+   `third_party/ImageViewer` or `third_party/TensionScript` — including OGRE's
+   build trees (`ogre-next-build*`, `ogre-next-install`). `.gitignore` may cover
+   paths there, but the trees themselves are off limits. Build OGRE only through
    `npm run bootstrap` (`scripts/bootstrap.mjs`); ImageViewer is consumed as
    source (its `src/format/IwiFile.cpp` is compiled into the host by
    `tension-core/build.rs`), so take a format change upstream and bump the
    submodule pin here.
-2. **TensionScript is a sibling repo, not a submodule.** The language lives at
-   `~/work/TensionScript` (the canonical checkout). Tension consumes the
-   compiler as the published `@yabgu_gm/tensionscript` npm package, which each
-   npm project carries as a devDependency (`tension-framework/package.json`,
-   each `examples/*/package.json`). To pick up a language change: publish it
-   there, then bump the version here. **Do not edit
-   `node_modules/@yabgu_gm/tensionscript` in place** — it is an installed
-   artifact, and an edit there is lost on the next `npm install`. Version bumps
-   flow through `package.json`.
+
+   TensionScript is the one exception to "never generate", and it is a narrow
+   one: `npm run compiler:vendor` runs `npm ci` and `npm run build` *inside* it,
+   which writes `node_modules/` and `dist/` there. Both are gitignored upstream
+   and both are build output; the sources are still read-only, and the fix for a
+   language problem goes upstream, never into that tree.
+2. **The compiler is a git submodule, vendored as a tarball.** The language lives
+   at `third_party/TensionScript`, pinned by the gitlink. `scripts/vendor-compiler.mjs`
+   builds it, runs its `publish:verify` gate, packs it into `.packs/`, and writes
+   the result into the **root** `package.json` as a `file:` devDependency named
+   `…-<version>-g<sha>.tgz` (the commit suffix is what distinguishes two bumps
+   that share a version). The root is the only install point: every `npm run` in
+   the tree — the framework, every example — resolves the same binary by walking
+   up to `<repo>/node_modules/.bin`. **No package may declare the compiler
+   again**: a nearer `node_modules/.bin` shadows the root one, so a per-example
+   install silently compiles that example with a different compiler than the
+   framework used. `.packs/` is gitignored; the tarball is reproducible from the
+   gitlink.
+
+   To pick up a language change:
+
+   ```sh
+   git -C third_party/TensionScript checkout <new-commit>
+   npm run compiler:vendor      # build, verify, pack, rewrite the root spec
+   npm install                  # root; refreshes package-lock.json
+   ```
+
+   `npm ci` refuses the changed tarball (the lock records the old integrity), so
+   use `npm install`. Commit the gitlink, the root `package.json` spec and the
+   root `package-lock.json` **together** — a gitlink without the spec pins a
+   commit nothing builds, and a spec without the gitlink names a tarball no
+   checkout reproduces.
 3. **Never use destructive git commands and never commit on the user's behalf.**
    Leave changes in the working tree for the user to review and commit. An
    explicit instruction in the user's request to commit that step is the only
@@ -228,9 +251,10 @@ testing what a guest loads.
 ## Writing a guest in TensionScript
 
 Long form, with the compile-and-run evidence for each claim:
-`~/work/TensionScript/docs/showcase.md` §1–§4 (the language is the published
-`@yabgu_gm/tensionscript`; versions named there may lag the pin here, so a
-limitation quoted below was re-measured against the version in this tree).
+`third_party/TensionScript/docs/showcase.md` §1–§4 (read from the pinned
+submodule, so it describes the compiler this tree actually builds with; a
+version named there may lag the pin, so a limitation quoted below was
+re-measured against the vendored tarball).
 
 The short version: **the language already has a type for every shape a guest
 handles.** A record, a run of records, a pixel, a header — each is a `struct`

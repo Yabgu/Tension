@@ -32,7 +32,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.13.2",
     "opentype.js": "^2.0.0"
   }
 }

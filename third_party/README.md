@@ -1,4 +1,4 @@
-# third_party — Ogre-Next and ImageViewer, from source
+# third_party — Ogre-Next, ImageViewer and TensionScript, from source
 
 `ogre-next/` is a submodule of [Ogre-Next](https://github.com/OGRECave/ogre-next)
 pinned at `475f783d76` (2026-09-07). Not the newest release tag: v3.0.0 is
@@ -14,8 +14,17 @@ inside the submodule plus a commit here.
 the `.iwi` container; the README section below says how the host and the C++
 bisect adapter use it. Apache-2.0 — see "Licensing" below.
 
-Those are the only two submodules. FreeImage used to be a third; it was
-removed — see "FreeImage is gone" below.
+`TensionScript/` is a submodule of
+[TensionScript](https://github.com/Yabgu/TensionScript) pinned at `d96ac6062b28`
+(2026-11-18, its `main`, the wasm GC arc). It is the **compiler**, not a C++
+dependency: `scripts/vendor-compiler.mjs` builds it, packs it into `.packs/` and
+declares that tarball in the root `package.json`, so the pin travels as a gitlink
+and installation never goes through the npm registry. A language change is a
+`git checkout <ref>` inside this submodule plus `npm run compiler:vendor`, then
+`npm install` at the root — `AGENTS.md` rule 2 has the full procedure.
+
+Those are the three submodules. FreeImage used to be one; it was removed — see
+"FreeImage is gone" below.
 
 ## Bootstrap
 

@@ -11,7 +11,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, npmBin } from './lib/toolchain.mjs';
+import { REPO, WIN, compilerBin } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -39,9 +39,17 @@ const generated = inherit(process.execPath,
                           [join(repo, 'scripts', 'gen-session.mjs'), '--hash', hash]);
 if (generated.status !== 0) fail(RUNNER, 'the framework generator refused the layout hash');
 
-// The example's own dependencies.
-const asc = npmBin(example, 'tensionscript');
-if (!existsSync(asc)) {
+// The compiler is the vendored one at the repo root; the example's own
+// dependencies (tension-core, tension-framework) are still per-example, and a
+// fresh tree has none of them — the guest below imports the framework, so that
+// is the link to test. (This used to be tested by the example's own copy of the
+// compiler, which no longer exists: one install point means one thing missing,
+// not two.)
+const asc = compilerBin(example);
+if (!asc) {
+  fail(RUNNER, 'tensionscript is not installed — run: npm run compiler:vendor && npm install');
+}
+if (!existsSync(join(example, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   console.error(`${RUNNER}: installing the example's dependencies…`);
   if (inherit('npm', ['install', '--silent'], { cwd: example }).status !== 0) {
     fail(RUNNER, 'npm install failed');

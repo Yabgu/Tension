@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { npmBin } from './lib/toolchain.mjs';
+import { compilerBin } from './lib/toolchain.mjs';
 import { spawn } from './lib/proc.mjs';
 
 const RUNNER = 'build-2d-guest';
@@ -81,14 +81,19 @@ console.log(`${RUNNER}: ${blob.length} bytes -> ${relative(exampleDir, outPath)}
 
 // ── 2. the guest ────────────────────────────────────────────────────────────
 //
-// The repo pins TensionScript in `tension-framework/package.json` and its
-// `node_modules` holds the version the framework compiles with. The globally
-// installed one may be older and will reject this framework: 0.11.0 fails on
-// `ogre.generated.ts`. Resolve the local pin first.
+// The repo pins TensionScript **once**, at the root: `scripts/vendor-compiler.mjs`
+// packs the submodule into `.packs/` and the root `package.json` declares that
+// tarball. `compilerBin` looks there first and only then at this example and the
+// framework, because a nearer `.bin` wins over a parent one — so a leftover
+// per-package install is how an example gets compiled by a compiler the tree no
+// longer pins (0.11.0 was installed that way once and rejected the framework's
+// `ogre.generated.ts`).
+//
+// `PATH` is last and is only a fallback: a globally installed compiler is the
+// case this list was written for, and it should not win by accident.
 const candidates = [
   process.env.TENSIONSCRIPT,
-  npmBin(join(repo, 'tension-framework'), 'tensionscript'),
-  npmBin(exampleDir, 'tensionscript'),
+  compilerBin(exampleDir),
   'tensionscript',
 ].filter(Boolean);
 
@@ -104,7 +109,11 @@ for (const candidate of candidates) {
 if (!compiler) {
   die(
     'no TensionScript compiler found. Checked TENSIONSCRIPT, ' +
-      'tension-framework/node_modules/.bin/tensionscript, and PATH.',
+      'node_modules/.bin/tensionscript at the repo root (the vendored pin), ' +
+      'this example\'s own node_modules/.bin/tensionscript, ' +
+      'tension-framework/node_modules/.bin/tensionscript, and PATH.\n' +
+      '  The root one is installed by `npm run compiler:vendor && npm install` ' +
+      'at the repo root.',
   );
 }
 
