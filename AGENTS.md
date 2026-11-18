@@ -43,6 +43,24 @@ come first; the rest is the Windows build cheat-sheet.
    compiler again** either: a nearer `node_modules/.bin` shadows the root one.
    `.packs/` is gitignored; the tarball is reproducible from the gitlink.
 
+   **A fresh clone builds the compiler as part of `npm install`.** `.packs/` is
+   not in git, so the root `preinstall` hook (`scripts/ensure-compiler.mjs`) runs
+   the vendoring itself before npm reads the tarball the spec names:
+
+   ```sh
+   git clone … && cd Tension
+   git submodule update --init third_party/TensionScript
+   npm install       # builds the compiler first (one minute), then installs
+   ```
+
+   That is the whole first-run story, and it is why a bare `npm install` on a fresh
+   clone does not die with `ENOENT … .packs/…tgz`. The hook is a no-op — four file
+   reads and one `git rev-parse` — whenever the manifest and its tarball are
+   present and agree with the declared spec, so adding a dependency to a warm tree
+   costs nothing. **It never edits `package.json`**: during an install that file is
+   the input npm is reading, so a spec that does not name the tarball is a refusal
+   naming `npm run compiler:vendor`, not a rewrite.
+
    To pick up a language change:
 
    ```sh
@@ -55,7 +73,8 @@ come first; the rest is the Windows build cheat-sheet.
    use `npm install`. Commit the gitlink, the root `package.json` spec and the
    root `package-lock.json` **together** — a gitlink without the spec pins a
    commit nothing builds, and a spec without the gitlink names a tarball no
-   checkout reproduces.
+   checkout reproduces. (`preinstall` alone will not do this step: it will not
+   rewrite the spec, and a checkout left unbumped only produces a warning.)
 3. **Never use destructive git commands and never commit on the user's behalf.**
    Leave changes in the working tree for the user to review and commit. An
    explicit instruction in the user's request to commit that step is the only
