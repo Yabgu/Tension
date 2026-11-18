@@ -20,7 +20,7 @@ historical record rather than a reproducible recipe — which is why they are
 described that way there.
 
 **The current pin** is `third_party/TensionScript` at the submodule commit, packed
-into `.packs/yabgu_gm-tensionscript-<version>-g<commit>.tgz` and declared once in
+into `.packs/yabgu_gm-tensionscript-<version>-g<commit>.tar` and declared once in
 the root `package.json`. A *new* fixture should be built with that compiler
 (`node scripts/tensionscript.mjs …`, which resolves and proves it); an existing
 one is not rebuilt, because these bytes are inputs to `e2e_debug.rs`.

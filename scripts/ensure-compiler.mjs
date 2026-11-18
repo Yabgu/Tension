@@ -4,11 +4,11 @@
 // # Why this has to run at *install* time
 //
 // `.packs/` is gitignored — 2.1 MB per bump does not belong in history — and the
-// root `package.json` declares the compiler as `file:.packs/…-g<sha>.tgz`. So on a
+// root `package.json` declares the compiler as `file:.packs/…-g<sha>.tar`. So on a
 // fresh clone the **first command a reader runs** is the one that cannot work:
 //
 //     npm error code ENOENT
-//     npm error path …/.packs/yabgu_gm-tensionscript-0.14.1-gd96ac6062b28.tgz
+//     npm error path …/.packs/yabgu_gm-tensionscript-0.14.1-gd96ac6062b28.tar
 //
 // and it dies before any script of ours could have run, because npm resolves the
 // dependency graph (and the file: tarball it names) before it runs `postinstall`.

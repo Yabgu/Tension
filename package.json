@@ -29,6 +29,6 @@
     "node": ">=20"
   },
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "file:.packs/yabgu_gm-tensionscript-0.14.1-gd96ac6062b28.tgz"
+    "@yabgu_gm/tensionscript": "file:.packs/yabgu_gm-tensionscript-0.14.1-gd96ac6062b28.tar"
   }
 }

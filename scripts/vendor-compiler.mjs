@@ -49,7 +49,7 @@
 //
 // # What it touches
 //
-//   .packs/<name>.tgz          the artifact (gitignored: 2.1 MB per bump)
+//   .packs/<name>.tar          the artifact (gitignored: 10.4 MB per bump)
 //   .packs/manifest.json       version, sha, tarball name, integrity, time
 //   package.json               devDependencies["@yabgu_gm/tensionscript"]
 //                              (explicit entry point only)
@@ -63,7 +63,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { executableMembers, readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
+import { executableMembers, readTar, readTarGz, writeTar } from './lib/deterministic-tar.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -91,8 +91,12 @@ export const RECURSION_MARKER = 'TENSION_COMPILER_VENDORING';
  *       on Windows — one header field, and `EINTEGRITY` on every non-Linux install.
  *   v2  modes come from the package's `bin` field: platform-independent by
  *       construction, because `package.json` is committed.
+ *   v3  the artifact is an **uncompressed** `.tar`. v2's archive was identical on
+ *       both platforms while its gzip was not — Node's bundled zlib differs between
+ *       the Windows and Linux builds — so the last variable was the compressor. npm
+ *       installs a `file:` `.tar` directly (measured on Windows: exit 0).
  */
-const TARBALL_FORMAT = 'canonical-tar-v2';
+const TARBALL_FORMAT = 'canonical-tar-v3';
 
 function fail(message, label) {
   console.error(`${label}: ${message}`);
@@ -203,10 +207,11 @@ export function vendorCompiler({
 
   // `npm pack` derives the basename from the package name: the scope's `@` and
   // `/` become `-`. So `@yabgu_gm/tensionscript` packs as
-  // `yabgu_gm-tensionscript-<version>.tgz`, and we add the commit before the
-  // extension.
+  // `yabgu_gm-tensionscript-<version>.tgz`, and the artifact we ship is that payload
+  // **uncompressed** as `<version>-g<sha>.tar` — see `lib/deterministic-tar.mjs` for
+  // why the gzip had to go.
   const baseName = `${PACKAGE.replace(/^@/, '').replace('/', '-')}-${version}`;
-  const tarballName = `${baseName}-g${sha}.tgz`;
+  const tarballName = `${baseName}-g${sha}.tar`;
   const tarballPath = join(packs, tarballName);
   const spec = `file:.packs/${tarballName}`;
 
@@ -289,8 +294,10 @@ export function vendorCompiler({
   if (verify.status !== 0) fail('npm run publish:verify failed — refusing to pack', label);
 
   mkdirSync(packs, { recursive: true });
-  // Pack into a scratch name first, then rename: `--pack-destination` always uses
-  // npm's own basename, so the commit suffix has to be applied afterwards.
+  // `npm pack` writes `<baseName>.tgz` — its own basename, with the commit suffix
+  // unknown to it. That file is a **scratch input**, not the artifact: it is read,
+  // canonicalised and deleted below, and `.tgz` appears nowhere in the spec, the
+  // manifest or the lockfile.
   const scratchName = `${baseName}.tgz`;
   const scratchPath = join(packs, scratchName);
   say(`packing ${version} at ${sha}`);
@@ -317,6 +324,14 @@ export function vendorCompiler({
   // same order, same contents, every piece of machine state fixed (see
   // `lib/deterministic-tar.mjs`). Two machines packing this commit now produce the
   // same bytes, which is the property the whole scheme needs.
+  //
+  // Note the last step: the artifact is written **uncompressed**. Canonicalising
+  // the tar made the archive identical on both platforms; the gzip around it stayed
+  // platform-dependent, because Node's bundled zlib differs between its Windows and
+  // Linux builds. Measured on the real Windows machine: both canonical tarballs
+  // decompressed to byte-identical raw streams (`cmp` clean, 10,465,280 B) while
+  // still hashing differently gzipped. A plain `.tar` removes that variable instead
+  // of pinning a compressor, and npm installs one from a `file:` spec.
   const scratched = readFileSync(scratchPath);
   const npmMembers = readTarGz(scratched);
   // **Which members are executable comes from `package.json`, never from the
@@ -325,20 +340,20 @@ export function vendorCompiler({
   // platform into the artifact — the defect this whole module exists to remove.
   // `bin` is committed metadata and is the same on every machine.
   const executables = executableMembers(pkg.bin);
-  const canonical = writeTarGz(npmMembers, { executables });
+  const canonical = writeTar(npmMembers, { executables });
   // The repack must not change the package, only its container — so read what was
   // written and compare it to what npm produced. Comparing in memory would only
-  // prove that `writeTarGz` agrees with itself; reading the *bytes* is what
-  // catches a padding or offset mistake, which is the failure that would silently
-  // truncate the last member.
-  assertSameMembers(npmMembers, readTarGz(canonical), label);
+  // prove that `writeTar` agrees with itself; reading the *bytes* is what catches a
+  // padding or offset mistake, which is the failure that would silently truncate
+  // the last member.
+  assertSameMembers(npmMembers, readTar(canonical), label);
   writeFileSync(tarballPath, canonical);
   // npm's own output is not referenced by anything after this: the manifest, the
   // root spec and the lockfile all name `tarballName`. Removing it means a stray
   // copy under npm's basename cannot be picked up by a later glob.
   rmSync(scratchPath, { force: true });
   say(`canonicalised ${npmMembers.length} members (mtime 0, uid/gid 0, ` +
-      `0755 for ${executables.size} bin member(s), 0644 for the rest)`);
+      `0755 for ${executables.size} bin member(s), 0644 for the rest, uncompressed)`);
 
   const integrity = `sha512-${createHash('sha512').update(readFileSync(tarballPath)).digest('base64')}`;
   writeFileSync(manifestPath, `${JSON.stringify({

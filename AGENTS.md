@@ -24,7 +24,7 @@ come first; the rest is the Windows build cheat-sheet.
    at `third_party/TensionScript`, pinned by the gitlink. `scripts/vendor-compiler.mjs`
    builds it, runs its `publish:verify` gate, packs it into `.packs/`, and writes
    the result into the **root** `package.json` as a `file:` devDependency named
-   `…-<version>-g<sha>.tgz` (the commit suffix is what distinguishes two bumps
+   `…-<version>-g<sha>.tar` (the commit suffix is what distinguishes two bumps
    that share a version). The root is the only install point, and
    `scripts/lib/toolchain.mjs` is the only resolver. It answers an **invocation**
    — the package's own `bin` entry run through `process.execPath` on every
@@ -79,7 +79,7 @@ come first; the rest is the Windows build cheat-sheet.
    ```
 
    That is the whole first-run story, and it is why a bare `npm install` on a fresh
-   clone does not die with `ENOENT … .packs/…tgz`. The hook is a no-op — four file
+   clone does not die with `ENOENT … .packs/…tar`. The hook is a no-op — four file
    reads and one `git rev-parse` — whenever the manifest and its tarball are
    present and agree with the declared spec, so adding a dependency to a warm tree
    costs nothing. **It never edits `package.json`**: during an install that file is

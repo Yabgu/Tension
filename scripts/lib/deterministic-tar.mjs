@@ -21,13 +21,22 @@
  *   mtime            0 — the packing time is the one field guaranteed to differ
  *   uid / gid        0 — the packing user's ids are machine state
  *   uname / gname    empty — same, and they leak a login name into a public file
- *   mode             dirs 0755, executables 0755, everything else 0644 — the
- *                    checkout's umask is machine state; the executable bit is the
- *                    one property that carries meaning
+ *   mode             dirs 0755, members named by the package's `bin` 0755,
+ *                    everything else 0644 — decided from committed metadata, never
+ *                    from the packed mode (NTFS has no execute bit, so reading it
+ *                    baked the packing platform into the artifact)
  *   pax headers      dropped — a pax `x` entry is a second, unnormalised record of
  *                    path and mtime, and its presence is itself platform-dependent
  *   member order     preserved — the order `npm pack` emitted, so the file list
  *                    stays reviewable against `package.json`'s `files`
+ *
+ * **Why the shipped artifact is a `.tar` and not a `.tgz`.** Canonicalising the tar
+ * made the archive identical on Linux and Windows; the gzip wrapper did not become
+ * identical, because Node's bundled zlib differs between those builds and emits
+ * different deflate output for the same input. The architect measured both
+ * canonical tarballs decompressing to byte-identical raw streams that still hashed
+ * differently. Shipping the uncompressed stream removes the only remaining variable,
+ * and npm installs a `file:` `.tar` happily (measured on that machine).
  *
  * **Why a hand-written writer and not `tar`.** A `tar` subprocess means GNU tar on
  * Linux and bsdtar on Windows, whose normalisation flags differ (`--mtime`,
@@ -36,11 +45,11 @@
  * gzip header (measured: two gzips a second apart are byte-identical), so the
  * compression step needs nothing but the default.
  *
- * **The output format is npm's own** — octal fields with a trailing space and NUL,
- * `ustar\0` + `00`, empty uid/gid/uname/gname for zero — so repacking a Linux
- * `npm pack` output is byte-identical to that output. `test-deterministic-tar.mjs`
- * asserts exactly that against a committed tarball, which is what makes "the
- * repack changes nothing but the metadata" a measurement rather than a hope.
+ * **The tar format is npm's own** — octal fields with a trailing space and NUL,
+ * `ustar\0` + `00`, empty uid/gid/uname/gname for zero — so `npm pack`'s payload and
+ * this writer agree field for field. `test-deterministic-tar.mjs` asserts exactly
+ * that against the committed artifact, which is what makes "the repack changes
+ * nothing but the metadata" a measurement rather than a hope.
  */
 
 import { gunzipSync, gzipSync } from 'node:zlib';
@@ -96,7 +105,18 @@ function readPaxRecords(data) {
  * entries are kept so a package that ships empty directories still round-trips.
  */
 export function readTarGz(buffer) {
-  const tar = gunzipSync(buffer);
+  return readTar(gunzipSync(buffer));
+}
+
+/**
+ * Read an **uncompressed** tar into `[{ name, mode, type, data }]`.
+ *
+ * The artifact this tree ships is a plain `.tar` — see `writeTar` for why
+ * compression had to go — so this is the reader the vendoring and the tests use for
+ * anything they produced themselves. `readTarGz` remains for one job: reading what
+ * `npm pack` hands back, which is still a `.tgz`.
+ */
+export function readTar(tar) {
   const entries = [];
   let offset = 0;
   let pendingPax = null;
@@ -250,7 +270,7 @@ function normalisedMode(type, name, executables) {
  * that could carry machine state is fixed. The two zero blocks at the end are
  * required by the format and are part of the digest.
  */
-export function writeTarGz(entries, { executables = new Set() } = {}) {
+export function writeTar(entries, { executables = new Set() } = {}) {
   const chunks = [];
   for (const entry of entries) {
     const type = entry.type ?? TYPE_FILE;
@@ -271,11 +291,34 @@ export function writeTarGz(entries, { executables = new Set() } = {}) {
     }
   }
   chunks.push(Buffer.alloc(BLOCK * 2));
+  return Buffer.concat(chunks);
+}
+
+/**
+ * The same bytes, gzipped. Used by the tests to build the *inputs* a platform's
+ * `npm pack` produces — never by the vendoring, which writes `writeTar`'s output
+ * directly.
+ *
+ * **Why the artifact is not compressed.** Canonicalising the tar made the *tar*
+ * identical across platforms; the *gzip* was not, because Node's bundled zlib
+ * differs between the Windows and Linux builds and emits different deflate streams
+ * for identical input. Measured on the real Windows machine: both canonical tarballs
+ * decompress to raw tar streams that are byte-identical (`cmp` clean, 10,465,280 B
+ * each) and still hash differently (2,118,735 vs 2,120,348 bytes gzipped) — so the
+ * remaining difference was the compressor, not the archive.
+ *
+ * A `.tar` preserves the property by construction instead of by luck, and npm
+ * installs one from a `file:` spec (measured there: `added 4 packages`, exit 0). The
+ * cost is size in a gitignored directory, which is the cheapest thing in this
+ * scheme. Chasing a pinned deflate implementation would be a dependency carried
+ * forever to save 8 MB of local disk.
+ */
+export function writeTarGz(entries, options = {}) {
   // Level 9 because that is what npm's own writer uses: measured on the vendored
-  // tarball, its 10,465,280-byte payload compresses to exactly 2,118,805 bytes at
-  // level 9 and 2,142,077 at Node's default 6. Matching it keeps the file the size
-  // a reader expects from `npm pack` rather than a third larger for no gain.
-  return gzipSync(Buffer.concat(chunks), { level: 9 });
+  // payload, 10,465,280 bytes compress to exactly 2,118,805 at 9 and 2,142,077 at
+  // Node's default 6. Matching it keeps test inputs the size a real `npm pack`
+  // produces.
+  return gzipSync(writeTar(entries, options), { level: 9 });
 }
 
 /**
@@ -288,5 +331,5 @@ export function writeTarGz(entries, { executables = new Set() } = {}) {
  */
 export function repackDeterministic(buffer, options = {}) {
   const entries = readTarGz(buffer);
-  return { buffer: writeTarGz(entries, options), entries };
+  return { buffer: writeTar(entries, options), entries };
 }

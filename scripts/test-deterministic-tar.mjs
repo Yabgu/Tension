@@ -24,8 +24,12 @@
 //   3. the members survive — same names, same order, same contents, byte for byte;
 //   4. a long path is carried in the ustar `prefix` field rather than a pax
 //      header, because a pax header is a second unnormalised record of the path;
-//   5. the real vendored tarball, if `.packs/` has one, is reproduced from its own
-//      members — i.e. the artifact on disk is already canonical.
+//   5. the real vendored artifact, if `.packs/` has one, is reproduced from its own
+//      members — i.e. the file on disk is already canonical;
+//   6. **the artifact is not gzip-compressed.** The canonical tar is identical on
+//      Linux and Windows; the gzip around it was not, because Node's bundled zlib
+//      differs between those builds. Shipping the raw stream removes the variable,
+//      and this check is what stops it coming back.
 //
 // Run: node scripts/test-deterministic-tar.mjs
 
@@ -36,7 +40,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 
-import { executableMembers, readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
+import { executableMembers, readTar, readTarGz, writeTar, writeTarGz } from './lib/deterministic-tar.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -134,6 +138,16 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
   const again = writeTarGz(readTarGz(linuxLike), { executables });
   check('canonicalising twice gives the same bytes', a.equals(again));
 
+  // **The shipped form is uncompressed.** `writeTar` (what the vendoring writes)
+  // must not gzip; `writeTarGz` exists only to build test *inputs* that look like a
+  // platform's `npm pack`. Asserting it here means the property is checked on a
+  // tree with no `.packs/` too, not just on the artifact that happens to be there.
+  const raw = writeTar(readTarGz(linuxLike), { executables });
+  check('writeTar emits an uncompressed tar stream',
+    !(raw[0] === 0x1f && raw[1] === 0x8b), `first two bytes: ${raw.subarray(0, 2).toString('hex')}`);
+  check('writeTar and writeTarGz agree once the latter is decompressed',
+    gunzipSync(writeTarGz(readTarGz(linuxLike), { executables })).equals(raw));
+
   const headers = gunzipSync(a).subarray(0, 512);
   const field = (offset, length) => headers.subarray(offset, offset + length).toString('latin1');
   check('mtime is 0', parseInt(field(136, 12).replace(/\0/g, '').trim(), 8) === 0,
@@ -179,8 +193,8 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
  * member-by-member comparison found exactly one difference between the two, so
  * reproducing it here is a faithful stand-in for a machine this suite cannot run on.
  */
-function withMode(buffer, member, mode) {
-  const tar = Buffer.from(gunzipSync(buffer));
+function withMode(tarBuffer, member, mode) {
+  const tar = Buffer.from(tarBuffer);
   let offset = 0;
   while (offset + 512 <= tar.length) {
     const name = tar.toString('utf8', offset, offset + 100).replace(/\0.*$/, '');
@@ -197,7 +211,7 @@ function withMode(buffer, member, mode) {
     }
     offset += 512 + Math.ceil(size / 512) * 512;
   }
-  return gzipSync(tar, { level: 9 });
+  return tar;
 }
 
 // ── 2b. the mode comes from `bin`, not from the input ──────────────────────
@@ -262,10 +276,10 @@ function withMode(buffer, member, mode) {
 {
   const packs = join(repo, '.packs');
   const tarballs = existsSync(packs)
-    ? readdirSync(packs).filter((name) => name.endsWith('.tgz'))
+    ? readdirSync(packs).filter((name) => name.endsWith('.tar'))
     : [];
   if (!tarballs.length) {
-    console.log('note    no .packs/*.tgz here — run `npm run compiler:vendor` to cover the real artifact');
+    console.log('note    no .packs/*.tar here — run `npm run compiler:vendor` to cover the real artifact');
   } else {
     // Stability is the assertion; canonicality of what is on disk is a **note**.
     // `.packs/` is local build output, and a tree vendored before this round has
@@ -274,6 +288,14 @@ function withMode(buffer, member, mode) {
     // red on a correct checkout for a reason its own message already explains.
     for (const name of tarballs) {
       const onDisk = readFileSync(join(packs, name));
+      // **Not gzipped.** The canonical archive was already identical on both
+      // platforms while its gzip was not (Node's bundled zlib differs between the
+      // Windows and Linux builds), so the artifact ships as a plain tar. This
+      // assertion exists so a future "let's compress it again" fails here rather
+      // than on a Windows user's install.
+      check(`${name} is not gzip-compressed`,
+        !(onDisk[0] === 0x1f && onDisk[1] === 0x8b),
+        `first two bytes: ${onDisk.subarray(0, 2).toString('hex')}`);
       // The real package's `bin`, from the submodule's committed manifest — this
       // is the metadata the canonical rule reads, and it is identical on every
       // platform because it is committed.
@@ -281,16 +303,16 @@ function withMode(buffer, member, mode) {
       const executables = existsSync(pkgManifest)
         ? executableMembers(JSON.parse(readFileSync(pkgManifest, 'utf8')).bin)
         : executableMembers(null);
-      const rebuilt = writeTarGz(readTarGz(onDisk), { executables });
+      const rebuilt = writeTar(readTar(onDisk), { executables });
       check(`repacking the vendored ${name} is stable`,
-        rebuilt.equals(writeTarGz(readTarGz(onDisk), { executables })));
+        rebuilt.equals(writeTar(readTar(onDisk), { executables })));
       // The property this round is about, on the real artifact: feed the
       // canonicaliser the tarball as Windows `npm pack` would have left it (bin
       // entry 0644) and require the committed bytes back.
       const binMembers = [...executables];
       if (binMembers.length) {
         const windowsShaped = withMode(onDisk, binMembers[0], 0o644);
-        const fromWindows = writeTarGz(readTarGz(windowsShaped), { executables });
+        const fromWindows = writeTar(readTar(windowsShaped), { executables });
         check(`a Windows-shaped repack of ${name} reproduces the same bytes`,
           fromWindows.equals(onDisk), `${fromWindows.length} B vs ${onDisk.length} B`);
       }
