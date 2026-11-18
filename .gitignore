@@ -1,5 +1,10 @@
 .codewhale
 
+# Vendored compiler tarballs (`npm run compiler:vendor`). 2.1 MB per bump and
+# reproducible from the submodule gitlink, so it does not belong in history.
+# `.packs/manifest.json` goes with it: it describes a local artifact.
+.packs/
+
 # Locally built Arch packages consumed by ci/Dockerfile (machine-local, large)
 ci/ogre-next-pkg/
 

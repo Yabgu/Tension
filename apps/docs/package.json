@@ -14,7 +14,6 @@
   },
   "devDependencies": {
     "@yabgu_gm/tension": "file:../../packages/cli",
-    "@yabgu_gm/tensionscript": "^0.14.1",
     "marked": "^18.2.0"
   },
   "dependencies": {

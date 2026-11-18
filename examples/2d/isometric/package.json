@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "TensionCore example: a worked isometric scene \u2014 oversized tileset, depth sort, modular character",
+  "description": "TensionCore example: a worked isometric scene — oversized tileset, depth sort, modular character",
   "scripts": {
     "build": "node build.mjs && node ../../../scripts/build-2d-guest.mjs && node ../../../scripts/pack-example.mjs .",
     "build:debug": "node build.mjs && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
@@ -21,8 +21,5 @@
   "dependencies": {
     "@yabgu_gm/tension-core": "file:../../../packages/core",
     "tension-framework": "file:../../../tension-framework"
-  },
-  "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.14.1"
   }
 }

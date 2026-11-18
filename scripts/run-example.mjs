@@ -35,6 +35,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleness } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+import { compilerBin } from './lib/toolchain.mjs';
+
 const repo = resolve(here, '..');
 const WIN = process.platform === 'win32';
 const EXE = WIN ? '.exe' : '';
@@ -266,8 +268,19 @@ if (!existsSync(host)) {
 }
 
 // ── the guest's build dependencies and its wasm ──────────────────────────────
-const asc = join(exampleDir, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript');
-if (!existsSync(asc)) {
+//
+// The compiler is **not** one of them any more: it is vendored once at the repo
+// root (`scripts/vendor-compiler.mjs`), and every `npm run` here resolves it by
+// walking up. What is still per-example is the link to `tension-core` and
+// `tension-framework`, so that is what decides whether to install — the
+// compiler's presence used to stand in for it, and standing in for it now would
+// always be false.
+const asc = compilerBin(exampleDir);
+if (!asc) {
+  die(`no tensionscript found\n` +
+      `  install the vendored compiler:  npm run compiler:vendor && npm install  (at the repo root)`);
+}
+if (!existsSync(join(exampleDir, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   console.log(`${pkg.name}: installing the guest's build dependencies...`);
   npm(['install', '--silent']);
 }
