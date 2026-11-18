@@ -11,7 +11,7 @@
 // closed, because the fallback is outside this repository.
 //
 // So every guest build names this script instead, and the resolution is
-// `requireCompiler()` — the repo root only, with the provenance of the tarball
+// `resolveCompiler()` — the repo root only, with the provenance of the tarball
 // asserted (`scripts/lib/toolchain.mjs`). The compiler's own arguments are passed
 // through untouched: this only chooses *which* compiler runs.
 //
@@ -19,7 +19,7 @@
 
 import { spawnSync } from 'node:child_process';
 
-import { CompilerError, compilerInvocation, resolveCompiler } from './lib/toolchain.mjs';
+import { CompilerError, resolveCompiler } from './lib/toolchain.mjs';
 
 let resolved;
 try {
@@ -35,16 +35,18 @@ try {
 // One line, on stderr, every build: which compiler ran, and whether it was proven
 // to be the vendored pin. "It compiled" is not evidence of *which* compiler
 // compiled it, and that distinction is the whole point of the resolver.
+// `resolved` **is** the invocation (`{ command, prefix, shell, path }`): the
+// package's own bin entry run through this Node on every platform, or the shim
+// when a package layout has no bin field. No second step decides how to launch it.
 process.stderr.write(
   resolved.version === null
-    ? `tensionscript: ${resolved.bin}\n`
-    : `tensionscript: ${resolved.version} from ${resolved.bin} (vendored ${resolved.tarball})\n`,
+    ? `tensionscript: ${resolved.path}\n`
+    : `tensionscript: ${resolved.version} from ${resolved.path} (vendored ${resolved.tarball})\n`,
 );
 
-const invocation = compilerInvocation(resolved.bin);
-const result = spawnSync(invocation.command, [...invocation.prefix, ...process.argv.slice(2)], {
+const result = spawnSync(resolved.command, [...resolved.prefix, ...process.argv.slice(2)], {
   stdio: 'inherit',
-  shell: invocation.shell,
+  shell: resolved.shell,
 });
 
 if (result.error) {

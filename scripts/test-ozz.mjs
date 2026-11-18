@@ -11,7 +11,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -47,7 +47,7 @@ if (generated.status !== 0) fail(RUNNER, 'the framework generator refused the la
 // not two.)
 let asc;
 try {
-  asc = requireCompiler(example);
+  asc = resolveCompiler(example);
 } catch (error) {
   if (error instanceof CompilerError) fail(RUNNER, error.message);
   throw error;
@@ -59,9 +59,11 @@ if (!existsSync(join(example, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   }
 }
 
-const compiled = spawn(asc, [join(example, 'ozz-load.ts'),
-                             '--config', join(repo, 'tension-framework', 'build', 'session.asconfig.json'),
-                             '-o', join(example, 'build', 'ozz-load.wasm')], { cwd: example });
+const compiled = spawn(asc.command,
+                       [...asc.prefix, join(example, 'ozz-load.ts'),
+                        '--config', join(repo, 'tension-framework', 'build', 'session.asconfig.json'),
+                        '-o', join(example, 'build', 'ozz-load.wasm')],
+                       { cwd: example, shell: asc.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
   fail(RUNNER, 'ozz-load.ts did not compile');

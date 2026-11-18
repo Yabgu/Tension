@@ -223,6 +223,24 @@ const SUITES = {
     run: () => execute(node, [join(repo, 'scripts', 'check-naga-pin.mjs')]),
   },
 
+  // The vendored compiler: two properties the rest of the tree depends on and
+  // nothing else asserts. `test-compiler-provenance.mjs` checks that the compiler
+  // that would run is the installed package's own file (and that the check still
+  // rejects one that is not); `test-deterministic-tar.mjs` checks that the packed
+  // tarball depends only on its contents, which is what makes the committed
+  // lockfile's integrity valid on every platform. Both are pure Node, no build.
+  'compiler-pin': {
+    title: 'compiler pin',
+    needs: [],
+    holds: [],
+    run: async () => {
+      const provenance = await execute(node, [join(repo, 'scripts', 'test-compiler-provenance.mjs')]);
+      if (provenance.status !== 0) return provenance;
+      const tarball = await execute(node, [join(repo, 'scripts', 'test-deterministic-tar.mjs')]);
+      return { status: tarball.status, output: provenance.output + tarball.output };
+    },
+  },
+
   // The checked-in Win32 overlay for Ogre's generated Vulkan settings header is
   // a copy of a generated file, which is exactly the kind of thing that goes
   // stale in silence: a symbol upstream adds stays undefined here, which still
@@ -605,6 +623,7 @@ const AUDIT = {
   // Reads the tree, or writes only into its own temp dir.
   eol: { class: 'parallel', cost: 0 },
   deps: { class: 'parallel', cost: 0 },
+  'compiler-pin': { class: 'parallel', cost: 1 },
   'win32-headers': { class: 'parallel', cost: 0 },
   'ogre-capacities': { class: 'parallel', cost: 0 },
   codegen: { class: 'parallel', cost: 0 },

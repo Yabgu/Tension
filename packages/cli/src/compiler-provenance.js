@@ -29,7 +29,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
-import { join, sep } from 'node:path';
+import { basename, dirname, join, sep } from 'node:path';
 
 /** The compiler package. */
 export const COMPILER_PACKAGE = '@yabgu_gm/tensionscript';
@@ -91,11 +91,84 @@ export function vendoredCompilerFacts(repo) {
 }
 
 /**
- * Assert that `bin`, inside the repository at `repo`, is the compiler this tree
+ * The file a compiler invocation actually runs.
+ *
+ * Accepts what the resolvers produce — an invocation `{ command, prefix, path }`
+ * or a bare path — and answers the **script**, not the launcher. `path` is the
+ * package's own bin entry when the resolver found one (`<pkg>/bin/tensionscript.js`,
+ * run through `process.execPath` on every platform); a bare path is either that
+ * same file or an npm `.bin` shim.
+ */
+export function launchedFile(target) {
+  if (typeof target === 'string') return target;
+  if (target && typeof target === 'object') return target.path ?? target.prefix?.[0] ?? target.command;
+  return '';
+}
+
+/**
+ * Where an npm `.bin` shim points, or the shim itself when it cannot be followed.
+ *
+ * **This exists because a shim is not a symlink on Windows.** npm writes
+ * `node_modules/.bin/tensionscript` as a symlink on POSIX — `realpath` lands inside
+ * the package — and as three real files on Windows (`tensionscript`,
+ * `tensionscript.cmd`, `tensionscript.ps1`), where `realpath` is the shim itself
+ * and a "is this inside the package" test can never pass. That is not a reason to
+ * loosen the assertion: it is a reason to look at what the shim *runs*.
+ *
+ *   POSIX    `realpathSync` follows the symlink; nothing else is needed.
+ *   Windows  `tensionscript.cmd` is text, and the script it launches appears in it
+ *            as `"%dp0%\..\@yabgu_gm\tensionscript\bin\tensionscript.js"`. Read
+ *            that, resolve it against the shim's own directory.
+ *
+ * A shim that names no script (a wrapper someone else wrote) resolves to itself,
+ * which fails the provenance check — correctly: this module can only prove the pin
+ * for a compiler it can follow to a file.
+ */
+export function shimTarget(shim) {
+  // Inside a package already: nothing to follow.
+  const dir = dirname(shim);
+  if (basename(dir) !== '.bin') {
+    try {
+      return realpathSync(shim);
+    } catch {
+      return shim;
+    }
+  }
+  // POSIX: the shim is a symlink whose realpath is the script.
+  try {
+    const real = realpathSync(shim);
+    if (real !== shim) return real;
+  } catch {
+    // fall through to the text read: a Windows `.cmd` is a real file
+  }
+  try {
+    const text = readFileSync(shim, 'utf8');
+    const match = text.match(/"%dp0%\\?([^"]+?\.(?:c|m)?js)"/i) ||
+                  text.match(/%~dp0([^\s"]+?\.(?:c|m)?js)/i);
+    if (match) {
+      // The shim is Windows text: its path is backslash-separated regardless of
+      // the platform reading it (this parser is exercised on Linux too, where a
+      // literal `..\@yabgu_gm\…` would otherwise be one long filename).
+      const rel = match[1].replace(/^[\\/]+/, '').split(/[\\/]+/).join('/');
+      return join(dir, rel);
+    }
+  } catch {
+    // unreadable: it is not a shim we can prove anything about
+  }
+  return shim;
+}
+
+/**
+ * Assert that `target`, inside the repository at `repo`, is the compiler this tree
  * vendored. Returns `{ version, tarball, sha }` so a caller can print what it
  * proved; throws {@link CompilerProvenanceError} otherwise.
+ *
+ * `target` is a compiler invocation (`{ command, prefix, path }`) or a bare path;
+ * see {@link launchedFile}. Prefer the invocation the resolver produces — the
+ * package's own `bin` entry, which is a file inside the package on every platform
+ * and therefore the only thing this check can verify without guessing.
  */
-export function assertVendoredCompiler(repo, bin) {
+export function assertVendoredCompiler(repo, target) {
   const { manifest, lockEntry, lockSpec, rootSpec, installed, pkgDir } =
     vendoredCompilerFacts(repo);
 
@@ -134,16 +207,19 @@ export function assertVendoredCompiler(repo, bin) {
     problems.push(`  installed               ${COMPILER_PACKAGE} ${installed.version}, the manifest is ${version}`);
   }
 
-  // The binary must be the installed package's own, not a shim that happens to sit
-  // at the right path. `realpath` also covers the POSIX shim, which is a symlink.
+  // The compiler that runs must be the installed package's own file, not something
+  // else that happens to sit at a plausible path. `shimTarget` is what makes this
+  // meaningful on Windows, where the `.bin` shim is a real file rather than a
+  // symlink into the package.
+  const launched = launchedFile(target);
   try {
-    const realBin = realpathSync(bin);
+    const realBin = shimTarget(launched);
     const realPkg = realpathSync(pkgDir);
     if (!realBin.startsWith(`${realPkg}${sep}`) && realBin !== realPkg) {
-      problems.push(`  ${bin} resolves to ${realBin}, outside ${realPkg}`);
+      problems.push(`  ${launched} runs ${realBin}, outside ${realPkg}`);
     }
   } catch (error) {
-    problems.push(`  ${bin} does not resolve: ${error.message}`);
+    problems.push(`  ${launched} does not resolve: ${error.message}`);
   }
 
   if (problems.length) {

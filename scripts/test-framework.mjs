@@ -21,7 +21,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../tension-framework/tools/lib/png.mjs';
-import { REPO, CompilerError, requireCompiler } from './lib/toolchain.mjs';
+import { REPO, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -91,10 +91,12 @@ if (process.env.TENSION_SESSION_READY === '1') {
 
 mkdirSync(build, { recursive: true });
 
-// The vendored compiler, resolved and proven: see `requireCompiler`.
+// The vendored compiler, resolved and proven: see `resolveCompiler`. It answers an
+// invocation (`{ command, prefix, shell }`), so the spawn below states nothing
+// about `.cmd` shims or shells — that decision lives in one place.
 let asc;
 try {
-  asc = requireCompiler(framework);
+  asc = resolveCompiler(framework);
 } catch (error) {
   if (error instanceof CompilerError) fail(RUNNER, error.message);
   throw error;
@@ -109,7 +111,7 @@ function compile(entry, out, { session = true } = {}) {
   if (session) args.push('--config', asconfig);
   else args.push('--runtime', 'incremental', '--target', 'release');
   args.push('-o', join(build, out));
-  return spawn(asc, args, { cwd: framework });
+  return spawn(asc.command, [...asc.prefix, ...args], { cwd: framework, shell: asc.shell });
 }
 
 /// Run a compiled fixture and return the result.

@@ -8,7 +8,7 @@
 // **The compiler is not installed here, and its absence is not repaired here.**
 // It is vendored once — `scripts/vendor-compiler.mjs` packs the
 // `third_party/TensionScript` submodule into `.packs/` and the root
-// `package.json` declares that tarball — and `requireCompiler()` asserts that the
+// `package.json` declares that tarball — and `resolveCompiler()` asserts that the
 // installed copy *is* that tarball before anything compiles. A build that quietly
 // installs its own copy is a build that can disagree with the rest of the tree,
 // which is what per-package installs used to do here: this package carried
@@ -24,7 +24,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { CompilerError, COMPILER, assertVendoredCompiler, requireCompiler } from './lib/toolchain.mjs';
+import { CompilerError, COMPILER, resolveCompiler } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -62,27 +62,39 @@ run(process.execPath, [join(repo, 'scripts', 'gen-session.mjs'), ...process.argv
 // field defaults on 2026-10-23, and 40 parse errors per example were blamed on
 // the source for two weeks.
 //
-// **The resolver is shared, and it asserts provenance.** `requireCompiler()` is
+// **The resolver is shared, and it asserts provenance.** `resolveCompiler()` is
 // the same call every other build script makes (`scripts/lib/toolchain.mjs`): the
-// repo root's `.bin` only, no PATH fallback, and a check that the installed copy
-// is the tarball `.packs/manifest.json` names — because a registry 0.14.1 and the
+// repo root and no PATH fallback, a check that the installed compiler is the
+// tarball `.packs/manifest.json` names — because a registry 0.14.1 and the
 // vendored 0.14.1 have the same version string, so a version comparison cannot
-// tell them apart. It throws with the two commands that fix a missing one rather
-// than installing anything itself.
+// tell them apart — and `$TENSIONSCRIPT` honoured when set, loudly.
+//
+// **`resolveCompiler`, not `requireCompiler`.** `requireCompiler` skips the
+// override, so this file used to document an escape hatch it ignored: setting
+// `$TENSIONSCRIPT` produced the same provenance failure it was meant to bypass.
+// Every entry point now resolves through the same function.
 let compiler;
-let vendored;
 try {
-  compiler = requireCompiler();
-  vendored = assertVendoredCompiler(compiler);
+  compiler = resolveCompiler();
 } catch (error) {
   if (error instanceof CompilerError) die(error.message);
   throw error;
 }
 
 // The path and the vendored artifact, printed every run: this is the line that
-// answers "did the build use the vendored compiler?" without inference.
-console.log(`build-framework: ${COMPILER} ${vendored.version} from ${compiler}`);
-console.log(`build-framework: vendored ${vendored.tarball} (${vendored.sha})`);
+// answers "did the build use the vendored compiler?" without inference. Under an
+// override there is no vendored artifact to name — the override's own warning is
+// the record.
+// Two shapes, because an override has no version this script can vouch for: it
+// was not read from the installed package's manifest, and pretending otherwise
+// would be the "quietly used the wrong compiler" failure the resolver exists to
+// prevent. The override's own warning has already gone to stderr.
+if (compiler.tarball) {
+  console.log(`build-framework: ${COMPILER} ${compiler.version} from ${compiler.path}`);
+  console.log(`build-framework: vendored ${compiler.tarball}`);
+} else {
+  console.log(`build-framework: ${COMPILER} from ${compiler.path} ($TENSIONSCRIPT override)`);
+}
 
 // 3. The framework guest itself.
 npm(['run', 'build'], { cwd: framework });

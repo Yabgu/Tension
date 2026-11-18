@@ -35,7 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleness } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-import { CompilerError, requireCompiler } from './lib/toolchain.mjs';
+import { CompilerError, resolveCompiler } from './lib/toolchain.mjs';
 
 const repo = resolve(here, '..');
 const WIN = process.platform === 'win32';
@@ -275,9 +275,12 @@ if (!existsSync(host)) {
 // `tension-framework`, so that is what decides whether to install — the
 // compiler's presence used to stand in for it, and standing in for it now would
 // always be false.
-let asc;
+// Resolved only as a **gate**: this script runs the example's `npm run build`,
+// which resolves the compiler again through the wrapper. The point here is to fail
+// with the resolver's message — missing pin, or wrong provenance — before spending
+// a minute on installs.
 try {
-  asc = requireCompiler(exampleDir);
+  resolveCompiler(exampleDir);
 } catch (error) {
   if (error instanceof CompilerError) die(error.message);
   throw error;

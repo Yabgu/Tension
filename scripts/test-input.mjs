@@ -30,7 +30,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 if (process.argv.includes('--edge')) {
@@ -77,10 +77,10 @@ if (process.env.TENSION_SESSION_READY === '1') {
   }
 }
 
-// The vendored compiler, resolved and proven: see `requireCompiler`.
+// The vendored compiler, resolved and proven: see `resolveCompiler`.
 let asc;
 try {
-  asc = requireCompiler(framework);
+  asc = resolveCompiler(framework);
 } catch (error) {
   if (error instanceof CompilerError) fail(RUNNER, error.message);
   throw error;
@@ -118,9 +118,11 @@ try {
 }
 
 const guest = join(out, 'guest-input.wasm');
-const compiled = spawn(asc, [join(suite, 'tests', 'guest-input.ts'),
-                             '--config', join(framework, 'build', 'session.asconfig.json'),
-                             '-o', guest]);
+const compiled = spawn(asc.command,
+                       [...asc.prefix, join(suite, 'tests', 'guest-input.ts'),
+                        '--config', join(framework, 'build', 'session.asconfig.json'),
+                        '-o', guest],
+                       { shell: asc.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
   fail(RUNNER, 'guest-input.ts did not compile');

@@ -27,9 +27,7 @@ import { fileURLToPath } from 'node:url';
 
 import { BLOCK_FLAG, KIND } from './lib/format.mjs';
 import { readDocs } from './lib/read-docs.mjs';
-import {
-  CompilerError, compilerInvocation, resolveCompiler,
-} from '../../../scripts/lib/toolchain.mjs';
+import { CompilerError, resolveCompiler } from '../../../scripts/lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, '..');
@@ -96,8 +94,9 @@ function firstExisting(candidates) {
  * shim and no shell on any platform.
  */
 function findCompiler() {
-  const { bin } = resolveCompiler(appDir);
-  return compilerInvocation(bin);
+  // `resolveCompiler` already answers `{ command, prefix, shell, path }` — the
+  // package's own bin entry run through this Node, on every platform.
+  return resolveCompiler(appDir);
 }
 
 let compiler;

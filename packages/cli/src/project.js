@@ -225,7 +225,10 @@ export function compiler(projectDir) {
   // imports it from here, so there is **one** check rather than two that drift.
   if (inRepo) {
     try {
-      assertVendoredCompiler(repo, rawBinPath(chosen));
+      // The **invocation**, not just a path: on Windows the package's own `bin`
+      // entry is a real file inside the package while a `.bin` shim is not, so the
+      // assertion needs to know which one it is looking at.
+      assertVendoredCompiler(repo, { ...chosen, path: rawBinPath(chosen) });
     } catch (error) {
       if (error instanceof CompilerProvenanceError) {
         die(error.message.split('\n')[0], error.message.split('\n').slice(1));
