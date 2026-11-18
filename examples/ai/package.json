@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: an interactive chat session over the tension::ai ABI",
   "scripts": {
-    "build": "tensionscript story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm",
-    "build:debug": "tensionscript story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm --debug --sourceMap",
+    "build": "node ../../scripts/tensionscript.mjs story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm",
+    "build:debug": "node ../../scripts/tensionscript.mjs story.ts --config ../../tension-framework/build/session.asconfig.json -o build/story.wasm --debug --sourceMap",
     "fetch-model": "node ../../scripts/run-example.mjs --fetch-model",
     "postinstall": "node ../../scripts/run-example.mjs --fetch-model",
     "run": "node ../../scripts/run-example.mjs --no-build",
@@ -20,8 +20,5 @@
   "dependencies": {
     "tension-framework": "file:../../tension-framework",
     "@yabgu_gm/tension-core": "file:../../packages/core"
-  },
-  "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.14.1"
   }
 }

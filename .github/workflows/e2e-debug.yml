@@ -41,6 +41,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # **The one submodule this target needs.** `tension-core/build.rs:238`
+      # compiles `third_party/ImageViewer/src/format/IwiFile.cpp` into the host
+      # and panics when it is absent, so a checkout without submodules fails
+      # before a single test runs:
+      #
+      #   thread 'main' panicked at build.rs:238:
+      #   third_party/ImageViewer/src/format/IwiFile.cpp is missing
+      #
+      # Only this one, and for a reason worth recording: `build.rs` names no
+      # other submodule (grep `third_party/` in it), and this job never invokes
+      # the TensionScript compiler, so neither `ogre-next` nor `TensionScript`
+      # is needed. `ogre-next` in particular is a large build tree, and fetching
+      # it here would cost minutes to compile nothing.
+      - name: Initialise the submodule the build requires
+        run: git submodule update --init --depth 1 third_party/ImageViewer
+
       - uses: dtolnay/rust-toolchain@stable
 
       # Caches the cargo registry and tension-core/target. Placed after the

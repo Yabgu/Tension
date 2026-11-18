@@ -5,7 +5,9 @@
   "description": "Tension: a wasm engine for the TensionScript guest language, with the OGRE capability and the OGRE wire records generated from one schema.",
   "type": "module",
   "scripts": {
+    "preinstall": "node scripts/ensure-compiler.mjs",
     "build": "npm run build:codegen && npm run build:native && npm run build:framework && npm run build:examples",
+    "compiler:vendor": "node scripts/vendor-compiler.mjs",
     "build:codegen": "node tools/codegen/generate.mjs --schema schema/ogre.json --out-ts tension-framework/assembly/ogre/generated --out-h tension-ogre/src/generated",
     "build:framework": "node scripts/build-framework.mjs",
     "build:examples": "node scripts/build-examples.mjs",
@@ -25,5 +27,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "devDependencies": {
+    "@yabgu_gm/tensionscript": "file:.packs/yabgu_gm-tensionscript-0.14.1-gd96ac6062b28.tgz"
   }
 }

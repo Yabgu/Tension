@@ -18,6 +18,9 @@ import { existsSync, readFileSync } from 'node:fs';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { SUFFIX, capture, die, exists, findBin, step } from './util.js';
+import {
+  CompilerProvenanceError, assertVendoredCompiler, compilerFixCommands, isInside,
+} from './compiler-provenance.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -147,8 +150,27 @@ export function framework(projectDir) {
  * is written down.
  */
 export function compiler(projectDir) {
+  // Absolute first: `isInside` and the `bin`-field walk both realpath, and a
+  // relative path would be resolved against this process's cwd rather than the
+  // caller's idea of the project.
+  projectDir = resolve(projectDir);
   const repo = repoRoot();
+  // **In this repository the compiler comes from the repository root, and only
+  // from there.** It is vendored once — `scripts/vendor-compiler.mjs` packs the
+  // `third_party/TensionScript` submodule into `.packs/` and the root
+  // `package.json` declares that tarball — so every project inside the tree shares
+  // one compiler, and a nearer `node_modules/.bin` would be a stale copy that
+  // shadows it (`tension-framework` used to carry `^0.13.2` while the examples
+  // carried `^0.14.1`).
+  //
+  // Outside the repository — an installed `tension` driving a user's own project —
+  // the project's own `node_modules` is right, and is what this did before: there
+  // is no repo pin to prefer, and `@yabgu_gm/tensionscript` from npm is a
+  // legitimate dependency of *their* project. So the behaviour splits here rather
+  // than one rule being stretched over both cases.
+  const inRepo = isInside(repo, projectDir);
   const candidates = [];
+  const bases = inRepo ? [repo] : [projectDir];
 
   // The package's own `bin` field, run through this Node, comes **first**: it is
   // the one candidate that needs no shim at all. That matters on Windows, where
@@ -156,7 +178,7 @@ export function compiler(projectDir) {
   // the extensionless POSIX script is not an executable image — and it is worth
   // having on every platform because it removes a dependency on how a package
   // manager chose to link the bin.
-  for (const base of [projectDir, repo && join(repo, 'tension-framework')].filter(Boolean)) {
+  for (const base of bases) {
     const pkg = packageJson(base, '@yabgu_gm/tensionscript');
     if (!pkg) continue;
     const binField = pkg.json.bin;
@@ -168,23 +190,59 @@ export function compiler(projectDir) {
 
   // The `.bin` shim, for an install whose package layout carries no resolvable
   // `bin` field — a wrapper the project chose, or a manager that links its own.
-  const shim = findBin(projectDir, 'tensionscript');
-  if (shim) candidates.push({ command: shim, prefix: [] });
+  for (const base of bases) {
+    const shim = findBin(base, 'tensionscript');
+    if (shim) {
+      candidates.push({ command: shim, prefix: [] });
+      break;
+    }
+  }
 
   const chosen = candidates[0];
   if (!chosen) {
-    die('cannot find the TensionScript compiler', [
-      'the guest is written in TensionScript and compiled by its compiler:',
-      '  npm install --save-dev @yabgu_gm/tensionscript',
-    ]);
+    die('cannot find the TensionScript compiler', inRepo
+      // In the repository the compiler is vendored, not fetched from the registry
+      // — and the registry advice is about to be wrong in the strongest way
+      // possible, because those versions are being unpublished.
+      ? compilerFixCommands(repo)
+      : [
+        'the guest is written in TensionScript and compiled by its compiler:',
+        '  npm install --save-dev @yabgu_gm/tensionscript',
+      ]);
   }
+
   const probe = capture(chosen.command, [...chosen.prefix, '--version']);
   const version = probe.status === 0 ? probe.stdout.trim() : 'unknown';
   if (probe.status !== 0) {
     die(`the TensionScript compiler at ${chosen.command} does not run`,
       probe.stderr.trim() || `exit ${probe.status}`);
   }
-  return { ...chosen, version };
+
+  // **Provenance, in the repository only.** `tension build` must not compile a
+  // guest with a compiler that merely happens to sit at the right path: a registry
+  // 0.14.1 and the vendored 0.14.1 have the same version string. The rule lives in
+  // `compiler-provenance.js` beside this file and `scripts/lib/toolchain.mjs`
+  // imports it from here, so there is **one** check rather than two that drift.
+  if (inRepo) {
+    try {
+      assertVendoredCompiler(repo, rawBinPath(chosen));
+    } catch (error) {
+      if (error instanceof CompilerProvenanceError) {
+        die(error.message.split('\n')[0], error.message.split('\n').slice(1));
+      }
+      throw error;
+    }
+  }
+  return { ...chosen, version, inRepo };
+}
+
+/// The file the invocation actually runs, for the provenance `realpath` check.
+///
+/// The candidates carry either a JS entry (run through `process.execPath`, so the
+/// file is the prefix's first element) or a shim (the command itself). Naming that
+/// here keeps the difference in one place rather than in every caller's head.
+function rawBinPath(candidate) {
+  return candidate.prefix.length ? candidate.prefix[0] : candidate.command;
 }
 
 /**

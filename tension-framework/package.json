@@ -6,7 +6,7 @@
   "ascMain": "assembly/index.ts",
   "types": "index.d.ts",
   "scripts": {
-    "build": "tensionscript index.ts -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
+    "build": "node ../scripts/tensionscript.mjs index.ts -o build/index.wasm --runtime incremental --target release --optimizeLevel 3",
     "test": "cd .. && node scripts/test.mjs --framework && node tension-framework/tests/rt-dispatch.mjs",
     "build:fixture": "bash tests/run.sh",
     "assets:fonts": "node tools/font/bake-ttf.mjs --spec assets/fonts/fonts.json --atlas assets --manifest assets/ui.json --ts assembly/ui/fonts.generated.ts --preview assets/preview",
@@ -32,7 +32,6 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.13.2",
     "opentype.js": "^2.0.0"
   }
 }

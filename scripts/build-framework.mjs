@@ -5,15 +5,26 @@
 // rewrites from session.json. Running them as one npm script is what keeps a
 // stale constant table from reaching a guest.
 //
-// The dependency install is here for the same reason `build-examples.mjs`
-// installs per example: `tensionscript` is a devDependency of this package, and
-// a fresh clone has no node_modules. Doing it in the build rather than
-// documenting it means `npm run build` is the whole first-run story.
+// **The compiler is not installed here, and its absence is not repaired here.**
+// It is vendored once — `scripts/vendor-compiler.mjs` packs the
+// `third_party/TensionScript` submodule into `.packs/` and the root
+// `package.json` declares that tarball — and `requireCompiler()` asserts that the
+// installed copy *is* that tarball before anything compiles. A build that quietly
+// installs its own copy is a build that can disagree with the rest of the tree,
+// which is what per-package installs used to do here: this package carried
+// `^0.13.2` while the examples carried `^0.14.1`, and the nearby `.bin` won.
+//
+// The consequence is that a missing compiler stops the build with the two
+// commands that fix it instead of reaching for one. That is deliberate: a global
+// `tensionscript` on `PATH` is how a tree ends up compiled by a version four
+// releases behind the pin.
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { CompilerError, COMPILER, assertVendoredCompiler, requireCompiler } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -51,93 +62,27 @@ run(process.execPath, [join(repo, 'scripts', 'gen-session.mjs'), ...process.argv
 // field defaults on 2026-10-23, and 40 parse errors per example were blamed on
 // the source for two weeks.
 //
-// The source of truth is the lockfile: it records the exact version `npm
-// install` would produce, so comparing against it needs no semver range
-// parser and no network. See docs/guard-discipline.md.
-const DEP_PACKAGE = 'tension-framework/package.json';
-const DEP_LOCK = 'tension-framework/package-lock.json';
-
-/// The `tensionscript` package this package declares, and the version the lock
-/// resolves it to. `null` when nothing is declared or there is no lock — both
-/// mean "fall back to installing".
-function declaredCompiler() {
-  const manifest = JSON.parse(readFileSync(join(framework, 'package.json'), 'utf8'));
-  const sections = [manifest.dependencies, manifest.devDependencies];
-  const name = 'tensionscript';
-  const declared = sections
-    .filter(Boolean)
-    .flatMap((section) => Object.entries(section))
-    .find(([key]) => key === name || key.endsWith(`/${name}`));
-  if (!declared) return null;
-
-  const [packageName, range] = declared;
-  const lockPath = join(framework, 'package-lock.json');
-  if (!existsSync(lockPath)) return { packageName, range, locked: null, lockRange: null };
-  const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-  const entry = lock.packages?.[`node_modules/${packageName}`];
-  // What the lock *recorded* as declared. If this disagrees with package.json,
-  // the lock is stale — edited manifest, unrefreshed lock — and the resolved
-  // version below describes a dependency graph the manifest no longer asks for.
-  const root = lock.packages?.[''] ?? {};
-  const lockRange = { ...root.dependencies, ...root.devDependencies }[packageName] ?? null;
-  return { packageName, range, locked: entry?.version ?? null, lockRange };
+// **The resolver is shared, and it asserts provenance.** `requireCompiler()` is
+// the same call every other build script makes (`scripts/lib/toolchain.mjs`): the
+// repo root's `.bin` only, no PATH fallback, and a check that the installed copy
+// is the tarball `.packs/manifest.json` names — because a registry 0.14.1 and the
+// vendored 0.14.1 have the same version string, so a version comparison cannot
+// tell them apart. It throws with the two commands that fix a missing one rather
+// than installing anything itself.
+let compiler;
+let vendored;
+try {
+  compiler = requireCompiler();
+  vendored = assertVendoredCompiler(compiler);
+} catch (error) {
+  if (error instanceof CompilerError) die(error.message);
+  throw error;
 }
 
-/// The version actually installed, or `null` when the package is absent.
-function installedCompiler(packageName) {
-  const manifest = join(framework, 'node_modules', ...packageName.split('/'), 'package.json');
-  if (!existsSync(manifest)) return null;
-  try {
-    return JSON.parse(readFileSync(manifest, 'utf8')).version ?? null;
-  } catch {
-    return null;  // an unreadable manifest is treated as absent: reinstall
-  }
-}
-
-const wanted = declaredCompiler();
-const compiler = join(framework, 'node_modules', '.bin',
-                      WIN ? 'tensionscript.cmd' : 'tensionscript');
-const have = wanted ? installedCompiler(wanted.packageName) : (existsSync(compiler) ? 'unknown' : null);
-const expect = wanted?.locked ?? null;
-// A lock whose recorded range has drifted from the manifest resolves a graph
-// nobody asked for. `npm install` reads the manifest and rewrites the lock, so
-// treating it as "needs installing" is what refreshes both.
-const staleLock = wanted !== null && wanted.lockRange !== null && wanted.lockRange !== wanted.range;
-
-if (!existsSync(compiler) || staleLock || (expect !== null && have !== expect)) {
-  const why = !existsSync(compiler) ? 'not installed'
-            : staleLock ? `lock records ${wanted.lockRange}, manifest declares ${wanted.range}`
-            : `${have} but the lock resolves ${expect}`;
-  console.log(`build-framework: ${wanted?.packageName ?? 'tensionscript'}: ${why} — installing`);
-  npm(['install', '--no-audit', '--no-fund'], { cwd: framework });
-}
-
-// Installing is not the proof; the version is. A guard that reinstalls and then
-// trusts the reinstall to have worked is the same defect one level down.
-//
-// Re-read the lock after installing, rather than comparing against the value
-// read before. `npm install` legitimately rewrites the lock when the manifest
-// changed — that is the whole point of the `staleLock` branch above — so a
-// post-install check against the *old* expectation would fail on success. This
-// was a real bug in the first version of this guard, caught by probing it with
-// a declared downgrade.
-if (wanted !== null) {
-  const settled = declaredCompiler();
-  const after = installedCompiler(settled.packageName);
-  if (settled.locked === null) {
-    die(`${settled.packageName} has no resolved version in ${DEP_LOCK} after ` +
-        `npm install (${DEP_PACKAGE} declares ${settled.range})\n` +
-        '  Check that the range names a version that exists in the registry.');
-  }
-  if (after !== settled.locked) {
-    die(`${settled.packageName} is ${after ?? 'absent'} after npm install, ` +
-        `but ${DEP_LOCK} resolves ${settled.locked} (${DEP_PACKAGE} declares ${settled.range})\n` +
-        '  A lockfile that npm cannot satisfy means a corrupt lock, a registry\n' +
-        '  mismatch, or a node_modules tree npm refuses to repair. Delete\n' +
-        '  tension-framework/node_modules and run npm install again.');
-  }
-  console.log(`build-framework: ${settled.packageName} ${after} matches the lock`);
-}
+// The path and the vendored artifact, printed every run: this is the line that
+// answers "did the build use the vendored compiler?" without inference.
+console.log(`build-framework: ${COMPILER} ${vendored.version} from ${compiler}`);
+console.log(`build-framework: vendored ${vendored.tarball} (${vendored.sha})`);
 
 // 3. The framework guest itself.
 npm(['run', 'build'], { cwd: framework });

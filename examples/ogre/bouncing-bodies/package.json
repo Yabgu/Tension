@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: sixty-four rigid bodies colliding in a box, through the physics layer",
   "scripts": {
-    "build": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
-    "build:debug": "tensionscript game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
+    "build": "node ../../../scripts/tensionscript.mjs game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm",
+    "build:debug": "node ../../../scripts/tensionscript.mjs game.ts --config ../../../tension-framework/build/session.asconfig.json -o build/game.wasm --debug --sourceMap",
     "run": "node ../../../scripts/run-example.mjs --no-build",
     "start": "node ../../../scripts/run-example.mjs",
     "pack": "node ../../../scripts/pack-example.mjs ."
@@ -23,8 +23,5 @@
     "@yabgu_gm/tension-core": "file:../../../packages/core",
     "@yabgu_gm/tension-ogre": "file:../../../packages/ogre",
     "@yabgu_gm/tension-ogre-next": "file:../../../packages/ogre-next"
-  },
-  "devDependencies": {
-    "@yabgu_gm/tensionscript": "^0.14.1"
   }
 }

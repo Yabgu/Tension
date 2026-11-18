@@ -28,11 +28,15 @@ const host = join(repo, 'tension-core', 'target', 'debug', `tension-core${WIN ? 
 const model = process.env.MODEL ?? join('examples', 'ai', 'models', 'Phi-3-mini-4k-instruct-q4.gguf');
 
 /// Install an example's dependencies and build its guest.
+///
+/// "Wired" is the link to `tension-core`, not the presence of a compiler: the
+/// compiler is vendored once at the repo root now, so an example that legitimately
+/// has no `node_modules` yet would look wired — the root pin is always findable —
+/// and the install below would never run.
 function buildExample(dir) {
-  const wired = existsSync(join(repo, dir, 'node_modules', '@yabgu_gm', 'tensionscript')) ||
-                existsSync(join(repo, dir, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript'));
+  const wired = existsSync(join(repo, dir, 'node_modules', '@yabgu_gm', 'tension-core'));
   if (!wired) {
-    console.log(`==> installing ${dir} deps (tensionscript + tension-framework)`);
+    console.log(`==> installing ${dir} deps (tension-core + tension-framework)`);
     // The ai example's postinstall fetches ~2.3 GB of weights; a demo run must
     // not start that behind your back. `npm install` inside examples/ai does.
     inherit('npm', ['install', '--no-audit', '--no-fund'], {

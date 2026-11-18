@@ -1,5 +1,10 @@
 .codewhale
 
+# Vendored compiler tarballs (`npm run compiler:vendor`). 2.1 MB per bump and
+# reproducible from the submodule gitlink, so it does not belong in history.
+# `.packs/manifest.json` goes with it: it describes a local artifact.
+.packs/
+
 # Locally built Arch packages consumed by ci/Dockerfile (machine-local, large)
 ci/ogre-next-pkg/
 
@@ -13,6 +18,14 @@ Cargo.lock.orig
 # Node
 node_modules/
 npm-debug.log*
+
+# Emitted by two producers — `scripts/build-2d-guest.mjs` (from the checked-in
+# fixture) and `tension build` (from the host's `graph emit-default`) — with a
+# provenance line that names which. Both regenerate before compiling, so nothing
+# needs the file to be present, and committing it made every `tension build` in an
+# example dirty the tree. `apps/editor/.gitignore` already treats its copy this
+# way; this is the same rule for the examples.
+examples/2d/*/src/graph.generated.ts
 
 # Build output
 build/

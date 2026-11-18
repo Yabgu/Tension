@@ -4,3 +4,6 @@
 [submodule "third_party/ImageViewer"]
 	path = third_party/ImageViewer
 	url = https://github.com/Yabgu/ImageViewer
+[submodule "third_party/TensionScript"]
+	path = third_party/TensionScript
+	url = https://github.com/Yabgu/TensionScript.git

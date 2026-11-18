@@ -24,10 +24,19 @@
 // dropping it reintroduces an intermittent, output-less failure.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+// The provenance rule and its messages live in the published CLI package, so the
+// rule has one implementation rather than one per consumer. See the header there.
+import {
+  COMPILER_PACKAGE as COMPILER,
+  CompilerProvenanceError as ProvenanceError,
+  assertVendoredCompiler as assertVendoredImpl,
+  compilerFixCommands,
+} from '../../packages/cli/src/compiler-provenance.js';
 
 export const WIN = process.platform === 'win32';
 export const EXE = WIN ? '.exe' : '';
@@ -244,6 +253,146 @@ export function toolchainReport() {
 /// that looked right.
 export function npmBin(dir, name) {
   return join(dir, 'node_modules', '.bin', WIN ? `${name}.cmd` : name);
+}
+
+// === The TensionScript compiler =============================================================
+//
+// **One resolver, and it fails closed.** The compiler is vendored once: the
+// `third_party/TensionScript` submodule is packed by `scripts/vendor-compiler.mjs`
+// into `.packs/`, and the root `package.json` declares that tarball, so
+// `<repo>/node_modules/.bin/tensionscript` is the only copy the tree is allowed to
+// run.
+//
+// Three ways of finding "a compiler" existed before this module owned the question,
+// and all three were wrong in different ways: `build-framework` looked at its own
+// `node_modules` first, `apps/docs/tools/run-examples.mjs` looked at two packages
+// that no longer have it, and `build-2d-guest.mjs` ended with a bare
+// `'tensionscript'` — a PATH lookup. Measured: this machine has a **global**
+// `@yabgu_gm/tensionscript` 0.11.0 shimmed at `~/.local/bin/tensionscript`, and a
+// bare lookup found it, so a tree with no root install compiled with a compiler
+// four versions behind the pin and reported ten parse errors in the framework's
+// own source. A missing compiler is a **setup step**, not a search problem: there
+// is no PATH lookup here, no `npm ls -g`, and no per-package fallback.
+
+// The package name comes from the shared module, so there is one spelling of
+// `@yabgu_gm/tensionscript` in this tree.
+export { COMPILER };
+
+/**
+ * The vendored compiler's shim, or `null` when it is not installed.
+ *
+ * Searches the repo root and any explicit `dirs` a caller passes — nothing else.
+ * The old `tension-framework` fallback is gone: that copy no longer exists, and a
+ * hint pointing at a directory nothing will ever populate is worse than none.
+ */
+export function compilerBin(...dirs) {
+  const name = WIN ? 'tensionscript.cmd' : 'tensionscript';
+  const seen = new Set();
+  for (const dir of [REPO, ...dirs]) {
+    const bin = join(dir, 'node_modules', '.bin', name);
+    if (seen.has(bin)) continue;
+    seen.add(bin);
+    if (existsSync(bin)) return bin;
+  }
+  return null;
+}
+
+/**
+ * How to launch a compiler path: `{ command, prefix, shell }`.
+ *
+ * npm's shim is not an executable image on Windows — `tensionscript`,
+ * `tensionscript.cmd` and `tensionscript.ps1` are written, and only the `.cmd` is
+ * launchable there — so it goes through a shell. A `.js` path (which is what
+ * `$TENSIONSCRIPT` usually names, and what a package's `bin` field contains) is run
+ * through this Node instead, because it needs no shebang and no shell anywhere.
+ */
+export function compilerInvocation(path) {
+  if (WIN && /\.(cmd|bat)$/i.test(path)) return { command: path, prefix: [], shell: true };
+  if (/\.(c|m)?js$/i.test(path)) return { command: process.execPath, prefix: [path], shell: false };
+  return { command: path, prefix: [], shell: false };
+}
+
+/** Thrown by {@link requireCompiler} and {@link assertVendoredCompiler}. */
+export class CompilerError extends Error {
+  constructor(message) { super(message); this.name = 'CompilerError'; }
+}
+
+/**
+ * The **fix** for a missing compiler, named as the two commands that produce it.
+ * Two steps because they fail in different situations: a fresh clone has no tarball
+ * (`compiler:vendor` packs the submodule), and a tree with a tarball that was never
+ * installed needs `npm install`. Naming only one sends half the readers to the
+ * wrong command, and a message that says "run npm install" over a missing tarball
+ * fails with an ENOENT on a path they have never seen.
+ */
+const COMPILER_STEPS = compilerFixCommands(REPO);
+
+/**
+ * Assert that `bin` is the compiler this tree vendored — not merely that a
+ * compiler exists there.
+ *
+ * **The check lives in `packages/cli/src/compiler-provenance.js`, not here.** That
+ * package is published and cannot import this file, so the dependency runs the
+ * other way and there is exactly **one** implementation of the rule: the CLI
+ * asserts it in-repo, and this module re-exports it. A second copy here would be a
+ * second check to keep in step, and the one that is not updated is the weaker one.
+ *
+ * Returns `{ version, tarball, sha }`; throws {@link CompilerError}.
+ */
+export function assertVendoredCompiler(bin) {
+  try {
+    return assertVendoredImpl(REPO, bin);
+  } catch (error) {
+    if (error instanceof ProvenanceError) throw new CompilerError(error.message);
+    throw error;
+  }
+}
+
+/**
+ * The compiler to run, or a `CompilerError` naming both fixes.
+ *
+ * Throws rather than returning `null`: a `null` that reaches `spawn` is an ENOENT
+ * three frames away from the cause, and that is the bug shape this replaces.
+ */
+export function requireCompiler(...dirs) {
+  const bin = compilerBin(...dirs);
+  if (!bin) {
+    throw new CompilerError([
+      `no vendored TensionScript compiler at ${join(REPO, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript')}`,
+      ...COMPILER_STEPS,
+    ].join('\n'));
+  }
+  assertVendoredCompiler(bin);
+  return bin;
+}
+
+/**
+ * `$TENSIONSCRIPT`, the explicit escape hatch, or `null`.
+ *
+ * An override is for the one reader who is deliberately testing a compiler that is
+ * not the pin. It cannot be silent: a machine that built with the wrong compiler
+ * for a month is what an override that whispers produces. Provenance is not
+ * asserted here — the path is by definition outside the pin — so the line is the
+ * only record, and it goes to stderr so it cannot be mistaken for build output.
+ */
+export function compilerOverride() {
+  const path = process.env.TENSIONSCRIPT;
+  if (!path) return null;
+  process.stderr.write(`tensionscript: using $TENSIONSCRIPT=${path} — NOT the vendored pin\n`);
+  return path;
+}
+
+/**
+ * The compiler to run: `$TENSIONSCRIPT` when set, else the asserted vendored pin.
+ * Returns `{ bin, version, tarball }`; `version`/`tarball` are `null` under an
+ * override, because nothing has been proven about it.
+ */
+export function resolveCompiler(...dirs) {
+  const override = compilerOverride();
+  if (override) return { bin: override, version: null, tarball: null };
+  const bin = requireCompiler(...dirs);
+  const facts = assertVendoredCompiler(bin);
+  return { bin, version: facts.version, tarball: facts.tarball };
 }
 
 /// Directories a tool may live in without being on PATH.
