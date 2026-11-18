@@ -72,13 +72,14 @@ unrelated to `src`/`cli` but still fail the command).
 
 ## Gotchas
 
-- **`file:` dependencies cache by version.** Repacking a tarball into the same
-  `yabgu_gm-tensionscript-<version>.tgz` name and reinstalling does **not** pick
-  up the new contents: npm serves the previously installed package from its
-  cache for that version, so every consumer keeps the old `~lib/task-rt` and a
-  freshly added export fails at typecheck (`TS2305: no exported member`). A
-  tarball refresh after a source change requires a **version bump** in the
-  fork's `package.json` before `npm pack`. Measured twice in 4e: the 0.3.2
+- **`file:` dependencies cache by version.** Repacking the compiler artifact
+  under the same name and reinstalling does **not** pick up the new contents: npm
+  serves the previously installed package from its cache for that version, so
+  every consumer keeps the old `~lib/task-rt` and a freshly added export fails at
+  typecheck (`TS2305: no exported member`). The vendoring puts the commit in the
+  name (`…-<version>-g<sha>.tar`) precisely so that is not a trap — a different
+  commit is a different file. Repacking the *same* commit after editing the source
+  still needs a **version bump** in the fork's `package.json`. Measured twice in 4e: the 0.3.2
   repack installed stale contents, and bumping to 0.3.3 fixed it.
 - **The `~env` global is dead-code-eliminated in release output when no arrow
   in the module captures `this`.** That is the expected shape, not a missing
