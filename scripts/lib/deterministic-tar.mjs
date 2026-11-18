@@ -199,13 +199,48 @@ function writeHeader({ name, mode, size, type }) {
   return header;
 }
 
-/** The normalised mode for an entry: the executable bit is the only signal kept. */
-function normalisedMode(mode, type) {
+/**
+ * The members a package's `bin` field names, as tar member paths.
+ *
+ * **This, and not the input mode, decides which members are executable.** The
+ * first version of this module normalised "anything with an execute bit to 0755",
+ * which reads the *filesystem* rather than the package: NTFS has no execute bit, so
+ * on Windows nothing looked executable and the compiler's bin entry was written
+ * 0644 against Linux's 0755. One header field, 1,606 bytes of compressed
+ * difference, and `EINTEGRITY` on every install from the committed lockfile.
+ *
+ * `package.json`'s `bin` is metadata: identical on every platform by construction,
+ * because it is committed. That is the only input this decision may have.
+ *
+ * `prefix` is the directory the pack root sits under — `package/` for an npm
+ * tarball, `''` for one whose members are already relative.
+ */
+export function executableMembers(binField, prefix = 'package/') {
+  const names = new Set();
+  if (!binField) return names;
+  const entries = typeof binField === 'string'
+    ? [binField]
+    : Object.values(binField);
+  for (const entry of entries) {
+    if (typeof entry !== 'string' || !entry) continue;
+    // `bin` entries are written `./bin/tensionscript.js` or `bin/tensionscript.js`
+    // by different tools and both mean the same member.
+    const relative = entry.replace(/^[.][\\/]/, '').split(/[\\/]+/).join('/');
+    names.add(`${prefix}${relative}`);
+  }
+  return names;
+}
+
+/**
+ * The normalised mode for an entry.
+ *
+ * Directories are 0755; a member named by the package's `bin` is 0755; everything
+ * else is 0644. **Never the input's mode** — see {@link executableMembers} for the
+ * platform defect that made "anything executable" the wrong question.
+ */
+function normalisedMode(type, name, executables) {
   if (type === TYPE_DIR) return 0o755;
-  // npm writes 0755 for a bin entry and 0644 for everything else; a checkout's
-  // umask can turn 0755 into 0754 or 0700, so "any execute bit" is the test.
-  const executable = (mode & 0o111) !== 0;
-  return executable ? 0o755 : 0o644;
+  return executables.has(name) ? 0o755 : 0o644;
 }
 
 /**
@@ -215,7 +250,7 @@ function normalisedMode(mode, type) {
  * that could carry machine state is fixed. The two zero blocks at the end are
  * required by the format and are part of the digest.
  */
-export function writeTarGz(entries) {
+export function writeTarGz(entries, { executables = new Set() } = {}) {
   const chunks = [];
   for (const entry of entries) {
     const type = entry.type ?? TYPE_FILE;
@@ -225,7 +260,7 @@ export function writeTarGz(entries) {
     const data = type === TYPE_DIR ? Buffer.alloc(0) : entry.data;
     chunks.push(writeHeader({
       name: entry.name,
-      mode: normalisedMode(entry.mode ?? 0o644, type),
+      mode: normalisedMode(type, entry.name, executables),
       size: data.length,
       type,
     }));
@@ -251,7 +286,7 @@ export function writeTarGz(entries) {
  * whether anything other than metadata changed. The caller compares the unpacked
  * member list on both sides rather than trusting the writer.
  */
-export function repackDeterministic(buffer) {
+export function repackDeterministic(buffer, options = {}) {
   const entries = readTarGz(buffer);
-  return { buffer: writeTarGz(entries), entries };
+  return { buffer: writeTarGz(entries, options), entries };
 }

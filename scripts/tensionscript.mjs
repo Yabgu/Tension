@@ -19,7 +19,7 @@
 
 import { spawnSync } from 'node:child_process';
 
-import { CompilerError, resolveCompiler } from './lib/toolchain.mjs';
+import { CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 
 let resolved;
 try {
@@ -44,10 +44,11 @@ process.stderr.write(
     : `tensionscript: ${resolved.version} from ${resolved.path} (vendored ${resolved.tarball})\n`,
 );
 
-const result = spawnSync(resolved.command, [...resolved.prefix, ...process.argv.slice(2)], {
-  stdio: 'inherit',
-  shell: resolved.shell,
-});
+// **`spawnForm`, not the invocation's fields directly.** On the shell path it
+// composes one quoted command line; passing an argument array with `shell: true`
+// concatenates unescaped (Node's DEP0190) and turns a spaced path into two args.
+const form = spawnForm(resolved, process.argv.slice(2));
+const result = spawnSync(form.command, form.args, { stdio: 'inherit', shell: form.shell });
 
 if (result.error) {
   process.stderr.write(`tensionscript: ${result.error.message}\n`);

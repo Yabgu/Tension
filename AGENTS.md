@@ -45,9 +45,17 @@ come first; the rest is the Windows build cheat-sheet.
    stderr and skips the provenance check, because a path outside the pin is a
    thing nothing can be proven about. It is for bisecting a compiler, not for
    routine builds. The tarball is **canonicalised** when it is packed (mtime 0,
-   uid/gid 0, modes normalised, no pax headers) so two machines packing the same
-   commit produce the same bytes and the committed lockfile's integrity is valid
-   on every platform; `scripts/test-deterministic-tar.mjs` asserts that.
+   uid/gid 0, no pax headers) so two machines packing the same commit produce the
+   same bytes and the committed lockfile's integrity is valid on every platform;
+   `scripts/test-deterministic-tar.mjs` asserts that.
+
+   **Modes come from the package's `bin` field, never from the file system.** A
+   member named by `bin` is 0755 and everything else is 0644. Reading the packed
+   mode instead looked equivalent and was not: NTFS has no execute bit, so
+   `npm pack` on Windows recorded the compiler's own entry as 0644 against Linux's
+   0755 — one header field, and `EINTEGRITY` on every install from the committed
+   lockfile. `package.json` is committed, so it is the only platform-independent
+   answer.
 
    **Never spell the compiler as a bare `tensionscript`** in a package script.
    That is a PATH lookup, and npm's PATH is the ancestor `node_modules/.bin`

@@ -36,7 +36,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
 
-import { readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
+import { executableMembers, readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -125,12 +125,13 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
     uname: 'runner', gname: 'runner', level: 1,
   });
 
-  const a = writeTarGz(readTarGz(linuxLike));
-  const b = writeTarGz(readTarGz(foreignLike));
+  const executables = executableMembers({ cli: './bin/cli.js' });
+  const a = writeTarGz(readTarGz(linuxLike), { executables });
+  const b = writeTarGz(readTarGz(foreignLike), { executables });
   check('two archives that differ only in metadata canonicalise to the same bytes',
     a.equals(b), `${digest(a)} vs ${digest(b)}`);
 
-  const again = writeTarGz(readTarGz(linuxLike));
+  const again = writeTarGz(readTarGz(linuxLike), { executables });
   check('canonicalising twice gives the same bytes', a.equals(again));
 
   const headers = gunzipSync(a).subarray(0, 512);
@@ -150,8 +151,9 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
   const source = buildArchive({
     mtime: 499162500, uid: 0, gid: 0, mode: 0o644, uname: '', gname: '', level: 9,
   });
+  const executables = executableMembers({ cli: './bin/cli.js' });
   const before = readTarGz(source);
-  const out = readTarGz(writeTarGz(before));
+  const out = readTarGz(writeTarGz(before, { executables }));
 
   check('member count is unchanged', before.length === out.length);
   check('member names and order are unchanged',
@@ -169,6 +171,76 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
   check('a zero-length member survives', out.some((e) => e.name === 'package/dist/empty.js' && e.data.length === 0));
 }
 
+/**
+ * Rewrite one member's mode in a gzipped tar, checksum and all.
+ *
+ * A test helper, not part of the canonicaliser: it builds the **input** a Windows
+ * `npm pack` would produce from the input a Linux one produced. The architect's
+ * member-by-member comparison found exactly one difference between the two, so
+ * reproducing it here is a faithful stand-in for a machine this suite cannot run on.
+ */
+function withMode(buffer, member, mode) {
+  const tar = Buffer.from(gunzipSync(buffer));
+  let offset = 0;
+  while (offset + 512 <= tar.length) {
+    const name = tar.toString('utf8', offset, offset + 100).replace(/\0.*$/, '');
+    const size = parseInt(tar.toString('latin1', offset + 124, offset + 136).trim() || '0', 8);
+    if (name === member) {
+      tar.write(`${mode.toString(8).padStart(6, '0')} \0`, offset + 100, 8, 'latin1');
+      tar.fill(0x20, offset + 148, offset + 156);
+      let sum = 0;
+      for (let i = 0; i < 512; i++) sum += tar[offset + i];
+      tar.write(sum.toString(8).padStart(6, '0'), offset + 148, 6, 'latin1');
+      tar.writeUInt8(0, offset + 154);
+      tar.writeUInt8(0x20, offset + 155);
+      break;
+    }
+    offset += 512 + Math.ceil(size / 512) * 512;
+  }
+  return gzipSync(tar, { level: 9 });
+}
+
+// ── 2b. the mode comes from `bin`, not from the input ──────────────────────
+//
+// The defect this round fixes. `npm pack` records the bin entry as 0755 on Linux
+// and **0644 on Windows**, because NTFS has no execute bit — so a rule that reads
+// the input mode bakes the packing platform into the artifact, and the committed
+// lockfile's integrity is then valid on one platform only. Measured by the
+// architect: everything matched except this one header field.
+//
+// So: the same members, one packed "on Linux" (bin 0755) and one "on Windows"
+// (bin 0644), must canonicalise to **identical bytes**, and both must say 0755.
+{
+  const asLinux = buildArchive({
+    mtime: 499162500, uid: 0, gid: 0, mode: 0o644, uname: '', gname: '', level: 9,
+  });
+
+  const executables = executableMembers({ cli: './bin/cli.js' }, 'package/');
+  const linuxBin = withMode(asLinux, 'package/bin/cli.js', 0o755);
+  const windowsBin = withMode(asLinux, 'package/bin/cli.js', 0o644);
+
+  const fromLinux = writeTarGz(readTarGz(linuxBin), { executables });
+  const fromWindows = writeTarGz(readTarGz(windowsBin), { executables });
+  check('a bin entry packed 0644 (the Windows shape) canonicalises identically to 0755',
+    fromLinux.equals(fromWindows), `${digest(fromLinux)} vs ${digest(fromWindows)}`);
+
+  const modeOf = (buffer, member) => {
+    const entry = readTarGz(buffer).find((e) => e.name === member);
+    return entry ? (entry.mode & 0o777).toString(8) : 'missing';
+  };
+  check('the bin entry is 0755 even though the input said 0644',
+    modeOf(fromWindows, 'package/bin/cli.js') === '755', modeOf(fromWindows, 'package/bin/cli.js'));
+  check('a non-bin member stays 0644',
+    modeOf(fromWindows, 'package/package.json') === '644', modeOf(fromWindows, 'package/package.json'));
+
+  // And the converse: an input that marks a *non-bin* file executable must not get
+  // 0755, or the rule would still be reading the input.
+  const strayExec = withMode(asLinux, 'package/package.json', 0o755);
+  const fromStray = writeTarGz(readTarGz(strayExec), { executables });
+  check('an executable bit on a non-bin member is not trusted',
+    modeOf(fromStray, 'package/package.json') === '644', modeOf(fromStray, 'package/package.json'));
+}
+
 // ── 3. a long path is carried by ustar's prefix, not a pax header ────────────
 {
   const longName = `package/${'a'.repeat(60)}/${'b'.repeat(60)}/file.js`;
@@ -176,10 +248,10 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
     mtime: 0, uid: 0, gid: 0, mode: 0o644, uname: '', gname: '', level: 9,
   });
   const members = readTarGz(source).concat([{ name: longName, mode: 0o644, type: 0x30, data: Buffer.from('x') }]);
-  const out = readTarGz(writeTarGz(members));
+  const out = readTarGz(writeTarGz(members, { executables: executableMembers(null) }));
   check('a 130-character path round-trips', out.some((e) => e.name === longName));
   check('no pax member is emitted',
-    !gunzipSync(writeTarGz(members)).subarray(156, 157).equals(Buffer.from('x')));
+    !gunzipSync(writeTarGz(members, { executables: executableMembers(null) })).subarray(156, 157).equals(Buffer.from('x')));
 }
 
 // ── 4. the real artifact is already canonical ───────────────────────────────
@@ -202,9 +274,26 @@ function buildArchive({ mtime, uid, gid, mode, uname, gname, level }) {
     // red on a correct checkout for a reason its own message already explains.
     for (const name of tarballs) {
       const onDisk = readFileSync(join(packs, name));
-      const rebuilt = writeTarGz(readTarGz(onDisk));
+      // The real package's `bin`, from the submodule's committed manifest — this
+      // is the metadata the canonical rule reads, and it is identical on every
+      // platform because it is committed.
+      const pkgManifest = join(repo, 'third_party', 'TensionScript', 'package.json');
+      const executables = existsSync(pkgManifest)
+        ? executableMembers(JSON.parse(readFileSync(pkgManifest, 'utf8')).bin)
+        : executableMembers(null);
+      const rebuilt = writeTarGz(readTarGz(onDisk), { executables });
       check(`repacking the vendored ${name} is stable`,
-        rebuilt.equals(writeTarGz(readTarGz(onDisk))));
+        rebuilt.equals(writeTarGz(readTarGz(onDisk), { executables })));
+      // The property this round is about, on the real artifact: feed the
+      // canonicaliser the tarball as Windows `npm pack` would have left it (bin
+      // entry 0644) and require the committed bytes back.
+      const binMembers = [...executables];
+      if (binMembers.length) {
+        const windowsShaped = withMode(onDisk, binMembers[0], 0o644);
+        const fromWindows = writeTarGz(readTarGz(windowsShaped), { executables });
+        check(`a Windows-shaped repack of ${name} reproduces the same bytes`,
+          fromWindows.equals(onDisk), `${fromWindows.length} B vs ${onDisk.length} B`);
+      }
       if (!onDisk.equals(rebuilt)) {
         console.log(`note    ${name} was packed before the repack existed ` +
           `(${onDisk.length} B on disk vs ${rebuilt.length} B canonical) — ` +

@@ -110,7 +110,15 @@ export function compileGuest(ctx, { debug = false } = {}) {
     ...(debug ? ['--debug', '--sourceMap'] : []),
     '-o', ctx.paths.wasm,
   ];
-  const status = run(ctx.compiler.command, args, { cwd: ctx.projectDir });
+  // `shell` comes from the resolution (`project.js` sets it for a `.cmd` shim),
+  // and the shell path gets **one composed string**: an argument array with
+  // `shell: true` is concatenated unescaped, so a project path with a space would
+  // silently become two arguments.
+  const shell = Boolean(ctx.compiler.shell);
+  const command = shell ? [ctx.compiler.command, ...args].map((part) =>
+    /[\s"]/.test(part) ? `"${part.replace(/"/g, '""')}"` : part).join(' ') : ctx.compiler.command;
+  const argv = shell ? [] : args;
+  const status = run(command, argv, { cwd: ctx.projectDir, shell });
   if (status !== 0) return { ok: false };
   return { ok: true, bytes: statSync(ctx.paths.wasm).size };
 }

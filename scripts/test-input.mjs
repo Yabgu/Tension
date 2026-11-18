@@ -30,7 +30,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 if (process.argv.includes('--edge')) {
@@ -118,11 +118,10 @@ try {
 }
 
 const guest = join(out, 'guest-input.wasm');
-const compiled = spawn(asc.command,
-                       [...asc.prefix, join(suite, 'tests', 'guest-input.ts'),
-                        '--config', join(framework, 'build', 'session.asconfig.json'),
-                        '-o', guest],
-                       { shell: asc.shell });
+const ascentForm = spawnForm(asc, [join(suite, 'tests', 'guest-input.ts'),
+                                  '--config', join(framework, 'build', 'session.asconfig.json'),
+                                  '-o', guest]);
+const compiled = spawn(ascentForm.command, ascentForm.args, { shell: ascentForm.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
   fail(RUNNER, 'guest-input.ts did not compile');

@@ -290,13 +290,63 @@ export { COMPILER };
  * A `.cmd`/`.bat` path is only reachable on Windows and needs a shell there; npm's
  * shims are not executable images. Anything else is spawned directly.
  */
-export function compilerInvocation(path) {
+export function compilerInvocation(path, win = WIN) {
   const common = { path };
-  if (WIN && /\.(cmd|bat)$/i.test(path)) return { ...common, command: path, prefix: [], shell: true };
+  // A batch file is not an executable image: Windows needs `cmd.exe` to run it,
+  // and Node refuses to spawn one directly (`EINVAL`).
+  if (win && /\.(cmd|bat)$/i.test(path)) return { ...common, command: path, prefix: [], shell: true };
+  // **A `.js` path always runs through this Node.** Windows has no shebang
+  // handling, so spawning one directly is `EFTYPE` — which is what made
+  // `$TENSIONSCRIPT=…\dist\asc.js` fail as an "escape hatch". This branch is also
+  // what the vendored pin takes on every platform.
   if (/\.(c|m)?js$/i.test(path)) {
     return { ...common, command: process.execPath, prefix: [path], shell: false };
   }
+  // A bare command name on Windows can only be reached through `cmd.exe`, because
+  // what it resolves to is a `.cmd` shim. On POSIX a bare name goes to `execvp`.
+  if (win && !/[\\/]/.test(path) && !/\.[a-z0-9]+$/i.test(path)) {
+    return { ...common, command: path, prefix: [], shell: true };
+  }
   return { ...common, command: path, prefix: [], shell: false };
+}
+
+/**
+ * Quote one argument for a shell command line.
+ *
+ * Only used on the shell path. `spawnSync(cmd, args, { shell: true })` concatenates
+ * the arguments unescaped — Node emits `DEP0190` for exactly that reason, and it is
+ * right to: an argument with a space in it silently becomes two, which for a path
+ * like `C:\Program Files\…` is a wrong command rather than an error.
+ */
+export function shellQuote(arg, win = WIN) {
+  const text = String(arg);
+  if (win) {
+    // Windows: everything inside double quotes is literal except `"` and `%`.
+    // A `.cmd` invocation is the only caller, and its arguments are file paths and
+    // flags — none contains `%` — so doubling `"` is the whole rule.
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
+ * How to spawn an invocation with `args`: `{ command, args, shell }`.
+ *
+ * **The shell form is one string with no argument array.** Node's `DEP0190` says
+ * passing an array with `shell: true` concatenates without escaping; composing the
+ * line ourselves with {@link shellQuote} is the fix, not a silenced warning. On the
+ * direct form the array is passed through untouched, which is what makes a path
+ * with a space in it safe there.
+ */
+export function spawnForm(invocation, args = [], win = WIN) {
+  if (!invocation.shell) {
+    return { command: invocation.command, args: [...invocation.prefix, ...args], shell: false };
+  }
+  const line = [invocation.command, ...invocation.prefix, ...args]
+    .map((arg) => shellQuote(arg, win)).join(' ');
+  // `args: []`, not the array: an empty array does not trigger the deprecation, and
+  // an absent one would make Node append `process.argv` on some call shapes.
+  return { command: line, args: [], shell: true };
 }
 
 /**

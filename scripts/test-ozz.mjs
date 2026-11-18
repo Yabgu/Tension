@@ -11,7 +11,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -59,11 +59,10 @@ if (!existsSync(join(example, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   }
 }
 
-const compiled = spawn(asc.command,
-                       [...asc.prefix, join(example, 'ozz-load.ts'),
-                        '--config', join(repo, 'tension-framework', 'build', 'session.asconfig.json'),
-                        '-o', join(example, 'build', 'ozz-load.wasm')],
-                       { cwd: example, shell: asc.shell });
+const form = spawnForm(asc, [join(example, 'ozz-load.ts'),
+                             '--config', join(repo, 'tension-framework', 'build', 'session.asconfig.json'),
+                             '-o', join(example, 'build', 'ozz-load.wasm')]);
+const compiled = spawn(form.command, form.args, { cwd: example, shell: form.shell });
 if (compiled.status !== 0) {
   process.stderr.write(compiled.stdout + compiled.stderr);
   fail(RUNNER, 'ozz-load.ts did not compile');

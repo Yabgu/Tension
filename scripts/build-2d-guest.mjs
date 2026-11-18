@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CompilerError, resolveCompiler } from './lib/toolchain.mjs';
+import { CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { renderGraphBlobModule } from '../packages/cli/src/graph-blob.js';
 import { spawn } from './lib/proc.mjs';
 
@@ -99,8 +99,8 @@ try {
 }
 // The invocation, not a path: it already names the launcher and whether it needs
 // a shell (`{ command, prefix, shell }`), so nothing here re-decides the platform.
-const probe = spawn(compiler.command, [...compiler.prefix, '--version'],
-                    { shell: compiler.shell });
+const probeForm = spawnForm(compiler, ['--version']);
+const probe = spawn(probeForm.command, probeForm.args, { shell: probeForm.shell });
 if (!probe || probe.status !== 0) {
   die(`the resolved compiler ${compiler.path} does not answer --version`);
 }
@@ -131,9 +131,9 @@ mkdirSync(join(exampleDir, 'build'), { recursive: true });
 const entry = join(exampleDir, 'src', 'main.ts');
 const out = join(exampleDir, 'build', 'game.wasm');
 const compileFlags = debug ? ['--debug', '--sourceMap'] : [];
-const compile = spawn(compiler.command,
-  [...compiler.prefix, entry, '--config', config, ...compileFlags, '-o', out],
-  { cwd: exampleDir, shell: compiler.shell });
+const compileForm = spawnForm(compiler, [entry, '--config', config, ...compileFlags, '-o', out]);
+const compile = spawn(compileForm.command, compileForm.args,
+                      { cwd: exampleDir, shell: compileForm.shell });
 if (!compile || compile.status !== 0) {
   console.error(compile?.stdout ?? '', compile?.stderr ?? '');
   die('the guest did not compile');

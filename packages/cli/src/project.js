@@ -185,7 +185,10 @@ export function compiler(projectDir) {
     const rel = typeof binField === 'string' ? binField : binField?.tensionscript;
     if (!rel) continue;
     const js = join(dirname(pkg.path), rel);
-    if (exists(js)) candidates.push({ command: process.execPath, prefix: [js] });
+    // `shell: false` and Node as the launcher, on every platform: a `.js` file
+    // cannot be executed directly on Windows (`EFTYPE`), and running it through
+    // this Node needs no shim, no shell and no argument escaping.
+    if (exists(js)) candidates.push({ command: process.execPath, prefix: [js], shell: false });
   }
 
   // The `.bin` shim, for an install whose package layout carries no resolvable
@@ -193,7 +196,9 @@ export function compiler(projectDir) {
   for (const base of bases) {
     const shim = findBin(base, 'tensionscript');
     if (shim) {
-      candidates.push({ command: shim, prefix: [] });
+      // The shim is a `.cmd` on Windows, which only `cmd.exe` can run: without
+      // `shell` this is `EINVAL`. `compileGuest` reads the field.
+      candidates.push({ command: shim, prefix: [], shell: process.platform === 'win32' });
       break;
     }
   }

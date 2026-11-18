@@ -63,7 +63,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
+import { executableMembers, readTarGz, writeTarGz } from './lib/deterministic-tar.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -81,13 +81,18 @@ export const RECURSION_MARKER = 'TENSION_COMPILER_VENDORING';
  * The tarball format this script writes, recorded in the manifest.
  *
  * `npm pack`'s own bytes are not reproducible across platforms, so `.packs/` holds
- * a **canonicalised** tarball (see `lib/deterministic-tar.mjs`). A manifest without
- * this field describes an artifact packed by npm directly — the state every tree
- * vendored before this existed is in — and the next run repacks it instead of
- * calling it up to date. Comparing the field is what makes that one repack happen
- * once, rather than re-reading 10 MB on every `preinstall`.
+ * a **canonicalised** tarball (see `lib/deterministic-tar.mjs`). The version is
+ * bumped whenever the canonicalisation rule changes, and a manifest carrying an
+ * older one is repacked rather than called current — which is how a tree picks up
+ * the fix without anyone deleting `.packs/` by hand.
+ *
+ *   v1  modes came from the input's execute bit. **Wrong across platforms**: NTFS
+ *       has no execute bit, so the compiler's bin entry was 0755 on Linux and 0644
+ *       on Windows — one header field, and `EINTEGRITY` on every non-Linux install.
+ *   v2  modes come from the package's `bin` field: platform-independent by
+ *       construction, because `package.json` is committed.
  */
-const TARBALL_FORMAT = 'canonical-tar-v1';
+const TARBALL_FORMAT = 'canonical-tar-v2';
 
 function fail(message, label) {
   console.error(`${label}: ${message}`);
@@ -123,7 +128,25 @@ function run(command, args, options = {}, label = 'vendor-compiler') {
   // An absolute *executable* path must not go through the shell — a path with a
   // space in it would be split — which is why this is not simply `WIN`.
   const shell = options.shell ?? needsShell(command);
-  const result = spawnSync(command, args, { encoding: 'utf8', ...options, shell });
+
+  if (!shell) {
+    const result = spawnSync(command, args, { encoding: 'utf8', ...options, shell: false });
+    if (result.error) fail(`${command}: ${result.error.message}`, label);
+    return result;
+  }
+
+  // **One composed string on the shell path, and no argument array.** Node says so
+  // itself — `DEP0190`: "passing args to a child process with shell option true can
+  // lead to security vulnerabilities, as the arguments are not escaped, only
+  // concatenated". Silencing that would be exactly the wrong response here: this
+  // file passes paths, and a path with a space in it becoming two arguments is a
+  // wrong command rather than an error. So quote, then hand the shell one line.
+  const line = [command, ...args].map((part) => {
+    const text = String(part);
+    if (!/[\s"]/.test(text)) return text;
+    return WIN ? `"${text.replace(/"/g, '""')}"` : `'${text.replace(/'/g, `'\\''`)}'`;
+  }).join(' ');
+  const result = spawnSync(line, [], { encoding: 'utf8', ...options, shell: true });
   if (result.error) fail(`${command}: ${result.error.message}`, label);
   return result;
 }
@@ -296,7 +319,13 @@ export function vendorCompiler({
   // same bytes, which is the property the whole scheme needs.
   const scratched = readFileSync(scratchPath);
   const npmMembers = readTarGz(scratched);
-  const canonical = writeTarGz(npmMembers);
+  // **Which members are executable comes from `package.json`, never from the
+  // input tarball.** npm pack on Windows records 0644 for the bin entry because
+  // NTFS has no execute bit, so reading the mode back would bake the packing
+  // platform into the artifact — the defect this whole module exists to remove.
+  // `bin` is committed metadata and is the same on every machine.
+  const executables = executableMembers(pkg.bin);
+  const canonical = writeTarGz(npmMembers, { executables });
   // The repack must not change the package, only its container — so read what was
   // written and compare it to what npm produced. Comparing in memory would only
   // prove that `writeTarGz` agrees with itself; reading the *bytes* is what
@@ -308,7 +337,8 @@ export function vendorCompiler({
   // root spec and the lockfile all name `tarballName`. Removing it means a stray
   // copy under npm's basename cannot be picked up by a later glob.
   rmSync(scratchPath, { force: true });
-  say(`canonicalised ${npmMembers.length} members (mtime 0, uid/gid 0, modes normalised)`);
+  say(`canonicalised ${npmMembers.length} members (mtime 0, uid/gid 0, ` +
+      `0755 for ${executables.size} bin member(s), 0644 for the rest)`);
 
   const integrity = `sha512-${createHash('sha512').update(readFileSync(tarballPath)).digest('base64')}`;
   writeFileSync(manifestPath, `${JSON.stringify({

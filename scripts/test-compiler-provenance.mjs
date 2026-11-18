@@ -26,7 +26,11 @@
 //      file — so the rule still bites rather than having been made vacuous;
 //   4. a Windows-style `.cmd` shim is followed to the script it runs, and one that
 //      names a file outside the package is rejected. The shim is a text file, so
-//      this is testable here; the platform it comes from is not.
+//      this is testable here; the platform it comes from is not;
+//   5. `$TENSIONSCRIPT` launches through `compilerInvocation` — a `.js` through this
+//      Node (`EFTYPE` otherwise), a `.cmd` through a shell (`EINVAL` otherwise);
+//   6. the shell form is one composed, quoted string with no argument array, which
+//      is the fix for Node's `DEP0190` and for a spaced path becoming two args.
 //
 // Run: node scripts/test-compiler-provenance.mjs
 
@@ -35,7 +39,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { assertVendoredCompiler, locateCompiler } from './lib/toolchain.mjs';
+import {
+  assertVendoredCompiler, compilerInvocation, locateCompiler, shellQuote, spawnForm,
+} from './lib/toolchain.mjs';
 import { launchedFile, shimTarget } from '../packages/cli/src/compiler-provenance.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -153,6 +159,55 @@ if (invocation) {
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+// ── 5. the $TENSIONSCRIPT override goes through the same invocation ─────────
+//
+// Measured on Windows, before this fix, both forms of the override failed at the
+// spawn: a `.js` gave `EFTYPE` (Windows does not execute JavaScript) and a `.cmd`
+// gave `EINVAL` (Node refuses a batch file without a shell). Neither is a fact
+// about the compiler — both are facts about how it was launched. The decision
+// belongs in `compilerInvocation`, which is what the vendored pin already uses.
+{
+  const jsOverride = compilerInvocation('C:\\work\\dist\\asc.js', true);
+  check('a .js override runs through this Node on Windows',
+    jsOverride.command === process.execPath && jsOverride.shell === false,
+    JSON.stringify(jsOverride));
+  check('a .js override names itself as the script',
+    jsOverride.prefix.length === 1 && jsOverride.prefix[0] === 'C:\\work\\dist\\asc.js');
+
+  const cmdOverride = compilerInvocation('C:\\work\\.bin\\tensionscript.cmd', true);
+  check('a .cmd override asks for a shell',
+    cmdOverride.shell === true && cmdOverride.command.endsWith('.cmd'),
+    JSON.stringify(cmdOverride));
+
+  const exeOverride = compilerInvocation('C:\\work\\tensionscript.exe', true);
+  check('an .exe override spawns directly',
+    exeOverride.shell === false && exeOverride.prefix.length === 0,
+    JSON.stringify(exeOverride));
+
+  // ── 6. the shell form is one string, so no argument can be mis-split ──────
+  //
+  // `spawnSync(cmd, args, { shell: true })` concatenates unescaped — Node's
+  // DEP0190 — so `C:\Program Files\Git\bin` becomes two arguments. The composed
+  // form quotes; the direct form passes the array through untouched, which is
+  // what makes a spaced path safe there.
+  const shellInvocation = { command: 'C:\\Program Files\\nodejs\\t.cmd', prefix: [], shell: true };
+  const shellForm = spawnForm(shellInvocation, ['--out', 'C:\\a b\\o.wasm'], true);
+  check('the shell form is a single command string with no argument array',
+    shellForm.args.length === 0 && typeof shellForm.command === 'string', JSON.stringify(shellForm));
+  check('a path with a space is quoted on the shell form',
+    shellForm.command.includes('"C:\\Program Files\\nodejs\\t.cmd"') &&
+    shellForm.command.includes('"C:\\a b\\o.wasm"'), shellForm.command);
+
+  const directInvocation = { command: process.execPath, prefix: ['/x/asc.js'], shell: false };
+  const directForm = spawnForm(directInvocation, ['--out', '/a b/o.wasm'], true);
+  check('the direct form keeps the argv array, unquoted',
+    directForm.shell === false && directForm.args.length === 3 &&
+    directForm.args[2] === '/a b/o.wasm', JSON.stringify(directForm));
+
+  check('POSIX quoting escapes a single quote', shellQuote("a'b", false) === "'a'\\''b'",
+    shellQuote("a'b", false));
 }
 
 if (failures) {

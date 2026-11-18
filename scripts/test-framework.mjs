@@ -21,7 +21,7 @@ import { dirname, join, relative, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { encodePng } from '../tension-framework/tools/lib/png.mjs';
-import { REPO, CompilerError, resolveCompiler } from './lib/toolchain.mjs';
+import { REPO, CompilerError, resolveCompiler, spawnForm } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -111,7 +111,8 @@ function compile(entry, out, { session = true } = {}) {
   if (session) args.push('--config', asconfig);
   else args.push('--runtime', 'incremental', '--target', 'release');
   args.push('-o', join(build, out));
-  return spawn(asc.command, [...asc.prefix, ...args], { cwd: framework, shell: asc.shell });
+  const form = spawnForm(asc, args);
+  return spawn(form.command, form.args, { cwd: framework, shell: form.shell });
 }
 
 /// Run a compiled fixture and return the result.
