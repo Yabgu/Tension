@@ -25,13 +25,23 @@ come first; the rest is the Windows build cheat-sheet.
    builds it, runs its `publish:verify` gate, packs it into `.packs/`, and writes
    the result into the **root** `package.json` as a `file:` devDependency named
    `…-<version>-g<sha>.tgz` (the commit suffix is what distinguishes two bumps
-   that share a version). The root is the only install point: every `npm run` in
-   the tree — the framework, every example — resolves the same binary by walking
-   up to `<repo>/node_modules/.bin`. **No package may declare the compiler
-   again**: a nearer `node_modules/.bin` shadows the root one, so a per-example
-   install silently compiles that example with a different compiler than the
-   framework used. `.packs/` is gitignored; the tarball is reproducible from the
-   gitlink.
+   that share a version). The root is the only install point, and
+   `scripts/lib/toolchain.mjs` is the only resolver: `requireCompiler()` looks at
+   `<repo>/node_modules/.bin` **only** and then proves the installed copy is the
+   tarball `.packs/manifest.json` names — the lock's `resolved` field, the
+   installed `version`, and the binary's realpath all have to agree. A version
+   comparison alone would pass a registry `0.14.1`.
+
+   **Never spell the compiler as a bare `tensionscript`** in a package script.
+   That is a PATH lookup, and npm's PATH is the ancestor `node_modules/.bin`
+   directories followed by the shell's own — so with no root install it reaches
+   whatever else is on the machine. Measured here: a global 0.11.0 shim at
+   `~/.local/bin/tensionscript` compiled the current framework into ten parse
+   errors that named the framework. Every guest build instead names
+   `node <rel>/scripts/tensionscript.mjs`, which resolves and proves the pin and
+   fails closed with the two commands that fix it. **No package may declare the
+   compiler again** either: a nearer `node_modules/.bin` shadows the root one.
+   `.packs/` is gitignored; the tarball is reproducible from the gitlink.
 
    To pick up a language change:
 

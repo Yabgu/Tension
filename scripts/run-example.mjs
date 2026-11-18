@@ -35,7 +35,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { staleness } from './build-stamp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-import { compilerBin } from './lib/toolchain.mjs';
+import { CompilerError, requireCompiler } from './lib/toolchain.mjs';
 
 const repo = resolve(here, '..');
 const WIN = process.platform === 'win32';
@@ -275,10 +275,12 @@ if (!existsSync(host)) {
 // `tension-framework`, so that is what decides whether to install — the
 // compiler's presence used to stand in for it, and standing in for it now would
 // always be false.
-const asc = compilerBin(exampleDir);
-if (!asc) {
-  die(`no tensionscript found\n` +
-      `  install the vendored compiler:  npm run compiler:vendor && npm install  (at the repo root)`);
+let asc;
+try {
+  asc = requireCompiler(exampleDir);
+} catch (error) {
+  if (error instanceof CompilerError) die(error.message);
+  throw error;
 }
 if (!existsSync(join(exampleDir, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   console.log(`${pkg.name}: installing the guest's build dependencies...`);
