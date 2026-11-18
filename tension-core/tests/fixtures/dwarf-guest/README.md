@@ -5,15 +5,25 @@ bytes. The host must **pass this guest through untouched**.
 
 ## Provenance
 
-- Compiler: `@yabgu_gm/tensionscript@0.14.0`, the published npm package —
-  installed from the registry, not built from the dev tree. Recompiled under
-  `0.14.1` on 2026-11-05 and byte-identical, so the recorded bytes below stand
-  for both: 0.14.1 is a docs/tests patch that does not touch codegen.
+- Compiler: `tensionscript` **0.14.0**, installed from the npm package that
+  existed at the time — not built from a dev tree. Recompiled under `0.14.1` on
+  2026-11-05 and byte-identical, so the recorded bytes below stand for both:
+  0.14.1 is a docs/tests patch that does not touch codegen.
+
+  This is a **historical provenance record**, and the recipe below is the one
+  that was run. The compiler is now pinned as the `third_party/TensionScript`
+  submodule and installed from the `.packs` tarball the root `package.json`
+  declares, so the npm install in that recipe will not resolve once the 0.13/0.14
+  releases are unpublished. That is deliberate: these bytes are a locked input to
+  `e2e_debug.rs`, and a new fixture is built with the current pin
+  (`node scripts/tensionscript.mjs …`), not by reinstalling an old one.
 - Source: `game.ts` in this directory, copied verbatim from
   `TensionScript/tests/debug/examples/add-locals/game.ts` — a named-local
   `add(a, b)` plus `_start_game`; the same shape as the Prompt A/B harness
   fixture.
-- Command (run **inside this directory**):
+- Command (run **inside this directory**; `node <pkg>/bin/tensionscript.js` is
+  what an npm install of that era gave you, and the equivalent today is
+  `node ../../../../scripts/tensionscript.mjs`):
 
   ```sh
   node <install>/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js \

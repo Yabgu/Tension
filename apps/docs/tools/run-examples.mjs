@@ -27,6 +27,9 @@ import { fileURLToPath } from 'node:url';
 
 import { BLOCK_FLAG, KIND } from './lib/format.mjs';
 import { readDocs } from './lib/read-docs.mjs';
+import {
+  CompilerError, compilerInvocation, resolveCompiler,
+} from '../../../scripts/lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(here, '..');
@@ -73,48 +76,38 @@ function firstExisting(candidates) {
 /**
  * The TensionScript compiler, as `{ command, prefix, shell }`.
  *
- * **The npm shim is not an executable image on Windows**, and asking for one by
- * the platform's executable suffix finds nothing: npm writes three files into
- * `node_modules/.bin` — `tensionscript`, `tensionscript.cmd`, `tensionscript.ps1`
- * — and only the `.cmd` is launchable there, while the extensionless file is a
- * POSIX shell script. Measured on Windows: `no TensionScript compiler found` on a
- * tree whose `.bin` was present and correct. `scripts/lib/toolchain.mjs`'s
- * `npmBin()` says the same thing in one line.
+ * **Resolved by the repository's one resolver**, not by a directory search here.
+ * This file used to look for `@yabgu_gm/tensionscript` inside
+ * `tension-framework/node_modules` and `apps/docs/node_modules`; vendoring moved
+ * the compiler to the repo root and deleted both, so the search found nothing and
+ * the docs build failed with "no TensionScript compiler found" while a perfectly
+ * good compiler sat one directory up. A local search that drifts from the rest of
+ * the tree is how that happens, so there is no local search any more.
  *
- * The package's own `bin` field comes **first**, run through this Node: it needs
- * no shim and no shell on any platform, which is the order `packages/cli/src/
- * project.js` already settled on. The `.cmd` shim is the fallback, spawned
- * through a shell because Node refuses to launch a `.cmd` bare.
+ * `requireCompiler()` looks at the root `.bin` only, asserts the installed copy is
+ * the tarball `.packs/manifest.json` names, and throws with the two commands that
+ * fix a missing one. `$TENSIONSCRIPT` is still honoured — through
+ * `resolveCompiler`, which prints that the override is *not* the vendored pin.
+ *
+ * The npm shim is not an executable image on Windows (npm writes `tensionscript`,
+ * `tensionscript.cmd` and `tensionscript.ps1`; only the `.cmd` launches there), and
+ * `compilerInvocation` is what knows that. It is also why the package's own `bin`
+ * is preferred over the shim wherever possible: run through this Node it needs no
+ * shim and no shell on any platform.
  */
 function findCompiler() {
-  if (process.env.TENSIONSCRIPT) {
-    const explicit = process.env.TENSIONSCRIPT;
-    return { command: explicit, prefix: [], shell: WIN && /\.(cmd|bat)$/i.test(explicit) };
-  }
-  for (const base of [join(repo, 'tension-framework'), appDir]) {
-    const pkgDir = join(base, 'node_modules', '@yabgu_gm', 'tensionscript');
-    const manifest = join(pkgDir, 'package.json');
-    if (!existsSync(manifest)) continue;
-    const bin = JSON.parse(readFileSync(manifest, 'utf8')).bin;
-    const entry = typeof bin === 'string' ? bin : bin?.tensionscript;
-    if (!entry) continue;
-    const js = join(pkgDir, entry);
-    if (existsSync(js)) return { command: process.execPath, prefix: [js], shell: false };
-  }
-  for (const base of [join(repo, 'tension-framework'), appDir]) {
-    const shim = join(base, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript');
-    if (existsSync(shim)) return { command: shim, prefix: [], shell: WIN };
-  }
-  return null;
+  const { bin } = resolveCompiler(appDir);
+  return compilerInvocation(bin);
 }
 
-const compiler = findCompiler();
-if (!compiler) {
-  fail('no TensionScript compiler found', [
-    'looked for the @yabgu_gm/tensionscript `bin` and the .bin shim, in',
-    'tension-framework/ and apps/docs/',
-    'run:  npm install   (in tension-framework, or at the repository root)',
-  ]);
+let compiler;
+try {
+  compiler = findCompiler();
+} catch (error) {
+  if (error instanceof CompilerError) {
+    fail('no TensionScript compiler found', error.message.split('\n'));
+  }
+  throw error;
 }
 
 const suffix = `${process.platform}-${process.arch}`;

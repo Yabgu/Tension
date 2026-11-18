@@ -8,8 +8,22 @@ Two guests, chosen because they exercise the two states `--debug` can see:
 
 | fixture | built by | carries DWARF | what it pins |
 | --- | --- | --- | --- |
-| `dwarf-guest/` | `@yabgu_gm/tensionscript@0.14.0`, byte-identical under `0.14.1` | yes | pass-through |
-| `legacy-guest/` | `@yabgu_gm/tensionscript@0.13.2` | no | the no-DWARF report |
+| `dwarf-guest/` | `tensionscript` 0.14.0, byte-identical under 0.14.1 | yes | pass-through |
+| `legacy-guest/` | `tensionscript` 0.13.2 | no | the no-DWARF report |
+
+**"Built by" is provenance, not a dependency.** Both were compiled from the npm
+package of the day, before the compiler became a submodule; the versions are
+recorded because the bytes are version-locked and a reader needs to know what
+produced them. Nothing here installs that package any more, and after the
+0.13/0.14 releases are unpublished the commands in each fixture's README become a
+historical record rather than a reproducible recipe — which is why they are
+described that way there.
+
+**The current pin** is `third_party/TensionScript` at the submodule commit, packed
+into `.packs/yabgu_gm-tensionscript-<version>-g<commit>.tgz` and declared once in
+the root `package.json`. A *new* fixture should be built with that compiler
+(`node scripts/tensionscript.mjs …`, which resolves and proves it); an existing
+one is not rebuilt, because these bytes are inputs to `e2e_debug.rs`.
 
 The distinction is the whole point: the host leaves a compiler-emitted guest
 alone, and for an older one it reports what is missing and names the fix without

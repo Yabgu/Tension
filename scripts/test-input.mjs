@@ -30,7 +30,7 @@
 
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, compilerBin } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 if (process.argv.includes('--edge')) {
@@ -77,9 +77,14 @@ if (process.env.TENSION_SESSION_READY === '1') {
   }
 }
 
-// The vendored compiler, from the repo root: see `compilerBin`.
-const asc = compilerBin(framework);
-if (!asc) fail(RUNNER, 'tensionscript is not installed — run: npm run compiler:vendor && npm install');
+// The vendored compiler, resolved and proven: see `requireCompiler`.
+let asc;
+try {
+  asc = requireCompiler(framework);
+} catch (error) {
+  if (error instanceof CompilerError) fail(RUNNER, error.message);
+  throw error;
+}
 
 // ── case 0: the mirror's own unit gate ──────────────────────────────────────
 //

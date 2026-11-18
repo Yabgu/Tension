@@ -21,7 +21,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { compilerBin } from './lib/toolchain.mjs';
+import { CompilerError, compilerInvocation, resolveCompiler } from './lib/toolchain.mjs';
 import { spawn } from './lib/proc.mjs';
 
 const RUNNER = 'build-2d-guest';
@@ -81,41 +81,32 @@ console.log(`${RUNNER}: ${blob.length} bytes -> ${relative(exampleDir, outPath)}
 
 // ── 2. the guest ────────────────────────────────────────────────────────────
 //
-// The repo pins TensionScript **once**, at the root: `scripts/vendor-compiler.mjs`
-// packs the submodule into `.packs/` and the root `package.json` declares that
-// tarball. `compilerBin` looks there first and only then at this example and the
-// framework, because a nearer `.bin` wins over a parent one — so a leftover
-// per-package install is how an example gets compiled by a compiler the tree no
-// longer pins (0.11.0 was installed that way once and rejected the framework's
-// `ogre.generated.ts`).
+// The repo pins TensionScript **once**, at the root, and `requireCompiler`
+// (`scripts/lib/toolchain.mjs`) is the only answer: the root `.bin`, with the
+// installed copy asserted to be the tarball `.packs/manifest.json` names.
 //
-// `PATH` is last and is only a fallback: a globally installed compiler is the
-// case this list was written for, and it should not win by accident.
-const candidates = [
-  process.env.TENSIONSCRIPT,
-  compilerBin(exampleDir),
-  'tensionscript',
-].filter(Boolean);
-
-let compiler = null;
-for (const candidate of candidates) {
-  const probe = spawn(candidate, ['--version']);
-  if (probe && probe.status === 0) {
-    compiler = candidate;
-    console.log(`${RUNNER}: ${candidate} (${probe.stdout.trim()})`);
-    break;
-  }
+// **There is no bare `'tensionscript'` candidate here any more.** It was a PATH
+// lookup, and measured on this machine a PATH lookup finds a *global* 0.11.0 shim
+// at `~/.local/bin/tensionscript` — which is exactly how an example gets compiled
+// by a compiler the tree stopped pinning four releases ago, and reports the
+// resulting parse errors against the framework's source. A missing compiler is a
+// setup step, and `requireCompiler` names both commands that fix it.
+let compiler;
+try {
+  compiler = resolveCompiler(exampleDir).bin;
+} catch (error) {
+  if (error instanceof CompilerError) die(error.message);
+  throw error;
 }
-if (!compiler) {
-  die(
-    'no TensionScript compiler found. Checked TENSIONSCRIPT, ' +
-      'node_modules/.bin/tensionscript at the repo root (the vendored pin), ' +
-      'this example\'s own node_modules/.bin/tensionscript, ' +
-      'tension-framework/node_modules/.bin/tensionscript, and PATH.\n' +
-      '  The root one is installed by `npm run compiler:vendor && npm install` ' +
-      'at the repo root.',
-  );
+// `compilerInvocation`, not the path alone: on Windows npm's shim is a `.cmd`,
+// which Node cannot launch without a shell.
+const invocation = compilerInvocation(compiler);
+const probe = spawn(invocation.command, [...invocation.prefix, '--version'],
+                    { shell: invocation.shell });
+if (!probe || probe.status !== 0) {
+  die(`the resolved compiler ${compiler} does not answer --version`);
 }
+console.log(`${RUNNER}: ${compiler} (${probe.stdout.trim()})`);
 
 // `--config` is the session config, not a preference: the guest imports its
 // memory and the arena starts at address 0, which is what makes `guest_read`

@@ -31,8 +31,8 @@ const model = process.env.MODEL ?? join('examples', 'ai', 'models', 'Phi-3-mini-
 ///
 /// "Wired" is the link to `tension-core`, not the presence of a compiler: the
 /// compiler is vendored once at the repo root now, so an example that legitimately
-/// has no `node_modules` yet would look wired (`compilerBin()` always finds the
-/// root one) and the install below would never run.
+/// has no `node_modules` yet would look wired — the root pin is always findable —
+/// and the install below would never run.
 function buildExample(dir) {
   const wired = existsSync(join(repo, dir, 'node_modules', '@yabgu_gm', 'tension-core'));
   if (!wired) {

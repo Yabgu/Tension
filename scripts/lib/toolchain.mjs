@@ -24,9 +24,9 @@
 // dropping it reintroduces an intermittent, output-less failure.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const WIN = process.platform === 'win32';
@@ -246,30 +246,253 @@ export function npmBin(dir, name) {
   return join(dir, 'node_modules', '.bin', WIN ? `${name}.cmd` : name);
 }
 
-/// The `tensionscript` the build should run, or `null` when none is installed.
-///
-/// **The repo root comes first, always.** The compiler is vendored once
-/// (`scripts/vendor-compiler.mjs`): the submodule is packed into `.packs/` and
-/// the root `package.json` declares that tarball, so `<repo>/node_modules/.bin`
-/// holds the one binary the whole tree is supposed to share. A package that
-/// still has its own copy has a *stale* one — npm installed it from a version
-/// range that nobody bumps now — and a nearer `.bin` wins over a parent one, so
-/// preferring the local copy is how a build ends up compiled by a compiler the
-/// tree no longer pins.
-///
-/// `dirs` are extra places to look *after* the root, for scripts whose caller
-/// historically kept one there; they exist so the lookup degrades to a clear
-/// "not installed" rather than an ENOENT.
+// === The TensionScript compiler =============================================================
+//
+// **One resolver, and it fails closed.** The compiler is vendored once: the
+// `third_party/TensionScript` submodule is packed by `scripts/vendor-compiler.mjs`
+// into `.packs/`, and the root `package.json` declares that tarball, so
+// `<repo>/node_modules/.bin/tensionscript` is the only copy the tree is allowed to
+// run.
+//
+// Three ways of finding "a compiler" existed before this module owned the question,
+// and all three were wrong in different ways: `build-framework` looked at its own
+// `node_modules` first, `apps/docs/tools/run-examples.mjs` looked at two packages
+// that no longer have it, and `build-2d-guest.mjs` ended with a bare
+// `'tensionscript'` — a PATH lookup. Measured: this machine has a **global**
+// `@yabgu_gm/tensionscript` 0.11.0 shimmed at `~/.local/bin/tensionscript`, and a
+// bare lookup found it, so a tree with no root install compiled with a compiler
+// four versions behind the pin and reported ten parse errors in the framework's
+// own source. A missing compiler is a **setup step**, not a search problem: there
+// is no PATH lookup here, no `npm ls -g`, and no per-package fallback.
+
+/** The compiler package. */
+export const COMPILER = '@yabgu_gm/tensionscript';
+
+/** Where `npm install` at the root puts the vendored package. */
+export function compilerPackageDir() {
+  return join(REPO, 'node_modules', ...COMPILER.split('/'));
+}
+
+/**
+ * The vendored compiler's shim, or `null` when it is not installed.
+ *
+ * Searches the repo root and any explicit `dirs` a caller passes — nothing else.
+ * The old `tension-framework` fallback is gone: that copy no longer exists, and a
+ * hint pointing at a directory nothing will ever populate is worse than none.
+ */
 export function compilerBin(...dirs) {
   const name = WIN ? 'tensionscript.cmd' : 'tensionscript';
   const seen = new Set();
-  for (const dir of [REPO, ...dirs, join(REPO, 'tension-framework')]) {
+  for (const dir of [REPO, ...dirs]) {
     const bin = join(dir, 'node_modules', '.bin', name);
     if (seen.has(bin)) continue;
     seen.add(bin);
     if (existsSync(bin)) return bin;
   }
   return null;
+}
+
+/**
+ * How to launch a compiler path: `{ command, prefix, shell }`.
+ *
+ * npm's shim is not an executable image on Windows — `tensionscript`,
+ * `tensionscript.cmd` and `tensionscript.ps1` are written, and only the `.cmd` is
+ * launchable there — so it goes through a shell. A `.js` path (which is what
+ * `$TENSIONSCRIPT` usually names, and what a package's `bin` field contains) is run
+ * through this Node instead, because it needs no shebang and no shell anywhere.
+ */
+export function compilerInvocation(path) {
+  if (WIN && /\.(cmd|bat)$/i.test(path)) return { command: path, prefix: [], shell: true };
+  if (/\.(c|m)?js$/i.test(path)) return { command: process.execPath, prefix: [path], shell: false };
+  return { command: path, prefix: [], shell: false };
+}
+
+/** Thrown by {@link requireCompiler} and {@link assertVendoredCompiler}. */
+export class CompilerError extends Error {
+  constructor(message) { super(message); this.name = 'CompilerError'; }
+}
+
+/**
+ * The **fix** for a missing compiler, named as the two commands that produce it.
+ * Two steps because they fail in different situations: a fresh clone has no tarball
+ * (`compiler:vendor` packs the submodule), and a tree with a tarball that was never
+ * installed needs `npm install`. Naming only one sends half the readers to the
+ * wrong command, and a message that says "run npm install" over a missing tarball
+ * fails with an ENOENT on a path they have never seen.
+ */
+const COMPILER_STEPS = [
+  '  a fresh clone has no tarball:     npm run compiler:vendor',
+  '  a tarball that is not installed:  npm install              (at the repo root)',
+];
+
+const INSTALLED_MANIFEST = (dir) => join(dir, 'package.json');
+
+/**
+ * The vendored pin, read from the three files that have to agree, or `null` when
+ * the tree is not vendored yet (no manifest, no lock entry, no install).
+ */
+function vendoredFacts() {
+  const manifestPath = join(REPO, '.packs', 'manifest.json');
+  const lockPath = join(REPO, 'package-lock.json');
+  const rootPath = join(REPO, 'package.json');
+  const pkgDir = compilerPackageDir();
+
+  let manifest = null;
+  if (existsSync(manifestPath)) {
+    try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch { manifest = null; }
+  }
+  let lockEntry = null;
+  let lockSpec = null;
+  if (existsSync(lockPath)) {
+    try {
+      const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+      lockEntry = lock.packages?.[`node_modules/${COMPILER}`] ?? null;
+      lockSpec = (lock.packages?.[''] ?? {}).devDependencies?.[COMPILER] ?? null;
+    } catch { lockEntry = null; }
+  }
+  let rootSpec = null;
+  if (existsSync(rootPath)) {
+    try { rootSpec = JSON.parse(readFileSync(rootPath, 'utf8')).devDependencies?.[COMPILER] ?? null; }
+    catch { rootSpec = null; }
+  }
+  let installed = null;
+  if (existsSync(INSTALLED_MANIFEST(pkgDir))) {
+    try { installed = JSON.parse(readFileSync(INSTALLED_MANIFEST(pkgDir), 'utf8')); } catch { installed = null; }
+  }
+  return { manifest, lockEntry, lockSpec, rootSpec, installed, pkgDir };
+}
+
+/**
+ * Assert that `bin` is the compiler this tree vendored — not merely that a
+ * compiler exists there.
+ *
+ * **Presence is not provenance.** A registry `0.14.1` and the tarball packed from
+ * `third_party/TensionScript` at the pinned commit have the *same version string*,
+ * so a version comparison would pass the one case this whole mechanism exists to
+ * exclude. What makes the statement true is the chain:
+ *
+ *   `.packs/manifest.json`          version V, tarball T
+ *   root `package-lock.json`        resolved = `file:.packs/T`, version V
+ *   root `package.json`             spec     = `file:.packs/T`
+ *   installed `<pkg>/package.json`  version V
+ *   `realpath(bin)`                 inside the installed package
+ *
+ * All five, or it throws. Cheap by construction: four JSON reads and a realpath,
+ * no spawn, no compile.
+ *
+ * Returns `{ version, tarball, sha }` so a caller can print what it proved.
+ */
+export function assertVendoredCompiler(bin) {
+  const facts = vendoredFacts();
+  const { manifest, lockEntry, lockSpec, rootSpec, installed, pkgDir } = facts;
+
+  const problems = [];
+  if (!manifest) {
+    problems.push(`  .packs/manifest.json is missing or unreadable`);
+  }
+  if (!installed) {
+    problems.push(`  ${COMPILER} is not installed at ${pkgDir}`);
+  }
+  if (!lockEntry) {
+    problems.push(`  package-lock.json has no node_modules/${COMPILER} entry`);
+  }
+  if (problems.length) {
+    throw new CompilerError([
+      `the vendored TensionScript compiler is not installed at ${REPO}`,
+      ...problems,
+      ...COMPILER_STEPS,
+    ].join('\n'));
+  }
+
+  const version = manifest.version;
+  const tarball = manifest.tarball;
+  const wantSpec = `file:.packs/${tarball}`;
+
+  if (rootSpec !== wantSpec) {
+    problems.push(`  package.json declares  ${rootSpec ?? '(nothing)'}, the manifest says ${wantSpec}`);
+  }
+  if (lockSpec !== wantSpec) {
+    problems.push(`  the lock records spec   ${lockSpec ?? '(nothing)'}, the manifest says ${wantSpec}`);
+  }
+  if (lockEntry.resolved !== wantSpec) {
+    // The one comparison that rules out a registry install at the same version.
+    problems.push(`  the lock resolved       ${lockEntry.resolved}, the manifest says ${wantSpec}`);
+  }
+  if (lockEntry.version !== version) {
+    problems.push(`  the lock resolves       ${COMPILER} ${lockEntry.version}, the manifest is ${version}`);
+  }
+  if (installed.version !== version) {
+    problems.push(`  installed               ${COMPILER} ${installed.version}, the manifest is ${version}`);
+  }
+
+  // The binary must be the installed package's own, not a shim that happens to sit
+  // at the right path. `realpath` also covers the POSIX shim, which is a symlink.
+  try {
+    const realBin = realpathSync(bin);
+    const realPkg = realpathSync(pkgDir);
+    if (!realBin.startsWith(`${realPkg}${sep}`) && realBin !== realPkg) {
+      problems.push(`  ${bin} resolves to ${realBin}, outside ${realPkg}`);
+    }
+  } catch (error) {
+    problems.push(`  ${bin} does not resolve: ${error.message}`);
+  }
+
+  if (problems.length) {
+    throw new CompilerError([
+      'the compiler that would run is NOT the vendored pin:',
+      ...problems,
+      '',
+      `  re-vendor and install:  npm run compiler:vendor && npm install   (at ${REPO})`,
+    ].join('\n'));
+  }
+  return { version, tarball, sha: manifest.sha };
+}
+
+/**
+ * The compiler to run, or a `CompilerError` naming both fixes.
+ *
+ * Throws rather than returning `null`: a `null` that reaches `spawn` is an ENOENT
+ * three frames away from the cause, and that is the bug shape this replaces.
+ */
+export function requireCompiler(...dirs) {
+  const bin = compilerBin(...dirs);
+  if (!bin) {
+    throw new CompilerError([
+      `no vendored TensionScript compiler at ${join(REPO, 'node_modules', '.bin', WIN ? 'tensionscript.cmd' : 'tensionscript')}`,
+      ...COMPILER_STEPS,
+    ].join('\n'));
+  }
+  assertVendoredCompiler(bin);
+  return bin;
+}
+
+/**
+ * `$TENSIONSCRIPT`, the explicit escape hatch, or `null`.
+ *
+ * An override is for the one reader who is deliberately testing a compiler that is
+ * not the pin. It cannot be silent: a machine that built with the wrong compiler
+ * for a month is what an override that whispers produces. Provenance is not
+ * asserted here — the path is by definition outside the pin — so the line is the
+ * only record, and it goes to stderr so it cannot be mistaken for build output.
+ */
+export function compilerOverride() {
+  const path = process.env.TENSIONSCRIPT;
+  if (!path) return null;
+  process.stderr.write(`tensionscript: using $TENSIONSCRIPT=${path} — NOT the vendored pin\n`);
+  return path;
+}
+
+/**
+ * The compiler to run: `$TENSIONSCRIPT` when set, else the asserted vendored pin.
+ * Returns `{ bin, version, tarball }`; `version`/`tarball` are `null` under an
+ * override, because nothing has been proven about it.
+ */
+export function resolveCompiler(...dirs) {
+  const override = compilerOverride();
+  if (override) return { bin: override, version: null, tarball: null };
+  const bin = requireCompiler(...dirs);
+  const facts = assertVendoredCompiler(bin);
+  return { bin, version: facts.version, tarball: facts.tarball };
 }
 
 /// Directories a tool may live in without being on PATH.

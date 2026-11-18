@@ -25,7 +25,7 @@
 
 import { existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { delimiter, join } from 'node:path';
-import { REPO, WIN, compilerBin } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
 import { fail, indent, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -104,9 +104,14 @@ if (process.env.TENSION_SESSION_READY === '1') {
   }
 }
 
-// The vendored compiler, from the repo root: see `compilerBin`.
-const asc = compilerBin(framework);
-if (!asc) fail(RUNNER, 'tensionscript is not installed — run: npm run compiler:vendor && npm install');
+// The vendored compiler, resolved and proven: see `requireCompiler`.
+let asc;
+try {
+  asc = requireCompiler(framework);
+} catch (error) {
+  if (error instanceof CompilerError) fail(RUNNER, error.message);
+  throw error;
+}
 const asconfig = join(framework, 'build', 'session.asconfig.json');
 
 /// Every fixture the suite compiles, in the order the shell runner compiled them.

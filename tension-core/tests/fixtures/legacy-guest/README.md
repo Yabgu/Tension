@@ -21,18 +21,31 @@ re-introducing a host-side fallback fails the suite rather than passing quietly.
 
 ## Provenance
 
-- Compiler: `@yabgu_gm/tensionscript@0.13.2` from npm — the release that
-  predates compiler-side DWARF emission. (`npm view
-  @yabgu_gm/tensionscript version` reported `0.13.2` when this was built.)
+- Compiler: `tensionscript` **0.13.2** — the release that predates
+  compiler-side DWARF emission, installed from the npm package as it then stood.
+  (`npm view @yabgu_gm/tensionscript version` reported `0.13.2` when this was
+  built.)
+
+  This is a **historical provenance record**. The compiler is now pinned as the
+  `third_party/TensionScript` submodule and installed from the `.packs` tarball
+  the root `package.json` declares; 0.13.2 is older than that pin and the npm
+  install below will not resolve once those releases are unpublished. The
+  fixture stays exactly as it is — its whole purpose is to be a guest from
+  *before* compiler-side DWARF, so a newer compiler cannot reproduce it by
+  definition.
 - Source: the same `game.ts` as `dwarf-guest` (TensionScript's add-locals
   fixture), so the two guests differ only in the compiler that built them.
 - Command (run with the source file in the working directory):
 
   ```sh
-  npm install @yabgu_gm/tensionscript@0.13.2
+  npm install @yabgu_gm/tensionscript@0.13.2     # historical; not reproducible from this tree
   node_modules/.bin/tensionscript game.ts \
     -o game.wasm --debug --sourceMap --optimizeLevel 0
   ```
+
+  A *new* pre-DWARF fixture is not a thing this tree can build: the current pin
+  always emits `.debug_*` under `--debug --sourceMap`, and `dwarf-guest` is the
+  fixture that pins that.
 
 ## Bytes
 

@@ -5,8 +5,8 @@
   "type": "module",
   "description": "TensionCore example: the guest asks the host to resize the window, then polls for it",
   "scripts": {
-    "build": "tensionscript game.ts -o build/game.wasm --config asconfig.json",
-    "build:debug": "tensionscript game.ts -o build/game.wasm --config asconfig.json --debug --sourceMap",
+    "build": "node ../../scripts/tensionscript.mjs game.ts -o build/game.wasm --config asconfig.json",
+    "build:debug": "node ../../scripts/tensionscript.mjs game.ts -o build/game.wasm --config asconfig.json --debug --sourceMap",
     "run": "node ../../scripts/run-example.mjs --no-build",
     "start": "node ../../scripts/run-example.mjs"
   },

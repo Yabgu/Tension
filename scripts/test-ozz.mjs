@@ -11,7 +11,7 @@
 
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, compilerBin } from './lib/toolchain.mjs';
+import { REPO, WIN, CompilerError, requireCompiler } from './lib/toolchain.mjs';
 import { fail, inherit, spawn } from './lib/proc.mjs';
 
 const repo = REPO;
@@ -45,9 +45,12 @@ if (generated.status !== 0) fail(RUNNER, 'the framework generator refused the la
 // is the link to test. (This used to be tested by the example's own copy of the
 // compiler, which no longer exists: one install point means one thing missing,
 // not two.)
-const asc = compilerBin(example);
-if (!asc) {
-  fail(RUNNER, 'tensionscript is not installed — run: npm run compiler:vendor && npm install');
+let asc;
+try {
+  asc = requireCompiler(example);
+} catch (error) {
+  if (error instanceof CompilerError) fail(RUNNER, error.message);
+  throw error;
 }
 if (!existsSync(join(example, 'node_modules', '@yabgu_gm', 'tension-core'))) {
   console.error(`${RUNNER}: installing the example's dependencies…`);
