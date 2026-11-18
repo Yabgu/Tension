@@ -29,6 +29,15 @@ import { tmpdir } from 'node:os';
 import { delimiter, dirname, join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// The provenance rule and its messages live in the published CLI package, so the
+// rule has one implementation rather than one per consumer. See the header there.
+import {
+  COMPILER_PACKAGE as COMPILER,
+  CompilerProvenanceError as ProvenanceError,
+  assertVendoredCompiler as assertVendoredImpl,
+  compilerFixCommands,
+} from '../../packages/cli/src/compiler-provenance.js';
+
 export const WIN = process.platform === 'win32';
 export const EXE = WIN ? '.exe' : '';
 
@@ -265,13 +274,9 @@ export function npmBin(dir, name) {
 // own source. A missing compiler is a **setup step**, not a search problem: there
 // is no PATH lookup here, no `npm ls -g`, and no per-package fallback.
 
-/** The compiler package. */
-export const COMPILER = '@yabgu_gm/tensionscript';
-
-/** Where `npm install` at the root puts the vendored package. */
-export function compilerPackageDir() {
-  return join(REPO, 'node_modules', ...COMPILER.split('/'));
-}
+// The package name comes from the shared module, so there is one spelling of
+// `@yabgu_gm/tensionscript` in this tree.
+export { COMPILER };
 
 /**
  * The vendored compiler's shim, or `null` when it is not installed.
@@ -320,132 +325,27 @@ export class CompilerError extends Error {
  * wrong command, and a message that says "run npm install" over a missing tarball
  * fails with an ENOENT on a path they have never seen.
  */
-const COMPILER_STEPS = [
-  '  a fresh clone has no tarball:     npm run compiler:vendor',
-  '  a tarball that is not installed:  npm install              (at the repo root)',
-];
-
-const INSTALLED_MANIFEST = (dir) => join(dir, 'package.json');
-
-/**
- * The vendored pin, read from the three files that have to agree, or `null` when
- * the tree is not vendored yet (no manifest, no lock entry, no install).
- */
-function vendoredFacts() {
-  const manifestPath = join(REPO, '.packs', 'manifest.json');
-  const lockPath = join(REPO, 'package-lock.json');
-  const rootPath = join(REPO, 'package.json');
-  const pkgDir = compilerPackageDir();
-
-  let manifest = null;
-  if (existsSync(manifestPath)) {
-    try { manifest = JSON.parse(readFileSync(manifestPath, 'utf8')); } catch { manifest = null; }
-  }
-  let lockEntry = null;
-  let lockSpec = null;
-  if (existsSync(lockPath)) {
-    try {
-      const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
-      lockEntry = lock.packages?.[`node_modules/${COMPILER}`] ?? null;
-      lockSpec = (lock.packages?.[''] ?? {}).devDependencies?.[COMPILER] ?? null;
-    } catch { lockEntry = null; }
-  }
-  let rootSpec = null;
-  if (existsSync(rootPath)) {
-    try { rootSpec = JSON.parse(readFileSync(rootPath, 'utf8')).devDependencies?.[COMPILER] ?? null; }
-    catch { rootSpec = null; }
-  }
-  let installed = null;
-  if (existsSync(INSTALLED_MANIFEST(pkgDir))) {
-    try { installed = JSON.parse(readFileSync(INSTALLED_MANIFEST(pkgDir), 'utf8')); } catch { installed = null; }
-  }
-  return { manifest, lockEntry, lockSpec, rootSpec, installed, pkgDir };
-}
+const COMPILER_STEPS = compilerFixCommands(REPO);
 
 /**
  * Assert that `bin` is the compiler this tree vendored — not merely that a
  * compiler exists there.
  *
- * **Presence is not provenance.** A registry `0.14.1` and the tarball packed from
- * `third_party/TensionScript` at the pinned commit have the *same version string*,
- * so a version comparison would pass the one case this whole mechanism exists to
- * exclude. What makes the statement true is the chain:
+ * **The check lives in `packages/cli/src/compiler-provenance.js`, not here.** That
+ * package is published and cannot import this file, so the dependency runs the
+ * other way and there is exactly **one** implementation of the rule: the CLI
+ * asserts it in-repo, and this module re-exports it. A second copy here would be a
+ * second check to keep in step, and the one that is not updated is the weaker one.
  *
- *   `.packs/manifest.json`          version V, tarball T
- *   root `package-lock.json`        resolved = `file:.packs/T`, version V
- *   root `package.json`             spec     = `file:.packs/T`
- *   installed `<pkg>/package.json`  version V
- *   `realpath(bin)`                 inside the installed package
- *
- * All five, or it throws. Cheap by construction: four JSON reads and a realpath,
- * no spawn, no compile.
- *
- * Returns `{ version, tarball, sha }` so a caller can print what it proved.
+ * Returns `{ version, tarball, sha }`; throws {@link CompilerError}.
  */
 export function assertVendoredCompiler(bin) {
-  const facts = vendoredFacts();
-  const { manifest, lockEntry, lockSpec, rootSpec, installed, pkgDir } = facts;
-
-  const problems = [];
-  if (!manifest) {
-    problems.push(`  .packs/manifest.json is missing or unreadable`);
-  }
-  if (!installed) {
-    problems.push(`  ${COMPILER} is not installed at ${pkgDir}`);
-  }
-  if (!lockEntry) {
-    problems.push(`  package-lock.json has no node_modules/${COMPILER} entry`);
-  }
-  if (problems.length) {
-    throw new CompilerError([
-      `the vendored TensionScript compiler is not installed at ${REPO}`,
-      ...problems,
-      ...COMPILER_STEPS,
-    ].join('\n'));
-  }
-
-  const version = manifest.version;
-  const tarball = manifest.tarball;
-  const wantSpec = `file:.packs/${tarball}`;
-
-  if (rootSpec !== wantSpec) {
-    problems.push(`  package.json declares  ${rootSpec ?? '(nothing)'}, the manifest says ${wantSpec}`);
-  }
-  if (lockSpec !== wantSpec) {
-    problems.push(`  the lock records spec   ${lockSpec ?? '(nothing)'}, the manifest says ${wantSpec}`);
-  }
-  if (lockEntry.resolved !== wantSpec) {
-    // The one comparison that rules out a registry install at the same version.
-    problems.push(`  the lock resolved       ${lockEntry.resolved}, the manifest says ${wantSpec}`);
-  }
-  if (lockEntry.version !== version) {
-    problems.push(`  the lock resolves       ${COMPILER} ${lockEntry.version}, the manifest is ${version}`);
-  }
-  if (installed.version !== version) {
-    problems.push(`  installed               ${COMPILER} ${installed.version}, the manifest is ${version}`);
-  }
-
-  // The binary must be the installed package's own, not a shim that happens to sit
-  // at the right path. `realpath` also covers the POSIX shim, which is a symlink.
   try {
-    const realBin = realpathSync(bin);
-    const realPkg = realpathSync(pkgDir);
-    if (!realBin.startsWith(`${realPkg}${sep}`) && realBin !== realPkg) {
-      problems.push(`  ${bin} resolves to ${realBin}, outside ${realPkg}`);
-    }
+    return assertVendoredImpl(REPO, bin);
   } catch (error) {
-    problems.push(`  ${bin} does not resolve: ${error.message}`);
+    if (error instanceof ProvenanceError) throw new CompilerError(error.message);
+    throw error;
   }
-
-  if (problems.length) {
-    throw new CompilerError([
-      'the compiler that would run is NOT the vendored pin:',
-      ...problems,
-      '',
-      `  re-vendor and install:  npm run compiler:vendor && npm install   (at ${REPO})`,
-    ].join('\n'));
-  }
-  return { version, tarball, sha: manifest.sha };
 }
 
 /**

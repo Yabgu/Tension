@@ -13,6 +13,7 @@
 
 import { basename, join } from 'node:path';
 import { compiler, framework, repoRoot, runtime } from './project.js';
+import { assertVendoredCompiler } from './compiler-provenance.js';
 import { capture, exists, step, SUFFIX } from './util.js';
 
 /** `ok`, `warn`, `fail`, printed as a mark and a colour-free word. */
@@ -98,8 +99,17 @@ export async function doctor(ctx, { headless = false } = {}) {
   }
 
   try {
+    // **The same call `tension build` makes**, so the doctor cannot report one
+    // compiler and the build use another. In this repository that means the
+    // vendored pin, which `compiler()` has already asserted is the tarball
+    // `.packs/manifest.json` names — and the line says so, because "0.14.1" alone
+    // is the answer a registry install would also give.
     const asc = compiler(ctx.projectDir);
     line('ok', 'tensionscript', `${asc.version} (${basename(asc.command)}${asc.prefix.length ? ` ${asc.prefix.join(' ')}` : ''})`);
+    if (asc.inRepo) {
+      const pin = assertVendoredCompiler(repoRoot(), asc.prefix.length ? asc.prefix[0] : asc.command);
+      line('ok', 'compiler pin', `vendored ${pin.tarball} at ${pin.sha}`);
+    }
   } catch (error) {
     fail('tensionscript', error.message.split('\n')[0]);
   }
