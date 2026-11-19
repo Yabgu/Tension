@@ -1058,6 +1058,25 @@ fn main() -> anyhow::Result<()> {
     // problem instead of ours. (`main.rs` builds the one engine; the sandbox's
     // test engine mirrors this line — `sandbox::tests::config`.)
     engine_config.wasm_stack_switching(true);
+    // **Shared memory, for a guest that more than one `Store` can see.** The
+    // threads proposal is on by default in wasmtime 50, but creation of an
+    // actual `SharedMemory` is not: `shared_memory` is `false` by default, and a
+    // module that declares `(memory 1 4096 shared)` is refused at instantiation
+    // until it is set. Setting `wasm_threads` explicitly too, rather than
+    // relying on the crate default, so a feature change cannot silently take
+    // the imports away from under a module the compiler already emits.
+    //
+    // What is being chosen here is a **tier 2** wasmtime feature: "it will not
+    // receive security updates or fixes to historical releases. Additionally
+    // security CVEs will not be issued for bugs in the implementation." That is
+    // a real risk for a host that runs guest code, and it is accepted
+    // deliberately: the async arena and spawn work cannot be built without a
+    // memory two stores share. It is unconditional rather than a flag for the
+    // same reason as stack switching above — a flag would let the host refuse a
+    // module the compiler legitimately emitted — so the risk is recorded here
+    // rather than made an operator's decision.
+    engine_config.wasm_threads(true);
+    engine_config.shared_memory(true);
     let engine = Engine::new(&engine_config)?;
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
