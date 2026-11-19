@@ -174,11 +174,16 @@ impl ResourceLimiter for MemoryBudget {
         _current: usize,
         desired: usize,
         _maximum: Option<usize>,
-    ) -> Result<bool> {
+    ) -> wasmtime::Result<bool> {
         Ok(self.limit.is_none_or(|limit| desired <= limit))
     }
 
-    fn table_growing(&mut self, _current: u32, _desired: u32, _maximum: Option<u32>) -> Result<bool> {
+    fn table_growing(
+        &mut self,
+        _current: usize,
+        _desired: usize,
+        _maximum: Option<usize>,
+    ) -> wasmtime::Result<bool> {
         // Tables are bounded by the module's own declarations in this tree —
         // no guest grows one at run time (the session's function table is
         // fixed at instantiation). Refusing here would be a limit with no
@@ -792,6 +797,10 @@ mod tests {
     fn config(guest_path: String) -> HostConfig {
         let mut engine_config = Config::new();
         engine_config.epoch_interruption(true);
+        // Mirrors `main`'s engine (see the comment there): a continuation
+        // module must compile here too, or this test proves nothing about the
+        // runtime the host ships.
+        engine_config.wasm_stack_switching(true);
         let engine = Engine::new(&engine_config).expect("an engine");
         HostConfig {
             module_cache: Arc::new(crate::host::module_cache::ModuleCache::default()),

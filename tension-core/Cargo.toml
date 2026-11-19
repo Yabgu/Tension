@@ -56,7 +56,7 @@ name = "tension-core"
 path = "src/main.rs"
 
 [dependencies]
-wasmtime = "=24.0.13"
+wasmtime = "=50.0.2"
 anyhow = "1.0.104"
 # The host owns the window. `sdl3` is core infrastructure now, not a capability
 # dependency, so it is unconditional: a feature-gated window would make two core
@@ -91,9 +91,12 @@ libc = "0.2"
 # the crate is versioned with it.
 tension-shadergen = { path = "../tension-shadergen" }
 
-# Cranelift is already in the tree as Wasmtime's compiler (same 0.111.13), so
-# naming it adds no download and no new licence — the argument the `libc` entry
-# above makes. The graph compiler's CPU lowering uses it directly.
+# Cranelift here is the graph compiler's CPU lowering, and it is pinned on its
+# own: wasmtime 50 moved to cranelift 0.137, so this is a second copy in the
+# dependency tree, not the one the runtime uses. Pinned rather than floated
+# because the lowering code names its API directly; the two were the same crate
+# version through wasmtime 24, and unifying them means migrating that code to
+# 0.137, which this bump deliberately does not do.
 cranelift-codegen = "=0.111.13"
 cranelift-frontend = "=0.111.13"
 cranelift-native = "=0.111.13"

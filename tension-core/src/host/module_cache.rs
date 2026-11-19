@@ -100,7 +100,9 @@ impl ModuleCache {
         }
 
         let bytes = std::fs::read(as_path).with_context(|| format!("{path}"))?;
-        let module = Module::new(engine, &bytes).with_context(|| format!("{path}"))?;
+        let module = Module::new(engine, &bytes)
+            .map_err(anyhow::Error::from)
+            .with_context(|| format!("{path}"))?;
         self.compiles.fetch_add(1, Ordering::SeqCst);
 
         // Insert only when the file can be fingerprinted: an entry keyed by
