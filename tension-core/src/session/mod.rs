@@ -745,7 +745,7 @@ impl Session {
         Params: WasmParams,
         Results: WasmResults,
     {
-        let Some(entry) = table.get(&mut *store, index) else {
+        let Some(entry) = table.get(&mut *store, u64::from(index)) else {
             return Err(SessionError::CallbackSlot {
                 slot,
                 why: "the index is past the end of the exported table",

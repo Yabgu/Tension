@@ -1047,6 +1047,17 @@ fn main() -> anyhow::Result<()> {
     // That is the price of being able to stop one, and it is the only mechanism
     // wasmtime offers that a guest cannot opt out of.
     engine_config.epoch_interruption(true);
+    // **Stack switching, for continuation modules.** TensionScript emits
+    // `cont.new`/`suspend`/`resume` for an async guest, and a module carrying
+    // those types is refused at compile time by an engine with this off — the
+    // guest never reaches its own entrypoint, so the refusal is not something a
+    // game can recover from. It is on unconditionally rather than behind a flag:
+    // a module that does not use continuations compiles and runs exactly as
+    // before, so there is no cost to pay for a guest that does, and a flag would
+    // make "the compiler emitted a legal module the host rejects" an operator
+    // problem instead of ours. (`main.rs` builds the one engine; the sandbox's
+    // test engine mirrors this line — `sandbox::tests::config`.)
+    engine_config.wasm_stack_switching(true);
     let engine = Engine::new(&engine_config)?;
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
@@ -1466,8 +1477,8 @@ fn main() -> anyhow::Result<()> {
     } else if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
         func.call(&mut store, ())
     } else {
-        Err(anyhow::anyhow!(
-            "game.wasm did not export `_start_game` or `_start`"
+        Err(wasmtime::Error::msg(
+            "game.wasm did not export `_start_game` or `_start`",
         ))
     };
 
@@ -1482,7 +1493,7 @@ fn main() -> anyhow::Result<()> {
         // holding a VkSurfaceKHR into an instance this drop destroys would be
         // a use-after-free that only shows up on a trap path.
         drop_host_window(&mut store);
-        return Err(error);
+        return Err(anyhow::Error::from(error));
     }
 
     // ── the host-owned loop (0.7.0a) ─────────────────────────────────────

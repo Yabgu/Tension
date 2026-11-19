@@ -773,9 +773,9 @@ pub(crate) fn with_store_installed<R>(
 pub fn import_closure(
     host: HostHandle,
     import: RegisteredImport,
-) -> impl Fn(Caller<'_, HostState>, &[Val], &mut [Val]) -> anyhow::Result<()> + Send + Sync + 'static
+) -> impl Fn(Caller<'_, HostState>, &[Val], &mut [Val]) -> wasmtime::Result<()> + Send + Sync + 'static
 {
-    move |mut caller: Caller<'_, HostState>, params: &[Val], results: &mut [Val]| -> anyhow::Result<()> {
+    move |mut caller: Caller<'_, HostState>, params: &[Val], results: &mut [Val]| -> wasmtime::Result<()> {
         // Pack the wasm values into the C array, checking each against the
         // declared signature. A mismatch here would mean the linker accepted a
         // call the adapter did not declare, which is a core bug, not a guest one.
@@ -783,7 +783,7 @@ pub fn import_closure(
         let mut slots = [Slot::I32(0); MAX_PARAMS];
         let declared = import.signature.params();
         if params.len() != declared.len() {
-            anyhow::bail!(
+            wasmtime::bail!(
                 "{}::{} was called with {} arguments but declared {}",
                 import.module,
                 import.name,
@@ -793,14 +793,14 @@ pub fn import_closure(
         }
         for (index, value) in params.iter().enumerate() {
             let slot = slot_of_val(value).ok_or_else(|| {
-                anyhow::anyhow!(
+                wasmtime::format_err!(
                     "{}::{} received a value this boundary does not carry",
                     import.module,
                     import.name
                 )
             })?;
             if slot.value_type() != declared[index] {
-                anyhow::bail!(
+                wasmtime::bail!(
                     "{}::{} argument {index} is {:?}, but the import declared {:?}",
                     import.module,
                     import.name,
@@ -881,7 +881,7 @@ pub fn import_closure(
 
         if import.signature.ret() != ValueType::Void {
             if results.len() != 1 {
-                anyhow::bail!(
+                wasmtime::bail!(
                     "{}::{} declares a return value but the linker gave {} slots",
                     import.module,
                     import.name,
@@ -889,7 +889,7 @@ pub fn import_closure(
                 );
             }
             let value = val_of_tension(import.signature.ret(), &ret).ok_or_else(|| {
-                anyhow::anyhow!(
+                wasmtime::format_err!(
                     "{}::{} declares {:?} as a return type this boundary cannot carry",
                     import.module,
                     import.name,
@@ -915,9 +915,9 @@ pub fn import_closure(
 /// the adapter: the flags make `i32` the return type, and the registry refuses a
 /// `DEFERRABLE` import that declares anything else (`-ENOSPC` has to have
 /// somewhere to go).
-fn set_i32_result(results: &mut [Val], value: i32) -> anyhow::Result<()> {
+fn set_i32_result(results: &mut [Val], value: i32) -> wasmtime::Result<()> {
     if results.len() != 1 {
-        anyhow::bail!("a deferrable import must return exactly one value");
+        wasmtime::bail!("a deferrable import must return exactly one value");
     }
     results[0] = Val::I32(value);
     Ok(())
