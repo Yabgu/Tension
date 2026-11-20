@@ -63,10 +63,27 @@ pub fn build() {
 
 /// Run the builder in its `--debug` mode: `build/debug/`, `--debug --sourceMap`.
 pub fn build_debug() {
+    // **One build at a time, per test process.** `cargo test` runs this file's
+    // tests on several threads, and two of them can reach the builder at once —
+    // the breakpoint tests when the artifacts are stale, and the negative
+    // control that needs a release build. Two `node` processes writing the same
+    // output files means one can read a half-written `.wasm`, which surfaces as
+    // a breakpoint that does not bind rather than as a build error. Measured:
+    // the first run after a checkout fails 2 of 5, a rerun passes, because the
+    // first run is the one that builds.
     run_builder(&["--debug"]);
 }
 
 fn run_builder(extra: &[&str]) {
+    // **One builder at a time, per test process** — release and debug alike.
+    // `cargo test` runs these tests on several threads; two `node` processes
+    // writing the same output files means one can read a half-written `.wasm`,
+    // which surfaces as a breakpoint that does not bind rather than as a build
+    // error. Measured: the first run after a fresh checkout failed 2 of 5
+    // breakpoint tests and a rerun passed, because the first run is the one
+    // that builds.
+    static BUILDING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _guard = BUILDING.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let script = repo().join("scripts").join("build-test-programs.mjs");
     let status = Command::new("node")
         .arg(&script)
