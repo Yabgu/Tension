@@ -37,59 +37,12 @@
 //! No capability, window or volume: `tension-core <guest>` is the whole
 //! invocation.
 
-#[path = "support/ci.rs"]
-mod support_ci;
+#[path = "support/programs.rs"]
+mod support_programs;
 
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn programs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("programs")
-}
-
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("tension-core is a directory under the repository root")
-        .to_path_buf()
-}
-
-/// Build every test program through the one recipe, so the flag list for this
-/// program is not restated here.
-fn build_programs() {
-    let script = repo().join("scripts").join("build-test-programs.mjs");
-    let status = Command::new("node")
-        .arg(&script)
-        .current_dir(programs_dir())
-        .status()
-        .unwrap_or_else(|error| {
-            support_ci::skip_or_fail(format_args!(
-                "async_on_main: could not run `node {}`: {error}",
-                script.display()
-            ));
-            panic!("unreachable: skip_or_fail panics by default")
-        });
-    if !status.success() {
-        support_ci::skip_or_fail(format_args!(
-            "async_on_main: `node {}` failed ({status}); the program is not built",
-            script.display()
-        ));
-    }
-}
-
-fn program() -> PathBuf {
-    build_programs();
-    let path = programs_dir().join("build").join("async-on-main.wasm");
-    if !path.exists() {
-        support_ci::skip_or_fail(format_args!(
-            "async_on_main: {} does not exist after the build",
-            path.display()
-        ));
-    }
-    path
-}
+use support_programs::{guest, programs_dir};
 
 fn transcript(stdout: &str) -> Vec<String> {
     stdout
@@ -103,7 +56,7 @@ fn transcript(stdout: &str) -> Vec<String> {
 
 #[test]
 fn the_shared_program_prints_the_contract_transcript() {
-    let guest = program();
+    let guest = guest("async-on-main");
     let expected_path = programs_dir().join("async-on-main.expected.txt");
     let expected_text = std::fs::read_to_string(&expected_path)
         .unwrap_or_else(|error| panic!("{} is unreadable: {error}", expected_path.display()));

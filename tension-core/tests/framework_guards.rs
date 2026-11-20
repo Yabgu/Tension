@@ -27,69 +27,17 @@
 //! scopes that to a module with a session import). That is what makes the
 //! no-session state real rather than simulated.
 //!
-//! Skip policy: `tests/support/ci.rs`. A missing program is rebuilt; a failing
-//! build or a missing artifact prints a skip only with
+//! Skip policy: `tests/support/programs.rs`. A missing program is rebuilt; a
+//! failing build or a missing artifact prints a skip only with
 //! `TENSION_TEST_ALLOW_SKIP=1`.
 
-#[path = "support/ci.rs"]
-mod support_ci;
+#[path = "support/programs.rs"]
+mod support_programs;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("tension-core is a directory under the repository root")
-        .to_path_buf()
-}
-
-fn programs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests")
-        .join("programs")
-}
-
-/// Build every program whose `.wasm` is missing or older than its `.ts`.
-///
-/// One recipe, shared with `threads.rs`: `scripts/build-test-programs.mjs`
-/// carries each program's flags. The guard program must **not** get the thread
-/// flags (a shared memory would create a pool and a session-shaped state the
-/// guards are testing the absence of), so the flag table lives there and this
-/// file restates none of it.
-fn build_programs() {
-    let script = repo().join("scripts").join("build-test-programs.mjs");
-    let status = Command::new("node")
-        .arg(&script)
-        .current_dir(programs_dir())
-        .status()
-        .unwrap_or_else(|error| {
-            support_ci::skip_or_fail(format_args!(
-                "framework_guards: could not run `node {}`: {error}",
-                script.display()
-            ));
-            panic!("unreachable: skip_or_fail panics by default")
-        });
-    if !status.success() {
-        support_ci::skip_or_fail(format_args!(
-            "framework_guards: `node {}` failed ({status}); the program is not built",
-            script.display()
-        ));
-    }
-}
-
-fn guest(name: &str) -> PathBuf {
-    build_programs();
-    let path = programs_dir().join("build").join(format!("{name}.wasm"));
-    if !path.exists() {
-        support_ci::skip_or_fail(format_args!(
-            "framework_guards: {} does not exist after the build",
-            path.display()
-        ));
-    }
-    path
-}
+use support_programs::guest;
 
 #[test]
 fn the_guards_hold_with_no_session_and_no_table() {

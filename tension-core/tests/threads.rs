@@ -27,61 +27,17 @@
 //! 4. **the refusals** — `-1` for an id out of range at both ends, `0` for the
 //!    first spawn of a valid id, `-2` for the second.
 //!
-//! Skip policy: `tests/support/ci.rs`. A missing guest is rebuilt rather than
-//! skipped; a failing build fails the test, because the compiler is vendored and
-//! the pin is proven.
+//! Skip policy: `tests/support/programs.rs` (over `tests/support/ci.rs`). A
+//! missing program is rebuilt rather than skipped; a failing build fails the
+//! test, because the compiler is vendored and the pin is proven.
 
-#[path = "support/ci.rs"]
-mod support_ci;
+#[path = "support/programs.rs"]
+mod support_programs;
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn programs_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("programs")
-}
-
-/// Build every program whose `.wasm` is missing or older than its `.ts`.
-///
-/// One recipe: `scripts/build-test-programs.mjs`, which is also what a developer
-/// runs by hand. The build line is not restated here, for the reason `async_on_main.rs`
-/// gives — two copies of a flag list drift, and the flag that would go first is
-/// the one the pinned optimizer needs.
-fn build_programs() {
-    let dir = programs_dir();
-    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("scripts").join("build-test-programs.mjs");
-    let status = Command::new("node")
-        .arg(&script)
-        .current_dir(&dir)
-        .status()
-        .unwrap_or_else(|error| {
-            support_ci::skip_or_fail(format_args!(
-                "threads: could not run `node {}`: {error}",
-                script.display()
-            ));
-            panic!("unreachable: skip_or_fail panics by default")
-        });
-    if !status.success() {
-        support_ci::skip_or_fail(format_args!(
-            "threads: `node {}` failed ({status}); the programs are not built",
-            script.display()
-        ));
-    }
-}
-
-/// One guest's artifact, built on demand.
-fn guest(name: &str) -> PathBuf {
-    build_programs();
-    let path = programs_dir().join("build").join(format!("{name}.wasm"));
-    if !path.exists() {
-        support_ci::skip_or_fail(format_args!(
-            "threads: {} does not exist after the build",
-            path.display()
-        ));
-    }
-    path
-}
+use support_programs::guest;
 
 /// Run one guest and return its `key=value` lines.
 ///
