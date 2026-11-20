@@ -1,0 +1,21 @@
+{
+  // The pre-launch tasks. `--sourceMap` is what links a wasm instruction back to
+  // a source line, and a release build carries no map — so the debug task builds
+  // the debug guest, exactly as every other example's does.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build:debug",
+      "type": "shell",
+      "command": "npm run build:debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "debug",
+      "dependsOn": ["build:debug"],
+      "dependsOrder": "sequence"
+    }
+  ]
+}

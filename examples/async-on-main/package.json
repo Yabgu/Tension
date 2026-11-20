@@ -1,0 +1,20 @@
+{
+  "name": "tension-example-async-on-main",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TensionCore example: `await` as a stackful continuation chain on main, with no host and no thread",
+  "scripts": {
+    "build": "node ../../scripts/tensionscript.mjs game.ts -o build/game.wasm --runtime incremental --target release --exportStart __start --enable stack-switching",
+    "build:debug": "node ../../scripts/tensionscript.mjs game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportStart __start --enable stack-switching",
+    "run": "node ../../scripts/run-example.mjs --no-build",
+    "start": "node ../../scripts/run-example.mjs"
+  },
+  "tension": {
+    "kind": "plain"
+  },
+  "dependencies": {
+    "tension-framework": "file:../../tension-framework",
+    "@yabgu_gm/tension-core": "file:../../packages/core"
+  }
+}
