@@ -8,16 +8,15 @@
 // drift this repository refuses, and the flag that matters most is the one a
 // copy would drop: **`--optimizeLevel 0`**.
 //
-// # Why `-O0`, and what it is not
+// # Why `-O0`
 //
-// The pinned compiler (0.14.1 at `03e0507b`) aborts inside Binaryen —
-// `Assertion failed: index < usedElements` in `mixed_arena.h` — for any program
-// that combines `--enable stack-switching` with `optimizeLevel >= 1`. Measured
-// on a three-line fixture (`async function leaf()`, one `await`, one `return`),
-// so it is the optimizer's handling of the continuation types, not anything
-// these guests do. `-O0` compiles and runs the same programs; the finding is
-// reported in the milestone's notes, and this comment is the place a future
-// reader finds out why the flag is here rather than in a commit message.
+// `-O0` is a *choice*: it builds fastest, keeps the artifacts small, and leaves
+// the line table unperturbed in the debug builds. It is no longer a workaround
+// for the optimizer. The pin at `150a6e97` compiles `async/schedule-order.ts`
+// at -O1, -O2 and -O3, and the compiler repo's `tests/async/optimize.js` pins a
+// three-line `await` at every level. Before that pin, -O1 aborted in `dce`
+// (`BinaryenResumeWithHandlers` built handlers but no sent types) and -O2 in
+// `local-cse`; both fixes are in the compiler repo and the Binaryen fork.
 //
 // # Why a table, not one flag list
 //
@@ -35,9 +34,10 @@
 //
 // `--debug` builds the *same* programs into `build/debug/`, with the program's
 // own flags plus `--debug --sourceMap`. Nothing else changes, `-O0` included:
-// the DWARF question and the optimizer question are separate, and a debug
-// artifact that dropped `-O0` would fail to compile for the stack-switching
-// programs (see above) rather than answer anything about DWARF.
+// a debug artifact is for a breakpoint, and -O0 is what keeps its line table
+// answering the source it came from. Higher levels do compile with DWARF now —
+// `schedule-order` was measured at -O2 with all four `.debug_*` sections — but
+// that is a separate choice from the one this script makes.
 //
 // Who asks for it: `tension-core/tests/debugger.rs`, which sets a source
 // breakpoint in a debug artifact under lldb. The release artifacts in
