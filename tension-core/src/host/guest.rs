@@ -114,7 +114,31 @@ impl GuestHost {
         // `Module::new` takes the text format as well as the binary one, so a
         // hand-written `.wat` fixture loads the way a compiled `game.wasm` does
         // (§7 Appendix B's smoke path).
-        let loaded = config.module_cache.load(&config.engine, &config.guest_path)?;
+        let loaded = config
+            .module_cache
+            .load(&config.engine, &config.guest_path)
+            .map_err(|error| {
+                // On a target without stack switching, a guest compiled with
+                // `--enable stack-switching` is refused by wasmtime at compile
+                // time ("cannot define continuation types when stack switching
+                // is disabled"). That refusal names the feature but not the
+                // platform; add the platform and the recompile hint so the
+                // operator sees the honest refusal rather than a raw wasmtime
+                // diagnostic. Anything else — a parse error, a bad import —
+                // stays the module cache's error untouched.
+                if !config.async_backend.supports_continuations()
+                    && format!("{error:?}").contains("stack switching")
+                {
+                    return anyhow::anyhow!(
+                        "{}: this guest uses continuations, which wasmtime does not \
+                         support on this target ({}) — recompile the guest without \
+                         `--enable stack-switching` (the Promise backend)",
+                        config.guest_path,
+                        std::env::consts::OS,
+                    );
+                }
+                error
+            })?;
         if let Some(bytes) = &loaded.bytes {
             // A malformed guest is reported with the file's name in front of
             // wasmtime's own parse error: `Module::new` does not know where the

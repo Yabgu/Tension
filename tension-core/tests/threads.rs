@@ -44,7 +44,13 @@ use support_programs::guest;
 /// The host logs to stderr, so the guest's own lines are all that is on stdout;
 /// parsing them into a map keeps the assertions about *values*, not order —
 /// which is what these tests are for. Ordering is `async_on_main.rs`'s job.
-fn run(name: &str, workers: usize) -> BTreeMap<String, String> {
+///
+/// The thread programs are continuation modules (`--enable stack-switching` is
+/// how the `$starts` table exists to serve requests), so on a target without
+/// stack switching they are refused by the host. The refusal is asserted here
+/// (exit non-zero, stderr naming the feature) and the caller gets `None`, with
+/// the reason printed.
+fn run(name: &str, workers: usize) -> Option<BTreeMap<String, String>> {
     let guest = guest(name);
     let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .arg("--executors")
@@ -54,22 +60,41 @@ fn run(name: &str, workers: usize) -> BTreeMap<String, String> {
         .expect("the interpreter runs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        output.status.success(),
-        "{} failed (exit {:?})\nstdout: {stdout}\nstderr: {}",
-        guest.display(),
-        output.status.code(),
-        stderr.lines().rev().take(8).collect::<Vec<_>>().join("\n")
-    );
 
-    let mut values = BTreeMap::new();
-    for line in stdout.lines() {
-        let line = line.trim();
-        if let Some((key, value)) = line.split_once('=') {
-            values.insert(key.trim().to_string(), value.trim().to_string());
+    if tension_core::async_backend::current().supports_continuations() {
+        assert!(
+            output.status.success(),
+            "{} failed (exit {:?})\nstdout: {stdout}\nstderr: {}",
+            guest.display(),
+            output.status.code(),
+            stderr.lines().rev().take(8).collect::<Vec<_>>().join("\n")
+        );
+
+        let mut values = BTreeMap::new();
+        for line in stdout.lines() {
+            let line = line.trim();
+            if let Some((key, value)) = line.split_once('=') {
+                values.insert(key.trim().to_string(), value.trim().to_string());
+            }
         }
+        return Some(values);
     }
-    values
+
+    assert!(
+        !output.status.success(),
+        "{name} must be refused on a target without stack switching, but it exited 0\n\
+         stdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("stack switching") || stderr.contains("continuation"),
+        "the refusal for {name} must name the feature, got:\n{stderr}"
+    );
+    eprintln!(
+        "{name}: stack switching is unavailable on {} — the host refused the guest \
+         by name (expected), and the thread ABI assertions are skipped",
+        std::env::consts::OS,
+    );
+    None
 }
 
 fn want<'a>(values: &'a BTreeMap<String, String>, key: &str) -> &'a str {
@@ -81,7 +106,9 @@ fn want<'a>(values: &'a BTreeMap<String, String>, key: &str) -> &'a str {
 
 #[test]
 fn one_executor_count_plus_the_pool() {
-    let values = run("count", 2);
+    let Some(values) = run("count", 2) else {
+        return;
+    };
 
     // `--executors 2` is two workers; main is always there.
     assert_eq!(want(&values, "executors"), "3");
@@ -101,7 +128,9 @@ fn one_executor_count_plus_the_pool() {
 
 #[test]
 fn a_worker_runs_on_its_own_store_and_joins() {
-    let values = run("spawn-join", 2);
+    let Some(values) = run("spawn-join", 2) else {
+        return;
+    };
 
     // The `$starts` indices came from `TaskBase.entry` — a module fact, which is
     // why a store other than the one that made the task can resolve them.
@@ -124,7 +153,9 @@ fn a_worker_runs_on_its_own_store_and_joins() {
 
 #[test]
 fn two_workers_observe_every_value_exactly_once() {
-    let values = run("two-workers", 2);
+    let Some(values) = run("two-workers", 2) else {
+        return;
+    };
 
     assert_eq!(want(&values, "spawn1"), "0");
     assert_eq!(want(&values, "spawn2"), "0");
@@ -143,7 +174,9 @@ fn two_workers_observe_every_value_exactly_once() {
 
 #[test]
 fn the_contracts_refusals_are_values() {
-    let values = run("spawn-refusals", 2);
+    let Some(values) = run("spawn-refusals", 2) else {
+        return;
+    };
 
     // Ids are `1..executorTotal`; main is 0 and is never a spawn target.
     assert_eq!(want(&values, "spawnMain"), "-1", "main cannot be spawned");
@@ -171,7 +204,9 @@ fn the_contracts_refusals_are_values() {
 /// named 'memory'" while the export is right there.
 #[test]
 fn a_shared_memory_guest_can_print() {
-    let values = run("count", 0);
+    let Some(values) = run("count", 0) else {
+        return;
+    };
     // With no workers configured, main is the whole pool.
     assert_eq!(want(&values, "executors"), "1");
 }

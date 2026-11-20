@@ -152,6 +152,7 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let config = HostConfig {
                 module_cache: Arc::clone(&state.module_cache),
                 engine: state.engine.clone(),
+                async_backend: state.async_backend,
                 // A nested guest gets no arguments. Its argv is the outer
                 // guest's convenience, and handing them over would make a
                 // nested run's behaviour depend on flags it never saw.

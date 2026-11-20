@@ -35,7 +35,11 @@ fn tags(stdout: &str) -> BTreeMap<String, Vec<i64>> {
     map
 }
 
-fn run(name: &str) -> BTreeMap<String, Vec<i64>> {
+/// Run one guest and answer its `tag: value` lines. On a target without stack
+/// switching the guest is refused by the host; the refusal is asserted here
+/// (exit non-zero, stderr naming the feature) and the caller gets `None`, with
+/// the reason printed — a silent skip is the thing this repository refuses.
+fn run(name: &str) -> Option<BTreeMap<String, Vec<i64>>> {
     let program = guest(name);
     let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .arg(&program)
@@ -43,13 +47,32 @@ fn run(name: &str) -> BTreeMap<String, Vec<i64>> {
         .expect("the interpreter runs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if tension_core::async_backend::current().supports_continuations() {
+        assert!(
+            output.status.success(),
+            "{name} failed (exit {:?})\nstdout:\n{stdout}\nstderr:\n{}",
+            output.status.code(),
+            stderr.lines().rev().take(12).collect::<Vec<_>>().join("\n")
+        );
+        return Some(tags(&stdout));
+    }
+
     assert!(
-        output.status.success(),
-        "{name} failed (exit {:?})\nstdout:\n{stdout}\nstderr:\n{}",
-        output.status.code(),
-        stderr.lines().rev().take(12).collect::<Vec<_>>().join("\n")
+        !output.status.success(),
+        "{name} must be refused on a target without stack switching, but it exited 0\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
     );
-    tags(&stdout)
+    assert!(
+        stderr.contains("stack switching") || stderr.contains("continuation"),
+        "the refusal for {name} must name the feature, got:\n{stderr}"
+    );
+    eprintln!(
+        "{name}: stack switching is unavailable on {} — the host refused the guest \
+         by name (expected), and the `tag: value` assertions are skipped",
+        std::env::consts::OS,
+    );
+    None
 }
 
 fn one(tags: &BTreeMap<String, Vec<i64>>, tag: &str) -> i64 {
@@ -68,7 +91,9 @@ fn one(tags: &BTreeMap<String, Vec<i64>>, tag: &str) -> i64 {
 /// `installed` would be 0.
 #[test]
 fn a_program_can_replace_mains_step() {
-    let tags = run("main-policy");
+    let Some(tags) = run("main-policy") else {
+        return;
+    };
     assert_eq!(
         one(&tags, "installed"),
         1,
@@ -90,7 +115,9 @@ fn a_program_can_replace_mains_step() {
 /// would mean the step spun without draining.
 #[test]
 fn a_suspension_falls_back_into_the_executor_loop() {
-    let tags = run("fallback-loop");
+    let Some(tags) = run("fallback-loop") else {
+        return;
+    };
     let marks: Vec<i64> = ["after a", "after b", "after c"]
         .iter()
         .map(|tag| one(&tags, tag))
@@ -114,7 +141,9 @@ fn a_suspension_falls_back_into_the_executor_loop() {
 /// counters are its own, so a green run says the shell ran *its* step.
 #[test]
 fn a_program_can_own_mains_scheduling_outright() {
-    let tags = run("main-step-replaced");
+    let Some(tags) = run("main-step-replaced") else {
+        return;
+    };
     assert!(
         one(&tags, "iterations") > 0,
         "the replacement step never ran: {tags:?}"

@@ -13,6 +13,11 @@
 //! to be reachable by the integration tests and the C harness they link, not
 //! only by the interpreter's `main`.
 
+// The async backend decision: whether wasmtime stack switching (continuations)
+// is live on this target, or the host falls back to the Promise seam and
+// refuses a continuation module by name. In the library so integration tests
+// gate on the same capability the host uses, not a second platform rule.
+pub mod async_backend;
 pub mod logging;
 pub mod pipeline;
 pub mod pipeline_default;

@@ -27,6 +27,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use tension_core::async_backend::AsyncBackend;
 use tension_core::res;
 use wasmtime::Engine;
 
@@ -40,6 +41,11 @@ pub struct HostConfig {
     /// exists to avoid. Immutable, `Clone`, and identical for every guest the
     /// process runs — so it is configuration, not per-guest state.
     pub engine: Engine,
+    /// Which async backend this engine gives the process: continuations on a
+    /// target that supports wasmtime stack switching, the Promise seam on one
+    /// that does not. Fixed with the engine, because the two are one decision
+    /// (`tension_core::async_backend::build`).
+    pub async_backend: AsyncBackend,
     /// The process's compiled-module cache.
     ///
     /// **Shared, not per guest**, for the same reason the engine is: the second

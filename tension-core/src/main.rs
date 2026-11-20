@@ -68,7 +68,7 @@ use tension_core::logging::{self, Config as LogConfig, ConfigError, Level};
 use tension_core::platform;
 use tension_core::render2d;
 use tension_core::res::{self, ResourceSet, Stat};
-use wasmtime::{Caller, Config, Engine, ExternType, Memory, Module, Store};
+use wasmtime::{Caller, Config, ExternType, Memory, Module, Store};
 
 /// The adapter ABI: loading a capability adapter, driving its lifecycle, and
 /// installing the imports it registers (`docs/architecture.md` §6). The run
@@ -320,6 +320,10 @@ pub(crate) struct HostState {
     /// engine, which would be a second compiled-code cache. `dev.run` needs it
     /// because a verb's only context is `Caller::data()`.
     pub(crate) engine: wasmtime::Engine,
+    /// Which async backend the process engine gives every guest, for a verb
+    /// (`dev.run`) that has to stand a nested guest up from `Caller::data()`
+    /// alone. The same value the `HostConfig` holds.
+    pub(crate) async_backend: tension_core::async_backend::AsyncBackend,
     /// The process's compiled-module cache, same reason and same `Arc`.
     pub(crate) module_cache: std::sync::Arc<host::module_cache::ModuleCache>,
     /// The executor pool for a guest that imported a **shared** linear memory,
@@ -435,6 +439,7 @@ impl HostState {
             runs: std::collections::HashMap::new(),
             next_run_id: 1,
             engine: config.engine.clone(),
+            async_backend: config.async_backend,
             module_cache: std::sync::Arc::clone(&config.module_cache),
             executors: None,
         }
@@ -825,6 +830,13 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             }
             "-h" | "--help" => {
                 println!("{USAGE}");
+                // `--help` starts the process far enough to name the backend it
+                // would build; the probe is the same question `main` asks of the
+                // real engine, asked of a throwaway one.
+                println!(
+                    "async backend: {}",
+                    tension_core::async_backend::current().label()
+                );
                 std::process::exit(0);
             }
             "-V" | "--version" => {
@@ -1181,13 +1193,22 @@ fn main() -> anyhow::Result<()> {
     // `cont.new`/`suspend`/`resume` for an async guest, and a module carrying
     // those types is refused at compile time by an engine with this off — the
     // guest never reaches its own entrypoint, so the refusal is not something a
-    // game can recover from. It is on unconditionally rather than behind a flag:
-    // a module that does not use continuations compiles and runs exactly as
-    // before, so there is no cost to pay for a guest that does, and a flag would
-    // make "the compiler emitted a legal module the host rejects" an operator
-    // problem instead of ours. (`main.rs` builds the one engine; the sandbox's
-    // test engine mirrors this line — `sandbox::tests::config`.)
-    engine_config.wasm_stack_switching(true);
+    // game can recover from. It is on rather than behind a flag: a module that
+    // does not use continuations compiles and runs exactly as before, so there
+    // is no cost to pay for a guest that does, and a flag would make "the
+    // compiler emitted a legal module the host rejects" an operator problem
+    // instead of ours.
+    //
+    // That argument is still right on a target that *supports* the feature.
+    // Wasmtime 50 enables stack switching only where its Cranelift target is
+    // x86-64 Linux/macOS/Darwin (`check_compatible_features` in wasmtime's
+    // `config.rs`); elsewhere `wasm_stack_switching(true)` makes `Engine::new`
+    // itself fail, and the honest equivalent is a refusal that names the
+    // platform — not refusing to start. `async_backend::build` tries the
+    // feature and falls back to an engine without it when wasmtime refuses it;
+    // the returned [`AsyncBackend`] is what the startup line and the tests
+    // assert. (`sandbox::tests::config` and `thread::tests::engine` mirror this
+    // through the same helper.)
     // **Shared memory, for a guest that more than one `Store` can see.** The
     // threads proposal is on by default in wasmtime 50, but creation of an
     // actual `SharedMemory` is not: `shared_memory` is `false` by default, and a
@@ -1207,7 +1228,10 @@ fn main() -> anyhow::Result<()> {
     // rather than made an operator's decision.
     engine_config.wasm_threads(true);
     engine_config.shared_memory(true);
-    let engine = Engine::new(&engine_config)?;
+    let (engine, async_backend) = tension_core::async_backend::build(&engine_config)?;
+    // One line, before any guest runs, naming the backend the process got. The
+    // value (not the prose) is what tests assert through `async_backend`.
+    eprintln!("async backend: {}", async_backend.label());
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
@@ -1263,6 +1287,7 @@ fn main() -> anyhow::Result<()> {
         // Play Mode runs the same compiled module on every press of a button.
         module_cache: std::sync::Arc::new(host::module_cache::ModuleCache::default()),
         engine,
+        async_backend,
         args: cli.args,
         guest_path: cli.wasm_path,
         res: std::sync::Arc::new(std::sync::Mutex::new(resource_sets)),
@@ -2726,7 +2751,7 @@ mod adapter_cli_tests {
     // ── the load-time checks on the guest's own structure ──────────────────
 
     fn module(wat: &str) -> Module {
-        Module::new(&Engine::default(), wat).expect("the test module compiles")
+        Module::new(&wasmtime::Engine::default(), wat).expect("the test module compiles")
     }
 
     /// F2 check 1, in its own words: a guest that speaks the session protocol
@@ -2853,7 +2878,7 @@ mod adapter_cli_tests {
         // code: one empty body
         section(10, &[0x01, 0x02, 0x00, 0x0b], &mut bytes);
 
-        let module = Module::new(&Engine::default(), &bytes).expect("the test module compiles");
+        let module = Module::new(&wasmtime::Engine::default(), &bytes).expect("the test module compiles");
         (module, bytes)
     }
 

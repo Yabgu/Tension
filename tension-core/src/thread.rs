@@ -614,10 +614,14 @@ mod tests {
     fn engine() -> Engine {
         let mut config = Config::new();
         config.wasm_threads(true);
-        config.wasm_stack_switching(true);
         config.shared_memory(true);
         config.epoch_interruption(true);
-        Engine::new(&config).expect("an engine with shared memory")
+        // Stack switching is negotiated by the same helper `main` uses; the
+        // returned backend is ignored here because these fixtures use no
+        // continuation types — shared memory is what is under test.
+        let (engine, _) =
+            crate::async_backend::build(&config).expect("an engine with shared memory");
+        engine
     }
 
     /// A worker that writes one word and exits: enough to prove the spawn is a
