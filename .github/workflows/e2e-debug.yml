@@ -178,13 +178,12 @@ jobs:
       # step spells them: `--test debugger` alone would run them and turn a
       # known compiler gap into a red job.
       #
-      #   a_source_breakpoint_binds_in_a_stack_switching_guest
-      #     The pinned compiler (0.14.1) emits no DWARF for a stack-switching
-      #     program — `WARNING DWARF emission failed: type form is not a function
-      #     type` at build time — so no fixture can exist to bind in, and a
-      #     checkout with no compiler could not build one either. It starts
-      #     running the day a committed debug `main-policy.wasm` can be built;
-      #     the test already upgrades itself on a `.debug_info` read.
+      # The stack-switching test used to be excluded here for a measured
+      # reason — the pinned 0.14.1 threw `type form is not a function type` on
+      # any continuation type and shipped no `.debug_*` sections at all. The pin
+      # now carries that fix, and `fixtures/debug/main-policy.wasm` is a
+      # committed stack-switching guest with DWARF, so the assertion is real
+      # here: it binds a `.ts` breakpoint inside an async function.
       #
       #   the two build paths
       #     `support/programs.rs` resolves a debug guest as fixture, then build
@@ -204,4 +203,5 @@ jobs:
               the_committed_debug_fixture_carries_dwarf \
               the_debug_report_names_what_a_debugger_can_see \
               a_source_breakpoint_binds_in_a_promise_guest \
+              a_source_breakpoint_binds_in_a_stack_switching_guest \
               a_guest_without_dwarf_cannot_be_stopped_at_a_source_line

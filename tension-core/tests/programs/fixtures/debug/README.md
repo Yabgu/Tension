@@ -11,7 +11,7 @@ Because the job that runs those assertions has **no compiler**. It used to
 vendor one, and it failed on a fresh runner before a single test ran:
 
 ```
-npm error path /home/runner/work/Tension/Tension/.packs/yabgu_gm-tensionscript-0.14.1-g03e0507bbaab.tar
+npm error path /home/runner/work/Tension/Tension/.packs/yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar
 npm error enoent ENOENT: no such file or directory
 ```
 
@@ -36,11 +36,11 @@ The vendored pin, proven by the one line the repo's compiler entry point prints
 on every build:
 
 ```
-tensionscript: 0.14.1 from /home/acakar/work/Tension/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js (vendored yabgu_gm-tensionscript-0.14.1-g03e0507bbaab.tar)
+tensionscript: 0.14.1 from /home/acakar/work/Tension/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js (vendored yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar)
 ```
 
 i.e. `third_party/TensionScript` at **`03e0507b`** (`v0.14.0-9-g03e0507b`),
-packed as `yabgu_gm-tensionscript-0.14.1-g03e0507bbaab.tar` — the spec the root
+packed as `yabgu_gm-tensionscript-0.14.1-g9697d1361c3f.tar` — the spec the root
 `package.json` devDependency names.
 
 ## Regenerating it
@@ -51,6 +51,13 @@ From the repository root, with the pin installed (`npm install`):
 node scripts/tensionscript.mjs tension-core/tests/programs/async/rt-guards.ts \
   --outFile tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
   --sourceMap --runtime incremental --target release --optimizeLevel 0 --debug
+
+# the stack-switching guest (its flags are `build-test-programs.mjs`'s
+# ASYNC_ON_MAIN_FLAGS plus --debug --sourceMap)
+node scripts/tensionscript.mjs tension-core/tests/programs/async/main-policy.ts \
+  --outFile tension-core/tests/programs/fixtures/debug/main-policy.wasm \
+  --sourceMap --runtime incremental --target release --optimizeLevel 0 --debug \
+  --enable threads --enable stack-switching
 ```
 
 Those are the flags `scripts/build-test-programs.mjs --debug` appends for
@@ -64,14 +71,25 @@ report asserts the map resolves beside the artifact.
 
 ## Bytes
 
-- `rt-guards.wasm`: 138 943 bytes,
-  SHA-256 `9fcb07e368fb398059421e346b790c665ca953dc42378e23ed3d7bd58c8d4203`
-- `rt-guards.wasm.map`: 500 977 bytes,
-  SHA-256 `64b3e2ca958a951b4de1db5f3dc91e235f58f43213e77dd5b2647ad0814af9c6`
-- Custom sections: `name`, `sourceMappingURL`, `.debug_abbrev`, `.debug_info`,
-  `.debug_line`, `.debug_ranges`. `.debug_info` + `.debug_line` together are
-  what makes the host pass the guest through (`tension-core/src/dwarf/mod.rs`,
-  `has_debug_sections`) and what makes a line-table breakpoint possible at all.
+- `rt-guards.wasm`: 138,968 bytes,
+  SHA-256 `b360ea1a21062b81051ba777e0aa6b658dbfbd8363ef678a5aef10bbe179d4f3`
+- `rt-guards.wasm.map`: 502,936 bytes,
+  SHA-256 `8138a368f84b6c90d566197ead4da3cae4f64dbb4e01d828b5d2777597f48382`
+- `main-policy.wasm`: 311,696 bytes,
+  SHA-256 `fd9ec2d90d7329652efc5b11dea3ba680f22523c31b965f2a345edfcfa0bc7c8` (no map: the async breakpoint test asserts a stop, not the
+  startup report's map line, and the map is 1.2 MB)
+
+`rt-guards.wasm` is the **Promise** guest (built without stack switching);
+`main-policy.wasm` is the **stack-switching** guest. Both carry
+`name`, `sourceMappingURL`, `.debug_abbrev`, `.debug_info`, `.debug_line` and
+`.debug_ranges` — `.debug_info` + `.debug_line` together are what makes the host
+pass the guest through (`tension-core/src/dwarf/mod.rs`,
+`has_debug_sections`) and what makes a line-table breakpoint possible at all.
+
+`main-policy.wasm` exists because of a compiler fix: 0.14.1 as built from
+`03e0507b` threw `type form is not a function type` on any continuation type and
+shipped **no** `.debug_*` sections for a stack-switching guest. The pin now
+carries that fix, and this fixture is the proof the async breakpoint test needs.
 
 ## One non-portable detail
 

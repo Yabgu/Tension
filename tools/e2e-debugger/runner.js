@@ -33,6 +33,7 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import {
@@ -554,7 +555,14 @@ async function runGuestMode({ binary, lldbInfo, options }) {
     return 1;
   }
 
-  const workDir = path.join("/tmp", `e2e-debug-guest-${process.pid}`);
+  // **A directory per invocation, not per process.** `cargo test` runs every
+  // test in one process, so a pid-keyed path is shared by two tests that drive
+  // lldb at the same time: both write `lldb.cmds` and `driver.py` into the same
+  // directory, one overwrites the other, and a breakpoint that was set for the
+  // other guest is what runs. Measured: the two breakpoint tests pass serially
+  // and fail together in parallel. `mkdtemp` gives each call its own directory,
+  // which is what the example mode gets for free by keying on the name.
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-debug-guest-"));
   try {
     Object.assign(
       answer,

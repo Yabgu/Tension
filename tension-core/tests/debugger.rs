@@ -355,6 +355,26 @@ fn observe_under_lldb(guest: &Path, file: &str, line: u64) -> Observation {
 /// This test is in the CI filter for exactly that reason.
 #[test]
 fn the_committed_debug_fixture_carries_dwarf() {
+    // Both committed fixtures, not just the one this file's first test needs:
+    // a fixture whose `.debug_*` sections silently disappear is exactly the
+    // failure a breakpoint binds to nothing, and it would otherwise only show
+    // up as a pending breakpoint two tests later.
+    for name in ["rt-guards.wasm", "main-policy.wasm"] {
+        let guest = debug_fixtures_dir().join(name);
+        assert!(
+            guest.is_file(),
+            "{name} is not committed — the CI job that runs the breakpoint assertions \
+             installs no compiler, so these fixtures are the only artifacts it can bind \
+             in. Regenerate them with the commands in the README beside them."
+        );
+        let bytes = std::fs::read(&guest).expect("the fixture is readable");
+        let sections = custom_sections(&bytes);
+        assert!(
+            sections.iter().any(|section| section == ".debug_info"),
+            "{name} carries no .debug_info — the compiler that built it emitted no DWARF, \
+             and a source breakpoint against it cannot bind; found {sections:#?}"
+        );
+    }
     let guest = debug_fixtures_dir().join("rt-guards.wasm");
     assert!(
         guest.is_file(),
