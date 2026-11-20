@@ -103,7 +103,7 @@ not an error.
 | the boot sequence (`thread_boot`) and the join at teardown | `tension-core/src/main.rs` |
 | the pool handle the imports read through `Caller::data()` | `HostState::executors` |
 | the flag | `--executors <N>` (worker threads; main is always one) |
-| the tests | `tension-core/tests/threads.rs`, guests in `tension-core/tests/guests/` |
+| the tests | `tension-core/tests/threads.rs`, programs in `tension-core/tests/programs/` |
 
 ## 6. Edges this host has, measured
 
@@ -156,8 +156,8 @@ Each was found by running a real guest, not by reading.
 - **the refusals** — `-1` for an id out of range at both ends, `-2` for a second
   spawn of a live id.
 
-The guests are `.ts` in `tension-core/tests/guests/`, built by that directory's
-`build.mjs` with the repository's pinned compiler. They are built at
+The programs are `.ts` in `tension-core/tests/programs/`, built by
+`scripts/build-test-programs.mjs` with the repository's pinned compiler. They are built at
 `--optimizeLevel 0`; the reason is in that script's header and in the milestone
 report — the pinned Binaryen aborts on `--enable stack-switching` at
 `optimizeLevel >= 1`, on any program, not on these in particular.
