@@ -29,7 +29,9 @@
 
 use std::sync::Arc;
 
-use wasmtime::{Linker, Module, Store};
+use wasmtime::{Linker, Module, SharedMemory, Store};
+
+use tension_core::thread::ExecutorPool;
 
 /// The root store's epoch deadline: "never", but not `u64::MAX`.
 ///
@@ -186,6 +188,40 @@ impl GuestHost {
         // and no suite runs at debug level.
         #[cfg(feature = "render2d-core")]
         crate::host::link_2d(&mut linker)?;
+        // ── the thread ABI (`docs/threads.md`) ────────────────────────────
+        //
+        // A guest whose build declares a **shared** linear memory gets the two
+        // host imports `env.__executorCount` and `env.__startThread`. The
+        // memory is created here, from the module's own declared type, because a
+        // module-defined shared memory is a *fresh* one per instantiation —
+        // which is the opposite of what a pool needs.
+        //
+        // `config.executors` is the worker count, so the answer to
+        // `__executorCount()` is `executors + 1` (main). A guest with no shared
+        // memory imports neither verb and gets no pool; a guest that asks for
+        // `__executorCount` anyway (impossible from the compiler, possible from
+        // a hand-written module) is answered `1` by the registered definition
+        // below, which is the truth for one store.
+        if let Some(ty) = tension_core::thread::shared_memory_import(&module) {
+            let memory = SharedMemory::new(&config.engine, ty)?;
+            let pool = ExecutorPool::new(
+                config.engine.clone(),
+                module.clone(),
+                memory.clone(),
+                config.executors + 1,
+            )?;
+            tension_core::thread::define_memory(&memory, &mut store, &mut linker)?;
+            // The store's handle is the owner from here: the two imports reach
+            // it through `Caller::data()`, and `main` joins through it after the
+            // guest returns. No second copy on the bundle.
+            store.data_mut().executors = Some(pool);
+        }
+        // Registered for **every** guest. Wasmtime resolves a definition only
+        // when a guest imports it, so an ordinary module sees nothing; and the
+        // nested-guest linker path (which shares this function) then has one
+        // registration instead of a second copy.
+        ExecutorPool::link(&mut linker)?;
+
         // `tension::dev`: a guest that runs another guest. Registered for every
         // guest, the process's own included — the editor is the caller this
         // exists for — and for a nested guest too, which is why the depth cap is

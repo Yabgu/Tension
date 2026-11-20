@@ -818,6 +818,7 @@ mod tests {
             session_open: false,
             session_callbacks: None,
             post_test_events: false,
+            executors: 0,
         }
     }
 

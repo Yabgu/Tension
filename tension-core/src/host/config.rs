@@ -70,4 +70,10 @@ pub struct HostConfig {
     pub session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three `JOB_DONE` events before `_start_game`.
     pub post_test_events: bool,
+    /// `--executors <N>`: the **worker** threads a shared-memory guest gets.
+    ///
+    /// Zero by default, and zero is meaningful: a guest is one executor (main)
+    /// unless the run asked for a pool. What the guest reads as
+    /// `__executorCount()` is this plus main — `docs/threads.md`.
+    pub executors: usize,
 }

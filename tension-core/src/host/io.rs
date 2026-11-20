@@ -15,6 +15,7 @@ use wasmtime::{Caller, Linker};
 
 use crate::logging::{self, Level};
 use crate::{guest_text, read_as_string, HostState};
+use tension_core::thread::GuestMemory;
 
 /// Register the `tension::io` verbs and `env.abort`.
 pub fn link_io(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
@@ -39,20 +40,23 @@ pub fn link_io(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "tension::io",
         "print",
         |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| {
-            let mem = caller
-                .get_export("memory")
-                .and_then(|e| e.into_memory())
-                .expect("game must export a memory named 'memory'");
-            let bytes = mem.data(&caller);
+            // **`GuestMemory`, not `into_memory()`.** A shared-memory guest (a
+            // `--sharedMemory` build) exports `Extern::SharedMemory`, which
+            // `into_memory()` answers `None` for — measured: the export is there
+            // (`is_some()` is true) and the expect fired anyway, which is the
+            // least useful shape a refusal can have. `GuestMemory::of` resolves
+            // either kind (`tension_core::thread`).
+            let Some(mem) = GuestMemory::of(&mut caller) else {
+                return;
+            };
             let start = ptr as usize;
-            let end = start + len.max(0) as usize;
-            let start = start.min(bytes.len());
-            let end = end.min(bytes.len());
+            let end = start.saturating_add(len.max(0) as usize);
+            let bytes = mem.copy(&caller, start, end);
             // A sandboxed guest's output is captured rather than printed: the
             // host reads it right after the entrypoint returns (`dev.out` in
             // Pass 3), and a nested run that interleaved with the editor's own
             // terminal would be the one thing a nested run must not do.
-            let text = String::from_utf8_lossy(&bytes[start..end]).into_owned();
+            let text = String::from_utf8_lossy(&bytes).into_owned();
             let captured = {
                 // The memory borrow above ends here, so `data_mut` is free.
                 let state = caller.data_mut();

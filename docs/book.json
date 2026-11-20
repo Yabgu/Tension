@@ -7,6 +7,8 @@
     { "title": "Vision", "page": "vision.md" },
     { "title": "Architecture", "page": "architecture.md" },
     { "title": "The session", "page": "session.md" },
+    { "title": "The task model — Promise and Task", "page": "task-model.md" },
+    { "title": "Threads and the host", "page": "threads.md" },
 
     {
       "title": "Modules",

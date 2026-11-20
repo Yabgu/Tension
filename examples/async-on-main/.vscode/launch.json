@@ -1,0 +1,37 @@
+{
+  // Debugging the continuation chain under tension-core.
+  //
+  // The interesting breakpoint is the line after any `await`: a stackful
+  // continuation keeps its frame on the guest's own stack, so the locals are
+  // where the source says they are, in the frame the debugger shows.
+  //
+  // `windows` overrides the program to `.exe`; a relative path without it will
+  // not launch on Windows.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (async-on-main)",
+      "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/game.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug",
+      "stopOnEntry": false
+    }
+  ]
+}

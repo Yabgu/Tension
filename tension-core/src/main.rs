@@ -322,6 +322,14 @@ pub(crate) struct HostState {
     pub(crate) engine: wasmtime::Engine,
     /// The process's compiled-module cache, same reason and same `Arc`.
     pub(crate) module_cache: std::sync::Arc<host::module_cache::ModuleCache>,
+    /// The executor pool for a guest that imported a **shared** linear memory,
+    /// or `None` for the ordinary one-store guest.
+    ///
+    /// Here rather than only on the `GuestHost` because the two thread imports
+    /// reach their state the way every other verb does — `Caller::data()` — and
+    /// a verb that had to be handed the pool separately would be the one verb
+    /// with a second path to its own state (`docs/threads.md`).
+    pub(crate) executors: Option<std::sync::Arc<tension_core::thread::ExecutorPool>>,
 }
 
 impl HostState {
@@ -428,7 +436,17 @@ impl HostState {
             next_run_id: 1,
             engine: config.engine.clone(),
             module_cache: std::sync::Arc::clone(&config.module_cache),
+            executors: None,
         }
+    }
+}
+
+/// The two thread imports answer from the store's own data, like every verb.
+impl tension_core::thread::ThreadImports for HostState {
+    fn executor_pool(
+        &self,
+    ) -> Option<&std::sync::Arc<tension_core::thread::ExecutorPool>> {
+        self.executors.as_ref()
     }
 }
 
@@ -480,6 +498,83 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
         .collect()
 }
 
+/// A shared-memory guest's three-call boot, in the order the contract fixes.
+///
+/// `docs/threads.md` is the host half's prose; this function is it. The three
+/// calls, and what each is for:
+///
+/// 1. `__threadInit(capacity)` — carve the control block (header, one record per
+///    executor, the request table, the arenas) at the first page boundary after
+///    `__heap_base`, growing the memory to fit. It answers `0` on success;
+///    a refusal is reported rather than guessed at.
+/// 2. `__arenaInit(__mainArenaBase(), __mainArenaSize())` — main's slice of the
+///    carved arenas. **The host's job, not the guest's**: it moves
+///    `__stack_pointer`, so it has to run with no live guest frame.
+/// 3. `__start()` — the module's boot body and async shell, answering the
+///    shell's status.
+///
+/// A module that exports no `__threadInit` (a hand-written fixture with a shared
+/// memory and no carved block) takes none of these steps: it has no control
+/// block to carve, and the pool still answers the two imports.
+fn thread_boot(
+    store: &mut Store<HostState>,
+    instance: &wasmtime::Instance,
+) -> anyhow::Result<()> {
+    /// The ring capacity main carves with. The guest's own default
+    /// (`std/assembly/thread.ts`, `DEFAULT_CAPACITY`) — stated here because the
+    /// host is the caller the contract gives it to.
+    const CAPACITY: i32 = 1024;
+
+    let Ok(init) = instance.get_typed_func::<i32, i32>(&mut *store, "__threadInit") else {
+        logging::log(
+            Level::Debug,
+            "thread",
+            "the module imports a shared memory but exports no `__threadInit`; \
+             the pool answers the imports and nothing is carved",
+        );
+        return Ok(());
+    };
+    let status = init.call(&mut *store, CAPACITY)?;
+    if status != 0 {
+        anyhow::bail!(
+            "__threadInit({CAPACITY}) answered {status} (-1: not a shared build or no \
+             executors configured, -2: the memory could not grow to hold the layout)"
+        );
+    }
+
+    let base = instance
+        .get_typed_func::<(), i32>(&mut *store, "__mainArenaBase")
+        .map_err(|_| anyhow::anyhow!("the module exports no `__mainArenaBase`"))?
+        .call(&mut *store, ())?;
+    let size = instance
+        .get_typed_func::<(), i32>(&mut *store, "__mainArenaSize")
+        .map_err(|_| anyhow::anyhow!("the module exports no `__mainArenaSize`"))?
+        .call(&mut *store, ())?;
+    if base == 0 || size == 0 {
+        anyhow::bail!(
+            "the carved block publishes no arena for main (base {base}, size {size}); \
+             `__threadInit` reported success, so this is a layout disagreement"
+        );
+    }
+    instance
+        .get_typed_func::<(i32, i32), ()>(&mut *store, "__arenaInit")
+        .map_err(|_| anyhow::anyhow!("the module exports no `__arenaInit`"))?
+        .call(&mut *store, (base, size))?;
+
+    // `__start` here, not later: a shared build's boot body **is** this entry,
+    // and the `() -> ()` call below finds nothing to do.
+    let started = instance
+        .get_typed_func::<(), i32>(&mut *store, "__start")
+        .map_err(|_| anyhow::anyhow!("the module exports no `__start() -> i32`"))?
+        .call(&mut *store, ())?;
+    logging::log(
+        Level::Debug,
+        "thread",
+        &format!("main booted: __threadInit({CAPACITY}), arena {base}+{size}, __start answered {started}"),
+    );
+    Ok(())
+}
+
 const PACK_USAGE: &str = r#"usage: tension-core pack <source-dir> [-o output.pak]
 
 Pack a directory tree into an ECMA-208 (SIDF) resource pak. The default output
@@ -527,6 +622,11 @@ options:
   --post-test-events     A2 test-only: post three JOB_DONE events before
                          `_start_game`, so an epoch fixture has something to
                          deliver
+  --executors <N>        worker threads for a `--sharedMemory` guest (default 0).
+                         Main is always one executor, so the guest's
+                         `__executorCount()` answers N + 1; the worker threads
+                         are created by `env.__startThread` when the guest asks,
+                         never at startup
   -h, --help             print this help
   -V, --version          print the version
   --                     end options: the next argument is <game.wasm>
@@ -620,6 +720,9 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
+    /// `--executors <N>`: worker threads for a shared-memory guest. Main is
+    /// always there, so `__executorCount()` answers `N + 1`.
+    executors: usize,
     wasm_path: String,
     args: Vec<String>,
 }
@@ -641,6 +744,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
+    let mut executors = 0usize;
     let mut wasm_path = None;
     let mut rest = argv.into_iter();
     while wasm_path.is_none() {
@@ -673,10 +777,18 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             session_callbacks = Some(parse_callback_slots(value)?);
             continue;
         }
+        if let Some(value) = arg.strip_prefix("--executors=") {
+            executors = parse_executors(value)?;
+            continue;
+        }
         match arg.as_str() {
             "--debug" => debug = true,
             "--session-open" => session_open = true,
             "--post-test-events" => post_test_events = true,
+            "--executors" => {
+                let value = rest.next().ok_or("`--executors` needs a count")?;
+                executors = parse_executors(&value)?;
+            }
             "--session-callbacks" => {
                 let value = rest
                     .next()
@@ -741,9 +853,27 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
+        executors,
         wasm_path,
         args: rest.collect(),
     })
+}
+
+/// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
+/// space can hold.
+fn parse_executors(value: &str) -> Result<usize, String> {
+    let count = value
+        .trim()
+        .parse::<usize>()
+        .map_err(|_| format!("`--executors {value}`: `{value}` is not a count"))?;
+    // Executor ids are `i32` in the guest's control block, and a mask is 32 bits
+    // wide, so a pool past 31 workers could never be addressed by a policy.
+    if count > 31 {
+        return Err(format!(
+            "`--executors {value}`: at most 31 workers (executor ids are masked by a 32-bit word)"
+        ));
+    }
+    Ok(count)
 }
 
 /// Build the logger's config: environment first, then the CLI on top, so
@@ -1141,6 +1271,7 @@ fn main() -> anyhow::Result<()> {
         session_open: cli.session_open,
         session_callbacks: cli.session_callbacks,
         post_test_events: cli.post_test_events,
+        executors: cli.executors,
     };
 
     // §7.2: the paks merge into one namespace, so two of them providing the
@@ -1373,6 +1504,30 @@ fn main() -> anyhow::Result<()> {
         session.verify_post_instantiate(&store)?;
     }
 
+    // ── the thread boot contract (TensionScript `docs/thread-abi.md` §2.1) ──
+    //
+    // A `--sharedMemory` guest runs **nothing** at instantiation: there is no
+    // start section, because a start section runs on every instantiation and a
+    // worker would then run `main` again on its own globals against the shared
+    // memory. So the host chooses the entry, and for main it is three calls in
+    // this order:
+    //
+    //   __threadInit(capacity)                          carve the control block
+    //   __arenaInit(__mainArenaBase(), __mainArenaSize())   main's slice
+    //   __start()                                       boot body + async shell
+    //
+    // `__arenaInit` **must** come before `__start` (it discards every allocation
+    // made before it, and the boot body allocates) and **must not** be called
+    // from inside the guest (`__threadInit` does not call it, for a reason
+    // measured in TensionScript): it moves `__stack_pointer`, and a guest frame
+    // addresses its shadow-stack slots relative to that pointer.
+    //
+    // An ordinary guest exports no `__threadInit` and takes none of these steps;
+    // it keeps the `__start` call below exactly as it was.
+    if store.data().executors.is_some() {
+        thread_boot(&mut store, &instance)?;
+    }
+
     // TensionScript's runtime initializer, when the guest exports one.
     //
     // The SDK builds with `--exportStart __start` so this is an export rather
@@ -1380,6 +1535,10 @@ fn main() -> anyhow::Result<()> {
     // instantiation, before the arena had been verified, which is why the
     // load-time check refuses one. Calling it here is the order the design asks
     // for — verify the arena, initialize the runtime, then run the game.
+    //
+    // A shared-memory guest's `__start` answers `i32` (the shell's status) and
+    // has already been called by `thread_boot`; the `() -> ()` form is the one
+    // an ordinary build emits.
     if let Ok(init) = instance.get_typed_func::<(), ()>(&mut store, "__start") {
         init.call(&mut store, ())?;
     }
@@ -1500,6 +1659,16 @@ fn main() -> anyhow::Result<()> {
             "game.wasm did not export `_start_game` or `_start`",
         ))
     };
+
+    // The worker threads a shared-memory guest started. Joined here — on both
+    // paths, before the adapters — because a worker outlives the `__startThread`
+    // call that made it, and a process that exits with a guest thread mid-frame
+    // is a trap with no message. `join_finished` never blocks: the guest is
+    // expected to have joined its workers itself (`__threadJoin`), so a live one
+    // here means the guest returned without doing so, which it logs.
+    if let Some(pool) = store.data().executors.clone() {
+        pool.join_finished();
+    }
 
     // Tear the adapters down on the trapping path *before* the error propagates.
     // `shutdown` (stop and join threads) then `destroy` (free), reverse of link

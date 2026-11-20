@@ -1934,6 +1934,7 @@ mod lifecycle {
                 window_closed: false,
                 adapters: Vec::new(),
                 session: None,
+                executors: None,
             },
         )
     }
@@ -2382,6 +2383,7 @@ mod verbs {
                 window_closed: false,
                 adapters: Vec::new(),
                 session: None,
+                executors: None,
             },
         )
     }
