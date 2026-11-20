@@ -1,6 +1,13 @@
 // `await` on main: a stackful continuation chain on **one** store, with no
 // host, no worker, no OS thread and no capability. `npm start`.
 //
+// **This file is the demo; the ABI contract is the test program.**
+// `tension-core/tests/programs/async-on-main.ts` is a verbatim copy of
+// TensionScript's `examples/async-main/main.ts`, and
+// `tension-core/tests/async_on_main.rs` asserts its transcript, so a change to
+// the contract is caught on both hosts. This example stays the longer, printed
+// walkthrough; if the two disagree, the test program is right.
+//
 // ## What this shows
 //
 // Every `await` here is a real suspension of `main`, not a straight line. The
