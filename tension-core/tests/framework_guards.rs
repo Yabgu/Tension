@@ -110,14 +110,14 @@ fn the_guards_hold_with_no_session_and_no_table() {
     let mut values = BTreeMap::new();
     for line in stdout.lines() {
         let line = line.trim();
-        if let Some((key, value)) = line.split_once('=') {
+        if let Some((key, value)) = line.split_once(": ") {
             values.insert(key.trim().to_string(), value.trim().to_string());
         }
     }
     let want = |key: &str| -> &str {
         values
             .get(key)
-            .unwrap_or_else(|| panic!("no `{key}=` line; transcript: {values:?}"))
+            .unwrap_or_else(|| panic!("no `{key}:` line; transcript: {values:?}"))
     };
 
     assert_eq!(want("start"), "ok", "rt.start() did not bind without a session");

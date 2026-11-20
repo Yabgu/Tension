@@ -89,25 +89,25 @@ class EventRecord {
 
 export function _start_game(): void {
   rt.start();
-  line("start=ok");
+  line("start: ok");
 
   let handle: Task<u32> = rt.job(7);
-  line("job-class=" + handle._record.class_.toString());
-  line("job-key=" + handle._record.key.toString());
-  line("job-settled=" + (handle.settled ? "1" : "0"));
-  line("has-runnable-before=" + (rt.hasRunnable() ? "1" : "0"));
+  line("job-class: " + handle._record.class_.toString());
+  line("job-key: " + handle._record.key.toString());
+  line("job-settled: " + (handle.settled ? "1" : "0"));
+  line("has-runnable-before: " + (rt.hasRunnable() ? "1" : "0"));
 
   awaitJob(handle);
-  line("resumed-after-park=" + resumed.toString());
+  line("resumed-after-park: " + resumed.toString());
 
   let record: EventRecord = new EventRecord();
   record.class_ = 4;
   record.a = 7;
   record.b = 41;
   rt.onEvent(4, changetype<u32>(record));
-  line("resumed-after-on-event=" + resumed.toString());
+  line("resumed-after-on-event: " + resumed.toString());
 
-  line("ai-dropped=" + rt.aiDropped().toString());
-  line("has-runnable-after=" + (rt.hasRunnable() ? "1" : "0"));
-  line("guard-result=" + probe().toString());
+  line("ai-dropped: " + rt.aiDropped().toString());
+  line("has-runnable-after: " + (rt.hasRunnable() ? "1" : "0"));
+  line("guard-result: " + probe().toString());
 }
