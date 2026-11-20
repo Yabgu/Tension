@@ -472,7 +472,17 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
       const result = vendorCompiler();
       unpinLockIntegrity();
       if (!result.built) console.log(`vendor-compiler: ${result.tarball} (unchanged)`);
-      else console.log('vendor-compiler: next: npm install   (refreshes the root lockfile)');
+      else {
+        // **The version does not change when the commit does.** The package is
+        // always `0.14.1`, so npm sees an installed copy that satisfies the
+        // new spec and leaves it alone: measured on Windows, `npm install`
+        // said "up to date" while node_modules still held the previous
+        // compiler, and the build then warned `DWARF emission failed` from a
+        // tarball that had already been fixed. Removing the installed copy is
+        // what makes npm unpack the new bytes.
+        console.log('vendor-compiler: next: rm -rf node_modules/@yabgu_gm/tensionscript && npm install');
+        console.log('vendor-compiler:       (the version stays 0.14.1, so npm will not replace the installed copy)');
+      }
     } catch (error) {
       if (!error.reported) throw error;
       process.exit(1);
