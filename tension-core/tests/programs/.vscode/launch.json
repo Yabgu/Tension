@@ -1,0 +1,110 @@
+{
+  // Run and debug one test program, from this folder. Open
+  // `tension-core/tests/programs` as the workspace root, then pick a program
+  // from the list — the same list `scripts/build-test-programs.mjs` builds.
+  //
+  // ## Which host you get, and why it matters
+  //
+  // `tension-core` cannot run these programs **on Windows**. wasmtime gates
+  // stack switching to x86-64 Linux/macOS (`wasmtime-50/src/config.rs:2486`),
+  // `Engine::new` refuses the feature at construction, and every program here
+  // is compiled with `--enable stack-switching`. Measured on this machine:
+  //
+  //   tension-core.exe main-policy.wasm
+  //   Error: the wasm_stack_switching feature is not supported on this compiler configuration
+  //
+  // Node's V8 does support it, so the same artifact runs under Node — that is
+  // what the first two configurations do, and they are the ones that work on
+  // Windows. The third needs Linux or macOS.
+  //
+  // ## Breakpoints, honestly
+  //
+  // * In `runner.mjs` (Node config): works, everywhere. That is the file that
+  //   instantiates the guest and answers its imports, so it is where you watch
+  //   a program start and stop.
+  // * In a `.ts` program: **does not work yet** for any async program. The
+  //   compiler's DWARF writer bails on continuation types —
+  //   `WARNING DWARF emission failed: type form is not a function type` — so the
+  //   artifact carries no `.debug_info` and a source breakpoint has nothing to
+  //   bind to. Measured identically on Linux and Windows, so it is a compiler
+  //   gap, not a platform one.
+  // * In `__mainStep__` or any other std function: same reason. The way to see
+  //   inside it today is to **replace** it — a program may declare its own
+  //   `mainStep`, and `print` from it. `async/main-policy.ts` does exactly that.
+  "version": "0.2.0",
+  "inputs": [
+    {
+      "id": "program",
+      "type": "pickString",
+      "description": "Which test program",
+      "options": [
+        "async-on-main",
+        "main-policy",
+        "fallback-loop",
+        "rt-guards",
+        "count",
+        "spawn-join",
+        "spawn-refusals",
+        "two-workers"
+      ],
+      "default": "main-policy"
+    }
+  ],
+  "configurations": [
+    {
+      // The one that works on every OS, including Windows. Set a breakpoint in
+      // runner.mjs or step through the instantiation.
+      "type": "node",
+      "request": "launch",
+      "name": "Node: run ${input:program}",
+      "program": "${workspaceFolder}/runner.mjs",
+      "runtimeArgs": ["--experimental-wasm-wasmfx"],
+      "args": ["${input:program}"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "programs: build"
+    },
+    {
+      // Same, with the runner's own trace of the module's imports and the
+      // status `__start` returned.
+      "type": "node",
+      "request": "launch",
+      "name": "Node: run ${input:program} (trace)",
+      "program": "${workspaceFolder}/runner.mjs",
+      "runtimeArgs": ["--experimental-wasm-wasmfx"],
+      "args": ["${input:program}", "--trace"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "skipFiles": ["<node_internals>/**"],
+      "preLaunchTask": "programs: build"
+    },
+    {
+      // The real host, with full Rust symbols: you can breakpoint inside
+      // `__executorCount`, `__startThread`, the ABI adapter, and step from the
+      // host into the guest. **Linux and macOS only** — see the note above.
+      //
+      // Needs the CodeLLDB extension (`vadimcn.vscode-lldb`). `--debug` makes
+      // tension-core pass DWARF through untouched; a guest without it still
+      // runs, you simply cannot breakpoint inside it.
+      "type": "lldb",
+      "request": "launch",
+      "name": "tension-core: debug ${input:program} (Linux/macOS)",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        // Kept so the entry exists on Windows and fails with the engine's own
+        // message rather than a missing-file error.
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": ["--debug", "--symbol-path", "${workspaceFolder}", "${workspaceFolder}/build/${input:program}.wasm"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "programs: build"
+    }
+  ]
+}

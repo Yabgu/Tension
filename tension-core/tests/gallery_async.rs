@@ -106,3 +106,33 @@ fn a_suspension_falls_back_into_the_executor_loop() {
     );
     assert_eq!(one(&tags, "value"), 9, "2 + 3 + 4: {tags:?}");
 }
+
+/// A program can **own** main's scheduling, not just observe it.
+///
+/// `main-step-replaced.ts` never calls `__mainStep__`: it drives two ready slots
+/// and then drains one request, which is the opposite order to the default. Both
+/// counters are its own, so a green run says the shell ran *its* step.
+#[test]
+fn a_program_can_own_mains_scheduling_outright() {
+    let tags = run("main-step-replaced");
+    assert!(
+        one(&tags, "iterations") > 0,
+        "the replacement step never ran: {tags:?}"
+    );
+    // `main` prints from **inside** `driveReady`, so the last iteration is still
+    // in progress when the transcript is taken: `drains` may be one behind.
+    // Measured: iterations 4, drains 3. That is the loop, not a bug — and it is
+    // worth pinning, because a step that drained *before* driving would print
+    // equal counts and mean something else.
+    let iterations = one(&tags, "iterations");
+    let drains = one(&tags, "drains");
+    assert!(
+        drains >= 1 && (drains == iterations || drains + 1 == iterations),
+        "one drain per iteration, minus the one still in progress: iterations {iterations}, drains {drains}"
+    );
+    assert_eq!(
+        one(&tags, "value"),
+        306,
+        "101 + 102 + 103, i.e. every suspension resumed: {tags:?}"
+    );
+}

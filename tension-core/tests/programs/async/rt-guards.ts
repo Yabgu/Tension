@@ -22,7 +22,7 @@
 // Every line is `tag: value`, one observation per line, so a failure names the
 // value that moved rather than a prose sentence.
 
-import { rt } from "../../../tension-framework/assembly/runtime/rt";
+import { rt } from "../../../../tension-framework/assembly/runtime/rt";
 import { Task, TaskRecord } from "~lib/task";
 
 @external("tension::io", "print")
