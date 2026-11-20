@@ -11,8 +11,8 @@
 //   build-synthetic-assets.mjs  writes the pages as PNGs, for a human to look at
 //   emit.mjs                    writes the pages as IWI + the scene table the
 //                               guest compiles against
-//   test-synthetic.mjs / the framework example's runner
-//                               read `scene()` for the probes and the colours
+//   emit.mjs (scene.json)       carries the probes and colours to
+//                               `tension-core/tests/examples_2d.rs`
 //
 // Nothing here reads the art back: the pages are generated from COLOURS, so the
 // expected colour at a probe is a value this module knows by construction. That

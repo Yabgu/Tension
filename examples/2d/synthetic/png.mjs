@@ -5,9 +5,8 @@
 // filter-0 scanlines, IEND. It writes 8-bit RGBA, which is what both the
 // synthetic pages and the frame dumps are.
 //
-// This is the same encoder `examples/2d/isometric/test.mjs` carries inline; it
-// lives here because the synthetic generator and two runners all need it and
-// three copies of a CRC table is how they drift.
+// The synthetic page generator needs it; `examples/2d/assets/png.mjs` has the
+// richer encoder/decoder, and two copies of a CRC table is already one too many.
 
 import { deflateSync } from 'node:zlib';
 

@@ -12,11 +12,8 @@
 //   7. tension-res        zig build test
 //   8. line endings       text files are UTF-8 with LF (batch files may be CRLF)
 //   9. dependency pins    one naga version, not two
-//  10. isometric (CI)    the three 2D problems, from synthetic pages
-//  11. isometric frame   the framework library reproduces the scene byte for byte
-//  12. starter           a scaffolded project builds and runs: template drift
-//  13. box-physics       the rigid-body example's own pixel and solver asserts
-//  14. stiff-boxes       the BDF2 example's own asserts, from packed textures
+//  10. 2D examples        six guests, asserted by tension-core/tests/examples_2d.rs
+//  11. starter            a scaffolded project builds and runs: template drift
 //
 // ## What "parallel" may and may not do here
 //
@@ -388,7 +385,7 @@ const SUITES = {
     title: 'window close',
     needs: [],
     // hello-sprites' guest and shader modules are this suite's inputs too.
-    holds: ['2d-example:hello-sprites', 'display'],
+    holds: ['2d-examples', 'display'],
     run: () => execute(node, [join(repo, 'scripts', 'test-window-close.mjs')],
                        { env: suiteEnv() }),
   },
@@ -402,91 +399,26 @@ const SUITES = {
                        { cwd: join(repo, 'tension-res'), env: suiteEnv() }),
   },
 
-  // Ten sprites, one atlas, one frame — the smallest end-to-end 2D guest, and
-  // the only suite that asserts an absolute pixel count (10240 = 10 x 32x32)
-  // rather than a colour at a probe. The count is the check that catches a
-  // renderer which draws every rect at the same place: ten probes can agree
-  // while the tenth sprite sits on top of the first.
-  'hello-sprites': {
-    title: 'hello-sprites',
-    needs: [],
-    // Writes the shader modules and the guest, in directories the other 2D
-    // suites also use.
-    holds: ['2d-example:hello-sprites'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'hello-sprites', 'test.mjs'),
-    ], { env: suiteEnv() }),
-  },
-
-  // The same scene from generated flat-colour pages: same canvas, same
-  // positions, same sort keys, same probes. Its assertions are cheap and its
-  // expectations are palette constants, so it catches a renderer bug without
-  // needing the art. `isometric-art` is the same scene drawn from the real
-  // tileset and catches art-pipeline bugs this one cannot.
-  isometric: {
-    title: 'isometric (synthetic)',
-    needs: [],
-    // Builds the adapter and the guest; both live in directories another 2D
-    // suite would also write.
-    holds: ['2d-example:isometric'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'isometric', 'test-synthetic.mjs'),
-    ], { env: suiteEnv() }),
-  },
-
-  // The worked example on the committed tileset. It used to be excluded from
-  // this list because the art was third-party and the example exited 77 on any
-  // machine without it; the tileset is drawn and committed now, so it runs
-  // everywhere the adapter does.
-  'isometric-art': {
-    title: 'isometric (art)',
-    needs: [],
-    holds: ['2d-example:isometric'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'isometric', 'test.mjs'),
-    ], { env: suiteEnv() }),
-  },
-
-  // The framework layer: `Tileset` + `Composite` + `IsometricWorld` rebuild the
-  // same scene and their frames must equal the hand-written guest's, byte for
-  // byte. That assertion is the whole test — it fails if the framework's
-  // emission differs anywhere, including in fields no probe reads.
-  'isometric-framework': {
-    title: 'isometric (framework)',
-    // No `needs`: this suite builds and runs the hand-written guest itself as
-    // its comparison, so depending on the `isometric` suite would run it twice
-    // and would make the framework suite un-runnable on its own.
-    needs: [],
-    holds: ['2d-example:isometric-framework'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'isometric-framework', 'test.mjs'),
-    ], { env: suiteEnv() }),
-  },
-
-  // The physics examples' own assertions, which existed as `test.mjs` and ran
-  // only by hand until now: a solver regression had no gate. Both build the
-  // guest and the adapter, so they take the same exclusive hold as the other 2D
-  // suites rather than racing them for `build/`.
+  // The 2D examples, asserted from Rust: hello-sprites, box-physics,
+  // stiff-boxes, and the isometric scene in its three forms (art, synthetic,
+  // and the framework reproduction). The assertions used to be six
+  // `examples/2d/*/test.mjs` files; `tension-core/tests/examples_2d.rs` now runs
+  // the guests and reads their stdout, and Node is only the build tool.
   //
-  // Their assertions are the interesting part and stay in the examples: the
-  // contact count and the rotation count for box-physics, the BDF2 frame count
-  // and the packed-volume texture for stiff-boxes. This table only makes them
-  // run.
-  'box-physics': {
-    title: 'box-physics',
+  // It holds `cargo-target` because it is a `cargo test` invocation, and
+  // `2d-examples` because its fixtures write `examples/2d/*/{assets,src,build}`.
+  // `window-close` builds hello-sprites in one of those directories and holds
+  // the same tag.
+  'examples-2d': {
+    title: '2D examples',
     needs: [],
-    holds: ['2d-example:box-physics'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'box-physics', 'test.mjs'),
-    ], { env: suiteEnv() }),
-  },
-
-  'stiff-boxes': {
-    title: 'stiff-boxes',
-    needs: [],
-    holds: ['2d-example:stiff-boxes'],
-    run: () => execute(node, [
-      join(repo, 'examples', '2d', 'stiff-boxes', 'test.mjs'),
+    holds: ['zig', 'cargo-target', '2d-examples'],
+    run: () => execute('cargo', [
+      'test', '--manifest-path', 'tension-core/Cargo.toml',
+      ...(process.env.TENSION_AI === '1'
+        ? ['--features', 'ai', 'render2d-core']
+        : ['--no-default-features', '--features', 'audio,render2d-core']),
+      '--test', 'examples_2d',
     ], { env: suiteEnv() }),
   },
 
@@ -642,12 +574,7 @@ const AUDIT = {
   docs: { class: 'isolated', cost: 6 },
   input: { class: 'isolated', cost: 4 },
   'ogre-unit': { class: 'isolated', cost: 0 },
-  'hello-sprites': { class: 'isolated', cost: 4 },
-  isometric: { class: 'isolated', cost: 10 },
-  'isometric-art': { class: 'isolated', cost: 10 },
-  'isometric-framework': { class: 'isolated', cost: 20 },
-  'box-physics': { class: 'isolated', cost: 5 },
-  'stiff-boxes': { class: 'isolated', cost: 5 },
+  'examples-2d': { class: 'serial', cost: 46 },
 
   // A resource that cannot be shared.
   'ogre-guest': { class: 'serial', cost: 44 },
@@ -818,19 +745,18 @@ if (requested.length) {
 // `zig` on cargo's PATH (cargo's build script runs it by name).
 
 const needsPreparation = order.some((name) =>
-  ['framework', 'ogre-guest', 'input', 'core', 'isometric', 'isometric-framework'].includes(name));
+  ['framework', 'ogre-guest', 'input', 'core'].includes(name));
 
 /// The 2D suites, i.e. the ones whose setup may rebuild the shader modules.
 ///
-/// `examples/2d/*/test.mjs` and `scripts/build-2d-guest.mjs` each check for
-/// `tension-2d/build/shaders/default_2d.vert.spv` and, when it is missing, run
-/// `scripts/build-2d.mjs` — a shared write into `tension-2d/build`. That guard is
-/// per-suite, so on a clean tree two of them can race. Building it once here is
-/// the same answer as the debug host and the session constants: do the shared work
-/// before the pool starts, and no suite's guard ever fires.
+/// `tension-core/tests/examples_2d.rs` and `scripts/build-2d-guest.mjs` each
+/// check for `tension-2d/build/shaders/default_2d.vert.spv` and, when it is
+/// missing, run `scripts/build-2d.mjs` — a shared write into `tension-2d/build`.
+/// That guard is per-suite, so on a clean tree two of them can race. Building it
+/// once here is the same answer as the debug host and the session constants: do
+/// the shared work before the pool starts, and no suite's guard ever fires.
 const needs2dShaders = order.some((name) =>
-  ['hello-sprites', 'isometric', 'isometric-art', 'isometric-framework',
-   'box-physics', 'stiff-boxes', 'window-close'].includes(name));
+  ['examples-2d', 'window-close'].includes(name));
 
 function banner(text) {
   console.log('\n======================================================================');

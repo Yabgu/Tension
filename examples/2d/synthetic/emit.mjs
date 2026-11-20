@@ -220,6 +220,15 @@ export function emit(exampleDir) {
     writeFileSync(join(pageDir(exampleDir), s.pages[i].name), encodeIwiRgba(PAGE, PAGE, pages[i]));
   }
   writeFileSync(join(exampleDir, 'src', 'scene.generated.ts'), sceneTable(s));
+  // The runner's expectations, as data. `tension-core/tests/examples_2d.rs`
+  // reads this rather than restating a colour: the guest and the assertion come
+  // from the same generator, so a probe cannot mean one thing to the page
+  // builder and another to the test.
+  writeFileSync(join(exampleDir, 'scene.json'), JSON.stringify({
+    canvas: s.canvas,
+    probes: s.probes,
+    expect: { back: s.expect.back, front: s.expect.front, wrong: s.expect.wrong },
+  }, null, 2));
   return s;
 }
 

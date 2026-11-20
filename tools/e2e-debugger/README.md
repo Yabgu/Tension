@@ -1,4 +1,4 @@
-# `tests/e2e` — the examples, executed
+# `tools/e2e-debugger` — the examples, executed
 
 `tension-core/tests/example_adoption.rs` answers static questions: does every
 example pin a DWARF-emitting compiler, does every committed artifact carry
@@ -11,11 +11,11 @@ not a guest whose breakpoint binds. Each of those is a separate pass over the
 examples, and each reports independently.
 
 ```sh
-node tests/e2e/runner.js                  # all three modes (same as --check)
-node tests/e2e/runner.js --only launch
-node tests/e2e/runner.js --only smoke
-node tests/e2e/runner.js --only debug
-node tests/e2e/runner.js --example ogre/hello-triangle
+node tools/e2e-debugger/runner.js                  # all three modes (same as --check)
+node tools/e2e-debugger/runner.js --only launch
+node tools/e2e-debugger/runner.js --only smoke
+node tools/e2e-debugger/runner.js --only debug
+node tools/e2e-debugger/runner.js --example ogre/hello-triangle
 ```
 
 Requires a built `tension-core` (`cargo build --manifest-path
@@ -25,7 +25,7 @@ a binary built elsewhere.
 Debug mode additionally needs a debugger. Install it once:
 
 ```sh
-cd tests/e2e && npm install
+cd tools/e2e-debugger && npm install
 ```
 
 That installs `@debugmcp/codelldb-*` — the same package family and version
@@ -37,7 +37,7 @@ own code uses Node built-ins only.
 The runner reports where its debugger came from on startup:
 
 ```
-e2e: lldb = tests/e2e/node_modules/@debugmcp/codelldb-linux-x64/lldb/bin/lldb (source: npm)
+e2e: lldb = tools/e2e-debugger/node_modules/@debugmcp/codelldb-linux-x64/lldb/bin/lldb (source: npm)
 e2e: lldb = absent (debug mode will skip)
 ```
 
@@ -87,10 +87,18 @@ Skips are only for states the test does not own: an artifact that was never
 built, a packed resource that was never packed, lldb not installed. A guest that
 fails to start for any other reason is a failure.
 
-## Why not Rust
+## Why this is still JavaScript, and why it lives here
 
-These are process-level checks: spawn, capture, time out, kill. Node's
-`child_process` and a temp directory express that directly, and the lldb driver
-is the same shape as `TensionScript/tests/debug/lib/run-lldb.js`, so the two
-harnesses stay readable side by side. The Rust suites keep the checks that need
-in-process access to the engine (`e2e_debug.rs` uses a cfg-gated dump flag).
+This was reviewed for conversion, not inherited. The launch and smoke modes are
+process spawning and output matching that Rust's `Command` could do. The debug
+mode is not: it drives lldb through a **Python script executed inside lldb**
+(`lib/run-lldb.js` writes it, then `lldb -b -s` runs it), and the only lldb
+available on a machine without a system install is the `@debugmcp/codelldb-*`
+npm package, resolved through Node's module loader. That is a debugger
+integration, not a test of TensionScript sources, so it stays JS and moves out
+of `tests/`: `tests/` now means the Rust test suite, and this is a tool.
+
+The static questions a launch file can answer are still in
+`tension-core/tests/example_adoption.rs`, and the checks that need in-process
+access to the engine are in `tension-core/tests/e2e_debug.rs`. If a Rust lldb
+client makes the debug driver unnecessary, this decision is the one to revisit.

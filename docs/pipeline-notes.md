@@ -298,7 +298,8 @@ llama.cpp backend posts one per chunk, and a reply stops dead at exactly 16 —
 
 `rt.deliver` now advances the class's `tail` to `head` after the batch has been
 copied into task records, guarded on `isReady()` like `reportDrops` (a guest with
-no session must not read the region table; `tests/rt-dispatch.mjs` traps otherwise).
+no session must not read the region table; `tension-core/tests/programs/rt-guards.ts`
+would trap otherwise, and `tests/framework_guards.rs` runs it).
 
 Two corollaries worth keeping:
 

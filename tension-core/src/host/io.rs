@@ -17,6 +17,26 @@ use crate::logging::{self, Level};
 use crate::{guest_text, read_as_string, HostState};
 use tension_core::thread::GuestMemory;
 
+/// Write guest text to the terminal, or to the sandbox's capture buffer.
+///
+/// A sandboxed guest's output is captured rather than printed: the host reads it
+/// right after the entrypoint returns (`dev.out` in Pass 3), and a nested run
+/// that interleaved with the editor's own terminal would be the one thing a
+/// nested run must not do. Shared by `print` and the showcase's `emit`.
+fn write_text(caller: &mut Caller<'_, HostState>, text: &str) {
+    let captured = match caller.data_mut().captured_out.as_mut() {
+        Some(out) => {
+            out.extend_from_slice(text.as_bytes());
+            true
+        }
+        None => false,
+    };
+    if !captured {
+        print!("{text}");
+        let _ = io::stdout().flush();
+    }
+}
+
 /// Register the `tension::io` verbs and `env.abort`.
 pub fn link_io(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
     // tension::io ABI -----------------------------------------------------
@@ -52,26 +72,30 @@ pub fn link_io(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
             let start = ptr as usize;
             let end = start.saturating_add(len.max(0) as usize);
             let bytes = mem.copy(&caller, start, end);
-            // A sandboxed guest's output is captured rather than printed: the
-            // host reads it right after the entrypoint returns (`dev.out` in
-            // Pass 3), and a nested run that interleaved with the editor's own
-            // terminal would be the one thing a nested run must not do.
             let text = String::from_utf8_lossy(&bytes).into_owned();
-            let captured = {
-                // The memory borrow above ends here, so `data_mut` is free.
-                let state = caller.data_mut();
-                match state.captured_out.as_mut() {
-                    Some(out) => {
-                        out.extend_from_slice(text.as_bytes());
-                        true
-                    }
-                    None => false,
-                }
-            };
-            if !captured {
-                print!("{text}");
-                let _ = io::stdout().flush();
-            }
+            write_text(&mut caller, &text);
+        },
+    )?;
+
+    // The showcase's tag protocol: `env.emit(tag, value)` prints `name: value`.
+    //
+    // This is not a capability verb — it is the import
+    // `TensionScript-a2/examples/async-main/main.ts` declares, because that
+    // program has no strings and the harness names the tags. Tension's host is
+    // the *other* host for that program (`tension-core/tests/programs/async-on-main.ts`
+    // is a copy), so it answers the same import with the same names, taken from
+    // `TensionScript-a2/examples/host.mjs`'s table. An unknown tag falls back to
+    // `tag<id>`, exactly as that harness does.
+    linker.func_wrap(
+        "env",
+        "emit",
+        |mut caller: Caller<'_, HostState>, tag: i32, value: i32| {
+            const NAMES: [&str; 5] = ["status", "suspensions", "carried", "total", "final"];
+            let name = NAMES
+                .get(tag as usize)
+                .map(|name| (*name).to_string())
+                .unwrap_or_else(|| format!("tag{tag}"));
+            write_text(&mut caller, &format!("{name}: {value}\n"));
         },
     )?;
 

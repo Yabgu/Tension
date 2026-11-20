@@ -16,7 +16,7 @@ A source breakpoint has no line table to bind to, and the host says so at startu
 ```
 
 It does not offer to build DWARF for it, and it does not call the user's build
-deprecated. `tension-core/tests/e2e_debug.rs` asserts both of those absences, so
+deprecated. `tension-core/tools/e2e-debugger_debug.rs` asserts both of those absences, so
 re-introducing a host-side fallback fails the suite rather than passing quietly.
 
 ## Provenance
@@ -73,5 +73,5 @@ diagnostic testable without a compiler in the loop.
 
 Five examples do not produce a debug artifact at all (a compile failure, a
 release-only build, or a missing packed resource). They are listed with their
-reasons in `tests/e2e/config/known-skips.json`; none of them exercises anything
+reasons in `tools/e2e-debugger/config/known-skips.json`; none of them exercises anything
 in this directory.
