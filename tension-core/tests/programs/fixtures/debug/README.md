@@ -62,9 +62,10 @@ node scripts/tensionscript.mjs tension-core/tests/programs/async/main-policy.ts 
 
 Those are the flags `scripts/build-test-programs.mjs --debug` appends for
 `rt-guards` (its `PLAIN_FLAGS` plus `--debug --sourceMap`), with `--outFile`
-pointing here instead of `build/debug/`. `--optimizeLevel 0` is not cosmetic:
-the pin aborts inside Binaryen for some optimized stack-switching programs (see
-that script's header), and `-O0` keeps every program in one recipe.
+pointing here instead of `build/debug/`. `--optimizeLevel 0` is what keeps the
+line table answering the source it came from; higher levels do compile with
+DWARF now (the pin compiles `schedule-order` at `-O2` with all four `.debug_*`
+sections), so this is a choice about breakpoints, not a limit.
 `--sourceMap` is not cosmetic either: 0.14.x emits the `.debug_*` sections only
 when `--debug` **and** `--sourceMap` are both set, and the `--debug` startup
 report asserts the map resolves beside the artifact.

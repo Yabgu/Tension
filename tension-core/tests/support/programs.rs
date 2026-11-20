@@ -112,6 +112,18 @@ pub fn guest(name: &str) -> PathBuf {
     artifact(&programs_dir().join("build"), name)
 }
 
+/// One program's artifact, built on demand **at a chosen optimization level**.
+///
+/// Same recipe, same flags, one flag replaced: the level. The artifact lands in
+/// `build/o<level>/` so it cannot shadow the `-O0` one every other test resolves
+/// by name. This is how the suite asks the question the compiler's own
+/// `tests/async/optimize.js` asks (does a continuation module compile above
+/// `-O0`?) *here*, where a guest that only runs when optimized would show up.
+pub fn guest_optimized(name: &str, level: u8) -> PathBuf {
+    run_builder(&[&format!("--optimize={level}")]);
+    artifact(&programs_dir().join("build").join(format!("o{level}")), name)
+}
+
 /// The committed debug artifacts — a `--debug --sourceMap` build in the tree,
 /// so a machine with no compiler can still be handed one.
 pub fn debug_fixtures_dir() -> PathBuf {

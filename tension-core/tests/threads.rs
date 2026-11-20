@@ -10,8 +10,9 @@
 //!
 //! The programs live in `tests/programs/` as `.ts`, so the ABI they exercise
 //! is visible and versioned. `scripts/build-test-programs.mjs` carries the flag
-//! list (and the `--optimizeLevel 0` the pinned Binaryen needs — see its
-//! header).
+//! list, `--optimizeLevel 0` among them — a choice of build speed and artifact
+//! size, not a workaround; pass `--optimize=<n>` to that script to build the
+//! same programs at another level (see `tests/gallery_optimized.rs`).
 //!
 //! What each test reads:
 //!

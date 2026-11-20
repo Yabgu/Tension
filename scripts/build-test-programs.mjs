@@ -55,11 +55,27 @@ const programs = join(repo, "tension-core", "tests", "programs");
 const compiler = join(repo, "scripts", "tensionscript.mjs");
 const force = process.argv.includes("--force");
 const debug = process.argv.includes("--debug");
+// **`--optimize=<n>` builds the same programs at a different level.** The
+// default lists all end in `--optimizeLevel 0`, which is the level the suite
+// runs; this lets one test ask "does the artifact survive optimization?" without
+// a second copy of any flag list. The override replaces the level, it does not
+// add one, and the output lands in its own directory so it cannot overwrite the
+// artifact every other test resolves by name.
+const optimizeArg = process.argv.find((a) => a.startsWith("--optimize="));
+const optimize = optimizeArg ? Number(optimizeArg.slice("--optimize=".length)) : null;
+if (optimizeArg && !Number.isInteger(optimize)) {
+  console.error(`build-test-programs: ${optimizeArg} is not an integer level`);
+  process.exit(1);
+}
 // Positional names filter the build, so a runner that needs one artifact
 // rebuilds one artifact. `runner.mjs` uses this when a program's source is
 // newer than its `.wasm`.
 const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
-const out = debug ? join(programs, "build", "debug") : join(programs, "build");
+const out = debug
+  ? join(programs, "build", "debug")
+  : optimize !== null
+    ? join(programs, "build", `o${optimize}`)
+    : join(programs, "build");
 
 /**
  * What a debug build adds to a program's own flags.
@@ -209,10 +225,28 @@ for (const rel of sources) {
     ++skipped;
     continue;
   }
-  console.log(`build-test-programs: ${rel}${debug ? " (debug)" : ""}`);
+  // The override replaces the level the table chose, and only the level: every
+  // other flag (memory, features, runtime) is the program's own.
+  let effective = flags;
+  if (optimize !== null) {
+    effective = [];
+    for (let i = 0; i < flags.length; ++i) {
+      if (flags[i] === "--optimizeLevel") {
+        ++i;
+        continue;
+      }
+      effective.push(flags[i]);
+    }
+    effective.push("--optimizeLevel", String(optimize));
+  }
+  console.log(
+    `build-test-programs: ${rel}` +
+      (debug ? " (debug)" : "") +
+      (optimize !== null ? ` (optimizeLevel ${optimize})` : ""),
+  );
   execFileSync(
     process.execPath,
-    [compiler, ts, "-o", wasm, ...flags, ...(debug ? DEBUG_FLAGS : [])],
+    [compiler, ts, "-o", wasm, ...effective, ...(debug ? DEBUG_FLAGS : [])],
     {
       cwd: programs,
       stdio: "inherit",
@@ -222,5 +256,6 @@ for (const rel of sources) {
 }
 console.log(
   `build-test-programs: ${built} built, ${skipped} up to date, ${sources.length} total` +
-    (debug ? ` — debug artifacts in ${out}` : ""),
+    (debug ? ` — debug artifacts in ${out}` : "") +
+    (optimize !== null ? ` — optimizeLevel ${optimize} artifacts in ${out}` : ""),
 );
