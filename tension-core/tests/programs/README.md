@@ -1,44 +1,33 @@
 # Test programs
 
-These are the TensionScript programs the Rust test suite runs. A test's subject
-is a program; this directory is where you read the language instead of the
-harness that spawns it.
+Every `.ts` file here is a **TensionScript program**, compiled by the repo's vendored
+compiler and run on `tension-core`. Open one to read the feature; open the Rust test beside it
+to read what is asserted. Nothing here is JavaScript, and nothing is assembled at runtime.
 
-Each `.ts` is built by `scripts/build-test-programs.mjs` (one recipe, the same
-one a developer runs by hand), and each line below names the Rust file that
-asserts it.
+```
+node scripts/build-test-programs.mjs        # build every program
+node scripts/build-test-programs.mjs --force # rebuild unconditionally
+```
 
-- **`count.ts`** — the thread ABI's executor count and the boot order: a
-  non-zero carved control block proves `__threadInit` ran before `__start`.
-  Asserted by `tension-core/tests/threads.rs` (`one_executor_count_plus_the_pool`,
-  `a_shared_memory_guest_can_print`).
-- **`spawn-join.ts`** — a worker runs on its own store and joins: the reply
-  `242` packs the worker's id into the answer, and `__threadJoin` sees the exit.
-  Asserted by `threads.rs` (`a_worker_runs_on_its_own_store_and_joins`).
-- **`two-workers.ts`** — twelve tasks over two workers: every value observed
-  exactly once, none lost or doubled. Asserted by `threads.rs`
-  (`two_workers_observe_every_value_exactly_once`).
-- **`spawn-refusals.ts`** — the contract's refusals as values: main cannot be
-  spawned, an id past the end is `-1`, a live id is `-2`. Asserted by
-  `threads.rs` (`the_contracts_refusals_are_values`).
-- **`async-on-main.ts`** — the shared `async-main` ABI contract, copied
-  verbatim from TensionScript's `examples/async-main/main.ts` with a header
-  naming its origin. It proves a stackful continuation chain on one store: six
-  suspensions, locals that survive them, and a final value that needs all of
-  them. Asserted by `tension-core/tests/async_on_main.rs` against
-  `async-on-main.expected.txt`.
+A built artifact lands in `build/<name>.wasm`, named by the program's **basename**. Names are
+unique across folders — that is what lets a test ask for `guest("main-policy")` without caring
+which folder the source lives in.
 
-  > **TensionScript's `tests/rt/examples.js` asserts the same file on a stub
-  > host.** A change to this program must be made in both repos in the same
-  > breath, and the expected transcript must match. The next round can replace
-  > the two copies with a real shared-file mechanism; until then the written
-  > rule is the mechanism.
+| folder | what lives there |
+|---|---|
+| `async/` | the Task path on one store: suspensions, locals, main's step, the fallback loop |
+| `policy/` | `TaskPolicy` implementations — default, eager, counting, custom, remote |
+| `thread/` | the thread ABI — identity, rings, spawn, pool, join |
+| `mask/` | placement control — widths, admission, violations, program-written masks |
+| `atomic/` | the primitives underneath — RMW, `@atomic` fields |
 
-- **`rt-guards.ts`** — the framework's no-session guards: `rt.start`, `rt.job`,
-  the no-table park, `rt.onEvent`, and the region-table refusal all return
-  quietly instead of trapping. Asserted by
-  `tension-core/tests/framework_guards.rs`.
-
-`build/` is generated and gitignored. A program whose flags are missing from the
-table in `scripts/build-test-programs.mjs` is a build error naming the file, not
-a silent default.
+| program | run by | proves |
+|---|---|---|
+| `async/main-policy.ts` | `gallery_async.rs` | a program's own `mainStep` replaces main's default step |
+| `async/fallback-loop.ts` | `gallery_async.rs` | a suspension yields into the executor loop, which keeps turning |
+| `async/async-on-main.ts` | `async_on_main.rs` | the shared ABI contract: six suspensions, a local carried across all of them |
+| `async/rt-guards.ts` | `framework_guards.rs` | the framework's behaviour with no session open |
+| `thread/count.ts` | `threads.rs` | `__executorCount` and the carved control block |
+| `thread/spawn-join.ts` | `threads.rs` | spawn a worker, serve a request, reply, join |
+| `thread/two-workers.ts` | `threads.rs` | two workers, twelve tasks, every value exactly once |
+| `thread/spawn-refusals.ts` | `threads.rs` | the contract's refusals are values, not traps |

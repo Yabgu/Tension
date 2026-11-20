@@ -92,6 +92,14 @@ const PLAIN_FLAGS = [
   "--optimizeLevel", "0",
 ];
 
+/**
+ * A program's flag list, by **basename** — the file name without `.ts`.
+ *
+ * Names are unique across the folders (a build failure says so if not), so a
+ * test asks for `guest("main-policy")` and does not care which folder the
+ * source lives in. Where a program needs something its folder default does not
+ * give it, it is named here.
+ */
 const PROGRAMS = {
   "count": THREAD_FLAGS,
   "spawn-join": THREAD_FLAGS,
@@ -99,34 +107,79 @@ const PROGRAMS = {
   "two-workers": THREAD_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
   "rt-guards": PLAIN_FLAGS,
+  "main-policy": ASYNC_ON_MAIN_FLAGS,
+  "fallback-loop": ASYNC_ON_MAIN_FLAGS,
 };
 
+/**
+ * The default flags for a folder, so a new program in an existing folder needs
+ * no entry above. A folder with no default is an error: it would be a program
+ * nobody decided how to build.
+ */
+const FOLDER_FLAGS = {
+  "async": ASYNC_ON_MAIN_FLAGS,
+  "policy": ASYNC_ON_MAIN_FLAGS,
+  "thread": THREAD_FLAGS,
+  "mask": THREAD_FLAGS,
+  "atomic": THREAD_FLAGS,
+};
+
+/** Every `.ts` under `programs/`, as repo-relative paths, sorted. */
+function collect(dir, prefix = "") {
+  const found = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === "build" || entry.name === "node_modules") continue;
+    const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) {
+      found.push(...collect(join(dir, entry.name), rel));
+    } else if (entry.name.endsWith(".ts")) {
+      found.push(rel);
+    }
+  }
+  return found.sort();
+}
+
 mkdirSync(out, { recursive: true });
-const sources = readdirSync(programs).filter((name) => name.endsWith(".ts")).sort();
+const sources = collect(programs);
 if (sources.length === 0) {
-  console.error("build-test-programs: no .ts programs in " + programs);
+  console.error("build-test-programs: no .ts programs under " + programs);
   process.exit(1);
+}
+
+/** Name uniqueness is what lets a test ask for a program without a folder. */
+const seen = new Map();
+for (const rel of sources) {
+  const name = rel.split("/").pop().replace(/\.ts$/, "");
+  if (seen.has(name)) {
+    console.error(
+      `build-test-programs: two programs are named "${name}": ` +
+      `${seen.get(name)} and ${rel}. Names are the test's handle, so they must be unique.`,
+    );
+    process.exit(1);
+  }
+  seen.set(name, rel);
 }
 
 let built = 0;
 let skipped = 0;
-for (const source of sources) {
-  const name = source.replace(/\.ts$/, "");
-  const flags = PROGRAMS[name];
+for (const rel of sources) {
+  const name = rel.split("/").pop().replace(/\.ts$/, "");
+  const folder = rel.includes("/") ? rel.split("/")[0] : "";
+  const flags = PROGRAMS[name] ?? FOLDER_FLAGS[folder];
   if (!flags) {
     console.error(
-      `build-test-programs: ${source} has no entry in PROGRAMS — add its flag list ` +
-      `to this file rather than copying one into a test`,
+      `build-test-programs: ${rel} has no flag list — add it to PROGRAMS, or give ` +
+      `the "${folder}" folder a default in FOLDER_FLAGS`,
     );
     process.exit(1);
   }
   const wasm = join(out, `${name}.wasm`);
-  const ts = join(programs, source);
+  const ts = join(programs, rel);
   if (!force && existsSync(wasm) && statSync(wasm).mtimeMs >= statSync(ts).mtimeMs) {
     ++skipped;
     continue;
   }
-  console.log(`build-test-programs: ${source}`);
+  console.log(`build-test-programs: ${rel}`);
   execFileSync(process.execPath, [compiler, ts, "-o", wasm, ...flags], {
     cwd: programs,
     stdio: "inherit",
