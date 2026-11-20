@@ -51,11 +51,13 @@ export async function main(): i32 {
   }
 
   // Three more, chained: each argument is the previous result.
+  let t = step(1000);
   let a = await step(100);
   let b = await step(a);
   let c = await step(b);
+  let tres = await t;
 
-  let final = carried + total + c;
+  let final = carried + total + c + tres;
   emit(SUSPENSIONS, suspends);
   emit(TOTAL, total);
   emit(FINAL, final);
