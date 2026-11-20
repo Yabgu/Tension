@@ -14,7 +14,8 @@
 // instantiation — before any guest code runs, because the module has no start
 // section (`--exportStart __start` moved the boot body behind a call).
 
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,8 +30,110 @@ if (!name) {
   process.exit(2);
 }
 
-const wasmPath = join(here, "build", `${name}.wasm`);
+// **Which artifact, and does it carry debug info?**
+//
+// Two mistakes cost a debugging session each and are silent, so this file
+// answers both before it runs anything:
+//
+// 1. `build/<name>.wasm` is a **release** build — no `--debug`, so it has no
+//    `.debug_*` sections at all. A breakpoint in a `.ts` file can never bind
+//    against it, and the run looks normal. `build/debug/<name>.wasm` is the one
+//    a debugger needs.
+// 2. A stale artifact answers with an old transcript, which reads exactly like
+//    "my edit did nothing".
+//
+// So: prefer the debug artifact when its source is not newer, rebuild when the
+// compiler is installed and the artifact is missing or stale, and always print
+// what was loaded. `--release` forces the release artifact for a plain run.
+const wantRelease = process.argv.includes("--release");
+const sourcePath = join(here, "async", `${name}.ts`);
+const debugPath = join(here, "build", "debug", `${name}.wasm`);
+const releasePath = join(here, "build", `${name}.wasm`);
+
+function mtime(path) {
+  try {
+    return statSync(path).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
+
+function hasDebugSections(bytes) {
+  // A walk of the section table: id 0 is a custom section, and its name is a
+  // LEB-length-prefixed string.
+  let at = 8;
+  const uleb = () => {
+    let result = 0;
+    let shift = 0;
+    let byte;
+    do {
+      byte = bytes[at++];
+      result |= (byte & 0x7f) << shift;
+      shift += 7;
+    } while (byte & 0x80);
+    return result >>> 0;
+  };
+  const names = [];
+  while (at < bytes.length) {
+    const id = bytes[at++];
+    const size = uleb();
+    const end = at + size;
+    if (id === 0) {
+      const length = uleb();
+      names.push(Buffer.from(bytes.subarray(at, at + length)).toString("utf8"));
+    }
+    at = end;
+  }
+  return names.filter((n) => n.startsWith(".debug_"));
+}
+
+function build(debug) {
+  const flags = debug ? ["--debug"] : [];
+  const result = spawnSync(
+    process.execPath,
+    [join(here, "..", "..", "..", "scripts", "build-test-programs.mjs"), ...flags, "--force", name],
+    { stdio: "inherit", cwd: join(here, "..", "..", "..") },
+  );
+  return result.status === 0;
+}
+
+let wasmPath;
+if (wantRelease) {
+  wasmPath = releasePath;
+} else if (mtime(debugPath) > 0 && mtime(debugPath) >= mtime(sourcePath)) {
+  wasmPath = debugPath;
+} else {
+  // Missing or stale. Build if the vendored compiler is here; otherwise fall
+  // back to whatever exists and say so.
+  const compiler = join(here, "..", "..", "..", "node_modules", "@yabgu_gm", "tensionscript");
+  if (existsSync(compiler)) {
+    console.error(
+      `runner: building the debug artifact for ${name} (it is missing or older than its source)`,
+    );
+    build(true);
+  }
+  wasmPath = mtime(debugPath) > 0 ? debugPath : releasePath;
+}
+
+if (!existsSync(wasmPath)) {
+  console.error(`runner: no artifact at ${wasmPath} — run node scripts/build-test-programs.mjs`);
+  process.exit(5);
+}
+
 const bytes = readFileSync(wasmPath);
+const debugSections = hasDebugSections(bytes);
+console.error(
+  `runner: ${name} <- ${wasmPath.replace(here, ".")} ` +
+  `(${bytes.length} bytes, ${new Date(mtime(wasmPath)).toISOString()})`,
+);
+console.error(
+  debugSections.length
+    ? `runner: DWARF present: ${debugSections.join(", ")} — a .ts breakpoint can bind ` +
+      `with a DWARF-capable debugger (see .vscode/launch.json)`
+    : `runner: NO debug info in this artifact — a .ts breakpoint cannot bind. ` +
+      `Delete it and rerun (the debug build is automatic), or build with ` +
+      `\`node scripts/build-test-programs.mjs --debug\`.`,
+);
 const module = new WebAssembly.Module(bytes);
 const imports = WebAssembly.Module.imports(module);
 if (trace) {

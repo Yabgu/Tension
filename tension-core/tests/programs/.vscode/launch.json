@@ -19,18 +19,30 @@
   //
   // ## Breakpoints, honestly
   //
-  // * In `runner.mjs` (Node config): works, everywhere. That is the file that
-  //   instantiates the guest and answers its imports, so it is where you watch
-  //   a program start and stop.
-  // * In a `.ts` program: **does not work yet** for any async program. The
-  //   compiler's DWARF writer bails on continuation types —
-  //   `WARNING DWARF emission failed: type form is not a function type` — so the
-  //   artifact carries no `.debug_info` and a source breakpoint has nothing to
-  //   bind to. Measured identically on Linux and Windows, so it is a compiler
-  //   gap, not a platform one.
-  // * In `__mainStep__` or any other std function: same reason. The way to see
-  //   inside it today is to **replace** it — a program may declare its own
-  //   `mainStep`, and `print` from it. `async/main-policy.ts` does exactly that.
+  // * In `runner.mjs`: works everywhere. That is the file that instantiates the
+  //   guest and answers its imports, so it is where you watch a program start
+  //   and stop.
+  // * In a `.ts` program: **yes, now**, on any OS — with two conditions, both
+  //   of which are now automatic or one click:
+  //     1. the artifact must carry DWARF. `runner.mjs` resolves
+  //        `build/debug/<name>.wasm` and rebuilds it when it is missing or
+  //        older than its source, and prints which artifact it loaded and
+  //        whether `.debug_*` sections are in it. (It was not automatic until
+  //        the compiler learned to emit DWARF for continuation types —
+  //        `type form is not a function type` was a compiler gap, fixed in
+  //        0.14.1 at `9697d136`.)
+  //     2. VS Code's JavaScript debugger needs a helper extension to read
+  //        DWARF: `ms-vscode.wasm-dwarf-debugging`, and `"enableDWARF": true`
+  //        on the launch configuration. The extension's own text:
+  //        "Requires the ms-vscode.wasm-dwarf-debugging extension to function."
+  //   With both, a breakpoint on a line of `async-on-main.ts` binds in the
+  //   Node config — measured: V8 accepts a breakpoint at a byte offset in this
+  //   artifact and stops there (`hits: [{offset: 8394, fn: ...}]`), which is
+  //   the half the debugger needs from the module.
+  // * In `__mainStep__` or any other std function: same conditions, and the
+  //   std sources are in `node_modules/@yabgu_gm/tensionscript/std/assembly/`.
+  //   You can also **replace** it — a program may declare its own `mainStep`;
+  //   `async/main-policy.ts` and `async/schedule-order.ts` do exactly that.
   "version": "0.2.0",
   "inputs": [
     {
@@ -63,6 +75,9 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**"],
+      // Reads the guest's DWARF sections, which is what maps a `.ts` line to a
+      // byte offset in the module. Needs ms-vscode.wasm-dwarf-debugging.
+      "enableDWARF": true,
       "preLaunchTask": "programs: build"
     },
     {
@@ -77,6 +92,9 @@
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "skipFiles": ["<node_internals>/**"],
+      // Reads the guest's DWARF sections, which is what maps a `.ts` line to a
+      // byte offset in the module. Needs ms-vscode.wasm-dwarf-debugging.
+      "enableDWARF": true,
       "preLaunchTask": "programs: build"
     },
     {

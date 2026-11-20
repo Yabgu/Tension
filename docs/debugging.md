@@ -136,8 +136,32 @@ Measured, not inferred. Two guests, same host flag, same lldb commands.
   that registration. So a guest breakpoint there is impossible today, DWARF or
   not, and no flag or setting changes it.
 
-**In the meantime on Windows**, two paths still work, and neither is a
-breakpoint:
+**A `.ts` breakpoint on Windows is a different question, and the answer there
+is yes.** The lldb route above is `tension-core`; the Node route below is V8,
+and V8 *does* take breakpoints in a wasm module at a byte offset — measured in
+this tree with the inspector protocol:
+
+```
+setBreakpoint: {scriptId: "128", lineNumber: 0, columnNumber: 8394}
+hits: [{reason: "other", offset: 8394, fn: "$~lib/array/Array<...>#constructor"}]
+```
+
+That is the half the guest must supply. The other half — mapping a `.ts` line to
+that offset — is the guest's DWARF, and VS Code's JavaScript debugger reads it
+through one helper extension:
+
+1. Install `ms-vscode.wasm-dwarf-debugging` (its own text: the `enableDWARF`
+   setting "Requires the ms-vscode.wasm-dwarf-debugging extension to function").
+2. Set `"enableDWARF": true` on the Node launch configuration — the ones in
+   `tension-core/tests/programs/.vscode/launch.json` already do.
+3. Run a **debug** artifact. `runner.mjs` resolves `build/debug/<name>.wasm` and
+   rebuilds it when it is missing or older than its source, and prints which
+   artifact it loaded and which `.debug_*` sections it carries. A breakpoint in
+   a `.ts` file cannot bind against `build/<name>.wasm`, which is a release
+   build with no debug sections at all — silently, which is why the runner now
+   says so out loud.
+
+**Also on Windows**, two paths work without a debugger:
 
 1. **Run the same artifact under Node** — the JS host half. V8 supports stack
    switching, so a guest `tension-core` refuses on Windows runs here, and the
@@ -150,6 +174,7 @@ breakpoint:
 
    `--trace` prints the imports it bound and the `__start` status, which is
    usually the whole question when a guest misbehaves before it prints anything.
+   `--release` forces the release artifact for a plain run.
 2. **Follow the source map** by hand. The debug build writes `<guest>.wasm.map`
    beside the artifact (`node scripts/build-test-programs.mjs --debug`), and it
    is a standard source map from wasm offsets to `.ts` lines — so a wasm offset

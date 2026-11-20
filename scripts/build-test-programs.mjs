@@ -55,6 +55,10 @@ const programs = join(repo, "tension-core", "tests", "programs");
 const compiler = join(repo, "scripts", "tensionscript.mjs");
 const force = process.argv.includes("--force");
 const debug = process.argv.includes("--debug");
+// Positional names filter the build, so a runner that needs one artifact
+// rebuilds one artifact. `runner.mjs` uses this when a program's source is
+// newer than its `.wasm`.
+const only = process.argv.slice(2).filter((a) => !a.startsWith("--"));
 const out = debug ? join(programs, "build", "debug") : join(programs, "build");
 
 /**
@@ -189,6 +193,7 @@ let built = 0;
 let skipped = 0;
 for (const rel of sources) {
   const name = rel.split("/").pop().replace(/\.ts$/, "");
+  if (only.length > 0 && !only.includes(name)) continue;
   const folder = rel.includes("/") ? rel.split("/")[0] : "";
   const flags = PROGRAMS[name] ?? FOLDER_FLAGS[folder];
   if (!flags) {
