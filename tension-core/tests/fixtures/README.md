@@ -1,7 +1,7 @@
 # Debug fixtures — version-locked inputs
 
 These bytes are **committed inputs to Tension's own E2E test**
-(`tension-core/tests/e2e_debug.rs`). Nothing here is rebuilt at test time, and
+(`tension-core/tools/e2e-debugger_debug.rs`). Nothing here is rebuilt at test time, and
 nothing here needs TensionScript, npm, or a network at test time.
 
 Two guests, chosen because they exercise the two states `--debug` can see:
@@ -68,7 +68,7 @@ cargo test --manifest-path tension-core/Cargo.toml --test e2e_debug
 That is the only command needed, and there is no optional test any more: the
 three report assertions run under plain `cargo test`. These fixtures are checked
 for the report strings they produce, not for breakpoint resolution — breakpoint
-coverage lives in the Node E2E's `debug` mode (`node tests/e2e/runner.js --only
+coverage lives in the Node E2E's `debug` mode (`node tools/e2e-debugger/runner.js --only
 debug`), which drives lldb over `tension-core` for every built example.
 
 CI still needs **Zig (>= 0.16)** and **gfortran (>= 14)** on the runner.

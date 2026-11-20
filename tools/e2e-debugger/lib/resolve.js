@@ -1,6 +1,6 @@
 // Where the pieces live: the interpreter under test and the debugger.
 //
-// The runner is invoked from the repository root (`node tests/e2e/runner.js`),
+// The runner is invoked from the repository root (`node tools/e2e-debugger/runner.js`),
 // but every path is derived from this file's own location so a test can be
 // started from anywhere.
 
@@ -11,11 +11,11 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 
-/// Resolution for packages installed under `tests/e2e/`, not for this module's
+/// Resolution for packages installed under `tools/e2e-debugger/`, not for this module's
 /// own dependencies — there are none beyond Node built-ins.
 const localRequire = createRequire(import.meta.url);
 
-/// `tests/e2e/lib` -> the repository root.
+/// `tools/e2e-debugger/lib` -> the repository root.
 export const repoRoot = path.resolve(here, "..", "..", "..");
 
 export const examplesRoot = path.join(repoRoot, "examples");
@@ -94,7 +94,7 @@ export function codelldbPackageName(platform = process.platform, arch = process.
  *
  * 1. `PATH`. A developer who installed lldb on purpose should get that one —
  *    it matches the debug info their system tools produce.
- * 2. `@debugmcp/codelldb-*` under `tests/e2e/node_modules`. This is what makes
+ * 2. `@debugmcp/codelldb-*` under `tools/e2e-debugger/node_modules`. This is what makes
  *    debug mode runnable on a machine with no system lldb: the same package
  *    family and version TensionScript uses, installed locally so this repo does
  *    not reach into a sibling checkout. Resolving it from
@@ -134,7 +134,7 @@ export function lldbSkipReason(resolved) {
   if (resolved.packageName) {
     return (
       `lldb not on PATH and ${resolved.packageName} not installed — ` +
-      `run \`npm install\` in tests/e2e/`
+      `run \`npm install\` in tools/e2e-debugger/`
     );
   }
   return "lldb not on PATH and no @debugmcp/codelldb package exists for this platform";

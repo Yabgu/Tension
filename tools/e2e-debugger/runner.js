@@ -7,10 +7,10 @@
 // when the declared command is actually executed, does the engine accept it,
 // does the guest run, and does a breakpoint bind?
 //
-//   node tests/e2e/runner.js                  # all three modes (--check)
-//   node tests/e2e/runner.js --only launch    # launch | smoke | debug
-//   node tests/e2e/runner.js --example io     # one example
-//   node tests/e2e/runner.js --help
+//   node tools/e2e-debugger/runner.js                  # all three modes (--check)
+//   node tools/e2e-debugger/runner.js --only launch    # launch | smoke | debug
+//   node tools/e2e-debugger/runner.js --example io     # one example
+//   node tools/e2e-debugger/runner.js --help
 //
 // Exit 0 when every case passes or skips; 1 when any case fails.
 
@@ -70,7 +70,7 @@ function parseArgs(argv) {
 
 function usage() {
   return [
-    "usage: node tests/e2e/runner.js [--check] [--only <mode>] [--example <name>]",
+    "usage: node tools/e2e-debugger/runner.js [--check] [--only <mode>] [--example <name>]",
     "",
     "modes:",
     "  launch  rebuild each .vscode/launch.json command and prove its flags parse",
