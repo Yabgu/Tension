@@ -63,6 +63,9 @@ tension-audio.wav
 # Guests are compiled by asc; the fixtures that are text (.wat) are committed
 *.wasm
 
+# … except the debug fixtures a test needs when no compiler is installed
+!tension-core/tests/programs/fixtures/debug/*.wasm
+
 # TensionScript-emitted declarations (tension-framework/index.d.ts is tracked
 # and hand-written; ignore rules do not apply to already-tracked files)
 *.d.ts
