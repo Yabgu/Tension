@@ -109,6 +109,7 @@ const PROGRAMS = {
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
+  "main-step-replaced": ASYNC_ON_MAIN_FLAGS,
 };
 
 /**

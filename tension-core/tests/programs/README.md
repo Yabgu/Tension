@@ -25,9 +25,30 @@ which folder the source lives in.
 |---|---|---|
 | `async/main-policy.ts` | `gallery_async.rs` | a program's own `mainStep` replaces main's default step |
 | `async/fallback-loop.ts` | `gallery_async.rs` | a suspension yields into the executor loop, which keeps turning |
+| `async/main-step-replaced.ts` | `gallery_async.rs` | a program **owns** main's scheduling — two slots, then one drain |
 | `async/async-on-main.ts` | `async_on_main.rs` | the shared ABI contract: six suspensions, a local carried across all of them |
 | `async/rt-guards.ts` | `framework_guards.rs` | the framework's behaviour with no session open |
 | `thread/count.ts` | `threads.rs` | `__executorCount` and the carved control block |
 | `thread/spawn-join.ts` | `threads.rs` | spawn a worker, serve a request, reply, join |
 | `thread/two-workers.ts` | `threads.rs` | two workers, twelve tasks, every value exactly once |
 | `thread/spawn-refusals.ts` | `threads.rs` | the contract's refusals are values, not traps |
+
+## Running one by hand
+
+`tension-core` runs these on **Linux and macOS**. On Windows the engine refuses stack
+switching — wasmtime does not implement it there (`wasmtime-50/src/config.rs:2486`), and
+`Engine::new` refuses the feature at construction. For Windows, use the Node runner in this
+folder: it serves the same imports and prints the same transcript.
+
+```sh
+node --experimental-wasm-wasmfx runner.mjs main-policy
+node --experimental-wasm-wasmfx runner.mjs async-on-main --trace
+```
+
+Thread programs (`thread/*`) need a real thread host. Run them under `tension-core` on
+Linux/macOS, or through the Rust tests, which provide one.
+
+`.vscode/` in this folder has launch configurations for both paths. Open this folder as the
+workspace root to use them; the file's header records what can and cannot be breakpointed, and
+why.
+

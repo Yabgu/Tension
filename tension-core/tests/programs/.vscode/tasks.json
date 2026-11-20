@@ -1,0 +1,32 @@
+{
+  // The build half of the launch configurations.
+  //
+  // `programs: build` is the same script the Rust tests call, so the flag list
+  // lives in one place (`scripts/build-test-programs.mjs` and its folder
+  // defaults) and a task cannot drift from a test.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "programs: build",
+      "type": "shell",
+      "command": "node ${workspaceFolder}/../../../scripts/build-test-programs.mjs",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "programs: build (force)",
+      "type": "shell",
+      "command": "node ${workspaceFolder}/../../../scripts/build-test-programs.mjs --force",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "host: build (debug)",
+      "type": "shell",
+      "command": "cargo build --manifest-path ${workspaceFolder}/../../../tension-core/Cargo.toml",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}
