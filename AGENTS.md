@@ -553,6 +553,58 @@ It builds `tension-res` → `tension-ogre` → `tension-core` for the native sid
 (release, audio-only by default; `TENSION_AI=1` includes `ai`), generates the
 session constants, compiles the framework guest, and builds every example.
 
+### Windows prerequisites (a fresh machine fails three ways at once)
+
+A fresh Windows machine cannot build this repository for three reasons at once,
+and all three are prerequisites rather than bugs. The winget package directories
+below have **no shim**, so nothing else finds them; put them on `PATH` in every
+shell that builds:
+
+- **Zig** (`zig`, 0.17.x) — winget `zig.zig`. `tension-res` builds with
+  `zig build`; without it on `PATH` that step dies with a "command not found"
+  for `zig`.
+- **gfortran** (16.x) — the Fortran solver core. Without it, the solver build
+  step dies with a "command not found" for `gfortran`.
+- **`cc.exe`** — a MinGW install ships `gcc.exe` and
+  `x86_64-w64-mingw32-gcc.exe` but **not** `cc.exe`, and
+  `tension-core/build.rs` (~line 326) runs `Command::new(cc)`;
+  `std::process::Command` on Windows appends only `.exe`. Copy `gcc.exe` to
+  `cc.exe` in the same directory and put it on `PATH`, or the build-script step
+  fails with a spawn error naming `cc`.
+
+Concretely (winget version directories, no shim):
+
+```
+C:\Users\<you>\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-<ver>
+C:\Users\<you>\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin
+```
+
+### Stack switching is x86-64 Linux/macOS only
+
+wasmtime 50 enables the stack-switching proposal (continuations) only where its
+Cranelift target is x86-64 Linux/macOS/Darwin — its `check_compatible_features`
+in `wasmtime/src/config.rs`, not a switch this tree controls. On Windows the
+engine refuses the *feature* itself:
+
+```
+the wasm_stack_switching feature is not supported on this compiler configuration
+```
+
+`tension-core` handles that honestly rather than refusing to start: it falls
+back to an engine without the feature (the Promise seam), prints one startup
+line naming the backend, and refuses a *module* that needs continuations with
+this message — recompile such a guest without `--enable stack-switching`:
+
+```
+<guest>: this guest uses continuations, which wasmtime does not support on this target (windows) — recompile the guest without `--enable stack-switching` (the Promise backend)
+```
+
+The raw wasmtime module refusal underneath it is:
+
+```
+cannot define continuation types when stack switching is disabled
+```
+
 Manual equivalents, when one target needs rebuilding on its own:
 
 ```

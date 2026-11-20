@@ -797,19 +797,19 @@ mod tests {
     fn config(guest_path: String) -> HostConfig {
         let mut engine_config = Config::new();
         engine_config.epoch_interruption(true);
-        // Mirrors `main`'s engine (see the comment there): a continuation
-        // module must compile here too, or this test proves nothing about the
-        // runtime the host ships.
-        engine_config.wasm_stack_switching(true);
-        // Mirrors `main`'s engine (see the comment there), including the
-        // tier-2 shared-memory risk recorded on that line: a module a guest can
-        // be handed must behave here exactly as it does in the shipped host.
+        // Mirrors `main`'s engine through the same helper (see
+        // `tension_core::async_backend::build`): a continuation module must
+        // compile here when the target supports it, and a target that does not
+        // must still build an engine. The returned backend is what a nested
+        // guest's refusal is keyed on.
         engine_config.wasm_threads(true);
         engine_config.shared_memory(true);
-        let engine = Engine::new(&engine_config).expect("an engine");
+        let (engine, async_backend) =
+            tension_core::async_backend::build(&engine_config).expect("an engine");
         HostConfig {
             module_cache: Arc::new(crate::host::module_cache::ModuleCache::default()),
             engine,
+            async_backend,
             args: Vec::new(),
             guest_path,
             res: Arc::new(Mutex::new(tension_core::res::MountTable::new())),

@@ -215,6 +215,7 @@ fn test_state() -> HostState {
                 next_run_id: 1,
                 engine: Default::default(),
                 module_cache: Default::default(),
+                async_backend: tension_core::async_backend::current(),
                 window_closed: false,
                 adapters: Vec::new(),
         session: None,

@@ -68,6 +68,29 @@ fn the_shared_program_prints_the_contract_transcript() {
         .expect("the interpreter runs");
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // `async-on-main` is a stackful guest: one store, one executor, no threads,
+    // every suspension a continuation. On a target without stack switching the
+    // host refuses it by name; assert that refusal rather than failing with a
+    // mystery, and print the reason.
+    if !tension_core::async_backend::current().supports_continuations() {
+        assert!(
+            !output.status.success(),
+            "async-on-main must be refused on a target without stack switching, but it exited 0\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("stack switching") || stderr.contains("continuation"),
+            "the refusal for async-on-main must name the feature, got:\n{stderr}"
+        );
+        eprintln!(
+            "async-on-main: stack switching is unavailable on {} — the host refused \
+             the guest by name (expected), and the transcript comparison is skipped",
+            std::env::consts::OS,
+        );
+        return;
+    }
+
     assert!(
         output.status.success(),
         "the shared program failed (exit {:?})\nstdout: {stdout}\nstderr: {}",

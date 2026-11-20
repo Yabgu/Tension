@@ -46,6 +46,20 @@ fn continuation_module_is_refused_without_stack_switching() {
 
 #[test]
 fn continuation_module_instantiates_with_stack_switching() {
+    // Gated on the same capability the host uses — `tension_core::async_backend`
+    // — not on a second copy of the platform rule. On a target without stack
+    // switching this half cannot pass, and it says so rather than skipping
+    // silently: the refusal half above is the assertion that still runs there.
+    if !tension_core::async_backend::current().supports_continuations() {
+        eprintln!(
+            "stack switching is unavailable on {} — the instantiation half of \
+             this test cannot run here; the refusal half above is the assertion \
+             that applies",
+            std::env::consts::OS,
+        );
+        return;
+    }
+
     let mut config = Config::new();
     config.wasm_stack_switching(true);
     let engine = Engine::new(&config).expect("an engine with stack switching");
