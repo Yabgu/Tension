@@ -847,16 +847,27 @@ mod tests {
               br $forever)))
     "#;
 
+    /// Escape a byte string for a WAT string literal: a backslash and a quote
+    /// are the two characters whose decoded value differs from their literal
+    /// form. A host path (e.g. `C:\Users\...`) must be escaped before it is
+    /// interpolated into a `(data (i32.const 0) "...")` segment, or WAT reads
+    /// `\U` as an invalid escape. The caller still hands the guest the
+    /// **original** length — the decoded byte count — not this literal's length.
+    fn wat_string(text: &str) -> String {
+        text.replace('\\', "\\\\").replace('"', "\\\"")
+    }
+
     /// Calls `tension::dev.run` twice on the path baked in at byte 0, storing
     /// both returned ids at 64 and 68. Two runs from one guest, so the run table
     /// has to hold both at once.
     fn run_twice(path: &str) -> String {
+        let escaped = wat_string(path);
         format!(
             r#"
         (module
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
@@ -869,13 +880,14 @@ mod tests {
     /// (`cap = 0`) and then a fill — storing at 64 the run id, at 68 the probed
     /// length, at 72 the fill's return value, and at 100 the output bytes.
     fn run_then_read_out(path: &str) -> String {
+        let escaped = wat_string(path);
         format!(
             r#"
         (module
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (local $id i32)
             (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
@@ -891,12 +903,13 @@ mod tests {
     /// Calls `tension::dev.run` once and stores the return value at 64 — the
     /// errno, when the call is refused.
     fn run_once(path: &str) -> String {
+        let escaped = wat_string(path);
         format!(
             r#"
         (module
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
@@ -1196,6 +1209,7 @@ mod tests {
         // Runs the target, then makes the two refusals `dev.out` can produce:
         // a buffer too small for the output, and an id that is not a run.
         let path = format!("{target}");
+        let escaped = wat_string(&path);
         let outer = scratch.write(
             "outer.wat",
             &format!(
@@ -1204,7 +1218,7 @@ mod tests {
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "out" (func $out (param i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (local $id i32)
             (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))
@@ -1337,6 +1351,7 @@ mod tests {
         let target = scratch.write("game.wat", BATCH); // no `_game_running`
         // The outer guest asks for a rendering run on it and stores the errno.
         let path = format!("{target}");
+        let escaped = wat_string(&path);
         let outer = scratch.write(
             "outer.wat",
             &format!(
@@ -1344,7 +1359,7 @@ mod tests {
         (module
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 2) (i32.const 0) (i32.const 0)))
             (i32.store (i32.const 4100) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
@@ -1376,6 +1391,7 @@ mod tests {
         let scratch = Scratch::new("kind-accept");
         let target = scratch.write("game.wat", ADOPTED);
         let path = format!("{target}");
+        let escaped = wat_string(&path);
         let outer = scratch.write(
             "outer.wat",
             &format!(
@@ -1383,7 +1399,7 @@ mod tests {
         (module
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (i32.store (i32.const 4096) (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))))
         "#,
@@ -1418,6 +1434,7 @@ mod tests {
     #[cfg(feature = "render2d-core")]
     fn outer_render_with_stop(target: &str, frames: u32, stop: bool) -> String {
         let path = target.to_string();
+        let escaped = wat_string(&path);
         let tail = if stop {
             r#"(i32.store (i32.const 4116) (call $stop (local.get $id)))
             (i32.store (i32.const 4120) (call $frame (local.get $id)))"#
@@ -1435,7 +1452,7 @@ mod tests {
           (import "tension::dev" "read" (func $read (param i32 i32 i32) (result i32)))
           (import "tension::dev" "stop" (func $stop (param i32) (result i32)))
           (memory (export "memory") 2)
-          (data (i32.const 0) "{path}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (local $id i32)
             (local $i i32)
@@ -1579,6 +1596,7 @@ mod tests {
     fn batch_frame_reports_already_complete() {
         let scratch = Scratch::new("batchframe");
         let game = scratch.write("game.wat", BATCH);
+        let escaped = wat_string(&game);
         let outer = scratch.write(
             "outer.wat",
             &format!(
@@ -1587,7 +1605,7 @@ mod tests {
           (import "tension::dev" "run" (func $run (param i32 i32 i32 i32 i32) (result i32)))
           (import "tension::dev" "frame" (func $frame (param i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "{game}")
+          (data (i32.const 0) "{escaped}")
           (func (export "_start_game")
             (local $id i32)
             (local.set $id (call $run (i32.const 0) (i32.const {len}) (i32.const 1) (i32.const 0) (i32.const 0)))

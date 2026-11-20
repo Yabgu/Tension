@@ -2751,7 +2751,7 @@ mod adapter_cli_tests {
     // ── the load-time checks on the guest's own structure ──────────────────
 
     fn module(wat: &str) -> Module {
-        Module::new(&Engine::default(), wat).expect("the test module compiles")
+        Module::new(&wasmtime::Engine::default(), wat).expect("the test module compiles")
     }
 
     /// F2 check 1, in its own words: a guest that speaks the session protocol
@@ -2878,7 +2878,7 @@ mod adapter_cli_tests {
         // code: one empty body
         section(10, &[0x01, 0x02, 0x00, 0x0b], &mut bytes);
 
-        let module = Module::new(&Engine::default(), &bytes).expect("the test module compiles");
+        let module = Module::new(&wasmtime::Engine::default(), &bytes).expect("the test module compiles");
         (module, bytes)
     }
 
