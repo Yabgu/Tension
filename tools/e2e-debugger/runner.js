@@ -10,7 +10,24 @@
 //   node tools/e2e-debugger/runner.js                  # all three modes (--check)
 //   node tools/e2e-debugger/runner.js --only launch    # launch | smoke | debug
 //   node tools/e2e-debugger/runner.js --example io     # one example
+//   node tools/e2e-debugger/runner.js --guest \
+//     tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
+//     --file rt-guards.ts --line 96                    # one test program
 //   node tools/e2e-debugger/runner.js --help
+//
+// `--guest` is a fourth mode, not a variant of `debug`: the examples mode
+// iterates committed artifacts and `config/breakpoints.json`, while a test
+// program is named by the caller and has no `.vscode/` around it. Both hand the
+// run to `debugGuest()` in `lib/run-lldb.js`, so there is one lldb driver and
+// one reading of its transcript.
+//
+// A test program's debug artifact resolves in the order `tests/support/
+// programs.rs` documents: the committed fixture under
+// `tension-core/tests/programs/fixtures/debug/` first, then a
+// `scripts/build-test-programs.mjs --debug` build when the vendored compiler is
+// installed, and nothing at all otherwise. This mode is handed a path — it does
+// not guess one — so when the path is absent it names both candidates rather
+// than picking for the caller.
 //
 // Exit 0 when every case passes or skips; 1 when any case fails.
 
@@ -34,7 +51,7 @@ import {
 import { createReport, firstLineOf } from "./lib/report.js";
 import { lldbSkipReason, resolveLldb, resolveTensionCore } from "./lib/resolve.js";
 import { reportsMissingGuest, runTensionCore, unknownFlagIn } from "./lib/run-tension-core.js";
-import { runUnderLldb } from "./lib/run-lldb.js";
+import { debugGuest } from "./lib/run-lldb.js";
 
 const MODES = ["launch", "smoke", "debug"];
 
@@ -49,7 +66,15 @@ function missingGuestPath() {
 }
 
 function parseArgs(argv) {
-  const options = { check: true, only: null, example: null, help: false };
+  const options = {
+    check: true,
+    only: null,
+    example: null,
+    guest: null,
+    file: null,
+    line: null,
+    help: false,
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--check") options.check = true;
@@ -59,11 +84,35 @@ function parseArgs(argv) {
     } else if (arg === "--example") {
       options.example = argv[index + 1];
       index += 1;
+    } else if (arg === "--guest") {
+      options.guest = argv[index + 1];
+      index += 1;
+    } else if (arg === "--file") {
+      options.file = argv[index + 1];
+      index += 1;
+    } else if (arg === "--line") {
+      const value = argv[index + 1];
+      index += 1;
+      if (!/^\d+$/.test(value ?? "")) throw new Error(`--line takes a line number, not "${value}"`);
+      options.line = Number(value);
     } else if (arg === "--help" || arg === "-h") options.help = true;
     else throw new Error(`unknown argument ${arg}`);
   }
   if (options.only && !MODES.includes(options.only)) {
     throw new Error(`--only takes one of ${MODES.join(", ")}, not "${options.only}"`);
+  }
+
+  const guestMode = options.guest !== null;
+  if (guestMode) {
+    // A breakpoint needs both halves; half a location would silently bind
+    // nothing and read as "the engine's fault".
+    if (!options.file) throw new Error("--guest needs --file: the source file to break in");
+    if (options.line === null) throw new Error("--guest needs --line: the source line to break on");
+    if (options.only || options.example) {
+      throw new Error("--guest debugs one program; it does not combine with --only or --example");
+    }
+  } else if (options.file || options.line !== null) {
+    throw new Error("--file and --line locate a breakpoint; they need --guest <program.wasm>");
   }
   return options;
 }
@@ -71,11 +120,15 @@ function parseArgs(argv) {
 function usage() {
   return [
     "usage: node tools/e2e-debugger/runner.js [--check] [--only <mode>] [--example <name>]",
+    "       node tools/e2e-debugger/runner.js --guest <program.wasm> --file <name.ts> --line <n>",
     "",
     "modes:",
     "  launch  rebuild each .vscode/launch.json command and prove its flags parse",
     "  smoke   run each built artifact under `--debug` and look for a crash",
     "  debug   bind a source breakpoint per config/breakpoints.json under lldb",
+    "",
+    "--guest debugs one test program instead of the examples, and prints one JSON",
+    "line: {stopped, hit_breakpoint, file, line, function, stops, exit_state}.",
     "",
     "environment:",
     "  TENSION_CORE  path to the tension-core binary (default: target/release)",
@@ -428,14 +481,15 @@ async function runDebugMode({ examples, allExamples, knownSkips, breakpoints, re
     const workDir = path.join("/tmp", `e2e-debug-${name.replace(/\//g, "-")}-${process.pid}`);
     let observed;
     try {
-      observed = runUnderLldb({
+      observed = debugGuest({
         lldb,
         binary,
+        guest: artifact,
         args,
-        cwd: example.dir,
-        symbolPath: example.dir,
         breakpoints: [{ file: path.basename(breakpoint.file), line: breakpoint.line }],
         workDir,
+        symbolPath: example.dir,
+        cwd: example.dir,
         timeoutMs: DEBUG_TIMEOUT_MS,
       });
     } catch (error) {
@@ -445,9 +499,8 @@ async function runDebugMode({ examples, allExamples, knownSkips, breakpoints, re
       fs.rmSync(workDir, { recursive: true, force: true });
     }
 
-    const stop = observed.stops?.[0];
-    if (observed.resolved && stop) {
-      report.pass("debug", name, `${stop.file}:${stop.line} (${stop.function || "?"})`);
+    if (observed.hit_breakpoint) {
+      report.pass("debug", name, `${observed.file}:${observed.line} (${observed.function || "?"})`);
     } else {
       report.fail(
         "debug",
@@ -459,7 +512,87 @@ async function runDebugMode({ examples, allExamples, knownSkips, breakpoints, re
   }
 }
 
-// --------------------------------------------------------------- main ---
+// -------------------------------------------------------------- guest ---
+
+/// One JSON line, the shape the examples mode reports through `debugGuest`.
+///
+/// Printed last on stdout so a caller can read the final `{` line without
+/// knowing what the engine logged before it. `reason` appears only when the
+/// question could not be measured at all (no debugger, no artifact) — which is
+/// a different answer from "the breakpoint did not bind", and a caller that
+/// conflated the two would report an environment gap as a product defect.
+async function runGuestMode({ binary, lldbInfo, options }) {
+  const guest = path.resolve(options.guest);
+  const answer = {
+    guest,
+    breakpoint: { file: options.file, line: options.line },
+    stopped: false,
+    hit_breakpoint: false,
+    file: null,
+    line: null,
+    function: null,
+    stops: [],
+    exit_state: null,
+  };
+
+  if (!fs.existsSync(guest)) {
+    // Both candidates, in resolution order, because the answer a caller wants
+    // is "what would exist" rather than "what you typed is wrong".
+    const name = path.basename(guest, ".wasm");
+    answer.reason =
+      `no such program: ${guest} — the committed debug fixture is ` +
+      `tension-core/tests/programs/fixtures/debug/${name}.wasm, and a build with ` +
+      `DWARF is \`node scripts/build-test-programs.mjs --debug\` (needs the vendored compiler)`;
+    console.log(JSON.stringify(answer));
+    return 1;
+  }
+
+  const lldb = lldbInfo.path;
+  if (!lldb) {
+    answer.reason = lldbSkipReason(lldbInfo);
+    console.log(JSON.stringify(answer));
+    return 1;
+  }
+
+  const workDir = path.join("/tmp", `e2e-debug-guest-${process.pid}`);
+  try {
+    Object.assign(
+      answer,
+      debugGuest({
+        lldb,
+        binary,
+        guest,
+        breakpoints: [{ file: options.file, line: options.line }],
+        workDir,
+        timeoutMs: DEBUG_TIMEOUT_MS,
+      })
+    );
+  } catch (error) {
+    answer.reason = error.message.split("\n")[0];
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+
+  // `raw` is what a person reads when the JSON says false; it is not part of
+  // the report, so the printed line stays one line. Everything else the driver
+  // answered — `stops`, `exit_state`, `timedOut` — is kept, because a caller
+  // distinguishing "never bound" from "lldb gave up" needs it.
+  delete answer.raw;
+  console.log(JSON.stringify(answer));
+  if (answer.hit_breakpoint) {
+    console.error(
+      `e2e: guest stopped at ${answer.file}:${answer.line} (${answer.function || "?"})`
+    );
+    return 0;
+  }
+  if (!answer.reason) {
+    console.error(
+      `e2e: breakpoint at ${options.file}:${options.line} never resolved` +
+        (answer.timedOut ? " (lldb timed out)" : "")
+    );
+  }
+  return 1;
+}
 
 async function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -470,6 +603,16 @@ async function main() {
 
   const { path: binary, release } = resolveTensionCore();
   const lldbInfo = resolveLldb();
+
+  if (options.guest) {
+    console.log(
+      `e2e: guest ${relativePath(path.resolve(options.guest))}; ` +
+        `tension-core ${release ? "release" : "debug"} at ${relativePath(binary)}; ` +
+        `lldb = ${lldbInfo.path ? relativePath(lldbInfo.path) : "absent"}`
+    );
+    return runGuestMode({ binary, lldbInfo, options });
+  }
+
   const knownSkips = loadKnownSkips();
   const breakpoints = loadBreakpoints();
 

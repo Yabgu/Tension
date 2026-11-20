@@ -119,11 +119,11 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | import | signature | registered at |
 |---|---|---|
 | `run` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
-| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:279` |
-| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:309` |
-| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:336` |
-| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:388` |
-| `pipe` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:436` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:280` |
+| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:310` |
+| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:337` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:389` |
+| `pipe` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:437` |
 
 ## `tension::input` — capability
 

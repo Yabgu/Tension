@@ -16,6 +16,9 @@ node tools/e2e-debugger/runner.js --only launch
 node tools/e2e-debugger/runner.js --only smoke
 node tools/e2e-debugger/runner.js --only debug
 node tools/e2e-debugger/runner.js --example ogre/hello-triangle
+node tools/e2e-debugger/runner.js --guest \
+  tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
+  --file rt-guards.ts --line 96                     # one test program
 ```
 
 Requires a built `tension-core` (`cargo build --manifest-path
@@ -62,6 +65,53 @@ fallback that makes debug mode runnable on a machine with no system lldb.
   with comments after it has no line-table entry, so a breakpoint set there
   never binds (measured — `log` failed on its declaration line, passes on the
   statement). Skips when neither a system lldb nor the npm package is available.
+
+### One program: `--guest`
+
+`--guest <program.wasm> --file <name.ts> --line <n>` debugs a single artifact
+from `tension-core/tests/programs/` instead of an example. The examples mode
+iterates committed artifacts and `config/breakpoints.json`; a test program is
+named by its caller and has no `.vscode/` around it.
+
+The host is run as `--debug --symbol-path <the artifact's directory> <guest>`,
+and the breakpoint resolves against the artifact's own line table, so the guest
+must be a **debug** build. A committed one exists, and it is what the tests and
+CI read:
+
+```
+tension-core/tests/programs/fixtures/debug/rt-guards.wasm   # committed, with its .map
+```
+
+This mode is handed a path and does not choose one for the caller. When the
+path is absent it names both candidates in the order `tests/support/programs.rs`
+resolves them: the fixture above, then a build, which needs the vendored
+compiler installed:
+
+```sh
+node scripts/build-test-programs.mjs --debug   # build/debug/, DWARF + source map
+```
+
+One JSON line is printed last on stdout, in the shape the examples' debug mode
+reports through the same driver:
+
+```json
+{"guest":"…/rt-guards.wasm","breakpoint":{"file":"rt-guards.ts","line":96},"stopped":true,"hit_breakpoint":true,"file":"rt-guards.ts","line":96,"function":"tension-core/tests/programs/async/rt-guards/_start_game","stops":[…],"exit_state":5,"timedOut":false}
+```
+
+The function name carries the module path relative to the compiler's working
+directory, so it differs between the committed fixture (built from the repo
+root) and a `build/debug/` artifact (built from `tests/programs/`). A caller
+matching on it should match the tail, `rt-guards/_start_game`, as
+`tests/debugger.rs` does.
+
+`reason` appears **instead** when the question could not be measured at all (no
+debugger on this machine, no such artifact) — a different answer from "the
+breakpoint did not bind", and one a caller must not read as a product defect.
+Exit code is 0 when the breakpoint was hit, 1 otherwise.
+
+This is the driver `tension-core/tests/debugger.rs` uses; there is no second
+parser of lldb output (`lib/run-lldb.js::debugGuest` is the single entry point
+both modes call).
 
 ## Config
 

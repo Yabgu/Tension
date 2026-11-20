@@ -1,9 +1,14 @@
 # The DWARF E2E assertions, on every push.
 #
-# Scope: exactly one integration target, tests/e2e_debug.rs — the four tests
-# that pin the host's `--debug` behaviours (pass-through, the legacy fallback
-# and its deprecation, and `--symbol-path` not moving `DW_AT_comp_dir`). The
-# full suite (`npm test`) is not run here: it needs the OGRE fixtures and a
+# Scope: two integration targets, tests/e2e_debug.rs and tests/debugger.rs.
+#
+#   e2e_debug  the host's `--debug` behaviours: pass-through, the legacy guest
+#              and its report, and `--symbol-path` reaching the hint.
+#   debugger   the same claims where a person meets them — the startup report
+#              that names DWARF, the source map and the lldb recipe, plus a
+#              real source breakpoint bound under lldb in a debug guest.
+#
+# The full suite (`npm test`) is not run here: it needs the OGRE fixtures and a
 # display, which is what ci/Dockerfile is for.
 #
 # Why not the container (`node ci/docker.mjs test`): the image is built from
@@ -22,6 +27,27 @@
 #                host owns the window. It links under `--no-default-features`
 #                too, which is how this job builds. The runner image does not
 #                ship it; it comes from apt below.
+#   lldb       - tests/debugger.rs drives it through tools/e2e-debugger, and on
+#                Linux it consumes wasmtime's GDB-JIT registration, so the
+#                breakpoint test is green here. It is *not* added for Windows:
+#                lldb there registers no JIT image at all, measured — the test
+#                says so and asserts only the report (`docs/debugging.md`).
+#   node       - only to run `tools/e2e-debugger/runner.js`, which the test
+#                spawns. No `npm install`, and no compiler: the debug guest the
+#                breakpoint assertions read is committed at
+#                `tension-core/tests/programs/fixtures/debug/rt-guards.wasm`.
+#
+#                An earlier version of this job vendored the compiler here, and
+#                it failed on a fresh runner before a single test ran:
+#
+#                  npm error path /home/runner/work/Tension/Tension/.packs/yabgu_gm-tensionscript-0.14.1-g03e0507bbaab.tar
+#                  npm error enoent ENOENT: no such file or directory
+#
+#                `.packs/` is gitignored and rebuilt per machine, so nothing in
+#                this job could produce it. The fixture is the answer: a pinned
+#                compiler's `--debug --sourceMap` output, a few hundred KB,
+#                committed for the same reason `examples/*/build/*.wasm` are, and
+#                with the recipe to regenerate it in the README beside it.
 # Nothing else is needed because `--no-default-features` drops cpal (no ALSA
 # headers) and llama-cpp-2 (no CMake/libclang C++ build). The E2E tests touch
 # neither.
@@ -41,20 +67,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # **The one submodule this target needs.** `tension-core/build.rs:238`
+      # **The one submodule this job needs.** `tension-core/build.rs:238`
       # compiles `third_party/ImageViewer/src/format/IwiFile.cpp` into the host
-      # and panics when it is absent, so a checkout without submodules fails
-      # before a single test runs:
+      # and panics when it is absent, so a checkout without it fails before a
+      # single test runs:
       #
       #   thread 'main' panicked at build.rs:238:
       #   third_party/ImageViewer/src/format/IwiFile.cpp is missing
       #
-      # Only this one, and for a reason worth recording: `build.rs` names no
-      # other submodule (grep `third_party/` in it), and this job never invokes
-      # the TensionScript compiler, so neither `ogre-next` nor `TensionScript`
-      # is needed. `ogre-next` in particular is a large build tree, and fetching
-      # it here would cost minutes to compile nothing.
-      - name: Initialise the submodule the build requires
+      # TensionScript is deliberately **not** fetched: the debug guest the
+      # breakpoint assertions bind in is committed, so this job needs no
+      # compiler (see the header). `ogre-next` is not fetched either: it is a
+      # large build tree, `build.rs` names no other submodule (grep
+      # `third_party/` in it), and fetching it here would cost minutes to
+      # compile nothing.
+      - name: Initialise the submodule this target needs
         run: git submodule update --init --depth 1 third_party/ImageViewer
 
       - uses: dtolnay/rust-toolchain@stable
@@ -90,10 +117,10 @@ jobs:
           restore-keys: |
             zig-0.17.0-v2-${{ runner.os }}-
 
-      - name: Install gfortran
+      - name: Install gfortran and lldb
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gfortran
+          sudo apt-get install -y --no-install-recommends gfortran lldb
 
       # The core links libSDL3 on every build now that the host owns the
       # window, so the linker needs it whether or not a test opens one:
@@ -129,10 +156,52 @@ jobs:
           zig version
           gfortran --version | head -1
           cc --version | head -1
-          # Diagnostic, not a gate: the lldb test skips cleanly when this is
-          # absent (and libtest hides a passing test's output, so the skip
-          # message is otherwise invisible in the log).
-          command -v lldb || echo "lldb: absent - the behavioural smoke will skip"
+          # Load-bearing, not diagnostic: tests/debugger.rs fails without it
+          # (a missing debugger is a missing fixture, per support/ci.rs), and
+          # libtest hides a passing test's output, so name the binary here.
+          lldb --version | head -1
 
       - name: E2E debug assertions
         run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
+
+      # The guest-breakpoint target, filtered by name. Every test named here
+      # reads the committed fixture and needs nothing built:
+      #
+      #   the_committed_debug_fixture_carries_dwarf   the artifact is in the tree
+      #   the_debug_report_names_what_a_debugger_can_see   the startup report
+      #   a_source_breakpoint_binds_in_a_promise_guest     binds for real here
+      #   a_guest_without_dwarf_cannot_be_stopped_at_a_source_line
+      #                                              the control that keeps the
+      #                                              one above from being vacuous
+      #
+      # Two tests are left out **by name**, and the filters are the reason this
+      # step spells them: `--test debugger` alone would run them and turn a
+      # known compiler gap into a red job.
+      #
+      #   a_source_breakpoint_binds_in_a_stack_switching_guest
+      #     The pinned compiler (0.14.1) emits no DWARF for a stack-switching
+      #     program — `WARNING DWARF emission failed: type form is not a function
+      #     type` at build time — so no fixture can exist to bind in, and a
+      #     checkout with no compiler could not build one either. It starts
+      #     running the day a committed debug `main-policy.wasm` can be built;
+      #     the test already upgrades itself on a `.debug_info` read.
+      #
+      #   the two build paths
+      #     `support/programs.rs` resolves a debug guest as fixture, then build
+      #     if `node_modules/@yabgu_gm/tensionscript` exists, then one printed
+      #     line. Nothing here installs a compiler, so nothing here takes the
+      #     second path — which is why the fixture test above is in the list: if
+      #     the fixture were deleted, the other three would print a line and pass
+      #     without measuring anything.
+      #
+      # No `TENSION_TEST_ALLOW_SKIP` is set on purpose: a missing debugger must
+      # fail the job rather than turn the guard into a green line with nothing
+      # behind it.
+      - name: Guest breakpoint assertions
+        run: |
+          cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+            --test debugger -- \
+              the_committed_debug_fixture_carries_dwarf \
+              the_debug_report_names_what_a_debugger_can_see \
+              a_source_breakpoint_binds_in_a_promise_guest \
+              a_guest_without_dwarf_cannot_be_stopped_at_a_source_line

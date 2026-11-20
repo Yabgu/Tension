@@ -29,7 +29,20 @@
 // program names its own flags here, once, in the file both the human and the
 // test call.
 //
-// Run: node scripts/build-test-programs.mjs [--force]
+// Run: node scripts/build-test-programs.mjs [--force] [--debug]
+//
+// # Two modes, one flag list
+//
+// `--debug` builds the *same* programs into `build/debug/`, with the program's
+// own flags plus `--debug --sourceMap`. Nothing else changes, `-O0` included:
+// the DWARF question and the optimizer question are separate, and a debug
+// artifact that dropped `-O0` would fail to compile for the stack-switching
+// programs (see above) rather than answer anything about DWARF.
+//
+// Who asks for it: `tension-core/tests/debugger.rs`, which sets a source
+// breakpoint in a debug artifact under lldb. The release artifacts in
+// `build/` stay what every other test runs — a guest built only to be run has
+// no use for a line table and no use for a 500 KB source map beside it.
 
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
@@ -39,9 +52,20 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
 const programs = join(repo, "tension-core", "tests", "programs");
-const out = join(programs, "build");
 const compiler = join(repo, "scripts", "tensionscript.mjs");
 const force = process.argv.includes("--force");
+const debug = process.argv.includes("--debug");
+const out = debug ? join(programs, "build", "debug") : join(programs, "build");
+
+/**
+ * What a debug build adds to a program's own flags.
+ *
+ * `--debug` is what asks the compiler for DWARF (`.debug_info`, `.debug_line`,
+ * `.debug_abbrev`, `.debug_ranges`) and `--sourceMap` for the `.map` beside the
+ * artifact. Both are needed: the host's `--debug` only registers a JIT image,
+ * it does not invent a line table (`tension-core/src/debug.rs`).
+ */
+const DEBUG_FLAGS = ["--debug", "--sourceMap"];
 
 /**
  * The flags every thread program is built with.
@@ -180,13 +204,18 @@ for (const rel of sources) {
     ++skipped;
     continue;
   }
-  console.log(`build-test-programs: ${rel}`);
-  execFileSync(process.execPath, [compiler, ts, "-o", wasm, ...flags], {
-    cwd: programs,
-    stdio: "inherit",
-  });
+  console.log(`build-test-programs: ${rel}${debug ? " (debug)" : ""}`);
+  execFileSync(
+    process.execPath,
+    [compiler, ts, "-o", wasm, ...flags, ...(debug ? DEBUG_FLAGS : [])],
+    {
+      cwd: programs,
+      stdio: "inherit",
+    },
+  );
   ++built;
 }
 console.log(
-  `build-test-programs: ${built} built, ${skipped} up to date, ${sources.length} total`,
+  `build-test-programs: ${built} built, ${skipped} up to date, ${sources.length} total` +
+    (debug ? ` — debug artifacts in ${out}` : ""),
 );

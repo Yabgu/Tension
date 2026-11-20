@@ -13,6 +13,15 @@
 // `settings set plugin.jit-loader.gdb.enable on` is what lets lldb see a
 // JIT-registered guest image; without it every guest breakpoint stays
 // unresolved and the run looks like a failure of the engine.
+//
+// # Two callers, one driver
+//
+// `debugGuest()` is the entry point everything uses: the runner's examples mode
+// (one artifact of an example, arguments from its `launch.json`) and its
+// `--guest` mode (one test program under `tests/programs/`). Both hand the same
+// `{stops, resolved, exit_state}` transcript to the same reader — a second
+// parser of lldb output would be a second place for "did it stop?" to be
+// answered differently.
 
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -125,4 +134,77 @@ export function runUnderLldb({
 
   const observed = JSON.parse(marker.slice("@@LLDB_JSON ".length));
   return { ...observed, raw, timedOut };
+}
+
+/**
+ * Debug one guest under lldb and answer the question the callers ask: did the
+ * process stop, and where?
+ *
+ * The host must be run with `--debug`: without it wasmtime hands the guest's
+ * bytes over with `debug_info(false)`, no JIT image is registered, and the
+ * breakpoint stays pending forever. That is the host flag, not the guest's —
+ * the guest needs the compiler's `--debug --sourceMap` on top of it.
+ *
+ * `args` is the whole host command line below the binary. Examples mode passes
+ * what the example's `launch.json` declares; a bare guest gets the two options
+ * a breakpoint needs and nothing else.
+ *
+ * @param {{
+ *   lldb: string,
+ *   binary: string,
+ *   guest: string,
+ *   args?: string[],
+ *   breakpoints: {file: string, line: number}[],
+ *   workDir: string,
+ *   symbolPath?: string,
+ *   cwd?: string,
+ *   timeoutMs?: number,
+ * }} options
+ * @returns {{
+ *   stopped: boolean,
+ *   hit_breakpoint: boolean,
+ *   file: string | null,
+ *   line: number | null,
+ *   function: string | null,
+ *   stops: object[],
+ *   exit_state: number,
+ *   raw: string,
+ *   timedOut: boolean,
+ * }}
+ */
+export function debugGuest({
+  lldb,
+  binary,
+  guest,
+  args = null,
+  breakpoints,
+  workDir,
+  symbolPath = path.dirname(guest),
+  cwd = path.dirname(guest),
+  timeoutMs = 10_000,
+}) {
+  const hostArgs = args ?? ["--debug", "--symbol-path", symbolPath, guest];
+  const observed = runUnderLldb({
+    lldb,
+    binary,
+    args: hostArgs,
+    cwd,
+    symbolPath,
+    breakpoints,
+    workDir,
+    timeoutMs,
+  });
+
+  const stop = observed.stops?.[0] ?? null;
+  return {
+    stopped: (observed.stops?.length ?? 0) > 0,
+    hit_breakpoint: Boolean(observed.resolved),
+    file: stop?.file ?? null,
+    line: stop?.line ?? null,
+    function: stop?.function ?? null,
+    stops: observed.stops ?? [],
+    exit_state: observed.exit_state,
+    raw: observed.raw,
+    timedOut: observed.timedOut,
+  };
 }
