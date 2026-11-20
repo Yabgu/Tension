@@ -1539,8 +1539,30 @@ fn main() -> anyhow::Result<()> {
     // A shared-memory guest's `__start` answers `i32` (the shell's status) and
     // has already been called by `thread_boot`; the `() -> ()` form is the one
     // an ordinary build emits.
+    let mut runtime_initialised = false;
     if let Ok(init) = instance.get_typed_func::<(), ()>(&mut store, "__start") {
         init.call(&mut store, ())?;
+        runtime_initialised = true;
+
+        // The showcase harness's other half. `TensionScript-a2`'s
+        // `examples/async-main/main.ts` has no `_start_game`: its `main` is a
+        // stackful continuation resumed by `__start`, and its harness reads the
+        // result from `__asyncStatus` after instantiation. That program is the
+        // shared ABI contract (`tests/programs/async-on-main.ts` is a copy), so
+        // a host that answers its `env.emit` import must also print the status
+        // line the harness prints, or the two transcripts cannot be compared.
+        // Scoped to a module that imports `env.emit` — the tag protocol is the
+        // marker, and no ordinary guest has it.
+        if module
+            .imports()
+            .any(|import| import.module() == "env" && import.name() == "emit")
+        {
+            if let Some(global) = instance.get_global(&mut store, "__asyncStatus") {
+                if let Some(status) = global.get(&mut store).i32() {
+                    println!("status: {status}");
+                }
+            }
+        }
     }
 
     // `--session-open`: A1's convenience, and *only* a flag. A1 has no guest SDK
@@ -1654,6 +1676,19 @@ fn main() -> anyhow::Result<()> {
         func.call(&mut store, ())
     } else if let Ok(func) = instance.get_typed_func::<(), ()>(&mut store, "_start") {
         func.call(&mut store, ())
+    } else if runtime_initialised {
+        // A stackful module may have no separate entry: `__start` is the boot
+        // body and the continuation shell, and `main` has run to completion by
+        // the time it returns. Measured on the shared program
+        // (`tests/programs/async-on-main.ts`), which exports `main` but neither
+        // `_start_game` nor `_start`; without this arm the host called `__start`
+        // and then failed on the entry it had already executed.
+        logging::log(
+            Level::Debug,
+            "core",
+            "the module booted through `__start` and exports no `_start_game`/`_start`; nothing left to run",
+        );
+        Ok(())
     } else {
         Err(wasmtime::Error::msg(
             "game.wasm did not export `_start_game` or `_start`",

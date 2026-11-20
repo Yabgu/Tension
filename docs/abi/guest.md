@@ -8,7 +8,7 @@ Every import a WebAssembly guest can call, grouped by module. These are the
 only things the host offers: a guest that imports anything else fails at
 instantiation, and that failure is the intended one.
 
-93 imports across 13 modules: 61 registered by the host in 10 modules, 32 by 3 capability adapters.
+94 imports across 13 modules: 62 registered by the host in 10 modules, 32 by 3 capability adapters.
 
 A **capability** module is present only when its shared object is loaded
 with `--capability`; the core modules are always present. Signatures are
@@ -30,6 +30,7 @@ says how in its own shim; the shared codes are in
 | import | signature | registered at |
 |---|---|---|
 | `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:310` |
+| `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:89` |
 | `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:265` |
 | `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:276` |
 
@@ -142,7 +143,7 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 |---|---|---|
 | `print` | `(i32, i32)` | `tension-core/src/thread.rs:444` |
 | `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:459` |
-| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:100` |
+| `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:124` |
 | `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:487` |
 | `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:483` |
 | `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:484` |
