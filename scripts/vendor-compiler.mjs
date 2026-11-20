@@ -433,6 +433,36 @@ function writeSpec(manifest, nextSpec) {
   writeFileSync(rootManifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
+/// Keeps the root lockfile from pinning the tarball's bytes.
+///
+/// **The tarball is not byte-identical across platforms, and cannot be.** The
+/// one file that differs is `dist/binaryen.js` — the JS glue built with the
+/// platform's own toolchain — measured at 14 732 683 bytes on Linux and
+/// 14 729 938 on Windows for the same compiler commit. A lockfile written on
+/// one machine therefore fails `npm install` on the other with an
+/// `EINTEGRITY` for a file nobody can make match:
+///
+///   npm error integrity checksum failed when using sha512 ... (26067456 bytes)
+///
+/// The pin that matters is the **submodule gitlink**, which is what this script
+/// reads; the bytes are provenance-checked by the build and the manifest keeps
+/// their hash for a reader who wants it (`.packs/manifest.json`). Removing the
+/// lock's `integrity` for this one entry is what lets a second machine vendor
+/// the same commit and install it.
+function unpinLockIntegrity() {
+  const lockPath = resolve(repo, "package-lock.json");
+  if (!existsSync(lockPath)) return;
+  const lock = JSON.parse(readFileSync(lockPath, "utf8"));
+  const entry = lock.packages?.[`node_modules/${PACKAGE}`];
+  if (!entry || entry.integrity === undefined) return;
+  delete entry.integrity;
+  writeFileSync(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+  console.log(
+    "vendor-compiler: package-lock.json no longer pins this tarball's integrity " +
+      "(dist/binaryen.js is built per platform; the submodule gitlink is the pin)"
+  );
+}
+
 // ── the explicit entry point ────────────────────────────────────────────────
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (process.env[RECURSION_MARKER]) {
@@ -440,8 +470,19 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   } else {
     try {
       const result = vendorCompiler();
+      unpinLockIntegrity();
       if (!result.built) console.log(`vendor-compiler: ${result.tarball} (unchanged)`);
-      else console.log('vendor-compiler: next: npm install   (refreshes the root lockfile)');
+      else {
+        // **The version does not change when the commit does.** The package is
+        // always `0.14.1`, so npm sees an installed copy that satisfies the
+        // new spec and leaves it alone: measured on Windows, `npm install`
+        // said "up to date" while node_modules still held the previous
+        // compiler, and the build then warned `DWARF emission failed` from a
+        // tarball that had already been fixed. Removing the installed copy is
+        // what makes npm unpack the new bytes.
+        console.log('vendor-compiler: next: rm -rf node_modules/@yabgu_gm/tensionscript && npm install');
+        console.log('vendor-compiler:       (the version stays 0.14.1, so npm will not replace the installed copy)');
+      }
     } catch (error) {
       if (!error.reported) throw error;
       process.exit(1);
