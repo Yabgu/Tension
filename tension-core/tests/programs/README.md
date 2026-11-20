@@ -7,11 +7,19 @@ to read what is asserted. Nothing here is JavaScript, and nothing is assembled a
 ```
 node scripts/build-test-programs.mjs        # build every program
 node scripts/build-test-programs.mjs --force # rebuild unconditionally
+node scripts/build-test-programs.mjs --debug # the same programs with DWARF, in build/debug/
 ```
 
 A built artifact lands in `build/<name>.wasm`, named by the program's **basename**. Names are
 unique across folders — that is what lets a test ask for `guest("main-policy")` without caring
 which folder the source lives in.
+
+`--debug` adds `--debug --sourceMap` to each program's own flag list and writes to
+`build/debug/<name>.wasm` (plus `<name>.wasm.map`). It exists for one caller,
+`tension-core/tests/debugger.rs`, which sets a source breakpoint in a debug artifact under
+lldb; release artifacts stay what every other test runs. Which programs actually carry
+`.debug_info` today, and why the stack-switching ones do not yet, is
+[`docs/debugging.md`](../../../docs/debugging.md) §3.
 
 | folder | what lives there |
 |---|---|
@@ -23,11 +31,11 @@ which folder the source lives in.
 
 | program | run by | proves |
 |---|---|---|
-| `async/main-policy.ts` | `gallery_async.rs` | a program's own `mainStep` replaces main's default step |
+| `async/main-policy.ts` | `gallery_async.rs`, `debugger.rs` | a program's own `mainStep` replaces main's default step; the breakpoint guard reads it as a stack-switching guest |
 | `async/fallback-loop.ts` | `gallery_async.rs` | a suspension yields into the executor loop, which keeps turning |
 | `async/main-step-replaced.ts` | `gallery_async.rs` | a program **owns** main's scheduling — two slots, then one drain |
 | `async/async-on-main.ts` | `async_on_main.rs` | the shared ABI contract: six suspensions, a local carried across all of them |
-| `async/rt-guards.ts` | `framework_guards.rs` | the framework's behaviour with no session open |
+| `async/rt-guards.ts` | `framework_guards.rs`, `debugger.rs` | the framework's behaviour with no session open; and, in a debug build, a source breakpoint that binds |
 | `thread/count.ts` | `threads.rs` | `__executorCount` and the carved control block |
 | `thread/spawn-join.ts` | `threads.rs` | spawn a worker, serve a request, reply, join |
 | `thread/two-workers.ts` | `threads.rs` | two workers, twelve tasks, every value exactly once |

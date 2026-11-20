@@ -605,6 +605,15 @@ The raw wasmtime module refusal underneath it is:
 cannot define continuation types when stack switching is disabled
 ```
 
+**Guest source breakpoints are in the same position on Windows, for a different
+reason.** lldb on Windows registers no `JIT(0x…)` image for the guest at all —
+wasmtime's GDB-JIT registration is the ELF-target module the GDB plugin reads —
+so a `.ts` breakpoint cannot bind there even for a guest that carries DWARF.
+Measured, with the evidence and the two paths that still work (the Node runner
+and the source map): [`docs/debugging.md`](docs/debugging.md) §3. The assertion
+that keeps this honest on every platform is
+`cargo test --manifest-path tension-core/Cargo.toml --test debugger`.
+
 Manual equivalents, when one target needs rebuilding on its own:
 
 ```

@@ -10,6 +10,11 @@
 //! the existing `#[path = "support/ci.rs"] mod support_ci;`. The skip policy is
 //! the same one: a failing build or a missing artifact **fails** by default and
 //! prints a skip only with `TENSION_TEST_ALLOW_SKIP=1`.
+//!
+//! [`guest_debug`] is the same recipe in the script's `--debug` mode: the same
+//! program, the same flags, plus `--debug --sourceMap`, landing in
+//! `build/debug/<name>.wasm`. One caller
+//! (`tests/debugger.rs`) needs a line table; nothing else should pay for one.
 
 #[path = "ci.rs"]
 mod support_ci;
@@ -32,9 +37,19 @@ pub fn programs_dir() -> PathBuf {
 
 /// Run the builder. Cheap when every artifact is current.
 pub fn build() {
+    run_builder(&[]);
+}
+
+/// Run the builder in its `--debug` mode: `build/debug/`, `--debug --sourceMap`.
+pub fn build_debug() {
+    run_builder(&["--debug"]);
+}
+
+fn run_builder(extra: &[&str]) {
     let script = repo().join("scripts").join("build-test-programs.mjs");
     let status = Command::new("node")
         .arg(&script)
+        .args(extra)
         .current_dir(programs_dir())
         .status()
         .unwrap_or_else(|error| {
@@ -46,8 +61,9 @@ pub fn build() {
         });
     if !status.success() {
         support_ci::skip_or_fail(format_args!(
-            "test programs: `node {}` failed ({status}); the programs are not built",
-            script.display()
+            "test programs: `node {} {}` failed ({status}); the programs are not built",
+            script.display(),
+            extra.join(" ")
         ));
     }
 }
@@ -55,7 +71,18 @@ pub fn build() {
 /// One program's artifact, built on demand.
 pub fn guest(name: &str) -> PathBuf {
     build();
-    let path = programs_dir().join("build").join(format!("{name}.wasm"));
+    artifact(&programs_dir().join("build"), name)
+}
+
+/// One program's **debug** artifact — the same program with DWARF and a source
+/// map — built on demand.
+pub fn guest_debug(name: &str) -> PathBuf {
+    build_debug();
+    artifact(&programs_dir().join("build").join("debug"), name)
+}
+
+fn artifact(dir: &Path, name: &str) -> PathBuf {
+    let path = dir.join(format!("{name}.wasm"));
     if !path.exists() {
         support_ci::skip_or_fail(format_args!(
             "test programs: {} does not exist after the build",

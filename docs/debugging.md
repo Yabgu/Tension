@@ -109,6 +109,95 @@ to the machine's own instructions, so the disassembly pane shows x86-64 (or
 arm64) while the source pane shows `game.ts`. That is the same trade CPython,
 the JVM and V8 make, and the reason source-level breakpoints work at all.
 
+### Where it binds, and where it cannot
+
+Measured, not inferred. Two guests, same host flag, same lldb commands.
+
+- **Linux and macOS — yes.** lldb 23.1.5, wasmtime 50, a guest built with
+  `--debug --sourceMap`. The stop carries the guest's own frame:
+
+  ```text
+  * thread #1, name = 'tension-core', stop reason = breakpoint 1.1
+      frame #0: 0x00007ffff752054e JIT(0x7ffff5a14010)`async/rt-guards/_start_game at rt-guards.ts:96:21
+  -> 96      line("job-key: " + handle._record.key.toString());
+  ```
+
+  `--debug` **on the host** is what makes it work. Without it the guest's bytes
+  reach wasmtime with `debug_info(false)`, no JIT image is registered, and the
+  breakpoint stays pending to the end of the process — with DWARF in the guest
+  and a correct `-f`/`-l`. The startup report says which of the two you have.
+
+- **Windows — no, and not because of this repository.** Measured on the Windows
+  host with the msys2 lldb (`C:\msys64\ucrt64\bin\lldb.exe`): the process runs,
+  the guest executes, and `image list` shows **no `JIT(0x…)` image at all**. The
+  cause is upstream of the flags: wasmtime gates its GDB-JIT registration on the
+  `gdb_jit_int` feature (`wasmtime-internal-jit-debug-50.0.2/src/lib.rs`), the
+  ELF-target module the GDB plugin reads, and lldb on Windows does not consume
+  that registration. So a guest breakpoint there is impossible today, DWARF or
+  not, and no flag or setting changes it.
+
+**In the meantime on Windows**, two paths still work, and neither is a
+breakpoint:
+
+1. **Run the same artifact under Node** — the JS host half. V8 supports stack
+   switching, so a guest `tension-core` refuses on Windows runs here, and the
+   host side is JavaScript you can step with `node --inspect-brk`:
+
+   ```sh
+   node --experimental-wasm-wasmfx \
+     tension-core/tests/programs/runner.mjs main-policy --trace
+   ```
+
+   `--trace` prints the imports it bound and the `__start` status, which is
+   usually the whole question when a guest misbehaves before it prints anything.
+2. **Follow the source map** by hand. The debug build writes `<guest>.wasm.map`
+   beside the artifact (`node scripts/build-test-programs.mjs --debug`), and it
+   is a standard source map from wasm offsets to `.ts` lines — so a wasm offset
+   in a trace, or a module loaded into Chrome DevTools, resolves to the line you
+   would have set a breakpoint on. `tension-core --debug` still reports whether
+   the guest carries DWARF and where its map is, on Windows too: that report is
+   a property of the guest, not of the platform.
+
+**This is asserted, not remembered.** `tension-core/tests/debugger.rs`:
+
+```sh
+node scripts/build-test-programs.mjs --debug          # build/debug/, with DWARF
+cargo test --manifest-path tension-core/Cargo.toml --test debugger
+```
+
+- `the_debug_report_names_what_a_debugger_can_see` — every platform: the report
+  carries `DWARF: present`, the source map, and the three `lldb:` recipe lines.
+- `a_source_breakpoint_binds_in_a_promise_guest` — Linux/macOS: lldb stops at
+  `rt-guards.ts:96`. Windows: prints the reason and asserts the report instead.
+- `a_source_breakpoint_binds_in_a_stack_switching_guest` — a breakpoint in an
+  async program on the stackful backend. Today the pinned compiler emits no
+  DWARF for those programs (`WARNING DWARF emission failed: type form is not a
+  function type`), so it prints that and returns; it reads `.debug_info` from the
+  artifact on every run, so it starts asserting a real stop when the pin moves.
+
+By hand, the same stop without the test wrapper:
+
+```sh
+node tools/e2e-debugger/runner.js --guest \
+  tension-core/tests/programs/build/debug/rt-guards.wasm \
+  --file rt-guards.ts --line 96
+```
+
+It prints one JSON line — `stopped`, `hit_breakpoint`, `file`, `line`,
+`function` — through the same lldb driver the examples use.
+
+**What this means for the breakpoint you set in VS Code.**
+
+- A `.ts` line in a **guest that carries DWARF** binds on Linux/macOS — any
+  example built with its `build:debug` task, and `tests/programs/` built with
+  `--debug` — as long as the launch configuration passes `--debug` to the host.
+- A line in an **async program** (a stack-switching guest) does **not** bind
+  today, on any platform: the pinned compiler emits no DWARF for those, which is
+  the third test above and is upstream. Nothing in the editor or the host fixes
+  it; when the compiler pin carries DWARF, the same configuration starts
+  binding and the test starts asserting.
+- On **Windows** nothing binds, for the JIT reason above.
+
 ### Locals
 
 `frame variable` prints the guest's locals: the compiler emits a

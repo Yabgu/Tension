@@ -1,9 +1,14 @@
 # The DWARF E2E assertions, on every push.
 #
-# Scope: exactly one integration target, tests/e2e_debug.rs — the four tests
-# that pin the host's `--debug` behaviours (pass-through, the legacy fallback
-# and its deprecation, and `--symbol-path` not moving `DW_AT_comp_dir`). The
-# full suite (`npm test`) is not run here: it needs the OGRE fixtures and a
+# Scope: two integration targets, tests/e2e_debug.rs and tests/debugger.rs.
+#
+#   e2e_debug  the host's `--debug` behaviours: pass-through, the legacy guest
+#              and its report, and `--symbol-path` reaching the hint.
+#   debugger   the same claims where a person meets them — the startup report
+#              that names DWARF, the source map and the lldb recipe, plus a
+#              real source breakpoint bound under lldb in a debug guest.
+#
+# The full suite (`npm test`) is not run here: it needs the OGRE fixtures and a
 # display, which is what ci/Dockerfile is for.
 #
 # Why not the container (`node ci/docker.mjs test`): the image is built from
@@ -22,6 +27,19 @@
 #                host owns the window. It links under `--no-default-features`
 #                too, which is how this job builds. The runner image does not
 #                ship it; it comes from apt below.
+#   lldb       - tests/debugger.rs drives it through tools/e2e-debugger, and on
+#                Linux it consumes wasmtime's GDB-JIT registration, so the
+#                breakpoint test is green here. It is *not* added for Windows:
+#                lldb there registers no JIT image at all, measured — the test
+#                says so and asserts only the report (`docs/debugging.md`).
+#   node/npm   - tests/debugger.rs builds its guests through
+#                `scripts/build-test-programs.mjs`, which runs the vendored
+#                TensionScript compiler. That is why this job now fetches the
+#                compiler submodule and installs the root package: a debug guest
+#                has to be *built* with DWARF, and committing wasm blobs to
+#                avoid one `npm install` would be version-locked build output in
+#                search of a test. Measured cost on a runner: ~1 min for the
+#                compiler, then ~40 s to build the nine programs.
 # Nothing else is needed because `--no-default-features` drops cpal (no ALSA
 # headers) and llama-cpp-2 (no CMake/libclang C++ build). The E2E tests touch
 # neither.
@@ -41,7 +59,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # **The one submodule this target needs.** `tension-core/build.rs:238`
+      # **The two submodules this target needs.** `tension-core/build.rs:238`
       # compiles `third_party/ImageViewer/src/format/IwiFile.cpp` into the host
       # and panics when it is absent, so a checkout without submodules fails
       # before a single test runs:
@@ -49,13 +67,16 @@ jobs:
       #   thread 'main' panicked at build.rs:238:
       #   third_party/ImageViewer/src/format/IwiFile.cpp is missing
       #
-      # Only this one, and for a reason worth recording: `build.rs` names no
-      # other submodule (grep `third_party/` in it), and this job never invokes
-      # the TensionScript compiler, so neither `ogre-next` nor `TensionScript`
-      # is needed. `ogre-next` in particular is a large build tree, and fetching
-      # it here would cost minutes to compile nothing.
-      - name: Initialise the submodule the build requires
-        run: git submodule update --init --depth 1 third_party/ImageViewer
+      # TensionScript is the compiler that builds the `tests/programs/` guests
+      # `tests/debugger.rs` sets breakpoints in; `.packs/` is gitignored, so the
+      # root `npm install` below vendors it from this checkout. `ogre-next` is
+      # still not fetched: it is a large build tree, `build.rs` names no other
+      # submodule (grep `third_party/` in it), and fetching it here would cost
+      # minutes to compile nothing.
+      - name: Initialise the submodules these targets need
+        run: |
+          git submodule update --init --depth 1 third_party/ImageViewer
+          git submodule update --init --depth 1 third_party/TensionScript
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -90,10 +111,19 @@ jobs:
           restore-keys: |
             zig-0.17.0-v2-${{ runner.os }}-
 
-      - name: Install gfortran
+      - name: Install gfortran and lldb
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends gfortran
+          sudo apt-get install -y --no-install-recommends gfortran lldb
+
+      # The vendored compiler, the way a fresh clone gets it: `.packs/` is
+      # gitignored, and the root `preinstall` hook (`scripts/ensure-compiler.mjs`)
+      # builds the pinned submodule, runs its `publish:verify` gate, packs a
+      # canonical tarball and installs it. `npm install`, never `npm ci`: the
+      # tarball is produced here, so there is no lock entry to restore from
+      # before it exists.
+      - name: Install the vendored TensionScript compiler
+        run: npm install
 
       # The core links libSDL3 on every build now that the host owns the
       # window, so the linker needs it whether or not a test opens one:
@@ -129,10 +159,19 @@ jobs:
           zig version
           gfortran --version | head -1
           cc --version | head -1
-          # Diagnostic, not a gate: the lldb test skips cleanly when this is
-          # absent (and libtest hides a passing test's output, so the skip
-          # message is otherwise invisible in the log).
-          command -v lldb || echo "lldb: absent - the behavioural smoke will skip"
+          # Load-bearing, not diagnostic: tests/debugger.rs fails without it
+          # (a missing debugger is a missing fixture, per support/ci.rs), and
+          # libtest hides a passing test's output, so name the binary here.
+          lldb --version | head -1
 
       - name: E2E debug assertions
         run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
+
+      # The guest-breakpoint target. (a) runs everywhere; (b) binds for real
+      # here because Ubuntu's lldb reads the JIT registration; (c) prints the
+      # compiler's gap and starts asserting the day the pin carries DWARF for
+      # stack-switching programs. No `TENSION_TEST_ALLOW_SKIP` is set on
+      # purpose: a missing artifact or debugger must fail the job rather than
+      # turn the guard into a green line with nothing behind it.
+      - name: Guest breakpoint assertions
+        run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test debugger
