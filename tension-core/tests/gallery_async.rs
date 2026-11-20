@@ -165,3 +165,107 @@ fn a_program_can_own_mains_scheduling_outright() {
         "101 + 102 + 103, i.e. every suspension resumed: {tags:?}"
     );
 }
+
+/// A program's raw output lines, in order — for a guest whose transcript is the
+/// assertion (an order of events, not a set of values).
+fn run_lines(name: &str) -> Option<Vec<String>> {
+    let program = guest(name);
+    let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg(&program)
+        .output()
+        .expect("the interpreter runs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    if !tension_core::async_backend::current().supports_continuations() {
+        assert!(
+            !output.status.success(),
+            "{name} must be refused on a target without stack switching, but it exited 0"
+        );
+        assert!(
+            stderr.contains("stack switching") || stderr.contains("continuation"),
+            "the refusal for {name} must name the feature, got:\n{stderr}"
+        );
+        eprintln!(
+            "{name}: stack switching is unavailable on {} — the host refused the guest \
+             by name (expected), and the order assertions are skipped",
+            std::env::consts::OS,
+        );
+        return None;
+    }
+
+    assert!(
+        output.status.success(),
+        "{name} failed (exit {:?})\nstdout:\n{stdout}\nstderr:\n{}",
+        output.status.code(),
+        stderr.lines().rev().take(12).collect::<Vec<_>>().join("\n")
+    );
+    Some(
+        stdout
+            .lines()
+            .map(|line| line.trim().to_string())
+            .filter(|line| !line.is_empty())
+            .collect(),
+    )
+}
+
+/// A policy changes the order tasks run in, and the step is the program's.
+///
+/// The ranked tasks are **created** in order low(1), mid(5), high(9), and each
+/// `create` only submits — nothing runs. The program's `mainStep` resumes the
+/// highest-ranked ready task each iteration, so the `enter` lines come out
+/// **high, mid, low**. A FIFO step — `__mainStep__`, or any step that pops one
+/// slot without looking at it — can only produce low, mid, high, so this
+/// assertion fails if the rank decision is lost.
+///
+/// `eager` is the contrast in the same transcript: its `create` drives the
+/// task, so `enter eager` appears before any ranked body has started.
+#[test]
+fn a_policy_changes_the_order_tasks_run_in() {
+    let Some(lines) = run_lines("schedule-order") else {
+        return;
+    };
+
+    // `enter <name>` lines, in the order they were printed.
+    let enters: Vec<&str> = lines
+        .iter()
+        .filter_map(|line| line.strip_prefix("enter "))
+        .collect();
+    assert_eq!(
+        enters,
+        vec!["eager", "high", "mid", "low"],
+        "the step must resume by rank (9, 5, 1) after the eager body ran at the call site; \
+         transcript:\n{}",
+        lines.join("\n")
+    );
+
+    // Exactly one resume per body: a task resumed twice would run twice.
+    for name in ["eager", "high", "mid", "low"] {
+        let resumes = lines
+            .iter()
+            .filter(|line| line.starts_with(&format!("resume {name} ")))
+            .count();
+        assert_eq!(resumes, 1, "{name} must resume exactly once; transcript:\n{}", lines.join("\n"));
+    }
+
+    // The values, which only exist if every suspension resumed where it parked.
+    for expected in ["value low 1", "value mid 5", "value high 9", "value eager 7"] {
+        assert!(
+            lines.iter().any(|line| line == expected),
+            "missing `{expected}`; transcript:\n{}",
+            lines.join("\n")
+        );
+    }
+
+    let steps = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("steps "))
+        .expect("the program prints its step count")
+        .trim()
+        .parse::<i64>()
+        .expect("a number");
+    assert!(
+        steps >= 4,
+        "four bodies each suspend once, so the loop must turn at least four times; saw {steps}"
+    );
+}
