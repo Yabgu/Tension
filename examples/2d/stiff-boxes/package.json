@@ -7,7 +7,7 @@
   "scripts": {
     "build": "node emit-boxes.mjs && node ../../../scripts/build-2d-guest.mjs && node ../../../scripts/pack-example.mjs .",
     "build:debug": "node emit-boxes.mjs && node ../../../scripts/build-2d-guest.mjs --debug && node ../../../scripts/pack-example.mjs .",
-    "test": "node test.mjs",
+    "test": "cargo test --manifest-path ../../../tension-core/Cargo.toml --no-default-features --features audio,render2d-core --test examples_2d stiff_boxes",
     "start": "tension-core --res build/stiff-boxes.tns build/game.wasm --windowed"
   },
   "tension": {

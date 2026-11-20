@@ -8,9 +8,10 @@
 //! pool in isolation (a worker that writes one word); these cover the boot
 //! sequence, the cross-store request, and the refusals.
 //!
-//! The guests live in `tests/guests/` as `.ts` plus `build.mjs`, so the ABI they
-//! exercise is visible and versioned. `build.mjs` carries the flag list (and the
-//! `--optimizeLevel 0` the pinned Binaryen needs — see its header).
+//! The programs live in `tests/programs/` as `.ts`, so the ABI they exercise
+//! is visible and versioned. `scripts/build-test-programs.mjs` carries the flag
+//! list (and the `--optimizeLevel 0` the pinned Binaryen needs — see its
+//! header).
 //!
 //! What each test reads:
 //!
@@ -37,26 +38,19 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-fn repo() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .expect("tension-core is a directory under the repository root")
-        .to_path_buf()
+fn programs_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("programs")
 }
 
-fn guests_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("guests")
-}
-
-/// Build every guest whose `.wasm` is missing or older than its `.ts`.
+/// Build every program whose `.wasm` is missing or older than its `.ts`.
 ///
-/// One recipe: `tests/guests/build.mjs`, which is also what a developer runs by
-/// hand. The build line is not restated here, for the reason `async_on_main.rs`
+/// One recipe: `scripts/build-test-programs.mjs`, which is also what a developer
+/// runs by hand. The build line is not restated here, for the reason `async_on_main.rs`
 /// gives — two copies of a flag list drift, and the flag that would go first is
 /// the one the pinned optimizer needs.
-fn build_guests() {
-    let dir = guests_dir();
-    let script = dir.join("build.mjs");
+fn build_programs() {
+    let dir = programs_dir();
+    let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("scripts").join("build-test-programs.mjs");
     let status = Command::new("node")
         .arg(&script)
         .current_dir(&dir)
@@ -70,7 +64,7 @@ fn build_guests() {
         });
     if !status.success() {
         support_ci::skip_or_fail(format_args!(
-            "threads: `node {}` failed ({status}); the guests are not built",
+            "threads: `node {}` failed ({status}); the programs are not built",
             script.display()
         ));
     }
@@ -78,8 +72,8 @@ fn build_guests() {
 
 /// One guest's artifact, built on demand.
 fn guest(name: &str) -> PathBuf {
-    build_guests();
-    let path = guests_dir().join("build").join(format!("{name}.wasm"));
+    build_programs();
+    let path = programs_dir().join("build").join(format!("{name}.wasm"));
     if !path.exists() {
         support_ci::skip_or_fail(format_args!(
             "threads: {} does not exist after the build",
