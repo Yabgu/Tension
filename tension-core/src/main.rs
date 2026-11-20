@@ -1231,7 +1231,19 @@ fn main() -> anyhow::Result<()> {
     let (engine, async_backend) = tension_core::async_backend::build(&engine_config)?;
     // One line, before any guest runs, naming the backend the process got. The
     // value (not the prose) is what tests assert through `async_backend`.
-    eprintln!("async backend: {}", async_backend.label());
+    //
+    // **A log record, not a bare `eprintln!`.** A process whose output is being
+    // parsed — `solver_log` reads every stderr line as JSON — cannot have an
+    // unstructured sentence appear among the records; that turned a change of
+    // diagnostic into a failure of an unrelated test (measured: `plain line
+    // among the JSON: async backend: continuations`). The logging subsystem
+    // renders this as text on a terminal and as a record in JSON, which is the
+    // same rule every other diagnostic in this file follows.
+    logging::log(
+        logging::Level::Info,
+        "core",
+        &format!("async backend: {}", async_backend.label()),
+    );
 
     // Resource paks: loaded and validated before the guest runs, so a bad path
     // or a malformed volume is reported here rather than as a mysterious miss
