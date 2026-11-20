@@ -161,25 +161,43 @@ breakpoint:
 **This is asserted, not remembered.** `tension-core/tests/debugger.rs`:
 
 ```sh
-node scripts/build-test-programs.mjs --debug          # build/debug/, with DWARF
 cargo test --manifest-path tension-core/Cargo.toml --test debugger
 ```
 
+The guest those tests bind in is **committed** —
+`tests/programs/fixtures/debug/rt-guards.wasm` and its map, a pinned compiler's
+`--debug --sourceMap` build of `async/rt-guards.ts`, regenerable with the
+command in the README beside it. That is why the assertions run on a machine
+with no compiler at all (CI does not install one). When the fixture is absent,
+`tests/support/programs.rs` falls back to `node scripts/build-test-programs.mjs
+--debug` if `node_modules/@yabgu_gm/tensionscript` exists, and otherwise prints
+one line naming what is missing and what to run.
+
+- `the_committed_debug_fixture_carries_dwarf` — every platform, no compiler
+  needed: the fixture is in the tree, its map travels with it, and it carries
+  `.debug_abbrev` / `.debug_info` / `.debug_line` / `.debug_ranges`. A hard
+  failure, so a deleted fixture cannot leave CI green with nothing measured.
 - `the_debug_report_names_what_a_debugger_can_see` — every platform: the report
   carries `DWARF: present`, the source map, and the three `lldb:` recipe lines.
 - `a_source_breakpoint_binds_in_a_promise_guest` — Linux/macOS: lldb stops at
   `rt-guards.ts:96`. Windows: prints the reason and asserts the report instead.
+- `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` — Linux/macOS: the
+  same bytes with every `.debug_*` custom section stripped does **not** bind, so
+  the stop above is DWARF's doing and not the driver's default answer. Runs in
+  CI for that reason.
 - `a_source_breakpoint_binds_in_a_stack_switching_guest` — a breakpoint in an
   async program on the stackful backend. Today the pinned compiler emits no
   DWARF for those programs (`WARNING DWARF emission failed: type form is not a
   function type`), so it prints that and returns; it reads `.debug_info` from the
   artifact on every run, so it starts asserting a real stop when the pin moves.
+  No fixture can exist until then, which is why the CI job filters it out **by
+  name** rather than running the whole target.
 
 By hand, the same stop without the test wrapper:
 
 ```sh
 node tools/e2e-debugger/runner.js --guest \
-  tension-core/tests/programs/build/debug/rt-guards.wasm \
+  tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
   --file rt-guards.ts --line 96
 ```
 

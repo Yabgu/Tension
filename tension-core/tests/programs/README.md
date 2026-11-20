@@ -21,6 +21,12 @@ lldb; release artifacts stay what every other test runs. Which programs actually
 `.debug_info` today, and why the stack-switching ones do not yet, is
 [`docs/debugging.md`](../../../docs/debugging.md) §3.
 
+One debug artifact is **committed**: `fixtures/debug/rt-guards.wasm` with its map, so the
+breakpoint assertions run on a machine with no compiler (CI installs none). A test asking for
+a debug guest resolves it there first, then through `--debug` when
+`node_modules/@yabgu_gm/tensionscript` exists, then gives up with one line naming what is
+missing and what to run. The README beside the fixture carries the command that built it.
+
 | folder | what lives there |
 |---|---|
 | `async/` | the Task path on one store: suspensions, locals, main's step, the fallback loop |

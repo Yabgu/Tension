@@ -15,6 +15,27 @@
 //! program, the same flags, plus `--debug --sourceMap`, landing in
 //! `build/debug/<name>.wasm`. One caller
 //! (`tests/debugger.rs`) needs a line table; nothing else should pay for one.
+//!
+//! # A debug guest resolves in three steps
+//!
+//! 1. The **committed fixture** at `tests/programs/fixtures/debug/<name>.wasm`,
+//!    if it is there. That is the whole point of committing one: the CI job that
+//!    runs the breakpoint assertions installs no compiler (the tarball it would
+//!    install is in `.packs/`, which is not in the repository), so a resolution
+//!    that could only build would leave that job nothing to bind in.
+//! 2. Otherwise the compiler's `--debug` mode, **if the vendored compiler is
+//!    installed** (`node_modules/@yabgu_gm/tensionscript`). A developer's
+//!    checkout builds the artifact it wants to inspect.
+//! 3. Otherwise one line naming what is missing and what to run, and `None`.
+//!
+//! Step 3 is the one case that does **not** go through
+//! [`support_ci::skip_or_fail`], and the reason is in the shape of the answer:
+//! a checkout with no compiler and no fixture cannot produce the artifact at
+//! all, so there is nothing to fail *on* — the honest report is the missing
+//! recipe. A test that resolves to `None` prints that line and returns without
+//! asserting a stop; the fixture's own presence is asserted separately, by a
+//! test that hard-fails, so a deleted fixture cannot turn a green job into a
+//! test that measured nothing.
 
 #[path = "ci.rs"]
 mod support_ci;
@@ -74,11 +95,52 @@ pub fn guest(name: &str) -> PathBuf {
     artifact(&programs_dir().join("build"), name)
 }
 
+/// The committed debug artifacts — a `--debug --sourceMap` build in the tree,
+/// so a machine with no compiler can still be handed one.
+pub fn debug_fixtures_dir() -> PathBuf {
+    programs_dir().join("fixtures").join("debug")
+}
+
+/// Whether the vendored compiler is installed in this checkout.
+///
+/// The path is the one the root `package.json` devDependency installs to, which
+/// is why the check is a directory and not a version: `scripts/tensionscript.mjs`
+/// is the only thing that decides *which* compiler runs and proves it came from
+/// the pinned tarball. This answers the weaker question the resolution order
+/// needs — is there a compiler here at all, or is a build a waste of a spawn.
+pub fn compiler_installed() -> bool {
+    repo()
+        .join("node_modules")
+        .join("@yabgu_gm")
+        .join("tensionscript")
+        .is_dir()
+}
+
 /// One program's **debug** artifact — the same program with DWARF and a source
-/// map — built on demand.
-pub fn guest_debug(name: &str) -> PathBuf {
+/// map — as the committed fixture, else built on demand, else `None`.
+///
+/// The order is documented at the top of this file and stated here once, so the
+/// test and any future caller cannot drift: fixture, build, one printed line.
+/// `None` means "this machine cannot produce the artifact", never "the
+/// artifact is broken" — the caller prints nothing further and asserts nothing.
+pub fn guest_debug(name: &str) -> Option<PathBuf> {
+    let fixture = debug_fixtures_dir().join(format!("{name}.wasm"));
+    if fixture.is_file() {
+        return Some(fixture);
+    }
+
+    if !compiler_installed() {
+        eprintln!(
+            "debugger: no debug artifact for {name} — {} is not committed, and the vendored \
+             compiler is not installed at node_modules/@yabgu_gm/tensionscript; run \
+             `npm install`, then `node scripts/build-test-programs.mjs --debug`",
+            fixture.display()
+        );
+        return None;
+    }
+
     build_debug();
-    artifact(&programs_dir().join("build").join("debug"), name)
+    Some(artifact(&programs_dir().join("build").join("debug"), name))
 }
 
 fn artifact(dir: &Path, name: &str) -> PathBuf {

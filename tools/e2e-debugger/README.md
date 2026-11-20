@@ -17,7 +17,7 @@ node tools/e2e-debugger/runner.js --only smoke
 node tools/e2e-debugger/runner.js --only debug
 node tools/e2e-debugger/runner.js --example ogre/hello-triangle
 node tools/e2e-debugger/runner.js --guest \
-  tension-core/tests/programs/build/debug/rt-guards.wasm \
+  tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
   --file rt-guards.ts --line 96                     # one test program
 ```
 
@@ -75,7 +75,17 @@ named by its caller and has no `.vscode/` around it.
 
 The host is run as `--debug --symbol-path <the artifact's directory> <guest>`,
 and the breakpoint resolves against the artifact's own line table, so the guest
-must be a **debug** build:
+must be a **debug** build. A committed one exists, and it is what the tests and
+CI read:
+
+```
+tension-core/tests/programs/fixtures/debug/rt-guards.wasm   # committed, with its .map
+```
+
+This mode is handed a path and does not choose one for the caller. When the
+path is absent it names both candidates in the order `tests/support/programs.rs`
+resolves them: the fixture above, then a build, which needs the vendored
+compiler installed:
 
 ```sh
 node scripts/build-test-programs.mjs --debug   # build/debug/, DWARF + source map
@@ -85,8 +95,14 @@ One JSON line is printed last on stdout, in the shape the examples' debug mode
 reports through the same driver:
 
 ```json
-{"guest":"…/rt-guards.wasm","breakpoint":{"file":"rt-guards.ts","line":96},"stopped":true,"hit_breakpoint":true,"file":"rt-guards.ts","line":96,"function":"async/rt-guards/_start_game","stops":[…],"exit_state":5,"timedOut":false}
+{"guest":"…/rt-guards.wasm","breakpoint":{"file":"rt-guards.ts","line":96},"stopped":true,"hit_breakpoint":true,"file":"rt-guards.ts","line":96,"function":"tension-core/tests/programs/async/rt-guards/_start_game","stops":[…],"exit_state":5,"timedOut":false}
 ```
+
+The function name carries the module path relative to the compiler's working
+directory, so it differs between the committed fixture (built from the repo
+root) and a `build/debug/` artifact (built from `tests/programs/`). A caller
+matching on it should match the tail, `rt-guards/_start_game`, as
+`tests/debugger.rs` does.
 
 `reason` appears **instead** when the question could not be measured at all (no
 debugger on this machine, no such artifact) — a different answer from "the

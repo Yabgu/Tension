@@ -1,13 +1,34 @@
 //! What a debugger can actually see of a guest, asserted on every platform
 //! that can have it.
 //!
-//! Three claims, in the order a person meets them:
+//! Five claims, in the order a person meets them:
 //!
 //! | test | claim | runs on |
 //! |---|---|---|
+//! | `the_committed_debug_fixture_carries_dwarf` | the debug artifact is in the tree, with its map, and carries a line table | every platform, no compiler needed |
 //! | `the_debug_report_names_what_a_debugger_can_see` | `--debug` reports the DWARF, the source map and the lldb recipe a breakpoint needs | every platform |
 //! | `a_source_breakpoint_binds_in_a_promise_guest` | a `.ts` line in a DWARF-carrying guest stops under lldb | Linux/macOS (Windows: fact, below) |
+//! | `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` | the same line in the same guest with its `.debug_*` sections gone does **not** bind | Linux/macOS (Windows: fact, below) |
 //! | `a_source_breakpoint_binds_in_a_stack_switching_guest` | the same for an async program on the stackful backend | self-upgrading, see below |
+//!
+//! # Where the artifact comes from
+//!
+//! `tests/programs/fixtures/debug/rt-guards.wasm` — a committed `--debug
+//! --sourceMap` build, with the map beside it. `support/programs.rs` resolves a
+//! debug guest as fixture, then build, then one printed line, and CI (which has
+//! no compiler: the tarball it would install lives in `.packs/`, not in the
+//! repository) only ever gets as far as the first step. The fixture test is
+//! therefore in the CI filter too: without it, deleting the fixture would leave
+//! the job green with tests that measured nothing.
+//!
+//! # Why the fourth test exists
+//!
+//! "The breakpoint bound" is only worth asserting if a guest without DWARF
+//! does not bind. That control was run by hand in the round before this one; it
+//! is a test now, and it uses the same bytes: the fixture with its `.debug_*`
+//! sections stripped out. The strip is asserted before the debugger is asked
+//! (the same "never assert a stop against an artifact not checked for
+//! `.debug_info`" rule, inverted), so "no hit" cannot come from a broken copy.
 //!
 //! # Why the first test is the one that must never regress
 //!
@@ -63,7 +84,7 @@ mod support_programs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use support_programs::guest_debug;
+use support_programs::{debug_fixtures_dir, guest_debug};
 
 /// The interpreter under test.
 const BINARY: &str = env!("CARGO_BIN_EXE_tension-core");
@@ -149,6 +170,56 @@ fn carries_debug_info(guest: &Path) -> bool {
             false
         }
     }
+}
+
+/// The same module with every `.debug_*` custom section removed, so a guest
+/// that carried a line table no longer does.
+///
+/// A byte-level control, and the one place in this file where section framing is
+/// spelled out — because the bytes *are* the thing being varied: everything
+/// except the debug sections has to stay identical for the negative control
+/// below to be about DWARF rather than about a different program. WebAssembly is
+/// the format; the rule is that a custom section (id 0) is `id`, a uleb length,
+/// then that many bytes, and removing whole sections leaves every other byte and
+/// every index untouched. Anything this walk does not understand is copied
+/// verbatim rather than guessed at — a truncated module answers with what it
+/// read, and the caller asserts the strip happened.
+fn strip_debug_sections(bytes: &[u8]) -> Vec<u8> {
+    const CUSTOM: u8 = 0;
+    if bytes.len() < 8 || &bytes[0..4] != b"\0asm" {
+        return bytes.to_vec();
+    }
+
+    let mut out = Vec::with_capacity(bytes.len());
+    out.extend_from_slice(&bytes[0..8]);
+    let mut at = 8usize;
+    while at < bytes.len() {
+        let start = at;
+        let id = bytes[at];
+        at += 1;
+        let Some(size) = read_uleb(bytes, &mut at) else {
+            out.extend_from_slice(&bytes[start..]);
+            return out;
+        };
+        let Some(end) = at.checked_add(size).filter(|end| *end <= bytes.len()) else {
+            out.extend_from_slice(&bytes[start..]);
+            return out;
+        };
+
+        let mut drop = false;
+        if id == CUSTOM {
+            let mut cursor = at;
+            if let Some(name_len) = read_uleb(bytes, &mut cursor) {
+                let stop = cursor.saturating_add(name_len).min(end);
+                drop = bytes[cursor..stop].starts_with(b".debug_");
+            }
+        }
+        if !drop {
+            out.extend_from_slice(&bytes[start..end]);
+        }
+        at = end;
+    }
+    out
 }
 
 // --------------------------------------------------------------- report ---
@@ -274,15 +345,57 @@ fn observe_under_lldb(guest: &Path, file: &str, line: u64) -> Observation {
 
 // ---------------------------------------------------------------- tests ---
 
+/// The committed fixture, asserted rather than assumed.
+///
+/// The two breakpoint claims resolve their guest through [`guest_debug`], which
+/// prints one line and returns `None` when there is neither a committed fixture
+/// nor a compiler to build one — the right answer for a checkout that cannot
+/// produce the artifact, and a silent green if the fixture were ever deleted.
+/// So the file is named here, by path, and a missing one is a hard failure.
+/// This test is in the CI filter for exactly that reason.
+#[test]
+fn the_committed_debug_fixture_carries_dwarf() {
+    let guest = debug_fixtures_dir().join("rt-guards.wasm");
+    assert!(
+        guest.is_file(),
+        "{} is not committed — the CI job that runs the breakpoint assertions installs no \
+         compiler, so this fixture is the only artifact it can bind in. Regenerate it with the \
+         command in the README beside it.",
+        guest.display()
+    );
+
+    let bytes = std::fs::read(&guest).expect("the committed fixture is readable");
+    let sections = custom_sections(&bytes);
+    for wanted in [".debug_abbrev", ".debug_info", ".debug_line", ".debug_ranges"] {
+        assert!(
+            sections.iter().any(|name| name == wanted),
+            "the committed fixture must carry {wanted} — it is a `--debug --sourceMap` build; \
+             found {sections:#?}"
+        );
+    }
+
+    // The map travels with the bytes: the report test below asserts the map
+    // resolves *beside* the artifact, so the pair is what is committed.
+    let map = guest.with_extension("wasm.map");
+    assert!(
+        map.is_file(),
+        "{} must travel with the fixture — the `--debug` report names it and asserts it \
+         resolves",
+        map.display()
+    );
+}
+
 /// (a) The startup report names the three things a debugger needs — DWARF, the
-/// source map, the lldb recipe — for the artifact a person actually builds.
+/// source map, the lldb recipe — for the artifact these tests set a breakpoint in.
 ///
 /// Every platform. A failure here is not "the debugger is broken": it is the
 /// report that a reader uses to find out *why* a breakpoint does not bind, so a
 /// silent change to it costs more than any single platform's bind.
 #[test]
 fn the_debug_report_names_what_a_debugger_can_see() {
-    let guest = guest_debug("rt-guards");
+    let Some(guest) = guest_debug("rt-guards") else {
+        return;
+    };
     let stderr = debug_report(&guest);
 
     assert!(
@@ -329,7 +442,9 @@ fn the_debug_report_names_what_a_debugger_can_see() {
 /// asserts the capability fact it can check and says what it did not measure.
 #[test]
 fn a_source_breakpoint_binds_in_a_promise_guest() {
-    let guest = guest_debug("rt-guards");
+    let Some(guest) = guest_debug("rt-guards") else {
+        return;
+    };
 
     if cfg!(windows) {
         eprintln!(
@@ -380,6 +495,80 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
     );
 }
 
+/// (b′ — the control) The same guest, the same line, with the line table gone:
+/// **no** breakpoint hit.
+///
+/// Without this, `hit_breakpoint: true` above would prove only that a driver
+/// printed `true` — the assertion would be vacuous. The round before this one
+/// checked it by hand against a release artifact; this is that check, committed,
+/// and it varies exactly one thing: the same bytes with every `.debug_*` custom
+/// section removed, written to a scratch path. A release build differs from this
+/// in other ways too (optimisation), so the strip is the sharper control.
+///
+/// The strip is asserted before lldb is asked — the rule that a stop is never
+/// asserted against an artifact nobody checked for `.debug_info`, applied to the
+/// negative direction — so a mis-stripped copy cannot read as "DWARF is not what
+/// binds a breakpoint".
+#[test]
+fn a_guest_without_dwarf_cannot_be_stopped_at_a_source_line() {
+    let Some(guest) = guest_debug("rt-guards") else {
+        return;
+    };
+
+    let bytes = std::fs::read(&guest).expect("the debug artifact is readable");
+    assert!(
+        carries_debug_info(&guest),
+        "the control starts from a guest that *does* carry `.debug_info`; sections were {:#?}",
+        custom_sections(&bytes)
+    );
+
+    let stripped = strip_debug_sections(&bytes);
+    let sections = custom_sections(&stripped);
+    assert!(
+        !sections.iter().any(|name| name.starts_with(".debug_")),
+        "the control's copy still carries a debug section, so it is not a control: {sections:#?}"
+    );
+    assert!(
+        stripped.len() < bytes.len(),
+        "stripping removed no bytes, so the copy is the original"
+    );
+
+    if cfg!(windows) {
+        eprintln!(
+            "lldb on windows does not register JIT images, so nothing binds there and the \
+             negative control is vacuous (measured; see docs/debugging.md)"
+        );
+        return;
+    }
+
+    // A scratch path beside the map-free copy: the driver resolves its own
+    // symbol path from the guest's directory, and there is nothing there to
+    // resolve — which is the point.
+    let work_dir = std::env::temp_dir().join(format!(
+        "tension-debugger-nodwarf-{}-{}",
+        std::process::id(),
+        RT_GUARDS_LINE
+    ));
+    std::fs::create_dir_all(&work_dir).expect("a scratch directory for the control");
+    let plain = work_dir.join("rt-guards.wasm");
+    std::fs::write(&plain, &stripped).expect("the stripped guest is writable");
+
+    let observation = observe_under_lldb(&plain, "rt-guards.ts", RT_GUARDS_LINE);
+    let _ = std::fs::remove_dir_all(&work_dir);
+
+    assert!(
+        observation.reason.is_none(),
+        "the control could not be measured, so it says nothing either way: {}",
+        observation.describe()
+    );
+    assert!(
+        !observation.hit_breakpoint,
+        "a guest with no `.debug_info` produced a breakpoint hit, so the assertion in \
+         `a_source_breakpoint_binds_in_a_promise_guest` proves nothing: {}",
+        observation.describe()
+    );
+}
+
 /// (c) The regression guard for the reason DWARF exists: a breakpoint in an
 /// **async program on the stackful backend**.
 ///
@@ -389,7 +578,9 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
 /// edit — no version check, no flag to flip.
 #[test]
 fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
-    let guest = guest_debug("main-policy");
+    let Some(guest) = guest_debug("main-policy") else {
+        return;
+    };
 
     if !carries_debug_info(&guest) {
         eprintln!(

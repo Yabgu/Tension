@@ -11,7 +11,7 @@
 //   node tools/e2e-debugger/runner.js --only launch    # launch | smoke | debug
 //   node tools/e2e-debugger/runner.js --example io     # one example
 //   node tools/e2e-debugger/runner.js --guest \
-//     tension-core/tests/programs/build/debug/rt-guards.wasm \
+//     tension-core/tests/programs/fixtures/debug/rt-guards.wasm \
 //     --file rt-guards.ts --line 96                    # one test program
 //   node tools/e2e-debugger/runner.js --help
 //
@@ -20,6 +20,14 @@
 // program is named by the caller and has no `.vscode/` around it. Both hand the
 // run to `debugGuest()` in `lib/run-lldb.js`, so there is one lldb driver and
 // one reading of its transcript.
+//
+// A test program's debug artifact resolves in the order `tests/support/
+// programs.rs` documents: the committed fixture under
+// `tension-core/tests/programs/fixtures/debug/` first, then a
+// `scripts/build-test-programs.mjs --debug` build when the vendored compiler is
+// installed, and nothing at all otherwise. This mode is handed a path — it does
+// not guess one — so when the path is absent it names both candidates rather
+// than picking for the caller.
 //
 // Exit 0 when every case passes or skips; 1 when any case fails.
 
@@ -528,7 +536,13 @@ async function runGuestMode({ binary, lldbInfo, options }) {
   };
 
   if (!fs.existsSync(guest)) {
-    answer.reason = `no such program: ${guest} (build it: node scripts/build-test-programs.mjs --debug)`;
+    // Both candidates, in resolution order, because the answer a caller wants
+    // is "what would exist" rather than "what you typed is wrong".
+    const name = path.basename(guest, ".wasm");
+    answer.reason =
+      `no such program: ${guest} — the committed debug fixture is ` +
+      `tension-core/tests/programs/fixtures/debug/${name}.wasm, and a build with ` +
+      `DWARF is \`node scripts/build-test-programs.mjs --debug\` (needs the vendored compiler)`;
     console.log(JSON.stringify(answer));
     return 1;
   }

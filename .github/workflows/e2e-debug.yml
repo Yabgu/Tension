@@ -32,14 +32,22 @@
 #                breakpoint test is green here. It is *not* added for Windows:
 #                lldb there registers no JIT image at all, measured — the test
 #                says so and asserts only the report (`docs/debugging.md`).
-#   node/npm   - tests/debugger.rs builds its guests through
-#                `scripts/build-test-programs.mjs`, which runs the vendored
-#                TensionScript compiler. That is why this job now fetches the
-#                compiler submodule and installs the root package: a debug guest
-#                has to be *built* with DWARF, and committing wasm blobs to
-#                avoid one `npm install` would be version-locked build output in
-#                search of a test. Measured cost on a runner: ~1 min for the
-#                compiler, then ~40 s to build the nine programs.
+#   node       - only to run `tools/e2e-debugger/runner.js`, which the test
+#                spawns. No `npm install`, and no compiler: the debug guest the
+#                breakpoint assertions read is committed at
+#                `tension-core/tests/programs/fixtures/debug/rt-guards.wasm`.
+#
+#                An earlier version of this job vendored the compiler here, and
+#                it failed on a fresh runner before a single test ran:
+#
+#                  npm error path /home/runner/work/Tension/Tension/.packs/yabgu_gm-tensionscript-0.14.1-g03e0507bbaab.tar
+#                  npm error enoent ENOENT: no such file or directory
+#
+#                `.packs/` is gitignored and rebuilt per machine, so nothing in
+#                this job could produce it. The fixture is the answer: a pinned
+#                compiler's `--debug --sourceMap` output, a few hundred KB,
+#                committed for the same reason `examples/*/build/*.wasm` are, and
+#                with the recipe to regenerate it in the README beside it.
 # Nothing else is needed because `--no-default-features` drops cpal (no ALSA
 # headers) and llama-cpp-2 (no CMake/libclang C++ build). The E2E tests touch
 # neither.
@@ -59,24 +67,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # **The two submodules this target needs.** `tension-core/build.rs:238`
+      # **The one submodule this job needs.** `tension-core/build.rs:238`
       # compiles `third_party/ImageViewer/src/format/IwiFile.cpp` into the host
-      # and panics when it is absent, so a checkout without submodules fails
-      # before a single test runs:
+      # and panics when it is absent, so a checkout without it fails before a
+      # single test runs:
       #
       #   thread 'main' panicked at build.rs:238:
       #   third_party/ImageViewer/src/format/IwiFile.cpp is missing
       #
-      # TensionScript is the compiler that builds the `tests/programs/` guests
-      # `tests/debugger.rs` sets breakpoints in; `.packs/` is gitignored, so the
-      # root `npm install` below vendors it from this checkout. `ogre-next` is
-      # still not fetched: it is a large build tree, `build.rs` names no other
-      # submodule (grep `third_party/` in it), and fetching it here would cost
-      # minutes to compile nothing.
-      - name: Initialise the submodules these targets need
-        run: |
-          git submodule update --init --depth 1 third_party/ImageViewer
-          git submodule update --init --depth 1 third_party/TensionScript
+      # TensionScript is deliberately **not** fetched: the debug guest the
+      # breakpoint assertions bind in is committed, so this job needs no
+      # compiler (see the header). `ogre-next` is not fetched either: it is a
+      # large build tree, `build.rs` names no other submodule (grep
+      # `third_party/` in it), and fetching it here would cost minutes to
+      # compile nothing.
+      - name: Initialise the submodule this target needs
+        run: git submodule update --init --depth 1 third_party/ImageViewer
 
       - uses: dtolnay/rust-toolchain@stable
 
@@ -115,15 +121,6 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends gfortran lldb
-
-      # The vendored compiler, the way a fresh clone gets it: `.packs/` is
-      # gitignored, and the root `preinstall` hook (`scripts/ensure-compiler.mjs`)
-      # builds the pinned submodule, runs its `publish:verify` gate, packs a
-      # canonical tarball and installs it. `npm install`, never `npm ci`: the
-      # tarball is produced here, so there is no lock entry to restore from
-      # before it exists.
-      - name: Install the vendored TensionScript compiler
-        run: npm install
 
       # The core links libSDL3 on every build now that the host owns the
       # window, so the linker needs it whether or not a test opens one:
@@ -167,11 +164,44 @@ jobs:
       - name: E2E debug assertions
         run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test e2e_debug
 
-      # The guest-breakpoint target. (a) runs everywhere; (b) binds for real
-      # here because Ubuntu's lldb reads the JIT registration; (c) prints the
-      # compiler's gap and starts asserting the day the pin carries DWARF for
-      # stack-switching programs. No `TENSION_TEST_ALLOW_SKIP` is set on
-      # purpose: a missing artifact or debugger must fail the job rather than
-      # turn the guard into a green line with nothing behind it.
+      # The guest-breakpoint target, filtered by name. Every test named here
+      # reads the committed fixture and needs nothing built:
+      #
+      #   the_committed_debug_fixture_carries_dwarf   the artifact is in the tree
+      #   the_debug_report_names_what_a_debugger_can_see   the startup report
+      #   a_source_breakpoint_binds_in_a_promise_guest     binds for real here
+      #   a_guest_without_dwarf_cannot_be_stopped_at_a_source_line
+      #                                              the control that keeps the
+      #                                              one above from being vacuous
+      #
+      # Two tests are left out **by name**, and the filters are the reason this
+      # step spells them: `--test debugger` alone would run them and turn a
+      # known compiler gap into a red job.
+      #
+      #   a_source_breakpoint_binds_in_a_stack_switching_guest
+      #     The pinned compiler (0.14.1) emits no DWARF for a stack-switching
+      #     program — `WARNING DWARF emission failed: type form is not a function
+      #     type` at build time — so no fixture can exist to bind in, and a
+      #     checkout with no compiler could not build one either. It starts
+      #     running the day a committed debug `main-policy.wasm` can be built;
+      #     the test already upgrades itself on a `.debug_info` read.
+      #
+      #   the two build paths
+      #     `support/programs.rs` resolves a debug guest as fixture, then build
+      #     if `node_modules/@yabgu_gm/tensionscript` exists, then one printed
+      #     line. Nothing here installs a compiler, so nothing here takes the
+      #     second path — which is why the fixture test above is in the list: if
+      #     the fixture were deleted, the other three would print a line and pass
+      #     without measuring anything.
+      #
+      # No `TENSION_TEST_ALLOW_SKIP` is set on purpose: a missing debugger must
+      # fail the job rather than turn the guard into a green line with nothing
+      # behind it.
       - name: Guest breakpoint assertions
-        run: cargo test --manifest-path tension-core/Cargo.toml --no-default-features --test debugger
+        run: |
+          cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+            --test debugger -- \
+              the_committed_debug_fixture_carries_dwarf \
+              the_debug_report_names_what_a_debugger_can_see \
+              a_source_breakpoint_binds_in_a_promise_guest \
+              a_guest_without_dwarf_cannot_be_stopped_at_a_source_line
