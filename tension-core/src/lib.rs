@@ -28,6 +28,11 @@ pub mod platform;
 pub mod render2d;
 pub mod res;
 pub mod shadergen_registry;
+// The thread ABI's host half: `env.__executorCount` and `env.__startThread`.
+// In the library because `tests/threads.rs` is an integration test — it links
+// this target — and because a worker is core infrastructure, not a property of
+// the binary's entry point.
+pub mod thread;
 pub mod world;
 
 /// Register the process-wide services the C ABI expects to be present.

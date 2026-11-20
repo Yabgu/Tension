@@ -713,6 +713,7 @@ mod tests {
                 window_closed: false,
                 adapters: Vec::new(),
                     session: None,
+                    executors: None,
                 },
             );
             let mut session = Session::create_from_module(&mut store, &module).expect("session");

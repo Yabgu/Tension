@@ -166,6 +166,11 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 session_open: false,
                 session_callbacks: None,
                 post_test_events: false,
+                // A nested guest gets no pool: its memory is the session's, one
+                // store, one executor. A nested guest that wants threads is a
+                // sandbox-lifetime question (the parent's memory is not shared
+                // with it), not a flag.
+                executors: 0,
             };
 
             let mut sandbox = match Sandbox::open(&config, state.guest_depth, (width, height)) {

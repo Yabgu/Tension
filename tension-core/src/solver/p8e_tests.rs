@@ -218,6 +218,7 @@ fn test_state() -> HostState {
                 window_closed: false,
                 adapters: Vec::new(),
         session: None,
+        executors: None,
     }
 }
 
