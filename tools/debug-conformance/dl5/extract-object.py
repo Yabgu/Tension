@@ -52,7 +52,7 @@ for hit in hits:
     raw = bytes(blob)
     if b".wasmtime.engine" not in raw:
         continue
-    path = "/tmp/dl5/obj/%s.elf" % __import__("os").environ.get("DL5_NAME", "object")
+    path = "/tmp/dl5/objD/%s.elf" % __import__("os").environ.get("DL5_NAME", "object")
     with open(path, "wb") as f:
         f.write(raw)
     out["found"] = {"addr": hit, "size": size, "path": path}

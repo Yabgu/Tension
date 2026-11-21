@@ -136,6 +136,38 @@ with a different ASLR seed, so the measurement is stable.
 
 Evidence: `dl5/per-artifact-rows.json`.
 
-## Phase D — pending
+## Phase D — the compiler-side fix cannot reach zero; measured, reverted
 
-## Phase E — pending
+Brief's preferred fix (one whole-body range *in addition to* the per-row ones),
+plus three further emitters, all measured on `first-branch.wasm` by extracting
+the JIT object:
+
+| emitter | object pairs | distinct | rows | outside |
+|---|---|---|---|---|
+| baseline (row-split only) | 5267 | 1458 | 1030 | **201** (19.5%) |
+| (a) row-split + whole bodies | 5541 | 1572 | 1030 | **200** (19.4%) |
+| (b) whole bodies only | 274 | 274 | 1030 | **349** (33.9%) |
+| (c) one range `[0, payloadSize)` | 0 | 0 | 1030 | **1030** (100%) |
+
+- (a) is the brief's fix: **one row better than baseline. It does not reach 0.**
+- (c) is the control: `translate_ranges_raw` opens with `if start == 0 { return
+  None }`, so a module-wide range is dropped entirely. No emitter can express it.
+- Gap analysis on the baseline object: 166 disjoint covered runs, 200 rows
+  outside, **74 of them at a gap start**, median gap **122 bytes** (p25 30,
+  p75 172, max 216). Not an instruction-rounding artefact — a stretch of compiled
+  code the rewritten range list does not claim while the rewritten line table
+  emits rows inside it.
+
+**Conclusion: the invariant break is inside the vendored transform, not the
+emitter.** The input it is given tiles perfectly (0 rows outside, DL4). Full
+write-up: `dl5/PHASE-D-DL5.md`.
+
+Tree state: `src/dwarf/index.ts` unchanged and `git status` clean; all four
+variants built, measured, reverted; `dist/` reinstalled from the committed
+baseline; 24 artifacts rebuilt from it.
+
+## Phase E — not run (droppable, and D consumed the round)
+
+The brief allows dropping E if D consumes the round. D is a negative result with
+a control, which is worth more than a half-measured prologue change on a tree
+that cannot pass its own assertion.
