@@ -1,0 +1,53 @@
+# The 63 "unresolved" cases are guests the resolved engine refuses to run.
+# Measured 2026-11-21, DL4 phase E.
+#
+# tools/e2e-debugger/lib/resolve.js::resolveTensionCore() prefers
+# tension-core/target/release/tension-core. That binary is from Nov 16;
+# src/async_backend.rs (which decides continuations vs the Promise seam) is from
+# Nov 20 (12092c2). The release binary runs in AsyncBackend::Promise and refuses
+# a continuation module at parse time:
+#
+#   Error: async-before-await.wasm
+#   Caused by: 1: cannot define continuation types when stack switching is
+#                 disabled (at offset 0x26)
+#
+# The harness sees locations 0 / resolved 0 and records "unresolved"; the guest
+# process exited before any code ran.
+#
+# 14 of the 24 conformance artifacts are refused by the release binary:
+#   async-after-await async-before-await async-loop-resume async-on-main
+#   count fallback-loop main-policy main-step-replaced schedule-order
+#   spawn-join spawn-refusals stack-switch-resume start-game-entry task-entry
+#   two-workers
+# Those 14 programs own exactly 63 of the 82 matrix cases — set-equal to the 63
+# "unresolved" verdicts, both directions.
+#
+# The same cases with the continuations engine:
+#   TENSION_CORE=tension-core/target/debug/tension-core
+#   node tools/debug-conformance/runner.js --no-build --only <name>
+
+== async_statement_before_await exit=0
+  PASS async_statement_before_await  async-before-await.ts:11
+== async_statement_after_await exit=0
+  PASS async_statement_after_await  async-after-await.ts:13
+== async_resume_in_loop exit=0
+  PASS async_resume_in_loop  async-loop-resume.ts:13
+== stack_switch_nested_resume exit=0
+  PASS stack_switch_nested_resume  stack-switch-resume.ts:13
+== task_entry_first_statement exit=1
+  FAIL task_entry_first_statement  task-entry.ts:8 -> stopped with no source file (empty) (locations 2, resolved 2)
+
+# Four of five bind and stop on the right line. The fifth stops at the right
+# address with no source — the transform defect of DL4-REPORT.md §4b, not the
+# engine.
+
+# The owner's own line, same guest artifact, same harness, only the engine:
+#
+#   TENSION_CORE=.../target/debug/tension-core node tools/e2e-debugger/runner.js \
+#     --guest examples/async-on-main/build/game.wasm --file game.ts --line 77
+#
+#   {"stopped":true,"hit_breakpoint":true,"file":"game.ts","line":77,
+#    "function":"game/main","breakpoints":[{"id":1,"locations":2,"resolved":2}]}
+#   e2e: guest stopped at game.ts:77 (game/main)
+#
+# With the release engine the same command reports locations 0, resolved 0.

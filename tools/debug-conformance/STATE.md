@@ -85,4 +85,23 @@ in the transform; the next patch belongs in the compiler's range emitter.
 | `npm run test:debug` | 2 PASS | 2 PASS |
 | Tension `debugger` suite | 5 passed | 5 passed |
 | census | 114 / 0 | 114 / 0, ratchet 8 improved 0 worse |
-| conformance, 82 cases | 63 / 7 / 0 / 12 | see below |
+| conformance, 82 cases | 63 / 7 / 0 / 12 | 63 / 7 / 0 / 12, per case identical to `green-2026-11-21.json` |
+
+## The round's actual answer
+
+**The 63 `unresolved` cases are exactly the 63 cases whose guest the resolved
+engine refuses to compile** — set-equal, both directions. 14 of 24 conformance
+artifacts are continuation modules; `resolveTensionCore()` picks
+`target/release/tension-core` (Nov 16), which runs in Promise mode and refuses
+them at parse:
+
+    cannot define continuation types when stack switching is disabled (at offset 0x26)
+
+With `TENSION_CORE=target/debug/tension-core` (continuations), four of the five
+async group-A cases **PASS**, and `examples/async-on-main/game.ts:77` stops at
+`game.ts:77` in `game/main` — the owner's complaint, resolved by running this
+measurement, not by a patch. Evidence: `dl4/continuations-subset.txt`.
+
+The 7 `stopped with no source` cases are the real DWARF defect: the JIT object
+wasmtime builds has 18% of its line rows outside its own CU ranges (measured on
+the object, `dl4/jit-object-stats.txt`). Report: `DL4-REPORT.md`.
