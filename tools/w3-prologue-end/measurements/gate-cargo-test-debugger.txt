@@ -1,0 +1,118 @@
+warning: unreachable pattern
+   --> C:\work\Tension\tension-shadergen\src\combined_sampler.rs:182:9
+    |
+176 |         19..=39 => (&[0], false),
+    |         ------- matches all the relevant values
+...
+182 |         OP_TYPE_IMAGE | OP_TYPE_SAMPLER | OP_TYPE_SAMPLED_IMAGE => (&[0], false),
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ no value can reach this
+    |
+    = note: `#[warn(unreachable_patterns)]` (part of `#[warn(unused)]`) on by default
+
+warning: unreachable pattern
+   --> C:\work\Tension\tension-shadergen\src\combined_sampler.rs:184:9
+    |
+176 |         19..=39 => (&[0], false),
+    |         ------- matches all the relevant values
+...
+184 |         OP_TYPE_POINTER => (&[0, 2], false),
+    |         ^^^^^^^^^^^^^^^ no value can reach this
+
+warning: unused variable: `stale`
+   --> C:\work\Tension\tension-shadergen\src\combined_sampler.rs:576:9
+    |
+576 |     let stale = stale_sampled_images(insns, words, texture.pointee_type);
+    |         ^^^^^ help: if this is intentional, prefix it with an underscore: `_stale`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tension-shadergen` (lib) generated 3 warnings (run `cargo fix --lib -p tension-shadergen` to apply 1 suggestion)
+warning: constant `SPIRV_MAGIC` is never used
+   --> src\pipeline\naga_backend.rs:159:7
+    |
+159 | const SPIRV_MAGIC: u32 = 0x0723_0203;
+    |       ^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `tension-core` (lib) generated 1 warning
+warning: unused imports: `CTRL_CORE_ONLY`, `CTRL_OBSERVABLE`, `CTRL_RESIZE`, `CTRL_SRC_CORE`, `CTRL_SRC_GUEST`, and `CTRL_SRC_LAYER`
+   --> src\adapter\ffi.rs:161:77
+    |
+161 |     TensionCtrlMsg, TensionEventLayer, TensionPadRecord, TensionWindowInfo, CTRL_CORE_ONLY,
+    |                                                                             ^^^^^^^^^^^^^^
+162 |     CTRL_OBSERVABLE, CTRL_RESIZE, CTRL_SRC_CORE, CTRL_SRC_GUEST, CTRL_SRC_LAYER,
+    |     ^^^^^^^^^^^^^^^  ^^^^^^^^^^^  ^^^^^^^^^^^^^  ^^^^^^^^^^^^^^  ^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused doc comment
+   --> src\session\epoch.rs:199:5
+    |
+199 | /     /// `(class, key)` pairs this epoch published, matched to task ids after the
+200 | |     /// arena borrow ends.
+    | |__________________________^
+201 |       let mut completions: Vec<(u32, u32, i32)> = Vec::new();
+    |       ------------------------------------------------------- rustdoc does not generate documentation for statements
+    |
+    = help: use `//` for a plain comment
+    = note: `#[warn(unused_doc_comments)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Caller`
+  --> src\session\apply.rs:26:41
+   |
+26 | use wasmtime::{AsContext, AsContextMut, Caller};
+   |                                         ^^^^^^
+
+warning: unused import: `AsContextMut`
+  --> src\session\apply.rs:26:27
+   |
+26 | use wasmtime::{AsContext, AsContextMut, Caller};
+   |                           ^^^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src\host\platform_abi.rs:104:10
+    |
+104 |         |mut caller: Caller<'_, HostState>, kind: u32, a0: i32, a1: i32, a2: i32, a3: i32| -> i32 {
+    |          ----^^^^^^
+    |          |
+    |          help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: associated items `new` and `publish_host_surface` are never used
+   --> src\adapter\mod.rs:408:12
+    |
+402 | impl AdapterHost {
+    | ---------------- associated items in this implementation
+...
+408 |     pub fn new(posting: Arc<PostingSide>) -> Box<AdapterHost> {
+    |            ^^^
+...
+491 |     pub fn publish_host_surface(
+    |            ^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `with_publish_caller` is never used
+   --> src\adapter\mod.rs:887:15
+    |
+887 | pub(crate) fn with_publish_caller<R>(
+    |               ^^^^^^^^^^^^^^^^^^^
+
+warning: `tension-core` (bin "tension-core") generated 7 warnings (run `cargo fix --bin "tension-core" -p tension-core` to apply 3 suggestions)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.64s
+     Running tests\debugger.rs (tension-core\target\debug\deps\debugger-a1f152e2b6d0a2ac.exe)
+lldb on windows does not register JIT images, so nothing binds there and the negative control is vacuous (measured; see docs/debugging.md)
+
+running 5 tests
+lldb on windows does not register JIT images, so a guest breakpoint cannot bind (measured; see docs/debugging.md)
+test a_guest_without_dwarf_cannot_be_stopped_at_a_source_line ... ok
+test a_source_breakpoint_binds_in_a_promise_guest ... ok
+lldb on windows does not register JIT images, so a guest breakpoint cannot bind (measured; see docs/debugging.md)
+test a_source_breakpoint_binds_in_a_stack_switching_guest ... ok
+test the_committed_debug_fixture_carries_dwarf ... ok
+test the_debug_report_names_what_a_debugger_can_see ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.59s
+

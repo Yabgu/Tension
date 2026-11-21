@@ -1,0 +1,263 @@
+[
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "first",
+    "line": 10
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "nonfirst",
+    "line": 14
+  },
+  {
+    "module": "log",
+    "guest": "examples/log/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "first",
+    "line": 32
+  },
+  {
+    "module": "log",
+    "guest": "examples/log/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "nonfirst",
+    "line": 35
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/compute",
+    "kind": "first",
+    "line": 42
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/compute",
+    "kind": "nonfirst",
+    "line": 43
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/pipeline",
+    "kind": "first",
+    "line": 48
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/pipeline",
+    "kind": "nonfirst",
+    "line": 50
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/run",
+    "kind": "first",
+    "line": 60
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/run",
+    "kind": "nonfirst",
+    "line": 62
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "first",
+    "line": 96
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "nonfirst",
+    "line": 98
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/base",
+    "kind": "first",
+    "line": 54
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/base",
+    "kind": "nonfirst",
+    "line": 55
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/mid",
+    "kind": "first",
+    "line": 60
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/mid",
+    "kind": "nonfirst",
+    "line": 61
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/outer",
+    "kind": "first",
+    "line": 69
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/outer",
+    "kind": "nonfirst",
+    "line": 70
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/main",
+    "kind": "first",
+    "line": 77
+  },
+  {
+    "module": "async-on-main-promise",
+    "guest": "examples/async-on-main/build/game-promise.wasm",
+    "file": "game.ts",
+    "function": "game/main",
+    "kind": "nonfirst",
+    "line": 86
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_game_running",
+    "kind": "single-row",
+    "line": 89
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/_start_game",
+    "kind": "nonfirst",
+    "line": 22
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/run",
+    "kind": "nonfirst",
+    "line": 67
+  },
+  {
+    "module": "async-io",
+    "guest": "examples/async-io/build/game.wasm",
+    "file": "game.ts",
+    "function": "game/pipeline",
+    "kind": "nonfirst",
+    "line": 49
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/print",
+    "kind": "first",
+    "line": 73
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/print",
+    "kind": "nonfirst",
+    "line": 74
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/argCount",
+    "kind": "first",
+    "line": 96
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/arg",
+    "kind": "first",
+    "line": 101,
+    "hostArg": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/arg",
+    "kind": "nonfirst",
+    "line": 102,
+    "hostArg": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  },
+  {
+    "module": "io",
+    "guest": "examples/io/build/game.wasm",
+    "file": "io.ts",
+    "fileIndex": 62,
+    "function": "~lib/tension-framework/assembly/io/argCount",
+    "kind": "first",
+    "line": 96,
+    "hostArg": [
+      "alpha",
+      "beta",
+      "gamma"
+    ]
+  }
+]

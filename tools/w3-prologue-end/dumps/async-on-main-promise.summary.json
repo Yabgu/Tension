@@ -1,0 +1,396 @@
+{
+  "module": "examples\\async-on-main\\build\\game-promise.wasm",
+  "section": ".debug_line",
+  "version": 4,
+  "headerLength": 3087,
+  "minInstLength": 1,
+  "maxOpsPerInst": 1,
+  "defaultIsStmt": true,
+  "lineBase": -5,
+  "lineRange": 14,
+  "opcodeBase": 13,
+  "declaredStandardOpcodeLengths": {
+    "DW_LNS_copy": 0,
+    "DW_LNS_advance_pc": 1,
+    "DW_LNS_advance_line": 1,
+    "DW_LNS_set_file": 1,
+    "DW_LNS_set_column": 1,
+    "DW_LNS_negate_stmt": 0,
+    "DW_LNS_set_basic_block": 0,
+    "DW_LNS_const_add_pc": 0,
+    "DW_LNS_fixed_advance_pc": 0,
+    "DW_LNS_set_prologue_end": 1,
+    "DW_LNS_set_epilogue_begin": 0,
+    "DW_LNS_set_isa": 0
+  },
+  "declaredLengthsThatDifferFromDwarf4Spec": [
+    {
+      "opcode": "0x09",
+      "name": "DW_LNS_fixed_advance_pc",
+      "declared": 0,
+      "spec": 1
+    },
+    {
+      "opcode": "0x0a",
+      "name": "DW_LNS_set_prologue_end",
+      "declared": 1,
+      "spec": 0
+    },
+    {
+      "opcode": "0x0c",
+      "name": "DW_LNS_set_isa",
+      "declared": 0,
+      "spec": 1
+    }
+  ],
+  "includeDirectories": [
+    "C:\\work\\Tension\\examples\\async-on-main"
+  ],
+  "fileCount": 65,
+  "fileNames": [
+    {
+      "index": 1,
+      "name": "node_modules/rt/common.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 2,
+      "name": "node_modules/rt/tlsf.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 3,
+      "name": "node_modules/shared/typeinfo.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 4,
+      "name": "node_modules/rt/itcms.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 5,
+      "name": "node_modules/tension-framework/assembly/time.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 6,
+      "name": "node_modules/tension-framework/assembly/log.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 7,
+      "name": "node_modules/util/error.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 8,
+      "name": "node_modules/shared/runtime.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 9,
+      "name": "node_modules/util/number.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 10,
+      "name": "node_modules/util/math.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 11,
+      "name": "node_modules/util/string.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 12,
+      "name": "node_modules/rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 13,
+      "name": "node_modules/arraybuffer.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 14,
+      "name": "node_modules/util/hash.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 15,
+      "name": "node_modules/map.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 16,
+      "name": "node_modules/tension-framework/assembly/ai.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 17,
+      "name": "node_modules/tension-framework/assembly/res.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 18,
+      "name": "node_modules/tension-framework/assembly/solver.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 19,
+      "name": "node_modules/tension-framework/assembly/runtime/wire.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 20,
+      "name": "node_modules/tension-framework/assembly/runtime/manifest.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 21,
+      "name": "node_modules/tension-framework/assembly/runtime/layout.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 22,
+      "name": "node_modules/tension-framework/assembly/runtime/arena.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 23,
+      "name": "node_modules/tension-framework/assembly/runtime/tlv.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 24,
+      "name": "node_modules/tension-framework/assembly/runtime/config.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 25,
+      "name": "node_modules/util/sort.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 26,
+      "name": "node_modules/array.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 27,
+      "name": "node_modules/builtins.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 28,
+      "name": "node_modules/task.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 29,
+      "name": "node_modules/task-rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 30,
+      "name": "node_modules/tension-framework/assembly/runtime/rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 31,
+      "name": "node_modules/tension-framework/assembly/ogre/wire.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 32,
+      "name": "node_modules/tension-framework/assembly/runtime/strings.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 33,
+      "name": "node_modules/tension-framework/assembly/platform.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 34,
+      "name": "node_modules/tension-framework/assembly/ogre/mesh.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 35,
+      "name": "node_modules/tension-framework/assembly/ogre/index.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 36,
+      "name": "node_modules/tension-framework/assembly/input.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 37,
+      "name": "node_modules/tension-framework/assembly/anim/key.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 38,
+      "name": "node_modules/tension-framework/assembly/anim/animation.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 39,
+      "name": "node_modules/tension-framework/assembly/anim/skeleton.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 40,
+      "name": "node_modules/tension-framework/assembly/anim/matrix.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 41,
+      "name": "node_modules/tension-framework/assembly/physics.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 42,
+      "name": "node_modules/tension-framework/assembly/2d/types.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 43,
+      "name": "node_modules/tension-framework/assembly/2d/iwi.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 44,
+      "name": "node_modules/tension-framework/assembly/2d/constants.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 45,
+      "name": "node_modules/tension-framework/assembly/2d/canvas.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 46,
+      "name": "node_modules/tension-framework/assembly/2d/scene.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 47,
+      "name": "node_modules/tension-framework/assembly/dev.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 48,
+      "name": "node_modules/tension-framework/assembly/ui/theme.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 49,
+      "name": "node_modules/tension-framework/assembly/ui/fonts.generated.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 50,
+      "name": "node_modules/tension-framework/assembly/ui/fonts.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 51,
+      "name": "node_modules/tension-framework/assembly/ui/hit.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 52,
+      "name": "node_modules/tension-framework/assembly/ui/painter.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 53,
+      "name": "node_modules/tension-framework/assembly/ui/event-def.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 54,
+      "name": "node_modules/tension-framework/assembly/ui/behavior.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 55,
+      "name": "node_modules/tension-framework/assembly/ui/events.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 56,
+      "name": "node_modules/tension-framework/assembly/ui/builder.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 57,
+      "name": "node_modules/tension-framework/assembly/ui/layout.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 58,
+      "name": "node_modules/tension-framework/assembly/editor/document.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 59,
+      "name": "node_modules/tension-framework/assembly/editor/command.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 60,
+      "name": "node_modules/tension-framework/assembly/app/shell.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 61,
+      "name": "game.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 62,
+      "name": "node_modules/tension-framework/assembly/io.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 63,
+      "name": "node_modules/string.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 64,
+      "name": "node_modules/number.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 65,
+      "name": "node_modules/function.ts",
+      "directoryIndex": 1
+    }
+  ],
+  "totalRows": 4063,
+  "sequenceCount": 122,
+  "opcodeCounts": {
+    "DW_LNE_set_address": 122,
+    "DW_LNS_set_file": 160,
+    "DW_LNS_advance_line": 1054,
+    "DW_LNS_set_column": 3528,
+    "DW_LNS_copy": 3941,
+    "DW_LNS_advance_pc": 3819,
+    "DW_LNE_end_sequence": 122
+  },
+  "prologueEnd": {
+    "emitted": 0,
+    "rows": []
+  },
+  "epilogueBegin": {
+    "emitted": 0,
+    "rows": []
+  }
+}
