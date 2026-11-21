@@ -81,4 +81,56 @@ Flip table by failure mode (details in `FLIPS-DL3.md`):
   `async-on-main.ts:50,61,62,63`, inside `async function main`) is `unresolved`
   before and after. **This patch does not fix the reported symptom.**
 
-## Phase D — pending
+## Owner's line, measured directly
+
+`examples/async-on-main/game.ts:77` (`print("main: begin")`, first statement of
+`export async function main()`) compiled with the patched compiler:
+
+    node ~/work/TensionScript-a2/bin/tensionscript.js game.ts -o /tmp/dl3/l77-patched/game.wasm \
+         --runtime incremental --debug --sourceMap --exportStart __start --enable stack-switching
+    node tools/e2e-debugger/runner.js --guest /tmp/dl3/l77-patched/game.wasm --file game.ts --line 77
+
+    {"stopped":false,"hit_breakpoint":false,"breakpoints":[{"id":1,"locations":0,"resolved":0}]}
+    e2e: breakpoint at game.ts:77 never resolved
+
+The artifact is **byte-identical** to the committed `examples/async-on-main/build/game.wasm`
+(sha256 `07b8a219…`), so the patch changes nothing at all for this program.
+
+**And the row exists.** The census on that artifact:
+
+    file …/examples/async-on-main/game.ts lines 29 unreachable 0 locations 224 bytes 2182
+    line …/game.ts:77 locations 3 bytes 32
+    module-total unreachable_lines 6 unpaired_addresses 0
+
+Same shape in the conformance guest: `async/async-on-main.ts:50,61,62,63` each
+have 3 locations and 6 bytes, `unpaired_addresses 0` — and lldb still resolves
+**0** locations for them. So the 63 `unresolved` cases are **not** a
+missing-row class, and the census's `unreachable_lines` is not the same set.
+Not diagnosed this round; recorded because a future fix will need it.
+
+## Phase D — design (running)
+
+| build | `seqStart` | prologue marker | measured |
+|---|---|---|---|
+| (b) alone, as the candidate writes it | `rows[first].addr` | guarded block kept | **byte-identical artifacts to base, 24/24** — the guard `head.addr > seqStart` is false, so the block never runs. Inert; no 82-case run needed |
+| (a) alone | `start` | none | **63/7/1/11 — 0 of 82 moved; census 153 (unchanged)** |
+| (b) alone, constructed | `rows[first].addr` | bare `DW_LNS_set_prologue_end` before the loop | **63/7/0/12 — same single flip; census 153 (unchanged)** |
+| (a)+(b) as committed, rebuilt | `start` | guarded block | **63/7/0/12, results byte-identical to the Phase C green capture** |
+
+Conclusion: the prologue marker is what flips `class_method`; the pair is what
+closes the census holes (153 -> 114). (b) as the candidate writes it is dead
+code without (a).
+
+## Gates (all measured on the patched branch, artifacts from the committed build)
+
+| gate | before (base `6424085e`) | after (`64222b3b`) |
+|---|---|---|
+| `npm run check` | FAIL — 3 lint warnings in `tests/debug/lib/dwarf-reader.js` (516, 518, 630), tsc clean | FAIL, identical output (pre-existing; `main` lints clean) |
+| `npm run test:debug:unit` | ok, 5 + 5 cases (parity 1147 B) | ok, 5 + 5 cases (parity 1155 B) |
+| `npm run test:debug` | 2 PASS (add-locals, await-locals) | 2 PASS, identical |
+| Tension `debugger` suite | 5 passed, 0 failed | 5 passed, 0 failed |
+| census | 153 unreachable / 0 unpaired | 114 / 0, ratchet 8 improved 0 worse |
+| conformance, 82 cases | 63/7/1/11 | 63/7/0/12 (reproduced twice) |
+
+Report: `DL3-REPORT.md`. Round complete as a measurement; the owner's symptom
+(`examples/async-on-main/game.ts:77`) is **not** fixed by this patch.
