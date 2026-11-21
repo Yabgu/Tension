@@ -26,6 +26,7 @@ Baselines: red = `red-capture-2026-11-21.json` (63/7/1/11, census
 | **(b) alone, as written** | `rows[first].addr` | guarded block | — | — | — | — | — (artifacts byte-identical to base, 24/24) |
 | **(b) alone, constructed** | `rows[first].addr` | bare `DW_LNS_set_prologue_end` | 63 | 7 | 0 | 12 | 153 |
 | (a)+(b) as committed | `start` | guarded block | 63 | 7 | 0 | 12 | 114 |
+| (a)+(b), re-measured | `start` | guarded block | 63 | 7 | 0 | 12 | 114 |
 
 Captures: [`phase-d-a-only-2026-11-21.json`](phase-d-a-only-2026-11-21.json),
 [`phase-d-b-only-2026-11-21.json`](phase-d-b-only-2026-11-21.json).
@@ -96,5 +97,17 @@ also what the census sees: 153 -> 114 unreachable lines.
   the `if (head.addr > seqStart)` guard, not a necessity: the constructed (b)
   shows the marker works at `seqStart = rows[first].addr` too.
 
-**No case regressed in any of the three builds**, and no assertion was weakened
+## The committed build, re-measured
+
+The committed (a)+(b) tree was restored (`git checkout -- src/dwarf/encode.ts`,
+`diff` against `HEAD` clean), rebuilt and re-run a third time:
+
+    unresolved 63 / no source 7 / wrong line 0 / pass 12
+    results array byte-identical to the Phase C green capture (0 of 82 differ)
+
+Compiler bundle `dist/assemblyscript.js` also rebuilt to the same hash
+(`6202020e…`), and the 24 artifacts to the same `async-on-main.wasm` hash
+(`4c4e1db8…`), so both the build and the measurement are reproducible.
+
+**No case regressed in any of the four builds**, and no assertion was weakened
 to get here.
