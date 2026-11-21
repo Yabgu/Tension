@@ -16,14 +16,36 @@ batch mode, and classifies:
 
 | verdict | meaning |
 |---|---|
-| `unresolved` | the breakpoint matched no location — lldb never bound it to an address |
-| `no stop` | it resolved, and execution ran to the end without stopping |
-| `stopped with no source file (…)` | it stopped, and the frame names no file we asked for |
-| `stopped at N` | it stopped in the right file on a **different** line |
+| `skipped` | the case **did not run**; a `reason` is mandatory (`guest-refused`, `engine-arg-unsupported`, `engine-error`, `harness-error`) |
+| `unresolved` | the guest ran and the breakpoint matched no location — lldb never bound it to an address |
+| `no-stop` | it resolved, and execution ran to the end without stopping |
+| `no-source` | it stopped, and the frame names no file we asked for |
+| `wrong-line` | it stopped in the right file on a **different** line (`expectedLine` and `observedLine` both recorded) |
 | `pass` | resolved ≥ 1, stopped on a breakpoint, right file, and `line === expected` |
 
 They fail for different reasons, and "it stopped" is not a pass. A harness that
-rounds `stopped at N` up to green reports the owner's own complaint as working.
+rounds `wrong-line` up to green reports the owner's own complaint as working.
+
+`skipped` is **not** a failure — it is "unknown" — and it is not green either. The
+tally prints it apart from `fail`. Before v2 the runner called every
+non-resolution `unresolved`, which is how 63 guests that the engine refused to
+load were read as 63 debugger defects for four rounds.
+
+## Loadability is probed, and the engine is recorded
+
+Before a case runs under lldb, the engine is run on the artifact **without a
+debugger** and its stderr read. A guest it will not parse is
+`skipped(guest-refused)` with the engine's own message in the row; a flag it does
+not accept (an older binary) is `skipped(engine-arg-unsupported)`. Inferring
+either from "lldb found no location" is the mistake v2 removes.
+
+Every capture records the engine's path, mtime and the `async backend:` line it
+prints, and the run **warns loudly** when the binary predates the newest file
+under `tension-core/src/`. A stale interpreter turns continuation guests into
+phantom failures, which is exactly what happened: `target/release/tension-core`
+was built 2026-11-16, four days before the per-target async backend landed.
+
+    TENSION_CORE=<path>   # measure a specific engine; the capture records which
 
 ## lldb is a dependency
 
