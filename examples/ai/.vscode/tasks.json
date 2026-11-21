@@ -3,8 +3,26 @@
   // the only thing that links a wasm instruction back to a source line; a
   // release build carries no map, so source breakpoints cannot resolve. The
   // launch config names the compound "debug" task, which runs these in order.
+  //
+  // `check:model` is first for a measured reason. This example loads a real
+  // GGUF through llama.cpp, and the host panics inside `session_create` before
+  // the guest's entrypoint ever runs when the file is missing. A guest that
+  // never runs is never JIT'd, so no image is registered and lldb reports the
+  // breakpoint as pending with `where = <Unknown>` — which reads exactly like
+  // broken DWARF, and is not. Measured on this tree: without the model,
+  // `story.ts:234` never binds, while the same line binds in `examples/io`.
+  //
+  // So the task fails here, with the command that fixes it, instead of leaving
+  // a breakpoint that silently never hits.
   "version": "2.0.0",
   "tasks": [
+    {
+      "label": "check:model",
+      "type": "shell",
+      "command": "node -e \"const f=require('fs');const p='models/Phi-3-mini-4k-instruct-q4.gguf';if(!f.existsSync(p)){console.error('model missing: '+p);console.error('run: npm run fetch-model');process.exit(1)}console.log('model present: '+p)\"",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
     {
       "label": "build:debug",
       "type": "shell",
@@ -15,7 +33,7 @@
     },
     {
       "label": "debug",
-      "dependsOn": ["build:debug"],
+      "dependsOn": ["check:model", "build:debug"],
       "dependsOrder": "sequence"
     }
   ]

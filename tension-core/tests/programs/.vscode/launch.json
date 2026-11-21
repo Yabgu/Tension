@@ -1,120 +1,39 @@
 {
-  // Run and debug one test program, from this folder. Open
-  // `tension-core/tests/programs` as the workspace root, then pick a program
-  // from the list — the same list `scripts/build-test-programs.mjs` builds.
+  // One configuration per program, and each one names the exact file it runs.
   //
-  // ## Which host you get, and why it matters
+  // There is no picker and no runner script in the debug path: what you see in
+  // `args` below is the whole command line, in the order the host receives it.
+  // `build/debug/<name>.wasm` is the artifact with DWARF in it — the release
+  // `build/<name>.wasm` has no `.debug_*` sections, so a `.ts` breakpoint
+  // cannot bind in it and the run still looks normal.
   //
-  // `tension-core` cannot run these programs **on Windows**. wasmtime gates
-  // stack switching to x86-64 Linux/macOS (`wasmtime-50/src/config.rs:2486`),
-  // `Engine::new` refuses the feature at construction, and every program here
-  // is compiled with `--enable stack-switching`. Measured on this machine:
+  // `preLaunchTask` compiles that one program (see tasks.json: the command is
+  // the compiler, the source, the output and the flags, spelled out).
   //
-  //   tension-core.exe main-policy.wasm
-  //   Error: the wasm_stack_switching feature is not supported on this compiler configuration
+  // `initCommands` turns the GDB JIT loader on: without it lldb never sees the
+  // guest image and every breakpoint stays pending.
   //
-  // Node's V8 does support it, so the same artifact runs under Node — that is
-  // what the first two configurations do, and they are the ones that work on
-  // Windows. The third needs Linux or macOS.
+  // `windows` overrides the host to `.exe`; a path without it will not launch.
   //
-  // ## Breakpoints, honestly
-  //
-  // * In `runner.mjs`: works everywhere. That is the file that instantiates the
-  //   guest and answers its imports, so it is where you watch a program start
-  //   and stop.
-  // * In a `.ts` program: **yes, now**, on any OS — with two conditions, both
-  //   of which are now automatic or one click:
-  //     1. the artifact must carry DWARF. `runner.mjs` resolves
-  //        `build/debug/<name>.wasm` and rebuilds it when it is missing or
-  //        older than its source, and prints which artifact it loaded and
-  //        whether `.debug_*` sections are in it. (It was not automatic until
-  //        the compiler learned to emit DWARF for continuation types —
-  //        `type form is not a function type` was a compiler gap, fixed in
-  //        0.14.1 at `9697d136`.)
-  //     2. VS Code's JavaScript debugger needs a helper extension to read
-  //        DWARF: `ms-vscode.wasm-dwarf-debugging`, and `"enableDWARF": true`
-  //        on the launch configuration. The extension's own text:
-  //        "Requires the ms-vscode.wasm-dwarf-debugging extension to function."
-  //   With both, a breakpoint on a line of `async-on-main.ts` binds in the
-  //   Node config — measured: V8 accepts a breakpoint at a byte offset in this
-  //   artifact and stops there (`hits: [{offset: 8394, fn: ...}]`), which is
-  //   the half the debugger needs from the module.
-  // * In `__mainStep__` or any other std function: same conditions, and the
-  //   std sources are in `node_modules/@yabgu_gm/tensionscript/std/assembly/`.
-  //   You can also **replace** it — a program may declare its own `mainStep`;
-  //   `async/main-policy.ts` and `async/schedule-order.ts` do exactly that.
+  // The thread programs get `--executors 2` because that is what
+  // `tension-core/tests/threads.rs` runs them with: two workers plus main.
   "version": "0.2.0",
-  "inputs": [
-    {
-      "id": "program",
-      "type": "pickString",
-      "description": "Which test program",
-      "options": [
-        "async-on-main",
-        "main-policy",
-        "fallback-loop",
-        "rt-guards",
-        "count",
-        "spawn-join",
-        "spawn-refusals",
-        "two-workers"
-      ],
-      "default": "main-policy"
-    }
-  ],
   "configurations": [
     {
-      // The one that works on every OS, including Windows. Set a breakpoint in
-      // runner.mjs or step through the instantiation.
-      "type": "node",
-      "request": "launch",
-      "name": "Node: run ${input:program}",
-      "program": "${workspaceFolder}/runner.mjs",
-      "runtimeArgs": ["--experimental-wasm-wasmfx"],
-      "args": ["${input:program}"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "skipFiles": ["<node_internals>/**"],
-      // Reads the guest's DWARF sections, which is what maps a `.ts` line to a
-      // byte offset in the module. Needs ms-vscode.wasm-dwarf-debugging.
-      "enableDWARF": true,
-      "preLaunchTask": "programs: build"
-    },
-    {
-      // Same, with the runner's own trace of the module's imports and the
-      // status `__start` returned.
-      "type": "node",
-      "request": "launch",
-      "name": "Node: run ${input:program} (trace)",
-      "program": "${workspaceFolder}/runner.mjs",
-      "runtimeArgs": ["--experimental-wasm-wasmfx"],
-      "args": ["${input:program}", "--trace"],
-      "cwd": "${workspaceFolder}",
-      "console": "integratedTerminal",
-      "skipFiles": ["<node_internals>/**"],
-      // Reads the guest's DWARF sections, which is what maps a `.ts` line to a
-      // byte offset in the module. Needs ms-vscode.wasm-dwarf-debugging.
-      "enableDWARF": true,
-      "preLaunchTask": "programs: build"
-    },
-    {
-      // The real host, with full Rust symbols: you can breakpoint inside
-      // `__executorCount`, `__startThread`, the ABI adapter, and step from the
-      // host into the guest. **Linux and macOS only** — see the note above.
-      //
-      // Needs the CodeLLDB extension (`vadimcn.vscode-lldb`). `--debug` makes
-      // tension-core pass DWARF through untouched; a guest without it still
-      // runs, you simply cannot breakpoint inside it.
+      // async/await on one stack, no threads: three suspensions, one carried local
       "type": "lldb",
       "request": "launch",
-      "name": "tension-core: debug ${input:program} (Linux/macOS)",
+      "name": "debug: async-on-main",
       "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
       "windows": {
-        // Kept so the entry exists on Windows and fails with the engine's own
-        // message rather than a missing-file error.
         "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
       },
-      "args": ["--debug", "--symbol-path", "${workspaceFolder}", "${workspaceFolder}/build/${input:program}.wasm"],
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/async-on-main.wasm"
+      ],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "initCommands": [
@@ -122,7 +41,241 @@
         "settings set target.debug-file-search-paths ${workspaceFolder}"
       ],
       "sourceMap": { ".": "${workspaceFolder}" },
-      "preLaunchTask": "programs: build"
+      "preLaunchTask": "build: async-on-main",
+      "stopOnEntry": false
+    },
+    {
+      // a program replaces main's step and wraps the default
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: main-policy",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/main-policy.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: main-policy",
+      "stopOnEntry": false
+    },
+    {
+      // a program owns the scheduling decision outright
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: main-step-replaced",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/main-step-replaced.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: main-step-replaced",
+      "stopOnEntry": false
+    },
+    {
+      // three policies, three creation orders, one resume order — the transcript is the schedule
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: schedule-order",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/schedule-order.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: schedule-order",
+      "stopOnEntry": false
+    },
+    {
+      // what runs when main suspends
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: fallback-loop",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/fallback-loop.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: fallback-loop",
+      "stopOnEntry": false
+    },
+    {
+      // an ordinary guest: the framework with no session open
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: rt-guards",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "${workspaceFolder}/build/debug/rt-guards.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: rt-guards",
+      "stopOnEntry": false
+    },
+    {
+      // the boot order and the carved control block
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: count",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--executors",
+        "2",
+        "${workspaceFolder}/build/debug/count.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: count",
+      "stopOnEntry": false
+    },
+    {
+      // a request crosses to a worker and comes back with its value
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: spawn-join",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--executors",
+        "2",
+        "${workspaceFolder}/build/debug/spawn-join.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: spawn-join",
+      "stopOnEntry": false
+    },
+    {
+      // twelve tasks, every value observed exactly once
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: two-workers",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--executors",
+        "2",
+        "${workspaceFolder}/build/debug/two-workers.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: two-workers",
+      "stopOnEntry": false
+    },
+    {
+      // the refusals: an id out of range, a second spawn of a live id
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug: spawn-refusals",
+      "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}",
+        "--executors",
+        "2",
+        "${workspaceFolder}/build/debug/spawn-refusals.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "build: spawn-refusals",
+      "stopOnEntry": false
     }
   ]
 }
