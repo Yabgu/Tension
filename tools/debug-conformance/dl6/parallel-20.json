@@ -1,0 +1,406 @@
+{
+  "format": "debug-conformance v2",
+  "engine": {
+    "path": "/home/acakar/work/Tension/tension-core/target/release/tension-core",
+    "relative": "tension-core/target/release/tension-core",
+    "mtime": "2026-11-21T21:14:04.942Z",
+    "mtimeMs": 1795295644942.3179,
+    "newestSource": {
+      "path": "tension-core/src/session/mod.rs",
+      "mtime": "2026-11-20T20:49:35.781Z"
+    },
+    "stale": false,
+    "backend": "continuations"
+  },
+  "lldb": "/usr/sbin/lldb",
+  "lldbVersion": null,
+  "binary": "tension-core/target/release/tension-core",
+  "probed": true,
+  "workers": 8,
+  "counts": {
+    "no-source": 11,
+    "pass": 9
+  },
+  "results": [
+    {
+      "name": "first_statement_print",
+      "program": "first-statement",
+      "file": "first-statement.ts",
+      "line": 7,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 7,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "first-statement.ts:7 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "first_statement_after_declarations",
+      "program": "first-after-decls",
+      "file": "first-after-decls.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 10,
+      "observedLine": 10,
+      "observedFile": "first-after-decls.ts",
+      "detail": "first-after-decls.ts:10",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "first_statement_branch",
+      "program": "first-branch",
+      "file": "first-branch.ts",
+      "line": 5,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 5,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "first-branch.ts:5 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "first_statement_loop",
+      "program": "first-loop",
+      "file": "first-loop.ts",
+      "line": 6,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 6,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "first-loop.ts:6 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "async_statement_before_await",
+      "program": "async-before-await",
+      "file": "async-before-await.ts",
+      "line": 11,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 11,
+      "observedLine": 11,
+      "observedFile": "async-before-await.ts",
+      "detail": "async-before-await.ts:11",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "task_entry_first_statement",
+      "program": "task-entry",
+      "file": "task-entry.ts",
+      "line": 8,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 8,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "task-entry.ts:8 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "lambda_body",
+      "program": "lambda-body",
+      "file": "lambda-body.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 10,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "lambda-body.ts:10 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "class_method",
+      "program": "class-method",
+      "file": "class-method.ts",
+      "line": 13,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 13,
+      "observedLine": 13,
+      "observedFile": "class-method.ts",
+      "detail": "class-method.ts:13",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "class_constructor",
+      "program": "class-method",
+      "file": "class-method.ts",
+      "line": 9,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 9,
+      "observedLine": 9,
+      "observedFile": "class-method.ts",
+      "detail": "class-method.ts:9",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "second_function_in_file",
+      "program": "second-function",
+      "file": "second-function.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 10,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "second-function.ts:10 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "entry_surface_main",
+      "program": "start-game-entry",
+      "file": "start-game-entry.ts",
+      "line": 8,
+      "group": "A",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 8,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "start-game-entry.ts:8 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "async_on_main.transcript#3",
+      "program": "async-on-main",
+      "file": "async-on-main.ts",
+      "line": 62,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 62,
+      "observedLine": 62,
+      "observedFile": "async-on-main.ts",
+      "detail": "async-on-main.ts:62",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "main_policy.transcript#2",
+      "program": "main-policy",
+      "file": "main-policy.ts",
+      "line": 41,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 41,
+      "observedLine": 41,
+      "observedFile": "main-policy.ts",
+      "detail": "main-policy.ts:41",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#3",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 45,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 45,
+      "observedLine": 45,
+      "observedFile": "fallback-loop.ts",
+      "detail": "fallback-loop.ts:45",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "schedule_order.transcript#7",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 168,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 168,
+      "observedLine": 168,
+      "observedFile": "schedule-order.ts",
+      "detail": "schedule-order.ts:168",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#1",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 92,
+      "group": "B",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 92,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "rt-guards.ts:92 -> no-source (file empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#2",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 95,
+      "group": "B",
+      "executors": 0,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 95,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "rt-guards.ts:95 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "thread_count.transcript#2",
+      "program": "count",
+      "file": "count.ts",
+      "line": 44,
+      "group": "B",
+      "executors": 2,
+      "verdict": "pass",
+      "reason": null,
+      "expectedLine": 44,
+      "observedLine": 44,
+      "observedFile": "count.ts",
+      "detail": "count.ts:44",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "spawn_join.transcript#1",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 122,
+      "group": "B",
+      "executors": 2,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 122,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "spawn-join.ts:122 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "two_workers.transcript#1",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 110,
+      "group": "B",
+      "executors": 2,
+      "verdict": "no-source",
+      "reason": null,
+      "expectedLine": 110,
+      "observedLine": 0,
+      "observedFile": "",
+      "detail": "two-workers.ts:110 -> no-source (file empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    }
+  ]
+}

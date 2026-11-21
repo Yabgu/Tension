@@ -66,49 +66,35 @@
 // matrix entry's marker).
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { Worker } from "node:worker_threads";
 
 import { lldbSkipReason, resolveLldb, resolveTensionCore } from "../e2e-debugger/lib/resolve.js";
-import { debugGuest } from "../e2e-debugger/lib/run-lldb.js";
+import { PROBE_TIMEOUT_MS, guestOf, makeLoadProbe, programs, repo, runCase, sourceOf } from "./lib/cases.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const repo = path.resolve(here, "..", "..");
-const programs = path.join(repo, "tension-core", "tests", "programs");
-const debugBuild = path.join(programs, "build", "debug");
 const engineSrc = path.join(repo, "tension-core", "src");
 
 /** The capture format. v2 split `unresolved` from `skipped(reason)`. */
 const FORMAT = "debug-conformance v2";
 
-/** A breakpoint run costs ~8 s (measured in `tools/e2e-debugger`); 30 s is 3.7x. */
-const DEBUG_TIMEOUT_MS = 30_000;
-
-/** A load probe is a parse plus a short run; every conformance guest finishes in <1 s. */
-const PROBE_TIMEOUT_MS = 20_000;
-
 function parseArgs(argv) {
-  const args = { only: null, json: null, build: true, probe: true };
+  const args = { only: [], json: null, build: true, probe: true, workers: 8 };
   for (let i = 0; i < argv.length; ++i) {
     const arg = argv[i];
-    if (arg === "--only") args.only = argv[++i];
+    if (arg === "--only") args.only.push(argv[++i]);
     else if (arg === "--json") args.json = argv[++i];
     else if (arg === "--no-build") args.build = false;
     else if (arg === "--no-probe") args.probe = false;
+    else if (arg === "--workers") args.workers = Number(argv[++i]);
+    else if (arg.startsWith("--workers=")) args.workers = Number(arg.slice("--workers=".length));
     else throw new Error(`unknown argument ${arg}`);
   }
+  if (!Number.isInteger(args.workers) || args.workers < 1) args.workers = 1;
   return args;
-}
-
-/** Where a program's source lives, by searching the program folders. */
-function sourceOf(programName) {
-  for (const folder of fs.readdirSync(programs, { withFileTypes: true })) {
-    if (!folder.isDirectory() || folder.name === "build") continue;
-    const candidate = path.join(programs, folder.name, `${programName}.ts`);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return null;
 }
 
 /** The 1-based line holding `// @<marker>`, exactly once. */
@@ -174,18 +160,6 @@ function expand(row) {
   }));
 }
 
-/** The guest artifact, and the symbol path a breakpoint needs. */
-function guestOf(programName) {
-  const guest = path.join(debugBuild, `${programName}.wasm`);
-  if (!fs.existsSync(guest)) {
-    throw new Error(
-      `no debug artifact at ${path.relative(repo, guest)} — run ` +
-        `"node scripts/build-test-programs.mjs --debug" first`
-    );
-  }
-  return guest;
-}
-
 /** `mtimeMs` of the newest file under a directory tree, or `null`. */
 function newestFile(root, filter) {
   let best = null;
@@ -248,65 +222,24 @@ function engineFacts(binaryPath) {
 }
 
 /**
- * Can the engine load this guest? Asked directly, not inferred.
+ * Does a case name match one of the `--only` needles?
  *
- * The engine is run on the artifact with no debugger. A guest it cannot parse
- * is reported by its own `failed to parse WebAssembly module` chain, which is a
- * property of (guest, engine) and has nothing to do with breakpoints. The
- * answer is cached per (program, executors) because it cannot vary per case.
+ * **An exact name wins over a substring.** `transcript#1` is a prefix of
+ * `transcript#10`, so a filter that only compared substrings would silently add
+ * a case — and a case the caller did not list is a case the two runs being
+ * compared do not share. A needle that names a case exactly therefore matches
+ * that case and nothing else; only a needle naming no case falls back to a
+ * substring, which is the `--only async` convenience.
  */
-function makeLoadProbe(binaryPath) {
-  const cache = new Map();
-  return function probe(testCase) {
-    const key = `${testCase.program}\u0000${testCase.executors}`;
-    if (cache.has(key)) return cache.get(key);
-    const guest = guestOf(testCase.program);
-    const args = ["--debug"];
-    if (testCase.executors > 0) args.push("--executors", String(testCase.executors));
-    args.push(guest);
-    const run = spawnSync(binaryPath, args, {
-      cwd: path.dirname(guest),
-      encoding: "utf8",
-      timeout: PROBE_TIMEOUT_MS,
-      maxBuffer: 4 * 1024 * 1024,
-    });
-    const stderr = run.stderr ?? "";
-    const verdict = { loads: true, reason: null, message: null };
-    if (run.error && run.error.code === "ETIMEDOUT") {
-      // Parsed and still running: that is a load, not a refusal.
-      verdict.loads = true;
-    } else if (/unknown (option|argument) \x60?([^\x60\n]*)\x60?/.test(stderr)) {
-      // The engine does not accept a flag this case needs. A stale binary is the
-      // usual cause (e.g. one built before `--executors`). That is still "did not
-      // run", but it is not the guest's fault and not the debugger's.
-      const flag = /unknown (?:option|argument) \x60([^\x60]+)\x60/.exec(stderr);
-      verdict.loads = false;
-      verdict.reason = "engine-arg-unsupported";
-      verdict.message = `${flag ? flag[1] : "an option"} is not accepted by this engine (${path.relative(repo, binaryPath)})`;
-    } else if (/failed to parse WebAssembly module/.test(stderr)) {
-      verdict.loads = false;
-      verdict.reason = "guest-refused";
-      const lines = stderr
-        .trim()
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line && !/^Caused by:?$/.test(line) && !/^usage:/.test(line));
-      verdict.message = lines.slice(-2).join(" | ") || stderr.trim().split("\n").pop();
-    } else if (run.status !== 0) {
-      verdict.loads = false;
-      verdict.reason = "engine-error";
-      verdict.message =
-        stderr
-          .trim()
-          .split("\n")
-          .map((line) => line.trim())
-          .filter((line) => line && !/^usage:|^\s{2,}/.test(line))
-          .slice(-2)
-          .join(" | ") || `exit ${run.status}`;
-    }
-    cache.set(key, verdict);
-    return verdict;
-  };
+function matchesOnly(name, needles) {
+  if (needles.some((needle) => needle === name)) return true;
+  return needles.some((needle) => !exactlyNamesACase(needle) && name.includes(needle));
+}
+
+/** Whether `needle` is the full name of some case. */
+let caseNames = null;
+function exactlyNamesACase(needle) {
+  return caseNames !== null && caseNames.has(needle);
 }
 
 /** Count results by class. `skipped` is counted apart from `fail`. */
@@ -319,7 +252,7 @@ function tally(results) {
   return counts;
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv.slice(2));
   const matrix = JSON.parse(fs.readFileSync(path.join(here, "matrix.json"), "utf8"));
 
@@ -374,13 +307,12 @@ function main() {
     }
   }
 
-  const rows = [];
-  for (const row of matrix.cases) {
-    for (const testCase of expand(row)) {
-      if (args.only && !testCase.name.includes(args.only)) continue;
-      rows.push(testCase);
-    }
-  }
+  // Expand first, filter second: "an exact name wins" needs the whole name set
+  // before it can decide what a needle means.
+  const allCases = [];
+  for (const row of matrix.cases) allCases.push(...expand(row));
+  caseNames = new Set(allCases.map((testCase) => testCase.name));
+  const rows = args.only.length > 0 ? allCases.filter((testCase) => matchesOnly(testCase.name, args.only)) : allCases;
   if (rows.length === 0) {
     console.error("debug-conformance: the matrix expanded to no cases");
     process.exit(2);
@@ -400,84 +332,107 @@ function main() {
   fs.rmSync(cacheRoot, { recursive: true, force: true });
   fs.mkdirSync(cacheRoot, { recursive: true });
   const workRoot = cacheRoot;
-  const results = [];
+  // Probes first, on this thread. The load answer is cached per
+  // (program, executors) because it cannot vary per case, so measuring it once
+  // beats measuring it per worker — and a pool that re-probed would spend its
+  // parallelism on the same fact.
   const probe = makeLoadProbe(binary);
-
-  for (const testCase of rows) {
-    const guest = guestOf(testCase.program);
-    const symbolPath = path.dirname(sourceOf(testCase.program));
-    const extra = testCase.executors > 0 ? ["--executors", String(testCase.executors)] : [];
-    const hostArgs = ["--debug", ...extra, "--symbol-path", symbolPath, guest];
-
-    // The case did not run if the engine cannot load the guest. Asked before
-    // the debugger is involved, so the answer cannot be a debugger verdict.
+  const results = new Array(rows.length);
+  const pending = [];
+  for (const [index, testCase] of rows.entries()) {
     if (args.probe) {
       const loadable = probe(testCase);
       if (!loadable.loads) {
-        results.push({
+        results[index] = {
           ...testCase,
           verdict: "skipped",
           reason: loadable.reason,
           engineMessage: loadable.message,
           detail: `skipped(${loadable.reason}): ${loadable.message ?? "the engine would not load the guest"}`,
           breakpoint: null,
-        });
+        };
         continue;
       }
     }
+    pending.push(index);
+  }
 
-    let observed;
-    try {
-      observed = debugGuest({
-        lldb: lldb.path,
-        binary,
-        guest,
-        args: hostArgs,
-        symbolPath,
-        cwd: path.dirname(guest),
-        breakpoints: [{ file: testCase.file, line: testCase.line }],
-        workDir: path.join(workRoot, testCase.name.replace(/[^\w.-]/g, "_")),
-        timeoutMs: DEBUG_TIMEOUT_MS,
-      });
-    } catch (error) {
-      results.push({
-        ...testCase,
-        verdict: "error",
-        reason: "harness-error",
-        detail: String(error && error.message ? error.message : error).split("\n")[0],
-        breakpoint: null,
-      });
-      continue;
+  // One line per completed case. A 15-minute run that prints nothing until the
+  // end is a run the caller can only poll blind, which is why the previous
+  // rounds polled a directory count instead of the log.
+  let done = 0;
+  const progress = (result) => {
+    ++done;
+    const label = result.verdict === "pass" ? "ok" : result.verdict;
+    console.log(
+      `${label} ${done}/${rows.length} ${result.name}` +
+        (result.verdict === "pass" ? "" : `  (${result.detail})`)
+    );
+  };
+  for (const result of results) if (result) progress(result);
+  console.log("");
+
+  const context = { lldb: lldb.path, binary, workRoot };
+
+  if (args.workers <= 1) {
+    for (const index of pending) {
+      results[index] = runCase(context, rows[index]);
+      progress(results[index]);
     }
+  } else {
+    await runPool(pending, context, args.workers);
+  }
 
-    const breakpoint = observed.breakpoints?.[0] ?? null;
-    const resolved = (breakpoint?.resolved ?? 0) >= 1;
-    const stopped = observed.stopped && observed.hit_breakpoint;
-    const fileOk = typeof observed.file === "string" && observed.file.endsWith(testCase.file);
-    const lineOk = observed.line === testCase.line;
-
-    let verdict;
-    if (!resolved) verdict = "unresolved";
-    else if (!stopped) verdict = "no-stop";
-    else if (!fileOk) verdict = "no-source";
-    else if (!lineOk) verdict = "wrong-line";
-    else verdict = "pass";
-
-    results.push({
-      ...testCase,
-      verdict,
-      reason: null,
-      expectedLine: testCase.line,
-      observedLine: observed.line ?? null,
-      observedFile: observed.file ?? null,
-      detail:
-        verdict === "pass"
-          ? `${testCase.file}:${testCase.line}`
-          : `${testCase.file}:${testCase.line} -> ${verdict}` +
-            (verdict === "wrong-line" ? ` at ${observed.line}` : "") +
-            (verdict === "no-source" ? ` (file ${observed.file || "empty"})` : "") +
-            (breakpoint ? ` (locations ${breakpoint.locations}, resolved ${breakpoint.resolved})` : ""),
-      breakpoint: breakpoint ?? null,
+  async function runPool(indices, caseContext, count) {
+    const queue = [...indices];
+    const size = Math.min(count, queue.length);
+    let active = size;
+    await new Promise((resolve) => {
+      for (let spawned = 0; spawned < size; ++spawned) {
+        const worker = new Worker(new URL("./lib/case-worker.js", import.meta.url), {
+          workerData: { context: caseContext },
+        });
+        let current = null;
+        let closed = false;
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          if (--active === 0) resolve();
+        };
+        const feed = () => {
+          if (queue.length === 0) {
+            worker.postMessage({ type: "stop" });
+            return;
+          }
+          current = queue.shift();
+          worker.postMessage({ type: "run", index: current, testCase: rows[current] });
+        };
+        worker.on("message", (message) => {
+          if (message.type !== "result") return;
+          results[message.index] = message.result;
+          current = null;
+          progress(message.result);
+          feed();
+        });
+        worker.on("error", (error) => {
+          // A worker that dies costs the case it was holding, not the run. The
+          // row is `error(harness-error)` and the pool refills from the queue.
+          const index = current ?? queue.shift();
+          if (index !== undefined && index !== null) {
+            results[index] = {
+              ...rows[index],
+              verdict: "error",
+              reason: "harness-error",
+              detail: String(error && error.message ? error.message : error).split("\n")[0],
+              breakpoint: null,
+            };
+            current = null;
+            progress(results[index]);
+          }
+        });
+        worker.on("exit", close);
+        feed();
+      }
     });
   }
 
@@ -513,6 +468,7 @@ function main() {
       lldbVersion: lldb.version ?? null,
       binary: path.relative(repo, binary),
       probed: args.probe,
+      workers: args.workers,
       counts,
       results,
     };
@@ -523,9 +479,7 @@ function main() {
   process.exit(failed === 0 ? 0 : 1);
 }
 
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   console.error(`debug-conformance: ${error && error.message ? error.message : error}`);
   process.exit(2);
-}
+});

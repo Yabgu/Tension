@@ -1,0 +1,22 @@
+# The fixed 20 cases for the serial-vs-parallel check (DL6 phase B).
+# The 11 no-source survivors plus 9 passes, spread over every program group.
+first_statement_print
+first_statement_branch
+first_statement_loop
+task_entry_first_statement
+lambda_body
+second_function_in_file
+entry_surface_main
+rt_guards.transcript#1
+rt_guards.transcript#2
+spawn_join.transcript#1
+two_workers.transcript#1
+first_statement_after_declarations
+async_statement_before_await
+class_method
+class_constructor
+async_on_main.transcript#3
+main_policy.transcript#2
+fallback_loop.transcript#3
+schedule_order.transcript#7
+thread_count.transcript#2

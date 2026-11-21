@@ -33,3 +33,31 @@ The compiler remote previously carried `main` and feature branches only; the
 three `fix/dwarf-*` branches are new there. **Asymmetry:** this protects
 everything up to the moment of the push. Commits made later in this round are
 not covered until pushed again, and this round pushes nothing else.
+
+## Phase B — the harness runs on a bounded pool, and it is checked
+
+`runner.js` now takes `--workers N` (default 8) and prints **one line per
+completed case** (`ok 12/82 name`, else the failing verdict with its detail).
+The classification moved to `lib/cases.js` so the inline path (`--workers 1`) and
+the pool (`lib/case-worker.js`) run the *same* function; the load probe stays on
+the main thread because it is cached per (program, executors) and re-probing it
+per worker would multiply the same measurement. `workers` is recorded in the
+capture header.
+
+`--only` also learned that an exact name wins: the needle `transcript#1` matched
+`transcript#1`, `#10` and `#11` before, so a filter meant to select twenty cases
+selected twenty-one. That was caught by the first run of this check, not by
+reading the code.
+
+The check is `dl6/serial-parallel-subset.txt` — 20 cases, the 11 `no-source`
+survivors plus 9 passes spread over every program group — run twice on the same
+engine:
+
+    TENSION_CORE=tension-core/target/release/tension-core \
+      node tools/debug-conformance/runner.js --no-build --workers 1 <20 names> --json dl6/serial-20.json
+    ...                                                       --workers 8       --json dl6/parallel-20.json
+
+**Verdicts and observed lines identical, 20/20** (`differing: none`). Same name
+set in all three of subset / serial / parallel. Timings on this machine: serial
+≈ 7 min, `--workers 8` ≈ 75 s (~5.6x). Four full-matrix runs at 8 workers cost
+what one serial run did.

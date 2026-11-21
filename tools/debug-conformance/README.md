@@ -56,8 +56,32 @@ would be a hole in a gate whose purpose is finding holes.
 
     node tools/debug-conformance/runner.js                  # every case
     node tools/debug-conformance/runner.js --only async     # a name substring
+    node tools/debug-conformance/runner.js --only class_method --only lambda_body
     node tools/debug-conformance/runner.js --json out.json  # also a table
     node tools/debug-conformance/runner.js --no-build       # use artifacts as-is
+    node tools/debug-conformance/runner.js --workers 8      # the default
+    node tools/debug-conformance/runner.js --workers 1      # serial, for a baseline
+
+Cases are independent — each owns its `.cache/work/<case>/` directory and spawns
+its own engine — so they run on a bounded pool of worker threads, `--workers N`,
+**8 by default**. `--workers 1` runs them inline on one thread; the classification
+is the same module (`lib/cases.js`) on both paths, so the two cannot disagree
+about what a verdict means. The capture records the worker count, because two
+runs that were measured under different parallelism should say so.
+
+One line is printed per completed case (`ok 12/82 name`, or the failing verdict
+with its detail), so a long run can be followed instead of polled blind. The
+[tally](#three-questions-asked-separately) at the end is unchanged.
+
+`--only` takes a case name or a substring, and **an exact name wins**: the
+needle `transcript#1` names one case, not `transcript#1`, `#10`, `#11`. A needle
+that names no case falls back to a substring. Without that rule a filter meant to
+select twenty cases silently selected twenty-one, and a comparison between two
+runs is only as good as its case *set*.
+
+The 20-case serial-vs-parallel check lives in `dl6/`: the same twenty names, run
+once at `--workers 1` and once at `--workers 8`, case for case identical (see
+`DL6-REPORT.md`).
 
 The artifacts come from `scripts/build-test-programs.mjs --debug`, which builds
 with the compiler `scripts/tensionscript.mjs` resolves — the **vendored pin**
