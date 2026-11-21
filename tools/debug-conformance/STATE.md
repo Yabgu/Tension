@@ -61,3 +61,54 @@ engine:
 set in all three of subset / serial / parallel. Timings on this machine: serial
 ≈ 7 min, `--workers 8` ≈ 75 s (~5.6x). Four full-matrix runs at 8 workers cost
 what one serial run did.
+
+## Phase C — the marker, measured two ways. Compiler `e72eb823`, `c8fd330b`
+
+1. `standard_opcode_lengths` corrected for `0x09`, `0x0a`, `0x0c` (DWARF4
+   §6.2.5.2). Emitted header verified byte-wise: `[0,1,1,1,1,0,0,0,1,0,0,1]`.
+   Bought no case — lldb knows `0x0a` — but the commit that emits `0x0a` is not
+   the one to leave the table lying about it.
+2. `DW_LNS_set_prologue_end` on exactly one row of every sequence, no gate.
+
+Placement measured both ways: **edge row (body's first byte) 71 / 11**;
+**first row naming a source line 66 / 16**. The brief's boundary is the second
+and loses five cases; the compiler keeps the first and says so.
+
+`tests/debug/unit/dwarf.js` asserts the line program byte for byte; the marker
+adds one byte, so the expected sequence was updated to the new whole sequence
+(not shortened, not weakened) and now pins the marker too.
+
+## Phase D — 59/17/6 → 71/11/0, and the eleven are a different defect
+
+Engine release (2026-11-21, continuations, `stale: false`), `--workers 8`, run
+twice on the same binary, per case identical. 12 moved, all failure → pass, no
+regression. `game.ts:77` stops at `game.ts:77` in `game/main`, 3/3, and reports
+no source on the unpatched compiler's guest.
+
+For all 11 remaining cases the JIT object was extracted and the stop address
+tested against the CU's `DW_AT_ranges`: **11 of 11 outside every range** (holes
+`0x10`–`0x88` B before the next covered run); the passing control is inside.
+Compiler object 0/2283 rows outside; JIT object 199/1025 (19.4%).
+
+## Phase E — memo only
+
+`dl6/PHASE-E-DL6.md`: three options with row/case counts; no recommendation.
+The compiler cannot express full coverage (`start == 0` ranges are dropped;
+whole-body ranges buy 1 row of 201). The decision belongs to the user, and
+patching the vendored tree needs the standing rule lifted by name.
+
+## Gates (DL6)
+
+    npm run check ............ exit 0
+    npm test ................. exit 0, 71 checks
+    test:debug:unit .......... 5 + 5, parity 1155 B
+    test:debug ............... 2 PASS
+    Tension debugger test .... 5 passed (18.02 s)
+    census ................... 114 unreachable, 8 improved / 0 worse
+    conformance .............. 71 pass / 11 no-source / 0 wrong-line / 0 skipped
+    serial vs parallel (20) .. identical 20/20
+    game.ts:77 ............... stops at game.ts:77
+
+Not on either remote: the compiler commits after `a82c1536` and the harness
+commits after `497cc83`. Phase 0 protected everything up to the push, nothing
+after it.

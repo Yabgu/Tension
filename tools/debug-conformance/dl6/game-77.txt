@@ -1,0 +1,15 @@
+# game.ts:77 — the owner's line, DL6
+
+```
+$ node tools/e2e-debugger/runner.js --guest examples/async-on-main/build/game.wasm --file game.ts --line 77
+  {"guest":"/home/acakar/work/Tension/examples/async-on-main/build/game.wasm","breakpoint":{"file":"game.ts","line":77},"stopped":true,"hit_breakpoint":true,"file":"game.ts","line":77,"function":"game/main","stops":[{"file":"game.ts","line":77,"function":"game/main","hit_breakpoint":true}],"exit_state":5,"breakpoints":[{"id":1,"locations":2,"resolved":2}],"timedOut":false}
+  e2e: guest stopped at game.ts:77 (game/main)
+  {"guest":"/home/acakar/work/Tension/examples/async-on-main/build/game.wasm","breakpoint":{"file":"game.ts","line":77},"stopped":true,"hit_breakpoint":true,"file":"game.ts","line":77,"function":"game/main","stops":[{"file":"game.ts","line":77,"function":"game/main","hit_breakpoint":true}],"exit_state":5,"breakpoints":[{"id":1,"locations":2,"resolved":2}],"timedOut":false}
+  e2e: guest stopped at game.ts:77 (game/main)
+  {"guest":"/home/acakar/work/Tension/examples/async-on-main/build/game.wasm","breakpoint":{"file":"game.ts","line":77},"stopped":true,"hit_breakpoint":true,"file":"game.ts","line":77,"function":"game/main","stops":[{"file":"game.ts","line":77,"function":"game/main","hit_breakpoint":true}],"exit_state":5,"breakpoints":[{"id":1,"locations":2,"resolved":2}],"timedOut":false}
+  e2e: guest stopped at game.ts:77 (game/main)
+
+# the same command, the guest the unpatched compiler (main 41b8721b) builds:
+$ node tools/e2e-debugger/runner.js --guest /tmp/dl6/game-main.wasm --file game.ts --line 77
+  {"guest":"/tmp/dl6/game-main.wasm","breakpoint":{"file":"game.ts","line":77},"stopped":true,"hit_breakpoint":true,"file":"","line":0,"function":"","stops":[{"file":"","line":0,"function":"","hit_breakpoint":true}],"exit_state":5,"breakpoints":[{"id":1,"locations":2,"resolved":2}],"timedOut":false}
+  e2e: guest stopped at :0 (?)
