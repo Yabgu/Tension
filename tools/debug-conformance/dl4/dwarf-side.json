@@ -1,0 +1,2089 @@
+[
+  {
+    "case": "first_statement_branch",
+    "module": "first-branch.wasm",
+    "modulePath": "/home/acakar/work/Tension/tension-core/tests/programs/build/debug/first-branch.wasm",
+    "wantedFile": "first-branch.ts",
+    "wantedLine": 5,
+    "units": [
+      {
+        "index": 0,
+        "name": "first-branch.wasm",
+        "compDir": "/home/acakar/work/Tension/tension-core/tests/programs",
+        "lowPc": null,
+        "highPc": null,
+        "rangeCount": 2313,
+        "ranges": [
+          {
+            "low": 3,
+            "high": 12
+          },
+          {
+            "low": 13,
+            "high": 22
+          },
+          {
+            "low": 23,
+            "high": 24
+          },
+          {
+            "low": 24,
+            "high": 26
+          },
+          {
+            "low": 26,
+            "high": 28
+          },
+          {
+            "low": 28,
+            "high": 30
+          },
+          {
+            "low": 30,
+            "high": 32
+          },
+          {
+            "low": 32,
+            "high": 34
+          },
+          {
+            "low": 34,
+            "high": 36
+          },
+          {
+            "low": 36,
+            "high": 38
+          },
+          {
+            "low": 38,
+            "high": 40
+          },
+          {
+            "low": 41,
+            "high": 48
+          }
+        ],
+        "rangesTruncated": 2301
+      }
+    ],
+    "rows": [
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 0,
+        "address": 4789,
+        "addressHex": "0x12b5",
+        "file": "conformance/first-branch.ts",
+        "line": 5,
+        "column": 6,
+        "span": 1,
+        "isFirstRowOfSequence": true,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 0,
+        "sequenceRowCount": 7,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 1,
+        "address": 4790,
+        "addressHex": "0x12b6",
+        "file": "conformance/first-branch.ts",
+        "line": 5,
+        "column": 6,
+        "span": 2,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 1,
+        "sequenceRowCount": 7,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 2,
+        "address": 4792,
+        "addressHex": "0x12b8",
+        "file": "conformance/first-branch.ts",
+        "line": 5,
+        "column": 2,
+        "span": 2,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 3,
+        "sequenceRowCount": 7,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      }
+    ],
+    "inAnyUnitRange": true,
+    "fileRows": [
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 4789,
+        "sequenceStartHex": "0x12b5",
+        "rows": [
+          {
+            "i": 0,
+            "address": 4789,
+            "addressHex": "0x12b5",
+            "file": "conformance/first-branch.ts",
+            "line": 5,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 4790,
+            "addressHex": "0x12b6",
+            "file": "conformance/first-branch.ts",
+            "line": 5,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 1
+          },
+          {
+            "i": 2,
+            "address": 4792,
+            "addressHex": "0x12b8",
+            "file": "conformance/first-branch.ts",
+            "line": 5,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 3
+          },
+          {
+            "i": 3,
+            "address": 4794,
+            "addressHex": "0x12ba",
+            "file": "conformance/first-branch.ts",
+            "line": 6,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 5
+          },
+          {
+            "i": 4,
+            "address": 4798,
+            "addressHex": "0x12be",
+            "file": "conformance/first-branch.ts",
+            "line": 6,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 9
+          },
+          {
+            "i": 5,
+            "address": 4802,
+            "addressHex": "0x12c2",
+            "file": "conformance/first-branch.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 13
+          },
+          {
+            "i": 6,
+            "address": 4806,
+            "addressHex": "0x12c6",
+            "file": "conformance/first-branch.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 17
+          }
+        ]
+      },
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 4812,
+        "sequenceStartHex": "0x12cc",
+        "rows": [
+          {
+            "i": 0,
+            "address": 4812,
+            "addressHex": "0x12cc",
+            "file": "conformance/first-branch.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 4813,
+            "addressHex": "0x12cd",
+            "file": "conformance/first-branch.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 1
+          },
+          {
+            "i": 2,
+            "address": 4815,
+            "addressHex": "0x12cf",
+            "file": "conformance/first-branch.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 3
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "first_statement_print",
+    "module": "first-statement.wasm",
+    "modulePath": "/home/acakar/work/Tension/tension-core/tests/programs/build/debug/first-statement.wasm",
+    "wantedFile": "first-statement.ts",
+    "wantedLine": 7,
+    "units": [
+      {
+        "index": 0,
+        "name": "first-statement.wasm",
+        "compDir": "/home/acakar/work/Tension/tension-core/tests/programs",
+        "lowPc": null,
+        "highPc": null,
+        "rangeCount": 2308,
+        "ranges": [
+          {
+            "low": 3,
+            "high": 12
+          },
+          {
+            "low": 13,
+            "high": 22
+          },
+          {
+            "low": 23,
+            "high": 24
+          },
+          {
+            "low": 24,
+            "high": 26
+          },
+          {
+            "low": 26,
+            "high": 28
+          },
+          {
+            "low": 28,
+            "high": 30
+          },
+          {
+            "low": 30,
+            "high": 32
+          },
+          {
+            "low": 32,
+            "high": 34
+          },
+          {
+            "low": 34,
+            "high": 36
+          },
+          {
+            "low": 36,
+            "high": 38
+          },
+          {
+            "low": 38,
+            "high": 40
+          },
+          {
+            "low": 41,
+            "high": 48
+          }
+        ],
+        "rangesTruncated": 2296
+      }
+    ],
+    "rows": [
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 0,
+        "address": 4789,
+        "addressHex": "0x12b5",
+        "file": "conformance/first-statement.ts",
+        "line": 7,
+        "column": 8,
+        "span": 1,
+        "isFirstRowOfSequence": true,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 0,
+        "sequenceRowCount": 3,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 1,
+        "address": 4790,
+        "addressHex": "0x12b6",
+        "file": "conformance/first-statement.ts",
+        "line": 7,
+        "column": 8,
+        "span": 4,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 1,
+        "sequenceRowCount": 3,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 42,
+        "rowIndex": 2,
+        "address": 4794,
+        "addressHex": "0x12ba",
+        "file": "conformance/first-statement.ts",
+        "line": 7,
+        "column": 2,
+        "span": 0,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 4789,
+        "offsetFromSequenceStart": 5,
+        "sequenceRowCount": 3,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      }
+    ],
+    "inAnyUnitRange": true,
+    "fileRows": [
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 4789,
+        "sequenceStartHex": "0x12b5",
+        "rows": [
+          {
+            "i": 0,
+            "address": 4789,
+            "addressHex": "0x12b5",
+            "file": "conformance/first-statement.ts",
+            "line": 7,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 4790,
+            "addressHex": "0x12b6",
+            "file": "conformance/first-statement.ts",
+            "line": 7,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 1
+          },
+          {
+            "i": 2,
+            "address": 4794,
+            "addressHex": "0x12ba",
+            "file": "conformance/first-statement.ts",
+            "line": 7,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 5
+          }
+        ]
+      },
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 4799,
+        "sequenceStartHex": "0x12bf",
+        "rows": [
+          {
+            "i": 0,
+            "address": 4799,
+            "addressHex": "0x12bf",
+            "file": "conformance/first-statement.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 4800,
+            "addressHex": "0x12c0",
+            "file": "conformance/first-statement.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 1
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "class_method",
+    "module": "class-method.wasm",
+    "modulePath": "/home/acakar/work/Tension/tension-core/tests/programs/build/debug/class-method.wasm",
+    "wantedFile": "class-method.ts",
+    "wantedLine": 13,
+    "units": [
+      {
+        "index": 0,
+        "name": "class-method.wasm",
+        "compDir": "/home/acakar/work/Tension/tension-core/tests/programs",
+        "lowPc": null,
+        "highPc": null,
+        "rangeCount": 2806,
+        "ranges": [
+          {
+            "low": 3,
+            "high": 12
+          },
+          {
+            "low": 13,
+            "high": 22
+          },
+          {
+            "low": 23,
+            "high": 24
+          },
+          {
+            "low": 24,
+            "high": 26
+          },
+          {
+            "low": 26,
+            "high": 28
+          },
+          {
+            "low": 28,
+            "high": 30
+          },
+          {
+            "low": 30,
+            "high": 32
+          },
+          {
+            "low": 32,
+            "high": 34
+          },
+          {
+            "low": 34,
+            "high": 36
+          },
+          {
+            "low": 36,
+            "high": 38
+          },
+          {
+            "low": 38,
+            "high": 40
+          },
+          {
+            "low": 41,
+            "high": 48
+          }
+        ],
+        "rangesTruncated": 2794
+      }
+    ],
+    "rows": [
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 56,
+        "rowIndex": 0,
+        "address": 8163,
+        "addressHex": "0x1fe3",
+        "file": "conformance/class-method.ts",
+        "line": 13,
+        "column": 10,
+        "span": 23,
+        "isFirstRowOfSequence": true,
+        "sequenceStart": 8163,
+        "offsetFromSequenceStart": 0,
+        "sequenceRowCount": 11,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 56,
+        "rowIndex": 1,
+        "address": 8186,
+        "addressHex": "0x1ffa",
+        "file": "conformance/class-method.ts",
+        "line": 13,
+        "column": 10,
+        "span": 4,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8163,
+        "offsetFromSequenceStart": 23,
+        "sequenceRowCount": 11,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 56,
+        "rowIndex": 2,
+        "address": 8190,
+        "addressHex": "0x1ffe",
+        "file": "conformance/class-method.ts",
+        "line": 13,
+        "column": 4,
+        "span": 3,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8163,
+        "offsetFromSequenceStart": 27,
+        "sequenceRowCount": 11,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      }
+    ],
+    "inAnyUnitRange": true,
+    "fileRows": [
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 8060,
+        "sequenceStartHex": "0x1f7c",
+        "rows": [
+          {
+            "i": 0,
+            "address": 8060,
+            "addressHex": "0x1f7c",
+            "file": "conformance/class-method.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 8121,
+            "addressHex": "0x1fb9",
+            "file": "conformance/class-method.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 61
+          },
+          {
+            "i": 2,
+            "address": 8135,
+            "addressHex": "0x1fc7",
+            "file": "conformance/class-method.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 75
+          },
+          {
+            "i": 3,
+            "address": 8137,
+            "addressHex": "0x1fc9",
+            "file": "conformance/class-method.ts",
+            "line": 8,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 77
+          },
+          {
+            "i": 4,
+            "address": 8139,
+            "addressHex": "0x1fcb",
+            "file": "conformance/class-method.ts",
+            "line": 9,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 79
+          },
+          {
+            "i": 5,
+            "address": 8143,
+            "addressHex": "0x1fcf",
+            "file": "conformance/class-method.ts",
+            "line": 9,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 83
+          }
+        ]
+      },
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 8163,
+        "sequenceStartHex": "0x1fe3",
+        "rows": [
+          {
+            "i": 0,
+            "address": 8163,
+            "addressHex": "0x1fe3",
+            "file": "conformance/class-method.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 8186,
+            "addressHex": "0x1ffa",
+            "file": "conformance/class-method.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 23
+          },
+          {
+            "i": 2,
+            "address": 8190,
+            "addressHex": "0x1ffe",
+            "file": "conformance/class-method.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 27
+          },
+          {
+            "i": 3,
+            "address": 8193,
+            "addressHex": "0x2001",
+            "file": "conformance/class-method.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 30
+          },
+          {
+            "i": 4,
+            "address": 8207,
+            "addressHex": "0x200f",
+            "file": "conformance/class-method.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 44
+          },
+          {
+            "i": 5,
+            "address": 8221,
+            "addressHex": "0x201d",
+            "file": "conformance/class-method.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 58
+          },
+          {
+            "i": 6,
+            "address": 8223,
+            "addressHex": "0x201f",
+            "file": "conformance/class-method.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 60
+          },
+          {
+            "i": 7,
+            "address": 8226,
+            "addressHex": "0x2022",
+            "file": "conformance/class-method.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 63
+          },
+          {
+            "i": 8,
+            "address": 8228,
+            "addressHex": "0x2024",
+            "file": "conformance/class-method.ts",
+            "line": 15,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 65
+          },
+          {
+            "i": 9,
+            "address": 8242,
+            "addressHex": "0x2032",
+            "file": "conformance/class-method.ts",
+            "line": 15,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 79
+          },
+          {
+            "i": 10,
+            "address": 8257,
+            "addressHex": "0x2041",
+            "file": "conformance/class-method.ts",
+            "line": 15,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 94
+          }
+        ]
+      },
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 8484,
+        "sequenceStartHex": "0x2124",
+        "rows": [
+          {
+            "i": 0,
+            "address": 8484,
+            "addressHex": "0x2124",
+            "file": "conformance/class-method.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 8520,
+            "addressHex": "0x2148",
+            "file": "conformance/class-method.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 36
+          },
+          {
+            "i": 2,
+            "address": 8522,
+            "addressHex": "0x214a",
+            "file": "conformance/class-method.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 38
+          },
+          {
+            "i": 3,
+            "address": 8530,
+            "addressHex": "0x2152",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 46
+          },
+          {
+            "i": 4,
+            "address": 8534,
+            "addressHex": "0x2156",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 50
+          },
+          {
+            "i": 5,
+            "address": 8548,
+            "addressHex": "0x2164",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 64
+          },
+          {
+            "i": 7,
+            "address": 8553,
+            "addressHex": "0x2169",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 69
+          },
+          {
+            "i": 8,
+            "address": 8567,
+            "addressHex": "0x2177",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 83
+          },
+          {
+            "i": 9,
+            "address": 8582,
+            "addressHex": "0x2186",
+            "file": "conformance/class-method.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 98
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "io_line10",
+    "module": "game.wasm",
+    "modulePath": "/home/acakar/work/Tension/examples/io/build/game.wasm",
+    "wantedFile": "game.ts",
+    "wantedLine": 10,
+    "units": [
+      {
+        "index": 0,
+        "name": "game.wasm",
+        "compDir": "/home/acakar/work/Tension/examples/io",
+        "lowPc": null,
+        "highPc": null,
+        "rangeCount": 3213,
+        "ranges": [
+          {
+            "low": 3,
+            "high": 12
+          },
+          {
+            "low": 13,
+            "high": 22
+          },
+          {
+            "low": 23,
+            "high": 24
+          },
+          {
+            "low": 24,
+            "high": 26
+          },
+          {
+            "low": 26,
+            "high": 28
+          },
+          {
+            "low": 28,
+            "high": 30
+          },
+          {
+            "low": 30,
+            "high": 32
+          },
+          {
+            "low": 32,
+            "high": 34
+          },
+          {
+            "low": 34,
+            "high": 36
+          },
+          {
+            "low": 36,
+            "high": 38
+          },
+          {
+            "low": 38,
+            "high": 40
+          },
+          {
+            "low": 41,
+            "high": 48
+          }
+        ],
+        "rangesTruncated": 3201
+      }
+    ],
+    "rows": [
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 0,
+        "address": 8793,
+        "addressHex": "0x2259",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 10,
+        "column": 8,
+        "span": 25,
+        "isFirstRowOfSequence": true,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 0,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 1,
+        "address": 8818,
+        "addressHex": "0x2272",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 10,
+        "column": 8,
+        "span": 4,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 25,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 2,
+        "address": 8822,
+        "addressHex": "0x2276",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 10,
+        "column": 2,
+        "span": 3,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 29,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      }
+    ],
+    "inAnyUnitRange": true,
+    "fileRows": [
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 8793,
+        "sequenceStartHex": "0x2259",
+        "rows": [
+          {
+            "i": 0,
+            "address": 8793,
+            "addressHex": "0x2259",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 8818,
+            "addressHex": "0x2272",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 25
+          },
+          {
+            "i": 2,
+            "address": 8822,
+            "addressHex": "0x2276",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 29
+          },
+          {
+            "i": 3,
+            "address": 8825,
+            "addressHex": "0x2279",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 32
+          },
+          {
+            "i": 4,
+            "address": 8829,
+            "addressHex": "0x227d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 36
+          },
+          {
+            "i": 5,
+            "address": 8832,
+            "addressHex": "0x2280",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 39
+          },
+          {
+            "i": 6,
+            "address": 8834,
+            "addressHex": "0x2282",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 41
+          },
+          {
+            "i": 7,
+            "address": 8836,
+            "addressHex": "0x2284",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 43
+          },
+          {
+            "i": 8,
+            "address": 8840,
+            "addressHex": "0x2288",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 47
+          },
+          {
+            "i": 10,
+            "address": 8844,
+            "addressHex": "0x228c",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 51
+          },
+          {
+            "i": 11,
+            "address": 8858,
+            "addressHex": "0x229a",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 65
+          },
+          {
+            "i": 12,
+            "address": 8873,
+            "addressHex": "0x22a9",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 80
+          },
+          {
+            "i": 13,
+            "address": 8876,
+            "addressHex": "0x22ac",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 83
+          },
+          {
+            "i": 14,
+            "address": 8878,
+            "addressHex": "0x22ae",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 85
+          },
+          {
+            "i": 15,
+            "address": 8882,
+            "addressHex": "0x22b2",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 89
+          },
+          {
+            "i": 16,
+            "address": 8884,
+            "addressHex": "0x22b4",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 91
+          },
+          {
+            "i": 17,
+            "address": 8886,
+            "addressHex": "0x22b6",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 93
+          },
+          {
+            "i": 18,
+            "address": 8889,
+            "addressHex": "0x22b9",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 96
+          },
+          {
+            "i": 19,
+            "address": 8893,
+            "addressHex": "0x22bd",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 100
+          },
+          {
+            "i": 21,
+            "address": 8897,
+            "addressHex": "0x22c1",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 104
+          },
+          {
+            "i": 22,
+            "address": 8911,
+            "addressHex": "0x22cf",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 118
+          },
+          {
+            "i": 23,
+            "address": 8926,
+            "addressHex": "0x22de",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 133
+          },
+          {
+            "i": 24,
+            "address": 8930,
+            "addressHex": "0x22e2",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 137
+          },
+          {
+            "i": 25,
+            "address": 8945,
+            "addressHex": "0x22f1",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 152
+          },
+          {
+            "i": 26,
+            "address": 8947,
+            "addressHex": "0x22f3",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 154
+          },
+          {
+            "i": 27,
+            "address": 8962,
+            "addressHex": "0x2302",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 169
+          },
+          {
+            "i": 28,
+            "address": 8977,
+            "addressHex": "0x2311",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 184
+          },
+          {
+            "i": 29,
+            "address": 8981,
+            "addressHex": "0x2315",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 188
+          },
+          {
+            "i": 30,
+            "address": 8996,
+            "addressHex": "0x2324",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 203
+          },
+          {
+            "i": 31,
+            "address": 8999,
+            "addressHex": "0x2327",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 206
+          },
+          {
+            "i": 32,
+            "address": 9004,
+            "addressHex": "0x232c",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 211
+          },
+          {
+            "i": 33,
+            "address": 9010,
+            "addressHex": "0x2332",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 217
+          },
+          {
+            "i": 34,
+            "address": 9014,
+            "addressHex": "0x2336",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 221
+          },
+          {
+            "i": 35,
+            "address": 9017,
+            "addressHex": "0x2339",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 224
+          },
+          {
+            "i": 36,
+            "address": 9021,
+            "addressHex": "0x233d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 228
+          },
+          {
+            "i": 37,
+            "address": 9027,
+            "addressHex": "0x2343",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 22,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 234
+          },
+          {
+            "i": 38,
+            "address": 9035,
+            "addressHex": "0x234b",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 242
+          },
+          {
+            "i": 39,
+            "address": 9049,
+            "addressHex": "0x2359",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 256
+          },
+          {
+            "i": 40,
+            "address": 9051,
+            "addressHex": "0x235b",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 258
+          },
+          {
+            "i": 41,
+            "address": 9054,
+            "addressHex": "0x235e",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 261
+          },
+          {
+            "i": 42,
+            "address": 9056,
+            "addressHex": "0x2360",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 263
+          },
+          {
+            "i": 43,
+            "address": 9060,
+            "addressHex": "0x2364",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 267
+          },
+          {
+            "i": 44,
+            "address": 9074,
+            "addressHex": "0x2372",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 281
+          },
+          {
+            "i": 45,
+            "address": 9089,
+            "addressHex": "0x2381",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 296
+          },
+          {
+            "i": 46,
+            "address": 9093,
+            "addressHex": "0x2385",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 24,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 300
+          },
+          {
+            "i": 47,
+            "address": 9097,
+            "addressHex": "0x2389",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 24,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 304
+          },
+          {
+            "i": 48,
+            "address": 9101,
+            "addressHex": "0x238d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 25,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 308
+          },
+          {
+            "i": 49,
+            "address": 9105,
+            "addressHex": "0x2391",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 25,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 312
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "case": "io_line14",
+    "module": "game.wasm",
+    "modulePath": "/home/acakar/work/Tension/examples/io/build/game.wasm",
+    "wantedFile": "game.ts",
+    "wantedLine": 14,
+    "units": [
+      {
+        "index": 0,
+        "name": "game.wasm",
+        "compDir": "/home/acakar/work/Tension/examples/io",
+        "lowPc": null,
+        "highPc": null,
+        "rangeCount": 3213,
+        "ranges": [
+          {
+            "low": 3,
+            "high": 12
+          },
+          {
+            "low": 13,
+            "high": 22
+          },
+          {
+            "low": 23,
+            "high": 24
+          },
+          {
+            "low": 24,
+            "high": 26
+          },
+          {
+            "low": 26,
+            "high": 28
+          },
+          {
+            "low": 28,
+            "high": 30
+          },
+          {
+            "low": 30,
+            "high": 32
+          },
+          {
+            "low": 32,
+            "high": 34
+          },
+          {
+            "low": 34,
+            "high": 36
+          },
+          {
+            "low": 36,
+            "high": 38
+          },
+          {
+            "low": 38,
+            "high": 40
+          },
+          {
+            "low": 41,
+            "high": 48
+          }
+        ],
+        "rangesTruncated": 3201
+      }
+    ],
+    "rows": [
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 7,
+        "address": 8836,
+        "addressHex": "0x2284",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 14,
+        "column": 8,
+        "span": 4,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 43,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 8,
+        "address": 8840,
+        "addressHex": "0x2288",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 14,
+        "column": 23,
+        "span": 2,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 47,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 10,
+        "address": 8844,
+        "addressHex": "0x228c",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 14,
+        "column": 23,
+        "span": 14,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 51,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 11,
+        "address": 8858,
+        "addressHex": "0x229a",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 14,
+        "column": 8,
+        "span": 15,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 65,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      },
+      {
+        "unitIndex": 0,
+        "sequenceIndex": 62,
+        "rowIndex": 12,
+        "address": 8873,
+        "addressHex": "0x22a9",
+        "file": "/home/acakar/work/Tension/examples/io/game.ts",
+        "line": 14,
+        "column": 2,
+        "span": 3,
+        "isFirstRowOfSequence": false,
+        "sequenceStart": 8793,
+        "offsetFromSequenceStart": 80,
+        "sequenceRowCount": 50,
+        "inUnitRanges": true,
+        "inUnitLowHigh": false
+      }
+    ],
+    "inAnyUnitRange": true,
+    "fileRows": [
+      {
+        "sequenceIndex": null,
+        "sequenceStart": 8793,
+        "sequenceStartHex": "0x2259",
+        "rows": [
+          {
+            "i": 0,
+            "address": 8793,
+            "addressHex": "0x2259",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": true,
+            "offsetFromSequenceStart": 0
+          },
+          {
+            "i": 1,
+            "address": 8818,
+            "addressHex": "0x2272",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 25
+          },
+          {
+            "i": 2,
+            "address": 8822,
+            "addressHex": "0x2276",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 10,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 29
+          },
+          {
+            "i": 3,
+            "address": 8825,
+            "addressHex": "0x2279",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 32
+          },
+          {
+            "i": 4,
+            "address": 8829,
+            "addressHex": "0x227d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 11,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 36
+          },
+          {
+            "i": 5,
+            "address": 8832,
+            "addressHex": "0x2280",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 39
+          },
+          {
+            "i": 6,
+            "address": 8834,
+            "addressHex": "0x2282",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 13,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 41
+          },
+          {
+            "i": 7,
+            "address": 8836,
+            "addressHex": "0x2284",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 43
+          },
+          {
+            "i": 8,
+            "address": 8840,
+            "addressHex": "0x2288",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 47
+          },
+          {
+            "i": 10,
+            "address": 8844,
+            "addressHex": "0x228c",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 51
+          },
+          {
+            "i": 11,
+            "address": 8858,
+            "addressHex": "0x229a",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 65
+          },
+          {
+            "i": 12,
+            "address": 8873,
+            "addressHex": "0x22a9",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 14,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 80
+          },
+          {
+            "i": 13,
+            "address": 8876,
+            "addressHex": "0x22ac",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 83
+          },
+          {
+            "i": 14,
+            "address": 8878,
+            "addressHex": "0x22ae",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 85
+          },
+          {
+            "i": 15,
+            "address": 8882,
+            "addressHex": "0x22b2",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 89
+          },
+          {
+            "i": 16,
+            "address": 8884,
+            "addressHex": "0x22b4",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 91
+          },
+          {
+            "i": 17,
+            "address": 8886,
+            "addressHex": "0x22b6",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 93
+          },
+          {
+            "i": 18,
+            "address": 8889,
+            "addressHex": "0x22b9",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 96
+          },
+          {
+            "i": 19,
+            "address": 8893,
+            "addressHex": "0x22bd",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 100
+          },
+          {
+            "i": 21,
+            "address": 8897,
+            "addressHex": "0x22c1",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 104
+          },
+          {
+            "i": 22,
+            "address": 8911,
+            "addressHex": "0x22cf",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 118
+          },
+          {
+            "i": 23,
+            "address": 8926,
+            "addressHex": "0x22de",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 133
+          },
+          {
+            "i": 24,
+            "address": 8930,
+            "addressHex": "0x22e2",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 137
+          },
+          {
+            "i": 25,
+            "address": 8945,
+            "addressHex": "0x22f1",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 152
+          },
+          {
+            "i": 26,
+            "address": 8947,
+            "addressHex": "0x22f3",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 154
+          },
+          {
+            "i": 27,
+            "address": 8962,
+            "addressHex": "0x2302",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 169
+          },
+          {
+            "i": 28,
+            "address": 8977,
+            "addressHex": "0x2311",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 184
+          },
+          {
+            "i": 29,
+            "address": 8981,
+            "addressHex": "0x2315",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 188
+          },
+          {
+            "i": 30,
+            "address": 8996,
+            "addressHex": "0x2324",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 17,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 203
+          },
+          {
+            "i": 31,
+            "address": 8999,
+            "addressHex": "0x2327",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 206
+          },
+          {
+            "i": 32,
+            "address": 9004,
+            "addressHex": "0x232c",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 16,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 211
+          },
+          {
+            "i": 33,
+            "address": 9010,
+            "addressHex": "0x2332",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 217
+          },
+          {
+            "i": 34,
+            "address": 9014,
+            "addressHex": "0x2336",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 20,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 221
+          },
+          {
+            "i": 35,
+            "address": 9017,
+            "addressHex": "0x2339",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 224
+          },
+          {
+            "i": 36,
+            "address": 9021,
+            "addressHex": "0x233d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 21,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 228
+          },
+          {
+            "i": 37,
+            "address": 9027,
+            "addressHex": "0x2343",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 22,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 234
+          },
+          {
+            "i": 38,
+            "address": 9035,
+            "addressHex": "0x234b",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 242
+          },
+          {
+            "i": 39,
+            "address": 9049,
+            "addressHex": "0x2359",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 256
+          },
+          {
+            "i": 40,
+            "address": 9051,
+            "addressHex": "0x235b",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 258
+          },
+          {
+            "i": 41,
+            "address": 9054,
+            "addressHex": "0x235e",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 261
+          },
+          {
+            "i": 42,
+            "address": 9056,
+            "addressHex": "0x2360",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 263
+          },
+          {
+            "i": 43,
+            "address": 9060,
+            "addressHex": "0x2364",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 267
+          },
+          {
+            "i": 44,
+            "address": 9074,
+            "addressHex": "0x2372",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 281
+          },
+          {
+            "i": 45,
+            "address": 9089,
+            "addressHex": "0x2381",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 23,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 296
+          },
+          {
+            "i": 46,
+            "address": 9093,
+            "addressHex": "0x2385",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 24,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 300
+          },
+          {
+            "i": 47,
+            "address": 9097,
+            "addressHex": "0x2389",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 24,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 304
+          },
+          {
+            "i": 48,
+            "address": 9101,
+            "addressHex": "0x238d",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 25,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 308
+          },
+          {
+            "i": 49,
+            "address": 9105,
+            "addressHex": "0x2391",
+            "file": "/home/acakar/work/Tension/examples/io/game.ts",
+            "line": 25,
+            "isEnd": false,
+            "isFirst": false,
+            "offsetFromSequenceStart": 312
+          }
+        ]
+      }
+    ]
+  }
+]
