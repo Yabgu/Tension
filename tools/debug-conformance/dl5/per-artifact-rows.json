@@ -1,0 +1,461 @@
+{
+  "format": "dl5-per-artifact v1",
+  "rows": [
+    {
+      "program": "async-after-await",
+      "objectBytes": 1121464,
+      "rows": 2126,
+      "rowsOut": 394,
+      "rowsOutPct": 18.5,
+      "rangePairs": 7911,
+      "livePairs": 7911,
+      "dupPairs": 5150,
+      "gaps": 357,
+      "gapBytes": 33507,
+      "sampleOutside": [
+        "0x7ffff58e3140",
+        "0x7ffff58e3193",
+        "0x7ffff58e31a4",
+        "0x7ffff58e31a9",
+        "0x7ffff58e31d0"
+      ]
+    },
+    {
+      "program": "async-before-await",
+      "objectBytes": 1121784,
+      "rows": 2128,
+      "rowsOut": 394,
+      "rowsOutPct": 18.5,
+      "rangePairs": 7915,
+      "livePairs": 7915,
+      "dupPairs": 5152,
+      "gaps": 357,
+      "gapBytes": 33514,
+      "sampleOutside": [
+        "0x7ffff58e3140",
+        "0x7ffff58e3193",
+        "0x7ffff58e31a4",
+        "0x7ffff58e31a9",
+        "0x7ffff58e31d0"
+      ]
+    },
+    {
+      "program": "async-loop-resume",
+      "objectBytes": 1214640,
+      "rows": 2316,
+      "rowsOut": 423,
+      "rowsOutPct": 18.3,
+      "rangePairs": 8999,
+      "livePairs": 8999,
+      "dupPairs": 5959,
+      "gaps": 368,
+      "gapBytes": 34145,
+      "sampleOutside": [
+        "0x7ffff74d8140",
+        "0x7ffff74d8193",
+        "0x7ffff74d81a4",
+        "0x7ffff74d81a9",
+        "0x7ffff74d81d0"
+      ]
+    },
+    {
+      "program": "async-on-main",
+      "objectBytes": 737408,
+      "rows": 1797,
+      "rowsOut": 322,
+      "rowsOutPct": 17.9,
+      "rangePairs": 6010,
+      "livePairs": 6010,
+      "dupPairs": 3742,
+      "gaps": 251,
+      "gapBytes": 24090,
+      "sampleOutside": [
+        "0x7ffff5b41140",
+        "0x7ffff5b41193",
+        "0x7ffff5b411a4",
+        "0x7ffff5b411a9",
+        "0x7ffff5b411d0"
+      ]
+    },
+    {
+      "program": "class-method",
+      "objectBytes": 791096,
+      "rows": 1233,
+      "rowsOut": 226,
+      "rowsOutPct": 18.3,
+      "rangePairs": 6407,
+      "livePairs": 6407,
+      "dupPairs": 4651,
+      "gaps": 179,
+      "gapBytes": 15965,
+      "sampleOutside": [
+        "0x7ffff753f140",
+        "0x7ffff753f193",
+        "0x7ffff753f1a4",
+        "0x7ffff753f1a9",
+        "0x7ffff753f1d0"
+      ]
+    },
+    {
+      "program": "count",
+      "objectBytes": 1119216,
+      "rows": 2506,
+      "rowsOut": 416,
+      "rowsOutPct": 16.6,
+      "rangePairs": 11378,
+      "livePairs": 11378,
+      "dupPairs": 8022,
+      "gaps": 247,
+      "gapBytes": 21291,
+      "sampleOutside": [
+        "0x7ffff74ef060",
+        "0x7ffff74ef09c",
+        "0x7ffff74ef09e",
+        "0x7ffff74ef0ba",
+        "0x7ffff74ef107"
+      ]
+    },
+    {
+      "program": "fallback-loop",
+      "objectBytes": 1198088,
+      "rows": 2317,
+      "rowsOut": 411,
+      "rowsOutPct": 17.7,
+      "rangePairs": 8969,
+      "livePairs": 8969,
+      "dupPairs": 5921,
+      "gaps": 356,
+      "gapBytes": 33694,
+      "sampleOutside": [
+        "0x7ffff74dc1a0",
+        "0x7ffff74dc1f3",
+        "0x7ffff74dc204",
+        "0x7ffff74dc209",
+        "0x7ffff74dc230"
+      ]
+    },
+    {
+      "program": "first-after-decls",
+      "objectBytes": 782528,
+      "rows": 1212,
+      "rowsOut": 221,
+      "rowsOutPct": 18.2,
+      "rangePairs": 6360,
+      "livePairs": 6360,
+      "dupPairs": 4622,
+      "gaps": 175,
+      "gapBytes": 15719,
+      "sampleOutside": [
+        "0x7ffff7541140",
+        "0x7ffff7541193",
+        "0x7ffff75411a4",
+        "0x7ffff75411a9",
+        "0x7ffff75411d0"
+      ]
+    },
+    {
+      "program": "first-branch",
+      "objectBytes": 684992,
+      "rows": 1030,
+      "rowsOut": 201,
+      "rowsOutPct": 19.5,
+      "rangePairs": 5267,
+      "livePairs": 5267,
+      "dupPairs": 3809,
+      "gaps": 165,
+      "gapBytes": 15316,
+      "sampleOutside": [
+        "0x7ffff7559140",
+        "0x7ffff7559193",
+        "0x7ffff75591a4",
+        "0x7ffff75591a9",
+        "0x7ffff75591d0"
+      ]
+    },
+    {
+      "program": "first-loop",
+      "objectBytes": 781976,
+      "rows": 1215,
+      "rowsOut": 224,
+      "rowsOutPct": 18.4,
+      "rangePairs": 6348,
+      "livePairs": 6348,
+      "dupPairs": 4611,
+      "gaps": 176,
+      "gapBytes": 15816,
+      "sampleOutside": [
+        "0x7ffff7542140",
+        "0x7ffff7542193",
+        "0x7ffff75421a4",
+        "0x7ffff75421a9",
+        "0x7ffff75421d0"
+      ]
+    },
+    {
+      "program": "first-statement",
+      "objectBytes": 684576,
+      "rows": 1025,
+      "rowsOut": 199,
+      "rowsOutPct": 19.4,
+      "rangePairs": 5259,
+      "livePairs": 5259,
+      "dupPairs": 3804,
+      "gaps": 165,
+      "gapBytes": 15324,
+      "sampleOutside": [
+        "0x7ffff7559140",
+        "0x7ffff7559193",
+        "0x7ffff75591a4",
+        "0x7ffff75591a9",
+        "0x7ffff75591d0"
+      ]
+    },
+    {
+      "program": "lambda-body",
+      "objectBytes": 791312,
+      "rows": 1232,
+      "rowsOut": 226,
+      "rowsOutPct": 18.3,
+      "rangePairs": 6401,
+      "livePairs": 6401,
+      "dupPairs": 4644,
+      "gaps": 179,
+      "gapBytes": 16021,
+      "sampleOutside": [
+        "0x7ffff753f140",
+        "0x7ffff753f193",
+        "0x7ffff753f1a4",
+        "0x7ffff753f1a9",
+        "0x7ffff753f1d0"
+      ]
+    },
+    {
+      "program": "main-policy",
+      "objectBytes": 1196432,
+      "rows": 2291,
+      "rowsOut": 410,
+      "rowsOutPct": 17.9,
+      "rangePairs": 8937,
+      "livePairs": 8937,
+      "dupPairs": 5919,
+      "gaps": 356,
+      "gapBytes": 33715,
+      "sampleOutside": [
+        "0x7ffff74dc1a0",
+        "0x7ffff74dc1f3",
+        "0x7ffff74dc204",
+        "0x7ffff74dc209",
+        "0x7ffff74dc230"
+      ]
+    },
+    {
+      "program": "main-step-replaced",
+      "objectBytes": 1197440,
+      "rows": 2310,
+      "rowsOut": 418,
+      "rowsOutPct": 18.1,
+      "rangePairs": 8955,
+      "livePairs": 8955,
+      "dupPairs": 5925,
+      "gaps": 357,
+      "gapBytes": 33804,
+      "sampleOutside": [
+        "0x7ffff74dc1a0",
+        "0x7ffff74dc1f3",
+        "0x7ffff74dc204",
+        "0x7ffff74dc209",
+        "0x7ffff74dc230"
+      ]
+    },
+    {
+      "program": "promise-fallback",
+      "objectBytes": 1123008,
+      "rows": 2098,
+      "rowsOut": 396,
+      "rowsOutPct": 18.9,
+      "rangePairs": 8679,
+      "livePairs": 8679,
+      "dupPairs": 5936,
+      "gaps": 325,
+      "gapBytes": 30747,
+      "sampleOutside": [
+        "0x7ffff74ee140",
+        "0x7ffff74ee193",
+        "0x7ffff74ee1a4",
+        "0x7ffff74ee1a9",
+        "0x7ffff74ee1d0"
+      ]
+    },
+    {
+      "program": "rt-guards",
+      "objectBytes": 989312,
+      "rows": 2235,
+      "rowsOut": 437,
+      "rowsOutPct": 19.6,
+      "rangePairs": 8892,
+      "livePairs": 8892,
+      "dupPairs": 6033,
+      "gaps": 317,
+      "gapBytes": 29578,
+      "sampleOutside": [
+        "0x7ffff750f220",
+        "0x7ffff750f273",
+        "0x7ffff750f284",
+        "0x7ffff750f289",
+        "0x7ffff750f2b0"
+      ]
+    },
+    {
+      "program": "schedule-order",
+      "objectBytes": 1352104,
+      "rows": 2787,
+      "rowsOut": 530,
+      "rowsOutPct": 19,
+      "rangePairs": 9793,
+      "livePairs": 9793,
+      "dupPairs": 6287,
+      "gaps": 419,
+      "gapBytes": 38593,
+      "sampleOutside": [
+        "0x7ffff74b61a0",
+        "0x7ffff74b61f3",
+        "0x7ffff74b6204",
+        "0x7ffff74b6209",
+        "0x7ffff74b6230"
+      ]
+    },
+    {
+      "program": "second-function",
+      "objectBytes": 685064,
+      "rows": 1031,
+      "rowsOut": 204,
+      "rowsOutPct": 19.8,
+      "rangePairs": 5263,
+      "livePairs": 5263,
+      "dupPairs": 3806,
+      "gaps": 166,
+      "gapBytes": 15440,
+      "sampleOutside": [
+        "0x7ffff7559140",
+        "0x7ffff7559193",
+        "0x7ffff75591a4",
+        "0x7ffff75591a9",
+        "0x7ffff75591d0"
+      ]
+    },
+    {
+      "program": "spawn-join",
+      "objectBytes": 1353544,
+      "rows": 3145,
+      "rowsOut": 522,
+      "rowsOutPct": 16.6,
+      "rangePairs": 12948,
+      "livePairs": 12948,
+      "dupPairs": 8852,
+      "gaps": 344,
+      "gapBytes": 29351,
+      "sampleOutside": [
+        "0x7ffff74b6060",
+        "0x7ffff74b609c",
+        "0x7ffff74b609e",
+        "0x7ffff74b60ba",
+        "0x7ffff74b6107"
+      ]
+    },
+    {
+      "program": "spawn-refusals",
+      "objectBytes": 1120008,
+      "rows": 2507,
+      "rowsOut": 420,
+      "rowsOutPct": 16.8,
+      "rangePairs": 11390,
+      "livePairs": 11390,
+      "dupPairs": 8039,
+      "gaps": 248,
+      "gapBytes": 21339,
+      "sampleOutside": [
+        "0x7ffff74ef060",
+        "0x7ffff74ef09c",
+        "0x7ffff74ef09e",
+        "0x7ffff74ef0ba",
+        "0x7ffff74ef107"
+      ]
+    },
+    {
+      "program": "stack-switch-resume",
+      "objectBytes": 1210600,
+      "rows": 2302,
+      "rowsOut": 407,
+      "rowsOutPct": 17.7,
+      "rangePairs": 8989,
+      "livePairs": 8989,
+      "dupPairs": 5954,
+      "gaps": 363,
+      "gapBytes": 34171,
+      "sampleOutside": [
+        "0x7ffff74d9140",
+        "0x7ffff74d9193",
+        "0x7ffff74d91a4",
+        "0x7ffff74d91a9",
+        "0x7ffff74d91d0"
+      ]
+    },
+    {
+      "program": "start-game-entry",
+      "objectBytes": 973600,
+      "rows": 1745,
+      "rowsOut": 321,
+      "rowsOutPct": 18.4,
+      "rangePairs": 7162,
+      "livePairs": 7162,
+      "dupPairs": 4828,
+      "gaps": 279,
+      "gapBytes": 27492,
+      "sampleOutside": [
+        "0x7ffff5b08140",
+        "0x7ffff5b08193",
+        "0x7ffff5b081a4",
+        "0x7ffff5b081a9",
+        "0x7ffff5b081d0"
+      ]
+    },
+    {
+      "program": "task-entry",
+      "objectBytes": 1135696,
+      "rows": 2164,
+      "rowsOut": 393,
+      "rowsOutPct": 18.2,
+      "rangePairs": 8098,
+      "livePairs": 8098,
+      "dupPairs": 5286,
+      "gaps": 354,
+      "gapBytes": 33888,
+      "sampleOutside": [
+        "0x7ffff5ae0140",
+        "0x7ffff5ae0193",
+        "0x7ffff5ae01a4",
+        "0x7ffff5ae01a9",
+        "0x7ffff5ae01d0"
+      ]
+    },
+    {
+      "program": "two-workers",
+      "objectBytes": 1365136,
+      "rows": 3158,
+      "rowsOut": 522,
+      "rowsOutPct": 16.5,
+      "rangePairs": 13118,
+      "livePairs": 13118,
+      "dupPairs": 9001,
+      "gaps": 344,
+      "gapBytes": 29302,
+      "sampleOutside": [
+        "0x7ffff74b3060",
+        "0x7ffff74b309c",
+        "0x7ffff74b309e",
+        "0x7ffff74b30ba",
+        "0x7ffff74b3107"
+      ]
+    }
+  ]
+}
