@@ -127,6 +127,32 @@ Measured, not inferred. Two guests, same host flag, same lldb commands.
   breakpoint stays pending to the end of the process — with DWARF in the guest
   and a correct `-f`/`-l`. The startup report says which of the two you have.
 
+- **A pending breakpoint can also mean the guest never ran.** The JIT image is
+  created when the module is instantiated, so a host that exits before that —
+  a missing argument, a refused session, a panic while loading a model — leaves
+  lldb nothing to bind to. The transcript looks like broken DWARF and is not:
+
+  ```
+  (lldb) breakpoint list
+  1: file = 'story.ts', line = 234, locations = 1,
+     where = <Unknown>[0x00007ffff74e0d92], ..., unresolved, hit count = 0
+  ```
+
+  Note the missing `JIT(0x…)` module name and `resolved = 1`: a guest that ran
+  prints `where = JIT(0x7ffff5a14010)`… at `file:line`. Measured on
+  `examples/ai` with its GGUF absent — the host panics inside `session_create`
+  before `_start_game`, so `story.ts:234` never binds while the same file binds
+  in `examples/io`. Read the process output above the breakpoint list first:
+  the reason the guest did not run is there. The `ai` example's debug task now
+  checks for the model and names `npm run fetch-model`, rather than leaving a
+  breakpoint that silently never hits.
+
+  A guest compiled with `--importMemory` and launched **without** the session
+  that defines `env::memory` fails the same way for the same reason
+  (`unknown import: env::memory has not been defined`, exit 1). The thread
+  programs import their memory too, which is why they are launched with the
+  host's `--executors` and the shared-memory path.
+
 - **Windows — no, and not because of this repository.** Measured on the Windows
   host with the msys2 lldb (`C:\msys64\ucrt64\bin\lldb.exe`): the process runs,
   the guest executes, and `image list` shows **no `JIT(0x…)` image at all**. The
@@ -135,6 +161,52 @@ Measured, not inferred. Two guests, same host flag, same lldb commands.
   ELF-target module the GDB plugin reads, and lldb on Windows does not consume
   that registration. So a guest breakpoint there is impossible today, DWARF or
   not, and no flag or setting changes it.
+
+### Known defect: some lines in async bodies bind without a source location
+
+Measured on Linux x86-64, wasmtime 50, lldb 19, with a compiler-emitted DWARF
+guest. Some breakpoints bind and stop, but lldb prints no `at file:line`, and
+errors once per location with:
+
+```
+error: JIT(0x…) unable to resolve a line table file address 0x… back to a
+       compile unit, please file a bug and attach the address and file.
+```
+
+A table from two guests, because the shape is not yet predictable:
+
+| guest | line | what it is | result |
+|---|---|---|---|
+| `examples/async-on-main/game.ts` | 54 | first statement of `base()` | binds, **no location** |
+| | 55 | second statement of `base()` | `game.ts:55:40` |
+| | 69 | first statement of `outer()` | binds, **no location** |
+| | 77 | first statement of `main()` | binds, **no location** |
+| | 80, 83, 88, 89, 91, 95 | later lines in `main()` | resolve |
+| `tests/programs/async/async-on-main.ts` | 34, 35, 36 | inside `step(x)` | bind, **no location** |
+| | 41, 42 | inside `main()` | resolve |
+
+Non-async lines in the same stack-switching modules resolve normally
+(`main-policy.ts:41`, `schedule-order.ts:99` and `:148`), which is why the
+suite's breakpoint test passes while this defect is live.
+
+What has been **ruled out**, each measured rather than assumed:
+
+- the DWARF is internally consistent — `.debug_ranges` is ascending,
+  non-overlapping, non-empty (4,661 entries), it covers the whole code payload
+  (extent `0x3..0x5c08` = the payload size exactly), every source-map row's
+  address falls inside an entry, and every file index is in the file table;
+- the guest runs to completion (exit 0, 14 transcript lines), so this is not
+  the "guest never ran" case above;
+- whole-body `DW_AT_ranges` is **worse**, not better: rewriting the section to
+  one entry per body made `game.ts:80` stop resolving as well (16 unresolved
+  errors). The row-granular tiling is loading-bearing and must stay;
+- it is not the optimization level: both the failing and the passing example
+  are built at the default `-O0`.
+
+Still open: which rows lldb cannot attribute, and why. The next probe is
+wasmtime's JIT translation (its per-function address map and the frame table it
+hands the debugger), not the DWARF, because the DWARF side is now measured
+consistent.
 
 **A `.ts` breakpoint on Windows is a different question, and the answer there
 is yes.** The lldb route above is `tension-core`; the Node route below is V8,
