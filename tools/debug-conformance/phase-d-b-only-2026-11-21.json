@@ -1,0 +1,1236 @@
+{
+  "lldb": null,
+  "binary": "tension-core/target/release/tension-core",
+  "results": [
+    {
+      "name": "first_statement_print",
+      "program": "first-statement",
+      "file": "first-statement.ts",
+      "line": 7,
+      "group": "A",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "first-statement.ts:7 -> stopped with no source file (empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "first_statement_after_declarations",
+      "program": "first-after-decls",
+      "file": "first-after-decls.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "first-after-decls.ts:10",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "first_statement_branch",
+      "program": "first-branch",
+      "file": "first-branch.ts",
+      "line": 5,
+      "group": "A",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "first-branch.ts:5 -> stopped with no source file (empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "first_statement_loop",
+      "program": "first-loop",
+      "file": "first-loop.ts",
+      "line": 6,
+      "group": "A",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "first-loop.ts:6 -> stopped with no source file (empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "async_statement_before_await",
+      "program": "async-before-await",
+      "file": "async-before-await.ts",
+      "line": 11,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-before-await.ts:11 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_statement_after_await",
+      "program": "async-after-await",
+      "file": "async-after-await.ts",
+      "line": 13,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-after-await.ts:13 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_resume_in_loop",
+      "program": "async-loop-resume",
+      "file": "async-loop-resume.ts",
+      "line": 13,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-loop-resume.ts:13 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "stack_switch_nested_resume",
+      "program": "stack-switch-resume",
+      "file": "stack-switch-resume.ts",
+      "line": 13,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "stack-switch-resume.ts:13 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "promise_backend_before_await",
+      "program": "promise-fallback",
+      "file": "promise-fallback.ts",
+      "line": 14,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "promise-fallback.ts:14",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "task_entry_first_statement",
+      "program": "task-entry",
+      "file": "task-entry.ts",
+      "line": 8,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "task-entry.ts:8 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "lambda_body",
+      "program": "lambda-body",
+      "file": "lambda-body.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "lambda-body.ts:10 -> stopped with no source file (empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "class_method",
+      "program": "class-method",
+      "file": "class-method.ts",
+      "line": 13,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "class-method.ts:13",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "class_constructor",
+      "program": "class-method",
+      "file": "class-method.ts",
+      "line": 9,
+      "group": "A",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "class-method.ts:9",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "second_function_in_file",
+      "program": "second-function",
+      "file": "second-function.ts",
+      "line": 10,
+      "group": "A",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "second-function.ts:10 -> stopped with no source file (empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "entry_surface_main",
+      "program": "start-game-entry",
+      "file": "start-game-entry.ts",
+      "line": 8,
+      "group": "A",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "start-game-entry.ts:8 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_on_main.transcript#1",
+      "program": "async-on-main",
+      "file": "async-on-main.ts",
+      "line": 50,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-on-main.ts:50 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_on_main.transcript#2",
+      "program": "async-on-main",
+      "file": "async-on-main.ts",
+      "line": 61,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-on-main.ts:61 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_on_main.transcript#3",
+      "program": "async-on-main",
+      "file": "async-on-main.ts",
+      "line": 62,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-on-main.ts:62 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "async_on_main.transcript#4",
+      "program": "async-on-main",
+      "file": "async-on-main.ts",
+      "line": 63,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "async-on-main.ts:63 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_policy.transcript#1",
+      "program": "main-policy",
+      "file": "main-policy.ts",
+      "line": 37,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-policy.ts:37 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_policy.transcript#2",
+      "program": "main-policy",
+      "file": "main-policy.ts",
+      "line": 41,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-policy.ts:41 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_policy.transcript#3",
+      "program": "main-policy",
+      "file": "main-policy.ts",
+      "line": 42,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-policy.ts:42 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_policy.transcript#4",
+      "program": "main-policy",
+      "file": "main-policy.ts",
+      "line": 43,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-policy.ts:43 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#1",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 41,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:41 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#2",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 43,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:43 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#3",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 45,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:45 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#4",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 47,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:47 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#5",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 48,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:48 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "fallback_loop.transcript#6",
+      "program": "fallback-loop",
+      "file": "fallback-loop.ts",
+      "line": 49,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "fallback-loop.ts:49 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_step_replaced.transcript#1",
+      "program": "main-step-replaced",
+      "file": "main-step-replaced.ts",
+      "line": 51,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-step-replaced.ts:51 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_step_replaced.transcript#2",
+      "program": "main-step-replaced",
+      "file": "main-step-replaced.ts",
+      "line": 55,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-step-replaced.ts:55 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_step_replaced.transcript#3",
+      "program": "main-step-replaced",
+      "file": "main-step-replaced.ts",
+      "line": 56,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-step-replaced.ts:56 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "main_step_replaced.transcript#4",
+      "program": "main-step-replaced",
+      "file": "main-step-replaced.ts",
+      "line": 57,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "main-step-replaced.ts:57 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#1",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 147,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:147 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#2",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 149,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:149 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#3",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 154,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:154 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#4",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 156,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:156 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#5",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 161,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:161 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#6",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 163,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:163 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#7",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 168,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:168 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#8",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 170,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:170 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#9",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 175,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:175 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#10",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 190,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:190 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#11",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 191,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:191 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#12",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 192,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:192 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#13",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 193,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:193 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "schedule_order.transcript#14",
+      "program": "schedule-order",
+      "file": "schedule-order.ts",
+      "line": 194,
+      "group": "B",
+      "executors": 0,
+      "verdict": "unresolved",
+      "detail": "schedule-order.ts:194 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "rt_guards.transcript#1",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 92,
+      "group": "B",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "rt-guards.ts:92 -> stopped with no source file (empty) (locations 1, resolved 1)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#2",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 95,
+      "group": "B",
+      "executors": 0,
+      "verdict": "stopped with no source file (empty)",
+      "detail": "rt-guards.ts:95 -> stopped with no source file (empty) (locations 2, resolved 2)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 2,
+        "resolved": 2
+      }
+    },
+    {
+      "name": "rt_guards.transcript#3",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 96,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:96",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#4",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 97,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:97",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#5",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 98,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:98",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#6",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 101,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:101",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#7",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 108,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:108",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#8",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 110,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:110",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#9",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 111,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:111",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "rt_guards.transcript#10",
+      "program": "rt-guards",
+      "file": "rt-guards.ts",
+      "line": 112,
+      "group": "B",
+      "executors": 0,
+      "verdict": "pass",
+      "detail": "rt-guards.ts:112",
+      "breakpoint": {
+        "id": 1,
+        "locations": 1,
+        "resolved": 1
+      }
+    },
+    {
+      "name": "thread_count.transcript#1",
+      "program": "count",
+      "file": "count.ts",
+      "line": 39,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "count.ts:39 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "thread_count.transcript#2",
+      "program": "count",
+      "file": "count.ts",
+      "line": 44,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "count.ts:44 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "thread_count.transcript#3",
+      "program": "count",
+      "file": "count.ts",
+      "line": 45,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "count.ts:45 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "thread_count.transcript#4",
+      "program": "count",
+      "file": "count.ts",
+      "line": 46,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "count.ts:46 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "thread_count.transcript#5",
+      "program": "count",
+      "file": "count.ts",
+      "line": 47,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "count.ts:47 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#1",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 122,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:122 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#2",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 123,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:123 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#3",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 126,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:126 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#4",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 131,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:131 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#5",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 132,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:132 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#6",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 133,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:133 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_join.transcript#7",
+      "program": "spawn-join",
+      "file": "spawn-join.ts",
+      "line": 134,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-join.ts:134 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#1",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 110,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:110 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#2",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 111,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:111 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#3",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 120,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:120 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#4",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 121,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:121 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#5",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 122,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:122 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#6",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 123,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:123 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#7",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 126,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:126 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "two_workers.transcript#8",
+      "program": "two-workers",
+      "file": "two-workers.ts",
+      "line": 127,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "two-workers.ts:127 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_refusals.transcript#1",
+      "program": "spawn-refusals",
+      "file": "spawn-refusals.ts",
+      "line": 41,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-refusals.ts:41 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_refusals.transcript#2",
+      "program": "spawn-refusals",
+      "file": "spawn-refusals.ts",
+      "line": 42,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-refusals.ts:42 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_refusals.transcript#3",
+      "program": "spawn-refusals",
+      "file": "spawn-refusals.ts",
+      "line": 46,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-refusals.ts:46 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_refusals.transcript#4",
+      "program": "spawn-refusals",
+      "file": "spawn-refusals.ts",
+      "line": 47,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-refusals.ts:47 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    },
+    {
+      "name": "spawn_refusals.transcript#5",
+      "program": "spawn-refusals",
+      "file": "spawn-refusals.ts",
+      "line": 51,
+      "group": "B",
+      "executors": 2,
+      "verdict": "unresolved",
+      "detail": "spawn-refusals.ts:51 -> unresolved (locations 0, resolved 0)",
+      "breakpoint": {
+        "id": 1,
+        "locations": 0,
+        "resolved": 0
+      }
+    }
+  ]
+}

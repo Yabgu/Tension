@@ -24,10 +24,11 @@ Baselines: red = `red-capture-2026-11-21.json` (63/7/1/11, census
 | red (base) | `rows[first].addr` | none | 63 | 7 | 1 | 11 | 153 |
 | **(a) alone** | `start` | none | 63 | 7 | 1 | 11 | 153 |
 | **(b) alone, as written** | `rows[first].addr` | guarded block | — | — | — | — | — (artifacts byte-identical to base, 24/24) |
-| **(b) alone, constructed** | `rows[first].addr` | bare `DW_LNS_set_prologue_end` | *pending* | | | | *pending* |
+| **(b) alone, constructed** | `rows[first].addr` | bare `DW_LNS_set_prologue_end` | 63 | 7 | 0 | 12 | 153 |
 | (a)+(b) as committed | `start` | guarded block | 63 | 7 | 0 | 12 | 114 |
 
-Captures: [`phase-d-a-only-2026-11-21.json`](phase-d-a-only-2026-11-21.json).
+Captures: [`phase-d-a-only-2026-11-21.json`](phase-d-a-only-2026-11-21.json),
+[`phase-d-b-only-2026-11-21.json`](phase-d-b-only-2026-11-21.json).
 
 ## (a) alone — measured, no effect
 
@@ -67,3 +68,33 @@ no moved `seqStart`.
 This is **my construction, not the candidate's code** — the candidate contains
 no such build. It is here to separate "the marker matters" from "the extra row
 covering the prologue matters".
+
+### Result — the marker alone reproduces the flip
+
+    unresolved 63 / no source 7 / wrong line 0 / pass 12
+    class_method: stopped at 14 -> pass   (the same single flip)
+    census: unchanged, 153 unreachable, 0 improved, 0 worse
+
+So **the prologue marker is what fixes `class_method`**, and half (a) is not
+needed for that verdict. What (a) does add is visible only when compared per
+case against (a)+(b): four `no source file` cases gain a **second** resolved
+location (`locations 1, resolved 1` -> `locations 2, resolved 2`) —
+`first_statement_print`, `first_statement_branch`, `lambda_body`,
+`second_function_in_file` — and their verdict does not change. That second
+location is the row at the body start that only the pair produces, and it is
+also what the census sees: 153 -> 114 unreachable lines.
+
+## Which half is load-bearing
+
+- **For the one conformance flip: (b)**, the prologue marker. (b) alone
+  (constructed) flips `class_method` with no help from (a).
+- **For the census: neither alone, both together.** (a) alone 153, (b) alone
+  153, (a)+(b) 114. The saved lines are the prologue bytes
+  `[start, rows[first].addr)`, which only get a row when the sequence starts at
+  the body (a) *and* the block emits a copy there (b).
+- **As the candidate is written, (a) gates (b).** That coupling is an artifact of
+  the `if (head.addr > seqStart)` guard, not a necessity: the constructed (b)
+  shows the marker works at `seqStart = rows[first].addr` too.
+
+**No case regressed in any of the three builds**, and no assertion was weakened
+to get here.
