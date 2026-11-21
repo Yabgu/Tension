@@ -1,0 +1,70 @@
+(lldb) target create "C:\\work\\Tension\\tension-core\\target\\release\\tension-core.exe"
+Current executable set to 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64).
+(lldb) settings set -- target.run-args  "--debug" "--symbol-path" "C:\\work\\Tension\\examples\\io" "C:\\work\\Tension\\examples\\io\\build\\game.wasm"
+(lldb) command source -s 0 'C:\Users\abdurrahim\AppData\Local\Temp\w2-j\cmds.txt'
+Executing commands in 'C:\Users\abdurrahim\AppData\Local\Temp\w2-j\cmds.txt'.
+(lldb) settings set plugin.jit-loader.gdb.enable on
+(lldb) breakpoint set -f "game.ts" -l 10
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+(lldb) run
+[tension-core] debug: guest C:\work\Tension\examples\io\build\game.wasm
+[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is
+[tension-core] debug:   source map: ./game.wasm.map (found)
+[tension-core] debug:   symbol path: C:\work\Tension\examples\io
+[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on
+[tension-core] debug:   lldb: settings set target.debug-file-search-paths C:\work\Tension\examples\io
+[tension-core] debug:   lldb: image list                     # guest is JIT(0x...)
+[tension-core] debug:   lldb: breakpoint set -f game.ts -l <line>   # source line
+[tension-core] debug:   lldb: breakpoint set -r 'game/'   # or by function name
+2026-11-21T20:03:59.978Z INFO  core: debug: guest already carries DWARF; leaving it alone
+2026-11-21T20:04:00.045Z INFO  core: async backend: promise (no stack switching on this target)
+2026-11-21T20:04:00.046Z INFO  core: res: writing under \\?\C:\work
+1 location added to breakpoint 1
+(lldb) === TensionCore demo game ===
+Process 13532 launched: 'C:\work\Tension\tension-core\target\release\tension-core.exe' (x86_64)
+Process 13532 stopped
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x000001bd9ccb9fd2 JIT(0x1bd9cd98040)`game/_start_game at game.ts:11:8
+   8   	
+   9   	export function _start_game(): void {
+   10  	  print("=== TensionCore demo game ===");
+-> 11  	  print("Arguments passed to the game:");
+    	       ^
+   12  	
+   13  	  let n = argCount();
+   14  	  print("  count = " + n.toString());
+(lldb) image list
+[  0] C2F02A1F-98B8-4DB5-AA6D-B66924B662B2-00000001 0x00007ff78a400000 C:\work\Tension\tension-core\target\release\tension-core.exe 
+[  1] 44294CBD-55E8-CD67-B3D5-6B689F03152D-00000001 0x00007ff945b30000 C:\Windows\System32\ntdll.dll 
+[  2] E7D59A84-80CE-C3B1-5C62-A36AD505637E-00000001 0x00007ff944540000 C:\Windows\System32\kernel32.dll 
+[  3] 4957D45F-C8F7-39B9-5DE0-ABE1EAE2BC1C-00000001 0x00007ff943080000 C:\Windows\System32\KernelBase.dll 
+[  4] 29914076-9379-1DF9-0377-45B9ABFDB207-00000001 0x00007ff9450e0000 C:\Windows\System32\ole32.dll 
+[  5] E690ABC4-E4A0-A670-4293-6D5CB65C760C-00000001 0x00007ff9435f0000 C:\Windows\System32\msvcp_win.dll 
+[  6] 66A3E8DF-B8B8-8614-6544-529E6A6DD4F4-00000001 0x00007ff943490000 C:\Windows\System32\ucrtbase.dll 
+[  7] 92C6EC2A-BE47-8836-C99B-C83C2F3AE355-00000001 0x00007ff944230000 C:\Windows\System32\gdi32.dll 
+[  8] 6BB73143-5D65-BDE0-EFB4-D135F5BEBBF1-00000001 0x00007ff942cd0000 C:\Windows\System32\win32u.dll 
+[  9] 16AA0F4F-B688-27D5-9A6E-A797CEA35D4C-00000001 0x00007ff942dc0000 C:\Windows\System32\gdi32full.dll 
+[ 10] 8AA94273-08F6-A365-E0A1-0363D99DF815-00000001 0x00007ff944610000 C:\Windows\System32\user32.dll 
+[ 11] F4CDE3B9-63B0-A1B4-1526-7C4BCD8A989A-00000001 0x00007ff945540000 C:\Windows\System32\combase.dll 
+[ 12] E9DD1401-5C33-891F-2208-22884DBE17FA-00000001 0x00007ff944410000 C:\Windows\System32\rpcrt4.dll 
+[ 13] 60417C3E-E386-C45C-0576-FE3F5A842299-00000001 0x00007ff944150000 C:\Windows\System32\oleaut32.dll 
+[ 14] 6734B4B7-33DF-510B-9EB2-97344D59C601-00000001 0x00007ff943730000 C:\Windows\System32\bcryptprimitives.dll 
+[ 15] DF4CCD5E-BA14-7093-597A-EA426FDE6CAD-00000001 0x00007ff9370b0000 C:\Windows\System32\MMDevAPI.dll 
+[ 16] 9948D719-A6F5-F6AF-A591-212BD2AFF746-00000001 0x00007ff944f50000 C:\Windows\System32\imm32.dll 
+[ 17] B558B8D8-FC06-D23D-8176-21D762B117B6-00000001 0x00007ff936240000 C:\Windows\System32\winmm.dll 
+[ 18] 440DD63B-E2B0-21F8-0FD0-C78EF0AECEF2-00000001 0x00007ff939db0000 C:\Windows\System32\version.dll 
+[ 19] A36693AB-D3A3-B7EC-E736-5FD5A9FF531B-00000001 0x00007ff945470000 C:\Windows\System32\advapi32.dll 
+[ 20] FC0417B8-DF75-4857-A682-6A24039CC49D-00000001 msvcrt.dll[0x0000000180000000] C:\Windows\System32\msvcrt.dll 
+[ 21] FC0417B8-DF75-4857-A682-6A24039CC49D-00000001 msvcrt.dll[0x0000000180000000] C:\Windows\System32\msvcrt.dll 
+[ 22] FA3AB214-FE01-94CD-BF67-85D4A73C1738-00000001 0x00007ff943fb0000 C:\Windows\System32\sechost.dll 
+[ 23] 1A58C268-CE85-4B09-C6A0-0805123DDF3B-00000001 0x00007ff944a20000 C:\Windows\System32\setupapi.dll 
+[ 24] 64708141-4AA5-C991-B8A9-4F15C5BA6002-00000001 0x00007ff9437f0000 C:\Windows\System32\shell32.dll 
+[ 25] 372A71F2-0351-D8E0-3FDD-EA56AAB7F238-00000001 0x00007ff92b610000 C:\Windows\System32\vcruntime140.dll 
+[ 26] 738E31D6-4D82-DD50-C0A6-F3C3DD74A2D1-00000001 0x00007ff9427e0000 C:\Windows\System32\cfgmgr32.dll 
+[ 27] 6CA3140B 0x000001bd9ccb1000 JIT(0x1bd9cd98040) (0x000001bd9cd98040)
+(lldb) image lookup -n "game/_start_game"
+1 match found in JIT(0x1bd9cd98040):
+        Address: JIT(0x1bd9cd98040)[0x000001bd9ccb9f20] (JIT(0x1bd9cd98040).PT_LOAD[0]..text + 36640)
+        Summary: JIT(0x1bd9cd98040)`game/_start_game at game.ts:10:8
+(lldb) quit

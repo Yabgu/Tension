@@ -1,0 +1,36 @@
+# lldb: lldb version 20.1.4-codelldb
+# guest: C:\work\Tension\examples\io\build\game.wasm (sha256 81F9D86C79E638E08DC6D18E271A444DDC7A3FD3F2362FDAAB7EE9951F1A5E13)
+# command: tensionscript game.ts -o build/game.wasm --runtime incremental --debug --sourceMap --exportStart __start
+# host: tension-core.exe --debug --symbol-path <examples/io> <guest>
+
+===== breakpoint set -f game.ts -l 10 =====
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+1 location added to breakpoint 1
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x000001a264179fd2 JIT(0x1a26425b040)`game/_start_game at game.ts:11:8
+@@LLDB_JSON {"state": 5, "exit_status": -1, "breakpoints": [{"id": 1, "num_locations": 1, "locations": [{"resolved": true, "file": "game.ts", "line": 11, "addr": 1796975599570}]}], "stops": [{"file": "game.ts", "line": 11, "col": 8, "function": "game/_start_game", "pc": 1796975599570, "hit_breakpoint": true, "stop_reason": "3", "threads": 20}], "images": [{"name": "tension-core.exe"}, {"name": "ntdll.dll"}, {"name": "kernel32.dll"}, {"name": "KernelBase.dll"}, {"name": "ole32.dll"}, {"name": "msvcp_win.dll"}, {"name": "ucrtbase.dll"}, {"name": "gdi32.dll"}, {"name": "win32u.dll"}, {"name": "gdi32full.dll"}, {"name": "user32.dll"}, {"name": "combase.dll"}, {"name": "rpcrt4.dll"}, {"name": "oleaut32.dll"}, {"name": "bcryptprimitives.dll"}, {"name": "imm32.dll"}, {"name": "MMDevAPI.dll"}, {"name": "version.dll"}, {"name": "advapi32.dll"}, {"name": "winmm.dll"}, {"name": "msvcrt.dll"}, {"name": "msvcrt.dll"}, {"name": "sechost.dll"}, {"name": "setupapi.dll"}, {"name": "shell32.dll"}, {"name": "vcruntime140.dll"}, {"name": "cfgmgr32.dll"}, {"name": "JIT(0x1a26425b040)"}]}
+
+===== breakpoint set -f game.ts -l 11 =====
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+1 location added to breakpoint 1
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x0000012b2e2b9fd2 JIT(0x12b2e39c040)`game/_start_game at game.ts:11:8
+@@LLDB_JSON {"state": 5, "exit_status": -1, "breakpoints": [{"id": 1, "num_locations": 1, "locations": [{"resolved": true, "file": "game.ts", "line": 11, "addr": 1284969832402}]}], "stops": [{"file": "game.ts", "line": 11, "col": 8, "function": "game/_start_game", "pc": 1284969832402, "hit_breakpoint": true, "stop_reason": "3", "threads": 20}], "images": [{"name": "tension-core.exe"}, {"name": "ntdll.dll"}, {"name": "kernel32.dll"}, {"name": "KernelBase.dll"}, {"name": "ole32.dll"}, {"name": "msvcp_win.dll"}, {"name": "ucrtbase.dll"}, {"name": "gdi32.dll"}, {"name": "win32u.dll"}, {"name": "gdi32full.dll"}, {"name": "user32.dll"}, {"name": "combase.dll"}, {"name": "rpcrt4.dll"}, {"name": "oleaut32.dll"}, {"name": "bcryptprimitives.dll"}, {"name": "imm32.dll"}, {"name": "MMDevAPI.dll"}, {"name": "version.dll"}, {"name": "advapi32.dll"}, {"name": "winmm.dll"}, {"name": "msvcrt.dll"}, {"name": "msvcrt.dll"}, {"name": "sechost.dll"}, {"name": "setupapi.dll"}, {"name": "shell32.dll"}, {"name": "vcruntime140.dll"}, {"name": "cfgmgr32.dll"}, {"name": "JIT(0x12b2e39c040)"}]}
+
+===== breakpoint set -f game.ts -l 14 =====
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+1 location added to breakpoint 1
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x000002653b5f9ffe JIT(0x2653b6d5040)`game/_start_game at game.ts:14:23
+@@LLDB_JSON {"state": 5, "exit_status": -1, "breakpoints": [{"id": 1, "num_locations": 1, "locations": [{"resolved": true, "file": "game.ts", "line": 14, "addr": 2633811075070}]}], "stops": [{"file": "game.ts", "line": 14, "col": 23, "function": "game/_start_game", "pc": 2633811075070, "hit_breakpoint": true, "stop_reason": "3", "threads": 20}], "images": [{"name": "tension-core.exe"}, {"name": "ntdll.dll"}, {"name": "kernel32.dll"}, {"name": "KernelBase.dll"}, {"name": "ole32.dll"}, {"name": "msvcp_win.dll"}, {"name": "ucrtbase.dll"}, {"name": "gdi32.dll"}, {"name": "win32u.dll"}, {"name": "gdi32full.dll"}, {"name": "user32.dll"}, {"name": "combase.dll"}, {"name": "rpcrt4.dll"}, {"name": "oleaut32.dll"}, {"name": "MMDevAPI.dll"}, {"name": "bcryptprimitives.dll"}, {"name": "imm32.dll"}, {"name": "version.dll"}, {"name": "winmm.dll"}, {"name": "advapi32.dll"}, {"name": "msvcrt.dll"}, {"name": "sechost.dll"}, {"name": "setupapi.dll"}, {"name": "shell32.dll"}, {"name": "vcruntime140.dll"}, {"name": "cfgmgr32.dll"}, {"name": "JIT(0x2653b6d5040)"}]}
+
+===== breakpoint set -f game.ts -l 22 =====
+Breakpoint 1: no locations (pending).
+WARNING:  Unable to resolve breakpoint to any actual locations.
+1 location added to breakpoint 1
+* thread #1, name = 'main', stop reason = breakpoint 1.1
+    frame #0: 0x0000017d38cea09c JIT(0x17d394a2040)`game/_start_game at game.ts:22:13
+@@LLDB_JSON {"state": 5, "exit_status": -1, "breakpoints": [{"id": 1, "num_locations": 1, "locations": [{"resolved": true, "file": "game.ts", "line": 22, "addr": 1637335605404}]}], "stops": [{"file": "game.ts", "line": 22, "col": 13, "function": "game/_start_game", "pc": 1637335605404, "hit_breakpoint": true, "stop_reason": "3", "threads": 20}], "images": [{"name": "tension-core.exe"}, {"name": "ntdll.dll"}, {"name": "kernel32.dll"}, {"name": "KernelBase.dll"}, {"name": "ole32.dll"}, {"name": "msvcp_win.dll"}, {"name": "ucrtbase.dll"}, {"name": "gdi32.dll"}, {"name": "win32u.dll"}, {"name": "gdi32full.dll"}, {"name": "user32.dll"}, {"name": "combase.dll"}, {"name": "rpcrt4.dll"}, {"name": "oleaut32.dll"}, {"name": "bcryptprimitives.dll"}, {"name": "MMDevAPI.dll"}, {"name": "imm32.dll"}, {"name": "version.dll"}, {"name": "winmm.dll"}, {"name": "advapi32.dll"}, {"name": "msvcrt.dll"}, {"name": "msvcrt.dll"}, {"name": "sechost.dll"}, {"name": "setupapi.dll"}, {"name": "shell32.dll"}, {"name": "vcruntime140.dll"}, {"name": "cfgmgr32.dll"}, {"name": "JIT(0x17d394a2040)"}]}
