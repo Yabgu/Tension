@@ -58,7 +58,16 @@ const MODES = ["launch", "smoke", "debug"];
 
 const LAUNCH_TIMEOUT_MS = 15_000;
 const SMOKE_TIMEOUT_MS = 2_000;
-const DEBUG_TIMEOUT_MS = 10_000;
+// **A breakpoint run costs ~8 s, not ~1 s.** Measured on a stack-switching
+// guest (`fixtures/debug/main-policy.wasm`, breakpoint at `main-policy.ts:41`):
+// 8,017 / 8,050 / 8,125 / 8,147 / 8,203 ms over five runs, and 7,819 ms for
+// `rt-guards` — lldb attaching, reading the JIT image and resolving the source
+// line, against a debug build of the host. The old 10 s budget was 1.2x the
+// real cost, so one run in two timed out under `cargo test` (observed as
+// `stopped=false hit_breakpoint=false` with the suite finishing at 10.1 s), and
+// the same suite passed on a rerun. 30 s is ~3.7x the measurement: enough that
+// a slow machine reports a real failure instead of a stopwatch reading.
+const DEBUG_TIMEOUT_MS = 30_000;
 
 /// A guest path that cannot exist. Every launch configuration is rewritten to
 /// use it, so a run that gets past argument parsing must stop at the file check.

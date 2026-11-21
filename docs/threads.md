@@ -158,9 +158,10 @@ Each was found by running a real guest, not by reading.
 
 The programs are `.ts` in `tension-core/tests/programs/`, built by
 `scripts/build-test-programs.mjs` with the repository's pinned compiler. They are built at
-`--optimizeLevel 0`; the reason is in that script's header and in the milestone
-report — the pinned Binaryen aborts on `--enable stack-switching` at
-`optimizeLevel >= 1`, on any program, not on these in particular.
+`--optimizeLevel 0` for speed and artifact size. That is a choice, not a limit: the pin at
+`150a6e97` compiles a continuation module at `-O1..-O3`, and
+`tension-core/tests/gallery_optimized.rs` runs `async/schedule-order.ts` at `-O2` and
+asserts its transcript is identical to the `-O0` one (169,839 → 23,332 bytes).
 
 Cross-reference: TensionScript `docs/thread-abi.md` §4 (the imports), §5.1 (why
 an index crosses and a reference does not), and `tests/rt/gate4.js` (the same
