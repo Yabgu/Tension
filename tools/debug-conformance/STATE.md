@@ -61,9 +61,24 @@ identically): tsc `check:config` and `check:import` pass, `lint` reports 3
 gate is red before this round touches anything. Not repaired in this round (it
 is DL1's file, outside the four phases); reported as a finding.
 
-## Phase C — running
+## Phase C — measured
 
-Green capture started detached:
-`node tools/debug-conformance/runner.js --no-build --json tools/debug-conformance/green-2026-11-21.json`
+Green capture: `node tools/debug-conformance/runner.js --no-build --json
+tools/debug-conformance/green-2026-11-21.json`, detached, **12/82 pass, exit 1**
+(runner exits 1 on any failure).
+
+Flip table by failure mode (details in `FLIPS-DL3.md`):
+
+    unresolved            63 -> 63
+    stopped, no source     7 ->  7
+    stopped at wrong line  1 ->  0
+    pass                  11 -> 12
+
+- the one flip: `class_method` `class-method.ts:13`, `stopped at 14` -> `pass`.
+- `pass -> fail`: **none**.
+- 70 cases did not move (63 unresolved, 7 no-source, 11 pass).
+- The owner's complaint class (`async_on_main.transcript#1..#4`,
+  `async-on-main.ts:50,61,62,63`, inside `async function main`) is `unresolved`
+  before and after. **This patch does not fix the reported symptom.**
 
 ## Phase D — pending
