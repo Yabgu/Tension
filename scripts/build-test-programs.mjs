@@ -144,7 +144,26 @@ const PLAIN_FLAGS = [
  * source lives in. Where a program needs something its folder default does not
  * give it, it is named here.
  */
+/**
+ * The entry-surface case is an **async** `main`: measured, a sync `main` is
+ * never called by this compiler's boot body (only the shell resumes one), so a
+ * sync entry case would have no stop to assert and would be a test of the
+ * harness's patience. What the engine's entry surface actually is — host calls
+ * `__start`, shell resumes `main` — is what the case measures.
+ */
+
 const PROGRAMS = {
+  // The conformance matrix's own cases (`docs`: `tools/debug-conformance`).
+  // Each one exists to name a feature, so its flags are named too rather than
+  // inherited from a folder: an async case that quietly lost stack switching
+  // would measure the promise backend under an async case's name.
+  "async-before-await": ASYNC_ON_MAIN_FLAGS,
+  "async-after-await": ASYNC_ON_MAIN_FLAGS,
+  "async-loop-resume": ASYNC_ON_MAIN_FLAGS,
+  "stack-switch-resume": ASYNC_ON_MAIN_FLAGS,
+  "task-entry": ASYNC_ON_MAIN_FLAGS,
+  "start-game-entry": ASYNC_ON_MAIN_FLAGS,
+  "promise-fallback": PLAIN_FLAGS,
   "count": THREAD_FLAGS,
   "spawn-join": THREAD_FLAGS,
   "spawn-refusals": THREAD_FLAGS,
@@ -162,6 +181,7 @@ const PROGRAMS = {
  * nobody decided how to build.
  */
 const FOLDER_FLAGS = {
+  "conformance": PLAIN_FLAGS,
   "async": ASYNC_ON_MAIN_FLAGS,
   "policy": ASYNC_ON_MAIN_FLAGS,
   "thread": THREAD_FLAGS,

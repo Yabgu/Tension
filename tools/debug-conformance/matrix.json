@@ -1,0 +1,45 @@
+{
+  "//": [
+    "The conformance matrix: one entry per feature, not per file. A row is added",
+    "here and nowhere else — there is no per-case lldb script to edit.",
+    "",
+    "`program` is the basename under tension-core/tests/programs (build-test-programs",
+    "resolves its folder and flags). `file` is the guest source the breakpoint names,",
+    "which is what the debugger reports, so it must match the compiler's own DW_AT_name",
+    "for that source (a basename, not a path).",
+    "",
+    "Group A rows carry `marker`: the runner finds the single source line holding",
+    "`// @<marker>` and breaks there. Group B rows carry `transcript`: the name of the",
+    "program's own print function, and every call to it becomes a case named after the",
+    "feature and its position, so a red row reads `main_policy.transcript#2` rather",
+    "than a raw line number."
+  ],
+  "cases": [
+    { "group": "A", "name": "first_statement_print", "program": "first-statement", "file": "first-statement.ts", "marker": "@stop" },
+    { "group": "A", "name": "first_statement_after_declarations", "program": "first-after-decls", "file": "first-after-decls.ts", "marker": "@stop" },
+    { "group": "A", "name": "first_statement_branch", "program": "first-branch", "file": "first-branch.ts", "marker": "@stop" },
+    { "group": "A", "name": "first_statement_loop", "program": "first-loop", "file": "first-loop.ts", "marker": "@stop" },
+    { "group": "A", "name": "async_statement_before_await", "program": "async-before-await", "file": "async-before-await.ts", "marker": "@stop" },
+    { "group": "A", "name": "async_statement_after_await", "program": "async-after-await", "file": "async-after-await.ts", "marker": "@stop" },
+    { "group": "A", "name": "async_resume_in_loop", "program": "async-loop-resume", "file": "async-loop-resume.ts", "marker": "@stop" },
+    { "group": "A", "name": "stack_switch_nested_resume", "program": "stack-switch-resume", "file": "stack-switch-resume.ts", "marker": "@stop" },
+    { "group": "A", "name": "promise_backend_before_await", "program": "promise-fallback", "file": "promise-fallback.ts", "marker": "@stop" },
+    { "group": "A", "name": "task_entry_first_statement", "program": "task-entry", "file": "task-entry.ts", "marker": "@stop" },
+    { "group": "A", "name": "lambda_body", "program": "lambda-body", "file": "lambda-body.ts", "marker": "@stop" },
+    { "group": "A", "name": "class_method", "program": "class-method", "file": "class-method.ts", "marker": "@stop" },
+    { "group": "A", "name": "class_constructor", "program": "class-method", "file": "class-method.ts", "marker": "@stop2" },
+    { "group": "A", "name": "second_function_in_file", "program": "second-function", "file": "second-function.ts", "marker": "@stop" },
+    { "group": "A", "name": "entry_surface_main", "program": "start-game-entry", "file": "start-game-entry.ts", "marker": "@stop" },
+
+    { "group": "B", "name": "async_on_main", "program": "async-on-main", "file": "async-on-main.ts", "transcript": "emit" },
+    { "group": "B", "name": "main_policy", "program": "main-policy", "file": "main-policy.ts", "transcript": "print" },
+    { "group": "B", "name": "fallback_loop", "program": "fallback-loop", "file": "fallback-loop.ts", "transcript": "print" },
+    { "group": "B", "name": "main_step_replaced", "program": "main-step-replaced", "file": "main-step-replaced.ts", "transcript": "print" },
+    { "group": "B", "name": "schedule_order", "program": "schedule-order", "file": "schedule-order.ts", "transcript": "print" },
+    { "group": "B", "name": "rt_guards", "program": "rt-guards", "file": "rt-guards.ts", "transcript": "line" },
+    { "group": "B", "name": "thread_count", "program": "count", "file": "count.ts", "transcript": "line", "executors": 2 },
+    { "group": "B", "name": "spawn_join", "program": "spawn-join", "file": "spawn-join.ts", "transcript": "line", "executors": 2 },
+    { "group": "B", "name": "two_workers", "program": "two-workers", "file": "two-workers.ts", "transcript": "line", "executors": 2 },
+    { "group": "B", "name": "spawn_refusals", "program": "spawn-refusals", "file": "spawn-refusals.ts", "transcript": "line", "executors": 2 }
+  ]
+}

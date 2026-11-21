@@ -55,9 +55,26 @@ if process.GetState() == lldb.eStateStopped:
         "hit_breakpoint": reason == lldb.eStopReasonBreakpoint,
     })
 
+# **Where each breakpoint resolved**, asked of the target rather than inferred
+# from a stop. GetNumLocations() is the set of addresses lldb bound the request
+# to; IsResolved() per location is whether each was given a real address. A
+# request that matched nothing has zero locations, and a request matched in a
+# module with no line table has locations that never resolve - two different
+# failures that "did it stop?" folds into one.
+locations = []
+for index in range(target.GetNumBreakpoints()):
+    breakpoint = target.GetBreakpointAtIndex(index)
+    count = breakpoint.GetNumLocations()
+    resolved = 0
+    for location_index in range(count):
+        if breakpoint.GetLocationAtIndex(location_index).IsResolved():
+            resolved += 1
+    locations.append({"id": breakpoint.GetID(), "locations": count, "resolved": resolved})
+
 print("@@LLDB_JSON " + json.dumps({
     "stops": stops,
     "resolved": any(stop["hit_breakpoint"] for stop in stops),
+    "breakpoints": locations,
     "exit_state": process.GetState(),
 }))
 `;
@@ -199,6 +216,7 @@ export function debugGuest({
   return {
     stopped: (observed.stops?.length ?? 0) > 0,
     hit_breakpoint: Boolean(observed.resolved),
+    breakpoints: observed.breakpoints ?? [],
     file: stop?.file ?? null,
     line: stop?.line ?? null,
     function: stop?.function ?? null,
