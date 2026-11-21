@@ -69,3 +69,31 @@ different line. All 6 are a first statement of some function.
 
 The unpatched baseline is therefore **59 / 17 / 6**, not DL5's 71 / 11. Every
 "recovered" number in DL5's report is a patched-compiler number.
+
+## Reproducing it
+
+```bash
+# the unpatched reference compiler, without touching the working tree
+cd ~/work/TensionScript-a2
+git worktree add ../TensionScript-a2-main 41b8721b --detach
+cd ../TensionScript-a2-main
+ln -s ../TensionScript-a2/node_modules node_modules
+ln -s ../TensionScript-a2/third_party/binaryen-out third_party/binaryen-out
+cp ../TensionScript-a2/dist/binaryen.js dist/binaryen.js
+PATH=$HOME/emsdk:$HOME/emsdk/upstream/emscripten:$PATH node scripts/build
+sha256sum dist/assemblyscript.js          # 66e6932e…
+
+# install it, rebuild the 24 debug artifacts, run the 82 cases
+cd ~/work/Tension
+cp ../TensionScript-a2-main/dist/*.js ../TensionScript-a2-main/dist/*.json \
+   node_modules/@yabgu_gm/tensionscript/dist/
+TENSIONSCRIPT=$PWD/node_modules/@yabgu_gm/tensionscript/bin/tensionscript.js \
+  node scripts/build-test-programs.mjs --debug --force
+TENSION_CORE=tension-core/target/release/tension-core \
+  node tools/debug-conformance/runner.js --no-build --workers 8 \
+  --json tools/debug-conformance/dl6/ab-unpatched.json
+```
+
+`third_party/binaryen-out` is 1.4 GB and built out of tree, so the worktree
+points at the main checkout's copy rather than rebuilding it. The worktree was
+removed after the measurement; the recipe above is the whole of it.
