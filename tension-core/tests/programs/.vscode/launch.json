@@ -53,6 +53,8 @@
         "async-on-main",
         "main-policy",
         "fallback-loop",
+        "main-step-replaced",
+        "schedule-order",
         "rt-guards",
         "count",
         "spawn-join",
@@ -114,7 +116,11 @@
         // message rather than a missing-file error.
         "program": "${workspaceFolder}/../../../tension-core/target/debug/tension-core.exe"
       },
-      "args": ["--debug", "--symbol-path", "${workspaceFolder}", "${workspaceFolder}/build/${input:program}.wasm"],
+      // **`build/debug/`, not `build/`.** `build/<name>.wasm` is the release
+      // build — no `--debug`, so no `.debug_*` sections, so a `.ts` breakpoint
+      // can never bind against it and the run still looks normal. That was the
+      // one configuration here that named a release artifact.
+      "args": ["--debug", "--symbol-path", "${workspaceFolder}", "${workspaceFolder}/build/debug/${input:program}.wasm"],
       "cwd": "${workspaceFolder}",
       "console": "integratedTerminal",
       "initCommands": [
@@ -122,7 +128,7 @@
         "settings set target.debug-file-search-paths ${workspaceFolder}"
       ],
       "sourceMap": { ".": "${workspaceFolder}" },
-      "preLaunchTask": "programs: build"
+      "preLaunchTask": "programs: build (debug)"
     }
   ]
 }

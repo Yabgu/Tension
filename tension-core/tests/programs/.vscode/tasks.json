@@ -15,6 +15,16 @@
       "problemMatcher": []
     },
     {
+      // The artifacts a debugger needs: the same programs, the same flags, plus
+      // `--debug --sourceMap`, into `build/debug/`. `programs: build` writes the
+      // release ones, which carry no `.debug_*` sections at all.
+      "label": "programs: build (debug)",
+      "type": "shell",
+      "command": "node ${workspaceFolder}/../../../scripts/build-test-programs.mjs --debug",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
       "label": "programs: build (force)",
       "type": "shell",
       "command": "node ${workspaceFolder}/../../../scripts/build-test-programs.mjs --force",
