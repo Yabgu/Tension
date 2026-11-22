@@ -164,6 +164,13 @@ const PROGRAMS = {
   "task-entry": ASYNC_ON_MAIN_FLAGS,
   "start-game-entry": ASYNC_ON_MAIN_FLAGS,
   "promise-fallback": PLAIN_FLAGS,
+  // The Promise backend's **entry**: an `async main` with no stack switching.
+  // `PLAIN_FLAGS` plus `--exportStart __start` is the whole point of the
+  // program — with `--enable stack-switching` it would measure the stackful
+  // shell instead, so it is named here rather than inheriting the folder's
+  // default, and its entry is an export rather than a start section because
+  // that is the shape the SDK builds (and the one the host calls).
+  "async-main-promise": [...PLAIN_FLAGS, "--exportStart", "__start"],
   "count": THREAD_FLAGS,
   "spawn-join": THREAD_FLAGS,
   "spawn-refusals": THREAD_FLAGS,

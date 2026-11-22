@@ -1,0 +1,10 @@
+main begin
+chain before 20
+leaf 20
+chain after 40
+main after 41
+leaf 0
+leaf 1
+leaf 2
+main loop 6
+bodies 6
