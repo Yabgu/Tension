@@ -29,10 +29,10 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:310` |
+| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:337`, `tension-core/src/host/io.rs:44` |
 | `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:89` |
-| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:265` |
-| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:276` |
+| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:292` |
+| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:303` |
 
 ## `ogre` — capability
 
@@ -58,7 +58,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `park` | `(i64, i32, i32)` | `tension-core/src/scheduler.rs:578` |
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:370`, `tension-core/src/scheduler.rs:578` |
 
 ## `session`
 
@@ -79,16 +79,16 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | verb | flags | registered at |
 |---|---|---|---|---|
-| `open` | `(i32, i32, i32) → i32` | 1 | — | `tension-2d/reference/adapter.cpp:457` |
-| `close` | `(i32) → i32` | 2 | — | `tension-2d/reference/adapter.cpp:458` |
-| `set_pipeline` | `(i32, i32, i32) → i32` | 3 | — | `tension-2d/reference/adapter.cpp:459` |
-| `shader_compile_raw` | `(i32, i32, i32, i32, i32) → i32` | 4 | — | `tension-2d/reference/adapter.cpp:460` |
-| `submit` | `(i32, i32, i32, i32) → i32` | 5 | — | `tension-2d/reference/adapter.cpp:461` |
-| `present` | `(i32) → i32` | 6 | — | `tension-2d/reference/adapter.cpp:462` |
-| `texture_load` | `(i32, i32, i32, i32) → i32` | 7 | — | `tension-2d/reference/adapter.cpp:463` |
-| `info` | `(i32, i32, i32) → i32` | 8 | REENTRANT_READONLY | `tension-2d/reference/adapter.cpp:465` |
-| `screenshot` | `(i32, i32, i32) → i32` | 9 | — | `tension-2d/reference/adapter.cpp:466` |
-| `set_texture` | `(i32, i32, i32, i32) → i32` | 10 | — | `tension-2d/reference/adapter.cpp:469` |
+| `open` | `(i32, i32, i32) → i32` | 1 | — | `tension-2d/reference/adapter.cpp:457`, `tension-core/src/host/two_d.rs:134` |
+| `close` | `(i32) → i32` | 2 | — | `tension-2d/reference/adapter.cpp:458`, `tension-core/src/host/two_d.rs:199` |
+| `set_pipeline` | `(i32, i32, i32) → i32` | 3 | — | `tension-2d/reference/adapter.cpp:459`, `tension-core/src/host/two_d.rs:231` |
+| `shader_compile_raw` | `(i32, i32, i32, i32, i32) → i32` | 4 | — | `tension-2d/reference/adapter.cpp:460`, `tension-core/src/host/two_d.rs:280` |
+| `submit` | `(i32, i32, i32, i32) → i32` | 5 | — | `tension-2d/reference/adapter.cpp:461`, `tension-core/src/host/two_d.rs:298` |
+| `present` | `(i32) → i32` | 6 | — | `tension-2d/reference/adapter.cpp:462`, `tension-core/src/host/two_d.rs:356` |
+| `texture_load` | `(i32, i32, i32, i32) → i32` | 7 | — | `tension-2d/reference/adapter.cpp:463`, `tension-core/src/host/two_d.rs:384` |
+| `info` | `(i32, i32, i32) → i32` | 8 | REENTRANT_READONLY | `tension-2d/reference/adapter.cpp:465`, `tension-core/src/host/two_d.rs:437` |
+| `screenshot` | `(i32, i32, i32) → i32` | 9 | — | `tension-2d/reference/adapter.cpp:466`, `tension-core/src/host/two_d.rs:466` |
+| `set_texture` | `(i32, i32, i32, i32) → i32` | 10 | — | `tension-2d/reference/adapter.cpp:469`, `tension-core/src/host/two_d.rs:409` |
 
 ## `tension::ai`
 
@@ -141,12 +141,12 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/thread.rs:444` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:459` |
+| `print` | `(i32, i32)` | `tension-core/src/thread.rs:533`, `tension-core/src/host/io.rs:59` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:548`, `tension-core/src/host/io.rs:109` |
 | `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:124` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:487` |
-| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:483` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:484` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:576`, `tension-core/src/host/io.rs:139` |
+| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:572`, `tension-core/src/host/io.rs:192` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:573`, `tension-core/src/host/io.rs:198` |
 
 ## `tension::platform`
 

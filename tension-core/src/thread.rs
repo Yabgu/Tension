@@ -66,8 +66,35 @@ pub const ERR_SPAWN_FAILED: i32 = -6;
 /// guest. It reaches nothing but the pool, so the two imports a worker's own
 /// module also imports (`__executorCount`, `__startThread`) can be answered from
 /// inside a worker too.
+///
+/// **`parks` is a record, not a table.** A worker is a `Store` and therefore an
+/// *owner thread* under `docs/scheduler-contract.md` §2.2, so `scheduler::park`
+/// may legally be called here — but the contract's other half is that the guest
+/// MUST be resumable from the park the moment the call returns, and nothing can
+/// resume this store: no host loop runs on a worker, and `wake` may only be
+/// called on this store's owner thread, which is inside `__workerMain`. So the
+/// seam records the three integers the contract's call carries and nothing more.
+/// `run_worker` logs the count, which is the difference between "reached the
+/// seam" and "was resumed", kept as two facts on purpose.
+///
+/// Why the record is a plain tuple list rather than the binary's `Scheduler`:
+/// that type is keyed by the session ABI's class ids and per-class key spaces
+/// (`src/session/arena.rs`, 36 references in `scheduler.rs`), and `session` is a
+/// module of the **binary**. This crate is the library, so a park that could be
+/// resolved the way main's is would need that ABI moved into the library — which
+/// no round is allowed to do casually. The record is the honest fraction that
+/// fits on this side of the boundary, and its emptiness is a measurement.
 pub struct WorkerState {
     pool: Arc<ExecutorPool>,
+    parks: Mutex<Vec<WorkerPark>>,
+}
+
+/// One `scheduler::park` seen on a worker: the contract's three integers.
+#[derive(Clone, Copy, Debug)]
+pub struct WorkerPark {
+    pub task_id: u64,
+    pub class: u32,
+    pub key: u32,
 }
 
 /// What a linked instance's store must be able to answer for the two imports.
@@ -327,6 +354,35 @@ impl ExecutorPool {
             },
         )?;
         ExecutorPool::link(linker)?;
+        // **The park seam, for a worker's store.** A worker instantiates the same
+        // module as main, so it imports the same names; every async program
+        // imports `scheduler::park` whether or not it ever parks, because
+        // `parkState` is reachable from `__taskPark` in any module that links
+        // `~lib/task-rt`. Without a definition here the module fails at
+        // instantiation — `unknown import: scheduler::park` — and no executor
+        // could host a suspending task even in principle.
+        //
+        // What it does *not* do: **resume anything.** The park is recorded and
+        // the call returns (contract §2.1: the call returns, the suspension is
+        // the guest returning to its executor). There is no host loop on this
+        // store and no channel to hand it ids, so the record is where a future
+        // round's wake would start — not a wake that exists.
+        linker.func_wrap(
+            "scheduler",
+            "park",
+            |caller: Caller<'_, WorkerState>, task_id: i64, class: i32, key: i32| {
+                let mut parks = caller
+                    .data()
+                    .parks
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                parks.push(WorkerPark {
+                    task_id: task_id as u64,
+                    class: class as u32,
+                    key: key as u32,
+                });
+            },
+        )?;
         // `tension::io` too, and for a reason that is not convenience: the
         // module is **the same module** as main's, so it imports exactly what
         // main's build imports. A worker instance that cannot resolve `print`
@@ -370,6 +426,7 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
         &pool.engine,
         WorkerState {
             pool: Arc::clone(pool),
+            parks: Mutex::new(Vec::new()),
         },
     );
     store.set_epoch_deadline(NEVER_TRAPS);
@@ -380,8 +437,9 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     let instance = linker.instantiate(&mut store, &pool.module).map_err(|error| {
         anyhow::anyhow!(
             "the module did not instantiate as a worker — the worker's import set is \
-             env::memory, env::abort, env::__executorCount and env::__startThread, and \
-             a capability import has no answer on a worker thread: {error}"
+             env::memory, env::abort, env::__executorCount, env::__startThread, \
+             scheduler::park and tension::io, and a capability import has no answer on a \
+             worker thread: {error}"
         )
     })?;
 
@@ -417,6 +475,37 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     let status = worker_main.call(&mut store, id).map_err(|error| {
         anyhow::anyhow!("the worker's `__workerMain({id})` failed: {error}")
     })?;
+
+    // **What the park seam actually did on this executor.** The seam is
+    // reachable, so `park` may have been called; whether anything can resume is
+    // the other half, and this store has no host loop to do it. The count is
+    // logged — including zero — because "the guest parked" and "the guest never
+    // reached the seam" are different answers and a silent run cannot tell them
+    // apart.
+    let parks = {
+        let parks = store
+            .data()
+            .parks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        parks.clone()
+    };
+    logging::log(
+        Level::Info,
+        "thread",
+        &format!(
+            "executor {id} left the park seam having recorded {} park(s){} — a worker runs \
+             no host loop, so none of them can be resumed",
+            parks.len(),
+            match parks.first() {
+                Some(first) => format!(
+                    " (first: task {} on class {} key {})",
+                    first.task_id, first.class, first.key
+                ),
+                None => String::new(),
+            }
+        ),
+    );
     Ok(status)
 }
 

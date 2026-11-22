@@ -633,12 +633,32 @@ function valueCell(params, ret) {
 /// which the in-core registration does not spell out — and the module's heading
 /// says it lives in both places.
 ///
+/// **The same import can also be registered by two different stores.**
+/// `scheduler::park` is main's (`scheduler.rs`) and a worker's (`thread.rs`), and
+/// the two are registered for different `Store` types in different linker
+/// builders. Dropping one of them made this page claim a single site for an
+/// import that has two, so the losing row's site is kept in `also` and rendered
+/// beside the winner's. A reader asking "where is this registered" gets every
+/// answer, which is the only honest one.
+///
 /// The counts in the page's own header are computed from this, not from the raw
 /// lists, so the number matches the rows a reader can count.
 function mergeImports(rawCore, rawCapability) {
   const byKey = new Map();
-  for (const entry of rawCore) byKey.set(`${entry.module}:${entry.name}`, entry);
-  for (const entry of rawCapability) byKey.set(`${entry.module}:${entry.name}`, entry);
+  const note = (entry) => {
+    const kept = byKey.get(`${entry.module}:${entry.name}`);
+    if (!kept) return byKey.set(`${entry.module}:${entry.name}`, entry);
+    const site = `${entry.file}:${entry.line}`;
+    const keptSites = kept.also ?? [];
+    // A capability row still wins the row itself; either way the site is kept.
+    const winning = entry;
+    winning.also = [...keptSites, `${kept.file}:${kept.line}`].filter(
+      (s, i, all) => s !== `${winning.file}:${winning.line}` && all.indexOf(s) === i,
+    );
+    byKey.set(`${entry.module}:${entry.name}`, winning);
+  };
+  for (const entry of rawCore) note(entry);
+  for (const entry of rawCapability) note(entry);
   const merged = [...byKey.values()];
   const core = merged.filter((entry) => entry.verb === undefined);
   const capability = merged.filter((entry) => entry.verb !== undefined);
@@ -719,7 +739,8 @@ function renderGuestDoc(core, capability, memory, reserved, dualModules) {
       ? [...byModule.get(module)].sort((a, b) => (a.verb ?? 0) - (b.verb ?? 0))
       : byModule.get(module);
     for (const entry of rows) {
-      const where = `${CODE(`${entry.file}:${entry.line}`)}`;
+      const sites = [`${entry.file}:${entry.line}`, ...(entry.also ?? [])];
+      const where = sites.map((site) => CODE(site)).join(', ');
       const sig = CODE(valueCell(entry.params, entry.ret));
       if (hasVerb) {
         const verb = entry.verb === null || entry.verb === undefined ? '—' : String(entry.verb);
