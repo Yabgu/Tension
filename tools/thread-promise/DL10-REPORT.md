@@ -1,9 +1,10 @@
 # DL10 — a worker answers `scheduler::park`, and cannot resume it
 
 Round: let a worker's store answer the park seam, so an executor can host a
-suspending task at all. Branch `integration/dwarf-debug` @ **`dl10`** in the
-harness tree. **No compiler change**: `dist/assemblyscript.js` is unchanged at
-`767d3d7a`, and `TensionScript-a2` is at `dddd8849` with a clean tree.
+suspending task at all. `~/work/Tension` `integration/dwarf-debug` @
+**`d08ed63`**, pushed. **No compiler change**: `dist/assemblyscript.js` is
+unchanged at `767d3d7a`, and `TensionScript-a2` is at `dddd8849` with a clean
+tree.
 
 ## 1. Phase A — the six items
 
@@ -202,7 +203,37 @@ assumed. What is still missing, in order:
 3. Only then does `RemotePolicy`'s "await a task served elsewhere" become
    functional on a worker, which is the user's actual model.
 
-## 6. Not verified
+## 6. One adjacent thing this round touched
+
+`docs/abi/guest.md` is generated and its tables embed `file:line`, so the
+commit hook refused the commit until it was regenerated. Regenerating exposed a
+second problem: the generator kept **one** registration site per import (the last
+one it saw), and `scheduler::park` now has two — main's in `scheduler.rs` and a
+worker's in `thread.rs`. Left alone, the page would have silently dropped main's.
+
+`scripts/gen-abi-doc.mjs`'s `mergeImports` now keeps every distinct site and the
+renderer joins them:
+
+```
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:370`, `tension-core/src/scheduler.rs:578` |
+```
+
+That also restored a second site that was already being dropped for `env::abort`
+and for the ten `tension::2d` verbs (adapter + in-core). No row count changed
+(96 rows before and after); only the "registered at" cells gained the sites that
+were missing.
+
+**Pre-existing failure, not mine, reported not fixed:** `node
+scripts/test-abi-docs.mjs` fails one check on a clean tree as well —
+`the pre-commit hook could not be exercised: the copied tree is already stale`.
+Cause: the hook proof copies a fixed directory list
+(`scripts/test-abi-docs.mjs:147-158`) which omits `packages/cli/src`, and
+`scripts/lib/toolchain.mjs` imports `packages/cli/src/compiler-provenance.js`
+from it, so the copied tree cannot even run the generator. One line in that list
+would restore it; it is unrelated to this round and left for its own commit. The
+drift checks themselves (`guest.md is current`, row counts) pass.
+
+## 7. Not verified
 
 - **No genuinely pending suspension was executed on a worker.** The probe that
   tried ran through synchronously. So "a worker's parked task strands silently"
@@ -212,3 +243,5 @@ assumed. What is still missing, in order:
 - Windows: not touched.
 - The record is per-worker and unbounded. Nothing reads it, so it cannot grow in
   any measured run, but a future loop must bound it.
+- The pre-existing `test-abi-docs` failure above was confirmed identical on a
+  stashed (clean) tree, but I did not bisect when it started.
