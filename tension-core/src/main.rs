@@ -503,6 +503,48 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
         .collect()
 }
 
+/// The strand refusal, or `None` when every worker's parks were resolved.
+///
+/// **Unresolved at exit**, not "parked at all": a park a wake has resumed is a
+/// normal suspension and must not fail a run. Today nothing on a worker can
+/// resume one (`thread.rs`'s `WorkerPark::resolved` is the field the wake path
+/// will set), so the two are the same — the check is written for the day they are
+/// not.
+///
+/// Taken rather than read: the caller turns this into the process's outcome once,
+/// and a second reader must not be able to turn the same strand into a second
+/// refusal.
+fn strand_refusal(
+    pool: &std::sync::Arc<tension_core::thread::ExecutorPool>,
+) -> Option<wasmtime::Error> {
+    let strands = pool.take_strands();
+    if strands.is_empty() {
+        return None;
+    }
+    let named: Vec<String> = strands
+        .iter()
+        .map(|strand| {
+            format!(
+                "executor {} left {} task(s) parked and never resumed (first: task {} on class \
+                 {} key {})",
+                strand.executor, strand.unresolved, strand.first.task_id, strand.first.class,
+                strand.first.key
+            )
+        })
+        .collect();
+    // **The message says where the limit is, not what the guest did wrong.** A
+    // program that awaits the right thing still strands here, because this host
+    // has no way to wake a worker's task — that is a capability gap, and a reader
+    // who is told otherwise will go looking in their own code.
+    Some(wasmtime::Error::msg(format!(
+        "a worker's task cannot be resumed on this host, so this run would otherwise have \
+         exited successfully with it stranded: {}. A worker's store has no host loop, and \
+         `wake` is confined to a store's owner thread (docs/scheduler-contract.md §2.2), so a \
+         parked task on a worker has no path to a completion here.",
+        named.join("; ")
+    )))
+}
+
 /// A shared-memory guest's three-call boot, in the order the contract fixes.
 ///
 /// `docs/threads.md` is the host half's prose; this function is it. The three
@@ -1741,6 +1783,31 @@ fn main() -> anyhow::Result<()> {
     if let Some(pool) = store.data().executors.clone() {
         pool.join_finished();
     }
+
+    // **A stranded task is a refusal, and it joins the trap path.**
+    //
+    // A worker that finished with a park still unresolved left a task in its
+    // guest table that nothing on this host can wake: a worker store has no host
+    // loop, and the scheduler contract puts `wake` on a store's owner thread
+    // (§2.2). Nothing on main can reach it either — the ids live in the worker's
+    // own instance. So the honest outcome is to fail the run, the same way a
+    // guest trap does, instead of exiting 0 while a task that was promised a
+    // completion never gets one.
+    //
+    // **It is the same path as a trap on purpose**, down to the teardown below:
+    // this decides the outcome, it does not bypass the adapters and the window.
+    //
+    // **What this does not do: tell the guest.** The program's own `await` never
+    // returns either way — there is no wake path — so this makes the *process*
+    // honest, not the program. Detection inside the guest needs the wake path.
+    let guest_result = match store.data().executors.clone() {
+        Some(pool) => match strand_refusal(&pool) {
+            // A trap keeps its own reason; a strand cannot hide behind it.
+            Some(refusal) if guest_result.is_ok() => Err(refusal),
+            _ => guest_result,
+        },
+        None => guest_result,
+    };
 
     // Tear the adapters down on the trapping path *before* the error propagates.
     // `shutdown` (stop and join threads) then `destroy` (free), reverse of link

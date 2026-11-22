@@ -95,6 +95,31 @@ pub struct WorkerPark {
     pub task_id: u64,
     pub class: u32,
     pub key: u32,
+    /// Whether this park was ever resolved — i.e. some wake named its task.
+    ///
+    /// **Always `false` today**, and that is the measurement, not an oversight:
+    /// nothing on a worker store drains a park (no host loop, and contract §2.2
+    /// puts `wake` on the store's owner thread). The field exists so the
+    /// predicate below is written in the form that survives the wake path: a park
+    /// that *has* been resumed is not a strand, and when the wake path lands it
+    /// sets this instead of the check being re-cut.
+    pub resolved: bool,
+}
+
+/// A worker that finished with a task parked and never resumed.
+///
+/// Recorded on the **pool** rather than the store because the store dies with the
+/// worker, and the only place that can turn this into a refusal runs on main
+/// (`main.rs`, after `join_finished`).
+#[derive(Clone, Copy, Debug)]
+pub struct Strand {
+    /// The executor that stranded: 0 is main, so a real strand is >= 1.
+    pub executor: i32,
+    /// How many parks were left unresolved on that store.
+    pub unresolved: u32,
+    /// The first one, for the message: a bare count is not actionable in a
+    /// loading zone with eight workers.
+    pub first: WorkerPark,
 }
 
 /// What a linked instance's store must be able to answer for the two imports.
@@ -130,6 +155,9 @@ pub struct ExecutorPool {
     /// The threads that have been started. `BTreeMap` for deterministic teardown
     /// order, which is what a log line about a live worker should read like.
     workers: Mutex<BTreeMap<i32, JoinHandle<i32>>>,
+    /// Workers that finished with a task parked and never resumed, in the order
+    /// they finished. Read by [`ExecutorPool::take_strands`] on main.
+    strands: Mutex<Vec<Strand>>,
 }
 
 impl ExecutorPool {
@@ -152,12 +180,51 @@ impl ExecutorPool {
             memory,
             count,
             workers: Mutex::new(BTreeMap::new()),
+            strands: Mutex::new(Vec::new()),
         }))
     }
 
     /// The value `__executorCount` answers.
     pub fn count(&self) -> i32 {
         self.count
+    }
+
+    /// Records that executor `id` finished with `parks` left unresolved.
+    ///
+    /// Called once per worker, from [`worker_main`], at the last moment the
+    /// worker's own store is alive. One `Strand` per worker, not one per park: a
+    /// loading zone with eight workers needs "which one, how many", and the first
+    /// park is carried for the message.
+    fn record_strand(&self, id: i32, parks: &[WorkerPark]) {
+        let unresolved = parks.iter().filter(|park| !park.resolved).count();
+        if unresolved == 0 {
+            return;
+        }
+        let first = match parks.iter().find(|park| !park.resolved).copied() {
+            Some(park) => park,
+            None => return,
+        };
+        let mut strands = self
+            .strands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        strands.push(Strand {
+            executor: id,
+            unresolved: unresolved as u32,
+            first,
+        });
+    }
+
+    /// The strands recorded since the last call, oldest first.
+    ///
+    /// Taken, not read: the caller turns them into a refusal, and a second
+    /// caller must not be able to turn the same strand into a second one.
+    pub fn take_strands(&self) -> Vec<Strand> {
+        let mut strands = self
+            .strands
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *strands)
     }
 
     /// The memory every instance shares, for the caller that has to define it
@@ -380,6 +447,10 @@ impl ExecutorPool {
                     task_id: task_id as u64,
                     class: class as u32,
                     key: key as u32,
+                    // Nobody here can resume it: no host loop on this store, and
+                    // contract §2.2 confines `wake` to the owner thread. The
+                    // field is set by the wake path when one exists.
+                    resolved: false,
                 });
             },
         )?;
@@ -506,6 +577,14 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
             }
         ),
     );
+
+    // **A park that was never resolved is a strand, and main will refuse it.**
+    // Recorded on the pool, because this store is about to drop and the refusal
+    // has to be decided on main (`main.rs`, after `join_finished`). The predicate
+    // is `!resolved` — *unresolved at exit*, not "recorded at all" — so the day a
+    // wake path sets `resolved`, a resumed task stops being a strand with no
+    // change here.
+    pool.record_strand(id, &parks);
     Ok(status)
 }
 
