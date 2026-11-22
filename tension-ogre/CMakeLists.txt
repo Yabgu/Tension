@@ -8,6 +8,21 @@ set(TENSION_OGRE_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 set(TENSION_ROOT ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
 set(OGRE_NEXT_PREFIX "${TENSION_ROOT}/third_party/ogre-next-install" CACHE PATH "OGRE-Next installation prefix")
+
+# Where the Vulkan SDK lives, when one is in play.
+#
+# The OGRE install ships the plugin's own headers but **not** the SDK's: on
+# Windows `OgreVulkanQueue.h` includes `<vulkan/vulkan_core.h>`, which is the
+# Vulkan SDK's header and nothing in the OGRE install tree provides it. Measured:
+# without this the adapter fails to compile at
+# `packages/ogre-next-win32-x64/include/OGRE-Next/RenderSystems/Vulkan/include/
+# OgreVulkanQueue.h:37: fatal error: vulkan/vulkan_core.h: No such file or
+# directory`, after a successful OGRE build — i.e. a prerequisite of the
+# *adapter*, not of OGRE. `scripts/build-ogre.mjs` passes the directory it found;
+# an empty value means "no Vulkan SDK", which is right on Linux, where the
+# headers come from the distro's `libvulkan-dev` and are already on the default
+# include path.
+set(TENSION_VULKAN_SDK "" CACHE PATH "Vulkan SDK root (Windows: contains Include/vulkan)")
 set(TENSION_RES_DIR "${TENSION_ROOT}/tension-res" CACHE PATH "tension-res directory")
 
 if(NOT DEFINED TENSION_OGRE_BACKEND)
@@ -129,6 +144,14 @@ if(TENSION_OGRE_BACKEND STREQUAL "ogre")
         ${OGRE_NEXT_PREFIX}/include/OGRE-Next/Hlms/Pbs
         ${OGRE_VULKAN_INCLUDE_DIR}
     )
+
+    # The SDK's headers, when one was named. See the `TENSION_VULKAN_SDK` comment
+    # above: the plugin's headers include `<vulkan/vulkan_core.h>`, and only the
+    # SDK (or a distro's libvulkan-dev) provides it.
+    if(TENSION_VULKAN_SDK)
+        target_include_directories(tension_ogre SYSTEM PRIVATE
+            "${TENSION_VULKAN_SDK}/Include")
+    endif()
 
     if(WIN32)
         list(APPEND CMAKE_FIND_LIBRARY_SUFFIXES ".dll.a" ".a")

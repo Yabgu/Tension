@@ -19,7 +19,7 @@
 import { spawnSync } from 'node:child_process';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { REPO, WIN, run, toolchainReport, which } from './lib/toolchain.mjs';
+import { REPO, WIN, findVulkanSdk, run, toolchainReport, which } from './lib/toolchain.mjs';
 import { missingSystemFilter, stageWindowsDependencies } from './lib/dll.mjs';
 import { inherit } from './lib/proc.mjs';
 
@@ -131,6 +131,19 @@ if (WIN && backend === 'ogre') {
 }
 
 if (process.env.CXX) args.push(`-DCMAKE_CXX_COMPILER=${process.env.CXX}`);
+
+// The Vulkan SDK's headers, when there is one.
+//
+// OGRE's install carries the plugin's headers but not the SDK's, and the
+// plugin's headers include `<vulkan/vulkan_core.h>`. On Windows that file only
+// exists in the Vulkan SDK, so the adapter needs the SDK's include directory
+// even though OGRE itself built fine. Discovered the same way `bootstrap.mjs`
+// discovers it (the machine-wide `VULKAN_SDK`, then `C:\VulkanSDK\<version>`),
+// because the two must agree about which SDK is in play.
+const vulkanSdk = findVulkanSdk();
+if (WIN && backend === 'ogre' && vulkanSdk) {
+  args.push(`-DTENSION_VULKAN_SDK=${vulkanSdk}`);
+}
 
 if (mode === '--test') args.push('-DTENSION_OGRE_BUILD_TESTS=ON');
 

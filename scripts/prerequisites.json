@@ -1,0 +1,55 @@
+{
+  "//": [
+    "Machine-readable prerequisites, read by scripts/bootstrap.mjs (--requirements",
+    "and the pre-flight) and by nothing else. One source: if a package is added",
+    "here the check asks pkg-config for it, and a fresh machine is told the exact",
+    "command; if it is removed here the claim disappears from both places.",
+    "",
+    "'module' is the name OGRE's own CMake probes ask pkg-config for, which is why",
+    "'Rapidjson' and 'freetype2' are capitalised and lowercased differently; that",
+    "is OGRE's spelling, not ours.",
+    "",
+    "'blocking' is measured, not assumed: a blocking gap stops 'npm run build'.",
+    "The non-blocking ones only silently remove an OGRE component (it uses",
+    "cmake_dependent_option), which is a feature gap rather than a failure."
+  ],
+  "win32": {
+    "x64": {
+      "packages": [
+        {
+          "module": "Rapidjson",
+          "pacman": "mingw-w64-ucrt-x86_64-rapidjson",
+          "blocking": true,
+          "why": "Hlms JSON materials and the Vulkan root layout",
+          "without": "the build fails: rapidjson/document.h not found"
+        },
+        {
+          "module": "freetype2",
+          "pacman": "mingw-w64-ucrt-x86_64-freetype",
+          "blocking": false,
+          "why": "OGRE_BUILD_COMPONENT_OVERLAY (the text overlay)",
+          "without": "the Overlay component is switched off silently"
+        },
+        {
+          "module": "zzip-zlib-config",
+          "pacman": null,
+          "blocking": false,
+          "why": "ZIP resource locations (OGRE_CONFIG_ENABLE_ZIP)",
+          "without": "ZIP archive resource locations are switched off silently",
+          "note": "not satisfiable from MSYS2: zziplib installs zziplib.pc (and four zzip*.pc siblings) but no zzip-zlib-config.pc, and OGRE's probe asks for that exact name. Measured with mingw-w64-ucrt-x86_64-zziplib 0.13.80-1 installed and OGRE still reporting OGRE_NO_ZIP_ARCHIVE 1. Nothing in Tension reads zips: resources are ECMA-208 paks (tension-res)."
+        }
+      ],
+      "sdk": [
+        {
+          "name": "Vulkan SDK",
+          "blocking": true,
+          "install": "https://vulkan.lunarg.com/sdk/home#windows",
+          "detect": "vulkan-via-include",
+          "location": "C:\\VulkanSDK\\<version>",
+          "why": "RenderSystem_Vulkan and the host's Vulkan surface",
+          "without": "the engine has no renderer on Windows (the adapter also needs its headers)"
+        }
+      ]
+    }
+  }
+}

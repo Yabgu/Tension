@@ -38,7 +38,7 @@ import { writeStamp } from './build-stamp.mjs';
 import { ensureSubmodules } from './lib/submodules.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
 import { readElfDynamic, runpathEntries } from './lib/elf.mjs';
-import { EXE, WIN, capture, run, toolchainReport, tryCapture, ucrt64Bin, which } from './lib/toolchain.mjs';
+import { EXE, WIN, capture, findVulkanSdk, run, toolchainReport, tryCapture, ucrt64Bin, which } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, '..');
@@ -616,6 +616,15 @@ function buildAdapter(ogreNextPayload) {
       // layer puts on PATH; the adapter must match the Ogre install's ABI.
       args.push('-DCMAKE_C_COMPILER=gcc', '-DCMAKE_CXX_COMPILER=g++');
     }
+    // The Vulkan SDK's headers. The OGRE install carries the plugin's own
+    // headers but not the SDK's, and `OgreVulkanQueue.h` includes
+    // `<vulkan/vulkan_core.h>` — so the adapter needs the SDK even though OGRE
+    // built without problem. Measured: without this, the adapter fails at
+    // `OgreVulkanQueue.h:37: fatal error: vulkan/vulkan_core.h: No such file`
+    // after a multi-minute OGRE build, which reads as an OGRE problem and is not.
+    const vulkanSdk = findVulkanSdk();
+    if (vulkanSdk) args.push(`-DTENSION_VULKAN_SDK=${vulkanSdk}`);
+    else note('ogre: no Vulkan SDK found — the adapter will fail to compile against the Vulkan plugin headers');
   }
 
   note(`ogre: configuring ${relative(repo, buildDir).split('\\').join('/')} against packages/ogre-next-${SUFFIX}`);

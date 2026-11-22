@@ -24,9 +24,9 @@ import {
   existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync,
 } from 'node:fs';
 import { availableParallelism } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { WIN, baseEnv, capture, need, run, toolchainReport, ucrt64Bin, which } from './lib/toolchain.mjs';
+import { WIN, baseEnv, capture, findVulkanSdk, need, run, toolchainReport, ucrt64Bin, which } from './lib/toolchain.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(here, '..');
@@ -69,9 +69,10 @@ const OGRE_PATCHES = [
 ];
 
 const FORCE = process.argv.includes('--force');
+const REQUIREMENTS = process.argv.includes('--requirements');
 for (const arg of process.argv.slice(2)) {
-  if (arg !== '--force') {
-    console.error(`bootstrap: unknown argument '${arg}' (want --force)`);
+  if (arg !== '--force' && arg !== '--requirements') {
+    console.error(`bootstrap: unknown argument '${arg}' (want --force, --requirements)`);
     process.exit(2);
   }
 }
@@ -226,6 +227,60 @@ process.on('SIGINT', () => { revertOgrePatch(); process.exit(130); });
 // prefix root and the library in lib/Release (import) and bin/Release (DLL).
 // Asking for one platform's spelling made this check answer "not installed" on
 // the other, which rebuilt a complete tree from scratch on every run.
+/// This platform's prerequisites, read from `scripts/prerequisites.json`.
+///
+/// A data file rather than a literal here, because the same list is what the
+/// documentation tells a human to install: one copy cannot drift from the other.
+/// `--requirements` and the pre-flight below both consume it, and the pre-flight
+/// is what turns a missing package into the command that installs it.
+function loadPrerequisites() {
+  const file = join(ROOT, 'scripts', 'prerequisites.json');
+  let data;
+  try {
+    data = JSON.parse(readFileSync(file, 'utf8'));
+  } catch (error) {
+    die(`could not read ${file}: ${error.message}`);
+  }
+  const platform = data[process.platform]?.[process.arch];
+  if (!platform) {
+    return { packages: [], sdk: [] };
+  }
+  return { packages: platform.packages ?? [], sdk: platform.sdk ?? [] };
+}
+
+const PREREQUISITES = loadPrerequisites();
+const WINDOWS_PACKAGES = PREREQUISITES.packages;
+
+// `--requirements`: print this platform's prerequisites and what the machine
+// has, without configuring or building anything. Placed **before** the
+// "already installed" early exit, because the question it answers ("what does a
+// fresh machine need?") is the one a reader asked first; a report that only
+// prints on a machine with no OGRE install is a report nobody can obtain.
+if (REQUIREMENTS) {
+  if (!WIN) {
+    say('prerequisites are declared for win32/x64; other hosts check their own libraries in the Linux branch of this script');
+    process.exit(0);
+  }
+  const bin = ucrt64Bin();
+  const pkgConfig = bin ? join(bin, 'pkg-config.exe') : null;
+  console.log(`bootstrap: prerequisites for ${process.platform}/${process.arch}`);
+  for (const pkg of WINDOWS_PACKAGES) {
+    let state = 'UNKNOWN (no pkg-config)';
+    if (pkgConfig && existsSync(pkgConfig)) {
+      const probe = spawnSync(pkgConfig, ['--modversion', pkg.module],
+        { env: ogreEnv(), encoding: 'utf8' });
+      state = probe.status === 0
+        ? `present ${probe.stdout.trim()}`
+        : `MISSING - ${pkg.pacman ? `pacman -S ${pkg.pacman}` : 'no MSYS2 package provides it'}`;
+    }
+    const kind = pkg.blocking ? 'blocking' : 'feature gap';
+    console.log(`  ${pkg.module.padEnd(18)} ${state.padEnd(44)} ${kind.padEnd(12)} ${pkg.why}`);
+  }
+  const sdk = findVulkanSdk();
+  console.log(`  ${'Vulkan SDK'.padEnd(18)} ${(sdk ? `present ${sdk}` : 'MISSING - https://vulkan.lunarg.com/sdk/home#windows').padEnd(44)} ${'blocking'.padEnd(12)} RenderSystem_Vulkan and the host's Vulkan surface`);
+  process.exit(0);
+}
+
 const mediaOk = isDirectory(join(INSTALL, 'share', 'OGRE-Next', 'Media')) ||
                 isDirectory(join(INSTALL, 'Media'));
 const mainLib = findMatching(INSTALL, (name) =>
@@ -273,9 +328,42 @@ function linkableLib(names) {
 
 const extraFlags = [];
 
+/// The MSYS2 `pkg-config` this platform's configure is pinned to, or null.
+let pkgConfigExe = null;
+
 // Whether this platform's flag set is supposed to produce the Vulkan render
 // system; the post-install check at the bottom holds the build to it.
 let vulkanExpected = false;
+
+/// Stop before configuring if a blocking prerequisite is missing.
+///
+/// The failure this prevents was measured on this machine: the configure
+/// reported nothing but "Could not locate Rapidjson", ninja then failed ~200
+/// objects later with a header path, and the reader had no package name to act
+/// on. `pkgConfigExe` is the same binary CMake is told to use, so this check and
+/// the configure cannot disagree about whether a package is present.
+function checkPrerequisites() {
+  if (!WIN || !pkgConfigExe) return;
+  const missing = WINDOWS_PACKAGES.filter(
+    (pkg) => spawnSync(pkgConfigExe, ['--exists', pkg.module], { env: ogreEnv(), encoding: 'utf8' })
+      .status !== 0,
+  );
+  const blocking = missing.filter((pkg) => pkg.blocking);
+  for (const pkg of missing.filter((p) => !p.blocking)) {
+    say(`warning: ${pkg.module} is not installed — ${pkg.without}`);
+    say(pkg.pacman
+      ? `         to build it in: pacman -S ${pkg.pacman}`
+      : `         no MSYS2 package provides it: ${pkg.note ?? 'see scripts/prerequisites.json'}`);
+  }
+  if (!blocking.length) return;
+  console.error('bootstrap: missing prerequisites for win32/x64');
+  for (const pkg of blocking) {
+    console.error(`bootstrap:   ${pkg.module.padEnd(18)} → ${pkg.pacman ? `pacman -S ${pkg.pacman}` : 'no MSYS2 package provides it'}`);
+    console.error(`bootstrap:   ${''.padEnd(18)}   ${pkg.why}; without it ${pkg.without}`);
+  }
+  console.error('bootstrap: run the commands above, then this script again.');
+  process.exit(1);
+}
 
 if (WIN) {
   // The bash script could write `/ucrt64/lib/libglslang.dll.a` because cmake ran
@@ -293,6 +381,39 @@ if (WIN) {
   if (!existsSync(shaderc)) {
     die(`expected glslang's import library at ${shaderc} (MSYS2 package mingw-w64-ucrt-x86_64-glslang)`);
   }
+
+  // **Which pkg-config, and why it is named here.** CMake's `find_program`
+  // takes the first `pkg-config`/`pkgconf` on PATH, and on this platform the
+  // inherited PATH carries a second MinGW (WinLibs, present for `gfortran` and
+  // `cc.exe`) whose `pkgconf.exe` knows almost nothing. Measured on the machine
+  // this was written on: that pkgconf lists **6** packages; MSYS2 UCRT64's
+  // `pkg-config.exe` lists **238**. Every dependency OGRE probes for is in the
+  // difference — `Rapidjson` among them — so the configure reported "Could not
+  // locate Rapidjson" and the build died ~200 objects later in
+  // `OgreVulkanRootLayout.cpp:47: fatal error: rapidjson/document.h: No such
+  // file or directory`. Naming the executable is the whole fix for that class
+  // of "missing" package: they are installed, and were being looked for with a
+  // tool that could not see them.
+  const pkgConfig = join(ucrt, 'pkg-config.exe');
+  if (!existsSync(pkgConfig)) {
+    die(`expected MSYS2's pkg-config at ${pkgConfig} ` +
+        '(MSYS2 package mingw-w64-ucrt-x86_64-pkgconf)');
+  }
+  pkgConfigExe = pkgConfig;
+
+  // Vulkan is not optional here: the host creates the instance and the surface
+  // (`tension-core/src/platform.rs`) and the adapter loads RenderSystem_Vulkan,
+  // so an SDK-less configure removes the renderer this engine renders with.
+  const vulkanSdk = findVulkanSdk();
+  if (!vulkanSdk) {
+    die('the Vulkan SDK was not found\n' +
+        '  looked for $VULKAN_SDK and C:\\VulkanSDK\\<version> with Include\\vulkan\\vulkan.h\n' +
+        '  the engine renders through RenderSystem_Vulkan on Windows and the host creates\n' +
+        '  the Vulkan surface itself, so the build cannot drop it\n' +
+        '  install it from https://vulkan.lunarg.com/sdk/home#windows and run this again');
+  }
+  say(`vulkan SDK: ${vulkanSdk}`);
+
   extraFlags.push(
     '-G', 'Ninja',
     '-DCMAKE_C_COMPILER=gcc',
@@ -300,6 +421,8 @@ if (WIN) {
     '-DCMAKE_CXX_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DCMAKE_C_FLAGS=-U_WIN32_WINNT -D_WIN32_WINNT=0x0600',
     '-DOGRE_BUILD_RENDERSYSTEM_D3D11=OFF',
+    `-DPKG_CONFIG_EXECUTABLE=${pkgConfig.split('\\').join('/')}`,
+    `-DOGRE_VULKAN_SDK=${vulkanSdk}`,
     `-DVulkan_SHADERC_LIB_REL=${shaderc}`,
     `-DVulkan_SHADERC_LIB_DBG=${shaderc}`,
   );
@@ -463,12 +586,35 @@ if (FORCE && existsSync(BUILD)) {
 
 console.log(`bootstrap: ${process.platform}/${process.arch} (${toolchainReport()})`);
 
+/// The environment the OGRE configure and build run in.
+///
+/// One addition over `baseEnv()`: on Windows, `PKG_CONFIG_PATH` names MSYS2
+/// UCRT64's two `pkgconfig` directories explicitly. The pinned executable
+/// already derives that prefix from its own location — this makes the search
+/// path a stated fact rather than a property of where the binary happens to
+/// live, which is what a relocated MSYS2 root would otherwise break.
+function ogreEnv() {
+  const env = baseEnv();
+  if (WIN) {
+    const ucrt = ucrt64Bin();
+    if (ucrt) {
+      const prefix = dirname(ucrt);
+      const dirs = [join(prefix, 'lib', 'pkgconfig'), join(prefix, 'share', 'pkgconfig')]
+        .filter(isDirectory);
+      if (dirs.length) env.PKG_CONFIG_PATH = dirs.join(delimiter);
+    }
+  }
+  return env;
+}
+
 for (const entry of OGRE_PATCHES) applyOgrePatch(entry);
 ogrePatchApplied = true;
 
+checkPrerequisites();
+
 say(`configuring (${SRC} -> ${BUILD})`);
 const started = Date.now();
-run('cmake', ['-S', SRC, '-B', BUILD, ...flags, ...extraFlags]);
+run('cmake', ['-S', SRC, '-B', BUILD, ...flags, ...extraFlags], { env: ogreEnv() });
 
 // FreeImage must be off and STBI must be on. Both are held to it here.
 // `cmake_dependent_option` turns each one off *silently* when its probe comes up
@@ -493,8 +639,21 @@ if (/^#define OGRE_NO_STBI_CODEC 1$/m.test(settingsText)) {
       '  STBI is this tree\'s only image codec; without it no PNG/JPEG/TGA loads.');
 }
 
+// `cmake_dependent_option` overrides the flag set above without saying so: "ZIP
+// ON" plus an unseen zzip probe is a build with ZIP off. The engine reads
+// ECMA-208 paks, not zips, so this is a gap rather than a fault - but a gap
+// nobody can see is the thing this round exists to stop. Say it, do not die.
+if (/^#define OGRE_NO_ZIP_ARCHIVE 1$/m.test(settingsText)) {
+  say('warning: ZIP resource locations are OFF - OGRE asks pkg-config for');
+  say('         zzip-zlib-config, which MSYS2 zziplib does not install (it ships');
+  say('         zziplib.pc); Tension resources are ECMA-208 paks, not zips.');
+}
+if (!/^#define OGRE_BUILD_COMPONENT_OVERLAY$/m.test(settingsText)) {
+  say('warning: the Overlay component is OFF - freetype2 was not found');
+}
+
 say(`building with ${nproc()} jobs`);
-run('cmake', ['--build', BUILD, '-j', nproc()]);
+run('cmake', ['--build', BUILD, '-j', nproc()], { env: ogreEnv() });
 
 say(`installing to ${INSTALL}`);
 run('cmake', ['--install', BUILD]);

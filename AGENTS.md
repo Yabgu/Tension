@@ -555,10 +555,15 @@ session constants, compiles the framework guest, and builds every example.
 
 ### Windows prerequisites (a fresh machine fails three ways at once)
 
-A fresh Windows machine cannot build this repository for three reasons at once,
-and all three are prerequisites rather than bugs. The winget package directories
-below have **no shim**, so nothing else finds them; put them on `PATH` in every
-shell that builds:
+Run `node scripts/bootstrap.mjs --requirements` first: it prints every package
+this platform needs, whether the machine has it, and the exact `pacman` command
+for the ones it does not. The list lives in [`scripts/prerequisites.json`](scripts/prerequisites.json)
+so the check and this document cannot disagree.
+
+Beyond what that reports, a fresh Windows machine cannot build this repository
+for three more reasons, and all three are prerequisites rather than bugs. The
+winget package directories below have **no shim**, so nothing else finds them;
+put them on `PATH` in every shell that builds:
 
 - **Zig** (`zig`, 0.17.x) — winget `zig.zig`. `tension-res` builds with
   `zig build`; without it on `PATH` that step dies with a "command not found"
@@ -578,6 +583,23 @@ Concretely (winget version directories, no shim):
 C:\Users\<you>\AppData\Local\Microsoft\WinGet\Packages\zig.zig_Microsoft.Winget.Source_8wekyb3d8bbwe\zig-x86_64-windows-<ver>
 C:\Users\<you>\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin
 ```
+
+**The Vulkan SDK is required on Windows**, and its absence is the failure mode
+that costs the most time: without it OGRE's configure prints `Could NOT find
+Vulkan` in passing and drops `RenderSystem_Vulkan`, the build then succeeds, and
+only the installed tree reveals the engine has no renderer. The engine renders
+through Vulkan on this platform and the host creates the Vulkan surface itself
+(`tension-core/src/platform.rs`), so there is no fallback. `bootstrap.mjs`
+discovers the SDK by `$VULKAN_SDK`, then the `C:\VulkanSDK\<version>` layout the
+LunarG installer leaves behind — a shell opened before the install never
+inherits the variable, which is exactly how the first build here failed. The
+adapter needs the SDK's headers too, not just OGRE.
+
+**MSYS2's own `pkg-config` is pinned in the configure.** Several MinGW
+installations put their own `pkgconf.exe` on `PATH`; the WinLibs one that
+provides `gfortran` here knows 6 packages where MSYS2's knows 238, and with it
+first a configure cannot see `Rapidjson`, `freetype2` or `zlib` even though they
+are installed.
 
 ### Stack switching is x86-64 Linux/macOS only
 

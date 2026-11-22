@@ -60,6 +60,60 @@ function isDirectory(path) {
   }
 }
 
+/// The newest installed Windows Vulkan SDK, or null.
+///
+/// One implementation for the three places that need it — OGRE's configure
+/// (`bootstrap.mjs`), the adapter's configure (`build-native.mjs`) and the
+/// standalone adapter script (`build-ogre.mjs`). They must agree about which SDK
+/// is in play: OGRE compiles its render system against it and the adapter
+/// compiles against the plugin headers, which `#include <vulkan/vulkan_core.h>`.
+///
+/// The LunarG installer sets `VULKAN_SDK` machine-wide, which a shell opened
+/// *before* the install does not inherit — measured on the machine this was
+/// written on: empty in the build shell, `C:\\VulkanSDK\\1.4.363.0` at machine
+/// scope. So the env var wins when it is set, and the install layout is the
+/// fallback rather than the other way round.
+///
+/// Returns a forward-slashed path, because it is handed to CMake cache
+/// variables where a backslash is an escape.
+///
+/// `TENSION_VULKAN_SDK` names one explicitly, for an install somewhere else.
+export function findVulkanSdk() {
+  const root = 'C:\\VulkanSDK';
+  const explicit = process.env.TENSION_VULKAN_SDK;
+  if (explicit && existsSync(join(explicit, 'Include', 'vulkan', 'vulkan_core.h'))) {
+    return explicit.split('\\').join('/');
+  }
+  if (process.env.VULKAN_SDK &&
+      existsSync(join(process.env.VULKAN_SDK, 'Include', 'vulkan', 'vulkan_core.h'))) {
+    return process.env.VULKAN_SDK.split('\\').join('/');
+  }
+  let versions = [];
+  try {
+    versions = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort((a, b) => {
+        const pa = a.split('.').map(Number);
+        const pb = b.split('.').map(Number);
+        for (let i = 0; i < Math.max(pa.length, pb.length); ++i) {
+          const delta = (pb[i] ?? 0) - (pa[i] ?? 0);
+          if (delta !== 0) return delta;
+        }
+        return 0;
+      });
+  } catch {
+    return null;
+  }
+  for (const version of versions) {
+    const dir = join(root, version);
+    if (existsSync(join(dir, 'Include', 'vulkan', 'vulkan_core.h'))) {
+      return dir.split('\\').join('/');
+    }
+  }
+  return null;
+}
+
 /// MSYS2's UCRT64 `bin` directory, or null when there is no MSYS2.
 ///
 /// `TENSION_MSYS2` overrides the search — a machine that installed MSYS2
