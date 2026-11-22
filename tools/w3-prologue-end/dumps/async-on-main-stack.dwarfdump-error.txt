@@ -1,0 +1,1 @@
+error: examples\async-on-main\build\game.wasm: bad form

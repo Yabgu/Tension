@@ -1,0 +1,12 @@
+[tension-core] debug: guest examples\async-on-main\build\game-promise.wasm
+[tension-core] debug:   DWARF: present (compiler-emitted) — passed through as-is
+[tension-core] debug:   source map: ./game-promise.wasm.map (found)
+[tension-core] debug:   symbol path: examples\async-on-main
+[tension-core] debug:   lldb: settings set plugin.jit-loader.gdb.enable on
+[tension-core] debug:   lldb: settings set target.debug-file-search-paths examples\async-on-main
+[tension-core] debug:   lldb: image list                     # guest is JIT(0x...)
+[tension-core] debug:   lldb: breakpoint set -f game-promise.ts -l <line>   # source line
+[tension-core] debug:   lldb: breakpoint set -r 'game-promise/'   # or by function name
+2026-11-21T20:30:54.612Z INFO  core: debug: guest already carries DWARF; leaving it alone
+2026-11-21T20:30:54.612Z INFO  core: async backend: promise (no stack switching on this target)
+2026-11-21T20:30:54.612Z INFO  core: res: writing under \\?\C:\work\Tension
