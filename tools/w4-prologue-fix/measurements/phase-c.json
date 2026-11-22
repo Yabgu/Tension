@@ -1,0 +1,821 @@
+{
+  "cases": [
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 10,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 10,
+      "stoppedPc": "0x1f4fb3a9f00",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 6,
+      "requestedLineRowAddrs": [
+        "0x1f4fb3a9f00",
+        "0x1f4fb3a9fa2",
+        "0x1f4fb3a9fad",
+        "0x1f4fb3aa220",
+        "0x1f4fb3aa24e",
+        "0x1f4fb3aa250"
+      ],
+      "rowAfterRequestedLine": null,
+      "stopRow": {
+        "addr_hex": "0x1f4fb3a9f00",
+        "line": 10,
+        "column": 8,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 14,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 14,
+      "stoppedPc": "0x1f98cdd9fde",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 4,
+      "requestedLineRowAddrs": [
+        "0x1f98cdd9fde",
+        "0x1f98cdd9ff3",
+        "0x1f98cdd9ffe",
+        "0x1f98cdda019"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1f98cdda023",
+        "line": 16,
+        "column": 7
+      },
+      "stopRow": {
+        "addr_hex": "0x1f98cdd9fde",
+        "line": 14,
+        "column": 23,
+        "cu": 1
+      }
+    },
+    {
+      "module": "log",
+      "function": "game/_start_game",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 32,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 32,
+      "stoppedPc": "0x2733fbfb080",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 5,
+      "requestedLineRowAddrs": [
+        "0x2733fbfb080",
+        "0x2733fbfb100",
+        "0x2733fbfb10b",
+        "0x2733fbfb2d0",
+        "0x2733fbfb2dc"
+      ],
+      "rowAfterRequestedLine": null,
+      "stopRow": {
+        "addr_hex": "0x2733fbfb080",
+        "line": 32,
+        "column": 26,
+        "cu": 1
+      }
+    },
+    {
+      "module": "log",
+      "function": "game/_start_game",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 35,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 35,
+      "stoppedPc": "0x1b32ccdb13c",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 3,
+      "requestedLineRowAddrs": [
+        "0x1b32ccdb13c",
+        "0x1b32ccdb14a",
+        "0x1b32ccdb158"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1b32ccdb15d",
+        "line": 39,
+        "column": 2
+      },
+      "stopRow": {
+        "addr_hex": "0x1b32ccdb13c",
+        "line": 35,
+        "column": 2,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/compute",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 42,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 42,
+      "stoppedPc": "0x28ece95981d",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 2,
+      "requestedLineRowAddrs": [
+        "0x28ece95981d",
+        "0x28ece959825"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x28ece959827",
+        "line": 43,
+        "column": 9
+      },
+      "stopRow": {
+        "addr_hex": "0x28ece95981d",
+        "line": 42,
+        "column": 19,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/compute",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 43,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 43,
+      "stoppedPc": "0x1d823749827",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 4,
+      "requestedLineRowAddrs": [
+        "0x1d823749827",
+        "0x1d823749833",
+        "0x1d82374983e",
+        "0x1d823749844"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1d82374987b",
+        "line": 41,
+        "column": 23
+      },
+      "stopRow": {
+        "addr_hex": "0x1d823749827",
+        "line": 43,
+        "column": 9,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 48,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 48,
+      "stoppedPc": "0x233e9a892a0",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 28,
+      "requestedLineRowAddrs": [
+        "0x233e9a892a0",
+        "0x233e9a89336",
+        "0x233e9a89347",
+        "0x233e9a8934c",
+        "0x233e9a8935a",
+        "0x233e9a89373",
+        "0x233e9a893a3",
+        "0x233e9a893ad",
+        "0x233e9a893b6",
+        "0x233e9a893c1",
+        "0x233e9a893d9",
+        "0x233e9a893e6",
+        "0x233e9a893ec",
+        "0x233e9a893fb",
+        "0x233e9a89404",
+        "0x233e9a89411",
+        "0x233e9a8941b",
+        "0x233e9a89594",
+        "0x233e9a8959f",
+        "0x233e9a895e3",
+        "0x233e9a895e9",
+        "0x233e9a895f3",
+        "0x233e9a89601",
+        "0x233e9a89605",
+        "0x233e9a89610",
+        "0x233e9a8962d",
+        "0x233e9a89661",
+        "0x233e9a8968f"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x233e9a897a0",
+        "line": 41,
+        "column": 23
+      },
+      "stopRow": {
+        "addr_hex": "0x233e9a892a0",
+        "line": 48,
+        "column": 6,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 50,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 50,
+      "stoppedPc": "0x2ac10c3951b",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 8,
+      "requestedLineRowAddrs": [
+        "0x2ac10c3951b",
+        "0x2ac10c3952a",
+        "0x2ac10c39535",
+        "0x2ac10c3955d",
+        "0x2ac10c3956c",
+        "0x2ac10c39571",
+        "0x2ac10c3957f",
+        "0x2ac10c39632"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x2ac10c39661",
+        "line": 48,
+        "column": 6
+      },
+      "stopRow": {
+        "addr_hex": "0x2ac10c3951b",
+        "line": 50,
+        "column": 2,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 60,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 60,
+      "stoppedPc": "0x2672c4f8960",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 9,
+      "requestedLineRowAddrs": [
+        "0x2672c4f8960",
+        "0x2672c4f8a16",
+        "0x2672c4f8a2b",
+        "0x2672c4f8a35",
+        "0x2672c4f91bc",
+        "0x2672c4f91c6",
+        "0x2672c4f922e",
+        "0x2672c4f9285",
+        "0x2672c4f9298"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x2672c4f92a0",
+        "line": 48,
+        "column": 6
+      },
+      "stopRow": {
+        "addr_hex": "0x2672c4f8960",
+        "line": 60,
+        "column": 6,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 62,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 62,
+      "stoppedPc": "0x13810518a47",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 2,
+      "requestedLineRowAddrs": [
+        "0x13810518a47",
+        "0x13810518a52"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x13810518aec",
+        "line": 47,
+        "column": 0
+      },
+      "stopRow": {
+        "addr_hex": "0x13810518a47",
+        "line": 62,
+        "column": 8,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/_start_game",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 96,
+      "verdict": "slid elsewhere (line 98)",
+      "stopped": true,
+      "stoppedLine": 98,
+      "stoppedPc": "0x2682c7ae39b",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": {
+        "addr_hex": "0x2682c7ae39b",
+        "line": 98,
+        "column": 2,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/_start_game",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 98,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 98,
+      "stoppedPc": "0x1e6028be39b",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 1,
+      "requestedLineRowAddrs": [
+        "0x1e6028be39b"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1e6028be4ad",
+        "line": 101,
+        "column": 37
+      },
+      "stopRow": {
+        "addr_hex": "0x1e6028be39b",
+        "line": 98,
+        "column": 2,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/base",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 54,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/base",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 55,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/mid",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 60,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/mid",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 61,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/outer",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 69,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/outer",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 70,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/main",
+      "kind": "first",
+      "file": "game.ts",
+      "requestedLine": 77,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-on-main-promise",
+      "function": "game/main",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 86,
+      "verdict": "no stop",
+      "stopped": false,
+      "stoppedLine": null,
+      "stoppedPc": null,
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 0,
+      "requestedLineRowAddrs": [],
+      "rowAfterRequestedLine": null,
+      "stopRow": null
+    },
+    {
+      "module": "async-io",
+      "function": "game/_game_running",
+      "kind": "single-row",
+      "file": "game.ts",
+      "requestedLine": 89,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 89,
+      "stoppedPc": "0x1ddd3dee7e0",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 4,
+      "requestedLineRowAddrs": [
+        "0x1ddd3dee7e0",
+        "0x1ddd3dee81c",
+        "0x1ddd3dee83a",
+        "0x1ddd3dee846"
+      ],
+      "rowAfterRequestedLine": null,
+      "stopRow": {
+        "addr_hex": "0x1ddd3dee7e0",
+        "line": 89,
+        "column": 9,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "game/_start_game",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 22,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 22,
+      "stoppedPc": "0x2af970fa07c",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 1,
+      "requestedLineRowAddrs": [
+        "0x2af970fa07c"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x2af970fa08b",
+        "line": 23,
+        "column": 6
+      },
+      "stopRow": {
+        "addr_hex": "0x2af970fa07c",
+        "line": 22,
+        "column": 13,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/run",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 67,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 67,
+      "stoppedPc": "0x26170158d79",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 6,
+      "requestedLineRowAddrs": [
+        "0x26170158d79",
+        "0x26170158d87",
+        "0x26170158da4",
+        "0x26170158db4",
+        "0x26170158dc2",
+        "0x26170158dda"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x26170158de7",
+        "line": 72,
+        "column": 2
+      },
+      "stopRow": {
+        "addr_hex": "0x26170158d79",
+        "line": 67,
+        "column": 41,
+        "cu": 1
+      }
+    },
+    {
+      "module": "async-io",
+      "function": "game/pipeline",
+      "kind": "nonfirst",
+      "file": "game.ts",
+      "requestedLine": 49,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 49,
+      "stoppedPc": "0x23938949342",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 26,
+      "requestedLineRowAddrs": [
+        "0x23938949342",
+        "0x23938949427",
+        "0x2393894943a",
+        "0x23938949448",
+        "0x23938949461",
+        "0x23938949491",
+        "0x2393894949b",
+        "0x239389494a4",
+        "0x239389494af",
+        "0x239389494c7",
+        "0x239389494d4",
+        "0x239389494da",
+        "0x239389494e9",
+        "0x239389494f2",
+        "0x239389494ff",
+        "0x23938949509",
+        "0x23938949515",
+        "0x2393894958d",
+        "0x239389495a4",
+        "0x239389495a8",
+        "0x239389495ad",
+        "0x239389495b1",
+        "0x239389495bc",
+        "0x239389495d9",
+        "0x239389495f8",
+        "0x239389495fc"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x23938949601",
+        "line": 48,
+        "column": 2
+      },
+      "stopRow": {
+        "addr_hex": "0x23938949342",
+        "line": 49,
+        "column": 6,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/print",
+      "kind": "first",
+      "file": "io.ts",
+      "requestedLine": 73,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 73,
+      "stoppedPc": "0x2d6c9ea9840",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 5,
+      "requestedLineRowAddrs": [
+        "0x2d6c9ea9840",
+        "0x2d6c9ea98a5",
+        "0x2d6c9ea98ae",
+        "0x2d6c9ea98df",
+        "0x2d6c9ea98eb"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x2d6c9eabb00",
+        "line": 101,
+        "column": 23
+      },
+      "stopRow": {
+        "addr_hex": "0x2d6c9ea9840",
+        "line": 73,
+        "column": 8,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/print",
+      "kind": "nonfirst",
+      "file": "io.ts",
+      "requestedLine": 74,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 74,
+      "stoppedPc": "0x1d526f698b3",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 2,
+      "requestedLineRowAddrs": [
+        "0x1d526f698b3",
+        "0x1d526f698be"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1d526f698df",
+        "line": 73,
+        "column": 8
+      },
+      "stopRow": {
+        "addr_hex": "0x1d526f698b3",
+        "line": 74,
+        "column": 8,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/argCount",
+      "kind": "first",
+      "file": "io.ts",
+      "requestedLine": 96,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 96,
+      "stoppedPc": "0x23371bb5ae0",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 5,
+      "requestedLineRowAddrs": [
+        "0x23371bb5ae0",
+        "0x23371bb5b1c",
+        "0x23371bb5b2f",
+        "0x23371bb5b3f",
+        "0x23371bb5b4b"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x23371bb9720",
+        "line": 67,
+        "column": 35
+      },
+      "stopRow": {
+        "addr_hex": "0x23371bb5ae0",
+        "line": 96,
+        "column": 9,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/arg",
+      "kind": "first",
+      "file": "io.ts",
+      "requestedLine": 101,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 101,
+      "stoppedPc": "0x1e5a8b6bb00",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 4,
+      "requestedLineRowAddrs": [
+        "0x1e5a8b6bb00",
+        "0x1e5a8b6bb7e",
+        "0x1e5a8b6bc9d",
+        "0x1e5a8b6bca9"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1e5a8b6bcc0",
+        "line": 80,
+        "column": 28
+      },
+      "stopRow": {
+        "addr_hex": "0x1e5a8b6bb00",
+        "line": 101,
+        "column": 23,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/arg",
+      "kind": "nonfirst",
+      "file": "io.ts",
+      "requestedLine": 102,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 102,
+      "stoppedPc": "0x264d4d0bb9c",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 4,
+      "requestedLineRowAddrs": [
+        "0x264d4d0bb9c",
+        "0x264d4d0bba4",
+        "0x264d4d0bc6c",
+        "0x264d4d0bc78"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x264d4d0bc9d",
+        "line": 101,
+        "column": 23
+      },
+      "stopRow": {
+        "addr_hex": "0x264d4d0bb9c",
+        "line": 102,
+        "column": 2,
+        "cu": 1
+      }
+    },
+    {
+      "module": "io",
+      "function": "~lib/tension-framework/assembly/io/argCount",
+      "kind": "first",
+      "file": "io.ts",
+      "requestedLine": 96,
+      "verdict": "exact",
+      "stopped": true,
+      "stoppedLine": 96,
+      "stoppedPc": "0x1816ee25ae0",
+      "breakpointLocations": 1,
+      "rowCountForRequestedLine": 5,
+      "requestedLineRowAddrs": [
+        "0x1816ee25ae0",
+        "0x1816ee25b1c",
+        "0x1816ee25b2f",
+        "0x1816ee25b3f",
+        "0x1816ee25b4b"
+      ],
+      "rowAfterRequestedLine": {
+        "addr_hex": "0x1816ee29720",
+        "line": 67,
+        "column": 35
+      },
+      "stopRow": {
+        "addr_hex": "0x1816ee25ae0",
+        "line": 96,
+        "column": 9,
+        "cu": 1
+      }
+    }
+  ]
+}
