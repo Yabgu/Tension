@@ -18,9 +18,13 @@ instead of calling into something.
 @external("env", "__startThread")  declare function __startThread(execId: i32): i32;
 ```
 
-Both are emitted only by a `--sharedMemory` build, and only when the module has
-an async shell (a program with no `$starts` table has nothing to serve requests
-from, so it gets neither).
+Both are emitted only by a `--sharedMemory` build, and only when the program's own
+code reaches the threading surface — a program that names no thread API gets
+neither, and a host that does not define them can still link such a module. (The
+condition used to be "the module has an async shell", which was never the right
+question: it made a shared build with a plain `main` carry two imports it could
+not use, and a host that defined only `env` then failed to link it at all. See
+`docs/thread-abi.md` §5 in TensionScript for the emission rule that replaced it.)
 
 - **`__executorCount() -> i32`** answers the number of executors this instance
   was configured for: main plus the pool. It is read once, by `__threadInit`, and

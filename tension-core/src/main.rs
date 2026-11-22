@@ -741,6 +741,198 @@ fn run_pack(cli: PackCli) -> anyhow::Result<()> {
     }
 }
 
+/// How a host option takes its value.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum ValueForm {
+    /// No value at all.
+    None,
+    /// Both `--x <value>` and `--x=<value>`.
+    Both,
+    /// `--x <value>` only: `--x=<value>` is **not** a spelling of this option
+    /// (`--write-root`, measured: `--write-root=/tmp` is `unknown option`).
+    SeparateOnly,
+}
+
+/// What `parse_cli` does with a recognised option.
+///
+/// An enum rather than a string so the dispatch `match` is exhaustive: a new
+/// table entry with a new kind does not compile until it has an arm.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum HostOptionKind {
+    Debug,
+    SymbolPath,
+    Res,
+    WriteRoot,
+    Capability,
+    LogLevel,
+    LogFormat,
+    LogFile,
+    SessionOpen,
+    SessionCallbacks,
+    PostTestEvents,
+    Executors,
+    Help,
+    Version,
+    /// `--`, the end of the options. In the table because the `USAGE` check has
+    /// to see it, and **exempt** from the post-path refusal: it is the separator
+    /// itself, and past the module path there is nothing left for it to separate.
+    /// A guest asking for a literal `--` still gets one.
+    Terminator,
+}
+
+/// One host option: every spelling it answers to, how it takes its value, what
+/// the parser does with it, and what to say when the value is missing.
+///
+/// **This table is the parser's only source of truth for what a host option
+/// is (I32).** `parse_cli` recognises a token by looking it up here, and
+/// [`misdirected_host_option`] looks it up in the same place, so a flag cannot
+/// be added to the parser without appearing in this table, and cannot appear
+/// here without being refused when it turns up after the module path. The two
+/// tests at the bottom of this file pin both directions of that claim.
+struct HostOption {
+    /// Every spelling. The **first** is canonical: messages name it.
+    spellings: &'static [&'static str],
+    value: ValueForm,
+    kind: HostOptionKind,
+    /// Completes "`--flag` " when the value is missing, e.g. `needs a count`.
+    /// Empty (and unused) for [`ValueForm::None`].
+    missing_value: &'static str,
+}
+
+/// Every host option, in one place. See [`HostOption`].
+const HOST_OPTIONS: &[HostOption] = &[
+    HostOption {
+        spellings: &["--debug"],
+        value: ValueForm::None,
+        kind: HostOptionKind::Debug,
+        missing_value: "",
+    },
+    HostOption {
+        spellings: &["--symbol-path"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::SymbolPath,
+        missing_value: "needs a path",
+    },
+    HostOption {
+        spellings: &["--res"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::Res,
+        missing_value: "needs a pak path",
+    },
+    HostOption {
+        spellings: &["--write-root"],
+        value: ValueForm::SeparateOnly,
+        kind: HostOptionKind::WriteRoot,
+        missing_value: "needs a directory",
+    },
+    HostOption {
+        spellings: &["--capability"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::Capability,
+        missing_value: "needs a path or a name",
+    },
+    HostOption {
+        spellings: &["--log-level"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::LogLevel,
+        missing_value: "needs a spec",
+    },
+    HostOption {
+        spellings: &["--log-format"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::LogFormat,
+        missing_value: "needs `text` or `json`",
+    },
+    HostOption {
+        spellings: &["--log-file"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::LogFile,
+        missing_value: "needs a path",
+    },
+    HostOption {
+        spellings: &["--session-open"],
+        value: ValueForm::None,
+        kind: HostOptionKind::SessionOpen,
+        missing_value: "",
+    },
+    HostOption {
+        spellings: &["--session-callbacks"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::SessionCallbacks,
+        missing_value: "needs a table slot (or two)",
+    },
+    HostOption {
+        spellings: &["--post-test-events"],
+        value: ValueForm::None,
+        kind: HostOptionKind::PostTestEvents,
+        missing_value: "",
+    },
+    HostOption {
+        spellings: &["--executors"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::Executors,
+        missing_value: "needs a count",
+    },
+    HostOption {
+        spellings: &["-h", "--help"],
+        value: ValueForm::None,
+        kind: HostOptionKind::Help,
+        missing_value: "",
+    },
+    HostOption {
+        spellings: &["-V", "--version"],
+        value: ValueForm::None,
+        kind: HostOptionKind::Version,
+        missing_value: "",
+    },
+    HostOption {
+        spellings: &["--"],
+        value: ValueForm::None,
+        kind: HostOptionKind::Terminator,
+        missing_value: "",
+    },
+];
+
+/// How a token matched the table.
+#[derive(Clone, Copy)]
+enum HostMatch<'a> {
+    /// The token is a spelling exactly (`--debug`).
+    Exact(&'static HostOption),
+    /// The token is `<spelling>=<value>`. `Some` when that form is a spelling of
+    /// the option, `None` when it is not (`--write-root=/x`), which is the typo
+    /// it has always been when it appears before the module path.
+    Equals(&'static HostOption, Option<&'a str>),
+}
+
+/// Looks a token up in [`HOST_OPTIONS`].
+///
+/// Returns `None` for anything that is not a host option — including a plain
+/// path and any dash token the table does not name, which is what keeps a
+/// guest's own `-v` or `--window=1280x720` out of the host's hands.
+fn match_host_option(arg: &str) -> Option<HostMatch<'_>> {
+    for option in HOST_OPTIONS {
+        for spelling in option.spellings {
+            if arg == *spelling {
+                return Some(HostMatch::Exact(option));
+            }
+            // An `=` form is offered only by an option that takes a value; for
+            // the others `-h=x` is a typo and stays one.
+            if option.value != ValueForm::None {
+                if let Some(rest) = arg.strip_prefix(spelling) {
+                    if let Some(value) = rest.strip_prefix('=') {
+                        let accepted = option.value == ValueForm::Both;
+                        return Some(HostMatch::Equals(
+                            option,
+                            if accepted { Some(value) } else { None },
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// The parsed command line. See `USAGE` for the contract.
 #[derive(Debug)]
 struct Cli {
@@ -793,84 +985,66 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut post_test_events = false;
     let mut executors = 0usize;
     let mut wasm_path = None;
+    // What the host understood, canonicalised to `--flag value` in the order it
+    // was given. Used only to suggest a corrected command line when a host option
+    // turns up after the module path (I32).
+    let mut host_argv: Vec<String> = Vec::new();
     let mut rest = argv.into_iter();
     while wasm_path.is_none() {
         let Some(arg) = rest.next() else { break };
-        if let Some(value) = arg.strip_prefix("--symbol-path=") {
-            symbol_paths.push(PathBuf::from(value));
+        // **One lookup decides what this token is.** Not a chain of
+        // `strip_prefix` arms beside a `match`: two recognisers drift apart, and
+        // the drift is the bug I32 names.
+        let Some(matched) = match_host_option(&arg) else {
+            // Not a host option. A lone `-` is taken as a path; anything longer
+            // that starts with a dash is a typo, and must not be handed to the
+            // loader as a file.
+            if arg.len() > 1 && arg.starts_with('-') {
+                return Err(format!("unknown option `{arg}`"));
+            }
+            wasm_path = Some(arg);
             continue;
+        };
+        let (option, inline) = match matched {
+            HostMatch::Exact(option) => (option, None),
+            // `--write-root=/x`: that form is not a spelling of the option, so
+            // ahead of the module path it is the same typo it has always been.
+            HostMatch::Equals(_, None) => return Err(format!("unknown option `{arg}`")),
+            HostMatch::Equals(option, Some(value)) => (option, Some(value.to_string())),
+        };
+        let value = match option.value {
+            ValueForm::None => None,
+            _ => match inline {
+                Some(value) => Some(value),
+                None => Some(rest.next().ok_or_else(|| missing_value(option))?),
+            },
+        };
+        host_argv.push(option.spellings[0].to_string());
+        if let Some(value) = &value {
+            host_argv.push(value.clone());
         }
-        if let Some(value) = arg.strip_prefix("--res=") {
-            res_paths.push(PathBuf::from(value));
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--capability=") {
-            capability_paths.push(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--log-level=") {
-            log_levels.push(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--log-format=") {
-            log_format = Some(value.to_string());
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--log-file=") {
-            log_file = Some(PathBuf::from(value));
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--session-callbacks=") {
-            session_callbacks = Some(parse_callback_slots(value)?);
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("--executors=") {
-            executors = parse_executors(value)?;
-            continue;
-        }
-        match arg.as_str() {
-            "--debug" => debug = true,
-            "--session-open" => session_open = true,
-            "--post-test-events" => post_test_events = true,
-            "--executors" => {
-                let value = rest.next().ok_or("`--executors` needs a count")?;
-                executors = parse_executors(&value)?;
+        match option.kind {
+            HostOptionKind::Debug => debug = true,
+            HostOptionKind::SessionOpen => session_open = true,
+            HostOptionKind::PostTestEvents => post_test_events = true,
+            HostOptionKind::SymbolPath => {
+                symbol_paths.push(PathBuf::from(required(option, &value)?))
             }
-            "--session-callbacks" => {
-                let value = rest
-                    .next()
-                    .ok_or("`--session-callbacks` needs a table slot (or two)")?;
-                session_callbacks = Some(parse_callback_slots(&value)?);
+            HostOptionKind::Res => res_paths.push(PathBuf::from(required(option, &value)?)),
+            HostOptionKind::WriteRoot => {
+                write_root = Some(PathBuf::from(required(option, &value)?))
             }
-            "--symbol-path" => {
-                let value = rest.next().ok_or("`--symbol-path` needs a path")?;
-                symbol_paths.push(PathBuf::from(value));
+            HostOptionKind::Capability => {
+                capability_paths.push(required(option, &value)?.to_string())
             }
-            "--res" => {
-                let value = rest.next().ok_or("`--res` needs a pak path")?;
-                res_paths.push(PathBuf::from(value));
+            HostOptionKind::LogLevel => log_levels.push(required(option, &value)?.to_string()),
+            HostOptionKind::LogFormat => log_format = Some(required(option, &value)?.to_string()),
+            HostOptionKind::LogFile => log_file = Some(PathBuf::from(required(option, &value)?)),
+            HostOptionKind::SessionCallbacks => {
+                session_callbacks = Some(parse_callback_slots(required(option, &value)?)?)
             }
-            "--write-root" => {
-                let value = rest.next().ok_or("`--write-root` needs a directory")?;
-                write_root = Some(PathBuf::from(value));
-            }
-            "--capability" => {
-                let value = rest.next().ok_or("`--capability` needs a path or a name")?;
-                capability_paths.push(value);
-            }
-            "--log-level" => {
-                let value = rest.next().ok_or("`--log-level` needs a spec")?;
-                log_levels.push(value);
-            }
-            "--log-format" => {
-                let value = rest.next().ok_or("`--log-format` needs `text` or `json`")?;
-                log_format = Some(value);
-            }
-            "--log-file" => {
-                let value = rest.next().ok_or("`--log-file` needs a path")?;
-                log_file = Some(PathBuf::from(value));
-            }
-            "-h" | "--help" => {
+            HostOptionKind::Executors => executors = parse_executors(required(option, &value)?)?,
+            HostOptionKind::Help => {
                 println!("{USAGE}");
                 // `--help` starts the process far enough to name the backend it
                 // would build; the probe is the same question `main` asks of the
@@ -881,20 +1055,22 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                 );
                 std::process::exit(0);
             }
-            "-V" | "--version" => {
+            HostOptionKind::Version => {
                 println!("tension-core {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
-            "--" => wasm_path = rest.next(),
-            // A lone `-` is taken as a path; anything longer that starts with a
-            // dash is a typo, and must not be handed to the loader as a file.
-            other if other.len() > 1 && other.starts_with('-') => {
-                return Err(format!("unknown option `{other}`"));
-            }
-            other => wasm_path = Some(other.to_string()),
+            HostOptionKind::Terminator => wasm_path = rest.next(),
         }
     }
     let wasm_path = wasm_path.ok_or("missing <game.wasm>")?;
+    // Everything after the module path is the guest's — **unless it names a host
+    // option**, which is almost certainly a misordered command line and used to
+    // be applied to nothing at all, silently, on the flag that decides the whole
+    // measurement (I32).
+    let args: Vec<String> = rest.collect();
+    if let Some(message) = misdirected_host_option(&wasm_path, &args, &host_argv) {
+        return Err(message);
+    }
     Ok(Cli {
         debug,
         symbol_paths,
@@ -909,8 +1085,95 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         post_test_events,
         executors,
         wasm_path,
-        args: rest.collect(),
+        args,
     })
+}
+
+/// The message for an option whose value is missing.
+fn missing_value(option: &HostOption) -> String {
+    format!("`{}` {}", option.spellings[0], option.missing_value)
+}
+
+/// The value a table entry promised.
+///
+/// Infallible by construction — the loop consumed a value for every
+/// [`ValueForm`] other than `None` — so the `Err` arm repeats
+/// [`missing_value`] rather than panicking on a shape the type system cannot see.
+fn required<'a>(option: &HostOption, value: &'a Option<String>) -> Result<&'a str, String> {
+    value.as_deref().ok_or_else(|| missing_value(option))
+}
+
+/// The refusal for a host option that appeared **after** the module path (I32).
+///
+/// Guest argv is a real feature and stays: `examples/io/build/game.wasm` takes
+/// `-v`, the `2d` examples take `--window=1280x720`, and the editor takes
+/// `--title=…` — none of those is a host option, and all of them keep reaching
+/// the guest. What must not keep happening is a token the host *owns* being
+/// dropped into argv, where it looks like success: `game.wasm --executors 2`
+/// answered `executors=1` with exit 0 and no warning.
+///
+/// So the rule is the table's, not a second list's: a token that
+/// [`match_host_option`] recognises is refused, and everything else passes
+/// through untouched. `--` is the one exemption (see [`HostOptionKind::Terminator`]).
+///
+/// The message names the flag, states the rule, and shows the corrected command
+/// line, rebuilt from what the host understood plus what the user wrote after the
+/// path — so it suggests *their* line with one token moved, not a template.
+fn misdirected_host_option(
+    wasm_path: &str,
+    args: &[String],
+    host_argv: &[String],
+) -> Option<String> {
+    for (i, arg) in args.iter().enumerate() {
+        let Some(matched) = match_host_option(arg) else {
+            continue;
+        };
+        let option = match matched {
+            HostMatch::Exact(option) => option,
+            HostMatch::Equals(option, _) => option,
+        };
+        if option.kind == HostOptionKind::Terminator {
+            continue;
+        }
+        // `--executors 2`: the value came along as the next token. An `=` form
+        // carries its own, so it moves alone.
+        let inline = matches!(matched, HostMatch::Equals(_, Some(_)));
+        let takes_next = option.value != ValueForm::None && !inline && i + 1 < args.len();
+        let mut moved = vec![arg.clone()];
+        if matches!(matched, HostMatch::Equals(_, None)) {
+            // `--write-root=/x`: this option has no `=` form, so the suggestion
+            // has to split it — recommending the same non-spelling that failed
+            // would be a worse answer than saying nothing.
+            if let Some((_, value)) = arg.split_once('=') {
+                moved = vec![option.spellings[0].to_string(), value.to_string()];
+            }
+        } else if takes_next {
+            moved.push(args[i + 1].clone());
+        }
+        let mut guest: Vec<String> = Vec::with_capacity(args.len());
+        for (j, other) in args.iter().enumerate() {
+            if j == i || (takes_next && j == i + 1) {
+                continue;
+            }
+            guest.push(other.clone());
+        }
+        let mut suggestion: Vec<String> = vec!["tension-core".to_string()];
+        suggestion.extend(host_argv.iter().cloned());
+        suggestion.extend(moved);
+        suggestion.push(wasm_path.to_string());
+        suggestion.extend(guest);
+
+        let mut message = format!(
+            "`{arg}` came after the module path, so it was handed to the guest as argv \
+             instead of applied by the host.\n\n\
+             Host options must precede <game.wasm>: everything after it is passed to the \
+             game verbatim (that is what the guest's `tension::io arg()` returns).\n\n\
+             The corrected order is:\n\n    {}",
+            suggestion.join(" ")
+        );
+        return Some(message);
+    }
+    None
 }
 
 /// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
@@ -2737,7 +3000,11 @@ mod res_cli_tests {
             "--res=b.tns".into(),
             "--debug".into(),
             "game.wasm".into(),
-            "--res".into(), // after the guest path: this one is the game's
+            // After the guest path these are the game's — a guest argument is
+            // whatever the guest says it is, and `--window=…` is what the 2d
+            // examples actually pass (`examples/2d/hello-sprites/dist/run.sh`).
+            "--window=1280x720".into(),
+            "-v".into(),
         ])
         .expect("parses");
         assert_eq!(
@@ -2746,7 +3013,18 @@ mod res_cli_tests {
         );
         assert!(cli.debug);
         assert_eq!(cli.wasm_path, "game.wasm");
-        assert_eq!(cli.args, vec!["--res".to_string()]);
+        assert_eq!(
+            cli.args,
+            vec!["--window=1280x720".to_string(), "-v".to_string()]
+        );
+
+        // **A host option after the path is refused, not passed through (I32).**
+        // It used to land in `args`, where it looked like success:
+        // `game.wasm --executors 2` answered `executors=1` with exit 0.
+        let err = parse_cli(vec!["game.wasm".into(), "--res".into(), "a.tns".into()])
+            .expect_err("a host option after the module path is a misordered command line");
+        assert!(err.contains("`--res`"), "unexpected error: {err}");
+        assert!(err.contains("precede"), "unexpected error: {err}");
     }
 
     #[test]
@@ -2780,6 +3058,138 @@ mod res_cli_tests {
 }
 
 #[cfg(test)]
+mod host_option_table_tests {
+    use super::*;
+
+    /// The dash tokens `USAGE` documents, taken from the lines that *begin* one.
+    ///
+    /// A line in the options block starts with two spaces and the flag, then its
+    /// value placeholder and prose (`--symbol-path <PATH>   where…`); a spelling
+    /// list can be comma-separated (`-h, --help`). Scanning stops at the first
+    /// word that is not a dash token, which is where the prose starts. The
+    /// `pack` subcommand's `[-o output.pak]` sits mid-line in the header, so it
+    /// is not collected — a different parser (`parse_pack_cli`) owns it.
+    fn usage_dash_tokens() -> Vec<String> {
+        let mut tokens = Vec::new();
+        for line in USAGE.lines() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with('-') {
+                continue;
+            }
+            for word in trimmed.split_whitespace() {
+                let word = word.trim_end_matches(',');
+                if !word.starts_with('-') {
+                    break;
+                }
+                tokens.push(word.to_string());
+            }
+        }
+        tokens
+    }
+
+    /// Every table entry is recognised by the parser, and refused after the
+    /// module path — the two halves of "the table is the source of truth" (I32).
+    #[test]
+    fn every_table_entry_is_recognised_and_refused_after_the_module_path() {
+        for option in HOST_OPTIONS {
+            for spelling in option.spellings {
+                assert!(
+                    match_host_option(spelling).is_some(),
+                    "`{spelling}` is in HOST_OPTIONS but the parser does not recognise it"
+                );
+
+                // `--` is the one exemption: it is the separator, and past the
+                // module path there is nothing left for it to separate.
+                let after = vec![spelling.to_string()];
+                let refusal = misdirected_host_option("game.wasm", &after, &[]);
+                if option.kind == HostOptionKind::Terminator {
+                    assert!(refusal.is_none(), "`{spelling}` must not be refused after the path");
+                } else {
+                    let message = refusal.unwrap_or_else(|| {
+                        panic!("`{spelling}` after the module path was not refused")
+                    });
+                    assert!(
+                        message.contains(spelling),
+                        "the refusal must name `{spelling}`: {message}"
+                    );
+                }
+
+                match option.kind {
+                    // These print and `exit(0)`; they cannot be parsed in this
+                    // process. Recognition is the half that matters here, and it
+                    // is asserted above.
+                    HostOptionKind::Help | HostOptionKind::Version => continue,
+                    HostOptionKind::Terminator => {
+                        let cli = parse_cli(vec![spelling.to_string(), "game.wasm".into()])
+                            .expect("`--` takes the next argument as the path");
+                        assert_eq!(cli.wasm_path, "game.wasm");
+                        continue;
+                    }
+                    _ => {}
+                }
+                // A value that satisfies that option's own parser, so a failure
+                // here means "the table and the parser disagree", not "the test
+                // handed `--executors` a word".
+                let value = match option.kind {
+                    HostOptionKind::Executors => "2",
+                    HostOptionKind::SessionCallbacks => "0",
+                    HostOptionKind::LogFormat => "text",
+                    _ => "value",
+                };
+                let mut argv = vec![spelling.to_string()];
+                if option.value != ValueForm::None {
+                    argv.push(value.to_string());
+                }
+                argv.push("game.wasm".to_string());
+                let cli = parse_cli(argv)
+                    .unwrap_or_else(|err| panic!("`{spelling}` did not parse: {err}"));
+                assert_eq!(cli.wasm_path, "game.wasm", "`{spelling}` lost the module path");
+                assert!(
+                    cli.args.is_empty(),
+                    "`{spelling}` before the path must leave no guest argv, got {:?}",
+                    cli.args
+                );
+            }
+        }
+    }
+
+    /// `USAGE` and the table name the same flags, in both directions, and a dash
+    /// token that is not a host option is still the guest's.
+    #[test]
+    fn the_usage_text_and_the_table_agree_about_every_dash_token() {
+        let usage = usage_dash_tokens();
+        let table: Vec<String> = HOST_OPTIONS
+            .iter()
+            .flat_map(|option| option.spellings.iter().map(|spelling| spelling.to_string()))
+            .collect();
+
+        for token in &usage {
+            assert!(
+                table.contains(token),
+                "`{token}` is documented in USAGE but missing from HOST_OPTIONS, so the \
+                 post-path check cannot refuse it — add it to the table"
+            );
+        }
+        for spelling in &table {
+            assert!(
+                usage.contains(spelling),
+                "`{spelling}` is in HOST_OPTIONS but not documented in USAGE"
+            );
+        }
+
+        // The other half of the rule: a dash token the table does not name is the
+        // guest's. These are real (`examples/io/game.wasm` takes `-v`, the 2d
+        // examples take `--window=…`), and `-` alone is a path.
+        for guest in ["-v", "--window=1280x720", "--title=Tension Editor", "-"] {
+            assert!(
+                match_host_option(guest).is_none(),
+                "`{guest}` must reach the guest, not the host"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod adapter_cli_tests {
     use super::*;
 
@@ -2790,7 +3200,8 @@ mod adapter_cli_tests {
             "echo".into(),
             "--capability=other.so".into(),
             "game.wasm".into(),
-            "--capability".into(), // after the guest path: this one is the game's
+            // A guest argument, not a host one: it keeps reaching the guest.
+            "--title=Tension Editor".into(),
         ])
         .expect("parses");
         assert_eq!(
@@ -2798,10 +3209,15 @@ mod adapter_cli_tests {
             vec!["echo".to_string(), "other.so".to_string()]
         );
         assert_eq!(cli.wasm_path, "game.wasm");
-        assert_eq!(cli.args, vec!["--capability".to_string()]);
+        assert_eq!(cli.args, vec!["--title=Tension Editor".to_string()]);
 
         let err = parse_cli(vec!["--capability".into()]).unwrap_err();
         assert!(err.contains("--capability"), "unexpected error: {err}");
+
+        // After the path it is a misordered host option, and it is named.
+        let err = parse_cli(vec!["game.wasm".into(), "--capability=echo".into()])
+            .expect_err("a host option after the module path is refused");
+        assert!(err.contains("--capability=echo"), "unexpected error: {err}");
     }
 
     #[test]
@@ -3104,10 +3520,19 @@ mod log_cli_tests {
     }
 
     #[test]
-    fn log_flags_after_the_guest_belong_to_the_game() {
-        let parsed = cli(&["game.wasm", "--log-level=debug"]);
+    fn log_flags_after_the_guest_are_refused() {
+        // A log flag after the module path used to be dropped into the guest's
+        // argv: the host logged at the default level and nothing said so. It is
+        // now a named error (I32), because a log flag is the host's, not the
+        // game's.
+        let error = parse_cli(vec!["game.wasm".into(), "--log-level=debug".into()])
+            .expect_err("a log flag after the module path is refused");
+        assert!(error.contains("--log-level=debug"), "unexpected error: {error}");
+
+        // What still belongs to the game is a token that is not a host option.
+        let parsed = cli(&["game.wasm", "--level=debug"]);
         assert!(parsed.log_levels.is_empty());
-        assert_eq!(parsed.args, vec!["--log-level=debug".to_string()]);
+        assert_eq!(parsed.args, vec!["--level=debug".to_string()]);
     }
 
     #[test]

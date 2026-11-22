@@ -53,6 +53,16 @@ const NEVER_TRAPS: u64 = u64::MAX / 2;
 
 /// Refusals. The contract fixes only "0 is success"; these are the host's own
 /// negatives, and `docs/threads.md` lists them for an operator reading a log.
+///
+/// **These numbers share a channel with the guest's own refusals** — the value
+/// an exported `__workerMain` answers (`std/assembly/thread.ts` in TensionScript
+/// answers `-1` for a bad id or a non-shared build, `-2` for an uncarved control
+/// block and `-3` for an arena that does not cover the record). `-1` agrees;
+/// `-2` and `-3` do not. Nothing reads the guest's answer today except the Debug
+/// lines in [`run_worker`] and [`ExecutorPool::join_finished`], so the collision
+/// is latent rather than active — but a negative read off a log belongs to
+/// whichever side produced it, and renumbering either half is an ABI change with
+/// its own round. See I39.
 pub const ERR_ID_OUT_OF_RANGE: i32 = -1;
 pub const ERR_ALREADY_BORN: i32 = -2;
 pub const ERR_INSTANTIATE: i32 = -3;
