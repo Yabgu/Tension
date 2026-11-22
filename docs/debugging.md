@@ -153,14 +153,35 @@ Measured, not inferred. Two guests, same host flag, same lldb commands.
   programs import their memory too, which is why they are launched with the
   host's `--executors` and the shared-memory path.
 
-- **Windows — no, and not because of this repository.** Measured on the Windows
-  host with the msys2 lldb (`C:\msys64\ucrt64\bin\lldb.exe`): the process runs,
-  the guest executes, and `image list` shows **no `JIT(0x…)` image at all**. The
-  cause is upstream of the flags: wasmtime gates its GDB-JIT registration on the
-  `gdb_jit_int` feature (`wasmtime-internal-jit-debug-50.0.2/src/lib.rs`), the
-  ELF-target module the GDB plugin reads, and lldb on Windows does not consume
-  that registration. So a guest breakpoint there is impossible today, DWARF or
-  not, and no flag or setting changes it.
+- **Windows — yes, for a Promise guest.** Measured on the Windows host,
+  2026-11-22. `examples/async-on-main` built on the **Promise** backend
+  (`--debug --sourceMap`, no `--enable stack-switching`) under codelldb's lldb
+  20.1.4:
+
+  ```
+  (lldb) image list
+  [27] 2CE5EE3E 0x000002297fed1000 JIT(0x2290234a040) (0x000002290234a040)
+
+  breakpoint set -f game.ts -l 77   -> stopped at game.ts:77   (game/main$resume)
+  breakpoint set -f game.ts -l 81   -> stopped at game.ts:81
+  breakpoint set -f game.ts -l 92   -> stopped at game.ts:92
+  ```
+
+  The same stop is asserted by `a_source_breakpoint_binds_in_a_promise_guest`
+  against the committed fixture — `rt-guards.ts:96`, where msys2's lldb 23.1.5
+  stops too on this machine. This page previously said the opposite — that
+  `image list` shows **no `JIT(0x…)` image at all** and a guest breakpoint is
+  impossible there. That is not reproducible here with either debugger build.
+  *(Inference, not measured: the earlier reading most likely saw a
+  stack-switching guest — the case immediately below — which the engine refuses
+  before lldb is handed a module.)*
+
+- **A stack-switching guest cannot bind on Windows — because it cannot load.**
+  `tension-core` refuses the module (`this guest uses continuations, which
+  wasmtime does not support on this target (windows)`), so lldb never receives
+  anything to register. That is a **load refusal**, not a missing-symbols or
+  JIT-registration problem, and it is the reason the stack-switching breakpoint
+  test skips there.
 
 ### Known defect: some lines in async bodies bind without a source location
 
@@ -276,19 +297,21 @@ one line naming what is missing and what to run.
   failure, so a deleted fixture cannot leave CI green with nothing measured.
 - `the_debug_report_names_what_a_debugger_can_see` — every platform: the report
   carries `DWARF: present`, the source map, and the three `lldb:` recipe lines.
-- `a_source_breakpoint_binds_in_a_promise_guest` — Linux/macOS: lldb stops at
-  `rt-guards.ts:96`. Windows: prints the reason and asserts the report instead.
-- `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` — Linux/macOS: the
-  same bytes with every `.debug_*` custom section stripped does **not** bind, so
-  the stop above is DWARF's doing and not the driver's default answer. Runs in
-  CI for that reason.
+- `a_source_breakpoint_binds_in_a_promise_guest` — lldb stops at
+  `rt-guards.ts:96` on every platform where it registers the guest's JIT image,
+  Windows included (measured 2026-11-22). It skips only on a **measured**
+  capability gap — the guest does not load, or lldb holds no `JIT(…)` image
+  after the run — and prints that measurement.
+- `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` — the same bytes
+  with every `.debug_*` custom section stripped does **not** bind, so the stop
+  above is DWARF's doing and not the driver's default answer. Runs wherever the
+  positive test runs; on Windows the stripped guest registers no image at all,
+  which is the same conclusion by a different route. Runs in CI for that reason.
 - `a_source_breakpoint_binds_in_a_stack_switching_guest` — a breakpoint in an
-  async program on the stackful backend. Today the pinned compiler emits no
-  DWARF for those programs (`WARNING DWARF emission failed: type form is not a
-  function type`), so it prints that and returns; it reads `.debug_info` from the
-  artifact on every run, so it starts asserting a real stop when the pin moves.
-  No fixture can exist until then, which is why the CI job filters it out **by
-  name** rather than running the whole target.
+  async program on the stackful backend. The fixture carries DWARF; the test
+  skips only where the **engine refuses to load** the module (Windows:
+  continuations unsupported), printing the host's own sentence, and asserts a
+  real stop wherever the module loads.
 
 By hand, the same stop without the test wrapper:
 
@@ -303,15 +326,14 @@ It prints one JSON line — `stopped`, `hit_breakpoint`, `file`, `line`,
 
 **What this means for the breakpoint you set in VS Code.**
 
-- A `.ts` line in a **guest that carries DWARF** binds on Linux/macOS — any
-  example built with its `build:debug` task, and `tests/programs/` built with
-  `--debug` — as long as the launch configuration passes `--debug` to the host.
-- A line in an **async program** (a stack-switching guest) does **not** bind
-  today, on any platform: the pinned compiler emits no DWARF for those, which is
-  the third test above and is upstream. Nothing in the editor or the host fixes
-  it; when the compiler pin carries DWARF, the same configuration starts
-  binding and the test starts asserting.
-- On **Windows** nothing binds, for the JIT reason above.
+- A `.ts` line in a **guest that carries DWARF** binds on Linux/macOS — and on
+  Windows too, when the guest is a **Promise** build — any example built with its
+  `build:debug` task, and `tests/programs/` built with `--debug`, as long as the
+  launch configuration passes `--debug` to the host.
+- A line in an **async program** on the **stackful** backend binds wherever the
+  module loads: the guest carries DWARF, and `main-policy.ts:41` is asserted. On
+  Windows the module is refused at load, so nothing binds — that is
+  `wasmtime`'s continuation support, not the debugger.
 
 ### Locals
 

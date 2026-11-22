@@ -71,10 +71,30 @@ for index in range(target.GetNumBreakpoints()):
             resolved += 1
     locations.append({"id": breakpoint.GetID(), "locations": count, "resolved": resolved})
 
+# **Which JIT images lldb holds, by name.** A guest wasmtime registered for
+# debugging appears as 'JIT(0x...)'; a module the engine refused to load, or
+# one with no debug info to register, does not. Asked of the target through the
+# Python API rather than matched out of the image-list text, for the same reason the
+# rest of this file does: one reading of lldb. A caller uses this to tell
+# "nothing can bind here" (a measured capability gap) from "the binding is
+# broken" (a defect), which a bare stopped=false cannot.
+jit_modules = []
+for index in range(target.GetNumModules()):
+    spec = target.GetModuleAtIndex(index).GetFileSpec()
+    name = spec.GetFilename() or ""
+    # A registered guest names itself 'JIT(0x...)'. The second test is the
+    # version-proof half: a module whose file does not exist on disk is one the
+    # debugger generated, which is what a JIT image is. Both are asked so the
+    # probe does not depend on one debugger's naming convention -- the platform
+    # name is exactly what this round is removing from the decision.
+    if name.startswith("JIT(") or not spec.Exists():
+        jit_modules.append(name or "<unnamed JIT image>")
+
 print("@@LLDB_JSON " + json.dumps({
     "stops": stops,
     "resolved": any(stop["hit_breakpoint"] for stop in stops),
     "breakpoints": locations,
+    "jit_modules": jit_modules,
     "exit_state": process.GetState(),
 }))
 `;
@@ -93,7 +113,7 @@ const ATTACH_FAILURE =
  *   workDir: string,
  *   timeoutMs?: number,
  * }} options
- * @returns {{resolved: boolean, stops: object[], raw: string, timedOut: boolean}}
+ * @returns {{resolved: boolean, stops: object[], jit_modules: string[], raw: string, timedOut: boolean}}
  */
 export function runUnderLldb({
   lldb,
@@ -184,6 +204,7 @@ export function runUnderLldb({
  *   line: number | null,
  *   function: string | null,
  *   stops: object[],
+ *   jit_modules: string[],
  *   exit_state: number,
  *   raw: string,
  *   timedOut: boolean,
@@ -221,6 +242,7 @@ export function debugGuest({
     line: stop?.line ?? null,
     function: stop?.function ?? null,
     stops: observed.stops ?? [],
+    jit_modules: observed.jit_modules ?? [],
     exit_state: observed.exit_state,
     raw: observed.raw,
     timedOut: observed.timedOut,

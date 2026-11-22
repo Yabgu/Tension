@@ -7,9 +7,9 @@
 //! |---|---|---|
 //! | `the_committed_debug_fixture_carries_dwarf` | the debug artifact is in the tree, with its map, and carries a line table | every platform, no compiler needed |
 //! | `the_debug_report_names_what_a_debugger_can_see` | `--debug` reports the DWARF, the source map and the lldb recipe a breakpoint needs | every platform |
-//! | `a_source_breakpoint_binds_in_a_promise_guest` | a `.ts` line in a DWARF-carrying guest stops under lldb | Linux/macOS (Windows: fact, below) |
-//! | `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` | the same line in the same guest with its `.debug_*` sections gone does **not** bind | Linux/macOS (Windows: fact, below) |
-//! | `a_source_breakpoint_binds_in_a_stack_switching_guest` | the same for an async program on the stackful backend | self-upgrading, see below |
+//! | `a_source_breakpoint_binds_in_a_promise_guest` | a `.ts` line in a DWARF-carrying guest stops under lldb | every platform whose lldb registers the guest's JIT image |
+//! | `a_guest_without_dwarf_cannot_be_stopped_at_a_source_line` | the same line in the same guest with its `.debug_*` sections gone does **not** bind | the same |
+//! | `a_source_breakpoint_binds_in_a_stack_switching_guest` | the same for an async program on the stackful backend | the same, when the guest loads |
 //!
 //! # Where the artifact comes from
 //!
@@ -39,24 +39,39 @@
 //! when a breakpoint does not bind, on every platform, including the one where
 //! no breakpoint can bind at all.
 //!
-//! # The Windows fact
+//! # The Windows fact, corrected
 //!
-//! lldb on Windows does not register wasmtime's GDB-JIT image: the guest runs,
-//! and `image list` shows no `JIT(0x…)` entry at all (measured on the msys2
-//! lldb; wasmtime gates the JIT-debug module on `gdb_jit_int`, which the GDB
-//! plugin reads, and that path exists for the ELF targets). So (b) and (c) keep
-//! their count on Windows but assert only what is observable there — the
-//! report. They are not `#[ignore]`d: an ignored test is a test nobody notices
-//! has stopped existing.
+//! This file used to say that lldb on Windows registers no `JIT(0x…)` image, so
+//! nothing could bind, and (b) and (c) returned after asserting the startup
+//! report. **That is false**, and it was measured false on 2026-11-22: a
+//! DWARF-carrying guest is registered — `image list` shows `[30] … JIT(0x…)` —
+//! and a breakpoint on `rt-guards.ts:96` stops inside
+//! `async/rt-guards/_start_game`. Both lldb builds on that machine agree:
+//! codelldb's 20.1.4 and msys2's 23.1.5. `docs/debugging.md` carries the
+//! transcripts.
 //!
-//! # Why (c) passes today without a debugger
+//! A platform name is therefore no longer a reason to skip. Each breakpoint
+//! test **probes what the debugger can do** and skips only on the measured
+//! result, in this order:
 //!
-//! The pinned compiler (0.14.1) emits **no DWARF for a stack-switching
-//! program** — it warns `DWARF emission failed: type form is not a function
-//! type` at build time and ships `name` + `sourceMappingURL` only. That is
-//! upstream and this round does not fake it. The test therefore reads the
-//! artifact's custom sections first: absent `.debug_info` prints the reason and
-//! returns. When the pin moves, the same test runs lldb with no edit — which is
+//! 1. does the host load the guest at all — a stack-switching guest on this
+//!    target is refused before lldb is handed anything, which is a *load
+//!    refusal*, not a missing symbol;
+//! 2. did lldb register a `JIT(…)` image for the guest it loaded;
+//! 3. only then is a bind asserted.
+//!
+//! Every skip prints the measurement that earned it. None of these tests is
+//! `#[ignore]`d: an ignored test is a test nobody notices has stopped existing.
+//!
+//! # Why (c) still has a load probe of its own
+//!
+//! The pinned compiler now emits DWARF for a stack-switching program too, so
+//! the section walk below passes and the test reaches the debugger. What stops
+//! it on a target without continuations is the **engine**: `main-policy.wasm`
+//! is refused at load (`this guest uses continuations, which wasmtime does not
+//! support on this target`), and nothing can bind in a module that never
+//! loaded. That is the measured reason, and it is printed as such. The day the
+//! pin or the engine changes, the same test runs lldb with no edit — which is
 //! the whole point of asserting the section walk rather than a version string.
 //!
 //! # One lldb driver
@@ -237,6 +252,45 @@ fn debug_report(guest: &Path) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
+/// Whether the host can load the guest at all — measured, not assumed.
+///
+/// A stack-switching guest on a target without continuations is refused by
+/// wasmtime before lldb is handed anything, and the host exits non-zero naming
+/// the refusal. That is a **load refusal**, and it is the honest reason to skip
+/// a breakpoint test — unlike "lldb cannot see JIT images", which used to be
+/// assumed from the platform name and was measured false on 2026-11-22 (see the
+/// module docs and `docs/debugging.md`).
+///
+/// Returns the host's own `Error:` line when it refuses the module, and `None`
+/// when a plain run succeeds.
+fn load_refusal(guest: &Path) -> Option<String> {
+    let output = Command::new(BINARY)
+        .arg(guest)
+        .output()
+        .unwrap_or_else(|error| {
+            support_ci::skip_or_fail(format_args!(
+                "debugger: could not run the host on {}: {error}",
+                guest.display()
+            ));
+            panic!("unreachable: skip_or_fail panics by default")
+        });
+    if output.status.success() {
+        return None;
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+    let line = stderr
+        .lines()
+        .find(|line| line.starts_with("Error:"))
+        .or_else(|| {
+            stderr
+                .lines()
+                .find(|line| !line.trim().is_empty() && !line.contains(" INFO "))
+        })
+        .unwrap_or("the host exited non-zero and printed nothing");
+    Some(line.trim().to_string())
+}
+
 /// The lines `--debug` prints as the lldb recipe, per `src/debug.rs::report`.
 /// The three a breakpoint needs: the GDB JIT loader, a source line, a function
 /// pattern. The `image list` hint is printed beside them and is not asserted
@@ -261,6 +315,10 @@ struct Observation {
     file: Option<String>,
     line: Option<u64>,
     function: Option<String>,
+    /// The `JIT(…)` images lldb held when the run ended. Empty means the guest
+    /// was never registered for debugging — a measured capability gap, which is
+    /// a skip; a whole run that stopped nowhere *with* an image is a defect.
+    jit_modules: Vec<String>,
     /// Present only when the question could not be measured (no lldb, no
     /// artifact). Emphatically not the same answer as "did not bind".
     reason: Option<String>,
@@ -269,12 +327,13 @@ struct Observation {
 impl Observation {
     fn describe(&self) -> String {
         format!(
-            "stopped={} hit_breakpoint={} file={} line={} function={}",
+            "stopped={} hit_breakpoint={} file={} line={} function={} jit={:?}",
             self.stopped,
             self.hit_breakpoint,
             self.file.as_deref().unwrap_or("(none)"),
             self.line.map(|line| line.to_string()).unwrap_or_else(|| "(none)".into()),
             self.function.as_deref().unwrap_or("(none)"),
+            self.jit_modules,
         )
     }
 }
@@ -339,6 +398,16 @@ fn observe_under_lldb(guest: &Path, file: &str, line: u64) -> Observation {
         file: text("file"),
         line: value.get("line").and_then(|v| v.as_u64()),
         function: text("function"),
+        jit_modules: value
+            .get("jit_modules")
+            .and_then(|modules| modules.as_array())
+            .map(|modules| {
+                modules
+                    .iter()
+                    .filter_map(|module| module.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default(),
         reason: text("reason"),
     }
 }
@@ -458,18 +527,23 @@ fn the_debug_report_names_what_a_debugger_can_see() {
 /// whole path — compiler DWARF, host `--debug`, wasmtime's JIT registration,
 /// lldb — honest. The measured stop is `rt-guards.ts:96`.
 ///
-/// Windows cannot bind (module docs, "the Windows fact"), so there the test
-/// asserts the capability fact it can check and says what it did not measure.
+/// Windows used to return here after asserting the report, on the belief that
+/// lldb there registers no JIT image. Measured false on 2026-11-22: the image is
+/// registered and this line stops. So the skip is gone and two probes stand in
+/// its place — the guest loads, and lldb holds a `JIT(…)` image for it — both
+/// read from the run, neither from the platform name.
 #[test]
 fn a_source_breakpoint_binds_in_a_promise_guest() {
     let Some(guest) = guest_debug("rt-guards") else {
         return;
     };
 
-    if cfg!(windows) {
+    // Probe 1 — the guest loads. A module the engine refuses has no image to
+    // register and nothing to bind; that is the host's own sentence, printed.
+    if let Some(refusal) = load_refusal(&guest) {
         eprintln!(
-            "lldb on windows does not register JIT images, so a guest breakpoint cannot bind \
-             (measured; see docs/debugging.md)"
+            "rt-guards does not load on this target, so no source breakpoint can bind \
+             (measured: the host refused the guest): {refusal}"
         );
         assert_dwarf_report_only(&guest);
         return;
@@ -480,6 +554,22 @@ fn a_source_breakpoint_binds_in_a_promise_guest() {
         support_ci::skip_or_fail(format_args!("debugger: {reason}"));
         return;
     }
+
+    // Probe 2 — lldb registered the guest it loaded. An lldb that holds no
+    // `JIT(…)` image has nothing to bind and says so, measured; a run that
+    // *does* hold one and still stops nowhere falls through to the assertions
+    // below, which is the failure this test exists to catch.
+    if observation.jit_modules.is_empty() {
+        eprintln!(
+            "rt-guards loaded, but lldb registered no JIT image for it \
+             (measured: zero `JIT(…)` modules after the run), so no source breakpoint can bind \
+             here: {}",
+            observation.describe()
+        );
+        assert_dwarf_report_only(&guest);
+        return;
+    }
+
     eprintln!("rt-guards under lldb: {}", observation.describe());
 
     assert!(
@@ -553,14 +643,6 @@ fn a_guest_without_dwarf_cannot_be_stopped_at_a_source_line() {
         "stripping removed no bytes, so the copy is the original"
     );
 
-    if cfg!(windows) {
-        eprintln!(
-            "lldb on windows does not register JIT images, so nothing binds there and the \
-             negative control is vacuous (measured; see docs/debugging.md)"
-        );
-        return;
-    }
-
     // A scratch path beside the map-free copy: the driver resolves its own
     // symbol path from the guest's directory, and there is nothing there to
     // resolve — which is the point.
@@ -592,10 +674,11 @@ fn a_guest_without_dwarf_cannot_be_stopped_at_a_source_line() {
 /// (c) The regression guard for the reason DWARF exists: a breakpoint in an
 /// **async program on the stackful backend**.
 ///
-/// Today the pinned compiler emits no DWARF for a stack-switching program, so
-/// this prints that reason and returns. It re-reads the artifact every run, so
-/// the day the pin carries DWARF this test starts asserting a real stop with no
-/// edit — no version check, no flag to flip.
+/// The fixture carries DWARF, so the section walk below passes and the test
+/// reaches the engine. On a target without continuations the engine refuses to
+/// load the module, and that refusal — printed, measured — is the reason no
+/// breakpoint can bind there. Nothing is skipped on the platform's name; the
+/// day the engine loads it, the same test asserts a real stop with no edit.
 #[test]
 fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
     let Some(guest) = guest_debug("main-policy") else {
@@ -604,16 +687,20 @@ fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
 
     if !carries_debug_info(&guest) {
         eprintln!(
-            "the pinned compiler emits no DWARF for stack-switching programs yet \
-             (tensionscript 0.14.1; see the warning at build time)"
+            "main-policy carries no DWARF, so a source breakpoint has nothing to bind in \
+             (measured: no `.debug_info` in the artifact); rebuild the fixture \
+             (`node scripts/build-test-programs.mjs --debug`)"
         );
         return;
     }
 
-    if cfg!(windows) {
+    // Probe — the engine loads the guest. A target without continuations refuses
+    // it before lldb is involved; that is a **load refusal**, and it is printed
+    // as the reason rather than described as a JIT-image problem.
+    if let Some(refusal) = load_refusal(&guest) {
         eprintln!(
-            "lldb on windows does not register JIT images, so a guest breakpoint cannot bind \
-             (measured; see docs/debugging.md)"
+            "main-policy does not load on this target, so no source breakpoint can bind \
+             (measured: the host refused the guest): {refusal}"
         );
         assert_dwarf_report_only(&guest);
         return;
@@ -624,6 +711,18 @@ fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
         support_ci::skip_or_fail(format_args!("debugger: {reason}"));
         return;
     }
+
+    if observation.jit_modules.is_empty() {
+        eprintln!(
+            "main-policy loaded, but lldb registered no JIT image for it \
+             (measured: zero `JIT(…)` modules after the run), so no source breakpoint can bind \
+             here: {}",
+            observation.describe()
+        );
+        assert_dwarf_report_only(&guest);
+        return;
+    }
+
     eprintln!("main-policy under lldb: {}", observation.describe());
 
     assert!(
@@ -645,9 +744,10 @@ fn a_source_breakpoint_binds_in_a_stack_switching_guest() {
     );
 }
 
-/// The one assertion a platform without JIT images can still make: the host
-/// reports the guest's DWARF, so the missing stop is the platform's, not the
-/// build's.
+/// The assertion still available when the debugger cannot reach the guest —
+/// because the engine refused to load it, or because lldb registered no image for
+/// it. It checks that the guest's DWARF reached the host, so a missing stop is
+/// the target's, not the build's.
 fn assert_dwarf_report_only(guest: &Path) {
     let stderr = debug_report(guest);
     assert!(
