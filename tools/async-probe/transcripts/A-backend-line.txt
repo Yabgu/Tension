@@ -1,0 +1,7 @@
+$ ./tension-core/target/release/tension-core --help | grep -A1 "async backend"
+verbatim (that is what the guest's `tension::io arg()` hands back).
+async backend: continuations (wasmtime stack switching)
+
+$ ./tension-core/target/release/tension-core /tmp/ap1/shared-probe.wat   # startup line
+2026-11-22T00:26:42.165Z INFO  core: async backend: continuations (wasmtime stack switching)
+2026-11-22T00:26:42.165Z INFO  core: res: writing under /home/acakar/work/Tension

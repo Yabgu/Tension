@@ -1,0 +1,36 @@
+
+== engine
+  async backend: continuations (wasmtime stack switching)
+  33545888 B  2026-11-21_22:14:04
+
+== C — shared memory, atomics and a worker thread (Linux, --executors 2)
+2026-11-22T00:28:07.971Z INFO  core: async backend: continuations (wasmtime stack switching)
+main: atomic 0+7+35 = 42 ok|main: executorCount = 3 ok|worker: atomic rmw.add over shared memory ok|
+
+== C — the same guest with no pool (--executors 0, the default)
+2026-11-22T00:28:07.990Z INFO  core: async backend: continuations (wasmtime stack switching)
+main: atomic 0+7+35 = 42 ok|main: executorCount WRONG|
+
+== D — Promise builds (no --enable stack-switching), and one stackful control
+  main-framework-promise.wasm export "main" export "memory" 
+  main-io-promise.wasm       export "main" export "memory" 
+  main-framework-stackful.wasm export "main" export "memory" export "$starts" 
+
+== D — the owner's example: game.ts, Promise build vs stackful build
+  Promise build exports:  export "main" export "_start_game" export "memory" export "__start" 
+  stackful build exports: export "__asyncStatus" export "main" export "_start_game" export "__asyncPump" export "memory" export "$starts" export "__start" 
+  main = 301 in game-promise.wasm; call sites = 0
+  main = $game/main in game.wasm; call sites = 1
+  _start_game body, Promise build (the program exports it, empty):
+    (func (;184;) (type 4)
+        nop
+      )
+
+== D — what runs (a printed line means main ran; silence means it never did)
+  --- main-framework-promise
+  --- main-io-promise
+      io only: main ran
+      
+  --- main-framework-stackful
+      framework index: main ran
+      
