@@ -16,6 +16,22 @@
       "label": "debug",
       "dependsOn": ["build:debug"],
       "dependsOrder": "sequence"
+    },
+    // The Promise build, for platforms whose engine cannot enable stack
+    // switching (Windows: wasmtime refuses continuations there). Same flags as
+    // `build:debug` minus `--enable stack-switching`, so the guest compiles to
+    // the Promise shell — `__start` calls `main` and drains its ready queue.
+    {
+      "label": "build:debug:promise",
+      "type": "shell",
+      "command": "node ../../scripts/tensionscript.mjs game.ts -o build/debug/game.wasm --runtime incremental --debug --sourceMap --exportStart __start",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "debug:promise",
+      "dependsOn": ["build:debug:promise"],
+      "dependsOrder": "sequence"
     }
   ]
 }

@@ -32,6 +32,35 @@
       "sourceMap": { ".": "${workspaceFolder}" },
       "preLaunchTask": "debug",
       "stopOnEntry": false
+    },
+    {
+      // The same debug session on the **Promise** build. Windows cannot enable
+      // stack switching, so the configuration above (whose pre-launch task
+      // passes `--enable stack-switching`) produces a guest the engine refuses
+      // before any breakpoint exists. This one builds `build/debug/game.wasm`
+      // without that flag and launches the same engine at it.
+      "type": "lldb",
+      "request": "launch",
+      "name": "lldb: tension-core --debug (async-on-main, Promise)",
+      "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core",
+      "windows": {
+        "program": "${workspaceFolder}/../../tension-core/target/debug/tension-core.exe"
+      },
+      "args": [
+        "--debug",
+        "--symbol-path",
+        "${workspaceFolder}/build/debug",
+        "${workspaceFolder}/build/debug/game.wasm"
+      ],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "initCommands": [
+        "settings set plugin.jit-loader.gdb.enable on",
+        "settings set target.debug-file-search-paths ${workspaceFolder}/build/debug"
+      ],
+      "sourceMap": { ".": "${workspaceFolder}" },
+      "preLaunchTask": "debug:promise",
+      "stopOnEntry": false
     }
   ]
 }
