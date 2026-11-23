@@ -172,6 +172,34 @@ const GUEST: &str = r#"
 // The executor
 // ---------------------------------------------------------------------------
 
+/// The re-park guest: **two** parks in sequence from one task.
+///
+/// `run(task, key)` parks on `(4, key)`, prints `AFTER 1`, parks on `(5, key + 1000)`,
+/// prints `AFTER 2`, and returns 42. Two parks, two wakes, one task — the shape a
+/// loading-zone task has when it awaits several resources in turn.
+///
+/// The keys differ (7 then 1007 for `key = 7`) on purpose: the executor's ledger wants
+/// one entry per key, so two different keys is what lets both parks be recorded without
+/// the second displacing the first.
+const GUEST_REPARK: &str = r#"
+(module
+  (import "env" "__park" (func $park (param i32 i32)))
+  (import "env" "__print32" (func $print32 (param i32 i32)))
+  (func (export "run") (param $task i32) (param $key i32) (result i32)
+    (local $keep i32)
+    (local.set $keep (i32.const 42))
+    (call $print32 (i32.const 1) (local.get $task))
+    ;; first park: (4, key)
+    (call $park (i32.const 4) (local.get $key))
+    ;; tag 3 = AFTER 1, value = the local
+    (call $print32 (i32.const 3) (local.get $keep))
+    ;; second park: (5, key + 1000)
+    (call $park (i32.const 5) (i32.add (local.get $key) (i32.const 1000)))
+    ;; tag 4 = AFTER 2, value = the local
+    (call $print32 (i32.const 4) (local.get $keep))
+    (local.get $keep)))
+"#;
+
 type Log = Arc<Mutex<Vec<String>>>;
 
 fn note(log: &Log, line: impl Into<String>) {
@@ -340,7 +368,9 @@ impl Executor {
                 }
                 Err(next) => {
                     // The guest parked again. Legal, and the loop keeps serving: the
-                    // task is still the executor's to resume.
+                    // task is still the executor's to resume. This is the
+                    // loading-zone shape — one stackful task awaiting several things
+                    // in sequence — and until DL26 no test reached it.
                     parked = next;
                     note(
                         log,
@@ -349,6 +379,9 @@ impl Executor {
                             self.id, parked.class, parked.key
                         ),
                     );
+                    if let Some(gate) = parked_gate {
+                        gate.park();
+                    }
                 }
             }
         }
@@ -403,8 +436,16 @@ impl Gate {
     }
 
     fn wait_until_all_parked(&self) {
+        self.wait_for(self.want);
+    }
+
+    /// Wait until at least `n` parks have happened.
+    ///
+    /// The re-park test needs staged waits: only **one** park exists until the first
+    /// wake resumes the task, so waiting for two before posting anything deadlocks.
+    fn wait_for(&self, n: usize) {
         let mut count = self.parked.lock().unwrap();
-        while *count < self.want {
+        while *count < n {
             count = self.cv.wait(count).unwrap_or_else(|p| p.into_inner());
         }
     }
@@ -455,6 +496,12 @@ fn run_guest(engine: &Engine, module: &Module, log: &Log, task: TaskId, key: i32
                 let line = match tag {
                     1 => format!("guest (task {value}): BEFORE the park"),
                     2 => format!("guest (task {task}): AFTER the park keep={value}"),
+                    // The re-park guest's two halves. The numbers are checked as
+                    // well as the order: `keep` is set once, before either park, so a
+                    // frame that did not survive the *second* suspension would show a
+                    // different value in AFTER 2.
+                    3 => format!("guest (task {task}): AFTER 1 keep={value}"),
+                    4 => format!("guest (task {task}): AFTER 2 keep={value}"),
                     _ => format!("guest (task {task}): print tag {tag} value {value}"),
                 };
                 note(&print_log, line);
@@ -809,4 +856,221 @@ fn h3_a_wake_for_a_foreign_task_is_refused_by_name() {
     for line in &observed {
         eprintln!("{line}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// I62 — re-park: one task, two parks in sequence.
+// ---------------------------------------------------------------------------
+
+/// **The loading-zone shape**: one stackful task awaiting several things in turn.
+///
+/// The guest parks on `(4, 7)`, is woken, prints `AFTER 1`, parks on `(5, 1007)`, is
+/// woken again, prints `AFTER 2`, and returns 42. The executor serves both wakes from
+/// one loop, with one fiber that is suspended twice.
+///
+/// # What this test does and does not reach
+///
+/// It exercises the probe's `Err(next)` branch — the re-park arm of the loop — which
+/// until DL26 no test had run. It does **not** exercise `src/thread.rs`'s resolution
+/// marking, and that distinction matters: see `DL26-REPORT.md` §B, where the engine's
+/// find-first lookup is quoted as a live, unguarded defect. The probe holds **one**
+/// `Park` in a local (the `parked` variable it overwrites); the engine holds a `Vec`
+/// and searches it. A test in this file cannot reach the second.
+///
+/// # Why the wakes are staged
+///
+/// The second park does not exist until the first wake resumes the task, so the gate
+/// is waited on twice, with the first wake posted in between. No sleeps.
+#[test]
+fn b_repark_one_task_parks_twice_and_both_wakes_resume_it() {
+    let engine = Engine::default();
+    let module = Module::new(&engine, GUEST_REPARK).expect("the re-park WAT compiles");
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let executor = Executor::new(1);
+    let gate = Gate::new(2);
+
+    let outcome = std::thread::scope(|scope| {
+        let worker = {
+            let executor = Arc::clone(&executor);
+            let log = Arc::clone(&log);
+            let gate = &gate;
+            let engine = &engine;
+            let module = &module;
+            scope.spawn(move || executor.serve(engine, module, &log, 1, 7, Some(gate)))
+        };
+
+        // First park on (4, 7).
+        gate.wait_for(1);
+        executor.post(Wake {
+            task: 1,
+            class: 4,
+            key: 7,
+        });
+
+        // The task resumed and parked again, on (5, 1007).
+        gate.wait_for(2);
+        executor.post(Wake {
+            task: 1,
+            class: 5,
+            key: 1007,
+        });
+
+        worker.join().expect("the executor thread does not panic")
+    });
+
+    let observed = lines(&log);
+    let text = observed.join("\n");
+
+    assert!(
+        matches!(outcome, Outcome::Done(42)),
+        "the twice-parked task must complete with 42, got {outcome:?}:\n{text}"
+    );
+    assert!(
+        !text.contains("STRANDED"),
+        "a task that resumed from both parks must not strand:\n{text}"
+    );
+
+    let after1 = observed
+        .iter()
+        .position(|l| l.contains("AFTER 1 keep=42"))
+        .unwrap_or_else(|| panic!("no AFTER 1 line:\n{text}"));
+    let after2 = observed
+        .iter()
+        .position(|l| l.contains("AFTER 2 keep=42"))
+        .unwrap_or_else(|| panic!("no AFTER 2 line:\n{text}"));
+    assert!(
+        after1 < after2,
+        "the two halves must be printed in order:\n{text}"
+    );
+
+    // The local survives *both* suspensions: it was set once, before either park.
+    assert_eq!(
+        observed
+            .iter()
+            .filter(|l| l.contains("AFTER 1 keep=42") || l.contains("AFTER 2 keep=42"))
+            .count(),
+        2,
+        "both AFTER lines must carry keep=42:\n{text}"
+    );
+
+    eprintln!("--- B: re-park, verbatim ---");
+    for line in &observed {
+        eprintln!("{line}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C — delivery validation: which record a wake is for, and when it is refused.
+// ---------------------------------------------------------------------------
+
+/// **The two halves of `delivery_target`**, which is the decision `service_wakes` now
+/// makes before it calls `__taskWake`.
+///
+/// # Why this is testable here and the executor is not
+///
+/// The engine's guard lives inside `service_wakes`, on a worker's own thread, against a
+/// store nothing outside can reach. The *decision* was extracted into
+/// `tension_core::thread::delivery_target(parks, task_id)` precisely so it can be
+/// asserted: it takes a slice of the real `WorkerPark` records and answers an index or
+/// `None`. This test is the gate for the two behaviours that matter, and it is the test
+/// that would have caught the find-first marking DL22 shipped.
+///
+/// # Case 1 — a re-parking task (I62)
+///
+/// One task id, two records: the first resolved by its wake, the second still waiting.
+/// The answer must be the **second**. `find(|p| p.task_id == id)` answers the first,
+/// which is the defect: it marks an already-resolved record and leaves the live park
+/// unresolved, so the strand refusal reports a task that resumed correctly.
+///
+/// # Case 2 — an id this store never parked (I55)
+///
+/// No record at all → `None`, and `service_wakes` refuses by name and does not wake.
+/// A foreign or recycled id names a *different* task in this store's slot table.
+#[test]
+fn c_delivery_target_prefers_the_unresolved_record_and_refuses_an_unknown_id() {
+    use tension_core::thread::{delivery_target, WorkerPark};
+
+    let record = |task_id: u64, resolved: bool| WorkerPark {
+        task_id,
+        class: 4,
+        key: 7,
+        resolved,
+    };
+
+    // -- case 1: find-first would answer 0; the live park is 1 -----------------
+    let two = [record(7, true), record(7, false)];
+    assert_eq!(
+        delivery_target(&two, 7),
+        Some(1),
+        "a wake must mark the *unresolved* record — index 0 is already resolved, and \
+         marking it again is the false-STRANDED defect"
+    );
+
+    // The same question with the records the other way round: still the unresolved one,
+    // not the first.
+    let reversed = [record(7, false), record(7, true)];
+    assert_eq!(
+        delivery_target(&reversed, 7),
+        Some(0),
+        "the rule is 'unresolved first', not 'lowest index'"
+    );
+
+    // -- every record for that id already resolved -----------------------------
+    // Not refused: a second post for a key that completed is the engine's own
+    // behaviour (the AI stream posts READY then DONE for one key). The wake proceeds
+    // and `__taskWake` is a no-op, so an index is the right answer.
+    let all_resolved = [record(7, true), record(7, true)];
+    assert!(
+        delivery_target(&all_resolved, 7).is_some(),
+        "an already-resolved id is delivered, not refused — the measurement, not a change"
+    );
+
+    // -- case 2: an id this store never parked --------------------------------
+    assert_eq!(
+        delivery_target(&two, 99),
+        None,
+        "an id with no record must be refused: waking it would resume whatever \
+         `slots[99]` names in this store"
+    );
+    assert_eq!(
+        delivery_target(&[], 7),
+        None,
+        "an empty park list refuses every delivery"
+    );
+
+    // -- and a different task's record is not this one ------------------------
+    let other = [record(8, false)];
+    assert_eq!(
+        delivery_target(&other, 7),
+        None,
+        "a record for another task does not authorise this id"
+    );
+
+    // -- the refusal must be readable ---------------------------------------
+    // The guard's message names all four facts a reader needs to find the producer:
+    // which executor, which task, and the pair the completion was posted for.
+    {
+        use tension_core::thread::RefusedDelivery;
+        let refused = RefusedDelivery {
+            executor: 1,
+            task_id: 99,
+            class: 4,
+            key: 7,
+        };
+        let rendered = refused.to_string();
+        for needle in ["executor 1", "task 99", "class 4", "key 7"] {
+            assert!(
+                rendered.contains(needle),
+                "the refusal must name `{needle}`, got: {rendered}"
+            );
+        }
+        eprintln!("--- C: refusal message ---");
+        eprintln!("{rendered}");
+    }
+
+    eprintln!("--- C: delivery_target, all cases ---");
+    eprintln!("two = [resolved(7), unresolved(7)] -> {:?}", delivery_target(&two, 7));
+    eprintln!("all_resolved(7)                     -> {:?}", delivery_target(&all_resolved, 7));
+    eprintln!("unknown id 99                       -> {:?}", delivery_target(&two, 99));
+    eprintln!("empty                               -> {:?}", delivery_target(&[], 7));
 }

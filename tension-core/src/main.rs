@@ -503,7 +503,17 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
         .collect()
 }
 
-/// The strand refusal, or `None` when every worker's parks were resolved.
+/// The session's refusal, or `None` when nothing was left parked and no delivery was
+/// refused.
+///
+/// **Two failures, one exit.** A stranded task and a refused delivery are different
+/// bugs — one is "a park nobody completed", the other "a completion for a task this
+/// store never had" — but both mean the run does not describe what happened, so both
+/// fail it. Their sentences are separate in the message, because a reader told the
+/// wrong reason goes looking in the wrong place.
+///
+/// Originally the strand refusal only; widened in DL26 when delivery validation added
+/// the second source.
 ///
 /// **Unresolved at exit**, not "parked at all": a park a wake has resumed is a
 /// normal suspension and must not fail a run. Since DL20 a worker *can* resume one,
@@ -518,7 +528,8 @@ fn strand_refusal(
     pool: &std::sync::Arc<tension_core::thread::ExecutorPool>,
 ) -> Option<wasmtime::Error> {
     let strands = pool.take_strands();
-    if strands.is_empty() {
+    let refused = pool.take_refused_deliveries();
+    if strands.is_empty() && refused.is_empty() {
         return None;
     }
     // **The table, read from main (DL18).** Before this round a worker's parks
@@ -555,14 +566,31 @@ fn strand_refusal(
     // or the guest does not export `__taskWake` so its executor serves no wake
     // path. Both are stated, because a reader told the wrong reason goes looking
     // in the wrong place.
-    Some(wasmtime::Error::msg(format!(
-        "a task was left parked when the session stopped: {}. A session pool now resumes \
-         parked tasks (docs/threads.md), so this means either nothing completed that \
-         `(class, key)` before shutdown, or the guest exports no `__taskWake` for its \
-         executor to call (the scheduler contract §2.2 confines the wake to the store's \
-         owner thread, so only the owning store can resume its own task).",
-        named.join("; ")
-    )))
+    // **The refusal delivery sentence is unconditional.** A delivery for a task the
+    // store never parked is a bug in the *producer* — a foreign owner, a recycled
+    // slot, or a stale entry in the ledger — so there is no legitimate reading of it
+    // and no "this might be fine" clause to add.
+    let refused_named: Vec<String> = refused.iter().map(|r| r.to_string()).collect();
+
+    let mut parts: Vec<String> = Vec::new();
+    if !named.is_empty() {
+        parts.push(format!(
+            "a task was left parked when the session stopped: {}. A session pool now \
+             resumes parked tasks (docs/threads.md), so this means either nothing \
+             completed that `(class, key)` before shutdown, or the guest exports no \
+             `__taskWake` for its executor to call (the scheduler contract §2.2 confines \
+             the wake to the store's owner thread, so only the owning store can resume \
+             its own task).",
+            named.join("; ")
+        ));
+    }
+    if !refused_named.is_empty() {
+        parts.push(format!(
+            "a completion was delivered to a task its store never parked: {}",
+            refused_named.join("; ")
+        ));
+    }
+    Some(wasmtime::Error::msg(parts.join(". ")))
 }
 
 /// Write the session's stop word and each executor's state word at teardown.

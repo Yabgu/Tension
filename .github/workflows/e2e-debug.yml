@@ -239,3 +239,28 @@ jobs:
             --test threads -- \
               a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake \
               a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks
+
+      # **The stackful proofs (I61).** Two targets that existed and passed and that no
+      # job ran — the vacuous-gate class, with six receipts on this project already.
+      # Both halves of the capability table live here: `--test fiber` is DL24's
+      # measurement that a host import can suspend and resume a guest call, and
+      # `--test fiber-executor` is DL25's executor (park suspends, a wake resumes, a
+      # stranded task is named, a foreign wake is refused).
+      #
+      # Nothing here needs a compiler, a fixture or a window: both guests are inline
+      # WAT compiled by wasmtime's own `wat` support at run time, so this step pays no
+      # install and takes no skip path. The **12** tests are the whole of both targets
+      # — 6 + 6, both filter-free, because unlike `--test threads` every test in them
+      # is runnable here. (DL26's brief declared 11 from 6 + 5; the round added two to
+      # `fiber-executor` rather than one, which is reported in `DL26-REPORT.md` §6.)
+      #
+      # `--no-default-features` is the job's usual set, and both targets pass under it
+      # locally (`cargo test --test fiber-executor --no-default-features` → 4 passed
+      # before the re-park test, 5 after).
+      #
+      # No `TENSION_TEST_ALLOW_SKIP`: a probe that cannot run must fail the job, not
+      # become a green line with nothing behind it.
+      - name: Stackful proofs
+        run: |
+          cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+            --test fiber --test fiber-executor

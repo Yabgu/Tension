@@ -257,6 +257,11 @@ pub struct Delivery {
     pub owner: u32,
     pub task_id: u64,
     pub class: u32,
+    /// The producer id the completion was posted for. Carried **only** so a refusal can
+    /// name the pair a foreign delivery was for (I55): the wake itself needs the task id
+    /// alone. Without it the refusal would say "some completion" and the reader would
+    /// have nothing to search the producer for.
+    pub key: u32,
     pub payload: i32,
 }
 
@@ -475,6 +480,54 @@ impl ParkLedger {
     }
 }
 
+/// Which park record a delivery of `task_id` must resume, or why there is none.
+///
+/// **This is the delivery validation (I55) and the re-park answer (I62) in one
+/// function**, because they are the same question asked of the same `Vec`.
+///
+/// # Why it is not `find(|p| p.task_id == id)`
+///
+/// A task's `task_id` is its **slot index**, and it is the same for every park that
+/// task ever makes (`std/assembly/task-rt.ts`'s `parkState`: `const id = state.slot;
+/// hostPark(<i64>id, …)` — one call per suspension, same id each time). The seam
+/// pushes a record per park and nothing prunes the vec, so a task that awaited twice
+/// leaves **two records with one id**: the first already `resolved`, the second not.
+///
+/// Find-first therefore marks the **resolved** record a second time and leaves the
+/// live park unresolved, and `record_strand` — whose predicate is `!park.resolved` —
+/// then reports a stranded task that in fact resumed correctly, failing a healthy run
+/// with exit 1. Preferring the unresolved record is the whole of the fix, and it is
+/// also what "the park this wake is for" means: a delivery can only resume a task that
+/// is waiting.
+///
+/// # Why `None` is a refusal and not a no-op
+///
+/// A delivery is produced by `ParkLedger::take`, i.e. by a park that this ledger
+/// recorded. A store with **no** record for the id is therefore a store that never
+/// parked it: a foreign owner, a recycled slot, or a stale delivery. Waking it would
+/// call `__taskWake` with an id that means something else in this store's `slots`
+/// table — resuming an unrelated task. There is no legitimate reading of a foreign id,
+/// so it is refused by name (see `service_wakes`) rather than passed through.
+///
+/// The `resolved`-only case is deliberately **not** refused here: a second post for a
+/// key that already completed is the engine's own behaviour to keep (the AI stream's
+/// READY-then-DONE posts twice for one key by design), and it is measured, not
+/// changed, in `DL26-REPORT.md` §C.
+pub fn delivery_target(parks: &[WorkerPark], task_id: u64) -> Option<usize> {
+    // The unresolved record first: that is the park a wake is *for*.
+    if let Some(index) = parks
+        .iter()
+        .position(|park| park.task_id == task_id && !park.resolved)
+    {
+        return Some(index);
+    }
+    // Otherwise a record that exists but is already resolved. Still this store's own
+    // task, so the wake proceeds — `__taskWake` is a no-op for an id whose slot is
+    // empty (`task-rt.ts:349`: `if (state == null) continue;`). Returning its index
+    // marks an already-true flag.
+    parks.iter().position(|park| park.task_id == task_id)
+}
+
 /// One `scheduler::park` seen on a worker: the contract's three integers.
 #[derive(Clone, Copy, Debug)]
 pub struct WorkerPark {
@@ -509,6 +562,33 @@ pub struct Strand {
     /// The first one, for the message: a bare count is not actionable in a
     /// loading zone with eight workers.
     pub first: WorkerPark,
+}
+
+/// A delivery the owning store refused to wake: it had no park for that task id.
+///
+/// **This is a bug whenever it happens** — a foreign owner, a recycled slot, or a
+/// stale delivery — so it is recorded rather than logged and dropped, and it fails the
+/// run the way a stranded task does (`main.rs`'s refusal path, exit 1). Silence is how
+/// the class went unnoticed before DL26.
+#[derive(Clone, Copy, Debug)]
+pub struct RefusedDelivery {
+    /// The executor the delivery was routed to.
+    pub executor: i32,
+    /// The task id it named.
+    pub task_id: u64,
+    pub class: u32,
+    pub key: u32,
+}
+
+impl std::fmt::Display for RefusedDelivery {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "executor {} refused to wake task {} (class {} key {}): this store has no park \
+             for that id, so the delivery names a foreign or recycled task",
+            self.executor, self.task_id, self.class, self.key
+        )
+    }
 }
 
 /// What a linked instance's store must be able to answer for the two imports.
@@ -579,6 +659,9 @@ pub struct ExecutorPool {
     /// Workers that finished with a task parked and never resumed, in the order
     /// they finished. Read by [`ExecutorPool::take_strands`] on main.
     strands: Mutex<Vec<Strand>>,
+    /// Deliveries refused by their store because it had no park for the id (I55).
+    /// Read by [`ExecutorPool::take_refused_deliveries`] on main.
+    refused_deliveries: Mutex<Vec<RefusedDelivery>>,
     /// **The park table, owned by the executor set rather than by a store.**
     ///
     /// This is the change DL18 exists for. Before it, a worker's parks lived in
@@ -634,6 +717,7 @@ impl ExecutorPool {
             count,
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
+            refused_deliveries: Mutex::new(Vec::new()),
             parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
             early: Mutex::new(Vec::new()),
             inboxes: Mutex::new(Vec::new()),
@@ -699,6 +783,33 @@ impl ExecutorPool {
         });
     }
 
+    /// Record a delivery this store refused to wake (I55).
+    ///
+    /// Called by [`service_wakes`] on the owning thread, for a delivery whose task id
+    /// this store has no park record for. The delivery is **not** woken — see
+    /// [`delivery_target`] on why a foreign id is never resumed — and the run is failed
+    /// later, on main, the same way a strand is.
+    pub fn note_refused_delivery(&self, refused: RefusedDelivery) {
+        logging::log(Level::Error, "thread", &format!("{refused}"));
+        let mut list = self
+            .refused_deliveries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        list.push(refused);
+    }
+
+    /// The refused deliveries recorded since the last call, oldest first.
+    ///
+    /// Taken, not read, for the same reason [`ExecutorPool::take_strands`] is: a second
+    /// reader must not be able to turn one refusal into two.
+    pub fn take_refused_deliveries(&self) -> Vec<RefusedDelivery> {
+        let mut list = self
+            .refused_deliveries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *list)
+    }
+
     /// The strands recorded since the last call, oldest first.
     ///
     /// Taken, not read: the caller turns them into a refusal, and a second
@@ -753,6 +864,7 @@ impl ExecutorPool {
             owner: entry.owner,
             task_id: entry.task_id,
             class,
+            key,
             payload,
         });
         Some(entry.owner)
@@ -834,6 +946,7 @@ impl ExecutorPool {
             owner,
             task_id,
             class: completion.class,
+            key: completion.key,
             payload: completion.payload,
         });
         true
@@ -1385,6 +1498,39 @@ fn service_wakes(
                     memory_size
                 );
             }
+            // ── delivery validation (I55, DL26) ───────────────────────────────
+            //
+            // **Before the wake, not after it.** The wake call below is unconditional
+            // and `__taskWake` resumes whatever `slots[id]` names in this store, so a
+            // delivery carrying a foreign or recycled id would resume an unrelated
+            // task — and, with the find-first mark that used to live here, could also
+            // mark the wrong park. The store's own records are the only thing that can
+            // say whether this id is its own, so they are consulted first.
+            //
+            // `None` means "this store never parked that id". It is a bug every time,
+            // so it is refused by name and fails the run; see `delivery_target`.
+            let target = {
+                let parks = store
+                    .data()
+                    .parks
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                delivery_target(&parks, delivery.task_id)
+            };
+            let Some(target) = target else {
+                pool.note_refused_delivery(RefusedDelivery {
+                    executor: id,
+                    task_id: delivery.task_id,
+                    class: delivery.class,
+                    key: delivery.key,
+                });
+                // **Not woken, and not marked.** The task this id names in *this*
+                // store is a different task; resuming it would be worse than the
+                // refusal. The loop keeps serving: a later delivery may still be
+                // legitimate.
+                continue;
+            };
+
             {
                 // **Unsafe on purpose, and narrow.** A `SharedMemory` has no
                 // `&mut` to take — it is shared with every other store by
@@ -1416,17 +1562,21 @@ fn service_wakes(
             // (DL21's `2 → 1`). The count is now "parks this store left
             // unresolved", which is true for any N.
             //
-            // A wake for an id this store never parked (a stale delivery) marks
-            // nothing, which is the honest answer: there is no record of it.
-            if let Some(park) = store
-                .data()
-                .parks
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .iter_mut()
-                .find(|park| park.task_id == delivery.task_id)
+            // **The record the lookup chose**, not the first one with this id. A
+            // re-parking task leaves one record per park and the earlier ones are
+            // already resolved, so marking by `find` would leave the live park
+            // unresolved and produce a false STRANDED — see `delivery_target`.
+            //
+            // A refused delivery never reaches this line: it `continue`s above.
             {
-                park.resolved = true;
+                let mut parks = store
+                    .data()
+                    .parks
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if let Some(park) = parks.get_mut(target) {
+                    park.resolved = true;
+                }
             }
             served += 1;
             // **A shared counter for the guest to observe.** Header word 6 (5 is
