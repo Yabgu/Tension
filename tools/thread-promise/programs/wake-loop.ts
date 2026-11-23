@@ -15,11 +15,11 @@
 // # Two things measured while writing it, both kept
 //
 // 1. **The key space bounded N before anything else did.** `scheduler::key_capacity`
-//    admits **768** keys for the jobs family (`CLASS_JOB_DONE`, 4) and 1024 for
-//    resources (`CLASS_RESOURCE_READY`, 5). A 1000-key loop on class 4 puts keys
-//    768..999 outside the space, where the seam records a strand instead of a parkable
-//    entry — measured: the run stopped at 769 wakes and the refusal named key 769. So
-//    this guest uses class 5.
+//    answers `Some(768)` for the jobs family (`CLASS_JOB_DONE`, 4) and the seam refuses on
+//    `key > bound`, so class 4 admits keys 0..=768 — 769 distinct keys, and the 770th park
+//    is refused. Measured: 770 parks recorded, 769 wakes served, the refusal naming key
+//    769. A 1000-key loop therefore needs a family whose bound is >= 1000, which
+//    `CLASS_RESOURCE_READY` (5) is at 1024. So this guest uses class 5.
 // 2. **Main must not spin.** The host bumps the served counter (`bump_served`) on every
 //    wake, so a spinning main ping-pongs that cache line against the writer on every
 //    single wake and burns a core competing with the thread it is waiting for — both of
