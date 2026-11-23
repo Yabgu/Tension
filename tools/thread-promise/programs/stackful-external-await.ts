@@ -1,0 +1,102 @@
+// DL23 Q4 — a stackful await on an **external** completion, on the current seam.
+//
+// This is the shortest program that asks the round's question at guest level: can a
+// stackful task park on something this store does not produce, and be resumed?
+//
+// # What it does
+//
+// `policy.await(task)` is the guest library's designed path for exactly that
+// (`std/assembly/thread.ts`, `PoolPolicy.await` / `RemotePolicy.await`):
+//
+//     __parkOn(task);      // registers a Waiter on the task, in this store's heap
+//     __suspendParked();   // wasm `suspend`, payload -2
+//
+// One task, one park, one would-be resume, no worker, no second store.
+//
+// # What it measures (bundled `aa74d6a1`, engine 33 643 504 B @ 2026-11-23 14:11)
+//
+//   main: leaf=0
+//   main: BEFORE the policy await
+//   main: _start_game (host entry)
+//   exit 0, 0.0 s
+//
+// `main: AFTER the policy await` never prints, so `__suspendParked` really did
+// suspend the continuation — and the run still exits 0, because `__start`'s
+// coreloop has nothing left to run. With `--post-completion 4,7` the host reports
+// `buffered (no park yet: sticky)` and the completion is never used: **the park
+// seam never sees this park at all.** The module does not even import
+// `scheduler::park` (checked with `WebAssembly.Module.imports`), so there is no
+// path by which a delivery could reach it.
+//
+// That is the round's answer in one program: the stackful path is
+// **suspend-without-park**. The suspension is real; the registry is untouched;
+// nothing can resume it. `tools/thread-promise/DL23-REPORT.md` §Q4 has the
+// missing call and where it would go.
+//
+// # The `await leaf()` is load-bearing, not scaffolding
+//
+// The shell choice is whole-program — `compiler.ts:1716`,
+// `asyncShellSuspends = program.hasAwait && options.hasFeature(StackSwitching)` —
+// and `policy.await(...)` is a **method call**, not an `await` expression. Without
+// a real `await` in the program the build gets the non-suspending shell and is
+// refused at compile time:
+//
+//     ERROR AS100: Not implemented: ~lib/task-stack/__suspendParked requires the
+//     suspending async shell, which this program does not emit
+//
+// measured while writing this file. So the line stays, with its reason.
+//
+// Build (bundle aa74d6a1, I44):
+//   tensionscript stackful-external-await.ts -o /tmp/q4b.wasm \
+//     --runtime incremental --target release --sharedMemory --importMemory \
+//     --initialMemory 2 --maximumMemory 256 \
+//     --enable threads --enable stack-switching --optimizeLevel 0
+//
+// Run:
+//   tension-core --executors 2 --post-completion 4,7 /tmp/q4b.wasm
+import { Task, TaskBase, TaskRecord } from "~lib/task";
+import { RemotePolicy } from "~lib/thread";
+
+@external("tension::io", "print")
+declare function hostPrint(ptr: usize, len: i32): void;
+
+function line(text: string): void {
+  let bytes = String.UTF8.encode(text);
+  hostPrint(changetype<usize>(bytes), bytes.byteLength);
+  let newline = String.UTF8.encode("\n");
+  hostPrint(changetype<usize>(newline), newline.byteLength);
+}
+
+const CLASS_JOB_DONE: i32 = 4; // session/arena.rs:222
+
+/** A handle for a completion the *host* would deliver: class and key stamped. */
+function pendingJob(key: i32): Task<i32> {
+  const record = new TaskRecord();
+  record.class_ = CLASS_JOB_DONE;
+  record.key = key;
+  const handle = new Task<i32>();
+  handle._record = record;
+  return handle;
+}
+
+async function leaf(): i32 {
+  return 0;
+}
+
+export async function main(): i32 {
+  // See the header: `program.hasAwait` must be true, or there is no suspending
+  // shell and `__suspendParked` is refused at compile time.
+  let warm_up = await leaf();
+  line("main: leaf=" + warm_up.toString());
+
+  line("main: BEFORE the policy await");
+  let job: Task<i32> = pendingJob(7);
+  let policy = new RemotePolicy(1, 0, -1);
+  policy.await(changetype<TaskBase>(job));
+  line("main: AFTER the policy await");
+  return 0;
+}
+
+export function _start_game(): void {
+  line("main: _start_game (host entry)");
+}

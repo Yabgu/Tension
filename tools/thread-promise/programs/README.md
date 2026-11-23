@@ -197,6 +197,35 @@ Error: a worker's task cannot be resumed on this host, so this run would otherwi
 
 A run of `strand-nested` that exits 0 means the strand refusal did not fire.
 
+## The two stackful probes (DL23) — what the seam is NOT
+
+These two exist to answer one question: **is the park/wake seam a neutral
+suspension primitive, or the Promise backend wearing a general name?** Both are
+scratch probes, not tests, and both need `--enable stack-switching`:
+
+```sh
+# one worker, a plain entry — the pool-lifetime control (two knobs, four runs)
+tension-core --executors 2 stackful-worker.wasm
+# one task, one park, one would-be resume, no worker, no second store
+tension-core --executors 2 --post-completion 4,7 stackful-external-await.wasm
+```
+
+**`stackful-worker.ts`** separates the two reasons a stackful worker "hangs". Its
+header carries the 2×2 (entry shape × stop-before-join). A plain entry runs and
+then hangs if main joins without stopping it (DL20B's pool lifetime); an **async**
+entry never runs at all — no line, no park — which is DL11's `EXIT=124`.
+
+**`stackful-external-await.ts`** is the answer in one program: `policy.await(task)`
+suspends (`__parkOn` + `__suspendParked`), the `AFTER` line never prints, the run
+exits **0 in 0 s**, and the host's `--post-completion` stays `buffered` because the
+module does not import `scheduler::park` at all. The suspension is real; the seam
+never sees it.
+
+**What that means for this directory's other guests:** every guest that parks
+successfully (`wake-on-worker`, `two-waiters-late`, `strand-nested`) is built
+*without* `--enable stack-switching`. The park/wake path is the Promise backend's.
+`DL23-REPORT.md` has the quoted emission sites and the missing host call.
+
 ## Hashes
 
 Four hashes are known, and **none of the pairs is comparable**: each
