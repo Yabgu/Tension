@@ -3,8 +3,9 @@
 **Round:** DL34, 2026-11-23. **One file**, `scripts/rebuild.mjs`, +100/−13. No Rust, no
 compiler, no `std`, no test change. **The bundle stayed `3ef8a8f4`.**
 
-**Committed:** `22b994e` on branch `fix/dl34-npm-resolution` (pushed), CI
-**`45278878964` — success**.
+**Committed:** `22b994e` (the change) and `ddb413d` (this report), both on branch
+`fix/dl34-npm-resolution` in `~/work/Tension` (pushed). CI **`45278878964` — success** on
+`22b994e`; **`45279581555` — success** on `ddb413d`.
 
 ---
 
