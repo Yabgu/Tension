@@ -38,7 +38,7 @@
 //! next, a nested guest — has to be able to stand up, and it needs nothing from
 //! `main` to do it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 
@@ -97,6 +97,240 @@ pub const ERR_SPAWN_FAILED: i32 = -6;
 pub struct WorkerState {
     pool: Arc<ExecutorPool>,
     parks: Mutex<Vec<WorkerPark>>,
+}
+
+/// The empty marker in a direct table. `u64::MAX` rather than 0, because task id
+/// 0 is a valid slot index in the guest's table.
+const EMPTY_TASK: u64 = u64::MAX;
+
+/// One family's parked tasks: a direct array indexed by the producer's key.
+///
+/// **This type is the library's, and that is the point of DL18.** It lived in the
+/// binary's `scheduler.rs`, where a worker could not reach it: `session` and
+/// `scheduler` are modules of the binary (`main.rs:81`, `:90`) while
+/// `WorkerState` and `ExecutorPool` are the library's (`lib.rs:40`). A worker
+/// gets its store from the library, so a table it can reach had to be *created*
+/// here — main then adopts it (`scheduler::Scheduler` holds
+/// `HashMap<u32, ParkTable>` of this type, unchanged).
+///
+/// The type names **no class constant and no session type**: the family→bound
+/// policy belongs to the producers (`scheduler::key_capacity`), so it is handed
+/// in by [`ParkLedger::new`] as a function. That is what keeps the library free
+/// of `session::arena` — the 14 scalars `scheduler.rs` still needs are its own
+/// business.
+#[derive(Debug)]
+pub struct ParkTable {
+    /// One entry per key in `0..=bound`. EMPTY_TASK when nothing is parked.
+    slots: Vec<u64>,
+    parked: u32,
+}
+
+impl ParkTable {
+    pub fn new(bound: u32) -> ParkTable {
+        ParkTable {
+            slots: vec![EMPTY_TASK; bound as usize + 1],
+            parked: 0,
+        }
+    }
+
+    /// How many tasks are parked in this family.
+    pub fn parked(&self) -> u32 {
+        self.parked
+    }
+
+    /// The task id parked on `key`, if any.
+    pub fn get(&self, key: u32) -> Option<u64> {
+        let slot = *self.slots.get(key as usize)?;
+        (slot != EMPTY_TASK).then_some(slot)
+    }
+
+    /// Register `task_id` for `key`, answering the id it displaced (if any).
+    ///
+    /// **Overwrite, not refuse**, because the guest's own registration already
+    /// overwrites: `__taskPark` does `byKey.set(keyOf(family, key), record)`
+    /// (`task-rt.ts:246`). A re-park of a key is how a task awaits the same
+    /// producer id twice — the AI stream does it every chunk, and the OGRE
+    /// loader every sequential load — so a host that refused would strand the
+    /// second park while the guest considered it parked.
+    ///
+    /// Liveness is the guest's to know, not the host's: the slot table is where
+    /// the continuation lives (contract §1.2), so a displaced entry whose task
+    /// had already resumed is a stale hint, not a live park. A wake for such an
+    /// id is a no-op in `__taskWake` (its slot is empty). §4.9's "refuse a
+    /// second concurrent park on one pair" is enforced where it can be decided
+    /// — the guest's slot table — not by a host that cannot see a resume.
+    pub fn insert(&mut self, key: u32, task_id: u64) -> Result<Option<u64>, ()> {
+        let slot = match self.slots.get_mut(key as usize) {
+            Some(slot) => slot,
+            None => return Err(()),
+        };
+        let displaced = (*slot != EMPTY_TASK).then_some(*slot);
+        if displaced.is_none() {
+            self.parked += 1;
+        }
+        *slot = task_id;
+        Ok(displaced)
+    }
+
+    /// Remove and answer the task parked on `key`.
+    pub fn take(&mut self, key: u32) -> Option<u64> {
+        let slot = self.slots.get_mut(key as usize)?;
+        if *slot == EMPTY_TASK {
+            return None;
+        }
+        let task_id = *slot;
+        *slot = EMPTY_TASK;
+        self.parked -= 1;
+        Some(task_id)
+    }
+
+    /// Take up to `limit` parked ids, lowest key first.
+    ///
+    /// The drop path's accessor (§4.4): a lost signal is attributed to a
+    /// *family*, not a record — the producer's count cannot say which stream
+    /// lost it (`pre0`'s note, and `rt.ts`'s rollup) — so the wake names the
+    /// family's parked tasks rather than trying to match a key that never
+    /// arrived. Lowest key first only so the order is deterministic in a test.
+    pub fn take_upto(&mut self, limit: usize) -> Vec<u64> {
+        let mut taken = Vec::new();
+        if limit == 0 {
+            return taken;
+        }
+        for index in 0..self.slots.len() {
+            if taken.len() == limit {
+                break;
+            }
+            if self.slots[index] != EMPTY_TASK {
+                taken.push(self.slots[index]);
+                self.slots[index] = EMPTY_TASK;
+                self.parked -= 1;
+            }
+        }
+        taken
+    }
+
+    /// Every parked `(key, task_id)` in key order — the reader behind
+    /// [`ParkLedger::snapshot`].
+    pub fn entries(&self) -> Vec<(u32, u64)> {
+        let mut out = Vec::new();
+        for (key, slot) in self.slots.iter().enumerate() {
+            if *slot != EMPTY_TASK {
+                out.push((key as u32, *slot));
+            }
+        }
+        out
+    }
+}
+
+/// Every family's parked tasks, for one executor set.
+///
+/// **One ledger type, held by both halves.** `ExecutorPool` owns one and main's
+/// `scheduler::Scheduler` owns per-family tables of the same [`ParkTable`], so a
+/// park recorded on a worker and a park recorded on main are the same kind of
+/// record in the same kind of table — and the pool's copy is reachable from main
+/// because the pool is an `Arc` both stores share.
+///
+/// **The bound policy is a parameter, not a constant.** Which families are
+/// awaitable and how wide their key space is (`jobs = 768`, `resources = 1024`,
+/// `ai = 4`, …) is a *producer* fact, and it lives in
+/// `scheduler::key_capacity` on the binary side. Handing it in as a function is
+/// what lets this type be the library's without naming a single class id.
+pub struct ParkLedger {
+    tables: HashMap<u32, ParkTable>,
+    /// `class -> family` — `scheduler::family_of` on the binary side.
+    family_of: fn(u32) -> u32,
+    /// `family -> key bound`, `None` when the family is not awaitable —
+    /// `scheduler::key_capacity` on the binary side.
+    bound_of: fn(u32) -> Option<u32>,
+}
+
+impl ParkLedger {
+    /// A ledger that resolves and sizes with the **producer's** two policies.
+    ///
+    /// Both are functions rather than tables so this type can live in the library
+    /// without naming a class id: the family map and the key spaces are facts
+    /// about producers (`docs/scheduler-contract.md` §3), not about threads.
+    pub fn new(
+        family_of: fn(u32) -> u32,
+        bound_of: fn(u32) -> Option<u32>,
+    ) -> ParkLedger {
+        ParkLedger {
+            tables: HashMap::new(),
+            family_of,
+            bound_of,
+        }
+    }
+
+    /// Records a park, answering `false` when it could not be stored.
+    ///
+    /// `false` means the *family* has no key space (not awaitable — a class
+    /// refusal in `scheduler`'s terms) or the key is wider than it. The caller
+    /// keeps its own record either way: on a worker the store-local list is what
+    /// the strand refusal reads, and a park the ledger declined is still a park
+    /// that never resumed.
+    pub fn record(&mut self, class: u32, key: u32, task_id: u64) -> bool {
+        let family = (self.family_of)(class);
+        let Some(bound) = (self.bound_of)(family) else {
+            return false;
+        };
+        if key > bound {
+            return false;
+        }
+        let table = self
+            .tables
+            .entry(family)
+            .or_insert_with(|| ParkTable::new(bound));
+        table.insert(key, task_id).is_ok()
+    }
+
+    /// The task parked on `(class, key)`, if one is parked and unresolved.
+    pub fn get(&self, class: u32, key: u32) -> Option<u64> {
+        let family = (self.family_of)(class);
+        self.tables.get(&family)?.get(key)
+    }
+
+    /// How many tasks are parked for a class's family.
+    pub fn parked(&self, class: u32) -> u32 {
+        let family = (self.family_of)(class);
+        self.tables.get(&family).map_or(0, |table| table.parked())
+    }
+
+    /// Every parked entry as `(family, key, task_id)`, ordered by family then by
+    /// the table's own key order.
+    ///
+    /// **Family, not class**: the tables are keyed by family (a park on
+    /// `JOB_DONE` and one on `JOB_FAILED` wait on the same table), so the family
+    /// is what an observer can name without re-deriving the map.
+    ///
+    /// The observation a caller **on another thread** uses: the pool is shared,
+    /// so main can read what a worker parked after that worker's store is gone.
+    /// A snapshot rather than a reference because the lock must not travel.
+    pub fn snapshot(&self) -> Vec<(u32, u32, u64)> {
+        let mut families: Vec<u32> = self.tables.keys().copied().collect();
+        families.sort_unstable();
+        let mut entries = Vec::new();
+        for family in families {
+            let Some(table) = self.tables.get(&family) else {
+                continue;
+            };
+            for (key, task_id) in table.entries() {
+                entries.push((family, key, task_id));
+            }
+        }
+        entries
+    }
+
+    /// Removes the park for `(family, key)`, answering its task id.
+    ///
+    /// **This is a resolution, not a wake.** A wake would take the id and resume
+    /// the task; this only removes the entry, which is the half the host can do
+    /// from any thread. DL19's wake path is the caller this waits for — nothing
+    /// calls it in this round, which is why `WorkerPark::resolved` is still
+    /// written `false` by the only code that builds one.
+    pub fn take(&mut self, class: u32, key: u32) -> Option<u64> {
+        let family = (self.family_of)(class);
+        self.tables.get_mut(&family)?.take(key)
+    }
 }
 
 /// One `scheduler::park` seen on a worker: the contract's three integers.
@@ -168,6 +402,16 @@ pub struct ExecutorPool {
     /// Workers that finished with a task parked and never resumed, in the order
     /// they finished. Read by [`ExecutorPool::take_strands`] on main.
     strands: Mutex<Vec<Strand>>,
+    /// **The park table, owned by the executor set rather than by a store.**
+    ///
+    /// This is the change DL18 exists for. Before it, a worker's parks lived in
+    /// the worker's own `Store` (`WorkerState::parks`) and died with it, so main
+    /// could never see one; the binary's `Scheduler` had a table no worker could
+    /// reach, because `scheduler` is a binary module and this crate is the
+    /// library. The table now lives where the host already shares one object
+    /// between the stores it creates — the pool, an `Arc` both sides hold — so
+    /// main reads a worker's park through `parks()` after the worker is gone.
+    parks: Mutex<ParkLedger>,
 }
 
 impl ExecutorPool {
@@ -181,6 +425,8 @@ impl ExecutorPool {
         module: Module,
         memory: SharedMemory,
         count: usize,
+        family_of: fn(u32) -> u32,
+        bound_of: fn(u32) -> Option<u32>,
     ) -> anyhow::Result<Arc<Self>> {
         let count = i32::try_from(count.max(1))
             .map_err(|_| anyhow::anyhow!("the executor count does not fit in an i32"))?;
@@ -191,6 +437,7 @@ impl ExecutorPool {
             count,
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
+            parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
         }))
     }
 
@@ -235,6 +482,20 @@ impl ExecutorPool {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::take(&mut *strands)
+    }
+
+    /// Every park the executor set has recorded, as `(family, key, task_id)`.
+    ///
+    /// **The evidence DL18 was built to produce.** A worker's parks go into the
+    /// pool's ledger, and the pool is an `Arc` shared with main, so this answers
+    /// after the worker's store has dropped — which is exactly what no reader
+    /// could do before. Resumption is still DL19's: an entry here is a task
+    /// parked and *not* resumed.
+    pub fn parks(&self) -> Vec<(u32, u32, u64)> {
+        self.parks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .snapshot()
     }
 
     /// The memory every instance shares, for the caller that has to define it
@@ -448,20 +709,57 @@ impl ExecutorPool {
             "scheduler",
             "park",
             |caller: Caller<'_, WorkerState>, task_id: i64, class: i32, key: i32| {
-                let mut parks = caller
-                    .data()
-                    .parks
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                parks.push(WorkerPark {
-                    task_id: task_id as u64,
-                    class: class as u32,
-                    key: key as u32,
-                    // Nobody here can resume it: no host loop on this store, and
-                    // contract §2.2 confines `wake` to the owner thread. The
-                    // field is set by the wake path when one exists.
-                    resolved: false,
-                });
+                let (park, pool) = {
+                    let data = caller.data();
+                    (
+                        WorkerPark {
+                            task_id: task_id as u64,
+                            class: class as u32,
+                            key: key as u32,
+                            // Nobody here can resume it: no host loop on this
+                            // store, and contract §2.2 confines `wake` to the
+                            // owner thread. The flag is set by the wake path when
+                            // one exists — and when it does, it will be set on
+                            // the *pool's* table entry, not here (see below).
+                            resolved: false,
+                        },
+                        Arc::clone(&data.pool),
+                    )
+                };
+                {
+                    let mut parks = caller
+                        .data()
+                        .parks
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    parks.push(park);
+                }
+                // **The same park, into the table main can reach (DL18).** Two
+                // records, one truth: the store-local list above is what the
+                // strand refusal counts (it must survive this store — it is read
+                // in `worker_main` while the store is still alive), and this
+                // ledger is what main can see after the store is gone. A park the
+                // ledger declines (family not awaitable, key outside its space)
+                // is still a strand, which is why the two are separate answers
+                // rather than one.
+                let recorded = {
+                    let mut ledger = pool
+                        .parks
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    ledger.record(park.class, park.key, park.task_id)
+                };
+                if !recorded {
+                    logging::log(
+                        Level::Trace,
+                        "thread",
+                        &format!(
+                            "park on class {} key {} is outside the awaitable space; \
+                             recorded as a strand only",
+                            park.class, park.key
+                        ),
+                    );
+                }
             },
         )?;
         // `tension::io` too, and for a reason that is not convenience: the
@@ -595,6 +893,22 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     // wake path sets `resolved`, a resumed task stops being a strand with no
     // change here.
     pool.record_strand(id, &parks);
+    // **The same parks, seen from the pool (DL18).** Read back through the shared
+    // ledger rather than from the local list: this is the path main uses, so the
+    // log line is evidence that the table is reachable from the other side and
+    // not merely written to. Empty here means the ledger declined every park
+    // (a family that is not awaitable), which is a different fact from "the
+    // guest never parked".
+    let visible = pool.parks();
+    logging::log(
+        Level::Debug,
+        "thread",
+        &format!(
+            "executor {id}: the pool's park table holds {} entr{}",
+            visible.len(),
+            if visible.len() == 1 { "y" } else { "ies" }
+        ),
+    );
     Ok(status)
 }
 
@@ -848,8 +1162,24 @@ mod tests {
         let module = Module::new(&engine, WORKER).expect("the fixture compiles");
         let ty = shared_memory_import(&module).expect("the fixture imports a shared memory");
         let memory = SharedMemory::new(&engine, ty).expect("a shared memory");
-        let pool = ExecutorPool::new(engine.clone(), module.clone(), memory.clone(), 2)
-            .expect("a pool of two");
+        // The policies this test's hand-written wat needs: no families, so every
+        // park is its own family and one key space wide enough to hold it. The
+        // production values arrive from `scheduler::{family_of, key_capacity}`.
+        fn identity_family(class: u32) -> u32 {
+            class
+        }
+        fn wide_enough(_family: u32) -> Option<u32> {
+            Some(1024)
+        }
+        let pool = ExecutorPool::new(
+            engine.clone(),
+            module.clone(),
+            memory.clone(),
+            2,
+            identity_family,
+            wide_enough,
+        )
+        .expect("a pool of two");
 
         let mut store = Store::new(&engine, Plain(Arc::clone(&pool)));
         store.set_epoch_deadline(NEVER_TRAPS);

@@ -228,11 +228,17 @@ impl GuestHost {
         // below, which is the truth for one store.
         if let Some(ty) = tension_core::thread::shared_memory_import(&module) {
             let memory = SharedMemory::new(&config.engine, ty)?;
+            // The two park policies are the **binary's**: which class belongs
+            // to which family, and how wide each family's key space is
+            // (`scheduler::family_of`, `scheduler::key_capacity`). The library
+            // owns the table and never names a class id (DL18).
             let pool = ExecutorPool::new(
                 config.engine.clone(),
                 module.clone(),
                 memory.clone(),
                 config.executors + 1,
+                crate::scheduler::family_of,
+                crate::scheduler::key_capacity,
             )?;
             tension_core::thread::define_memory(&memory, &mut store, &mut linker)?;
             // The store's handle is the owner from here: the two imports reach

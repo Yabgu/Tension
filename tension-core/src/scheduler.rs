@@ -53,6 +53,12 @@ use crate::session::arena::{
     CLASS_RESOURCE_FAILED, CLASS_RESOURCE_READY, CLASS_SUBMISSION_REJECTED,
 };
 use crate::HostState;
+/// **The table is the library's type, adopted here (DL18).** It used to be defined
+/// in this file, which made it unreachable from a worker — `scheduler` is a module
+/// of the binary (`main.rs:81`) and a worker's store comes from the library
+/// (`lib.rs:40`). Defining it there and using it here is one type with two
+/// holders, which is what "a worker gets a table at birth" needs.
+use tension_core::thread::ParkTable;
 
 /// `-ENOSPC`: the scheduler's own refusal — the task table is full. Contract
 /// §5.1 keeps this distinct from a class refusal, which carries the class's
@@ -62,10 +68,6 @@ pub const ENOSPC: i32 = -28;
 /// `-EINVAL`: a key outside the family's declared space, i.e. a class refusal
 /// the scheduler can detect without knowing the class's own errno.
 pub const EINVAL: i32 = -22;
-
-/// The empty marker in a direct table. `u64::MAX` rather than 0, because task id
-/// 0 is a valid slot index in the guest's table.
-const EMPTY: u64 = u64::MAX;
 
 /// The family a completion class belongs to. Mirrors the framework's bindings
 /// (`tension-framework/assembly/runtime/rt.ts:78-86`) and the std's
@@ -107,99 +109,6 @@ pub fn key_capacity(family: u32) -> Option<u32> {
         CLASS_LOG => Some(1023),
         CLASS_DEVICE_LOST | CLASS_SUBMISSION_REJECTED => Some(0),
         _ => None,
-    }
-}
-
-/// One family's parked tasks: a direct array indexed by the producer's key.
-#[derive(Debug)]
-pub struct ParkTable {
-    /// One entry per key in `0..=bound`. EMPTY when nothing is parked.
-    slots: Vec<u64>,
-    parked: u32,
-}
-
-impl ParkTable {
-    fn new(bound: u32) -> ParkTable {
-        ParkTable {
-            slots: vec![EMPTY; bound as usize + 1],
-            parked: 0,
-        }
-    }
-
-    /// How many tasks are parked in this family.
-    pub fn parked(&self) -> u32 {
-        self.parked
-    }
-
-    /// The task id parked on `key`, if any.
-    pub fn get(&self, key: u32) -> Option<u64> {
-        let slot = *self.slots.get(key as usize)?;
-        (slot != EMPTY).then_some(slot)
-    }
-
-    /// Register `task_id` for `key`, answering the id it displaced (if any).
-    ///
-    /// **Overwrite, not refuse**, because the guest's own registration already
-    /// overwrites: `__taskPark` does `byKey.set(keyOf(family, key), record)`
-    /// (`task-rt.ts:246`). A re-park of a key is how a task awaits the same
-    /// producer id twice — the AI stream does it every chunk, and the OGRE
-    /// loader every sequential load — so a host that refused would strand the
-    /// second park while the guest considered it parked.
-    ///
-    /// Liveness is the guest's to know, not the host's: the slot table is where
-    /// the continuation lives (contract §1.2), so a displaced entry whose task
-    /// had already resumed is a stale hint, not a live park. A wake for such an
-    /// id is a no-op in `__taskWake` (its slot is empty). §4.9's "refuse a
-    /// second concurrent park on one pair" is enforced where it can be decided
-    /// — the guest's slot table — not by a host that cannot see a resume.
-    fn insert(&mut self, key: u32, task_id: u64) -> Result<Option<u64>, ()> {
-        let slot = match self.slots.get_mut(key as usize) {
-            Some(slot) => slot,
-            None => return Err(()),
-        };
-        let displaced = (*slot != EMPTY).then_some(*slot);
-        if displaced.is_none() {
-            self.parked += 1;
-        }
-        *slot = task_id;
-        Ok(displaced)
-    }
-
-    /// Remove and answer the task parked on `key`.
-    pub fn take(&mut self, key: u32) -> Option<u64> {
-        let slot = self.slots.get_mut(key as usize)?;
-        if *slot == EMPTY {
-            return None;
-        }
-        let task_id = *slot;
-        *slot = EMPTY;
-        self.parked -= 1;
-        Some(task_id)
-    }
-
-    /// Take up to `limit` parked ids, lowest key first.
-    ///
-    /// The drop path's accessor (§4.4): a lost signal is attributed to a
-    /// *family*, not a record — the producer's count cannot say which stream
-    /// lost it (`pre0`'s note, and `rt.ts`'s rollup) — so the wake names the
-    /// family's parked tasks rather than trying to match a key that never
-    /// arrived. Lowest key first only so the order is deterministic in a test.
-    pub fn take_upto(&mut self, limit: usize) -> Vec<u64> {
-        let mut taken = Vec::new();
-        if limit == 0 {
-            return taken;
-        }
-        for index in 0..self.slots.len() {
-            if taken.len() == limit {
-                break;
-            }
-            if self.slots[index] != EMPTY {
-                taken.push(self.slots[index]);
-                self.slots[index] = EMPTY;
-                self.parked -= 1;
-            }
-        }
-        taken
     }
 }
 

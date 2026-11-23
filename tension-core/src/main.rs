@@ -521,6 +521,20 @@ fn strand_refusal(
     if strands.is_empty() {
         return None;
     }
+    // **The table, read from main (DL18).** Before this round a worker's parks
+    // lived in the worker's `Store` and were gone by the time this ran; they now
+    // live in the pool's ledger, which main still holds. The line is emitted at
+    // Debug because it is evidence for the round that made the table shared, not
+    // part of the refusal's contract.
+    let parks = pool.parks();
+    logging::log(
+        Level::Debug,
+        "thread",
+        &format!(
+            "main reads the pool's park table: {parks:?}{}",
+            if parks.len() > 1 { " (family, key, task_id)" } else { "" }
+        ),
+    );
     let named: Vec<String> = strands
         .iter()
         .map(|strand| {
@@ -1163,7 +1177,7 @@ fn misdirected_host_option(
         suggestion.push(wasm_path.to_string());
         suggestion.extend(guest);
 
-        let mut message = format!(
+        let message = format!(
             "`{arg}` came after the module path, so it was handed to the guest as argv \
              instead of applied by the host.\n\n\
              Host options must precede <game.wasm>: everything after it is passed to the \
