@@ -820,6 +820,7 @@ mod tests {
             post_test_events: false,
             post_completion: None,
             post_completion_after_parks: None,
+            post_completion_each_park: None,
             executors: 0,
         }
     }

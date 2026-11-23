@@ -528,6 +528,55 @@ pub fn delivery_target(parks: &[WorkerPark], task_id: u64) -> Option<usize> {
     parks.iter().position(|park| park.task_id == task_id)
 }
 
+/// One delivery's timings, in nanoseconds — DL27's instrument.
+///
+/// **Every field is a segment, never a blend.** The brief is explicit that a number
+/// which hides queue wait inside dispatch is a wrong number, so the split is the point
+/// of the type and `call_ns` carries the warning that matters:
+///
+/// - `queue_wait_ns` — the park was recorded until the delivery was taken. **This is
+///   the producer's cadence, not an engine cost.** In this round's probe the producer
+///   is the park seam itself, so this is the tightest cadence that exists; a real
+///   producer (a decode thread, an I/O completion) adds to it and does not change what
+///   the engine spends.
+/// - `validate_ns` — `delivery_target` under the store's lock, i.e. the I55 guard.
+/// - `scratch_ns` — writing the task id into the executor's dead spawn-record words.
+/// - `call_ns` — `wake.call`, the call into wasm. **This is not host work.** The guest
+///   runs inside it: `__taskWake` → `state.resume` → `f$resume`, until the guest parks
+///   again or returns. It is reported as its own column for exactly that reason.
+/// - `mark_ns` — setting `resolved` on the record the lookup chose.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WakeTiming {
+    pub queue_wait_ns: u64,
+    pub validate_ns: u64,
+    pub scratch_ns: u64,
+    pub call_ns: u64,
+    pub mark_ns: u64,
+}
+
+impl WakeTiming {
+    /// The engine's own host work for one wake: everything except the call into wasm.
+    pub fn host_ns(&self) -> u64 {
+        self.queue_wait_ns + self.validate_ns + self.scratch_ns + self.mark_ns
+    }
+}
+
+/// Whether the instrument is on (`TENSION_MEASURE=1`).
+///
+/// **Read once**, because it is consulted on every delivery and every park: a
+/// per-call `std::env::var` would itself be the cost being measured. Off by default,
+/// and when off the only thing any of this costs is one relaxed atomic load.
+pub fn measuring() -> bool {
+    use std::sync::OnceLock;
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        matches!(
+            std::env::var("TENSION_MEASURE").as_deref(),
+            Ok("1") | Ok("true") | Ok("yes")
+        )
+    })
+}
+
 /// One `scheduler::park` seen on a worker: the contract's three integers.
 #[derive(Clone, Copy, Debug)]
 pub struct WorkerPark {
@@ -634,6 +683,14 @@ impl ThreadImports for WorkerState {
 /// not store an entry, does not hold a displaced one, and does not wake anything.
 /// The post goes through [`ExecutorPool::deliver`], the same door every producer
 /// uses, so whatever park a post wakes today it wakes tomorrow.
+/// DL27's probe flag: post a completion for the key of each of the first `remaining`
+/// parks of `class`. See [`ExecutorPool::arm_post_each_park`].
+#[derive(Clone, Copy, Debug)]
+pub struct EachParkWatch {
+    pub class: u32,
+    pub remaining: u32,
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct ParkWatch {
     pub class: u32,
@@ -659,6 +716,19 @@ pub struct ExecutorPool {
     /// Workers that finished with a task parked and never resumed, in the order
     /// they finished. Read by [`ExecutorPool::take_strands`] on main.
     strands: Mutex<Vec<Strand>>,
+    /// DL27's probe: post for every park (see [`ExecutorPool::arm_post_each_park`]).
+    /// `None` in an ordinary run.
+    each_park: Mutex<Option<EachParkWatch>>,
+    /// DL27's instrument: one entry per delivery, **only when `TENSION_MEASURE=1`**.
+    /// Empty otherwise, so an unmetered run allocates nothing.
+    timings: Mutex<Vec<WakeTiming>>,
+    /// When the most recent park was recorded, for `queue_wait_ns`.
+    ///
+    /// Only the latest is kept, and that is sound for this probe's shape (one worker,
+    /// parks strictly in sequence, each completing before the next begins). It would
+    /// not be sound for concurrent parks, and a future round measuring those needs a
+    /// per-park stamp rather than a pool-level "last".
+    last_park_at: Mutex<Option<std::time::Instant>>,
     /// Deliveries refused by their store because it had no park for the id (I55).
     /// Read by [`ExecutorPool::take_refused_deliveries`] on main.
     refused_deliveries: Mutex<Vec<RefusedDelivery>>,
@@ -718,6 +788,9 @@ impl ExecutorPool {
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
             refused_deliveries: Mutex::new(Vec::new()),
+            each_park: Mutex::new(None),
+            timings: Mutex::new(Vec::new()),
+            last_park_at: Mutex::new(None),
             parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
             early: Mutex::new(Vec::new()),
             inboxes: Mutex::new(Vec::new()),
@@ -810,6 +883,48 @@ impl ExecutorPool {
         std::mem::take(&mut *list)
     }
 
+    /// Stamp the moment a park was recorded, for `queue_wait_ns`.
+    ///
+    /// Called from the seam, only when `measuring()`. Stores the latest rather than a
+    /// map: the probe's parks are strictly sequential (see the field's doc).
+    fn note_park_time(&self) {
+        let mut slot = self
+            .last_park_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(std::time::Instant::now());
+    }
+
+    /// How long ago the last park was recorded, if one was.
+    fn since_last_park(&self) -> Option<std::time::Duration> {
+        let slot = self
+            .last_park_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        slot.map(|at| at.elapsed())
+    }
+
+    /// Record one delivery's timings. No-op unless `measuring()`.
+    fn note_timing(&self, timing: WakeTiming) {
+        let mut list = self
+            .timings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        list.push(timing);
+    }
+
+    /// The timings recorded so far, taken rather than read.
+    ///
+    /// Public so a caller can summarise them; `service_wakes` logs the summary at the
+    /// end of the session loop, which is where the process still has them.
+    pub fn take_timings(&self) -> Vec<WakeTiming> {
+        let mut list = self
+            .timings
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *list)
+    }
+
     /// The strands recorded since the last call, oldest first.
     ///
     /// Taken, not read: the caller turns them into a refusal, and a second
@@ -868,6 +983,42 @@ impl ExecutorPool {
             payload,
         });
         Some(entry.owner)
+    }
+
+    /// Arm the DL27 probe's "post for every park" watch: for each of the next `limit`
+    /// parks whose class matches, post a completion for **that park's own key**.
+    ///
+    /// The producer here is the park seam itself, so the queue wait being measured is
+    /// the tightest cadence that can exist — the host learns of the park the instant it
+    /// is recorded. A real producer adds to that wait; it does not change what the
+    /// engine then spends, which is what the other columns price.
+    pub fn arm_post_each_park(&self, class: u32, limit: u32) {
+        let mut watch = self
+            .each_park
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *watch = Some(EachParkWatch {
+            class,
+            remaining: limit,
+        });
+    }
+
+    /// Answer the class this park should be completed for, if the each-park watch is
+    /// armed and still has parks to serve. Consumes one.
+    ///
+    /// `None` in an ordinary run (the watch is `None`), so the seam's behaviour is
+    /// exactly what it was.
+    fn note_each_park(&self, class: u32) -> Option<u32> {
+        let mut watch = self
+            .each_park
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let watch = watch.as_mut()?;
+        if watch.class != class || watch.remaining == 0 {
+            return None;
+        }
+        watch.remaining -= 1;
+        Some(class)
     }
 
     /// Arm the test-only "post once N parks have landed" watch.
@@ -1274,6 +1425,12 @@ impl ExecutorPool {
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
                     parks.push(park);
                 }
+                // **DL27's queue-wait stamp.** Taken after the record exists, which is
+                // the moment a producer could first learn of this park. Off unless
+                // `TENSION_MEASURE=1`, so an ordinary run pays one atomic load.
+                if measuring() {
+                    pool.note_park_time();
+                }
                 // **The same park, into the table main can reach (DL18).** Two
                 // records, one truth: the store-local list above is what the
                 // strand refusal counts (it must survive this store — it is read
@@ -1329,6 +1486,26 @@ impl ExecutorPool {
                             park.class, park.key
                         ),
                     );
+                }
+                // **DL27's producer**: with `--post-completion-each-park` armed, post a
+                // completion for *this* park's key. The seam is the producer, which is
+                // the tightest cadence a producer can have — see the flag's doc.
+                if recorded {
+                    if let Some(class) = pool.note_each_park(park.class) {
+                        let matched = pool.deliver(class, park.key, 0);
+                        logging::log(
+                            Level::Debug,
+                            "core",
+                            &format!(
+                                "--post-completion-each-park: class {class} key {} -> {}",
+                                park.key,
+                                match matched {
+                                    Some(owner) => format!("matched a park on executor {owner}"),
+                                    None => "buffered (no park yet: sticky)".to_string(),
+                                }
+                            ),
+                        );
+                    }
                 }
                 // **The other ordering, as a test instrument (DL22).** Only when
                 // `--post-completion-after-parks` armed a watch, and only on the
@@ -1491,6 +1668,16 @@ fn service_wakes(
             continue;
         }
         for delivery in mine {
+            // **DL27's per-delivery clock.** `taken_at` is the moment this delivery was
+            // in hand; the queue wait is how long the park had been waiting when it was
+            // — which is the producer's cadence, not the engine's cost.
+            let metered = measuring();
+            let taken_at = std::time::Instant::now();
+            let queue_wait_ns = if metered {
+                pool.since_last_park().map_or(0, |wait| wait.as_nanos() as u64)
+            } else {
+                0
+            };
             if !scratch_ok {
                 anyhow::bail!(
                     "executor {id}: the wake scratch ({scratch}) is outside the module's memory \
@@ -1531,6 +1718,11 @@ fn service_wakes(
                 continue;
             };
 
+            // Validation ends here — the target index is known and the delivery is
+            // known to be this store's. The scratch write below is its own segment,
+            // because folding it into validation is exactly the "blended figure" the
+            // brief forbids.
+            let validated_at = std::time::Instant::now();
             {
                 // **Unsafe on purpose, and narrow.** A `SharedMemory` has no
                 // `&mut` to take — it is shared with every other store by
@@ -1548,8 +1740,11 @@ fn service_wakes(
                     unsafe { *base.add(scratch + offset) = *byte };
                 }
             }
+
             // §2.2: this store's own `__taskWake`, on this store's own thread.
+            let before_call = std::time::Instant::now();
             wake.call(&mut *store, (scratch as i32, 1))?;
+            let after_call = std::time::Instant::now();
             // **P1 (DL22): the owner answers for its own park, at the moment it
             // resumes it.** This is the store's own record, written on the store's
             // own thread, so there is no lock ordering to get wrong and no
@@ -1578,6 +1773,16 @@ fn service_wakes(
                     park.resolved = true;
                 }
             }
+            if metered {
+                let marked_at = std::time::Instant::now();
+                pool.note_timing(WakeTiming {
+                    queue_wait_ns,
+                    validate_ns: (validated_at - taken_at).as_nanos() as u64,
+                    scratch_ns: (before_call - validated_at).as_nanos() as u64,
+                    call_ns: (after_call - before_call).as_nanos() as u64,
+                    mark_ns: (marked_at - after_call).as_nanos() as u64,
+                });
+            }
             served += 1;
             // **A shared counter for the guest to observe.** Header word 6 (5 is
             // `H_STOP`; `HEADER_WORDS` is 16 and 0-4 are in use) counts wakes this
@@ -1603,7 +1808,91 @@ fn service_wakes(
         "thread",
         &format!("executor {id} left its session loop after {served} wake(s)"),
     );
+
+    // **DL27's summary.** Printed here because this is the last place the process still
+    // holds the samples, and because a metered run is the only kind that has any. One
+    // line per segment plus the host total, each with p50/p95/min/max, so no reader has
+    // to take a blended figure on trust.
+    if measuring() {
+        let timings = pool.take_timings();
+        if timings.is_empty() {
+            logging::log(
+                Level::Info,
+                "measure",
+                &format!("executor {id}: no deliveries were timed"),
+            );
+        } else {
+            log_timing_summary(id, &timings);
+        }
+    }
     Ok(())
+}
+
+/// p50/p95/min/max of one column, in nanoseconds, as one log line's worth of text.
+fn percentiles(values: &mut Vec<u64>) -> (u64, u64, u64, u64) {
+    values.sort_unstable();
+    let n = values.len();
+    let min = values[0];
+    let max = values[n - 1];
+    // Nearest-rank: the smallest value at or above the requested fraction. Stated
+    // because a percentile is only meaningful with its definition attached.
+    let at = |fraction: f64| {
+        let rank = ((n as f64) * fraction).ceil() as usize;
+        values[rank.clamp(1, n) - 1]
+    };
+    (at(0.50), at(0.95), min, max)
+}
+
+/// DL27's summary table, one line per column.
+///
+/// **The columns are named for what they contain**, which is the round's whole
+/// discipline: `call` is the guest running, not the host, and `queue_wait` is the
+/// producer, not the engine.
+fn log_timing_summary(id: i32, timings: &[WakeTiming]) {
+    let n = timings.len();
+    let mut columns: Vec<(&str, Vec<u64>)> = vec![
+        ("queue_wait", timings.iter().map(|t| t.queue_wait_ns).collect()),
+        ("validate", timings.iter().map(|t| t.validate_ns).collect()),
+        ("scratch", timings.iter().map(|t| t.scratch_ns).collect()),
+        ("call(guest runs inside)", timings.iter().map(|t| t.call_ns).collect()),
+        ("mark", timings.iter().map(|t| t.mark_ns).collect()),
+        (
+            "host_dispatch(v+s+m)",
+            timings
+                .iter()
+                .map(|t| t.validate_ns + t.scratch_ns + t.mark_ns)
+                .collect(),
+        ),
+        ("host_total(no call)", timings.iter().map(|t| t.host_ns()).collect()),
+        (
+            "round_trip(all five)",
+            timings
+                .iter()
+                .map(|t| t.queue_wait_ns + t.validate_ns + t.scratch_ns + t.call_ns + t.mark_ns)
+                .collect(),
+        ),
+    ];
+    // `round_trip` is the whole park-to-park cycle for one pair, per sample, and it is
+    // what a throughput figure must be derived from. Wall clock is **not**: a metered run
+    // of 1000 pairs takes ~52 ms, of which ~4 ms is these segments and the rest is
+    // process startup plus the session loop's 50 ms shutdown slice
+    // (`wait_for_work(SLICE)` noticing the stop). Dividing the wall clock by the pair
+    // count would report the loop's slice as a per-await cost.
+    //
+    // **Two totals, because one of them is not host work.** `host_total` includes
+    // `queue_wait`, which is the producer's cadence; `host_dispatch` is the engine's own
+    // per-wake work (validate, scratch, mark) and nothing else. Summing percentiles
+    // would be wrong — they do not add — so both are computed per sample.
+    for (name, mut values) in columns.drain(..) {
+        let (p50, p95, min, max) = percentiles(&mut values);
+        logging::log(
+            Level::Info,
+            "measure",
+            &format!(
+                "executor {id}: {name:<24} n={n} p50={p50}ns p95={p95}ns min={min}ns max={max}ns"
+            ),
+        );
+    }
 }
 
 fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {

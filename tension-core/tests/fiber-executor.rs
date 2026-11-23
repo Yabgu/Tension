@@ -172,6 +172,34 @@ const GUEST: &str = r#"
 // The executor
 // ---------------------------------------------------------------------------
 
+/// DL27's looping guest: **N** parks in sequence from one task, one key each.
+///
+/// `run(task, n)` sets `keep = 42`, then parks on `(4, i)` for `i` in `0..n`, and
+/// returns `keep`. The keys are distinct so nothing is displaced, and the park's own
+/// wake is posted by the executor loop (see `serve_inner`) — the same producer cadence
+/// the promise probe uses.
+///
+/// `keep` is read after the *last* suspension, so it also proves the frame survived
+/// all N of them rather than only the first.
+const GUEST_LOOP: &str = r#"
+(module
+  (import "env" "__park" (func $park (param i32 i32)))
+  (import "env" "__print32" (func $print32 (param i32 i32)))
+  (func (export "run") (param $task i32) (param $n i32) (result i32)
+    (local $i i32)
+    (local $keep i32)
+    (local.set $keep (i32.const 42))
+    (block $done
+      (loop $again
+        (br_if $done (i32.ge_u (local.get $i) (local.get $n)))
+        (call $park (i32.const 4) (local.get $i))
+        (local.set $i (i32.add (local.get $i) (i32.const 1)))
+        (br $again)))
+    ;; tag 2 = the AFTER line, once, with the local that survived every suspension.
+    (call $print32 (i32.const 2) (local.get $keep))
+    (local.get $keep)))
+"#;
+
 /// The re-park guest: **two** parks in sequence from one task.
 ///
 /// `run(task, key)` parks on `(4, key)`, prints `AFTER 1`, parks on `(5, key + 1000)`,
@@ -283,6 +311,52 @@ impl Executor {
         key: i32,
         parked_gate: Option<&Gate>,
     ) -> Outcome {
+        self.serve_inner(engine, module, log, task, key, parked_gate, false, None)
+    }
+
+    /// The same loop with **no per-park logging**, and with the park's own wake posted
+    /// by the loop, for measurement.
+    ///
+    /// Two reasons it is a separate entry point rather than an option on `serve`:
+    ///
+    /// - **Per-park `eprintln!` would be the measurement.** A metered run takes 1000
+    ///   parks; one formatted line each is microseconds a park, which is an order of
+    ///   magnitude more than the dispatch being priced.
+    /// - **The producer has to be the seam to be comparable.** In the promise probe the
+    ///   park seam posts the completion, so the host learns of the park the instant it
+    ///   is recorded. Posting the wake here, immediately after `resume` returns the
+    ///   park, is the same cadence — otherwise this number would include a test
+    ///   thread's scheduling and would not be comparable to that one.
+    #[allow(clippy::too_many_arguments)]
+    fn serve_quiet(
+        &self,
+        engine: &Engine,
+        module: &Module,
+        log: &Log,
+        task: TaskId,
+        key: i32,
+        timings: &mut Vec<(u64, u64)>,
+    ) -> Outcome {
+        self.serve_inner(engine, module, log, task, key, None, true, Some(timings))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn serve_inner(
+        &self,
+        engine: &Engine,
+        module: &Module,
+        log: &Log,
+        task: TaskId,
+        key: i32,
+        parked_gate: Option<&Gate>,
+        quiet: bool,
+        mut timings: Option<&mut Vec<(u64, u64)>>,
+    ) -> Outcome {
+        let note = |line: String| {
+            if !quiet {
+                note(log, line);
+            }
+        };
         let stack = FiberStack::new(512 * 1024, true)
             .map_err(|_| "the fiber stack could not be allocated")
             .expect("a fiber stack");
@@ -303,6 +377,7 @@ impl Executor {
                     &log_for_fiber,
                     task,
                     key,
+                    quiet,
                 );
                 install(previous);
                 result
@@ -322,21 +397,32 @@ impl Executor {
             }
             Err(park) => park,
         };
-        note(
-            log,
-            format!(
-                "executor {}: parked class={} key={} (task {task})",
-                self.id, parked.class, parked.key
-            ),
-        );
+        note(format!(
+            "executor {}: parked class={} key={} (task {task})",
+            self.id, parked.class, parked.key
+        ));
         if let Some(gate) = parked_gate {
             gate.park();
+        }
+        // **The metered path's producer is the loop itself**, mirroring the promise
+        // probe where the park seam posts: the host learns of the park the instant it
+        // is recorded, which is the tightest cadence a producer can have. A separate
+        // producer thread would add its own scheduling to `queue_wait`, and the two
+        // backends' numbers would then not be comparable.
+        let mut park_observed_at = std::time::Instant::now();
+        if timings.is_some() {
+            self.post(Wake {
+                task,
+                class: parked.class,
+                key: parked.key,
+            });
         }
 
         // -- the loop ---------------------------------------------------------
         let mut refusal: Option<WrongOwner> = None;
         loop {
             let Some(wake) = self.wait() else { break };
+            let took_wake_at = std::time::Instant::now();
 
             if wake.task != task {
                 // **The pin.** A wake for a task this executor does not own. Refused
@@ -350,20 +436,27 @@ impl Executor {
                     },
                     executor: self.id,
                 };
-                note(log, format!("{refusal_value}"));
+                note(format!("{refusal_value}"));
                 refusal = Some(refusal_value);
                 break;
             }
 
-            match slot.as_ref().unwrap().resume(()) {
+            let queue_wait_ns = (took_wake_at - park_observed_at).as_nanos() as u64;
+            let resumed_at = std::time::Instant::now();
+            let outcome = slot.as_ref().unwrap().resume(());
+            let resume_ns = resumed_at.elapsed().as_nanos() as u64;
+            if let Some(samples) = timings.as_deref_mut() {
+                samples.push((queue_wait_ns, resume_ns));
+            }
+            match outcome {
                 Ok(value) => {
                     if let Some(fiber) = slot.take() {
                         let _ = fiber.into_stack();
                     }
-                    note(
-                        log,
-                        format!("executor {}: task {task} resumed and finished", self.id),
-                    );
+                    note(format!(
+                        "executor {}: task {task} resumed and finished",
+                        self.id
+                    ));
                     return Outcome::Done(value);
                 }
                 Err(next) => {
@@ -372,13 +465,18 @@ impl Executor {
                     // loading-zone shape — one stackful task awaiting several things
                     // in sequence — and until DL26 no test reached it.
                     parked = next;
-                    note(
-                        log,
-                        format!(
-                            "executor {}: task {task} parked again class={} key={}",
-                            self.id, parked.class, parked.key
-                        ),
-                    );
+                    park_observed_at = std::time::Instant::now();
+                    if timings.is_some() {
+                        self.post(Wake {
+                            task,
+                            class: parked.class,
+                            key: parked.key,
+                        });
+                    }
+                    note(format!(
+                        "executor {}: task {task} parked again class={} key={}",
+                        self.id, parked.class, parked.key
+                    ));
                     if let Some(gate) = parked_gate {
                         gate.park();
                     }
@@ -404,7 +502,7 @@ impl Executor {
                 stranded,
             },
             None => {
-                note(log, format!("executor {}: STRANDED — {stranded}", self.id));
+                note(format!("executor {}: STRANDED — {stranded}", self.id));
                 Outcome::Stranded(stranded)
             }
         }
@@ -452,7 +550,14 @@ impl Gate {
 }
 
 /// Run the guest's `run(task, key)` in its own store, inside a fiber's closure.
-fn run_guest(engine: &Engine, module: &Module, log: &Log, task: TaskId, key: i32) -> i32 {
+fn run_guest(
+    engine: &Engine,
+    module: &Module,
+    log: &Log,
+    task: TaskId,
+    key: i32,
+    quiet: bool,
+) -> i32 {
     let mut store = Store::new(engine, ());
     let mut linker = Linker::new(engine);
 
@@ -462,10 +567,12 @@ fn run_guest(engine: &Engine, module: &Module, log: &Log, task: TaskId, key: i32
             "env",
             "__park",
             move |_caller: Caller<'_, ()>, class: i32, key: i32| -> Result<(), wasmtime::Error> {
-                note(
-                    &park_log,
-                    format!("guest (task {task}): inside __park({class}, {key})"),
-                );
+                if !quiet {
+                    note(
+                        &park_log,
+                        format!("guest (task {task}): inside __park({class}, {key})"),
+                    );
+                }
                 let handle = current();
                 if handle.is_null() {
                     return Err(wasmtime::Error::msg(
@@ -478,10 +585,12 @@ fn run_guest(engine: &Engine, module: &Module, log: &Log, task: TaskId, key: i32
                 let suspend: &mut Suspend<(), Park, i32> =
                     unsafe { &mut *(handle as *mut Suspend<(), Park, i32>) };
                 let (): () = suspend.suspend(Park { class, key });
-                note(
-                    &park_log,
-                    format!("guest (task {task}): __park returned — resumed"),
-                );
+                if !quiet {
+                    note(
+                        &park_log,
+                        format!("guest (task {task}): __park returned — resumed"),
+                    );
+                }
                 Ok(())
             },
         )
@@ -1124,4 +1233,110 @@ fn c_delivery_target_prefers_the_unresolved_record_and_refuses_an_unknown_id() {
     eprintln!("all_resolved(7)                     -> {:?}", delivery_target(&all_resolved, 7));
     eprintln!("unknown id 99                       -> {:?}", delivery_target(&two, 99));
     eprintln!("empty                               -> {:?}", delivery_target(&[], 7));
+}
+
+// ---------------------------------------------------------------------------
+// Q1/Q2/Q3 — the fiber backend's cost per await.
+// ---------------------------------------------------------------------------
+
+/// p50/p95/min/max of one column, nanoseconds. Nearest-rank, stated because a
+/// percentile is only meaningful with its definition attached.
+fn percentiles(values: &mut [u64]) -> (u64, u64, u64, u64) {
+    values.sort_unstable();
+    let n = values.len();
+    let at = |fraction: f64| {
+        let rank = ((n as f64) * fraction).ceil() as usize;
+        values[rank.clamp(1, n) - 1]
+    };
+    (at(0.50), at(0.95), values[0], values[n - 1])
+}
+
+/// **The fiber backend's per-await cost**, measured the same way the promise backend's
+/// is: one task, `PAIRS` parks, one wake each, all inside one process.
+///
+/// # The columns
+///
+/// - `queue_wait` — the park was observed by the loop until the wake was taken. The
+///   producer here is the loop itself, so this is the tightest cadence that exists; a
+///   real producer adds to it.
+/// - `resume` — the `Fiber::resume` call. **The guest runs inside it** (it continues to
+///   its next park or returns), so this is guest work plus the stack switch, not host
+///   bookkeeping. It is the fibre equivalent of the promise backend's `call(guest runs
+///   inside)` column.
+/// - `total` — the two summed per sample.
+///
+/// # What is *not* here that the promise column has
+///
+/// There is no `validate`, no `scratch`, no `mark`: this backend's park needs no
+/// ledger lookup, no write into guest memory and no per-store resolution flag, because
+/// the suspension *is* the stack switch and the executor holds the fiber directly. That
+/// absence is a result, not an omission, and it is why the two tables' host columns are
+/// not the same shape.
+///
+/// # The timer's cost is disclosed, not subtracted
+///
+/// Two `Instant::now()` per sample here (four on the promise side). Measured on this
+/// machine at ~35 ns each (`/tmp` microbenchmark, reported in `DL27-REPORT.md`), so each
+/// column carries roughly one clock's worth of overshoot and no figure below ~70 ns is
+/// distinguishable from zero.
+#[test]
+fn q_fiber_cost_per_await() {
+    const PAIRS: usize = 1000;
+
+    let engine = Engine::default();
+    let module = Module::new(&engine, GUEST_LOOP).expect("the loop WAT compiles");
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let executor = Executor::new(1);
+    let mut samples: Vec<(u64, u64)> = Vec::with_capacity(PAIRS);
+
+    let started = std::time::Instant::now();
+    let outcome = executor
+        .serve_quiet(&engine, &module, &log, 1, PAIRS as i32, &mut samples);
+    let elapsed = started.elapsed();
+
+    let observed = lines(&log);
+    let text = observed.join("\n");
+    assert!(
+        matches!(outcome, Outcome::Done(42)),
+        "the loop must complete with the local intact, got {outcome:?}:\n{text}"
+    );
+    assert_eq!(
+        samples.len(),
+        PAIRS,
+        "one sample per park; got {} of {PAIRS}:\n{text}",
+        samples.len()
+    );
+    // The guest printed AFTER once, at the end, with keep=42 — so the functional result
+    // is checkable here exactly as it is on the promise backend.
+    assert!(
+        text.contains("AFTER the park keep=42"),
+        "the local set before the first park must survive all {PAIRS}:\n{text}"
+    );
+
+    let mut queue: Vec<u64> = samples.iter().map(|(q, _)| *q).collect();
+    let mut resume: Vec<u64> = samples.iter().map(|(_, r)| *r).collect();
+    let mut total: Vec<u64> = samples.iter().map(|(q, r)| q + r).collect();
+
+    let (q50, q95, qmin, qmax) = percentiles(&mut queue);
+    let (r50, r95, rmin, rmax) = percentiles(&mut resume);
+    let (t50, t95, tmin, tmax) = percentiles(&mut total);
+
+    let pairs_per_sec = PAIRS as f64 / elapsed.as_secs_f64();
+
+    eprintln!("--- fiber backend, n={PAIRS}, profile=test (debug), --executors-not-applicable ---");
+    eprintln!("queue_wait  p50={q50}ns p95={q95}ns min={qmin}ns max={qmax}ns");
+    eprintln!("resume      p50={r50}ns p95={r95}ns min={rmin}ns max={rmax}ns");
+    eprintln!("total       p50={t50}ns p95={t95}ns min={tmin}ns max={tmax}ns");
+    eprintln!(
+        "throughput  {pairs_per_sec:.0} pairs/s  (wall {:.3}ms over {PAIRS} pairs)",
+        elapsed.as_secs_f64() * 1000.0
+    );
+
+    // A sanity floor, not a performance assertion: 1000 suspends of one fiber in well
+    // under a second is what "this works" means, and anything near the 50 ms condvar
+    // slice would be a stall rather than a cost.
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "1000 parks took {elapsed:?} — that is a stall, not a cost"
+    );
 }

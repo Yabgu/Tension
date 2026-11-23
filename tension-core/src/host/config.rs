@@ -85,6 +85,9 @@ pub struct HostConfig {
     /// ordering, which is what a real producer does and what DL22's defect needs.
     /// `None` arms nothing.
     pub post_completion_after_parks: Option<(u32, u32, u32)>,
+    /// `--post-completion-each-park <class>,<n>`: one completion per park, posted from
+    /// the seam (DL27's producer). `None` arms nothing.
+    pub post_completion_each_park: Option<(u32, u32)>,
     /// `--executors <N>`: the **worker** threads a shared-memory guest gets.
     ///
     /// Zero by default, and zero is meaningful: a guest is one executor (main)

@@ -804,6 +804,12 @@ options:
                          --post-completion it cannot be claimed by the first
                          park, which is what lets a second waiter be measured.
                          Needs --executors and a --sharedMemory guest
+  --post-completion-each-park <CLASS>,<N>
+                         DL27 test-only: post ONE completion for the key of each
+                         of the first N parks of CLASS, from the park seam itself.
+                         The producer for a looping cost measurement, where the
+                         host learns of a park the instant it is recorded.
+                         Needs --executors and a --sharedMemory guest
   --executors <N>        worker threads for a `--sharedMemory` guest (default 0).
                          Main is always one executor, so the guest's
                          `__executorCount()` answers N + 1; the worker threads
@@ -911,6 +917,9 @@ enum HostOptionKind {
     /// One completion for a chosen `(class, key)`, posted **once N parks** have
     /// landed on it — the *later* ordering, which `--post-completion` cannot give.
     PostCompletionAfterParks,
+    /// DL27 probe: one completion for **every** park of a class, up to N, posted from
+    /// the park seam. The producer for a looping cost measurement.
+    PostCompletionEachPark,
     Executors,
     Help,
     Version,
@@ -1021,6 +1030,12 @@ const HOST_OPTIONS: &[HostOption] = &[
         missing_value: "needs <CLASS>,<KEY>,<COUNT>",
     },
     HostOption {
+        spellings: &["--post-completion-each-park"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::PostCompletionEachPark,
+        missing_value: "needs <CLASS>,<N>",
+    },
+    HostOption {
         spellings: &["--executors"],
         value: ValueForm::Both,
         kind: HostOptionKind::Executors,
@@ -1117,6 +1132,9 @@ struct Cli {
     /// `--post-completion-after-parks <class>,<key>,<count>`: one completion, posted
     /// once `count` parks have landed on the pair (DL22's ordering).
     post_completion_after_parks: Option<(u32, u32, u32)>,
+    /// `--post-completion-each-park <class>,<n>`: one completion per park, from the
+    /// seam (DL27's producer).
+    post_completion_each_park: Option<(u32, u32)>,
     /// `--executors <N>`: worker threads for a shared-memory guest. Main is
     /// always there, so `__executorCount()` answers `N + 1`.
     executors: usize,
@@ -1143,6 +1161,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut post_test_events = false;
     let mut post_completion: Option<(u32, u32)> = None;
     let mut post_completion_after_parks: Option<(u32, u32, u32)> = None;
+    let mut post_completion_each_park: Option<(u32, u32)> = None;
     let mut executors = 0usize;
     let mut wasm_path = None;
     // What the host understood, canonicalised to `--flag value` in the order it
@@ -1206,6 +1225,12 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             HostOptionKind::PostCompletion => {
                 post_completion = Some(parse_completion(required(option, &value)?)?)
             }
+            HostOptionKind::PostCompletionEachPark => {
+                post_completion_each_park = Some(parse_class_count(
+                    "--post-completion-each-park",
+                    required(option, &value)?,
+                )?)
+            }
             HostOptionKind::PostCompletionAfterParks => {
                 post_completion_after_parks =
                     Some(parse_completion_after_parks(required(option, &value)?)?)
@@ -1252,6 +1277,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         post_test_events,
         post_completion,
         post_completion_after_parks,
+        post_completion_each_park,
         executors,
         wasm_path,
         args,
@@ -1397,6 +1423,29 @@ fn parse_completion_after_parks(value: &str) -> Result<(u32, u32, u32), String> 
         ));
     }
     Ok((class, key, count))
+}
+
+/// Parse a `<CLASS>,<N>` pair — the shape `--post-completion-each-park` takes.
+///
+/// Separate from `parse_completion` rather than overloaded onto it: that flag's key
+/// defaults to 0, and a count cannot default the same way without inventing the
+/// measurement the flag exists to take.
+fn parse_class_count(flag: &str, value: &str) -> Result<(u32, u32), String> {
+    let (class, count) = value
+        .split_once(',')
+        .ok_or_else(|| format!("`{flag} {value}`: needs <CLASS>,<N>"))?;
+    let class: u32 = class
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{flag} {value}`: `{}` is not a class id", class.trim()))?;
+    let count: u32 = count
+        .trim()
+        .parse()
+        .map_err(|_| format!("`{flag} {value}`: `{}` is not a count", count.trim()))?;
+    if count == 0 {
+        return Err(format!("`{flag} {value}`: a count of 0 posts nothing and measures nothing"));
+    }
+    Ok((class, count))
 }
 
 /// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
@@ -1838,6 +1887,7 @@ fn main() -> anyhow::Result<()> {
         post_test_events: cli.post_test_events,
         post_completion: cli.post_completion,
         post_completion_after_parks: cli.post_completion_after_parks,
+        post_completion_each_park: cli.post_completion_each_park,
         executors: cli.executors,
     };
 
@@ -2297,6 +2347,28 @@ fn main() -> anyhow::Result<()> {
             None => anyhow::bail!(
                 "--post-completion-after-parks needs --executors and a --sharedMemory guest: \
                  there is no pool to watch"
+            ),
+        }
+    }
+
+    // `--post-completion-each-park <class>,<n>`: arm the seam's producer. Like
+    // `--post-completion-after-parks`, it arms rather than posts — the seam posts, on
+    // the park, which is the only place "a park just happened" is knowable.
+    if let Some((class, limit)) = config.post_completion_each_park {
+        match store.data().executors.clone() {
+            Some(pool) => {
+                pool.arm_post_each_park(class, limit);
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--post-completion-each-park: armed for class {class}, {limit} park(s)"
+                    ),
+                );
+            }
+            None => anyhow::bail!(
+                "--post-completion-each-park needs --executors and a --sharedMemory guest: \
+                 there is no pool to arm"
             ),
         }
     }
@@ -3457,6 +3529,7 @@ mod host_option_table_tests {
                     // disagreement, which is what this test is for.
                     HostOptionKind::PostCompletion => "4,7",
                     HostOptionKind::PostCompletionAfterParks => "4,7,2",
+                    HostOptionKind::PostCompletionEachPark => "4,100",
                     _ => "value",
                 };
                 let mut argv = vec![spelling.to_string()];
