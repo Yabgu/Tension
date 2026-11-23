@@ -36,7 +36,7 @@
 mod support_programs;
 
 use std::collections::BTreeMap;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use support_programs::guest;
 
@@ -623,4 +623,140 @@ fn a_shared_memory_guest_can_print() {
     };
     // With no workers configured, main is the whole pool.
     assert_eq!(want(&values, "executors"), "1");
+}
+
+// ---------------------------------------------------------------------------
+// DL31: the spawn entry is the one the lowering created.
+// ---------------------------------------------------------------------------
+
+/// `__spawnIndexOf(anAsyncFunction)` must answer the **spawn entry**'s index, and a
+/// worker spawned at that answer must run the body it names.
+///
+/// The defect this guards, measured end to end at DL30: the API answered the
+/// **factory** `f` — the function a user writes — so `__serveOne` resumed `f`.
+/// A factory creates a task, binds it, and returns it, which is *normal
+/// completion*: `__resumeTask` answers `-1`, the `if (awaited >= 0)` guard never
+/// fires, nothing is queued, and the task is left unsettled with nothing to drive
+/// it. The run exited **0** with no sentence — the failure mode this arc exists to
+/// remove, and the reason the assertions below are about a *line appearing* rather
+/// than about an exit code.
+///
+/// Three things are asserted, and they are separable:
+///
+/// 1. the number — `spawnIndexOf=3`, the `$spawnStart` entry. Not `4`, the factory;
+///    not `0`, the body continuation;
+/// 2. the body ran *through* its suspension — both worker lines, in order;
+/// 3. the run is clean — exit 0, joined, no strand, no refusal.
+///
+/// Mutation-checked: falling back to `target.internalName` in
+/// `builtin_async_spawnIndexOf` makes the answer `4`, the worker prints nothing,
+/// and this test fails on assertion 1 (see `DL31-REPORT.md`).
+#[test]
+fn an_async_worker_entry_is_served_as_its_spawn_entry() {
+    // The guest is a continuation module, so a target without stack switching
+    // cannot serve it at all. Same policy as `run`: say so, and assert the host
+    // refuses it by name rather than silently passing.
+    let guest = support_programs::guest_thread_fixture_as_committed("spawn-entry-async");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg("--executors")
+        .arg("2")
+        .arg(&guest)
+        .env("TENSION_LOG_LEVEL", "debug")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the interpreter runs");
+
+    // **Bounded, because the defect's signature is a hang, not an exit code.**
+    // Measured at DL31: the guest built by the pre-fix compiler prints
+    // `spawnIndexOf=4`, spawns, and then joins a worker that never exits — the
+    // process sits there until killed. An unbounded `wait` turns that regression
+    // into a hung CI job with no message, which is the silence this arc exists to
+    // remove; a deadline turns it into a failing assertion that names the cause.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut timed_out = false;
+    loop {
+        match child.try_wait().expect("the interpreter is waitable") {
+            Some(_) => break,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                timed_out = true;
+                break;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+
+    // `wait_with_output` after a kill still returns what was written, so the
+    // assertions below can quote the guest's own lines in the failure message.
+    let output = child.wait_with_output().expect("the output is collectable");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+
+    assert!(
+        !timed_out,
+        "the run did not finish in 30 s — the worker was never served and `__threadJoin` \
+         is waiting on it. That is how the pre-fix `__spawnIndexOf` fails (it answers the \
+         factory's index, so `__serveOne` queues nothing and the created task is never \
+         driven); stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    if !tension_core::async_backend::current().supports_continuations() {
+        assert!(
+            !output.status.success(),
+            "the guest must be refused on a target without stack switching, but it exited 0\n\
+             stdout: {stdout}\nstderr: {stderr}"
+        );
+        assert!(
+            stderr.contains("stack switching") || stderr.contains("continuation"),
+            "the refusal must name the feature, got:\n{stderr}"
+        );
+        return;
+    }
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "the run must succeed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    // 1. The number under test. 3 is `$spawnStart` in this program's table:
+    //    `[0] $start · [1] ~asyncMainStart · [2] coreloop · [3] $spawnStart`.
+    assert!(
+        stdout.contains("main: spawnIndexOf=3"),
+        "`__spawnIndexOf` must answer the spawn entry's index (3), not the factory's \
+         (4) and not the body's (0); stdout was:\n{stdout}"
+    );
+
+    // 2. The body ran, and ran past its suspension. Order is asserted, not just
+    //    presence: a line printed after the `await` is the only thing that
+    //    distinguishes "served and finished" from "started".
+    let entered = at(&stdout, "worker: entered (async entry)");
+    let resumed = at(&stdout, "worker: AFTER the await, value=0");
+    assert!(
+        entered < resumed,
+        "the worker's AFTER line must follow its entry line; stdout was:\n{stdout}"
+    );
+
+    // 3. Clean: spawned, joined, and nothing stranded or refused.
+    assert!(
+        stdout.contains("main: spawn=0"),
+        "the spawn record must be accepted; stdout was:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("main: join=0"),
+        "the worker must be joined; stdout was:\n{stdout}"
+    );
+    assert!(
+        !stderr.contains("STRANDED") && !stderr.contains("left 1 task"),
+        "nothing may be stranded — the served task is the one that ran:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("refused"),
+        "no wake or delivery may be refused in a healthy run:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("detached") && !stderr.contains("detached"),
+        "`detached` must not appear in a healthy run"
+    );
 }

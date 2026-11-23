@@ -168,6 +168,44 @@ pub fn guest_thread_fixture(name: &str) -> PathBuf {
     fixture
 }
 
+/// One thread program's **committed** artifact, never rebuilt from source.
+///
+/// This is `guest_debug`'s order, and for `guest_debug`'s reason — with the
+/// measurement that makes it the right one here, which
+/// [`guest_thread_fixture`] cannot know about:
+///
+/// **the behavior under test is a compiler fix, and the vendored pin predates
+/// it.** `spawn-entry-async` exists to prove that `__spawnIndexOf(anAsyncFunction)`
+/// answers the `$spawnStart` entry. Measured at DL31 on this checkout:
+///
+/// ```text
+/// built with the vendored pin (bundle aa74d6a1):   spawnIndexOf=4, no worker line, EXIT=124
+/// built with the fixed compiler (bundle 3ef8a8f4): spawnIndexOf=3, body runs, exit 0
+/// ```
+///
+/// So `guest_thread_fixture`'s "a checkout that can build should measure the
+/// source it has" is exactly wrong for this one guest: building it with the pin
+/// produces the **defective** artifact, and the run then hangs rather than
+/// failing (main joins a worker that never exits). The committed bytes are the
+/// fix's own output, and they are what this test must measure.
+///
+/// **When the pin advances past `3ef8a8f4`** this can go back to
+/// `guest_thread_fixture` — the source path is right again once the compiler
+/// carries the fix. The recipe in `fixtures/thread/README.md` regenerates the
+/// bytes after any edit to the guest.
+pub fn guest_thread_fixture_as_committed(name: &str) -> PathBuf {
+    let fixture = thread_fixtures_dir().join(format!("{name}.wasm"));
+    if !fixture.is_file() {
+        support_ci::skip_or_fail(format_args!(
+            "test programs: {} is not committed; build it with the compiler that \
+             carries the DL31 fix and copy it here (see \
+             tension-core/tests/programs/fixtures/thread/README.md)",
+            fixture.display()
+        ));
+    }
+    fixture
+}
+
 /// Whether the vendored compiler is installed in this checkout.
 ///
 /// The path is the one the root `package.json` devDependency installs to, which
