@@ -328,8 +328,15 @@ the strongest form of "no ABI change, no engine change" available.
 | `a24497c` | `probe(thread): two stackful probes — the seam is suspend-without-park (DL23)` |
 | *this report* | `docs: DL23 — …` |
 
-CI: run id and conclusion in the message that carries this file (the two commits
-land on `integration/dwarf-debug`, and the workflow runs on push).
+CI: run **`45196168542`** on `838663a`, **success**. The `Wake path guard` step
+ran `2 tests` — DL21's sticky-wake guard and DL22's second-waiter guard — both ok in
+1.05 s. That is the round's regression evidence: neither guard moved, on an engine
+that this round did not touch.
+
+The probes are not in CI and are not meant to be: they are measurements of a
+capability that does not exist yet, not assertions that something works. A CI step
+that ran `stackful-external-await` would be asserting "this exits 0 without resuming
+anything", which is the defect itself.
 
 ## 7. Bugs I made, and what caught each
 
