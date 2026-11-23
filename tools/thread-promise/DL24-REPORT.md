@@ -379,5 +379,17 @@ therefore leaks its stack unless it is resumed; a pool must not rely on `Drop`.
 | `d187337` | `probe(fiber): a host import can suspend and resume a guest call — one parked task per thread (DL24)` — the six tests, the dev-dependency, the one-line lockfile delta |
 | *this file* | `docs: DL24 — …` |
 
-CI runs on `integration/dwarf-debug` on push; the new target is **not** wired into the
-workflow this round, as declared.
+CI: run **`45203920152`** on `222831a`, **success** — `Wake path guard` ran `2 tests`,
+both ok in 1.07 s. The new target is **not** wired into the workflow this round, as
+declared, and nothing about it reaches that job.
+
+One check worth recording, because it is the question a later round will ask: the probe
+also passes under the flags CI uses —
+
+```
+cargo test --test fiber --no-default-features   → 6 passed
+```
+
+— so it is not accidentally dependent on a default feature `tension-core` turns off in
+CI, and wiring it in later would be a one-line change to a working target rather than a
+porting exercise.
