@@ -683,6 +683,32 @@ impl ThreadImports for WorkerState {
 /// not store an entry, does not hold a displaced one, and does not wake anything.
 /// The post goes through [`ExecutorPool::deliver`], the same door every producer
 /// uses, so whatever park a post wakes today it wakes tomorrow.
+/// DL28's probe flag: hand executor `owner`'s queue a delivery **the ledger would never
+/// produce**, once a park on `(class, key)` has been recorded.
+///
+/// # Why a separate type from `EachParkWatch`
+///
+/// They are armed from the same place and for the same reason — the seam is the only spot
+/// that knows a worker is *waiting* — but they produce opposite kinds of delivery. The
+/// each-park watch posts through `Pool::deliver`, so the ledger matches it and the delivery
+/// is legitimate. This one bypasses `deliver` entirely and enqueues directly, which is
+/// precisely what makes the delivery foreign: the ledger is never consulted, so nothing has
+/// agreed that `task_id` is this store's.
+///
+/// **A test instrument, and nothing else.** It exists so the refusal path
+/// (`service_wakes` → `note_refused_delivery` → main's widened refusal → exit 1) can be
+/// measured end to end. A production run cannot arm it.
+#[derive(Clone, Copy, Debug)]
+pub struct ForeignDelivery {
+    pub class: u32,
+    pub key: u32,
+    /// The task id to name. Deliberately *not* checked against anything: an id the store
+    /// never parked is the point.
+    pub task_id: u64,
+    /// Which executor's queue to hand it to.
+    pub owner: u32,
+}
+
 /// DL27's probe flag: post a completion for the key of each of the first `remaining`
 /// parks of `class`. See [`ExecutorPool::arm_post_each_park`].
 #[derive(Clone, Copy, Debug)]
@@ -719,6 +745,9 @@ pub struct ExecutorPool {
     /// DL27's probe: post for every park (see [`ExecutorPool::arm_post_each_park`]).
     /// `None` in an ordinary run.
     each_park: Mutex<Option<EachParkWatch>>,
+    /// DL28's probe: inject one foreign delivery once a matching park lands
+    /// (see [`ExecutorPool::arm_foreign_delivery`]). `None` in an ordinary run.
+    foreign: Mutex<Option<ForeignDelivery>>,
     /// DL27's instrument: one entry per delivery, **only when `TENSION_MEASURE=1`**.
     /// Empty otherwise, so an unmetered run allocates nothing.
     timings: Mutex<Vec<WakeTiming>>,
@@ -789,6 +818,7 @@ impl ExecutorPool {
             strands: Mutex::new(Vec::new()),
             refused_deliveries: Mutex::new(Vec::new()),
             each_park: Mutex::new(None),
+            foreign: Mutex::new(None),
             timings: Mutex::new(Vec::new()),
             last_park_at: Mutex::new(None),
             parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
@@ -983,6 +1013,56 @@ impl ExecutorPool {
             payload,
         });
         Some(entry.owner)
+    }
+
+    /// Arm DL28's probe: inject **one foreign delivery** the next time a park on
+    /// `(class, key)` is recorded.
+    ///
+    /// Enqueued straight onto `owner`'s queue, bypassing `Pool::deliver` and therefore the
+    /// ledger — which is what makes it foreign. See [`ForeignDelivery`] on why this is an
+    /// instrument rather than a mechanism.
+    pub fn arm_foreign_delivery(&self, foreign: ForeignDelivery) {
+        let mut slot = self
+            .foreign
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(foreign);
+    }
+
+    /// Inject the armed foreign delivery if this park matches it; disarm either way.
+    ///
+    /// Answers the injected task id, so the caller can log **that** id rather than the
+    /// park's — they are different numbers and confusing them in a log line about a foreign
+    /// delivery would be the one mistake the line exists to make impossible. `None` when it
+    /// did not fire.
+    ///
+    /// Disarms on firing (a second injection would be a second refusal for one instrument).
+    /// A park that does not match leaves the arm in place, so a run whose first park is the
+    /// wrong pair waits for the right one rather than firing early.
+    fn note_park_for_foreign_delivery(&self, class: u32, key: u32) -> Option<u64> {
+        let foreign = {
+            let mut slot = self
+                .foreign
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match slot.as_ref() {
+                Some(foreign) if foreign.class == class && foreign.key == key => slot.take(),
+                _ => None,
+            }
+        };
+        let Some(foreign) = foreign else {
+            return None;
+        };
+        // **Straight onto the queue.** No `deliver`, so no ledger `take`, so nothing has
+        // agreed that `task_id` is a task this store ever parked.
+        self.enqueue(Delivery {
+            owner: foreign.owner,
+            task_id: foreign.task_id,
+            class: foreign.class,
+            key: foreign.key,
+            payload: 0,
+        });
+        Some(foreign.task_id)
     }
 
     /// Arm the DL27 probe's "post for every park" watch: for each of the next `limit`
@@ -1486,6 +1566,26 @@ impl ExecutorPool {
                             park.class, park.key
                         ),
                     );
+                }
+                // **DL28's instrument**: if a foreign delivery is armed for this pair, hand
+                // the owner's queue a delivery the ledger never matched. Placed *after*
+                // `claim_early` and after the each-park post, so a run that arms both gets
+                // the legitimate delivery first and the guest resumes before the refusal —
+                // which is the ordering the test asserts on.
+                if recorded {
+                    if let Some(foreign_task) =
+                        pool.note_park_for_foreign_delivery(park.class, park.key)
+                    {
+                        logging::log(
+                            Level::Info,
+                            "core",
+                            &format!(
+                                "--deliver-foreign: injected class {} key {} for task {foreign_task} \
+                                 straight onto the executor's queue — the ledger never matched it",
+                                park.class, park.key
+                            ),
+                        );
+                    }
                 }
                 // **DL27's producer**: with `--post-completion-each-park` armed, post a
                 // completion for *this* park's key. The seam is the producer, which is

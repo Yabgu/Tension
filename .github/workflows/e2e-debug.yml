@@ -228,7 +228,8 @@ jobs:
       # No `TENSION_TEST_ALLOW_SKIP` here either: a deleted fixture must fail the
       # job, not skip it.
       #
-      # **Two filters, both by name.** `libtest` ORs multiple filter arguments, and
+      # **Three filters, all by name** (DL28 added the third). `libtest` ORs multiple
+      # filter arguments, and
       # both tests take the fixture path above: `two-waiters-late` needs no compiler
       # for the same reason `wake-on-worker` does not. Adding a third guest to this
       # step means adding its committed fixture beside theirs — the `.gitignore`
@@ -238,7 +239,8 @@ jobs:
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
             --test threads -- \
               a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake \
-              a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks
+              a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks \
+              a_foreign_delivery_fails_the_run_by_name
 
       # **The stackful proofs (I61).** Two targets that existed and passed and that no
       # job ran — the vacuous-gate class, with six receipts on this project already.

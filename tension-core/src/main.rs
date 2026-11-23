@@ -804,6 +804,13 @@ options:
                          --post-completion it cannot be claimed by the first
                          park, which is what lets a second waiter be measured.
                          Needs --executors and a --sharedMemory guest
+  --deliver-foreign <CLASS>,<KEY>,<TASK_ID>
+                         DL28 test-only: inject ONE delivery naming TASK_ID straight
+                         onto executor 1's queue once a park on <CLASS>,<KEY> is
+                         recorded, bypassing the ledger. A test instrument: it
+                         exists so the foreign-delivery refusal can be measured end
+                         to end, and it must fail the run by name. Needs --executors
+                         and a --sharedMemory guest
   --post-completion-each-park <CLASS>,<N>
                          DL27 test-only: post ONE completion for the key of each
                          of the first N parks of CLASS, from the park seam itself.
@@ -920,6 +927,9 @@ enum HostOptionKind {
     /// DL27 probe: one completion for **every** park of a class, up to N, posted from
     /// the park seam. The producer for a looping cost measurement.
     PostCompletionEachPark,
+    /// DL28 probe: inject **one foreign delivery** (a task id the ledger never matched)
+    /// once a matching park lands, so the refusal path can be measured end to end.
+    DeliverForeign,
     Executors,
     Help,
     Version,
@@ -1030,6 +1040,12 @@ const HOST_OPTIONS: &[HostOption] = &[
         missing_value: "needs <CLASS>,<KEY>,<COUNT>",
     },
     HostOption {
+        spellings: &["--deliver-foreign"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::DeliverForeign,
+        missing_value: "needs <CLASS>,<KEY>,<TASK_ID>",
+    },
+    HostOption {
         spellings: &["--post-completion-each-park"],
         value: ValueForm::Both,
         kind: HostOptionKind::PostCompletionEachPark,
@@ -1135,6 +1151,9 @@ struct Cli {
     /// `--post-completion-each-park <class>,<n>`: one completion per park, from the
     /// seam (DL27's producer).
     post_completion_each_park: Option<(u32, u32)>,
+    /// `--deliver-foreign <class>,<key>,<task_id>`: inject one delivery the ledger never
+    /// matched (DL28's instrument).
+    deliver_foreign: Option<(u32, u32, u64)>,
     /// `--executors <N>`: worker threads for a shared-memory guest. Main is
     /// always there, so `__executorCount()` answers `N + 1`.
     executors: usize,
@@ -1162,6 +1181,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut post_completion: Option<(u32, u32)> = None;
     let mut post_completion_after_parks: Option<(u32, u32, u32)> = None;
     let mut post_completion_each_park: Option<(u32, u32)> = None;
+    let mut deliver_foreign: Option<(u32, u32, u64)> = None;
     let mut executors = 0usize;
     let mut wasm_path = None;
     // What the host understood, canonicalised to `--flag value` in the order it
@@ -1225,6 +1245,9 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             HostOptionKind::PostCompletion => {
                 post_completion = Some(parse_completion(required(option, &value)?)?)
             }
+            HostOptionKind::DeliverForeign => {
+                deliver_foreign = Some(parse_foreign(required(option, &value)?)?)
+            }
             HostOptionKind::PostCompletionEachPark => {
                 post_completion_each_park = Some(parse_class_count(
                     "--post-completion-each-park",
@@ -1278,6 +1301,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         post_completion,
         post_completion_after_parks,
         post_completion_each_park,
+        deliver_foreign,
         executors,
         wasm_path,
         args,
@@ -1423,6 +1447,33 @@ fn parse_completion_after_parks(value: &str) -> Result<(u32, u32, u32), String> 
         ));
     }
     Ok((class, key, count))
+}
+
+/// Parse `--deliver-foreign`'s value: `<CLASS>,<KEY>,<TASK_ID>`.
+///
+/// The task id is `u64` because that is what `Delivery` carries; both other fields are
+/// `u32` like every other `(class, key)` in this file. All three are required — a default
+/// for the task id would be a default for the *only* thing that makes the delivery foreign.
+fn parse_foreign(value: &str) -> Result<(u32, u32, u64), String> {
+    let fields: Vec<&str> = value.split(',').collect();
+    if fields.len() != 3 {
+        return Err(format!(
+            "`--deliver-foreign {value}`: needs <CLASS>,<KEY>,<TASK_ID>"
+        ));
+    }
+    let class: u32 = fields[0]
+        .trim()
+        .parse()
+        .map_err(|_| format!("`--deliver-foreign {value}`: `{}` is not a class id", fields[0].trim()))?;
+    let key: u32 = fields[1]
+        .trim()
+        .parse()
+        .map_err(|_| format!("`--deliver-foreign {value}`: `{}` is not a key", fields[1].trim()))?;
+    let task_id: u64 = fields[2]
+        .trim()
+        .parse()
+        .map_err(|_| format!("`--deliver-foreign {value}`: `{}` is not a task id", fields[2].trim()))?;
+    Ok((class, key, task_id))
 }
 
 /// Parse a `<CLASS>,<N>` pair — the shape `--post-completion-each-park` takes.
@@ -1888,6 +1939,7 @@ fn main() -> anyhow::Result<()> {
         post_completion: cli.post_completion,
         post_completion_after_parks: cli.post_completion_after_parks,
         post_completion_each_park: cli.post_completion_each_park,
+        deliver_foreign: cli.deliver_foreign,
         executors: cli.executors,
     };
 
@@ -2369,6 +2421,36 @@ fn main() -> anyhow::Result<()> {
             None => anyhow::bail!(
                 "--post-completion-each-park needs --executors and a --sharedMemory guest: \
                  there is no pool to arm"
+            ),
+        }
+    }
+
+    // `--deliver-foreign <class>,<key>,<task_id>`: **arm** the seam's injector. It fires
+    // once, when a park on the pair is recorded — the moment a worker is known to be
+    // waiting, which is the only time a foreign delivery is meaningful.
+    if let Some((class, key, task_id)) = config.deliver_foreign {
+        match store.data().executors.clone() {
+            Some(pool) => {
+                pool.arm_foreign_delivery(tension_core::thread::ForeignDelivery {
+                    class,
+                    key,
+                    task_id,
+                    // Executor 1: the first worker. The probe's guests run one worker, and
+                    // naming a second would need `--executors 3` and a spawn per id.
+                    owner: 1,
+                });
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--deliver-foreign: armed for class {class} key {key}, naming task \
+                         {task_id} (never parked)"
+                    ),
+                );
+            }
+            None => anyhow::bail!(
+                "--deliver-foreign needs --executors and a --sharedMemory guest: there is \
+                 no executor queue to inject into"
             ),
         }
     }
@@ -3530,6 +3612,7 @@ mod host_option_table_tests {
                     HostOptionKind::PostCompletion => "4,7",
                     HostOptionKind::PostCompletionAfterParks => "4,7,2",
                     HostOptionKind::PostCompletionEachPark => "4,100",
+                    HostOptionKind::DeliverForeign => "4,7,9999",
                     _ => "value",
                 };
                 let mut argv = vec![spelling.to_string()];

@@ -88,6 +88,9 @@ pub struct HostConfig {
     /// `--post-completion-each-park <class>,<n>`: one completion per park, posted from
     /// the seam (DL27's producer). `None` arms nothing.
     pub post_completion_each_park: Option<(u32, u32)>,
+    /// `--deliver-foreign <class>,<key>,<task_id>`: inject one delivery the ledger never
+    /// matched (DL28's instrument). `None` arms nothing.
+    pub deliver_foreign: Option<(u32, u32, u64)>,
     /// `--executors <N>`: the **worker** threads a shared-memory guest gets.
     ///
     /// Zero by default, and zero is meaningful: a guest is one executor (main)

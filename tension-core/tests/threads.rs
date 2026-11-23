@@ -482,8 +482,134 @@ fn a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks() {
     );
 }
 
-/// A guest that imports a **shared** memory and prints: the case that found
-/// `Extern::into_memory()` answering `None` for a `SharedMemory`.
+// ---------------------------------------------------------------------------
+// DL28 — the refusal end to end (I55's last unmeasured piece).
+// ---------------------------------------------------------------------------
+
+/// **A delivery the ledger never matched must fail the run and name itself.**
+///
+/// DL26 tested `delivery_target` as a decision, the refusal's message, and the pool's
+/// bookkeeping. What none of that measured is the wire between them: that
+/// `service_wakes` actually refuses, that `note_refused_delivery` reaches main, and that
+/// main **exits 1 with its own sentence** rather than the strand sentence or silence.
+///
+/// The delivery is produced by `--deliver-foreign`, which enqueues straight onto
+/// executor 1's queue once a park on the pair is recorded — bypassing `Pool::deliver` and
+/// therefore the ledger. That bypass is what makes it foreign: nothing has agreed that
+/// task 9999 is a task this store ever parked.
+///
+/// **The ordering is load-bearing and is asserted, not assumed.** The legitimate
+/// `--post-completion 4,7` is claimed at the same seam (by `claim_early`, which runs
+/// before the injection), so it is enqueued first and the guest resumes before the loop
+/// reaches the foreign delivery. That is what makes assertion 4 possible: the task
+/// resolved, so the strand sentence must be **absent** and only the refusal's sentence
+/// may appear.
+///
+/// The run, verbatim, is quoted in `DL28-REPORT.md` §B.
+#[test]
+fn a_foreign_delivery_fails_the_run_by_name() {
+    let run = run_with(&[
+        "--post-completion",
+        "4,7",
+        "--deliver-foreign",
+        "4,7,9999",
+    ]);
+    let all = format!("{}\n{}", run.stdout, run.stderr);
+
+    // 2. **exit 1** — a foreign delivery is a failure, not a warning.
+    assert_eq!(
+        run.status,
+        Some(1),
+        "a foreign delivery must fail the run:\nstdout: {}\nstderr: {}",
+        run.stdout,
+        run.stderr
+    );
+
+    // 3. It names the task **and** the pair, so the producer can be found.
+    assert!(
+        run.stderr.contains("refused to wake task 9999"),
+        "the refusal must name the foreign task:\n{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("class 4 key 7"),
+        "the refusal must name the pair the delivery was for:\n{}",
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("executor 1"),
+        "the refusal must name the executor that refused it:\n{}",
+        run.stderr
+    );
+
+    // 4a. main's own sentence for this failure.
+    assert!(
+        run.stderr
+            .contains("a completion was delivered to a task its store never parked"),
+        "the run's error must carry the delivery sentence:\n{}",
+        run.stderr
+    );
+    // 4b. **and not the strand sentence** — the task itself resumed, so claiming it was
+    // left parked would be telling the reader the wrong reason.
+    assert!(
+        !all.contains("a task was left parked when the session stopped"),
+        "this run resumed its task, so the strand sentence must be absent:\n{all}"
+    );
+
+    // 5. The legitimate wake still did its job: the guest printed both AFTER lines.
+    assert!(
+        run.stdout.contains("inner: AFTER the await, value=0"),
+        "the legitimate wake must still resume the inner task:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stdout.contains("worker: AFTER the await, value=0"),
+        "and the worker's own continuation:\n{}",
+        run.stdout
+    );
+
+    // 6. A healthy session teardown, not a detach.
+    assert!(
+        !all.contains("detached"),
+        "the session must stop and join in order:\n{all}"
+    );
+
+    // The instrument's own evidence that it fired where it said it did.
+    assert!(
+        run.stderr
+            .contains("injected class 4 key 7 for task 9999"),
+        "the flag must report its injection:\n{}",
+        run.stderr
+    );
+
+    // -- the control: the same guest and the same legitimate wake, no instrument ----
+    //
+    // Without this, the run above proves only that the fixture can fail. It is the
+    // second half of one test rather than a test of its own so the pair cannot be
+    // separated: drop one and the other's meaning changes. It is also the gate's
+    // "with the flag absent the binary behaves as at 96a30ac" check, kept as an
+    // assertion rather than a one-off pasted log.
+    let control = run_with(&["--post-completion", "4,7"]);
+    assert_eq!(
+        control.status,
+        Some(0),
+        "the control run must succeed:\nstdout: {}\nstderr: {}",
+        control.stdout,
+        control.stderr
+    );
+    assert!(
+        !control.stderr.contains("refused to wake"),
+        "nothing may be refused without the instrument:\n{}",
+        control.stderr
+    );
+    assert!(
+        !control.stderr.contains("a completion was delivered to a task"),
+        "and no delivery sentence either:\n{}",
+        control.stderr
+    );
+}
+
+/// A guest that imports a **shared** memory and prints: the case that found/// `Extern::into_memory()` answering `None` for a `SharedMemory`.
 ///
 /// It is not a thread test as such, it is the *transport* under three of them —
 /// every test above prints from a shared-memory guest — but it is cheap and it
