@@ -1068,6 +1068,57 @@ fn c_delivery_target_prefers_the_unresolved_record_and_refuses_an_unknown_id() {
         eprintln!("{rendered}");
     }
 
+    // -- the pool's own half: refused deliveries are taken, not read -----------
+    // The three pieces of the guard are each asserted here: the decision (above), the
+    // message (above), and the pool bookkeeping `service_wakes` writes through. What is
+    // **not** asserted is the wiring — that `service_wakes` actually calls these — which
+    // needs a worker whose store receives a foreign delivery, and nothing outside the
+    // crate can hand one to a store. Stated in `DL26-REPORT.md` §C.
+    {
+        use std::sync::Arc;
+        use tension_core::thread::{shared_memory_import, ExecutorPool, RefusedDelivery};
+        use wasmtime::{Engine, Module, SharedMemory};
+
+        // Shared memory has to be enabled on the engine before a module that imports
+        // one can even be created — the pool's own construction requires it.
+        let mut config = wasmtime::Config::new();
+        config.shared_memory(true);
+        let engine = Engine::new(&config).expect("an engine with shared memory");
+        let module = Module::new(
+            &engine,
+            r#"(module (import "env" "memory" (memory 1 4 shared)))"#,
+        )
+        .expect("the minimal shared-memory module");
+        let ty = shared_memory_import(&module).expect("it imports a shared memory");
+        let memory = SharedMemory::new(&engine, ty).expect("a shared memory");
+        fn identity(class: u32) -> u32 {
+            class
+        }
+        fn wide(_family: u32) -> Option<u32> {
+            Some(1024)
+        }
+        let pool: Arc<ExecutorPool> =
+            ExecutorPool::new(engine, module, memory, 2, identity, wide).expect("a pool");
+
+        assert!(
+            pool.take_refused_deliveries().is_empty(),
+            "a fresh pool has refused nothing"
+        );
+        pool.note_refused_delivery(RefusedDelivery {
+            executor: 1,
+            task_id: 99,
+            class: 4,
+            key: 7,
+        });
+        let taken = pool.take_refused_deliveries();
+        assert_eq!(taken.len(), 1, "the refusal is recorded");
+        assert_eq!(taken[0].task_id, 99);
+        assert!(
+            pool.take_refused_deliveries().is_empty(),
+            "taken, not read: one refusal cannot become two"
+        );
+    }
+
     eprintln!("--- C: delivery_target, all cases ---");
     eprintln!("two = [resolved(7), unresolved(7)] -> {:?}", delivery_target(&two, 7));
     eprintln!("all_resolved(7)                     -> {:?}", delivery_target(&all_resolved, 7));
