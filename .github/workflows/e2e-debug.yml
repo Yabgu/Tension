@@ -206,7 +206,8 @@ jobs:
               a_source_breakpoint_binds_in_a_stack_switching_guest \
               a_guest_without_dwarf_cannot_be_stopped_at_a_source_line
 
-      # **The wake path — the one behaviour `--test threads` is here for.**
+      # **The wake path and the strand count — the two behaviours `--test threads`
+      # is here for.**
       #
       # Nothing ran `--test threads` in CI before this step, so the thread ABI's
       # five assertions and the wake guard were local-only. This runs the guard
@@ -226,7 +227,15 @@ jobs:
       #
       # No `TENSION_TEST_ALLOW_SKIP` here either: a deleted fixture must fail the
       # job, not skip it.
+      #
+      # **Two filters, both by name.** `libtest` ORs multiple filter arguments, and
+      # both tests take the fixture path above: `two-waiters-late` needs no compiler
+      # for the same reason `wake-on-worker` does not. Adding a third guest to this
+      # step means adding its committed fixture beside theirs — the `.gitignore`
+      # negation for `fixtures/thread/*.wasm` is what makes it travel.
       - name: Wake path guard
         run: |
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
-            --test threads -- a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake
+            --test threads -- \
+              a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake \
+              a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks

@@ -506,10 +506,10 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
 /// The strand refusal, or `None` when every worker's parks were resolved.
 ///
 /// **Unresolved at exit**, not "parked at all": a park a wake has resumed is a
-/// normal suspension and must not fail a run. Today nothing on a worker can
-/// resume one (`thread.rs`'s `WorkerPark::resolved` is the field the wake path
-/// will set), so the two are the same — the check is written for the day they are
-/// not.
+/// normal suspension and must not fail a run. Since DL20 a worker *can* resume one,
+/// and since DL22 the count comes from the owning store's own record
+/// (`WorkerPark::resolved`, set by the session loop at the wake), so the number is
+/// per park and not per key.
 ///
 /// Taken rather than read: the caller turns this into the process's outcome once,
 /// and a second reader must not be able to turn the same strand into a second
@@ -769,6 +769,13 @@ options:
                          ledger, so a worker's park can claim it (§4.3's sticky
                          half). Needs --executors and a --sharedMemory guest.
                          KEY defaults to 0
+  --post-completion-after-parks <CLASS>,<KEY>,<COUNT>
+                         DL22 test-only: post ONE completion for the pair once
+                         COUNT parks have landed on it, and never again. The
+                         later ordering a real producer produces; unlike
+                         --post-completion it cannot be claimed by the first
+                         park, which is what lets a second waiter be measured.
+                         Needs --executors and a --sharedMemory guest
   --executors <N>        worker threads for a `--sharedMemory` guest (default 0).
                          Main is always one executor, so the guest's
                          `__executorCount()` answers N + 1; the worker threads
@@ -873,6 +880,9 @@ enum HostOptionKind {
     /// One completion for a chosen `(class, key)`, posted before the entry runs —
     /// the producer the wake path's deterministic proof needs.
     PostCompletion,
+    /// One completion for a chosen `(class, key)`, posted **once N parks** have
+    /// landed on it — the *later* ordering, which `--post-completion` cannot give.
+    PostCompletionAfterParks,
     Executors,
     Help,
     Version,
@@ -977,6 +987,12 @@ const HOST_OPTIONS: &[HostOption] = &[
         missing_value: "needs <CLASS>[,<KEY>]",
     },
     HostOption {
+        spellings: &["--post-completion-after-parks"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::PostCompletionAfterParks,
+        missing_value: "needs <CLASS>,<KEY>,<COUNT>",
+    },
+    HostOption {
         spellings: &["--executors"],
         value: ValueForm::Both,
         kind: HostOptionKind::Executors,
@@ -1070,6 +1086,9 @@ struct Cli {
     post_test_events: bool,
     /// `--post-completion <class>[,<key>]`: one completion for a chosen pair.
     post_completion: Option<(u32, u32)>,
+    /// `--post-completion-after-parks <class>,<key>,<count>`: one completion, posted
+    /// once `count` parks have landed on the pair (DL22's ordering).
+    post_completion_after_parks: Option<(u32, u32, u32)>,
     /// `--executors <N>`: worker threads for a shared-memory guest. Main is
     /// always there, so `__executorCount()` answers `N + 1`.
     executors: usize,
@@ -1095,6 +1114,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
     let mut post_completion: Option<(u32, u32)> = None;
+    let mut post_completion_after_parks: Option<(u32, u32, u32)> = None;
     let mut executors = 0usize;
     let mut wasm_path = None;
     // What the host understood, canonicalised to `--flag value` in the order it
@@ -1158,6 +1178,10 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             HostOptionKind::PostCompletion => {
                 post_completion = Some(parse_completion(required(option, &value)?)?)
             }
+            HostOptionKind::PostCompletionAfterParks => {
+                post_completion_after_parks =
+                    Some(parse_completion_after_parks(required(option, &value)?)?)
+            }
             HostOptionKind::Executors => executors = parse_executors(required(option, &value)?)?,
             HostOptionKind::Help => {
                 println!("{USAGE}");
@@ -1199,6 +1223,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_callbacks,
         post_test_events,
         post_completion,
+        post_completion_after_parks,
         executors,
         wasm_path,
         args,
@@ -1314,6 +1339,36 @@ fn parse_completion(value: &str) -> Result<(u32, u32), String> {
         .parse()
         .map_err(|_| format!("`--post-completion {value}`: `{key}` is not a key"))?;
     Ok((class, key))
+}
+
+/// Parse `--post-completion-after-parks`'s value: `<CLASS>,<KEY>,<COUNT>`.
+///
+/// **Three fields, all required.** `--post-completion` may default its key to 0
+/// because a post needs only a pair; this one's whole meaning is the count, so a
+/// missing field cannot be guessed without inventing the ordering the flag exists
+/// to fix.
+fn parse_completion_after_parks(value: &str) -> Result<(u32, u32, u32), String> {
+    let fields: Vec<&str> = value.split(',').collect();
+    if fields.len() != 3 {
+        return Err(format!(
+            "`--post-completion-after-parks {value}`: needs <CLASS>,<KEY>,<COUNT>"
+        ));
+    }
+    let class: u32 = fields[0].trim().parse().map_err(|_| {
+        format!("`--post-completion-after-parks {value}`: `{}` is not a class id", fields[0].trim())
+    })?;
+    let key: u32 = fields[1].trim().parse().map_err(|_| {
+        format!("`--post-completion-after-parks {value}`: `{}` is not a key", fields[1].trim())
+    })?;
+    let count: u32 = fields[2].trim().parse().map_err(|_| {
+        format!("`--post-completion-after-parks {value}`: `{}` is not a count", fields[2].trim())
+    })?;
+    if count == 0 {
+        return Err(format!(
+            "`--post-completion-after-parks {value}`: a count of 0 would post before any park,              which is `--post-completion`'s job"
+        ));
+    }
+    Ok((class, key, count))
 }
 
 /// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
@@ -1754,6 +1809,7 @@ fn main() -> anyhow::Result<()> {
         session_callbacks: cli.session_callbacks,
         post_test_events: cli.post_test_events,
         post_completion: cli.post_completion,
+        post_completion_after_parks: cli.post_completion_after_parks,
         executors: cli.executors,
     };
 
@@ -2187,6 +2243,32 @@ fn main() -> anyhow::Result<()> {
             None => anyhow::bail!(
                 "--post-completion needs --executors and a --sharedMemory guest: there is no \
                  pool to post into"
+            ),
+        }
+    }
+
+    // `--post-completion-after-parks <class>,<key>,<count>`: **arm a watch**, do
+    // not post. The post fires from the park seam that reaches the count, which is
+    // the only place "N parks have landed" is knowable — the ledger holds one entry
+    // per key by design. Nothing else about this flag differs from
+    // `--post-completion`: it reaches the same `deliver`, so it wakes exactly what
+    // a completion arriving at that instant would wake.
+    if let Some((class, key, count)) = config.post_completion_after_parks {
+        match store.data().executors.clone() {
+            Some(pool) => {
+                pool.arm_park_watch(class, key, count);
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--post-completion-after-parks: armed for class {class} key {key} after \
+                         {count} park(s)"
+                    ),
+                );
+            }
+            None => anyhow::bail!(
+                "--post-completion-after-parks needs --executors and a --sharedMemory guest: \
+                 there is no pool to watch"
             ),
         }
     }
@@ -3346,6 +3428,7 @@ mod host_option_table_tests {
                     // number: `value` would be a parse error, not a table/parser
                     // disagreement, which is what this test is for.
                     HostOptionKind::PostCompletion => "4,7",
+                    HostOptionKind::PostCompletionAfterParks => "4,7,2",
                     _ => "value",
                 };
                 let mut argv = vec![spelling.to_string()];

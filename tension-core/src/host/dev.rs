@@ -170,6 +170,9 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 // Nor a posted completion: the outer run's test producer is not
                 // the nested run's business, for the same reason as `args`.
                 post_completion: None,
+                // Nor a park watch: the outer run's ordering instrument has no
+                // meaning for a nested guest that gets no pool at all.
+                post_completion_after_parks: None,
                 // A nested guest gets no pool: its memory is the session's, one
                 // store, one executor. A nested guest that wants threads is a
                 // sandbox-lifetime question (the parent's memory is not shared

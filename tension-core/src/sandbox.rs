@@ -819,6 +819,7 @@ mod tests {
             session_callbacks: None,
             post_test_events: false,
             post_completion: None,
+            post_completion_after_parks: None,
             executors: 0,
         }
     }

@@ -80,6 +80,11 @@ pub struct HostConfig {
     /// posted before the entry runs so a park can claim it (§4.3's sticky half).
     /// `None` posts nothing.
     pub post_completion: Option<(u32, u32)>,
+    /// `--post-completion-after-parks <class>,<key>,<count>`: one completion for a
+    /// chosen pair, posted **once `count` parks have landed on it** — the later
+    /// ordering, which is what a real producer does and what DL22's defect needs.
+    /// `None` arms nothing.
+    pub post_completion_after_parks: Option<(u32, u32, u32)>,
     /// `--executors <N>`: the **worker** threads a shared-memory guest gets.
     ///
     /// Zero by default, and zero is meaningful: a guest is one executor (main)

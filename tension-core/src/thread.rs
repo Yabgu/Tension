@@ -94,7 +94,12 @@ pub const ERR_SPAWN_FAILED: i32 = -6;
 /// module of the **binary**. This crate is the library, so a park that could be
 /// resolved the way main's is would need that ABI moved into the library — which
 /// no round is allowed to do casually. The record is the honest fraction that
-/// fits on this side of the boundary, and its emptiness is a measurement.
+/// fits on this side of the boundary.
+///
+/// **Since DL22 it is also the authoritative answer to "did this store resume
+/// this park"**, which the shared ledger cannot give: the ledger holds one entry
+/// per key, so a displaced second waiter is absent from it whether or not it was
+/// ever resumed. This list holds one entry per park, in the order they happened.
 pub struct WorkerState {
     pool: Arc<ExecutorPool>,
     parks: Mutex<Vec<WorkerPark>>,
@@ -455,11 +460,15 @@ impl ParkLedger {
 
     /// Removes the park for `(family, key)`, answering its entry.
     ///
-    /// **This is a resolution, not a wake.** A wake would take the id and resume
+    /// **This is a bookkeeping step, not a wake.** A wake takes the id and resumes
     /// the task; this only removes the entry, which is the half the host can do
-    /// from any thread. DL19's wake path is the caller this waits for — nothing
-    /// calls it in this round, which is why `WorkerPark::resolved` is still
-    /// written `false` by the only code that builds one.
+    /// from any thread. `deliver` is its caller.
+    ///
+    /// **It is no longer the liveness answer (DL22).** The strand refusal reads the
+    /// owning store's own `WorkerPark::resolved`, because this ledger holds one
+    /// entry per key and so cannot speak for a displaced second waiter. Removing an
+    /// entry here says "no park is waiting on this pair any more"; it does not say
+    /// which task was resumed, and it never could.
     pub fn take(&mut self, class: u32, key: u32) -> Option<ParkedTask> {
         let family = (self.family_of)(class);
         self.tables.get_mut(&family)?.take(key)
@@ -472,14 +481,17 @@ pub struct WorkerPark {
     pub task_id: u64,
     pub class: u32,
     pub key: u32,
-    /// Whether this park was ever resolved — i.e. some wake named its task.
+    /// Whether this store has resumed this park — i.e. some wake named its task.
     ///
-    /// **Always `false` today**, and that is the measurement, not an oversight:
-    /// nothing on a worker store drains a park (no host loop, and contract §2.2
-    /// puts `wake` on the store's owner thread). The field exists so the
-    /// predicate below is written in the form that survives the wake path: a park
-    /// that *has* been resumed is not a strand, and when the wake path lands it
-    /// sets this instead of the check being re-cut.
+    /// **Written by exactly one place**: the session loop's owner thread, at the
+    /// moment it calls this store's `__taskWake` for this task id
+    /// (`service_wakes`, DL22's P1). Read by exactly one place: the strand
+    /// refusal's predicate (`record_strand`), which asks whether *this store* left
+    /// it unresolved.
+    ///
+    /// It is the store's own record on its own thread in both directions, which is
+    /// what makes it answerable at all — the shared ledger holds one entry per key
+    /// and so cannot speak for a displaced waiter.
     pub resolved: bool,
 }
 
@@ -520,6 +532,38 @@ impl ThreadImports for WorkerState {
 /// **Named for what it is.** Not a "thread table": the ids belong to the guest's
 /// carved control block (`docs/thread-abi.md` §3.2), the arenas belong to the
 /// guest, and what the host owns is exactly one OS thread per successfully
+/// A test-only request to post one completion **once N parks have landed on a
+/// pair** — the deterministic way to get DL22's ordering.
+///
+/// # Why this exists and what it is not
+///
+/// DL21's silent-loss shape needs the completion to arrive **after** both waiters
+/// have parked, which is what a real producer does and what a loading zone does.
+/// `--post-completion` posts at startup, so it always lands in the sticky buffer
+/// and is claimed by the first park — the opposite ordering. Reproducing the
+/// defect therefore needs a *later* post, and it must be deterministic rather than
+/// slept-for.
+///
+/// The park seam is where "N parks have landed" is an observable fact, and it is
+/// the only place that knows it: the ledger holds **one entry per key** (by
+/// design — holding N is the fan-out decision), so counting entries cannot answer
+/// it. So the counter lives here, incremented by the seam, and the post fires from
+/// the seam that reached the target.
+///
+/// **Nothing about parks, waking or the ledger changes.** The watch counts; it does
+/// not store an entry, does not hold a displaced one, and does not wake anything.
+/// The post goes through [`ExecutorPool::deliver`], the same door every producer
+/// uses, so whatever park a post wakes today it wakes tomorrow.
+#[derive(Clone, Copy, Debug)]
+pub struct ParkWatch {
+    pub class: u32,
+    pub key: u32,
+    /// How many parks on `(class, key)` to wait for before posting.
+    pub target: u32,
+    /// Parks seen on the pair so far. Guarded by the pool's `watch` mutex.
+    pub seen: u32,
+}
+
 /// started executor, plus the count it was configured for.
 pub struct ExecutorPool {
     engine: Engine,
@@ -556,6 +600,11 @@ pub struct ExecutorPool {
     /// Matched tasks, per owner, waiting for that owner to come round and call
     /// its own `__taskWake` (§3.4's hand-off).
     inboxes: Mutex<Vec<Delivery>>,
+    /// Test-only: post once N parks have landed on a pair (DL22's ordering).
+    ///
+    /// `None` unless `--post-completion-after-parks` armed it, so a production run
+    /// carries an empty `Option` and nothing else.
+    watch: Mutex<Option<ParkWatch>>,
     /// Set by session shutdown; every worker's loop wakes and leaves.
     stop: AtomicBool,
     /// Paired with `stop`: a real primitive, not a spin (§3.2/§4.4).
@@ -588,6 +637,7 @@ impl ExecutorPool {
             parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
             early: Mutex::new(Vec::new()),
             inboxes: Mutex::new(Vec::new()),
+            watch: Mutex::new(None),
             stop: AtomicBool::new(false),
             wake: Condvar::new(),
         }))
@@ -605,24 +655,31 @@ impl ExecutorPool {
     /// loading zone with eight workers needs "which one, how many", and the first
     /// park is carried for the message.
     fn record_strand(&self, id: i32, parks: &[WorkerPark]) {
-        // **`resolved` is now set by something real (B6).** The predicate is
-        // unchanged — `!resolved` — and what fills it is the ledger: a park is
-        // resolved exactly when some `ParkLedger::take` removed its entry, which
-        // is the caller the wake path added. A park the ledger declined (a family
-        // that is not awaitable) was never in it and is therefore a strand.
-        let still_parked = self.parked_task_ids();
-        // **Matched on the task id alone, deliberately.** The ledger is keyed by
-        // *family*, and a park on `JOB_FAILED` and one on `JOB_DONE` share a
-        // family, so comparing `class` here would mis-answer for exactly the
-        // classes the family map exists for. A task id is unique within a store,
-        // which is the whole question being asked: is *this* park still waiting?
+        // **The owner's own record is the truth (DL22 / P2).**
         //
-        // **A task is a strand while it is still in the ledger**, which is what
-        // makes `resolved` mean what its comment says — the first cut of this
-        // predicate had the sense inverted and failed a run whose wake had landed
-        // (`join=0`, `wakes served=1`, and a refusal naming the task it had just
-        // resumed).
-        let is_strand = |park: &WorkerPark| still_parked.contains(&park.task_id);
+        // Until now liveness came from the *shared ledger* — a park was a strand
+        // while some `ParkLedger::take` had not removed its entry. That is a
+        // main-side view of a worker's park, and it holds one entry per key, so it
+        // could not answer for a second waiter: the displaced task was absent from
+        // the ledger for a reason that has nothing to do with being resumed, and
+        // the count came out **0** while a task sat abandoned (DL22's reproduction,
+        // exit 0 with `waiter 1` never resumed).
+        //
+        // The park vec this is handed is the store's own list, one entry per park
+        // in the order they happened, and `service_wakes` sets `resolved` on the
+        // entry whose task it just woke — on this thread, about this store. So the
+        // predicate reads the only party that can actually know:
+        //
+        //     let is_strand = |park: &WorkerPark| !park.resolved;
+        //
+        // A park the ledger declined (a family that is not awaitable) was never
+        // resumable and is `!resolved` too, which is right: it is a strand.
+        //
+        // The predicate is unconditional and per park, so it is the same statement
+        // for one waiter or eight, and it survives any fan-out policy: a policy
+        // that resumes two tasks of one key marks two entries resolved, and this
+        // line needs no change.
+        let is_strand = |park: &WorkerPark| !park.resolved;
         let unresolved = parks.iter().filter(|park| is_strand(park)).count();
         if unresolved == 0 {
             return;
@@ -640,22 +697,6 @@ impl ExecutorPool {
             unresolved: unresolved as u32,
             first,
         });
-    }
-
-    /// The task ids still parked in the ledger.
-    ///
-    /// `resolved` is defined against this set: a park is resolved when its task id
-    /// is no longer here, i.e. some `ParkLedger::take` removed it.
-    fn parked_task_ids(&self) -> Vec<u64> {
-        let parks = self
-            .parks
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        parks
-            .snapshot()
-            .into_iter()
-            .map(|(_family, _key, entry)| entry.task_id)
-            .collect()
     }
 
     /// The strands recorded since the last call, oldest first.
@@ -715,6 +756,45 @@ impl ExecutorPool {
             payload,
         });
         Some(entry.owner)
+    }
+
+    /// Arm the test-only "post once N parks have landed" watch.
+    ///
+    /// Idempotent in the sense that matters: a second call replaces the first, and
+    /// a pool that was never armed carries `None`.
+    pub fn arm_park_watch(&self, class: u32, key: u32, target: u32) {
+        let mut watch = self
+            .watch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *watch = Some(ParkWatch {
+            class,
+            key,
+            target,
+            seen: 0,
+        });
+    }
+
+    /// Count a park at the seam; answer `true` when this one **just reached** the
+    /// watch's target and the completion must be posted now.
+    ///
+    /// Deliberately not a "count the parks" reader: the ledger cannot answer that
+    /// (one entry per key), and this is a measurement instrument rather than a
+    /// record of anything the engine decides. It answers `true` exactly once even
+    /// if more parks follow — "reposting never" is part of the flag's contract.
+    fn note_park(&self, class: u32, key: u32) -> bool {
+        let mut watch = self
+            .watch
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(watch) = watch.as_mut() else {
+            return false;
+        };
+        if watch.class != class || watch.key != key {
+            return false;
+        }
+        watch.seen = watch.seen.saturating_add(1);
+        watch.seen == watch.target
     }
 
     /// A park happened on `(class, key)` owned by `owner`: claim a buffered
@@ -1063,11 +1143,11 @@ impl ExecutorPool {
                             task_id: task_id as u64,
                             class: class as u32,
                             key: key as u32,
-                            // Nobody here can resume it: no host loop on this
-                            // store, and contract §2.2 confines `wake` to the
-                            // owner thread. The flag is set by the wake path when
-                            // one exists — and when it does, it will be set on
-                            // the *pool's* table entry, not here (see below).
+                            // **False here by construction, and it stops being
+                            // false on this store's own thread**: the session loop
+                            // sets it when it calls this store's `__taskWake` for
+                            // this task id (`service_wakes`). Written at the seam
+                            // and at the wake, read only by the strand refusal.
                             resolved: false,
                         },
                         Arc::clone(&data.pool),
@@ -1134,6 +1214,29 @@ impl ExecutorPool {
                             "executor {owner}: park on class {} key {} claimed a completion \
                              that had already arrived (sticky wake)",
                             park.class, park.key
+                        ),
+                    );
+                }
+                // **The other ordering, as a test instrument (DL22).** Only when
+                // `--post-completion-after-parks` armed a watch, and only on the
+                // park that reaches its target. The post goes through `deliver`,
+                // the same door every producer uses, so it can wake exactly what a
+                // completion arriving at that instant would wake — no more, no
+                // less. `seen` counts parks on the pair, which the ledger cannot
+                // (one entry per key), and this is why the counter lives here.
+                if recorded && pool.note_park(park.class, park.key) {
+                    let matched = pool.deliver(park.class, park.key, 0);
+                    logging::log(
+                        Level::Info,
+                        "core",
+                        &format!(
+                            "--post-completion-after-parks: class {} key {} -> {}",
+                            park.class,
+                            park.key,
+                            match matched {
+                                Some(owner) => format!("matched a park on executor {owner}"),
+                                None => "buffered (no park yet: sticky)".to_string(),
+                            }
                         ),
                     );
                 }
@@ -1301,6 +1404,30 @@ fn service_wakes(
             }
             // §2.2: this store's own `__taskWake`, on this store's own thread.
             wake.call(&mut *store, (scratch as i32, 1))?;
+            // **P1 (DL22): the owner answers for its own park, at the moment it
+            // resumes it.** This is the store's own record, written on the store's
+            // own thread, so there is no lock ordering to get wrong and no
+            // cross-thread write: the `Mutex` is the one `WorkerState` already
+            // carries, and this thread is the only one that ever holds that store.
+            //
+            // Before this, `resolved` was written once at the seam and never read,
+            // and liveness came from the *shared* ledger — which holds one entry
+            // per key, so it could not answer for a task the ledger had displaced
+            // (DL21's `2 → 1`). The count is now "parks this store left
+            // unresolved", which is true for any N.
+            //
+            // A wake for an id this store never parked (a stale delivery) marks
+            // nothing, which is the honest answer: there is no record of it.
+            if let Some(park) = store
+                .data()
+                .parks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .iter_mut()
+                .find(|park| park.task_id == delivery.task_id)
+            {
+                park.resolved = true;
+            }
             served += 1;
             // **A shared counter for the guest to observe.** Header word 6 (5 is
             // `H_STOP`; `HEADER_WORDS` is 16 and 0-4 are in use) counts wakes this
@@ -1459,9 +1586,10 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     // **A park that was never resolved is a strand, and main will refuse it.**
     // Recorded on the pool, because this store is about to drop and the refusal
     // has to be decided on main (`main.rs`, after `join_finished`). The predicate
-    // is `!resolved` — *unresolved at exit*, not "recorded at all" — so the day a
-    // wake path sets `resolved`, a resumed task stops being a strand with no
-    // change here.
+    // is `!resolved` — *unresolved at exit*, not "recorded at all" — and
+    // `resolved` is set by this store's own session loop, so a task the owner
+    // resumed is not a strand and a task it lost is one, for any number of
+    // waiters (DL22).
     pool.record_strand(id, &parks);
     // **The same parks, seen from the pool (DL18).** Read back through the shared
     // ledger rather than from the local list: this is the path main uses, so the

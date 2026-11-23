@@ -29,10 +29,10 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1022`, `tension-core/src/host/io.rs:44` |
+| `abort` | `(i32, i32, i32, i32) → wasmtime::Result<()>` | `tension-core/src/thread.rs:1102`, `tension-core/src/host/io.rs:44` |
 | `emit` | `(i32, i32)` | `tension-core/src/host/io.rs:89` |
-| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:977` |
-| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:988` |
+| `__executorCount` | `(void) → i32` | `tension-core/src/thread.rs:1057` |
+| `__startThread` | `(i32) → i32` | `tension-core/src/thread.rs:1068` |
 
 ## `ogre` — capability
 
@@ -58,7 +58,7 @@ says how in its own shim; the shared codes are in
 
 | import | signature | registered at |
 |---|---|---|
-| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1055`, `tension-core/src/scheduler.rs:487` |
+| `park` | `(i64, i32, i32)` | `tension-core/src/thread.rs:1135`, `tension-core/src/scheduler.rs:487` |
 
 ## `session`
 
@@ -119,11 +119,11 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 | import | signature | registered at |
 |---|---|---|
 | `run` | `(i32, i32, i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:97` |
-| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:283` |
-| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:313` |
-| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:340` |
-| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:392` |
-| `pipe` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:440` |
+| `stop` | `(i32) → i32` | `tension-core/src/host/dev.rs:286` |
+| `frame` | `(i32) → i32` | `tension-core/src/host/dev.rs:316` |
+| `read` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:343` |
+| `out` | `(i32, i32, i32) → i32` | `tension-core/src/host/dev.rs:395` |
+| `pipe` | `(i32, i32) → i32` | `tension-core/src/host/dev.rs:443` |
 
 ## `tension::input` — capability
 
@@ -141,12 +141,12 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/thread.rs:1509`, `tension-core/src/host/io.rs:59` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:1524`, `tension-core/src/host/io.rs:109` |
+| `print` | `(i32, i32)` | `tension-core/src/thread.rs:1637`, `tension-core/src/host/io.rs:59` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:1652`, `tension-core/src/host/io.rs:109` |
 | `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:124` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:1552`, `tension-core/src/host/io.rs:139` |
-| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:1548`, `tension-core/src/host/io.rs:192` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:1549`, `tension-core/src/host/io.rs:198` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:1680`, `tension-core/src/host/io.rs:139` |
+| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:1676`, `tension-core/src/host/io.rs:192` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:1677`, `tension-core/src/host/io.rs:198` |
 
 ## `tension::platform`
 

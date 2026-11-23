@@ -200,6 +200,10 @@ const PROGRAMS = {
   // completion posted *before* it resumes. Named here because it is the one
   // thread program that must **not** get the folder default — see `WAKE_FLAGS`.
   "wake-on-worker": WAKE_FLAGS,
+  // DL22's ordering probe: the same two-waiter shape, run twice — with the
+  // completion posted after both parks and (the mirror) before them. Same flags as
+  // the wake guard, for the same reason.
+  "two-waiters-late": WAKE_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,

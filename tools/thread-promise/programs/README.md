@@ -106,9 +106,29 @@ main: done
 Needs `--post-completion 4,7`; without it the guest parks forever and the run
 refuses (which is what `strand-nested` demonstrates on purpose).
 
+`two-waiters-late` — **moved in DL22** to `tension-core/tests/programs/thread/`,
+for the same reason `wake-on-worker` moved in DL21: it is a regression test now, and
+`tests/threads.rs` runs it twice. It is DL21's `two-waiters` shape with the
+completion posted **after** both parks, which is the ordering a real producer
+creates and the one that could abandon a task silently.
+
+```sh
+# after both parks — DL22's defect, and the guard that replaced it
+tension-core --executors 2 --post-completion-after-parks 4,7,2 <artifact>
+# before both parks — DL21's shape, the mirror that must not change
+tension-core --executors 2 --post-completion 4,7 <artifact>
+```
+
+Before DL22 the first of those exited **0** with `waiter 1` stranded and no
+refusal; it now exits 1 naming `first: task 0`, with `waiter 2` resumed (the ledger's
+slot holds the later park). The mirror still exits 1 naming `first: task 1`, with
+`waiter 1` resumed — the same behaviour DL21 measured.
+
 `two-waiters` — **DL21's measurement (I52)**, not a pass/fail probe: two tasks on
 one worker both await the same `(class, key)`, and the log says which of them the
-host can still see.
+host can still see. Its run 2 required `--post-completion`, i.e. the *sticky*
+ordering; DL22's `--post-completion-after-parks` is what makes the late ordering
+reachable.
 
 ```sh
 tension-core --executors 2 /tmp/two-waiters.wasm                        # both park

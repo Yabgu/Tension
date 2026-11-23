@@ -215,7 +215,12 @@ struct Run {
 }
 
 fn run_with(extra: &[&str]) -> Run {
-    let guest = support_programs::guest_thread_fixture("wake-on-worker");
+    run_guest("wake-on-worker", extra)
+}
+
+/// The same, for any thread fixture by name — DL22 runs one guest twice.
+fn run_guest(name: &str, extra: &[&str]) -> Run {
+    let guest = support_programs::guest_thread_fixture(name);
     let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
         .arg("--executors")
         .arg("2")
@@ -350,6 +355,130 @@ fn a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake() {
         stranded.stderr.contains("executor 1"),
         "the refusal must name the executor it happened on:\n{}",
         stranded.stderr
+    );
+}
+
+// ---------------------------------------------------------------------------
+// DL22: the owner's own park record is the truth (I53).
+// ---------------------------------------------------------------------------
+
+/// **A second waiter on one key is refused, not silently abandoned**, when the
+/// completion arrives *after* both have parked — the ordering a real producer
+/// creates, and the one DL21 could not reach.
+///
+/// # The defect this guards
+///
+/// Before DL22 the strand count came from the shared ledger, which holds **one**
+/// entry per key: the second park overwrites the first, so the first waiter is
+/// absent from the ledger whether or not it was ever resumed. With a late post the
+/// ledger's holder was woken, the displaced waiter was filtered out of the
+/// predicate, `unresolved` came out **0**, and the run **exited 0 with a task
+/// abandoned** — measured, `waiter 1` printing `BEFORE` and nothing else. The count
+/// now comes from the owning store's own per-park record, so it is 1.
+///
+/// # What is asserted
+///
+/// - exit **1**, and the refusal names `executor 1` with a count of exactly **1** —
+///   not 0 (the defect: nothing was resumed and nothing was reported) and not 2
+///   (the wake did not mark resolution, i.e. Part 2 is not finished);
+/// - the seam recorded **2** parks, so the 1 is a per-*park* number and not a
+///   per-key one;
+/// - `waiter 2` printed its `AFTER` line and `waiter 1` did not — the test pins
+///   *which* ordering happened, because the ledger's slot holds the later park;
+/// - no `detached`.
+///
+/// # The compulsory mirror
+///
+/// The second half runs the **same guest** with the completion posted *before* the
+/// parks (`--post-completion`, DL21's shape). It must still exit 1 with a refusal,
+/// and it must still resume the *other* waiter — `waiter 1`, the one the first park
+/// claimed from the sticky buffer. If that half changed, this round moved wake
+/// semantics under cover of fixing a count, and the round is wrong.
+#[test]
+fn a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks() {
+    // -- the fix: posted after both parks -----------------------------------
+    let late = run_guest(
+        "two-waiters-late",
+        &["--post-completion-after-parks", "4,7,2"],
+    );
+
+    // Two parks at the seam, one resumed, one abandoned: the truthful count is 1.
+    assert!(
+        late.stderr.contains("recorded 2 park(s)"),
+        "both waiters must have parked for this test to be about two waiters:\n{}",
+        late.stderr
+    );
+    assert_eq!(
+        late.status,
+        Some(1),
+        "an abandoned task must fail the run, not exit 0:\nstdout: {}\nstderr: {}",
+        late.stdout,
+        late.stderr
+    );
+    assert!(
+        late.stderr.contains("left 1 task(s) parked and never resumed"),
+        "the count must be exactly 1 — 0 is DL22's defect, 2 means the wake did not \
+         mark resolution:\n{}",
+        late.stderr
+    );
+    assert!(
+        late.stderr.contains("executor 1"),
+        "the refusal must name the executor:\n{}",
+        late.stderr
+    );
+    assert!(
+        late.stderr.contains("first: task 0 on class 4 key 7"),
+        "the abandoned task is the earlier park, which the ledger displaced:\n{}",
+        late.stderr
+    );
+
+    assert!(
+        late.stdout.contains("waiter 2: AFTER the await"),
+        "the ledger's holder is resumed and must print:\n{}",
+        late.stdout
+    );
+    assert!(
+        !late.stdout.contains("waiter 1: AFTER the await"),
+        "the displaced waiter was not resumed, so it must not print an AFTER line:\n{}",
+        late.stdout
+    );
+    assert!(
+        !late.stderr.contains("detached"),
+        "a healthy session run must not detach a worker:\n{}",
+        late.stderr
+    );
+
+    // -- the mirror: posted before both parks (DL21's shape, unchanged) -----
+    let sticky = run_guest("two-waiters-late", &["--post-completion", "4,7"]);
+
+    assert_eq!(
+        sticky.status,
+        Some(1),
+        "the sticky ordering must still refuse:\nstdout: {}\nstderr: {}",
+        sticky.stdout,
+        sticky.stderr
+    );
+    assert!(
+        sticky.stderr.contains("left 1 task(s) parked and never resumed"),
+        "the sticky count must stay 1:\n{}",
+        sticky.stderr
+    );
+    // The mirror's *other* waiter resumes: the first park claims the buffered
+    // completion, so the later park is the one left over.
+    assert!(
+        sticky.stdout.contains("waiter 1: AFTER the await"),
+        "the first park claims the sticky completion and must print:\n{}",
+        sticky.stdout
+    );
+    assert!(
+        !sticky.stdout.contains("waiter 2: AFTER the await"),
+        "the later park is the one left in the ledger, so it must not print:\n{}",
+        sticky.stdout
+    );
+    assert!(
+        !sticky.stderr.contains("detached"),
+        "a healthy session run must not detach a worker:\n{}",
+        sticky.stderr
     );
 }
 
