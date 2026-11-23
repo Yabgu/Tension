@@ -305,7 +305,8 @@ change, no std change.
 | `3adcd4b` | `test(fiber-executor): the guard's three pieces, and an honest gap` |
 | *this file* | `docs: DL26 — …` |
 
-CI: **`45222175321`**, **success**, on `3adcd4b`.
+CI: **`45222175321`**, **success**, on `3adcd4b` (the code); and **`45222666379`**,
+**success**, on `7209888` (this report).
 
 ## 7. Bugs I made, and what caught each
 
