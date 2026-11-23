@@ -106,6 +106,36 @@ main: done
 Needs `--post-completion 4,7`; without it the guest parks forever and the run
 refuses (which is what `strand-nested` demonstrates on purpose).
 
+`two-waiters` — **DL21's measurement (I52)**, not a pass/fail probe: two tasks on
+one worker both await the same `(class, key)`, and the log says which of them the
+host can still see.
+
+```sh
+tension-core --executors 2 /tmp/two-waiters.wasm                        # both park
+tension-core --executors 2 --post-completion 4,7 /tmp/two-waiters.wasm  # one resumes
+```
+
+Both runs record **2 parks** at the seam and report **1** in the refusal, and both
+exit **1**:
+
+```
+worker: starting two waiters on class 4 key 7
+waiter 1: BEFORE the await
+waiter 2: BEFORE the await
+worker: both waiters started
+...
+INFO  thread: executor 1 left the park seam having recorded 2 park(s) (first: task 0 on class 4 key 7)
+Error: ... executor 1 left 1 task(s) parked and never resumed (first: task 1 on class 4 key 7) ...
+```
+
+With the completion, `waiter 1: AFTER the await, value=0` is the one line that
+appears — waiter 1 (task 0) is resumed by the sticky buffer at its own park, before
+waiter 2 (task 1) displaces it in the ledger. **Verdict: (b)** for the shape the
+brief asks about — one resumed, the other stranded, the refusal fired. The count is
+the part to keep: the ledger holds **one** entry per key, so a second concurrent
+waiter is unrepresentable and the refusal's `2 → 1` is that loss made visible. See
+`DL21-REPORT.md` §Part 2 for the code path that would make it (c).
+
 ### Pool lifetime — a worker lives for the session (DL20)
 
 A worker does **not** exit when its entry returns. It runs a host-side loop
@@ -159,6 +189,11 @@ construction.
 | `plain-worker` | this reconstruction | 15,947 B | `E49006E31B85F89E41ED56D0364F06DA652976B8B8C966EE9D9587E342F7FE28` |
 | `strand-nested` | DL11 original (lost) | 30,751 B | `ef56d394a653b2c1…33dbd9` |
 | `strand-nested` | this reconstruction | 28,405 B | `72BFC834165E81A1D1E2A6E5DDD361D9674DA529704F9083AD915C7DBC7460AB` |
+
+One more artifact is known by hash: the wake guard's committed fixture,
+`tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm` — 29,315 B,
+`4981f0914e9be592…` at bundle `aa74d6a1`. It is not a probe (DL21 made it a test),
+so it lives with the tests; the recipe is beside it.
 
 The reconstruction hashes are reproducible: same compiler bundle, same flags,
 same bytes. The original hashes are recorded so that nobody mistakes a
