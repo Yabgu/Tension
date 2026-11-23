@@ -3,6 +3,10 @@
 **Round:** DL30, 2026-11-23. **Diagnosis only — no fix applied**, per the brief: the
 `__spawnIndexOf` change and the serve chain are the I60 governance seam.
 
+**Commits and CI:** `83a95ea` — the four probes and this report. CI **`45248675048`**,
+**success** on `83a95ea`; every existing gate ran unmodified (no `.rs`, no workflow change, so
+the job the repo runs is the same one it ran on `693cc4b`).
+
 **Baseline:** `Tension` `integration/dwarf-debug` @ `693cc4b`, clean, nothing unpushed.
 `TensionScript-a2` `main` @ `3f59ec08`, clean. Bundle **`aa74d6a1`**. Binary
 33 653 336 B @ 2026-11-23 18:56:30, newest source `thread.rs` @ 18:56:00, **0 newer**.
