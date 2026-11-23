@@ -329,6 +329,14 @@ function verify() {
   }
 
   // Committed fixtures: present, and no older than a source of the same name.
+  //
+  // Compared by **git commit time**, not file mtime. A checkout rewrites the
+  // mtime of the files it changed and leaves the rest at their clone time, so an
+  // mtime comparison says "main-policy.wasm is older than main-policy.ts" on a
+  // tree where the commit history says the opposite — a false STALE, measured
+  // here after a rebase. Commit time is a property of the history, so it reads
+  // the same on any clone. mtime is the fallback only for an untracked file,
+  // which has no history to ask.
   const fixtures = probe('git', ['-C', REPO, 'ls-files', 'tension-core/tests/programs/fixtures']);
   if (fixtures === null) {
     row('fixtures: committed .wasm', 'enumerable', 'git ls-files failed', 'UNKNOWN');
@@ -340,14 +348,20 @@ function verify() {
       const full = join(REPO, rel);
       if (!existsSync(full)) { missing += 1; continue; }
       const source = findSourceFor(rel);
-      if (source !== null && statSync(full).mtimeMs < statSync(source).mtimeMs) older += 1;
+      if (source === null) continue;
+      const sourceRel = relative(REPO, source).split('\\').join('/');
+      const fixtureTime = lastCommit(rel);
+      const sourceTime = lastCommit(sourceRel);
+      const fixtureMs = fixtureTime === null ? statSync(full).mtimeMs : fixtureTime * 1000;
+      const sourceMs = sourceTime === null ? statSync(source).mtimeMs : sourceTime * 1000;
+      if (fixtureMs < sourceMs) older += 1;
     }
     row(
       'fixtures: committed .wasm',
-      `${wasm.length} present, none older than source`,
+      `${wasm.length} present, none behind its source`,
       missing === 0 && older === 0
         ? `${wasm.length} present, all current`
-        : `${missing} missing, ${older} older than source`,
+        : `${missing} missing, ${older} behind source`,
       missing === 0 && older === 0 ? 'PASS' : 'STALE',
     );
   }
@@ -390,6 +404,15 @@ function verify() {
   );
 
   return rows;
+}
+
+/// When git last committed `rel` (repo-relative, forward slashes), or null when
+/// it has no history to ask.
+function lastCommit(rel) {
+  const out = probe('git', ['-C', REPO, 'log', '-1', '--format=%ct', '--', rel]);
+  if (out === null) return null;
+  const seconds = Number(out.trim());
+  return Number.isFinite(seconds) && out.trim() !== '' ? seconds : null;
 }
 
 /// The `.ts` a fixture was built from, by basename, or null when there is none
