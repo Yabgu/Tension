@@ -257,8 +257,19 @@ flaky order assertion, which is exactly what §7's bug 1 was.
 | `622611e` | `probe(fiber): the executor — park suspends, a wake resumes, silence is named (DL25)` — the four tests |
 | *this file* | `docs: DL25 — …` |
 
-CI runs on `integration/dwarf-debug` on push; the new target is **not** wired into the
-workflow, as declared.
+CI: run **`45215463267`** on `e3966fa`, **success** — `Wake path guard` ran `2 tests`, both
+ok in 1.32 s. The new target is **not** wired into the workflow, as declared, so it reaches
+that job in no way.
+
+Checked the thing a later round would ask: the committed probe also passes under the flags
+that job uses —
+
+```
+cargo test --test fiber-executor --no-default-features   → 4 passed
+```
+
+— so wiring it in later is a one-line change to a working target rather than a porting
+exercise.
 
 ## 7. Bugs I made, and what caught each
 
