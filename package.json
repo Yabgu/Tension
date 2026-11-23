@@ -7,6 +7,7 @@
   "scripts": {
     "preinstall": "node scripts/ensure-compiler.mjs",
     "build": "npm run build:codegen && npm run build:native && npm run build:framework && npm run build:examples",
+    "rebuild": "node scripts/rebuild.mjs",
     "compiler:vendor": "node scripts/vendor-compiler.mjs",
     "build:codegen": "node tools/codegen/generate.mjs --schema schema/ogre.json --out-ts tension-framework/assembly/ogre/generated --out-h tension-ogre/src/generated",
     "build:framework": "node scripts/build-framework.mjs",
