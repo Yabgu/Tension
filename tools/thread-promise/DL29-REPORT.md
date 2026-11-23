@@ -199,6 +199,10 @@ rather than implying I measured them.
 **Files touched:** `tools/thread-promise/programs/stackful-worker-index.ts` (new probe) and
 this report. Nothing else — no `src`, no test, no workflow.
 
+**Commits and CI:** `67caf62` — `probe(thread): an async worker entry is served as its
+factory — two seams (I57)` (probe + this report). CI **`45244975497`**, **success**; the
+existing gates ran unmodified and unchanged.
+
 ## F — bugs I made, and what caught each
 
 1. **My index-3 experiment was invalid the first time and I caught it by checking my own
