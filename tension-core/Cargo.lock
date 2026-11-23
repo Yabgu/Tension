@@ -2087,6 +2087,7 @@ dependencies = [
  "serde_json",
  "tension-shadergen",
  "wasmtime",
+ "wasmtime-internal-fiber",
  "yaml-rust2",
 ]
 

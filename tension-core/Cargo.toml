@@ -133,6 +133,19 @@ naga = { version = "29.0.4", features = ["glsl-in", "spv-out"] }
 # grepping them: a structural check that cannot be fooled by a comment.
 serde_json = "1.0"
 
+# **DL24's fiber spike, and only that.** `tests/fiber.rs` asks whether a host can
+# suspend a guest call on a fiber and resume it later. The *internal* crate is
+# deliberately chosen over the public `wasmtime-fiber-24.x`: this is version-locked
+# to the engine actually in use (`wasmtime = "=50.0.2"`), it is already in
+# `Cargo.lock` as a transitive dependency at exactly this version, and if a host
+# fiber path ever ships it must be this crate rather than a 26-major-versions-old
+# one. No features: that matches how `wasmtime` itself depends on it.
+#
+# The crate's own header says it is internal-only and "not intended for general
+# use". That is the point of a spike — the question is whether the mechanism works,
+# not whether the API is stable — and nothing outside `tests/fiber.rs` may use it.
+wasmtime-internal-fiber = "=50.0.2"
+
 # The surface probe needs a real window and a real Vulkan instance, so it is an
 # ordinary binary rather than a `#[test]` — see the file's header on the
 # `sdl3` main-thread rule.
