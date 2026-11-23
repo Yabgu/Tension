@@ -7,8 +7,8 @@ Both numbers come from 1000 pairs in one process, release build, segmented so no
 blends two things. The instrumentation is default-off and the run is byte-identical with it
 on or off.
 
-`~/work/Tension` `integration/dwarf-debug`: `b359f63` → **`bb88b19`**. CI **`45229865451`**,
-success. `~/work/TensionScript-a2` untouched at **`3f59ec08`**, bundle **`aa74d6a1`**, std
+`~/work/Tension` `integration/dwarf-debug`: `b359f63` → **`edfc199`**. CI **`45229865451`**
+on `bb88b19` and **`45230721279`** on `edfc199`, both **success**. `~/work/TensionScript-a2` untouched at **`3f59ec08`**, bundle **`aa74d6a1`**, std
 identical. **No compiler change, no std change, no ABI change.**
 
 ## 0. Phase 0
