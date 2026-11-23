@@ -71,8 +71,8 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, existsSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { cpSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 
 import { REPO, capture, run } from './lib/toolchain.mjs';
 
@@ -160,19 +160,99 @@ function captureHash(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
 
+/// Where npm is, resolved once per run.
+///
+/// # Why this is not one guess any more
+///
+/// It was `dirname(process.execPath)/node_modules/npm/bin/npm-cli.js` — where nvm
+/// and the Windows installer put npm beside node. **Debian and Ubuntu do not:**
+/// node is `/usr/bin/node` and npm is `/usr/lib/node_modules/npm`, reached through
+/// a `/usr/bin/npm` symlink. There the guess names a path that does not exist and
+/// the chain stopped at its first build step (I74, measured on snowarch).
+///
+/// The order below keeps every layout that worked working, and is tried in this
+/// sequence because each route is more specific than the next:
+///
+/// 1. **`npm_execpath`** — npm sets it for every lifecycle script and it is the
+///    documented way to find npm from inside one. Right on every layout npm
+///    itself supports, including ones this machine has never seen.
+/// 2. **`npm` on `PATH`** — kept because the script is also run as plain
+///    `node scripts/rebuild.mjs` (CI, and the tooling here), where nothing sets
+///    `npm_execpath`. A symlink is followed to its target, which on every unix
+///    layout is `npm-cli.js` — the same file route 1 names.
+/// 3. **The neighbour-of-node guess**, last, so a layout that resolved before
+///    still resolves now and this change cannot trade one machine for another.
+///
+/// Nothing resolves → an error naming all three, thrown **before any build
+/// step**. A run that cannot find npm must not look like a run that found
+/// nothing to do.
+let npmResolution;
+
+function resolveNpm() {
+  if (npmResolution) return npmResolution;
+  const tried = [];
+
+  // 1. npm_execpath — the documented route from inside a lifecycle script.
+  const execpath = process.env.npm_execpath;
+  if (execpath) {
+    if (existsSync(execpath)) {
+      return (npmResolution = { route: 'npm_execpath', file: realpathSync(execpath) });
+    }
+    tried.push(`npm_execpath → ${execpath} (does not exist)`);
+  } else {
+    tried.push('npm_execpath (unset — not run under `npm run`)');
+  }
+
+  // 2. The PATH's npm. `npm.cmd`/`npm.exe` first on Windows, where `npm` may be
+  //    an extensionless shell script the OS will not execute.
+  const names = process.platform === 'win32'
+    ? ['npm.cmd', 'npm.exe', 'npm']
+    : ['npm'];
+  for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+    for (const name of names) {
+      const candidate = join(dir, name);
+      if (!existsSync(candidate)) continue;
+      const real = realpathSync(candidate);
+      // `npm-cli.js` (or a link to it) runs under this same node, exactly as
+      // route 1 would. Anything else is a real executable — a `.cmd` shim on
+      // Windows, an exotic wrapper elsewhere — and is spawned directly.
+      if (real.endsWith('.js')) {
+        return (npmResolution = { route: `PATH → ${candidate}`, file: real });
+      }
+      return (npmResolution = { route: `PATH → ${candidate}`, file: real, direct: true });
+    }
+  }
+  tried.push('PATH (no `npm` on it)');
+
+  // 3. The neighbour-of-node guess, unchanged, so nothing that worked stops.
+  const neighbour = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
+  if (existsSync(neighbour)) {
+    return (npmResolution = { route: 'neighbour of node', file: neighbour });
+  }
+  tried.push(`neighbour of node → ${neighbour} (does not exist)`);
+
+  throw new Error(
+    `cannot find npm's CLI — tried:\n  ${tried.join('\n  ')}`,
+  );
+}
+
 /// npm, invoked through Node so a `.cmd` shim is never spawned directly.
 function npm(args, options = {}) {
-  const cli = join(dirname(process.execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  if (!existsSync(cli)) {
-    throw new Error(
-      `cannot find npm's CLI at ${cli} — invoke ${args.join(' ')} by hand`,
-    );
-  }
-  const result = spawnSync(process.execPath, [cli, ...args], {
-    stdio: 'inherit',
-    cwd: options.cwd ?? REPO,
-    env: process.env,
-  });
+  const { file, direct } = resolveNpm();
+  const result = direct
+    // A real executable: on Windows that is a `.cmd`, which node cannot spawn
+    // without a shell; elsewhere it is a script with its own interpreter line.
+    ? spawnSync(file, args, {
+        stdio: 'inherit',
+        cwd: options.cwd ?? REPO,
+        env: process.env,
+        shell: process.platform === 'win32',
+      })
+    : spawnSync(process.execPath, [file, ...args], {
+        stdio: 'inherit',
+        cwd: options.cwd ?? REPO,
+        env: process.env,
+      });
   if (result.error) throw new Error(`npm ${args.join(' ')}: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`npm ${args.join(' ')} failed (exit ${result.status})`);
 }
@@ -217,6 +297,13 @@ function runtimeFeatures() {
 // ── build ───────────────────────────────────────────────────────────────────
 
 function build() {
+  // **Resolved first, and reported.** Which npm this run will use is the fact
+  // that explains a build failure three steps later, and an unfamiliar layout
+  // should be diagnosable from one line instead of another round of guessing
+  // (I74). Thrown here, before any step, not at the first `npm` call.
+  const { route, file } = resolveNpm();
+  say(`npm via ${route} → ${file}`);
+
   // 1. the compiler checkout
   if (!existsSync(COMPILER_DIR)) {
     throw new Error(
