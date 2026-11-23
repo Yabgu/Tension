@@ -56,7 +56,10 @@ on Windows the engine refuses a continuation guest before it loads at all.
 ```sh
 tension-core --executors 2 /tmp/plain-worker.wasm
 tension-core --executors 2 /tmp/strand-nested.wasm
-tension-core --executors 2 --post-completion 4,7 /tmp/wake-on-worker.wasm
+# `wake-on-worker` now builds from the test tree:
+#   node scripts/build-test-programs.mjs && \
+#   tension-core --executors 2 --post-completion 4,7 \
+#     tension-core/tests/programs/build/wake-on-worker.wasm
 ```
 
 **`--executors 2` goes before the module path.** Everything after the module path
@@ -78,6 +81,12 @@ counter=10
 
 `counter=10` is the number that matters. `workIndex` is `0` on a plain build; a
 stackful control reports `2`, which is what distinguishes the two mechanisms.
+
+`wake-on-worker` — **moved in DL21** to `tension-core/tests/programs/thread/`,
+because it is a regression test now and not only a probe: `tests/threads.rs` runs
+it twice (with and without `--post-completion`) and CI runs that test by name. The
+log below is still what it prints; the build flags, the committed fixture and the
+recipe live under `tension-core/tests/programs/fixtures/thread/`.
 
 `wake-on-worker` — exit **0**, the DL20 proof: a completion main posts *before* the
 park is claimed by a worker's park, and the worker's continuation runs:
@@ -111,7 +120,8 @@ a ledger a live worker had not finished contributing to.
 
 Consequence for a guest: joining a worker blocks until that worker is *told* to
 stop, so a program must stop it (`__executorExit`) rather than expect it to die
-with its entry. `wake-on-worker.ts` uses the host's served-wake counter (header
+with its entry. `wake-on-worker.ts` — now at
+`tension-core/tests/programs/thread/` — uses the host's served-wake counter (header
 word 6) to know the wake landed.
 
 `strand-nested` — exit **1**, by design; the guest's stdout is unchanged and the

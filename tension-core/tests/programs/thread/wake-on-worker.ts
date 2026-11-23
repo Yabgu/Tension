@@ -20,9 +20,12 @@
 // the difference: `--post-completion 4,7` completes the pair that guest's await
 // waits on forever.
 //
-// Build: THREAD_FLAGS minus `--enable stack-switching` (see README.md), bundle
-// **aa74d6a1** — the same bundle every other guest here needs (I44). No std or
-// compiler change is required by this program, and none was made for it.
+// Build: `WAKE_FLAGS` in `scripts/build-test-programs.mjs` — THREAD_FLAGS minus
+// `--enable stack-switching` — bundle **aa74d6a1** (I44). No std or compiler
+// change is required by this program, and none was made for it. It lives here
+// (rather than in `tools/thread-promise/programs/`) because DL21 made it a
+// regression test: `tension-core/tests/threads.rs` runs it twice, and the
+// committed artifact is under `tests/programs/fixtures/thread/`.
 //
 // Run:
 //   tension-core --executors 2 --post-completion 4,7 <artifact>
@@ -35,9 +38,14 @@
 //   worker: BEFORE the await
 //   inner: AFTER the await, value=0
 //   worker: AFTER the await, value=0
-//   main: worker finished, stopping
+//   main: wakes served=1
 //   main: join=0
 //   main: done
+//
+// (`main: worker finished, stopping` was in this list until DL21 and was never
+// printed — the guest waits on the served-wake counter, then stops the worker and
+// joins. The line above it is the one it actually emits; corrected rather than
+// carried, because a program's own header is the first thing a reader trusts.)
 import { Task, TaskRecord } from "~lib/task";
 import { __taskBindTable } from "~lib/task-rt";
 

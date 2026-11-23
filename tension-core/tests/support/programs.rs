@@ -130,6 +130,44 @@ pub fn debug_fixtures_dir() -> PathBuf {
     programs_dir().join("fixtures").join("debug")
 }
 
+/// The committed **release** artifacts for the thread suite — a plain build in
+/// the tree, so a job with no compiler can still run the thread guard.
+pub fn thread_fixtures_dir() -> PathBuf {
+    programs_dir().join("fixtures").join("thread")
+}
+
+/// One thread program's artifact: **built when this checkout has a compiler, the
+/// committed fixture when it does not.**
+///
+/// # Why this order, and not `guest_debug`'s
+///
+/// `guest_debug` prefers its fixture unconditionally, because there the fixture
+/// *is* the artifact under test (a DWARF line table, which only a specific
+/// compiler produces). Here the artifact under test is a **behaviour** and the
+/// program is its source, so a checkout that can build should measure the source
+/// it has — otherwise an edit to the guest would leave every local run green
+/// against a stale fixture. The fixture is what a job without a compiler gets,
+/// and `fixtures/thread/README.md` carries the recipe that regenerates it.
+///
+/// The residual risk is stated rather than hidden: a fixture left stale relative
+/// to its `.ts` is not detected here. The remedy is the recipe, and the release
+/// run of this test on a machine with a compiler is what proves the source.
+pub fn guest_thread_fixture(name: &str) -> PathBuf {
+    if compiler_installed() {
+        return guest(name);
+    }
+    let fixture = thread_fixtures_dir().join(format!("{name}.wasm"));
+    if !fixture.is_file() {
+        support_ci::skip_or_fail(format_args!(
+            "test programs: {} is not committed and the vendored compiler is not \
+             installed at node_modules/@yabgu_gm/tensionscript; run `npm install`, \
+             then `node scripts/build-test-programs.mjs`",
+            fixture.display()
+        ));
+    }
+    fixture
+}
+
 /// Whether the vendored compiler is installed in this checkout.
 ///
 /// The path is the one the root `package.json` devDependency installs to, which

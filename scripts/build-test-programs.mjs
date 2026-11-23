@@ -113,6 +113,27 @@ const THREAD_FLAGS = [
 ];
 
 /**
+ * The wake proof's flags: `THREAD_FLAGS` **minus `--enable stack-switching`**.
+ *
+ * The difference is the point of the program. `wake-on-worker` parks on a real
+ * `await` under the **Promise** backend, so its shell is the one that runs
+ * without stack switching — which is what lets the guard run on any engine, and
+ * in a CI job that has no reason to care which backend is present. Built with
+ * `THREAD_FLAGS` it would measure the stackful shell instead and the test would
+ * be asserting a different mechanism under the same name.
+ */
+const WAKE_FLAGS = [
+  "--runtime", "incremental",
+  "--target", "release",
+  "--sharedMemory",
+  "--importMemory",
+  "--initialMemory", "2",
+  "--maximumMemory", "256",
+  "--enable", "threads",
+  "--optimizeLevel", "0",
+];
+
+/**
  * The stackful single-store program. `--exportStart __start` makes the boot body
  * an export the host calls (the Tension convention), rather than a start
  * section that would run before the host has verified anything.
@@ -175,6 +196,10 @@ const PROGRAMS = {
   "spawn-join": THREAD_FLAGS,
   "spawn-refusals": THREAD_FLAGS,
   "two-workers": THREAD_FLAGS,
+  // The wake path's guard (`tests/threads.rs`): a park on a worker that a
+  // completion posted *before* it resumes. Named here because it is the one
+  // thread program that must **not** get the folder default — see `WAKE_FLAGS`.
+  "wake-on-worker": WAKE_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,

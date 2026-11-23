@@ -22,6 +22,11 @@ All five facts held; no rebuild was needed.
 
 ## 1. The proof (Phase C)
 
+> **Path note (DL21).** This guest moved to
+> `tension-core/tests/programs/thread/wake-on-worker.ts` when it became a
+> regression test. Its content and the run below are unchanged; the path in this
+> report is the one it had when the round landed.
+
 The committed guest `tools/thread-promise/programs/wake-on-worker.ts`, run with
 `--executors 2 --post-completion 4,7`. Full stdout **and** the `DEBUG` thread log,
 because the ordering claim is in the log:

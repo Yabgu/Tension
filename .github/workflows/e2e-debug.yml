@@ -205,3 +205,28 @@ jobs:
               a_source_breakpoint_binds_in_a_promise_guest \
               a_source_breakpoint_binds_in_a_stack_switching_guest \
               a_guest_without_dwarf_cannot_be_stopped_at_a_source_line
+
+      # **The wake path — the one behaviour `--test threads` is here for.**
+      #
+      # Nothing ran `--test threads` in CI before this step, so the thread ABI's
+      # five assertions and the wake guard were local-only. This runs the guard
+      # **by name**, and the filter is the reason the step spells it: the other
+      # five tests build their guests with the vendored compiler, which this job
+      # cannot install (`I19` — `.packs/` is gitignored and rebuilt per machine,
+      # which is the `ENOENT` recorded above). Running `--test threads` whole
+      # would go red on a missing compiler, not on a missing wake.
+      #
+      # `wake-on-worker` needs no compiler here because its artifact is committed
+      # at `tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm`.
+      # `tests/support/programs.rs` builds from source when a checkout has a
+      # compiler and uses that fixture when it does not, so this job takes the
+      # fixture path and a developer's run takes the source path. Both run the
+      # same test; the recipe that regenerates the bytes is in the README beside
+      # them.
+      #
+      # No `TENSION_TEST_ALLOW_SKIP` here either: a deleted fixture must fail the
+      # job, not skip it.
+      - name: Wake path guard
+        run: |
+          cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
+            --test threads -- a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake

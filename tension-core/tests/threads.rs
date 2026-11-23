@@ -195,6 +195,164 @@ fn the_contracts_refusals_are_values() {
     assert_eq!(want(&values, "join"), "0");
 }
 
+// ---------------------------------------------------------------------------
+// DL21: the wake path, guarded.
+// ---------------------------------------------------------------------------
+
+/// One run of the wake guest, with the whole output kept.
+///
+/// `run` above parses `key=value` lines and asserts nothing else; this test needs
+/// the **log** (the sticky buffer's line, the park's claim, the refusal's words)
+/// and the exit code, so it takes the raw streams. It also cannot reuse `run`'s
+/// skip branch: that one skips every thread guest on a target without stack
+/// switching, and this guest is built **without** stack switching on purpose —
+/// the Promise shell is what resumes it. Skipping it there would make the guard
+/// skip on exactly the engine it was written for.
+struct Run {
+    status: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+fn run_with(extra: &[&str]) -> Run {
+    let guest = support_programs::guest_thread_fixture("wake-on-worker");
+    let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg("--executors")
+        .arg("2")
+        .args(extra)
+        .arg(&guest)
+        // The park seam and the sticky claim log at Debug; the buffered line, the
+        // served count and the refusal log at Info. Debug is what makes the
+        // *ordering* below observable instead of just the outcome.
+        .env("TENSION_LOG_LEVEL", "debug")
+        .output()
+        .expect("the interpreter runs");
+    Run {
+        status: output.status.code(),
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+/// Where `needle` sits in `haystack`, panicking with the whole text when absent.
+fn at(haystack: &str, needle: &str) -> usize {
+    haystack.find(needle).unwrap_or_else(|| {
+        panic!("expected `{needle}` in the log; the log was:\n{haystack}")
+    })
+}
+
+/// **The guard for the round's most important behaviour**: a task parked on a
+/// worker is resumed by a completion that was posted *before* it parked.
+///
+/// # What makes this a test and not a demonstration
+///
+/// Four things are asserted, and none of them is the exit code on its own — DL20B
+/// shipped a run that exited **0** with a task stranded, so an exit-code-only
+/// guard would have passed through its own worst bug:
+///
+/// 1. the completion was **buffered before there was a park** (`no park yet:
+///    sticky`) and the park then **claimed** it (`had already arrived`), asserted
+///    in that order in the log;
+/// 2. both `AFTER` lines are printed, so the continuation ran, in the worker;
+/// 3. `main: wakes served=1` and exit **0**;
+/// 4. no refusal and no `detached` anywhere — the two ways a "successful" run can
+///    still be wrong.
+///
+/// # The negative control, in the same test
+///
+/// The second half runs the **same guest without `--post-completion`** and asserts
+/// the opposite: the `AFTER` lines are absent and the run exits non-zero with a
+/// refusal naming the executor. Without it, part 1 would prove only that a program
+/// can print two lines, and a wake path that resumed *everything* unconditionally
+/// would pass this file. The pair is one test so that neither half can be dropped
+/// without the other going red.
+#[test]
+fn a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake() {
+    // -- the proof ---------------------------------------------------------
+    let resumed = run_with(&["--post-completion", "4,7"]);
+
+    let buffered = at(&resumed.stderr, "buffered (no park yet: sticky)");
+    let claimed = at(&resumed.stderr, "claimed a completion that had already arrived");
+    assert!(
+        buffered < claimed,
+        "the completion must be buffered *before* the park claims it — that is the \
+         sticky half, and the order in the log is the only evidence of it:\n{}",
+        resumed.stderr
+    );
+
+    for line in [
+        "inner: AFTER the await, value=0",
+        "worker: AFTER the await, value=0",
+    ] {
+        assert!(
+            resumed.stdout.contains(line),
+            "`{line}` is missing — the continuation did not run:\nstdout: {}\nstderr: {}",
+            resumed.stdout,
+            resumed.stderr
+        );
+    }
+
+    assert!(
+        resumed.stdout.contains("main: wakes served=1"),
+        "the host must report exactly one served wake, got:\n{}",
+        resumed.stdout
+    );
+    assert!(
+        resumed.stdout.contains("main: join=0"),
+        "the worker did not join cleanly:\n{}",
+        resumed.stdout
+    );
+    assert_eq!(
+        resumed.status,
+        Some(0),
+        "a resumed task must leave nothing stranded:\nstdout: {}\nstderr: {}",
+        resumed.stdout,
+        resumed.stderr
+    );
+
+    assert!(
+        !resumed.stderr.contains("Error:")
+            && !resumed.stderr.contains("never resumed"),
+        "the strand refusal fired on a run that resumed its task:\n{}",
+        resumed.stderr
+    );
+    // `join_finished` detaches after a grace period with a warning. A session
+    // pool that stops and joins in order must never reach it (DL20B's B7).
+    assert!(
+        !resumed.stderr.contains("detached"),
+        "a healthy session run must not detach a worker:\n{}",
+        resumed.stderr
+    );
+
+    // -- the negative control ----------------------------------------------
+    let stranded = run_with(&[]);
+
+    for line in ["inner: AFTER the await", "worker: AFTER the await"] {
+        assert!(
+            !stranded.stdout.contains(line),
+            "without `--post-completion` nothing completes the pair, so `{line}` \
+             must not be printed:\nstdout: {}",
+            stranded.stdout
+        );
+    }
+    assert!(
+        stranded.status.is_some_and(|code| code != 0),
+        "a run with a stranded task must fail, not exit 0:\nstdout: {}\nstderr: {}",
+        stranded.stdout,
+        stranded.stderr
+    );
+    assert!(
+        stranded.stderr.contains("never resumed"),
+        "the refusal must name what happened:\n{}",
+        stranded.stderr
+    );
+    assert!(
+        stranded.stderr.contains("executor 1"),
+        "the refusal must name the executor it happened on:\n{}",
+        stranded.stderr
+    );
+}
+
 /// A guest that imports a **shared** memory and prints: the case that found
 /// `Extern::into_memory()` answering `None` for a `SharedMemory`.
 ///
