@@ -50,8 +50,16 @@ cp tension-core/tests/programs/build/wake-on-worker.wasm \
 The artifact that was committed:
 
 ```
-29 315 bytes   sha256 4981f0914e9be592…
+29 315 bytes   sha256 23ed47bfe51733ac…
 ```
+
+**Regenerate it after any edit to the guest, comments included.** Measured while
+landing DL21: the source's header comment changed and **four bytes of the module
+moved** (`i32.const` immediates, two pairs, each off by 8) with the code identical
+— comment-free diff verified with `diff` on the stripped files. Same path, same
+flags, same compiler bundle, deterministic across runs. Whatever the mechanism, the
+practical rule is the one above, and it is why the recipe and the hash are written
+down rather than trusted to memory.
 
 Then prove it, both directions:
 

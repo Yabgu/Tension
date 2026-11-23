@@ -192,7 +192,7 @@ construction.
 
 One more artifact is known by hash: the wake guard's committed fixture,
 `tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm` — 29,315 B,
-`4981f0914e9be592…` at bundle `aa74d6a1`. It is not a probe (DL21 made it a test),
+`23ed47bfe51733ac…` at bundle `aa74d6a1`. It is not a probe (DL21 made it a test),
 so it lives with the tests; the recipe is beside it.
 
 The reconstruction hashes are reproducible: same compiler bundle, same flags,
