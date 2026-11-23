@@ -5,8 +5,8 @@ the run, names the task, the pair and the executor, and carries its own sentence
 negative control shows that without the guard the same run is **completely silent** (exit 0,
 nothing logged at all).
 
-`~/work/Tension` `integration/dwarf-debug`: `96a30ac` → **`cd688b1`**. CI **`45234048774`**,
-success, `Wake path guard`: `3 passed; 5 filtered out`. `~/work/TensionScript-a2` untouched
+`~/work/Tension` `integration/dwarf-debug`: `96a30ac` → **`cd688b1`**. CI **`45234048774`** on `cd688b1` and
+**`45234537539`** on `8e9211e`, both success; `Wake path guard`: `3 passed; 5 filtered out`. `~/work/TensionScript-a2` untouched
 at **`3f59ec08`**, bundle **`aa74d6a1`**, std identical.
 
 ## 0. Phase 0
