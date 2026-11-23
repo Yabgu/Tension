@@ -546,17 +546,97 @@ fn strand_refusal(
             )
         })
         .collect();
-    // **The message says where the limit is, not what the guest did wrong.** A
-    // program that awaits the right thing still strands here, because this host
-    // has no way to wake a worker's task — that is a capability gap, and a reader
-    // who is told otherwise will go looking in their own code.
+    // **The message says where the limit is, not what the guest did wrong.**
+    //
+    // DL20 changed what the limit *is*, so the sentence changed with it. Until
+    // this round the reason a worker's park could not resume was that a worker had
+    // no host loop at all; it has one now, and a run can still strand for two
+    // other reasons — nothing ever completed the `(class, key)` the task awaited,
+    // or the guest does not export `__taskWake` so its executor serves no wake
+    // path. Both are stated, because a reader told the wrong reason goes looking
+    // in the wrong place.
     Some(wasmtime::Error::msg(format!(
-        "a worker's task cannot be resumed on this host, so this run would otherwise have \
-         exited successfully with it stranded: {}. A worker's store has no host loop, and \
-         `wake` is confined to a store's owner thread (docs/scheduler-contract.md §2.2), so a \
-         parked task on a worker has no path to a completion here.",
+        "a task was left parked when the session stopped: {}. A session pool now resumes \
+         parked tasks (docs/threads.md), so this means either nothing completed that \
+         `(class, key)` before shutdown, or the guest exports no `__taskWake` for its \
+         executor to call (the scheduler contract §2.2 confines the wake to the store's \
+         owner thread, so only the owning store can resume its own task).",
         named.join("; ")
     )))
+}
+
+/// Write the session's stop word and each executor's state word at teardown.
+///
+/// **The header word is `H_STOP = 5`** — `std/assembly/thread.ts` documents
+/// `HEADER_WORDS = 16` with `0..=4` in use, so word 5 is free and needs no layout
+/// change. Written by the host rather than added as a guest constant, which is
+/// what keeps DL20 a host-only round: a guest-side reader would be a std edit.
+///
+/// **What a host write cannot do, said plainly:** it cannot *notify* a guest
+/// waiting in `atomicWait` — `atomic.notify` is a wasm instruction, and the host
+/// has no way to execute one. So the state-word write below releases a blocked
+/// served body only the next time it wakes, which for an endless `-1` timeout is
+/// never. That is not a regression this round introduces (nothing changes the
+/// served path), and it does not affect the session loop this round adds, which
+/// waits on a Rust `Condvar` and is released by [`ExecutorPool::stop_all`]. It is
+/// recorded because it is the exact reason a future guest-side loop would want a
+/// notify of its own.
+///
+/// Failure is **not** fatal: a guest with no control block has no worker to stop,
+/// and a shutdown that refused to proceed because a word could not be written
+/// would turn "we cannot signal" into "we cannot exit".
+fn signal_session_stop(store: &mut wasmtime::Store<HostState>, instance: &wasmtime::Instance) {
+    /// Word 5 of the carved header: 0 while the session runs, 1 once it stops.
+    const H_STOP: usize = 5;
+    /// `HEADER_BYTES` in `std/assembly/thread.ts`: `HEADER_WORDS(16) << 2`.
+    const HEADER_BYTES: usize = 64;
+
+    let Some(base) = instance
+        .get_global(&mut *store, "__controlBase")
+        .and_then(|global| global.get(&mut *store).i32())
+    else {
+        return;
+    };
+    let Some(stride) = instance
+        .get_global(&mut *store, "__controlStride")
+        .and_then(|global| global.get(&mut *store).i32())
+    else {
+        return;
+    };
+    let Some(total) = instance
+        .get_global(&mut *store, "__executorTotal")
+        .and_then(|global| global.get(&mut *store).i32())
+    else {
+        return;
+    };
+    if base <= 0 || stride <= 0 || total <= 0 {
+        return;
+    }
+    let Some(memory) = instance.get_memory(&mut *store, "memory") else {
+        return;
+    };
+    let header = base as usize + H_STOP * 4;
+    if header + 4 > memory.data_size(&*store) {
+        return;
+    }
+    {
+        let data = memory.data_mut(&mut *store);
+        data[header..header + 4].copy_from_slice(&1i32.to_le_bytes());
+        // Every executor's record: `base + HEADER_BYTES + id * stride`, with
+        // `sig = record + stride - 24` and the state word at `sig + 12`.
+        for id in 0..total as usize {
+            let sig = (base as usize) + HEADER_BYTES + (id + 1) * (stride as usize) - 24;
+            if sig + 24 > data.len() {
+                continue;
+            }
+            data[sig + 12..sig + 16].copy_from_slice(&2i32.to_le_bytes());
+        }
+    }
+    logging::log(
+        Level::Debug,
+        "thread",
+        &format!("session stop word written (executors {total}, stride {stride})"),
+    );
 }
 
 /// A shared-memory guest's three-call boot, in the order the contract fixes.
@@ -683,6 +763,12 @@ options:
   --post-test-events     A2 test-only: post three JOB_DONE events before
                          `_start_game`, so an epoch fixture has something to
                          deliver
+  --post-completion <CLASS>[,<KEY>]
+                         DL20 test-only: post ONE completion for a chosen pair
+                         before the entry runs, straight into the session's park
+                         ledger, so a worker's park can claim it (§4.3's sticky
+                         half). Needs --executors and a --sharedMemory guest.
+                         KEY defaults to 0
   --executors <N>        worker threads for a `--sharedMemory` guest (default 0).
                          Main is always one executor, so the guest's
                          `__executorCount()` answers N + 1; the worker threads
@@ -784,6 +870,9 @@ enum HostOptionKind {
     SessionOpen,
     SessionCallbacks,
     PostTestEvents,
+    /// One completion for a chosen `(class, key)`, posted before the entry runs —
+    /// the producer the wake path's deterministic proof needs.
+    PostCompletion,
     Executors,
     Help,
     Version,
@@ -882,6 +971,12 @@ const HOST_OPTIONS: &[HostOption] = &[
         missing_value: "",
     },
     HostOption {
+        spellings: &["--post-completion"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::PostCompletion,
+        missing_value: "needs <CLASS>[,<KEY>]",
+    },
+    HostOption {
         spellings: &["--executors"],
         value: ValueForm::Both,
         kind: HostOptionKind::Executors,
@@ -973,6 +1068,8 @@ struct Cli {
     session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
+    /// `--post-completion <class>[,<key>]`: one completion for a chosen pair.
+    post_completion: Option<(u32, u32)>,
     /// `--executors <N>`: worker threads for a shared-memory guest. Main is
     /// always there, so `__executorCount()` answers `N + 1`.
     executors: usize,
@@ -997,6 +1094,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
+    let mut post_completion: Option<(u32, u32)> = None;
     let mut executors = 0usize;
     let mut wasm_path = None;
     // What the host understood, canonicalised to `--flag value` in the order it
@@ -1057,6 +1155,9 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
             HostOptionKind::SessionCallbacks => {
                 session_callbacks = Some(parse_callback_slots(required(option, &value)?)?)
             }
+            HostOptionKind::PostCompletion => {
+                post_completion = Some(parse_completion(required(option, &value)?)?)
+            }
             HostOptionKind::Executors => executors = parse_executors(required(option, &value)?)?,
             HostOptionKind::Help => {
                 println!("{USAGE}");
@@ -1097,6 +1198,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_open,
         session_callbacks,
         post_test_events,
+        post_completion,
         executors,
         wasm_path,
         args,
@@ -1188,6 +1290,30 @@ fn misdirected_host_option(
         return Some(message);
     }
     None
+}
+
+/// Parse `--post-completion`'s value: `<CLASS>[,<KEY>]`, key defaulting to 0.
+///
+/// The pair is the *producer's*: a class id from the session's catalogue
+/// (`session::arena::CLASS_*`) and a submit-time key the producer minted. Both are
+/// plain integers here — this flag does not validate the class against the
+/// catalogue, because a test producer may legitimately name a class the host has
+/// never declared, and `posting.post` refuses an unknown class with a better
+/// message than a parse error would.
+fn parse_completion(value: &str) -> Result<(u32, u32), String> {
+    let (class, key) = match value.split_once(',') {
+        Some((class, key)) => (class, key),
+        None => (value, "0"),
+    };
+    let class: u32 = class
+        .trim()
+        .parse()
+        .map_err(|_| format!("`--post-completion {value}`: `{class}` is not a class id"))?;
+    let key: u32 = key
+        .trim()
+        .parse()
+        .map_err(|_| format!("`--post-completion {value}`: `{key}` is not a key"))?;
+    Ok((class, key))
 }
 
 /// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
@@ -1627,6 +1753,7 @@ fn main() -> anyhow::Result<()> {
         session_open: cli.session_open,
         session_callbacks: cli.session_callbacks,
         post_test_events: cli.post_test_events,
+        post_completion: cli.post_completion,
         executors: cli.executors,
     };
 
@@ -2023,6 +2150,47 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // `--post-completion <class>[,<key>]`: **one** completion, for a pair the
+    // guest chooses, posted *before* the entry runs.
+    //
+    // Before, not after, and that is the point: the wake path's deterministic
+    // proof needs the completion to be waiting when the worker's task parks
+    // (§4.3's sticky half). Posted through the same face `--post-test-events`
+    // uses, so it reaches `scheduler::deliver` and — through the pool's fallback
+    // — a worker's park.
+    if let Some((class, key)) = config.post_completion {
+        // **Straight to the pool's ledger, not through the posting ring.** The
+        // ring's completions are collected by an epoch publish, and a plain guest
+        // like this one never pumps an epoch — so a ring post would sit unread and
+        // the test would pass or fail by timing. The pool is the structure this
+        // round adds a producer for, and writing to it directly is what makes
+        // "posted before the park" a fact rather than a race.
+        //
+        // A session guest that *does* pump epochs reaches the same pool through
+        // `session/epoch.rs`'s delivery loop (B2), so this flag only chooses the
+        // shorter door for a test producer.
+        match store.data().executors.clone() {
+            Some(pool) => {
+                let owner = pool.deliver(class, key, 0);
+                logging::log(
+                    Level::Info,
+                    "core",
+                    &format!(
+                        "--post-completion: class {class} key {key} -> {}",
+                        match owner {
+                            Some(owner) => format!("matched a park on executor {owner}"),
+                            None => "buffered (no park yet: sticky)".to_string(),
+                        }
+                    ),
+                );
+            }
+            None => anyhow::bail!(
+                "--post-completion needs --executors and a --sharedMemory guest: there is no \
+                 pool to post into"
+            ),
+        }
+    }
+
     // Entrypoint: prefer the Tension-specific `_start_game`, else WASI `_start`.
     // The result is held, not propagated with `?`: a guest trap must still reach
     // the adapter teardown below (C3). With `?` here, a trap returned before it
@@ -2057,8 +2225,34 @@ fn main() -> anyhow::Result<()> {
     // is a trap with no message. `join_finished` never blocks: the guest is
     // expected to have joined its workers itself (`__threadJoin`), so a live one
     // here means the guest returned without doing so, which it logs.
+    // **Stop, then join, then check (DL20's B7).**
+    //
+    // The order is the round's finding, not a preference. `join_finished` detaches
+    // with a warning after a 2-second grace, which was right when a worker died
+    // with its entry and is wrong for a session pool: a healthy worker is *still
+    // running* when the guest returns, so joining first would warn and detach on
+    // every healthy run. And the strand check has to run last, because a worker
+    // records its strand on the way out — checking before stopping would read a
+    // ledger that a live worker has not finished contributing to.
     if let Some(pool) = store.data().executors.clone() {
+        let stopping = std::time::Instant::now();
+        pool.stop_all();
+        // The guest-visible half: `H_STOP` in the carved header, plus a notify on
+        // every executor's signal word — the same two addresses `__executorExit`
+        // notifies, so anything blocked in the guest's own `atomicWait` also
+        // leaves. Written here rather than adding a std constant (`HEADER_WORDS`
+        // is 16 and only 0-4 are used), which is what keeps this a host-only
+        // change.
+        signal_session_stop(&mut store, &instance);
         pool.join_finished();
+        logging::log(
+            Level::Debug,
+            "thread",
+            &format!(
+                "session pool stopped and joined in {} ms",
+                stopping.elapsed().as_millis()
+            ),
+        );
     }
 
     // **A stranded task is a refusal, and it joins the trap path.**
@@ -3148,6 +3342,10 @@ mod host_option_table_tests {
                     HostOptionKind::Executors => "2",
                     HostOptionKind::SessionCallbacks => "0",
                     HostOptionKind::LogFormat => "text",
+                    // `--post-completion` takes `CLASS[,KEY]`, and a class id is a
+                    // number: `value` would be a parse error, not a table/parser
+                    // disagreement, which is what this test is for.
+                    HostOptionKind::PostCompletion => "4,7",
                     _ => "value",
                 };
                 let mut argv = vec![spelling.to_string()];

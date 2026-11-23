@@ -167,6 +167,9 @@ pub fn link_dev(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
                 session_open: false,
                 session_callbacks: None,
                 post_test_events: false,
+                // Nor a posted completion: the outer run's test producer is not
+                // the nested run's business, for the same reason as `args`.
+                post_completion: None,
                 // A nested guest gets no pool: its memory is the session's, one
                 // store, one executor. A nested guest that wants threads is a
                 // sandbox-lifetime question (the parent's memory is not shared

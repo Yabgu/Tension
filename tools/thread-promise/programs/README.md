@@ -17,32 +17,18 @@ hash table below. Do not compare a reconstruction's hash with an original's.
 
 ## Which compiler these programs need
 
-**`fix/plain-worker` (`dddd8849`), bundle `767d3d7a` — not `main`.** They use
-surface that exists only on that branch:
+**Bundle `aa74d6a1`, on `main` (`3f59ec08`).** Everything these programs use is
+released surface now; earlier revisions of this file named
+`fix/plain-worker`/`767d3d7a`, which was true in rounds 9–16 and is not any more.
 
-- `__workerArg()` and `__workerMainPlain(id)` in `std/assembly/thread.ts` (added
-  by `695f51d3`, the plain worker);
+What they need from it:
+
+- `__workerArg()` and `__workerMainPlain(id)` in `std/assembly/thread.ts`;
 - a `__spawnIndexOf` that answers a real index for a build with no async shell,
-  and the thread-surface exports emitted for any shell rather than only the
-  async one (`dad86d13`).
+  and the thread-surface exports emitted for a program that reaches them rather
+  than for every shared build (`6a7b2a1`/DL16).
 
-Built with `main`'s bundle (`45b3535e`), both programs fail to compile:
-
-```
-ERROR TS2305: Module '~lib/thread' has no exported member '__workerArg'.
-ERROR AS100: Not implemented: ~lib/task-stack/__spawnIndexOf requires the
-             suspending async shell, which this program does not emit
-```
-
-That is the whole point of the branch: on `main` a thread program needs the
-continuations shell, and on Windows the engine refuses continuations. So a
-round re-running these measurements must install the `fix/plain-worker` bundle
-first, and must say which bundle it used.
-
-## Build
-
-Both programs build with the thread flags **minus `--enable stack-switching`** —
-that is the whole point of the plain (Promise) worker. From the repository root:
+Build them with the installed bundle directly:
 
 ```sh
 node scripts/tensionscript.mjs tools/thread-promise/programs/plain-worker.ts \
@@ -70,6 +56,7 @@ on Windows the engine refuses a continuation guest before it loads at all.
 ```sh
 tension-core --executors 2 /tmp/plain-worker.wasm
 tension-core --executors 2 /tmp/strand-nested.wasm
+tension-core --executors 2 --post-completion 4,7 /tmp/wake-on-worker.wasm
 ```
 
 **`--executors 2` goes before the module path.** Everything after the module path
@@ -91,6 +78,41 @@ counter=10
 
 `counter=10` is the number that matters. `workIndex` is `0` on a plain build; a
 stackful control reports `2`, which is what distinguishes the two mechanisms.
+
+`wake-on-worker` — exit **0**, the DL20 proof: a completion main posts *before* the
+park is claimed by a worker's park, and the worker's continuation runs:
+
+```
+main: spawning
+main: index=0
+main: spawn=0
+worker: BEFORE the await
+inner: AFTER the await, value=0
+worker: AFTER the await, value=0
+main: wakes served=1
+main: join=0
+main: done
+```
+
+Needs `--post-completion 4,7`; without it the guest parks forever and the run
+refuses (which is what `strand-nested` demonstrates on purpose).
+
+### Pool lifetime — a worker lives for the session (DL20)
+
+A worker does **not** exit when its entry returns. It runs a host-side loop
+(`tension-core/src/thread.rs`, `service_wakes`) until the session stops it, and
+each wake it serves is a call to **its own** `__taskWake` — the scheduler contract
+confines that to the store's owner thread (§2.2), so no other thread may do it.
+
+Teardown is **stop → join → check**: the pool is told to stop, workers leave, they
+are joined, and only then is the strand refusal decided. Joining first would
+detach a healthy worker with a warning on every run, and checking first would read
+a ledger a live worker had not finished contributing to.
+
+Consequence for a guest: joining a worker blocks until that worker is *told* to
+stop, so a program must stop it (`__executorExit`) rather than expect it to die
+with its entry. `wake-on-worker.ts` uses the host's served-wake counter (header
+word 6) to know the wake landed.
 
 `strand-nested` — exit **1**, by design; the guest's stdout is unchanged and the
 process refuses in stderr:

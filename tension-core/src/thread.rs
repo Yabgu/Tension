@@ -39,7 +39,8 @@
 //! `main` to do it.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
 use wasmtime::{Caller, Engine, ExternType, Linker, Module, SharedMemory, Store};
@@ -97,6 +98,10 @@ pub const ERR_SPAWN_FAILED: i32 = -6;
 pub struct WorkerState {
     pool: Arc<ExecutorPool>,
     parks: Mutex<Vec<WorkerPark>>,
+    /// **Which executor this store is.** The ledger's `owner` is routing, and this
+    /// is where a worker learns its own, so a park it records names the store that
+    /// must later call `__taskWake`. It is the id the host gave `__workerMain`.
+    id: i32,
 }
 
 /// The empty marker in a direct table. `u64::MAX` rather than 0, because task id
@@ -222,6 +227,133 @@ impl ParkTable {
     }
 }
 
+/// A completion that arrived **before** its park (§4.3).
+///
+/// Bounded by the class's declared key space, and keyed by `(class, key)` — the
+/// await's identity, which is repeatable, as opposed to a task's handle, which is
+/// not. One outstanding completion per pair is the contract's default coalescing
+/// (`docs/scheduler-contract.md` §1.6); a stream class that declares otherwise
+/// would need a queue per pair, which nothing declares today.
+#[derive(Clone, Copy, Debug)]
+pub struct EarlyCompletion {
+    pub class: u32,
+    pub key: u32,
+    pub payload: i32,
+}
+
+/// A matched task, waiting for its owner to consume it (§3.4's hand-off).
+///
+/// **The owner is named because the queue is shared.** All executors' inboxes are
+/// one `Vec` under one lock, and a worker takes only its own entries. That is what
+/// keeps `wake` on the store's owner thread (§2.2): this struct is *data* a
+/// non-owner may write; calling it is the owner's job alone.
+#[derive(Clone, Copy, Debug)]
+pub struct Delivery {
+    pub owner: u32,
+    pub task_id: u64,
+    pub class: u32,
+    pub payload: i32,
+}
+
+/// One parked task, as the **session ledger** holds it: three words.
+///
+/// **Why three and not one.** The handle is the right *identity* — a record's
+/// address is an offset into the session's one shared linear memory, the same
+/// number in every store and unique across them (measured: `HEAP_BASE = ARENA ?
+/// initialHeapBase() : __heap_base`, and the collector frees without compacting).
+/// But it is **not** the argument `__taskWake` takes: that is a *store-local*
+/// slot id (`std/assembly/task-rt.ts`), and `TaskRecord` carries no slot field —
+/// `state.slot` lives on `TaskState`. Deriving the id from the pointer would mean
+/// scanning the owning store's `slots` table for `slot.record == handle`, which is
+/// O(capacity) per wake against the contract's §3.3 O(1).
+///
+/// So the entry carries both, plus the route:
+///
+/// - `handle` — where the suspended task lives. The identity; survives a policy
+///   moving the task, because a move is then a field update inside the record.
+/// - `owner` — the executor that **parked**. Routing only: it says which store
+///   must be told to call its own `__taskWake`. It is not the executor the task
+///   will run on — a policy may move a task later, and the ledger does not encode
+///   where it runs.
+/// - `task_id` — the store-local slot id, which is what the owner's `__taskWake`
+///   actually reads.
+///
+/// **Liveness is the owning store's** (`slots[id].record` roots the record), so
+/// this handle must never be the only reference to one. The ledger is an index,
+/// not an owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParkedTask {
+    pub handle: u64,
+    pub owner: u32,
+    pub task_id: u64,
+}
+
+/// One family's parked tasks, as the ledger holds them: a direct array indexed by
+/// the producer's key, each cell a [`ParkedTask`].
+///
+/// **Not [`ParkTable`]** — that type is the scheduler's and carries a bare task
+/// id, which is all main's own tables need. Parameterising it over its value type
+/// for one wider field would have widened main's tables too; two shapes, one for
+/// each holder, is the smaller diff and states the difference rather than hiding
+/// it.
+#[derive(Debug)]
+struct ParkedTable {
+    slots: Vec<Option<ParkedTask>>,
+    parked: u32,
+}
+
+impl ParkedTable {
+    fn new(bound: u32) -> ParkedTable {
+        ParkedTable {
+            slots: vec![None; bound as usize + 1],
+            parked: 0,
+        }
+    }
+
+    /// Register `entry` for `key`, answering the one it displaced.
+    ///
+    /// **Overwrite, not refuse**, for the same reason [`ParkTable::insert`] is:
+    /// the guest's own registration overwrites, so a re-park of a key is how a
+    /// task awaits the same producer id twice. See that method for the full
+    /// argument.
+    fn insert(&mut self, key: u32, entry: ParkedTask) -> Option<ParkedTask> {
+        let Some(slot) = self.slots.get_mut(key as usize) else {
+            return None;
+        };
+        let displaced = *slot;
+        if displaced.is_none() {
+            self.parked += 1;
+        }
+        *slot = Some(entry);
+        displaced
+    }
+
+    fn get(&self, key: u32) -> Option<ParkedTask> {
+        *self.slots.get(key as usize)?
+    }
+
+    fn take(&mut self, key: u32) -> Option<ParkedTask> {
+        let slot = self.slots.get_mut(key as usize)?;
+        let entry = slot.take()?;
+        self.parked -= 1;
+        Some(entry)
+    }
+
+    fn parked(&self) -> u32 {
+        self.parked
+    }
+
+    fn entries(&self) -> Vec<(u32, ParkedTask)> {
+        let mut out = Vec::new();
+        for (key, slot) in self.slots.iter().enumerate() {
+            if let Some(entry) = slot {
+                out.push((key as u32, *entry));
+            }
+        }
+        out
+    }
+}
+
 /// Every family's parked tasks, for one executor set.
 ///
 /// **One ledger type, held by both halves.** `ExecutorPool` owns one and main's
@@ -236,7 +368,7 @@ impl ParkTable {
 /// `scheduler::key_capacity` on the binary side. Handing it in as a function is
 /// what lets this type be the library's without naming a single class id.
 pub struct ParkLedger {
-    tables: HashMap<u32, ParkTable>,
+    tables: HashMap<u32, ParkedTable>,
     /// `class -> family` — `scheduler::family_of` on the binary side.
     family_of: fn(u32) -> u32,
     /// `family -> key bound`, `None` when the family is not awaitable —
@@ -268,7 +400,7 @@ impl ParkLedger {
     /// keeps its own record either way: on a worker the store-local list is what
     /// the strand refusal reads, and a park the ledger declined is still a park
     /// that never resumed.
-    pub fn record(&mut self, class: u32, key: u32, task_id: u64) -> bool {
+    pub fn record(&mut self, class: u32, key: u32, entry: ParkedTask) -> bool {
         let family = (self.family_of)(class);
         let Some(bound) = (self.bound_of)(family) else {
             return false;
@@ -279,12 +411,13 @@ impl ParkLedger {
         let table = self
             .tables
             .entry(family)
-            .or_insert_with(|| ParkTable::new(bound));
-        table.insert(key, task_id).is_ok()
+            .or_insert_with(|| ParkedTable::new(bound));
+        table.insert(key, entry);
+        true
     }
 
     /// The task parked on `(class, key)`, if one is parked and unresolved.
-    pub fn get(&self, class: u32, key: u32) -> Option<u64> {
+    pub fn get(&self, class: u32, key: u32) -> Option<ParkedTask> {
         let family = (self.family_of)(class);
         self.tables.get(&family)?.get(key)
     }
@@ -295,7 +428,7 @@ impl ParkLedger {
         self.tables.get(&family).map_or(0, |table| table.parked())
     }
 
-    /// Every parked entry as `(family, key, task_id)`, ordered by family then by
+    /// Every parked entry as `(family, key, entry)`, ordered by family then by
     /// the table's own key order.
     ///
     /// **Family, not class**: the tables are keyed by family (a park on
@@ -305,7 +438,7 @@ impl ParkLedger {
     /// The observation a caller **on another thread** uses: the pool is shared,
     /// so main can read what a worker parked after that worker's store is gone.
     /// A snapshot rather than a reference because the lock must not travel.
-    pub fn snapshot(&self) -> Vec<(u32, u32, u64)> {
+    pub fn snapshot(&self) -> Vec<(u32, u32, ParkedTask)> {
         let mut families: Vec<u32> = self.tables.keys().copied().collect();
         families.sort_unstable();
         let mut entries = Vec::new();
@@ -313,21 +446,21 @@ impl ParkLedger {
             let Some(table) = self.tables.get(&family) else {
                 continue;
             };
-            for (key, task_id) in table.entries() {
-                entries.push((family, key, task_id));
+            for (key, entry) in table.entries() {
+                entries.push((family, key, entry));
             }
         }
         entries
     }
 
-    /// Removes the park for `(family, key)`, answering its task id.
+    /// Removes the park for `(family, key)`, answering its entry.
     ///
     /// **This is a resolution, not a wake.** A wake would take the id and resume
     /// the task; this only removes the entry, which is the half the host can do
     /// from any thread. DL19's wake path is the caller this waits for — nothing
     /// calls it in this round, which is why `WorkerPark::resolved` is still
     /// written `false` by the only code that builds one.
-    pub fn take(&mut self, class: u32, key: u32) -> Option<u64> {
+    pub fn take(&mut self, class: u32, key: u32) -> Option<ParkedTask> {
         let family = (self.family_of)(class);
         self.tables.get_mut(&family)?.take(key)
     }
@@ -412,6 +545,21 @@ pub struct ExecutorPool {
     /// between the stores it creates — the pool, an `Arc` both sides hold — so
     /// main reads a worker's park through `parks()` after the worker is gone.
     parks: Mutex<ParkLedger>,
+    /// Completions that arrived before their park, per `(class, key)` — §4.3's
+    /// sticky wake, for the whole session.
+    ///
+    /// Main has had this since the epoch work (`scheduler::RecentCompletions`),
+    /// but only *main's* `Scheduler` had it, so a completion posted before a
+    /// **worker's** park had nowhere to wait and was dropped. This is the same
+    /// protection for the pool, which is where a worker's park lives.
+    early: Mutex<Vec<EarlyCompletion>>,
+    /// Matched tasks, per owner, waiting for that owner to come round and call
+    /// its own `__taskWake` (§3.4's hand-off).
+    inboxes: Mutex<Vec<Delivery>>,
+    /// Set by session shutdown; every worker's loop wakes and leaves.
+    stop: AtomicBool,
+    /// Paired with `stop`: a real primitive, not a spin (§3.2/§4.4).
+    wake: Condvar,
 }
 
 impl ExecutorPool {
@@ -438,6 +586,10 @@ impl ExecutorPool {
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
             parks: Mutex::new(ParkLedger::new(family_of, bound_of)),
+            early: Mutex::new(Vec::new()),
+            inboxes: Mutex::new(Vec::new()),
+            stop: AtomicBool::new(false),
+            wake: Condvar::new(),
         }))
     }
 
@@ -453,11 +605,29 @@ impl ExecutorPool {
     /// loading zone with eight workers needs "which one, how many", and the first
     /// park is carried for the message.
     fn record_strand(&self, id: i32, parks: &[WorkerPark]) {
-        let unresolved = parks.iter().filter(|park| !park.resolved).count();
+        // **`resolved` is now set by something real (B6).** The predicate is
+        // unchanged — `!resolved` — and what fills it is the ledger: a park is
+        // resolved exactly when some `ParkLedger::take` removed its entry, which
+        // is the caller the wake path added. A park the ledger declined (a family
+        // that is not awaitable) was never in it and is therefore a strand.
+        let still_parked = self.parked_task_ids();
+        // **Matched on the task id alone, deliberately.** The ledger is keyed by
+        // *family*, and a park on `JOB_FAILED` and one on `JOB_DONE` share a
+        // family, so comparing `class` here would mis-answer for exactly the
+        // classes the family map exists for. A task id is unique within a store,
+        // which is the whole question being asked: is *this* park still waiting?
+        //
+        // **A task is a strand while it is still in the ledger**, which is what
+        // makes `resolved` mean what its comment says — the first cut of this
+        // predicate had the sense inverted and failed a run whose wake had landed
+        // (`join=0`, `wakes served=1`, and a refusal naming the task it had just
+        // resumed).
+        let is_strand = |park: &WorkerPark| still_parked.contains(&park.task_id);
+        let unresolved = parks.iter().filter(|park| is_strand(park)).count();
         if unresolved == 0 {
             return;
         }
-        let first = match parks.iter().find(|park| !park.resolved).copied() {
+        let first = match parks.iter().find(|park| is_strand(park)).copied() {
             Some(park) => park,
             None => return,
         };
@@ -472,6 +642,22 @@ impl ExecutorPool {
         });
     }
 
+    /// The task ids still parked in the ledger.
+    ///
+    /// `resolved` is defined against this set: a park is resolved when its task id
+    /// is no longer here, i.e. some `ParkLedger::take` removed it.
+    fn parked_task_ids(&self) -> Vec<u64> {
+        let parks = self
+            .parks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        parks
+            .snapshot()
+            .into_iter()
+            .map(|(_family, _key, entry)| entry.task_id)
+            .collect()
+    }
+
     /// The strands recorded since the last call, oldest first.
     ///
     /// Taken, not read: the caller turns them into a refusal, and a second
@@ -484,6 +670,167 @@ impl ExecutorPool {
         std::mem::take(&mut *strands)
     }
 
+    /// A completion arrived for `(class, key)`: match it against the session's
+    /// ledger, or buffer it for a park that has not happened yet (§4.3).
+    ///
+    /// Callable from **any** thread — that is the whole reason it exists as data
+    /// rather than as a guest call. Matching is O(1) (a direct array lookup in the
+    /// family's table, §3.3) and the matched id goes into the owner's inbox, where
+    /// only the owner will act on it (§2.2, §3.4).
+    ///
+    /// Answers the owner it matched, or `None` when the completion was buffered.
+    pub fn deliver(&self, class: u32, key: u32, payload: i32) -> Option<u32> {
+        let matched = {
+            let mut parks = self
+                .parks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            parks.take(class, key)
+        };
+        let Some(entry) = matched else {
+            // §4.3: no waiter yet. Buffer it; the park that comes later claims it.
+            let mut early = self
+                .early
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            // One per `(class, key)` — the same coalescing main's buffer uses.
+            if let Some(slot) = early
+                .iter_mut()
+                .find(|buffered| buffered.class == class && buffered.key == key)
+            {
+                slot.payload = payload;
+            } else {
+                early.push(EarlyCompletion {
+                    class,
+                    key,
+                    payload,
+                });
+            }
+            return None;
+        };
+        self.enqueue(Delivery {
+            owner: entry.owner,
+            task_id: entry.task_id,
+            class,
+            payload,
+        });
+        Some(entry.owner)
+    }
+
+    /// A park happened on `(class, key)` owned by `owner`: claim a buffered
+    /// completion for it, if one is already waiting (§4.3's other order).
+    ///
+    /// Answers whether a completion was claimed — the caller logs it, because
+    /// "the wake was already there" is the fact that makes a deterministic test
+    /// deterministic rather than lucky.
+    pub fn claim_early(&self, class: u32, key: u32, owner: u32, task_id: u64) -> bool {
+        let claimed = {
+            let mut early = self
+                .early
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            match early
+                .iter()
+                .position(|buffered| buffered.class == class && buffered.key == key)
+            {
+                Some(index) => Some(early.remove(index)),
+                None => None,
+            }
+        };
+        let Some(completion) = claimed else {
+            return false;
+        };
+        // The park is resolved by this completion, so take it back out of the
+        // ledger: leaving it would keep the strand predicate counting a task that
+        // is about to run, exactly as main's `scheduler.rs` does.
+        {
+            let mut parks = self
+                .parks
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            parks.take(class, key);
+        }
+        self.enqueue(Delivery {
+            owner,
+            task_id,
+            class: completion.class,
+            payload: completion.payload,
+        });
+        true
+    }
+
+    fn enqueue(&self, delivery: Delivery) {
+        let mut inboxes = self
+            .inboxes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        inboxes.push(delivery);
+        drop(inboxes);
+        // §3.4's boundary: the owner is told there is work, and it acts on it.
+        self.wake.notify_all();
+    }
+
+    /// Take every delivery addressed to `owner`, in arrival order (§4.5).
+    pub fn take_deliveries(&self, owner: u32) -> Vec<Delivery> {
+        let mut inboxes = self
+            .inboxes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut mine = Vec::new();
+        let mut rest = Vec::with_capacity(inboxes.len());
+        for delivery in inboxes.drain(..) {
+            if delivery.owner == owner {
+                mine.push(delivery);
+            } else {
+                rest.push(delivery);
+            }
+        }
+        *inboxes = rest;
+        mine
+    }
+
+    /// How many deliveries are waiting for `owner`. For logs and tests.
+    pub fn pending_for(&self, owner: u32) -> usize {
+        self.inboxes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .iter()
+            .filter(|delivery| delivery.owner == owner)
+            .count()
+    }
+
+    /// Ask every worker to leave. Idempotent.
+    pub fn stop_all(&self) {
+        self.stop.store(true, Ordering::SeqCst);
+        self.wake.notify_all();
+    }
+
+    /// Whether shutdown has been declared.
+    pub fn stopping(&self) -> bool {
+        self.stop.load(Ordering::SeqCst)
+    }
+
+    /// Block until there is something for `owner` to do, shutdown is declared, or
+    /// `timeout` elapses.
+    ///
+    /// **A real primitive, not a spin** (§3.2, §4.4). The timeout exists so the
+    /// loop re-checks its own state word even if a notify is missed — the same
+    /// read-then-check discipline the served body uses with `atomicWait`, and it
+    /// is a bound on a pathological wait, not a polling interval.
+    pub fn wait_for_work(&self, owner: u32, timeout: std::time::Duration) {
+        let inboxes = self
+            .inboxes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.stopping() || inboxes.iter().any(|delivery| delivery.owner == owner) {
+            return;
+        }
+        let _unused = self
+            .wake
+            .wait_timeout(inboxes, timeout)
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+    }
+
     /// Every park the executor set has recorded, as `(family, key, task_id)`.
     ///
     /// **The evidence DL18 was built to produce.** A worker's parks go into the
@@ -491,7 +838,7 @@ impl ExecutorPool {
     /// after the worker's store has dropped — which is exactly what no reader
     /// could do before. Resumption is still DL19's: an entry here is a task
     /// parked and *not* resumed.
-    pub fn parks(&self) -> Vec<(u32, u32, u64)> {
+    pub fn parks(&self) -> Vec<(u32, u32, ParkedTask)> {
         self.parks
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -742,12 +1089,29 @@ impl ExecutorPool {
                 // ledger declines (family not awaitable, key outside its space)
                 // is still a strand, which is why the two are separate answers
                 // rather than one.
+                let owner = caller.data().id as u32;
                 let recorded = {
                     let mut ledger = pool
                         .parks
                         .lock()
                         .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    ledger.record(park.class, park.key, park.task_id)
+                    ledger.record(
+                        park.class,
+                        park.key,
+                        ParkedTask {
+                            // **Not observable yet.** The contract fixes `park` at
+                            // three integers and does not carry the continuation
+                            // (§2.1: "The continuation is not a parameter"), and
+                            // `TaskRecord` carries no slot, so the host has no way
+                            // to learn the record's address without a std change —
+                            // which this round forbids. `0` means "identity not
+                            // provisioned"; `owner` + `task_id` are what the wake
+                            // path needs, and they are both present.
+                            handle: 0,
+                            owner,
+                            task_id: park.task_id,
+                        },
+                    )
                 };
                 if !recorded {
                     logging::log(
@@ -756,6 +1120,19 @@ impl ExecutorPool {
                         &format!(
                             "park on class {} key {} is outside the awaitable space; \
                              recorded as a strand only",
+                            park.class, park.key
+                        ),
+                    );
+                } else if pool.claim_early(park.class, park.key, owner, park.task_id) {
+                    // §4.3's other order, and the one the deterministic test uses:
+                    // the completion was already waiting, so this park never
+                    // suspends for real — the owner is told immediately.
+                    logging::log(
+                        Level::Debug,
+                        "thread",
+                        &format!(
+                            "executor {owner}: park on class {} key {} claimed a completion \
+                             that had already arrived (sticky wake)",
                             park.class, park.key
                         ),
                     );
@@ -800,12 +1177,165 @@ fn run_worker(pool: Arc<ExecutorPool>, id: i32) -> i32 {
 
 /// Instantiate the module over the shared memory, configure the worker's arena,
 /// and call `__workerMain(id)`.
+/// Increment the session's served-wake counter (header word 6).
+///
+/// **A diagnostic word, not a protocol one.** Nothing in the host reads it; a guest
+/// may, to order itself against a wake having landed. It is the honest way to make
+/// the DL20 proof deterministic without either side polling a heap address, and
+/// without inventing a synchronisation primitive the contract does not name.
+///
+/// `HEADER_WORDS` is 16 with `0..=4` in use (`H_MAGIC`, `H_TOTAL`, `H_STRIDE`,
+/// `H_CAPACITY`, `H_REQUESTS`), `5` is `H_STOP`, so `6` is free. Written through
+/// the `SharedMemory`'s `UnsafeCell` for the reason every shared write is: it is
+/// shared by construction, so there is no `&mut` to take.
+fn bump_served(memory: &wasmtime::SharedMemory, control_base: usize, served: u64) {
+    /// Header word 6.
+    const WORD: usize = 6;
+    let at = control_base + WORD * 4;
+    if at + 4 > memory.data_size() {
+        return;
+    }
+    let cells = memory.data();
+    let base = cells.as_ptr() as *mut u8;
+    // SAFETY: the bound was checked above; this is the owner thread writing a
+    // word it alone writes.
+    unsafe {
+        let mut word = [0u8; 4];
+        for (offset, slot) in word.iter_mut().enumerate() {
+            *slot = *base.add(at + offset);
+        }
+        let value = i32::from_le_bytes(word).saturating_add(1);
+        let _ = served;
+        for (offset, byte) in value.to_le_bytes().iter().enumerate() {
+            *base.add(at + offset) = *byte;
+        }
+    }
+}
+
+/// The worker's session loop: wait for a matched task, then call the guest's
+/// `__taskWake` on this store.
+///
+/// **Why the wait is a `Condvar` and not the guest's `atomicWait`.** §3.2 forbids
+/// a spin and §4.4 forbids "ask the state, then ask again", so the wait must be a
+/// real primitive; a Rust `Condvar` is one, and it keeps the whole mechanism in
+/// the host so no guest rebuild is needed (the round's gate: `asc.js` and the
+/// bundle are unchanged). §3.4's "the owner thread calls `wake` at a defined
+/// boundary" is exactly this function: the executor matched the id, and the owner
+/// is the one that invokes.
+///
+/// **The scratch is the executor's own spawn record.** `__taskWake` reads packed
+/// `u64` ids from guest memory, so one id has to be written somewhere the guest
+/// will not read it back. The spawn record's `entry`/`arg` words (`sig + 16`,
+/// `+ 20`) are dead by now: `__workerMain` read them once, before calling the
+/// entry, and `__spawnThread` refuses an id that is already born. Eight bytes
+/// there hold exactly one id, and `sig = record + stride - 24`, so the whole
+/// address is arithmetic on two exported globals — no guest call, no allocation,
+/// and no sharing with main's own scratch.
+fn service_wakes(
+    store: &mut Store<WorkerState>,
+    instance: &wasmtime::Instance,
+    id: i32,
+    wake: &wasmtime::TypedFunc<(i32, i32), ()>,
+    pool: &Arc<ExecutorPool>,
+) -> anyhow::Result<()> {
+    /// How long a wait lasts before the loop re-checks shutdown. A bound on a
+    /// missed notify, not a polling interval: a notify returns immediately.
+    const SLICE: std::time::Duration = std::time::Duration::from_millis(50);
+
+    let control_base = instance
+        .get_global(&mut *store, "__controlBase")
+        .and_then(|global| global.get(&mut *store).i32())
+        .ok_or_else(|| anyhow::anyhow!("the worker exports no readable `__controlBase`"))?;
+    let stride = instance
+        .get_global(&mut *store, "__controlStride")
+        .and_then(|global| global.get(&mut *store).i32())
+        .ok_or_else(|| anyhow::anyhow!("the worker exports no readable `__controlStride`"))?;
+    if control_base <= 0 || stride <= 0 {
+        anyhow::bail!("executor {id}: the control block is not carved (base {control_base}, stride {stride})");
+    }
+    // **The pool's memory, not an exported one.** A `--sharedMemory` guest built
+    // with `--importMemory` (every guest in this repo) *imports* its memory, so
+    // there is no `memory` export to look up; the host defined it at link time and
+    // the pool holds the handle.
+    let memory = pool.memory().clone();
+    // `rec = base + HEADER_BYTES(64) + id * stride`, `sig = rec + stride - 24`,
+    // and the entry word is `sig + 16` — so this is `rec + stride - 8`.
+    let scratch = (control_base as usize) + 64 + (id as usize + 1) * (stride as usize) - 8;
+    let memory_size = memory.data_size();
+    let scratch_ok = scratch + 8 <= memory_size;
+
+    let mut served: u64 = 0;
+    loop {
+        if pool.stopping() {
+            break;
+        }
+        let mine = pool.take_deliveries(id as u32);
+        if mine.is_empty() {
+            pool.wait_for_work(id as u32, SLICE);
+            continue;
+        }
+        for delivery in mine {
+            if !scratch_ok {
+                anyhow::bail!(
+                    "executor {id}: the wake scratch ({scratch}) is outside the module's memory \
+                     ({} bytes)",
+                    memory_size
+                );
+            }
+            {
+                // **Unsafe on purpose, and narrow.** A `SharedMemory` has no
+                // `&mut` to take — it is shared with every other store by
+                // construction — so the write goes through its `UnsafeCell`.
+                // This is the owning store's own scratch word (the dead
+                // `entry`/`arg` of its record), written on its own thread, so no
+                // other thread can be reading it; the unsafety is the API's, not
+                // a shortcut around a rule.
+                let cells = memory.data();
+                let base = cells.as_ptr() as *mut u8;
+                let bytes = delivery.task_id.to_le_bytes();
+                for (offset, byte) in bytes.iter().enumerate() {
+                    // SAFETY: `scratch + 8 <= memory_size` was checked above, and
+                    // this thread is the only writer of this address.
+                    unsafe { *base.add(scratch + offset) = *byte };
+                }
+            }
+            // §2.2: this store's own `__taskWake`, on this store's own thread.
+            wake.call(&mut *store, (scratch as i32, 1))?;
+            served += 1;
+            // **A shared counter for the guest to observe.** Header word 6 (5 is
+            // `H_STOP`; `HEADER_WORDS` is 16 and 0-4 are in use) counts wakes this
+            // session has served. It exists so a guest can order itself against a
+            // wake having landed without either side polling a *heap* word — which
+            // cannot work, because a `--sharedMemory` guest's heap is its own arena
+            // (measured: main spinning on a worker-owned `StaticArray` waited
+            // forever). The control block is the one region every store addresses
+            // identically.
+            bump_served(&memory, control_base as usize, served);
+            logging::log(
+                Level::Debug,
+                "thread",
+                &format!(
+                    "executor {id}: woke task {} for class {} ({} this session)",
+                    delivery.task_id, delivery.class, served
+                ),
+            );
+        }
+    }
+    logging::log(
+        Level::Info,
+        "thread",
+        &format!("executor {id} left its session loop after {served} wake(s)"),
+    );
+    Ok(())
+}
+
 fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     let mut store = Store::new(
         &pool.engine,
         WorkerState {
             pool: Arc::clone(pool),
             parks: Mutex::new(Vec::new()),
+            id,
         },
     );
     store.set_epoch_deadline(NEVER_TRAPS);
@@ -854,13 +1384,54 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     let status = worker_main.call(&mut store, id).map_err(|error| {
         anyhow::anyhow!("the worker's `__workerMain({id})` failed: {error}")
     })?;
+    let mut loop_error: Option<anyhow::Error> = None;
 
-    // **What the park seam actually did on this executor.** The seam is
-    // reachable, so `park` may have been called; whether anything can resume is
-    // the other half, and this store has no host loop to do it. The count is
-    // logged — including zero — because "the guest parked" and "the guest never
-    // reached the seam" are different answers and a silent run cannot tell them
-    // apart.
+    // ── the session loop (DL20) ───────────────────────────────────────────
+    //
+    // **The round's subject.** Until now `worker_main` returned here, so a park
+    // that arrived after the entry returned had nowhere to be resumed and the
+    // run either stranded (DL12B's refusal) or, worse, exited 0 with the task
+    // still parked. The worker now stays for the session: it blocks on a real
+    // primitive, and when a completion is matched for it, it calls the guest's
+    // own `__taskWake` on **this** store — which is the only thread allowed to
+    // (§2.2), and the reason the wait is here and not in a guest loop.
+    //
+    // **What this loop does not do.** It does not decide *which* tasks resume
+    // (the ledger and `deliver` do), it does not carry a continuation (it names
+    // store-local ids, §2.1), it does not touch the ready/inbox rings the served
+    // body uses (`I31`: those move continuations), and it does not run the
+    // guest's own step. It waits, takes, and calls `__taskWake`.
+    let wake = instance.get_typed_func::<(i32, i32), ()>(&mut store, "__taskWake").ok();
+    match wake {
+        None => {
+            // A guest that does not export `__taskWake` cannot be woken by name,
+            // and inventing a mechanism for it is out of scope. Said out loud:
+            // this is the DL19 limitation narrowing, not the limitation gone.
+            logging::log(
+                Level::Info,
+                "thread",
+                &format!(
+                    "executor {id} exports no `__taskWake`, so it serves no wake path; \
+                     a park after its entry returns still strands"
+                ),
+            );
+        }
+        Some(wake) => {
+            // **A failed loop is reported, but it does not skip the strand
+            // record.** Measured while building this: an error here returned
+            // early, so a worker that had parked was never counted and the run
+            // exited 0 with the task stranded — exactly the silent success DL12B
+            // exists to prevent. The error is carried to the end and raised
+            // *after* the bookkeeping.
+            if let Err(error) = service_wakes(&mut store, &instance, id, &wake, pool) {
+                loop_error = Some(error);
+            }
+        }
+    }
+
+    // **What the park seam actually did on this executor**, counted at the end of
+    // its life rather than the end of its entry: with a session loop the two are
+    // different moments, and the strand predicate is about the life.
     let parks = {
         let parks = store
             .data()
@@ -873,8 +1444,7 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
         Level::Info,
         "thread",
         &format!(
-            "executor {id} left the park seam having recorded {} park(s){} — a worker runs \
-             no host loop, so none of them can be resumed",
+            "executor {id} left the park seam having recorded {} park(s){}",
             parks.len(),
             match parks.first() {
                 Some(first) => format!(
@@ -909,7 +1479,10 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
             if visible.len() == 1 { "y" } else { "ies" }
         ),
     );
-    Ok(status)
+    match loop_error {
+        Some(error) => Err(error),
+        None => Ok(status),
+    }
 }
 
 

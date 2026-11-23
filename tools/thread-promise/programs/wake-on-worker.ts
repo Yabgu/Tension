@@ -1,0 +1,157 @@
+// DL20 Phase C — a task parked on a worker is resumed by a completion main posted
+// **before** the park.
+//
+// The proof this program exists for, in one run:
+//
+//   1. `async main` spawns a worker;
+//   2. main (the host, via `--post-completion 4,7`) posts a JOB_DONE completion for
+//      key 7 *before* the worker's task parks — §4.3's sticky half, which is the
+//      hard one, because the completion has nowhere to wait in a cache that only
+//      exists once something parks;
+//   3. the worker's nested task parks on that pair;
+//   4. it is resumed by the worker's own session loop, which calls this store's
+//      `__taskWake` — the only thread allowed to (§2.2);
+//   5. the worker prints BEFORE the await and AFTER it, so both lines come from
+//      the worker and the second one is proof the continuation ran;
+//   6. main tells the worker to stop and joins it, and the run exits 0 with
+//      nothing stranded (so DL12B's refusal does not fire).
+//
+// It is the same shape as `strand-nested.ts`, with the one difference that makes
+// the difference: `--post-completion 4,7` completes the pair that guest's await
+// waits on forever.
+//
+// Build: THREAD_FLAGS minus `--enable stack-switching` (see README.md), bundle
+// **aa74d6a1** — the same bundle every other guest here needs (I44). No std or
+// compiler change is required by this program, and none was made for it.
+//
+// Run:
+//   tension-core --executors 2 --post-completion 4,7 <artifact>
+//   ^ the host flags go BEFORE the module path (I32)
+//
+// Expected stdout (order fixed by the `done` flag, not by timing):
+//   main: spawning
+//   main: index=0
+//   main: spawn=0
+//   worker: BEFORE the await
+//   inner: AFTER the await, value=0
+//   worker: AFTER the await, value=0
+//   main: worker finished, stopping
+//   main: join=0
+//   main: done
+import { Task, TaskRecord } from "~lib/task";
+import { __taskBindTable } from "~lib/task-rt";
+
+// **The guest must export this itself.** `__taskWake` lives in `~lib/task-rt` but
+// is not a module export of a compiled guest (measured, DL19 A2): the host
+// resolves it by name to find a push handler, so a program that wants a wake path
+// re-exports it. One line, no compiler or std change — which is what keeps
+// DL20's bundle at aa74d6a1.
+export { __taskWake } from "~lib/task-rt";
+
+/**
+ * The coexistence rule's other half: a guest that exports `__taskWake` must also
+ * export `_game_running`, or the host refuses to run it at all ("a host-driven
+ * guest must export both").
+ *
+ * `0` is the truthful answer here: this program does **not** want host frames. It
+ * drives its own stop (a shared flag, then `__executorExit`) precisely so that the
+ * run is ordered by the worker finishing rather than by a frame count. The export
+ * exists to satisfy a load-time check, and it is not a frame loop it is opting out
+ * of — it never had one.
+ */
+export function _game_running(): i32 {
+  return 0;
+}
+import { __spawnIndexOf } from "~lib/task-stack";
+import { __executorExit, __selfExecutor, __spawnThread, __threadJoin } from "~lib/thread";
+
+@external("tension::io", "print")
+declare function hostPrint(ptr: usize, len: i32): void;
+
+function line(text: string): void {
+  let bytes = String.UTF8.encode(text);
+  hostPrint(changetype<usize>(bytes), bytes.byteLength);
+  let newline = String.UTF8.encode("\n");
+  hostPrint(changetype<usize>(newline), newline.byteLength);
+}
+
+const CLASS_JOB_DONE: i32 = 4; // session/arena.rs:222
+
+/**
+ * Header word 6 of the carved control block: wakes the host has served this
+ * session.
+ *
+ * `HEADER_WORDS = 16` with `0..=4` in use and `5` reserved for the session stop
+ * word, so `6` is this counter — written by the host (`thread.rs`, `bump_served`)
+ * and read here. It is how this fixture orders itself against a wake having landed
+ * without either side guessing a wall-clock.
+ */
+const HEADER_SERVED: usize = 6;
+
+/** The pair the host's `--post-completion 4,7` names. */
+const KEY: i32 = 7;
+
+/** A handle for a completion the *host* will deliver: class and key stamped. */
+function pendingJob(key: i32): Task<i32> {
+  const record = new TaskRecord();
+  record.class_ = CLASS_JOB_DONE;
+  record.key = key;
+  const handle = new Task<i32>();
+  handle._record = record;
+  return handle;
+}
+
+// **No shared flag between main and the worker, and that is not an omission.** A
+// `--sharedMemory` guest's heap is its *arena*, and arenas are disjoint slices of
+// the one linear memory (DL20 A1) — so a module global or a `StaticArray` is
+// visible in exactly one store. Measured: main spinning on a worker-owned
+// `StaticArray` waited forever while the worker had already printed its AFTER
+// line. The ordering therefore rides the join below, which is a real
+// synchronisation rather than a race with a timeout.
+
+async function awaited(): i32 {
+  let job: Task<i32> = pendingJob(KEY);
+  let v: i32 = await job;
+  line("inner: AFTER the await, value=" + v.toString());
+  return v;
+}
+
+async function workerEntry(): i32 {
+  __taskBindTable(16);
+  line("worker: BEFORE the await");
+  let v: i32 = await awaited();
+  line("worker: AFTER the await, value=" + v.toString());
+  // **The worker tells the session it is done**, which is what makes the run
+  // ordered rather than timed: the host loop sees this executor's state word go to
+  // 2 and leaves, so `__threadJoin` below returns because the worker exited, not
+  // because a sleep expired. Same shape as `plain-worker.ts`, and the same
+  // meaning: the executor has no more work and says so.
+  // Not `__executorExit` here: with a session pool the executor's life outlives
+  // its entry, so "my body is done" is not "stop". Main stops it (below) once the
+  // wake has been served.
+  return 0;
+}
+
+export function _start_game(): void {
+  line("main: spawning");
+  let index = __spawnIndexOf(workerEntry);
+  line("main: index=" + index.toString());
+  let spawned = __spawnThread(1, index, 0);
+  line("main: spawn=" + spawned.toString());
+
+  // **Wait for the host to have served a wake** (header word 6, which the host
+  // increments right after `__taskWake` returns), then stop the worker and join it.
+  //
+  // The word is in the *control block*, the one region every store addresses
+  // identically — a heap flag cannot work here, because a `--sharedMemory` guest's
+  // heap is its own arena (measured: main spinning on a worker-owned `StaticArray`
+  // waited forever). The bound means a broken run reports instead of hanging.
+  let served = <usize>__controlBase + HEADER_SERVED * 4;
+  let spins: i32 = 0;
+  while (atomicLoad<i32>(served) == 0 && spins < 200000000) spins++;
+  line("main: wakes served=" + atomicLoad<i32>(served).toString());
+
+  __executorExit(1);
+  line("main: join=" + __threadJoin(1).toString());
+  line("main: done");
+}

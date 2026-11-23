@@ -302,6 +302,20 @@ where
                     class: *class,
                     payload: *payload,
                 });
+                continue;
+            }
+            // **Then the session's pool (DL20's B2).** `data.scheduler` holds
+            // *main's* parks only; a task parked on a worker is in the pool's
+            // ledger, and before this line a completion for it matched nothing and
+            // was buffered forever. The pool matches it and queues the id for the
+            // worker that owns it — the worker's own thread is what calls
+            // `__taskWake` (§2.2), and it is woken by the enqueue.
+            //
+            // Main's park is tried first, deliberately: for a task parked on main
+            // the batch below is the shorter path (no thread hop), and the two
+            // tables cannot both hold one task because a park writes exactly one.
+            if let Some(pool) = data.executors.clone() {
+                pool.deliver(*class, *key, *payload);
             }
         }
     }

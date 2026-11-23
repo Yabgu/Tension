@@ -76,6 +76,10 @@ pub struct HostConfig {
     pub session_callbacks: Option<(u32, u32)>,
     /// A2 test-only: post three `JOB_DONE` events before `_start_game`.
     pub post_test_events: bool,
+    /// `--post-completion <class>[,<key>]`: one completion for a chosen pair,
+    /// posted before the entry runs so a park can claim it (§4.3's sticky half).
+    /// `None` posts nothing.
+    pub post_completion: Option<(u32, u32)>,
     /// `--executors <N>`: the **worker** threads a shared-memory guest gets.
     ///
     /// Zero by default, and zero is meaningful: a guest is one executor (main)
