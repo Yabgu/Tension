@@ -74,7 +74,7 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 
-import { REPO, capture, run } from './lib/toolchain.mjs';
+import { REPO, capture, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
 
 const CHECK_ONLY = process.argv.includes('--check');
 const PACKAGE = '@yabgu_gm/tensionscript';
@@ -156,6 +156,12 @@ function compareTrees(left, right) {
 }
 
 /// SHA-256 of a file, via Node rather than a platform tool.
+/// The first 12 hex characters — long enough to be a fingerprint in a table cell,
+/// short enough to read, and never the thing a comparison uses.
+function short(hash) {
+  return typeof hash === 'string' ? hash.slice(0, 12) : 'no compiler';
+}
+
 function captureHash(file) {
   return createHash('sha256').update(readFileSync(file)).digest('hex');
 }
@@ -475,6 +481,56 @@ function verify() {
     `${sources.length} built after source`,
     absent === 0 && stale === 0 ? `${sources.length} current` : `${absent} absent, ${stale} stale`,
     sources.length > 0 && absent === 0 && stale === 0 ? 'PASS' : 'STALE',
+  );
+
+  // **Which compiler built each guest** (I82). The link above asks whether the
+  // artifact is newer than its source, and an artifact's bytes are a function of
+  // **both** — so a compiler-only change is invisible to it: measured in DL35,
+  // five guests had moved while that link read `0 bytes moved`.
+  //
+  // This link asks the other half, from the record the builder writes beside each
+  // artifact: was it built by **the compiler that is installed now**? It reads
+  // those records and never an mtime — the question is provenance, and an mtime
+  // cannot answer a question about which binary ran.
+  //
+  // An artifact with **no** record is STALE, and says so in those words: it
+  // predates the record, so nothing is known about what built it, and "unknown"
+  // printed as PASS is the defect this link exists to remove.
+  //
+  // **Both sets.** The debug artifacts are guests too — they are what the
+  // breakpoint tests load, and an artifact built by an older compiler is exactly
+  // as misleading there as here. Only the sets that exist are counted, so a tree
+  // that has never run a debug build is not failed for the absence.
+  const installed = compilerIdentity();
+  let recorded = 0;
+  let unrecorded = 0;
+  let otherCompiler = 0;
+  for (const dir of ['build', join('build', 'debug')]) {
+    if (!existsSync(join(PROGRAMS, dir))) continue;
+    for (const source of sources) {
+      const artifact = join(PROGRAMS, dir, `${basename(source, '.ts')}.wasm`);
+      if (!existsSync(artifact)) continue; // absence is the row above's business
+      const record = readBuildRecord(artifact);
+      if (record === null) { unrecorded += 1; continue; }
+      if (installed.hash === null || record.compiler !== installed.hash) { otherCompiler += 1; continue; }
+      recorded += 1;
+    }
+  }
+  const present = recorded + unrecorded + otherCompiler;
+  row(
+    'guests: built by the installed compiler',
+    present === 0 ? 'every guest carries a record' : `${present} recorded by ${short(installed.hash)}`,
+    present === 0
+      ? 'no artifacts built (run npm run rebuild)'
+      : unrecorded === 0 && otherCompiler === 0
+        ? `${recorded} of ${present} current`
+        : [
+            // Only the reasons that fired: a cell that reads "0 no build record,
+            // 1 built by another compiler" makes a reader check a zero.
+            unrecorded > 0 ? `${unrecorded} with no build record` : null,
+            otherCompiler > 0 ? `${otherCompiler} built by another compiler` : null,
+          ].filter(Boolean).join(', '),
+    present > 0 && recorded === present && installed.hash !== null ? 'PASS' : 'STALE',
   );
 
   // Generated ABI docs, asked of the generator itself.

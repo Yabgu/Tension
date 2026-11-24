@@ -45,9 +45,11 @@
 // no use for a line table and no use for a 500 KB source map beside it.
 
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import { compilerIdentity, readBuildRecord, writeBuildRecord } from "./lib/toolchain.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -134,6 +136,17 @@ const WAKE_FLAGS = [
 ];
 
 /**
+ * **The fiber backend's guest** (DL36): `THREAD_FLAGS` plus the backend flag.
+ *
+ * The two backends are not interchangeable — a fiber guest calls the host to
+ * suspend and a continuation guest suspends in wasm — so the artifact records
+ * which one built it (`tension.stackful-backend`) and the host refuses a
+ * mismatched pairing by name. That is why this list differs from `THREAD_FLAGS`
+ * by exactly one flag.
+ */
+const FIBER_FLAGS = [...THREAD_FLAGS, "--stackful-backend", "fiber"];
+
+/**
  * The stackful single-store program. `--exportStart __start` makes the boot body
  * an export the host calls (the Tension convention), rather than a start
  * section that would run before the host has verified anything.
@@ -209,6 +222,8 @@ const PROGRAMS = {
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
   "main-step-replaced": ASYNC_ON_MAIN_FLAGS,
+  // DL36's fiber executor guest: the I70 scenario on the fiber backend.
+  "i70-fiber": FIBER_FLAGS,
 };
 
 /**
@@ -222,6 +237,7 @@ const FOLDER_FLAGS = {
   "policy": ASYNC_ON_MAIN_FLAGS,
   "thread": THREAD_FLAGS,
   "mask": THREAD_FLAGS,
+  "fiber": FIBER_FLAGS,
   "atomic": THREAD_FLAGS,
 };
 
@@ -261,8 +277,30 @@ for (const rel of sources) {
   seen.set(name, rel);
 }
 
+/** The compiler this run builds with — asked once, and the identity a record carries. */
+const identity = compilerIdentity();
+if (identity.hash === null) {
+  console.error(
+    "build-test-programs: no compiler to identify — nothing is skipped on a build record " +
+      "this run cannot write (" + (identity.path ?? "no installed compiler") + ")",
+  );
+}
+
 let built = 0;
 let skipped = 0;
+/** Artifacts rebuilt *because the compiler changed* — the count I82 was blind to. */
+let rebuiltForCompiler = 0;
+
+/** Reads the record beside an artifact, or null. Thin alias: the schema lives in `lib/toolchain.mjs`. */
+const readRecord = (wasm) => readBuildRecord(wasm);
+const writeRecord = (wasm, record) => writeBuildRecord(wasm, record);
+
+/** Whether two flag lists are the same list, in order. */
+function sameFlags(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; ++i) if (a[i] !== b[i]) return false;
+  return true;
+}
 for (const rel of sources) {
   const name = rel.split("/").pop().replace(/\.ts$/, "");
   if (only.length > 0 && !only.includes(name)) continue;
@@ -277,10 +315,6 @@ for (const rel of sources) {
   }
   const wasm = join(out, `${name}.wasm`);
   const ts = join(programs, rel);
-  if (!force && existsSync(wasm) && statSync(wasm).mtimeMs >= statSync(ts).mtimeMs) {
-    ++skipped;
-    continue;
-  }
   // The override replaces the level the table chose, and only the level: every
   // other flag (memory, features, runtime) is the program's own.
   let effective = flags;
@@ -295,6 +329,42 @@ for (const rel of sources) {
     }
     effective.push("--optimizeLevel", String(optimize));
   }
+  // **The flags the artifact was actually built with.** A debug build adds
+  // `--debug --sourceMap` on top, and those change the bytes, so they belong in
+  // the record: a record that named only the table's list would claim an artifact
+  // was built by a command that would not have produced it.
+  const usedFlags = debug ? [...effective, ...DEBUG_FLAGS] : effective;
+
+  // --- the skip condition, and why the mtime is no longer enough (I82) ------
+  //
+  // "Artifact newer than its source" was the whole test, and it is **not** the
+  // question. The artifact's *bytes* are a function of the source **and of the
+  // compiler that read it** — so a tree whose only change is in the compiler
+  // rebuilt nothing, and the round's control read as "0 bytes moved" while five
+  // guests had in fact moved (DL35's gate 3; the seat measured the five). A skip
+  // test that cannot see the compiler cannot see the change that matters most.
+  //
+  // So each artifact carries a record of how it was built (`<name>.wasm.build.json`)
+  // and the skip needs all of it: the source older, the compiler the same, **and
+  // the flags the same**. The last one is not in the brief and is a strict
+  // improvement of the same kind — a flag edit is invisible to an mtime test in
+  // exactly the way a compiler edit was.
+  const record = readRecord(wasm);
+  const upToDate =
+    !force &&
+    existsSync(wasm) &&
+    statSync(wasm).mtimeMs >= statSync(ts).mtimeMs &&
+    identity.hash !== null &&
+    record !== null &&
+    record.compiler === identity.hash &&
+    sameFlags(record.flags, usedFlags);
+  if (upToDate) {
+    ++skipped;
+    continue;
+  }
+  if (!force && record !== null && record.compiler !== identity.hash && existsSync(wasm)) {
+    ++rebuiltForCompiler;
+  }
   console.log(
     `build-test-programs: ${rel}` +
       (debug ? " (debug)" : "") +
@@ -302,16 +372,23 @@ for (const rel of sources) {
   );
   execFileSync(
     process.execPath,
-    [compiler, ts, "-o", wasm, ...effective, ...(debug ? DEBUG_FLAGS : [])],
+    [compiler, ts, "-o", wasm, ...usedFlags],
     {
       cwd: programs,
       stdio: "inherit",
     },
   );
+  writeRecord(wasm, {
+    compiler: identity.hash,
+    compilerPath: identity.path,
+    source: rel,
+    flags: usedFlags,
+  });
   ++built;
 }
 console.log(
   `build-test-programs: ${built} built, ${skipped} up to date, ${sources.length} total` +
+    (rebuiltForCompiler > 0 ? ` (${rebuiltForCompiler} for a new compiler)` : "") +
     (debug ? ` — debug artifacts in ${out}` : "") +
     (optimize !== null ? ` — optimizeLevel ${optimize} artifacts in ${out}` : ""),
 );

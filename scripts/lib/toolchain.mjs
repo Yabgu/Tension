@@ -24,9 +24,10 @@
 // dropping it reintroduces an intermittent, output-less failure.
 
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, dirname, join, sep } from 'node:path';
+import { delimiter, dirname, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 // The provenance rule and its messages live in the published CLI package, so the
@@ -532,6 +533,96 @@ export function resolveCompiler(...dirs) {
   const override = compilerOverride();
   if (override) return { ...compilerInvocation(override), version: null, tarball: null };
   return requireCompiler(...dirs);
+}
+
+/**
+ * **Which compiler this tree will run**, as an identity a build record can carry.
+ *
+ * `{ hash, path }` — `hash` is the sha256 of the compiler's own
+ * `dist/assemblyscript.js`; `path` is that file. Both are `null` when no
+ * compiler is installed, which is a fact a caller must handle rather than an
+ * empty string that compares equal to something.
+ *
+ * # Why `dist/`, and why here
+ *
+ * The digest is of `dist/assemblyscript.js` rather than of the bin entry,
+ * because that bundle **is** the compiler: `bin/tensionscript.js` is a loader,
+ * and two builds of the same sources that differ only in their `dist/` differ in
+ * everything that matters. It is also the file `rebuild.mjs` compares on its
+ * `dist → installed` link, so a guest's build record and the check that reads it
+ * compare **the same bytes**. One definition, two callers — a second copy is how
+ * the two would drift, and a record that disagrees with the check is worse than
+ * no record.
+ *
+ * The escape hatch is honoured: `$TENSIONSCRIPT` wins for the invocation, so its
+ * neighbouring `dist/` is what gets hashed. A record of a build made with
+ * something other than the vendored pin must say so, not claim the pin.
+ */
+export function compilerIdentity(...dirs) {
+  let resolved;
+  try {
+    resolved = resolveCompiler(...dirs);
+  } catch {
+    return { hash: null, path: null };
+  }
+  // `<pkg>/bin/tensionscript.js` → `<pkg>/dist/assemblyscript.js`. A resolved
+  // path with no `dist/` beside it (a shim, or a hand-pointed file) falls back to
+  // itself: less specific, still an identity, and `path` in the record says which.
+  const dist = join(dirname(resolved.path), '..', 'dist', 'assemblyscript.js');
+  const file = existsSync(dist) ? dist : resolved.path;
+  // A build record is committed for a committed fixture, so the path it carries
+  // must not be one machine's home directory: repo-relative when it is inside the
+  // repo, absolute only when it genuinely is not (the escape hatch pointing
+  // somewhere else). `rel` is what a record writes; `path` stays absolute for
+  // callers that have to open it.
+  const rel = relative(REPO, file);
+  const path = rel.startsWith('..') ? file : rel.split('\\').join('/');
+  try {
+    return { hash: createHash('sha256').update(readFileSync(file)).digest('hex'), path, absolute: file };
+  } catch {
+    return { hash: null, path, absolute: file };
+  }
+}
+
+/**
+ * The sidecar a guest artifact records its build in: `<artifact>.build.json`.
+ *
+ * Beside the artifact rather than in a manifest at the top, so a copy of one
+ * artifact carries its own provenance, and so a stale entry cannot outlive the
+ * file it describes. The schema:
+ *
+ * ```json
+ * { "compiler": "<sha256>", "compilerPath": "<file>", "source": "<rel .ts>",
+ *   "flags": ["--runtime", "incremental", …] }
+ * ```
+ *
+ * Writer: `scripts/build-test-programs.mjs`. Reader: `rebuild.mjs`'s
+ * `guests: built by the installed compiler` link. Both go through the functions
+ * below so the format has one definition (I82).
+ */
+export function buildRecordPath(artifact) {
+  return `${artifact}.build.json`;
+}
+
+/**
+ * The record beside `artifact`, or `null` when there is none or it cannot be
+ * read. **`null` is a fact** — "this artifact predates the record" — and the
+ * check reports it in those words rather than treating it as a match.
+ */
+export function readBuildRecord(artifact) {
+  const path = buildRecordPath(artifact);
+  if (!existsSync(path)) return null;
+  try {
+    const record = JSON.parse(readFileSync(path, 'utf8'));
+    return record !== null && typeof record === 'object' ? record : null;
+  } catch {
+    return null;
+  }
+}
+
+/// Writes the record beside `artifact`.
+export function writeBuildRecord(artifact, record) {
+  writeFileSync(buildRecordPath(artifact), `${JSON.stringify(record, null, 2)}\n`);
 }
 
 /// Directories a tool may live in without being on PATH.
