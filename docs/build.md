@@ -807,6 +807,16 @@ Three known gaps:
 3. **No rpath on Windows.** `auditLinkage` returns early (`build-native.mjs:416`);
    the DLL closure is staged and walked instead, which is a weaker check.
 
+**The compiler's prebuild needs `BINARYEN_CORES=1` on Windows.** `binaryen.js`
+is produced by emscripten's link step, which runs msys2's `wasm-opt` over a
+module of ~10 MB. `wasm-opt` 133 (msys2) deadlocks with two or more threads on
+this host: it does real work for a few seconds, then CPU drops to zero and
+nothing more is printed, so the hang reads as a dead build rather than a slow
+one. Measured 2026-11-24: `-O3` on a 34-byte module completes in 0.03 s under
+`BINARYEN_CORES=1` and never returns at the default of 16. Set
+`BINARYEN_CORES=1` for any step that reaches `wasm-opt` — `npm run rebuild`,
+`node scripts/vendor-compiler.mjs`, or the compiler's own `npm run build` (I79).
+
 **macOS is untested throughout**, including the `-G` versus `-V` difference in
 the shader build that the 2d design note flagged; no test in this tree covers
 it, and the note is deleted.
