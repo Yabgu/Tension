@@ -106,3 +106,72 @@ fn the_shared_program_prints_the_contract_transcript() {
         expected_path.display()
     );
 }
+
+// ---------------------------------------------------------------------------
+// The same contract, on the fiber backend (DL38, I90)
+// ---------------------------------------------------------------------------
+
+/// **The gate that would have caught I90.**
+///
+/// The continuation build above was the only build of this program, so a whole
+/// backend could lose its suspensions and every suite stayed green: the fiber
+/// artifact printed `suspensions: 0`, `total: 0`, `final: 13` and **exited 0** —
+/// a transcript that is wrong in the most dangerous way, because nothing failed.
+///
+/// This runs the *same source*, compiled with `--stackful-backend=fiber` and
+/// without `--enable stack-switching` (`async-on-main-fiber`, an alias in
+/// `scripts/build-test-programs.mjs`), and asserts the **same seven lines**.
+///
+/// # Why one expected file and not two
+///
+/// The seven lines are the ABI contract, and a backend is not allowed to change
+/// them: `carried` proves a local survived the suspension, `suspensions` that the
+/// bodies ran, `total`/`final` that the values came back. Two expected files
+/// would let the fiber backend drift and still pass — which is the defect, one
+/// level up. So both tests read `async-on-main.expected.txt`.
+///
+/// # No stack-switching gate
+///
+/// The continuation test refuses to compare on a target without continuations,
+/// because the host must refuse that guest. This one needs no such branch: a
+/// fiber artifact declares no continuation type (DL37), so it loads and runs
+/// everywhere — and if it quietly did not, that is a failure to report, not a
+/// reason to skip.
+#[test]
+fn the_fiber_backend_prints_the_same_contract_transcript() {
+    let guest = guest("async-on-main-fiber");
+    let expected_path = programs_dir().join("async-on-main.expected.txt");
+    let expected_text = std::fs::read_to_string(&expected_path)
+        .unwrap_or_else(|error| panic!("{} is unreadable: {error}", expected_path.display()));
+    let expected = transcript(&expected_text);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg(&guest)
+        .output()
+        .expect("the interpreter runs");
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "the fiber build of the shared program failed (exit {:?})\nstdout: {stdout}\nstderr: {}",
+        output.status.code(),
+        stderr.lines().rev().take(10).collect::<Vec<_>>().join("\n")
+    );
+
+    let actual = transcript(&stdout);
+    assert_eq!(
+        actual, expected,
+        "the fiber build's transcript does not match {}. The two backends share one \
+         contract (I90): a value that arrives on one and not the other is the defect \
+         this test exists for.\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        expected_path.display()
+    );
+
+    // **The executor was chosen from the artifact**, with no flag saying so: this
+    // is what makes the test a test of the record and the lowering together.
+    assert!(
+        stderr.contains("executor: fiber"),
+        "the artifact's record did not select the fiber executor:\n{stderr}"
+    );
+}

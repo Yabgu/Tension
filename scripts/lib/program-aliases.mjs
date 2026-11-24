@@ -1,0 +1,20 @@
+// **One source, more than one artifact.**
+//
+// A test program is normally one `.ts` and one `.wasm` named after it. An alias
+// breaks that only where the *build flags* are the subject: DL38 compiles the
+// ABI contract program twice — once for the continuation backend, once for the
+// fiber backend — and the second artifact is what a gate can assert on. Writing a
+// second `.ts` that re-exported the first would compile a different file through
+// the same lowering, which is a weaker claim than "this exact program, on this
+// backend, prints these lines".
+//
+// Kept in its own module because **two scripts need it and they must agree**:
+// `scripts/build-test-programs.mjs` writes the artifacts, and `scripts/rebuild.mjs`
+// counts and dates them. A copy of this table in each is how the check and the
+// build come to disagree about what exists.
+//
+// `name → source`, repo-relative under `tension-core/tests/programs/`.
+
+export const PROGRAM_ALIASES = {
+  "async-on-main-fiber": "async/async-on-main.ts",
+};

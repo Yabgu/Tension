@@ -31,7 +31,14 @@
 //! `tension.stackful-backend` = `fiber`), and because the CI job that runs this
 //! suite has no compiler — the same rule the thread and debug fixtures follow.
 
-#![cfg(target_os = "linux")]
+// **No crate-level `cfg`** (DL38, I91). This file carried
+// `#![cfg(target_os = "linux")]`, which on any other target compiled the file to
+// zero tests — and a suite reporting `test result: ok. 0 passed` is a green line
+// over nothing. DL36 read exactly that as a pass. Nothing here is
+// platform-specific: the executor is `wasmtime-internal-fiber`, the artifact is
+// ordinary wasm, and every host call in the test is `std`. If a single test ever
+// needs a target gate it gets one **on that test**, with the platform and the
+// reason named.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -244,15 +251,14 @@ fn two_parked_tasks_on_two_threads_both_complete() {
             let mut config = wasmtime::Config::new();
             config.wasm_threads(true);
             config.shared_memory(true);
-            // **Stack switching on the *engine*, though the guest has no
-            // `suspend`.** A `--stackful-backend=fiber` artifact still declares
-            // the shell's continuation types and tags (measured: two `cont`
-            // types, three tags), and the engine refuses to parse those with the
-            // feature off — "cannot define continuation types when stack
-            // switching is disabled". The lowering's *mechanism* is fiber-only;
-            // its *type section* is not yet, which is I85 and the reason the
-            // Windows unblock (I16) is not delivered by DL35 alone.
-            config.wasm_stack_switching(true);
+            // **No `wasm_stack_switching` here, and its absence is the claim.**
+            // DL36 had to turn it on: a fiber artifact then still declared the
+            // shell's continuation types and three tags, and wasmtime refuses to
+            // *parse* those with the feature off (I85). DL37 removed them, so this
+            // engine is the one a target without stack switching can build — which
+            // is what makes this test say something about such a target at all.
+            // If a future lowering move put a `(cont …)` back, this test would fail
+            // to load the module rather than quietly asking for the feature.
             let engine = wasmtime::Engine::new(&config).expect("an engine");
             let module = wasmtime::Module::new(&engine, &bytes).expect("the module");
             let mut store = wasmtime::Store::new(&engine, ());

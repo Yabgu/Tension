@@ -743,63 +743,18 @@ fn thread_boot(
         // **The fiber backend runs the same entry, on a fiber.** Everything above
         // (carve, arena, verify) is unchanged: those are calls that cannot suspend.
         // The difference is only what happens when the guest parks — the fiber
-        // hands control back here instead of returning from wasm entirely.
-        tension_core::fiber::Backend::Fiber => {
-            // **The producer, and where the I70 ordering comes from.** It is asked
-            // once per park, *after* the guest has parked, so "park, then wake" is
-            // the shape of the loop rather than something a test has to arrange.
-            // A staged completion is consumed when used: one flag, one resume — a
-            // second park on the same pair would otherwise be woken by a value that
-            // has already been delivered.
-            let mut staged = completions;
-            let outcome = tension_core::fiber::run(
-                &mut *store,
-                *instance,
-                |store, instance| {
-                    let start = instance
-                        .get_typed_func::<(), i32>(&mut *store, "__start")
-                        .expect("__start was resolved above");
-                    Ok(start.call(store, ())?)
-                },
-                |park| {
-                    let index = staged
-                        .iter()
-                        .position(|(class, key, _)| *class == park.class && *key == park.key)?;
-                    let (_, _, value) = staged.remove(index);
-                    // **Two lines, one fact each.** A single line naming both the
-                    // park and the completion would make a transcript unable to
-                    // say which came first — and "the wake came after the park" is
-                    // the ordering I70 is about.
-                    logging::log(
-                        Level::Info,
-                        "fiber",
-                        &format!(
-                            "task {} parked on class {} key {}",
-                            park.task, park.class, park.key
-                        ),
-                    );
-                    logging::log(
-                        Level::Info,
-                        "fiber",
-                        &format!(
-                            "completing class {} key {} with {value} → resume",
-                            park.class, park.key
-                        ),
-                    );
-                    Some(value)
-                },
-            )?;
-            match outcome {
-                tension_core::fiber::Outcome::Done(status) => status,
-                // **Refused, not hung.** The fiber is still suspended and cannot be
-                // dropped, so the stack is leaked; the run fails by name so that a
-                // task nobody will complete is a reported fact and not a process
-                // that sits there or exits 0 having done nothing.
-                tension_core::fiber::Outcome::Stranded(stranded) => {
-                    anyhow::bail!("{executor_name}: {stranded}", executor_name = "fiber executor")
-                }
-            }
-        }
+        // hands control back to the executor instead of unwinding the wasm call.
+        tension_core::fiber::Backend::Fiber => run_on_fiber(
+            &mut *store,
+            *instance,
+            completions,
+            |store, instance| {
+                let start = instance
+                    .get_typed_func::<(), i32>(&mut *store, "__start")
+                    .expect("__start was resolved above");
+                Ok(start.call(store, ())?)
+            },
+        )?,
     };
     logging::log(
         Level::Debug,
@@ -807,6 +762,77 @@ fn thread_boot(
         &format!("main booted: __threadInit({CAPACITY}), arena {base}+{size}, __start answered {started}"),
     );
     Ok(())
+}
+
+/// **Runs a guest entry on a fiber** when the artifact asked for the fiber backend,
+/// answering the status word, or fails by name when a task strands (I90).
+///
+/// Two callers, and they are the two shapes an entry has: a shared-memory guest's
+/// `__start() -> i32` (from `thread_boot`, after the carve and the arena) and an
+/// ordinary guest's `__start() -> ()`. Both need the same three things — a fiber,
+/// the published suspend handle, and a producer — so both come through here
+/// rather than each growing a copy of the loop.
+///
+/// **Why the plain guest needs it too.** Before this, only `thread_boot` ran on a
+/// fiber, and it is skipped for a module that exports no `__threadInit`. A plain
+/// fiber guest then called `__start` on the OS thread with no handle published:
+/// `scheduler::park` reached the host, found no fiber, and returned — so every
+/// suspension was silently dropped. That is the shape DL38 fixed on the lowering
+/// side (a `drive` no longer parks); a `policy.await`, which *does* park on a real
+/// producer pair, still needs a fiber to park on, and now gets one.
+///
+/// The producer is asked once per park, **after** the guest has parked, so
+/// "park, then wake" is the shape of the loop rather than something a caller
+/// arranges. A staged completion is consumed when used: one flag, one resume.
+fn run_on_fiber(
+    store: &mut Store<HostState>,
+    instance: wasmtime::Instance,
+    completions: Vec<(u32, u32, i32)>,
+    mut body: impl FnMut(&mut Store<HostState>, wasmtime::Instance) -> anyhow::Result<i32>,
+) -> anyhow::Result<i32> {
+    let mut staged = completions;
+    let outcome = tension_core::fiber::run(
+        &mut *store,
+        instance,
+        |store, instance| body(store, instance),
+        |park| {
+            let index = staged
+                .iter()
+                .position(|(class, key, _)| *class == park.class && *key == park.key)?;
+            let (_, _, value) = staged.remove(index);
+            // **Two lines, one fact each.** A single line naming both the park and
+            // the completion would make a transcript unable to say which came
+            // first — and "the wake came after the park" is the ordering I70 is
+            // about.
+            logging::log(
+                Level::Info,
+                "fiber",
+                &format!(
+                    "task {} parked on class {} key {}",
+                    park.task, park.class, park.key
+                ),
+            );
+            logging::log(
+                Level::Info,
+                "fiber",
+                &format!(
+                    "completing class {} key {} with {value} → resume",
+                    park.class, park.key
+                ),
+            );
+            Some(value)
+        },
+    )?;
+    match outcome {
+        tension_core::fiber::Outcome::Done(status) => Ok(status),
+        // **Refused, not hung.** The fiber is still suspended and cannot be
+        // dropped, so the stack is leaked; the run fails by name so that a task
+        // nobody will complete is a reported fact rather than a process that sits
+        // there, or exits 0 having done nothing.
+        tension_core::fiber::Outcome::Stranded(stranded) => {
+            anyhow::bail!("fiber executor: {stranded}")
+        }
+    }
 }
 
 const PACK_USAGE: &str = r#"usage: tension-core pack <source-dir> [-o output.pak]
@@ -2361,7 +2387,10 @@ fn main() -> anyhow::Result<()> {
     // An ordinary guest exports no `__threadInit` and takes none of these steps;
     // it keeps the `__start` call below exactly as it was.
     if store.data().executors.is_some() {
-        thread_boot(&mut store, &instance, executor, fiber_completions)?;
+        // **Cloned, not moved**: the plain-guest path below may also need the staged
+        // completions, and a shared guest reaches only this one. One `Vec` of at most
+        // a handful of triples, so the copy is not worth an ownership dance.
+        thread_boot(&mut store, &instance, executor, fiber_completions.clone())?;
     }
 
     // TensionScript's runtime initializer, when the guest exports one.
@@ -2377,7 +2406,19 @@ fn main() -> anyhow::Result<()> {
     // an ordinary build emits.
     let mut runtime_initialised = false;
     if let Ok(init) = instance.get_typed_func::<(), ()>(&mut store, "__start") {
-        init.call(&mut store, ())?;
+        // **A plain fiber guest's entry runs on a fiber too** (I90). `thread_boot`
+        // above is skipped when the module exports no `__threadInit`, and without
+        // this the entry ran on the OS thread with no suspend handle published, so
+        // a parking task's park was dropped in silence.
+        if executor == tension_core::fiber::Backend::Fiber {
+            run_on_fiber(&mut store, instance, fiber_completions, |store, instance| {
+                let init = instance.get_typed_func::<(), ()>(&mut *store, "__start")?;
+                init.call(store, ())?;
+                Ok(0)
+            })?;
+        } else {
+            init.call(&mut store, ())?;
+        }
         runtime_initialised = true;
 
         // The showcase harness's other half. `TensionScript-a2`'s

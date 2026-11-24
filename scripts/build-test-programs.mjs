@@ -50,6 +50,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { compilerIdentity, readBuildRecord, writeBuildRecord } from "./lib/toolchain.mjs";
+import { PROGRAM_ALIASES } from "./lib/program-aliases.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(here, "..");
@@ -151,6 +152,27 @@ const WAKE_FLAGS = [
  * Passing it as well produces the same bytes — measured, and asserted by
  * `tests/compiler/stackful-fiber-pruned`.
  */
+/**
+ * **The contract program, on the fiber backend** (DL38, I90).
+ *
+ * `ASYNC_ON_MAIN_FLAGS` minus `--enable stack-switching`, plus the backend flag.
+ * The omission is the round's subject: a fiber build's suspension is a call the
+ * host sees, so the artifact must not need the proposal — and if it silently
+ * *did*, the gate this artifact feeds is what would notice.
+ *
+ * Built as its own program rather than by re-running the build with a flag,
+ * because the transcript it must print is the same seven lines the continuation
+ * build prints: the ABI contract is backend-independent, and two artifacts
+ * compared against one expected file is how that stays true.
+ */
+const ASYNC_ON_MAIN_FIBER_FLAGS = [
+  "--runtime", "incremental",
+  "--target", "release",
+  "--exportStart", "__start",
+  "--optimizeLevel", "0",
+  "--stackful-backend", "fiber",
+];
+
 const FIBER_FLAGS = [
   // `THREAD_FLAGS` minus the `--enable stack-switching` **pair**, keeping every
   // other flag in order — a filter that dropped the two tokens by value would
@@ -238,6 +260,8 @@ const PROGRAMS = {
   // the wake guard, for the same reason.
   "two-waiters-late": WAKE_FLAGS,
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
+  // Built from `async/async-on-main.ts` — see `ALIASES` below.
+  "async-on-main-fiber": ASYNC_ON_MAIN_FIBER_FLAGS,
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
@@ -245,6 +269,15 @@ const PROGRAMS = {
   // DL36's fiber executor guest: the I70 scenario on the fiber backend.
   "i70-fiber": FIBER_FLAGS,
 };
+
+/**
+ * **One source, two artifacts** (DL38). The mapping is shared with
+ * `rebuild.mjs` (`scripts/lib/program-aliases.mjs`); the flag list is this
+ * file's, keyed by the artifact name in `PROGRAMS` above.
+ */
+const ALIASES = Object.fromEntries(
+  Object.entries(PROGRAM_ALIASES).map(([name, source]) => [name, { source, flags: PROGRAMS[name] }]),
+);
 
 /**
  * The default flags for a folder, so a new program in an existing folder needs
@@ -321,15 +354,32 @@ function sameFlags(a, b) {
   for (let i = 0; i < a.length; ++i) if (a[i] !== b[i]) return false;
   return true;
 }
-for (const rel of sources) {
+// **The work list: one entry per artifact**, which is one per source plus the
+// aliases. An alias names its own source, so `async-on-main-fiber.wasm` is built
+// from `async/async-on-main.ts` and nothing else has to know it exists.
+const work = sources.map((rel) => {
   const name = rel.split("/").pop().replace(/\.ts$/, "");
-  if (only.length > 0 && !only.includes(name)) continue;
   const folder = rel.includes("/") ? rel.split("/")[0] : "";
-  const flags = PROGRAMS[name] ?? FOLDER_FLAGS[folder];
+  const alias = ALIASES[name];
+  return {
+    rel: alias ? alias.source : rel,
+    name,
+    flags: alias ? alias.flags : PROGRAMS[name] ?? FOLDER_FLAGS[folder],
+  };
+});
+// The aliases are artifacts with no `.ts` of their own, so they are not in
+// `sources`; they are appended here in name order, which keeps the build's output
+// stable without pretending they are programs.
+for (const name of Object.keys(ALIASES).sort()) {
+  if (sources.some((rel) => rel.split("/").pop().replace(/\.ts$/, "") === name)) continue;
+  work.push({ rel: ALIASES[name].source, name, flags: ALIASES[name].flags });
+}
+for (const { rel, name, flags } of work) {
+  if (only.length > 0 && !only.includes(name)) continue;
   if (!flags) {
     console.error(
       `build-test-programs: ${rel} has no flag list — add it to PROGRAMS, or give ` +
-      `the "${folder}" folder a default in FOLDER_FLAGS`,
+      `its folder a default in FOLDER_FLAGS`,
     );
     process.exit(1);
   }
@@ -407,7 +457,7 @@ for (const rel of sources) {
   ++built;
 }
 console.log(
-  `build-test-programs: ${built} built, ${skipped} up to date, ${sources.length} total` +
+  `build-test-programs: ${built} built, ${skipped} up to date, ${work.length} total` +
     (rebuiltForCompiler > 0 ? ` (${rebuiltForCompiler} for a new compiler)` : "") +
     (debug ? ` — debug artifacts in ${out}` : "") +
     (optimize !== null ? ` — optimizeLevel ${optimize} artifacts in ${out}` : ""),

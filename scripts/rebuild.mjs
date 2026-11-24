@@ -76,6 +76,7 @@ import { basename, delimiter, dirname, join, relative, resolve } from 'node:path
 import { pathToFileURL } from 'node:url';
 
 import { REPO, capture, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
+import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
 import {
   readBuildRecord as readArtifactRecord,
   runtimeInputDigest,
@@ -532,6 +533,11 @@ async function verify() {
   }
 
   // Built guests: every test program `.ts` has an artifact at least as new.
+  //
+  // **One entry per artifact, not per source.** An alias (`PROGRAM_ALIASES`)
+  // builds a second artifact from a source that already has one — DL38's fiber
+  // build of the contract program — so a row that counted `.ts` files would
+  // report one fewer guest than exists and never date the extra one.
   const sources = [];
   if (existsSync(PROGRAMS)) {
     for (const entry of readdirSync(PROGRAMS, { withFileTypes: true })) {
@@ -541,18 +547,30 @@ async function verify() {
       }
     }
   }
+  const artifacts = sources.map((source) => ({
+    name: basename(source, '.ts'),
+    source,
+    artifact: join(PROGRAMS, 'build', `${basename(source, '.ts')}.wasm`),
+  }));
+  for (const [name, sourceRel] of Object.entries(PROGRAM_ALIASES)) {
+    if (artifacts.some((entry) => entry.name === name)) continue;
+    artifacts.push({
+      name,
+      source: join(PROGRAMS, sourceRel),
+      artifact: join(PROGRAMS, 'build', `${name}.wasm`),
+    });
+  }
   let stale = 0;
   let absent = 0;
-  for (const source of sources) {
-    const artifact = join(PROGRAMS, 'build', `${basename(source, '.ts')}.wasm`);
+  for (const { source, artifact } of artifacts) {
     if (!existsSync(artifact)) { absent += 1; continue; }
     if (statSync(artifact).mtimeMs < statSync(source).mtimeMs) stale += 1;
   }
   row(
     'guests: tests/programs/**/*.ts → build/*.wasm',
-    `${sources.length} built after source`,
-    absent === 0 && stale === 0 ? `${sources.length} current` : `${absent} absent, ${stale} stale`,
-    sources.length > 0 && absent === 0 && stale === 0 ? 'PASS' : 'STALE',
+    `${artifacts.length} built after source`,
+    absent === 0 && stale === 0 ? `${artifacts.length} current` : `${absent} absent, ${stale} stale`,
+    artifacts.length > 0 && absent === 0 && stale === 0 ? 'PASS' : 'STALE',
   );
 
   // **Which compiler built each guest** (I82). The link above asks whether the
@@ -579,8 +597,8 @@ async function verify() {
   let otherCompiler = 0;
   for (const dir of ['build', join('build', 'debug')]) {
     if (!existsSync(join(PROGRAMS, dir))) continue;
-    for (const source of sources) {
-      const artifact = join(PROGRAMS, dir, `${basename(source, '.ts')}.wasm`);
+    for (const { name } of artifacts) {
+      const artifact = join(PROGRAMS, dir, `${name}.wasm`);
       if (!existsSync(artifact)) continue; // absence is the row above's business
       const record = readBuildRecord(artifact);
       if (record === null) { unrecorded += 1; continue; }
