@@ -817,6 +817,57 @@ one. Measured 2026-11-24: `-O3` on a 34-byte module completes in 0.03 s under
 `BINARYEN_CORES=1` for any step that reaches `wasm-opt` — `npm run rebuild`,
 `node scripts/vendor-compiler.mjs`, or the compiler's own `npm run build` (I79).
 
+**Zig is not in the MSYS2 repositories, and WinGet does not put it on PATH.**
+`pacman -Ss zig` returns nothing (same finding as `ci/linsys2.md:73`). The
+WinGet package installs to
+`%LOCALAPPDATA%\Microsoft\WinGet\Packages\zig.zig_…\zig-x86_64-windows-<ver>\`
+with **no PATH shim**, so `cargo build` fails before compiling anything with
+
+```
+could not run `zig` (program not found) — tension-core links tension-res, so
+Zig 0.16 or newer must be on PATH (see tension-res/DESIGN.md §9.2)
+```
+
+Add that directory to `PATH`, or use a tarball install (CI downloads
+`ziglang.org/download/0.17.0` and checks a sha256, `.github/workflows/e2e-debug.yml`).
+`build.rs` tolerates a toolchain **below** the floor with a warning
+(`cargo:warning=tension-res requires Zig 0.16 or newer…`, `build.rs:585-593`)
+because the compiler is the real gate; it panics only when `zig` cannot be run
+at all (`build.rs:66-70`).
+
+**`--check`'s two runtime rows need a build record, not just a binary.** The
+`runtime: src → release|debug` rows compare `tension-core.exe.build.json` beside
+the binary against the 84 hashed inputs. A bare `cargo build` writes no such
+file, so both rows read `STALE — no build record beside the binary` even when
+the digest matches. The record is written by `scripts/build-native.mjs`
+(release, `build-native.mjs:923`) and by `scripts/rebuild.mjs` (debug,
+`rebuild.mjs:383`); build through one of those before gating on `--check`.
+
+**A cold `build-native` needs the Ninja generator and msys2's cmake (I92).**
+`sdl3-sys` builds SDL 3 from source for the `static-sdl3` feature. The `cmake`
+crate picks the **Visual Studio** generator on Windows by default
+(`cmake-0.1.58/src/lib.rs:510-513`), which drives MSBuild; on the VS 2026
+18.12.x install measured here MSBuild's `FileTracker` type initializer throws
+`System.ArgumentException: The path is not of a legal form`, the compiler-id
+build fails, and CMake reports `The C compiler identification is unknown` /
+`No CMAKE_C_COMPILER could be found` — although `cl.exe` itself compiles fine.
+The crate honours `CMAKE_GENERATOR`, so Ninja with the same `cl.exe` configures
+and builds. One more ordering fact: with Ninja, CMake **4.4.4**
+(`C:\Program Files\CMake`) emits a malformed resource rule and the SDL build
+dies with `fatal error RC1107: invalid usage`; msys2's CMake **4.5.1** does not.
+This invocation builds the payload on this host:
+
+```bat
+call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat"
+set "PATH=C:\msys64\ucrt64\bin;%PATH%"
+set CMAKE_GENERATOR=Ninja
+node scripts/build-native.mjs
+```
+
+The resulting `packages/core-win32-x64/bin/tension-core.exe` is 52,005,888 B
+and imports no `SDL3.dll` — the static link is what the size and the import
+table show.
+
 **macOS is untested throughout**, including the `-G` versus `-V` difference in
 the shader build that the 2d design note flagged; no test in this tree covers
 it, and the note is deleted.
