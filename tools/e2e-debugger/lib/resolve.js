@@ -33,14 +33,18 @@ export const configRoot = path.join(here, "..", "config");
  * it built elsewhere.
  */
 export function resolveTensionCore() {
+  // Windows names the binary `tension-core.exe`. Without the suffix every
+  // candidate below misses, so a binary that is present is reported absent and
+  // the census exits 2 on a Windows host that has one (I80).
+  const exe = process.platform === "win32" ? ".exe" : "";
   const override = process.env.TENSION_CORE;
   const candidates = override
     ? [path.resolve(override)]
     : [
-        path.join(repoRoot, "tension-core", "target", "release", "tension-core"),
-        path.join(repoRoot, "tension-core", "target", "debug", "tension-core"),
-        path.join(repoRoot, "target", "release", "tension-core"),
-        path.join(repoRoot, "target", "debug", "tension-core"),
+        path.join(repoRoot, "tension-core", "target", "release", `tension-core${exe}`),
+        path.join(repoRoot, "tension-core", "target", "debug", `tension-core${exe}`),
+        path.join(repoRoot, "target", "release", `tension-core${exe}`),
+        path.join(repoRoot, "target", "debug", `tension-core${exe}`),
       ];
 
   const found = candidates.find((candidate) => fs.existsSync(candidate));
