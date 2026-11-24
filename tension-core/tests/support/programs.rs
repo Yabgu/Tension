@@ -136,6 +136,73 @@ pub fn thread_fixtures_dir() -> PathBuf {
     programs_dir().join("fixtures").join("thread")
 }
 
+/// One fiber program's artifact: **built when this checkout has a compiler, the
+/// committed fixture when it does not** (DL39, I93).
+///
+/// The same resolution order as [`guest_thread_fixture`], for the same reason and
+/// with one addition. A checkout with a compiler builds the artifact, so a
+/// lowering regression is caught by a freshly emitted guest. A checkout without one
+/// — CI, which installs no compiler — loads the committed fixture, so the suite is
+/// a gate there instead of a skip. Both are the same program, and the committed
+/// `.build.json` beside the fixture records the compiler and flags that produced
+/// it, so the bytes are always traceable.
+///
+/// **Why the fiber suites needed this at all.** `async_on_main` called `guest()`,
+/// which begins with `build()`; with no compiler the builder fails and the test
+/// fails. That is why CI never ran it: the suite existed, the gate did not
+/// (I93 — the third round in a row where a green line meant nothing ran).
+pub fn guest_fiber_fixture(name: &str) -> PathBuf {
+    guest_or_fixture(name, fiber_fixtures_dir())
+}
+
+/// One **contract** program's artifact, by the same rule: built when this
+/// checkout has a compiler, the committed fixture when it does not.
+///
+/// The continuation twin of the fiber contract artifact. Both live committed
+/// (DL39) because the pair is the gate: a test that compares the two backends on
+/// one expected transcript cannot run in CI unless *both* artifacts are there, and
+/// CI has no compiler. `fixtures/contract/` holds the continuation build,
+/// `fixtures/fiber/` the fiber one — one directory each, named for the backend, so
+/// nobody has to remember which of the two is the control.
+pub fn guest_contract_fixture(name: &str) -> PathBuf {
+    guest_or_fixture(name, contract_fixtures_dir())
+}
+
+/// The committed fiber fixtures (`fixtures/fiber/`) — the artifacts the fiber
+/// executor's suites load, committed because the artifact **is** the compiler
+/// behaviour under test and CI has no compiler.
+pub fn fiber_fixtures_dir() -> PathBuf {
+    programs_dir().join("fixtures").join("fiber")
+}
+
+/// The committed contract fixtures (`fixtures/contract/`).
+pub fn contract_fixtures_dir() -> PathBuf {
+    programs_dir().join("fixtures").join("contract")
+}
+
+/// **The rule both fixture accessors follow, in one place**: build when there is a
+/// compiler, else the committed artifact, else fail by name.
+///
+/// Extracted so the two accessors cannot drift in *how* they fall back — the
+/// difference between them is a directory, and that is the only difference the
+/// callers should ever see.
+fn guest_or_fixture(name: &str, dir: PathBuf) -> PathBuf {
+    if compiler_installed() {
+        return guest(name);
+    }
+    let fixture = dir.join(format!("{name}.wasm"));
+    if !fixture.is_file() {
+        support_ci::skip_or_fail(format_args!(
+            "test programs: {} is not committed and the vendored compiler is not \
+             installed at node_modules/@yabgu_gm/tensionscript; run `npm install`, \
+             then `node scripts/build-test-programs.mjs`",
+            fixture.display()
+        ));
+    }
+    fixture
+}
+
+
 /// One thread program's artifact: **built when this checkout has a compiler, the
 /// committed fixture when it does not.**
 ///

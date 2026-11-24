@@ -42,7 +42,7 @@ mod support_programs;
 
 use std::process::Command;
 
-use support_programs::{guest, programs_dir};
+use support_programs::{guest_contract_fixture, guest_fiber_fixture, programs_dir};
 
 fn transcript(stdout: &str) -> Vec<String> {
     stdout
@@ -56,7 +56,11 @@ fn transcript(stdout: &str) -> Vec<String> {
 
 #[test]
 fn the_shared_program_prints_the_contract_transcript() {
-    let guest = guest("async-on-main");
+    // **The committed control artifact when there is no compiler** (I93) — the
+    // same rule as the fiber twin below, because the gate is the *pair*: a test
+    // that compares the two backends cannot run in CI unless both artifacts are
+    // there, and CI installs no compiler.
+    let guest = guest_contract_fixture("async-on-main");
     let expected_path = programs_dir().join("async-on-main.expected.txt");
     let expected_text = std::fs::read_to_string(&expected_path)
         .unwrap_or_else(|error| panic!("{} is unreadable: {error}", expected_path.display()));
@@ -139,7 +143,10 @@ fn the_shared_program_prints_the_contract_transcript() {
 /// reason to skip.
 #[test]
 fn the_fiber_backend_prints_the_same_contract_transcript() {
-    let guest = guest("async-on-main-fiber");
+    // **The committed fixture when there is no compiler** (I93): this test is the
+    // gate for the fiber backend, and CI installs no compiler, so `guest()` — which
+    // builds — would have made it unrunnable there rather than failing.
+    let guest = guest_fiber_fixture("async-on-main-fiber");
     let expected_path = programs_dir().join("async-on-main.expected.txt");
     let expected_text = std::fs::read_to_string(&expected_path)
         .unwrap_or_else(|error| panic!("{} is unreadable: {error}", expected_path.display()));

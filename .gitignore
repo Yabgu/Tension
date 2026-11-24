@@ -76,6 +76,10 @@ tension-audio.wav
 # compiler behaviour under test (the `tension.stackful-backend` record). Its
 # `.build.json` sidecar records the sha256 and flags that produced it.
 !tension-core/tests/programs/fixtures/fiber/*.wasm
+# … and the continuation half of the I90 contract pair (DL39). Both artifacts are
+# committed so `--test async_on_main` is a gate in CI, which has no compiler; one
+# directory per backend so the control is never the file someone forgot.
+!tension-core/tests/programs/fixtures/contract/*.wasm
 
 # TensionScript-emitted declarations (tension-framework/index.d.ts is tracked
 # and hand-written; ignore rules do not apply to already-tracked files)

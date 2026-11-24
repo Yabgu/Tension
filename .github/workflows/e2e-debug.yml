@@ -267,7 +267,16 @@ jobs:
       # same subject — stackful suspension — at the level the host ships, and the
       # suite that loads the committed fiber fixture. It needs no compiler either
       # (the artifact is committed), which is what lets this job run it.
+      #
+      # **`async_on_main` belongs here for the same reason and was the one missing**
+      # (DL39, I93). It is the only test in the tree that runs a plain
+      # `await asyncFn()` and compares the transcript against a fixed expectation,
+      # and it is the one that caught I90 — a whole backend losing its suspensions
+      # while every other suite stayed green. It could not run here before because
+      # both of its artifacts were built on demand and this job installs no
+      # compiler; they are committed now (`fixtures/contract/` for the continuation
+      # build, `fixtures/fiber/` for the fiber one), so the gate is real in CI.
       - name: Stackful proofs
         run: |
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
-            --test fiber --test fiber-executor --test fiber-runner
+            --test fiber --test fiber-executor --test fiber-runner --test async_on_main

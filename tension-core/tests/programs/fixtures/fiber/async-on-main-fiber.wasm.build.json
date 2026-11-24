@@ -1,0 +1,17 @@
+{
+  "compiler": "bf1ebc2770b8f8fc05ffa6b8c0b4a09e89a66dd97790064d684c92780ad56f81",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "source": "async/async-on-main.ts",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--exportStart",
+    "__start",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber"
+  ]
+}
