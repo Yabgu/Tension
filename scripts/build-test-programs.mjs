@@ -136,15 +136,35 @@ const WAKE_FLAGS = [
 ];
 
 /**
- * **The fiber backend's guest** (DL36): `THREAD_FLAGS` plus the backend flag.
+ * **The fiber backend's guest** (DL36, and DL37 for the second half): the thread
+ * flags, `--stackful-backend=fiber`, and **no `--enable stack-switching`**.
  *
  * The two backends are not interchangeable — a fiber guest calls the host to
  * suspend and a continuation guest suspends in wasm — so the artifact records
  * which one built it (`tension.stackful-backend`) and the host refuses a
- * mismatched pairing by name. That is why this list differs from `THREAD_FLAGS`
- * by exactly one flag.
+ * mismatched pairing by name.
+ *
+ * The flag is withheld **deliberately**, because the artifact proves it is not
+ * needed: a fiber build's suspension is a call, so it declares no continuation
+ * type and no tag, and this list being `THREAD_FLAGS` minus `stack-switching`
+ * plus the backend is what makes the committed fixture evidence of that (I85).
+ * Passing it as well produces the same bytes — measured, and asserted by
+ * `tests/compiler/stackful-fiber-pruned`.
  */
-const FIBER_FLAGS = [...THREAD_FLAGS, "--stackful-backend", "fiber"];
+const FIBER_FLAGS = [
+  // `THREAD_FLAGS` minus the `--enable stack-switching` **pair**, keeping every
+  // other flag in order — a filter that dropped the two tokens by value would
+  // leave the `--enable` that introduced them dangling, which the compiler reads
+  // as a repeated switch with a missing value.
+  ...THREAD_FLAGS.reduce((kept, flag, index, all) => {
+    if (flag === "--enable" && all[index + 1] === "stack-switching") return kept;
+    if (index > 0 && all[index - 1] === "--enable" && flag === "stack-switching") return kept;
+    kept.push(flag);
+    return kept;
+  }, []),
+  "--stackful-backend",
+  "fiber",
+];
 
 /**
  * The stackful single-store program. `--exportStart __start` makes the boot body

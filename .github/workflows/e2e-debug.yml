@@ -263,7 +263,11 @@ jobs:
       #
       # No `TENSION_TEST_ALLOW_SKIP`: a probe that cannot run must fail the job, not
       # become a green line with nothing behind it.
+      # **`fiber-runner` is in this run, not a run of its own** (DL37): it is the
+      # same subject — stackful suspension — at the level the host ships, and the
+      # suite that loads the committed fiber fixture. It needs no compiler either
+      # (the artifact is committed), which is what lets this job run it.
       - name: Stackful proofs
         run: |
           cargo test --manifest-path tension-core/Cargo.toml --no-default-features \
-            --test fiber --test fiber-executor
+            --test fiber --test fiber-executor --test fiber-runner

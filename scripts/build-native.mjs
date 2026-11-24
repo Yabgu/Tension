@@ -35,6 +35,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
+import { writeRuntimeRecord } from './lib/build-record.mjs';
 import { ensureSubmodules } from './lib/submodules.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
 import { readElfDynamic, runpathEntries } from './lib/elf.mjs';
@@ -914,6 +915,13 @@ function buildCore() {
   const coreBin = join(repo, 'tension-core', 'target', 'release', `tension-core${EXE}`);
   if (!existsSync(coreBin)) {
     fail(`cargo reported success but ${coreBin} is missing`);
+  }
+  // **What this build consumed, beside what it produced** (DL37, I86). Written
+  // here — by the step that ran cargo — because a record written anywhere else
+  // would be a claim about someone else's build. `--check` only reads it.
+  {
+    const record = writeRuntimeRecord(repo, 'release', coreBin);
+    note(`core: record ${record.inputFiles} inputs → ${basename(coreBin)}.build.json (${record.inputs.slice(0, 12)})`);
   }
 
   const destination = join(payload('core'), 'bin');

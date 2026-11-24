@@ -73,8 +73,14 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'node:fs';
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { REPO, capture, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
+import {
+  readBuildRecord as readArtifactRecord,
+  runtimeInputDigest,
+  writeRuntimeRecord,
+} from './lib/build-record.mjs';
 
 const CHECK_ONLY = process.argv.includes('--check');
 const PACKAGE = '@yabgu_gm/tensionscript';
@@ -156,6 +162,27 @@ function compareTrees(left, right) {
 }
 
 /// SHA-256 of a file, via Node rather than a platform tool.
+/**
+ * The compiler checkout's own record, and the digest its inputs give **now**.
+ *
+ * The module is imported **from that checkout** — `scripts/lib/build-record.mjs`,
+ * the one its build wrote the record with — so the canonical form has a single
+ * definition and a change to the input set moves both ends. A tree that has no
+ * such module (an older checkout) answers `null`, which is STALE with the reason.
+ */
+async function readCompilerInputDigest(dir, dist) {
+  const module = join(dir, 'scripts', 'lib', 'build-record.mjs');
+  if (!existsSync(module)) return null;
+  let helpers;
+  try {
+    helpers = await import(pathToFileURL(module).href);
+  } catch {
+    return null;
+  }
+  if (typeof helpers.compilerInputDigest !== 'function') return null;
+  return { record: helpers.readCompilerRecord(dist), current: helpers.compilerInputDigest(dir) };
+}
+
 /// The first 12 hex characters — long enough to be a fingerprint in a table cell,
 /// short enough to read, and never the thing a comparison uses.
 function short(hash) {
@@ -346,6 +373,17 @@ function build() {
         (ai ? ' — this is the `ai` feature; build-native.mjs turns it on only for TENSION_AI=1' : ''),
     );
   }
+  // **The dev binary's record, written by the step that built it** (DL37, I86).
+  // `build-native.mjs` writes the release one because it runs that cargo; this is
+  // the only place the dev binary is produced, so it writes its own. `--check`
+  // below never writes.
+  {
+    const dev = join(CORE, 'target', 'debug', process.platform === 'win32' ? 'tension-core.exe' : 'tension-core');
+    if (existsSync(dev)) {
+      const record = writeRuntimeRecord(REPO, 'debug', dev);
+      say(`runtime: record ${record.inputFiles} inputs → ${basename(dev)}.build.json (${record.inputs.slice(0, 12)})`);
+    }
+  }
 
   // 4. the guests the suites run
   say('guests: scripts/build-test-programs.mjs (and --debug)');
@@ -358,7 +396,7 @@ function build() {
 /**
  * @returns {{link: string, expected: string, actual: string, status: 'PASS'|'STALE'|'UNKNOWN'}[]}
  */
-function verify() {
+async function verify() {
   const rows = [];
   const row = (link, expected, actual, status) => rows.push({ link, expected, actual, status });
 
@@ -368,15 +406,38 @@ function verify() {
     row('compiler: installed dist', 'unknown', 'unknown', 'UNKNOWN');
     row('compiler: installed std', 'unknown', 'unknown', 'UNKNOWN');
   } else {
+    // **The bundle's own record, not its mtime** (DL37, I86). An mtime cannot say
+    // which sources produced a file — the lesson DL36 paid for one layer down — so
+    // `scripts/build.js` writes a content digest of `src/`, `cli/` and `std/`
+    // beside the artifact and this row recomputes it.
+    //
+    // **The digest's definition comes from the checkout being verified**, not from
+    // a copy here: `COMPILER_DIR/scripts/lib/build-record.mjs` is the module that
+    // wrote the record, so a change to the input set moves both ends together.
+    // A second copy of the canonical form is how a record and its check come to
+    // disagree.
     const dist = join(COMPILER_DIR, 'dist', 'assemblyscript.js');
-    const src = newest(join(COMPILER_DIR, 'src'), (name) => name.endsWith('.ts'));
-    const distMs = existsSync(dist) ? statSync(dist).mtimeMs : null;
-    row(
-      'compiler: src → dist/assemblyscript.js',
-      `built after ${stamp(src?.ms)}`,
-      distMs === null ? 'dist missing' : `built ${stamp(distMs)}`,
-      distMs !== null && src !== null && distMs >= src.ms ? 'PASS' : 'STALE',
-    );
+    const compilerRecord = await readCompilerInputDigest(COMPILER_DIR, dist);
+    if (compilerRecord === null) {
+      row(
+        'compiler: src → dist/assemblyscript.js',
+        'a record naming its inputs',
+        existsSync(dist) ? 'no build record beside dist' : 'dist missing',
+        'STALE',
+      );
+    } else {
+      const { record, current } = compilerRecord;
+      row(
+        'compiler: src → dist/assemblyscript.js',
+        `${current.files} inputs → ${short(current.hash)}`,
+        record === null
+          ? 'no build record beside dist'
+          : record.inputs === current.hash
+            ? `recorded ${short(record.inputs)}`
+            : `built from ${short(record.inputs)}`,
+        record !== null && record.inputs === current.hash ? 'PASS' : 'STALE',
+      );
+    }
 
     const installed = join(INSTALLED, 'dist', 'assemblyscript.js');
     if (!existsSync(dist) || !existsSync(installed)) {
@@ -403,21 +464,32 @@ function verify() {
 
   // The runtime, one row per profile: the release payload and the debug binary
   // VS Code launches are different artifacts and one can be stale alone.
-  const src = newest(join(CORE, 'src'));
+  //
+  // **Records, not mtimes** (DL37, I86). The binary's inputs are hashed into
+  // `<binary>.build.json` by the step that ran cargo (`build-native.mjs` for
+  // release, `build()` above for dev) and this recomputes the same digest. The
+  // mtime answered "was it touched after the source", which is not the question:
+  // a checkout, a rebase or a `touch` all move it without changing what the
+  // binary was built from, and a compiler-only edit moves nothing at all.
+  const digest = runtimeInputDigest(REPO);
   for (const profile of ['release', 'debug']) {
     const binary = join(CORE, 'target', profile, 'tension-core.exe');
     const binaryPosix = join(CORE, 'target', profile, 'tension-core');
-    const exists = existsSync(binary) ? binary : existsSync(binaryPosix) ? binaryPosix : null;
-    if (exists === null) {
-      row(`runtime: src → ${profile}`, `newer than ${stamp(src?.ms)}`, 'binary missing', 'STALE');
+    const found = existsSync(binary) ? binary : existsSync(binaryPosix) ? binaryPosix : null;
+    if (found === null) {
+      row(`runtime: src → ${profile}`, `${digest.files} inputs → ${short(digest.hash)}`, 'binary missing', 'STALE');
       continue;
     }
-    const ms = statSync(exists).mtimeMs;
+    const record = readArtifactRecord(found);
     row(
       `runtime: src → ${profile}`,
-      `newer than ${stamp(src?.ms)}`,
-      `built ${stamp(ms)}`,
-      src !== null && ms >= src.ms ? 'PASS' : 'STALE',
+      `${digest.files} inputs → ${short(digest.hash)}`,
+      record === null
+        ? 'no build record beside the binary'
+        : record.inputs === digest.hash
+          ? `recorded ${short(record.inputs)}`
+          : `built from ${short(record.inputs)}`,
+      record !== null && record.inputs === digest.hash ? 'PASS' : 'STALE',
     );
   }
 
@@ -606,7 +678,7 @@ try {
     build();
     say('chain built; verifying');
   }
-  const rows = verify();
+  const rows = await verify();
   const bad = printTable(rows);
   process.exit(bad === 0 ? 0 : 1);
 } catch (error) {
