@@ -69,6 +69,15 @@ is the same module (`lib/cases.js`) on both paths, so the two cannot disagree
 about what a verdict means. The capture records the worker count, because two
 runs that were measured under different parallelism should say so.
 
+**Run it alone.** A case is only as trustworthy as the machine it ran on: lldb is
+spawned per case, and when other work is competing for the cores its attach or its
+breakpoint binding fails — which the runner records as `unresolved`
+("the guest ran and the breakpoint matched no location"), not as a pass, but the
+*number* still moves. Measured twice: **62/82 with 14 `unresolved`** while eight
+`cargo test` suites were running on the same box, **71/82** on the same tree with
+nothing else going (DL38; I23 named the same effect earlier). A census quoted next
+to other measurements needs that context or it is misleading.
+
 One line is printed per completed case (`ok 12/82 name`, or the failing verdict
 with its detail), so a long run can be followed instead of polled blind. The
 [tally](#three-questions-asked-separately) at the end is unchanged.

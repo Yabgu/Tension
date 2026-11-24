@@ -87,6 +87,30 @@ stack switching, and it is not what `examples/async-on-main` runs.
   cross-thread completion, which needs a producer (OGRE's loader) and therefore a
   capability.
 
+### The two backends, and what they agree on
+
+A stackful suspension has two expressions, chosen by `--stackful-backend` and
+recorded in the artifact as `tension.stackful-backend`: `continuation` (wasm
+`suspend`, resumed out of the executor's table) and `fiber` (a call to
+`scheduler::park` that the host turns into an OS-thread fiber switch). On the
+fiber backend an awaited callee's body runs **on the caller's stack**: `drive()`
+calls it, it settles, and the caller's `await` reads the value one frame deeper —
+no park and no resume for that path. A suspension *inside* that body (a
+`policy.await` on a producer's pair, an external completion) still parks the
+fiber, and the resume continues exactly where it stopped because the whole stack
+is preserved. Both backends are asserted against the **same** contract transcript,
+including its suspension count: `tension-core/tests/async_on_main.rs` runs
+`the_shared_program_prints_the_contract_transcript` and
+`the_fiber_backend_prints_the_same_contract_transcript` against one expected file,
+from committed artifacts (`tests/programs/fixtures/contract/` and
+`.../fixtures/fiber/`) so the assertion also runs where no compiler is installed.
+
+What they do **not** yet share: the fiber backend has no guest-side core loop, so
+a program that observes the loop (a pump-step count, ready-queue order) or that
+uses the guest-side worker executor (`__workerMain` → `__serveOne`) does not run on
+it — the intrinsics that path calls are `unreachable` in a fiber build. That is a
+known limitation, not a passing case: `DL39-REPORT.md` records the transcripts.
+
 ## 5. Where to read more
 
 Upstream, in the pinned submodule:
