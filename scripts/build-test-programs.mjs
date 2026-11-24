@@ -262,6 +262,10 @@ const PROGRAMS = {
   "async-on-main": ASYNC_ON_MAIN_FLAGS,
   // Built from `async/async-on-main.ts` — see `ALIASES` below.
   "async-on-main-fiber": ASYNC_ON_MAIN_FIBER_FLAGS,
+  // DL40: the three cross-store programs on the fiber backend.
+  "spawn-join-fiber": FIBER_FLAGS,
+  "two-workers-fiber": FIBER_FLAGS,
+  "spawn-entry-async-fiber": FIBER_FLAGS,
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,

@@ -17,4 +17,10 @@
 
 export const PROGRAM_ALIASES = {
   "async-on-main-fiber": "async/async-on-main.ts",
+  // DL40: the three cross-store programs, on the fiber backend. Same sources,
+  // fiber flags, no `--enable stack-switching` — the twins the thread suite
+  // asserts beside their continuation builds.
+  "spawn-join-fiber": "thread/spawn-join.ts",
+  "two-workers-fiber": "thread/two-workers.ts",
+  "spawn-entry-async-fiber": "thread/spawn-entry-async.ts",
 };

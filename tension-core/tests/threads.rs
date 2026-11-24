@@ -760,3 +760,192 @@ fn an_async_worker_entry_is_served_as_its_spawn_entry() {
         "`detached` must not appear in a healthy run"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The same three programs on the fiber backend (DL40, I94)
+// ---------------------------------------------------------------------------
+
+/// **Every value these programs print, on both backends, compared.**
+///
+/// The continuation build of each is asserted by its own test above, with the
+/// exact numbers that test was written for. This one asks the other question: does
+/// the *same program*, built for the fiber backend, produce the same values —
+/// `answer=242`, `observed=12`, `valueSum=66`, `workerSum=30`, `join=0`, and the
+/// worker's own lines.
+///
+/// # The one documented difference: `$starts` indices
+///
+/// `workIndex`, `deliverIndex` and `spawnIndexOf` print **positions in the
+/// module's own `$starts` table**, and the two shells do not build the same table:
+/// the continuation shell's holds `main$start`, `~asyncMainStart`, the core loop
+/// and each spawn entry, and the fiber shell (DL37) has no core loop to hold. So a
+/// spawn entry legitimately lands at a different index. The assertion is therefore
+/// the backend-independent one — **the index exists and is not the factory's** —
+/// while the exact `=3` stays in the continuation test, where it is a fact of that
+/// build. That is a narrowed claim in one placed, named here rather than hidden:
+/// the parity table in `DL40-REPORT.md` records both transcripts.
+///
+/// # What is not narrowed
+///
+/// Everything a *task* is for: the value that crossed two stores, the count and the
+/// sum over twelve tasks, the worker's id riding home in the reply, and every join
+/// answering 0.
+#[test]
+fn the_cross_store_programs_print_the_same_values_on_the_fiber_backend() {
+    // The keys that are **not values**: `$starts` positions (a fact of the module's
+    // table, and the two shells build different tables) and `pumpRounds` (how many
+    // iterations the guest's own loop took before the reply landed — a measurement
+    // that moves between two runs of the *same* build, which is exactly why the
+    // continuation tests use it as a bounded escape and never assert it).
+    //
+    // Every other key a program prints must match the continuation build exactly.
+    const NON_CONTRACT_KEYS: [&str; 4] = ["workIndex", "deliverIndex", "spawnIndexOf", "pumpRounds"];
+
+    for name in ["spawn-join", "two-workers", "spawn-entry-async"] {
+        let twin = format!("{name}-fiber");
+        // **Committed fixtures when there is no compiler** (DL39's rule): the
+        // continuation artifact from `fixtures/thread/`, the fiber one from
+        // `fixtures/fiber/`. The same rule both suites use, so CI — which installs
+        // no compiler — runs this pair rather than skipping it.
+        let continuation = support_programs::guest_thread_fixture(name);
+        let fiber = support_programs::guest_fiber_fixture(&twin);
+
+        let plain = run_artifact(&continuation, &[]);
+        let on_fiber = run_artifact(&fiber, &[]);
+
+        assert_eq!(
+            plain.status, Some(0),
+            "{name}: the continuation build failed; stdout:\n{}\nstderr:\n{}",
+            plain.stdout, plain.stderr
+        );
+        assert!(
+            on_fiber.status.is_some(),
+            "{twin}: the fiber build did not finish in 30 s — a served task parked and \
+             nothing resumed it. That is exactly how the pre-DL40 artifact fails. \
+             stdout:\n{}\nstderr:\n{}",
+            on_fiber.stdout, on_fiber.stderr
+        );
+        assert_eq!(
+            on_fiber.status, Some(0),
+            "{twin}: the fiber build failed; stdout:\n{}\nstderr:\n{}",
+            on_fiber.stdout, on_fiber.stderr
+        );
+
+        let plain_values = key_values(&plain.stdout);
+        let fiber_values = key_values(&on_fiber.stdout);
+
+        for (key, value) in &plain_values {
+            let Some(other) = fiber_values.get(key) else {
+                panic!(
+                    "{twin}: prints no `{key}=` line, and the continuation build prints `{key}={value}`. \
+                     fiber stdout:\n{}",
+                    on_fiber.stdout
+                );
+            };
+            if NON_CONTRACT_KEYS.contains(&key.as_str()) {
+                if key == "pumpRounds" {
+                    // A count of iterations, so the only property worth asserting is
+                    // that it is one — a run that never pumped prints nothing here.
+                    assert!(
+                        other.parse::<i32>().is_ok(),
+                        "{twin}: `pumpRounds={other}` is not a count"
+                    );
+                    continue;
+                }
+                // A `$starts` position: present, non-negative, and not the
+                // factory's index — the properties that hold on both backends.
+                let index: i32 = other.parse().unwrap_or(-1);
+                assert!(
+                    index >= 0,
+                    "{twin}: `{key}={other}` is not a resolved spawn entry"
+                );
+                assert_ne!(index, 4, "{twin}: `{key}=4` is the factory, not the spawn entry");
+                continue;
+            }
+            assert_eq!(
+                value, other,
+                "{twin}: `{key}={other}` where the continuation build prints `{key}={value}`. \
+                 The two backends share one task model (DL40); a value that crosses on one and \
+                 not the other is the defect this test exists for.\n\
+                 fiber stdout:\n{}\nfiber stderr:\n{}",
+                on_fiber.stdout, on_fiber.stderr
+            );
+        }
+        // And nothing the continuation build did not print: a fiber build that
+        // invented a line is a difference too.
+        for key in fiber_values.keys() {
+            assert!(
+                plain_values.contains_key(key),
+                "{twin}: prints `{key}=`, which the continuation build does not"
+            );
+        }
+    }
+}
+
+/// One run of an artifact by path, with the log level the thread suites use — and
+/// **bounded**, because the failure this pair test exists to catch is a hang.
+///
+/// The pre-DL40 fiber artifact parks a served entry that nothing resumes: the
+/// worker never returns and `__threadJoin` waits forever. An unbounded `output()`
+/// turns that into a hung job with no message (measured: the red case sat for the
+/// whole 600 s timeout), which is the silence this arc exists to remove. A deadline
+/// turns it into `status: None` and an assertion that names it.
+fn run_artifact(guest: &std::path::Path, extra: &[&str]) -> Run {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_tension-core"))
+        .arg("--executors")
+        .arg("2")
+        .args(extra)
+        .arg(guest)
+        .env("TENSION_LOG_LEVEL", "debug")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("the interpreter runs");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let mut timed_out = false;
+    loop {
+        match child.try_wait().expect("the interpreter is waitable") {
+            Some(_) => break,
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                timed_out = true;
+                break;
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    }
+    let output = child.wait_with_output().expect("the output is collectable");
+    Run {
+        // `None` means "did not finish in 30 s" — not an exit code, and never an
+        // accidental pass.
+        status: if timed_out { None } else { output.status.code() },
+        stdout: String::from_utf8_lossy(&output.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&output.stderr).to_string(),
+    }
+}
+
+/// Every `key=value` line the guest printed, as a map.
+///
+/// **Only whole lines that look like a pair.** A guest line that is prose (the
+/// worker's `worker: entered (async entry)`) is not a key/value and is compared
+/// separately by the tests that care about it; parsing it as one would invent a key
+/// from whatever preceded the first `=`.
+fn key_values(stdout: &str) -> BTreeMap<String, String> {
+    let mut map = BTreeMap::new();
+    for line in stdout.lines() {
+        let line = line.trim();
+        // A log line glued to a guest line (the guest's `print` does not stop the
+        // host's logger from writing) leaves a timestamp inside the value; cut at
+        // it so the value is the guest's own.
+        let line = match line.find("20") {
+            Some(at) if line[at..].contains("T") && line[at..].contains('Z') && at > 0 => &line[..at],
+            _ => line,
+        };
+        let Some((key, value)) = line.split_once('=') else { continue };
+        if key.is_empty() || key.contains(' ') || key.contains(':') {
+            continue;
+        }
+        map.insert(key.to_string(), value.trim().to_string());
+    }
+    map
+}

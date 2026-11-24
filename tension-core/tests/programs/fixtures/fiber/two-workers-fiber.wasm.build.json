@@ -1,0 +1,23 @@
+{
+  "compiler": "6edd95979ae409959d8501e8417fdee5073bb542c89259b2fc5a876cbd071b14",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "source": "thread/two-workers.ts",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--sharedMemory",
+    "--importMemory",
+    "--initialMemory",
+    "2",
+    "--maximumMemory",
+    "256",
+    "--enable",
+    "threads",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber"
+  ]
+}
