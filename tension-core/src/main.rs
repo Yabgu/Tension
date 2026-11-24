@@ -688,6 +688,8 @@ fn signal_session_stop(store: &mut wasmtime::Store<HostState>, instance: &wasmti
 fn thread_boot(
     store: &mut Store<HostState>,
     instance: &wasmtime::Instance,
+    executor: tension_core::fiber::Backend,
+    completions: Vec<(u32, u32, i32)>,
 ) -> anyhow::Result<()> {
     /// The ring capacity main carves with. The guest's own default
     /// (`std/assembly/thread.ts`, `DEFAULT_CAPACITY`) — stated here because the
@@ -732,10 +734,73 @@ fn thread_boot(
 
     // `__start` here, not later: a shared build's boot body **is** this entry,
     // and the `() -> ()` call below finds nothing to do.
-    let started = instance
+    let start = instance
         .get_typed_func::<(), i32>(&mut *store, "__start")
-        .map_err(|_| anyhow::anyhow!("the module exports no `__start() -> i32`"))?
-        .call(&mut *store, ())?;
+        .map_err(|_| anyhow::anyhow!("the module exports no `__start() -> i32`"))?;
+
+    let started = match executor {
+        tension_core::fiber::Backend::Continuation => start.call(&mut *store, ())?,
+        // **The fiber backend runs the same entry, on a fiber.** Everything above
+        // (carve, arena, verify) is unchanged: those are calls that cannot suspend.
+        // The difference is only what happens when the guest parks — the fiber
+        // hands control back here instead of returning from wasm entirely.
+        tension_core::fiber::Backend::Fiber => {
+            // **The producer, and where the I70 ordering comes from.** It is asked
+            // once per park, *after* the guest has parked, so "park, then wake" is
+            // the shape of the loop rather than something a test has to arrange.
+            // A staged completion is consumed when used: one flag, one resume — a
+            // second park on the same pair would otherwise be woken by a value that
+            // has already been delivered.
+            let mut staged = completions;
+            let outcome = tension_core::fiber::run(
+                &mut *store,
+                *instance,
+                |store, instance| {
+                    let start = instance
+                        .get_typed_func::<(), i32>(&mut *store, "__start")
+                        .expect("__start was resolved above");
+                    Ok(start.call(store, ())?)
+                },
+                |park| {
+                    let index = staged
+                        .iter()
+                        .position(|(class, key, _)| *class == park.class && *key == park.key)?;
+                    let (_, _, value) = staged.remove(index);
+                    // **Two lines, one fact each.** A single line naming both the
+                    // park and the completion would make a transcript unable to
+                    // say which came first — and "the wake came after the park" is
+                    // the ordering I70 is about.
+                    logging::log(
+                        Level::Info,
+                        "fiber",
+                        &format!(
+                            "task {} parked on class {} key {}",
+                            park.task, park.class, park.key
+                        ),
+                    );
+                    logging::log(
+                        Level::Info,
+                        "fiber",
+                        &format!(
+                            "completing class {} key {} with {value} → resume",
+                            park.class, park.key
+                        ),
+                    );
+                    Some(value)
+                },
+            )?;
+            match outcome {
+                tension_core::fiber::Outcome::Done(status) => status,
+                // **Refused, not hung.** The fiber is still suspended and cannot be
+                // dropped, so the stack is leaked; the run fails by name so that a
+                // task nobody will complete is a reported fact and not a process
+                // that sits there or exits 0 having done nothing.
+                tension_core::fiber::Outcome::Stranded(stranded) => {
+                    anyhow::bail!("{executor_name}: {stranded}", executor_name = "fiber executor")
+                }
+            }
+        }
+    };
     logging::log(
         Level::Debug,
         "thread",
@@ -817,6 +882,10 @@ options:
                          The producer for a looping cost measurement, where the
                          host learns of a park the instant it is recorded.
                          Needs --executors and a --sharedMemory guest
+  --executor <name>      force `fiber` or `continuation`, for tests only. The
+                         default reads `tension.stackful-backend` out of the
+                         artifact (absent = continuation) and refuses a guest
+                         built for the other backend by name
   --executors <N>        worker threads for a `--sharedMemory` guest (default 0).
                          Main is always one executor, so the guest's
                          `__executorCount()` answers N + 1; the worker threads
@@ -931,6 +1000,13 @@ enum HostOptionKind {
     /// once a matching park lands, so the refusal path can be measured end to end.
     DeliverForeign,
     Executors,
+    /// `--executor <fiber|continuation>`: **force** one executor. Test-only.
+    ///
+    /// The default path never reads it: an execution chooses its executor from the
+    /// artifact's own `tension.stackful-backend` record (`fiber::Backend::of`), and
+    /// this switch exists so a *mismatched* pairing — a guest built for the other
+    /// backend — can be produced on purpose and its refusal measured.
+    Executor,
     Help,
     Version,
     /// `--`, the end of the options. In the table because the `USAGE` check has
@@ -1058,6 +1134,12 @@ const HOST_OPTIONS: &[HostOption] = &[
         missing_value: "needs a count",
     },
     HostOption {
+        spellings: &["--executor"],
+        value: ValueForm::Both,
+        kind: HostOptionKind::Executor,
+        missing_value: "needs `fiber` or `continuation`",
+    },
+    HostOption {
         spellings: &["-h", "--help"],
         value: ValueForm::None,
         kind: HostOptionKind::Help,
@@ -1144,7 +1226,7 @@ struct Cli {
     /// A2 test-only: post three JOB_DONE events before `_start_game`.
     post_test_events: bool,
     /// `--post-completion <class>[,<key>]`: one completion for a chosen pair.
-    post_completion: Option<(u32, u32)>,
+    post_completion: Option<(u32, u32, i32)>,
     /// `--post-completion-after-parks <class>,<key>,<count>`: one completion, posted
     /// once `count` parks have landed on the pair (DL22's ordering).
     post_completion_after_parks: Option<(u32, u32, u32)>,
@@ -1154,6 +1236,11 @@ struct Cli {
     /// `--deliver-foreign <class>,<key>,<task_id>`: inject one delivery the ledger never
     /// matched (DL28's instrument).
     deliver_foreign: Option<(u32, u32, u64)>,
+    /// `--executor <fiber|continuation>`: force one executor, for tests.
+    ///
+    /// `None` — the default — reads the choice out of the artifact. See
+    /// [`HostOptionKind::Executor`].
+    executor: Option<tension_core::fiber::Backend>,
     /// `--executors <N>`: worker threads for a shared-memory guest. Main is
     /// always there, so `__executorCount()` answers `N + 1`.
     executors: usize,
@@ -1178,11 +1265,12 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
     let mut session_open = false;
     let mut session_callbacks: Option<(u32, u32)> = None;
     let mut post_test_events = false;
-    let mut post_completion: Option<(u32, u32)> = None;
+    let mut post_completion: Option<(u32, u32, i32)> = None;
     let mut post_completion_after_parks: Option<(u32, u32, u32)> = None;
     let mut post_completion_each_park: Option<(u32, u32)> = None;
     let mut deliver_foreign: Option<(u32, u32, u64)> = None;
     let mut executors = 0usize;
+    let mut executor: Option<tension_core::fiber::Backend> = None;
     let mut wasm_path = None;
     // What the host understood, canonicalised to `--flag value` in the order it
     // was given. Used only to suggest a corrected command line when a host option
@@ -1259,6 +1347,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
                     Some(parse_completion_after_parks(required(option, &value)?)?)
             }
             HostOptionKind::Executors => executors = parse_executors(required(option, &value)?)?,
+            HostOptionKind::Executor => executor = Some(parse_executor(required(option, &value)?)?),
             HostOptionKind::Help => {
                 println!("{USAGE}");
                 // `--help` starts the process far enough to name the backend it
@@ -1299,6 +1388,7 @@ fn parse_cli(argv: Vec<String>) -> Result<Cli, String> {
         session_callbacks,
         post_test_events,
         post_completion,
+        executor,
         post_completion_after_parks,
         post_completion_each_park,
         deliver_foreign,
@@ -1395,7 +1485,8 @@ fn misdirected_host_option(
     None
 }
 
-/// Parse `--post-completion`'s value: `<CLASS>[,<KEY>]`, key defaulting to 0.
+/// Parse `--post-completion`'s value: `<CLASS>[,<KEY>[,<VALUE>]]`, key and value
+/// defaulting to 0.
 ///
 /// The pair is the *producer's*: a class id from the session's catalogue
 /// (`session::arena::CLASS_*`) and a submit-time key the producer minted. Both are
@@ -1403,11 +1494,22 @@ fn misdirected_host_option(
 /// catalogue, because a test producer may legitimately name a class the host has
 /// never declared, and `posting.post` refuses an unknown class with a better
 /// message than a parse error would.
-fn parse_completion(value: &str) -> Result<(u32, u32), String> {
-    let (class, key) = match value.split_once(',') {
-        Some((class, key)) => (class, key),
-        None => (value, "0"),
-    };
+fn parse_completion(value: &str) -> Result<(u32, u32, i32), String> {
+    // **Three optional fields, and the third is the payload (DL36).** Until a
+    // stackful await could return a producer's value, a completion's payload was
+    // always 0 and the flag did not need to say so. It does now: I70's assertion is
+    // that the awaited value **equals the producer's**, and a producer that can
+    // only say 0 cannot express it. Absent, the value is 0 and the flag means
+    // exactly what it meant before.
+    let mut fields = value.split(',');
+    let class = fields.next().unwrap_or(value);
+    let key = fields.next().unwrap_or("0");
+    let payload = fields.next();
+    if fields.next().is_some() {
+        return Err(format!(
+            "`--post-completion {value}`: expected <CLASS>[,<KEY>[,<VALUE>]]"
+        ));
+    }
     let class: u32 = class
         .trim()
         .parse()
@@ -1416,7 +1518,14 @@ fn parse_completion(value: &str) -> Result<(u32, u32), String> {
         .trim()
         .parse()
         .map_err(|_| format!("`--post-completion {value}`: `{key}` is not a key"))?;
-    Ok((class, key))
+    let payload: i32 = match payload {
+        Some(payload) => payload
+            .trim()
+            .parse()
+            .map_err(|_| format!("`--post-completion {value}`: `{payload}` is not a value"))?,
+        None => 0,
+    };
+    Ok((class, key, payload))
 }
 
 /// Parse `--post-completion-after-parks`'s value: `<CLASS>,<KEY>,<COUNT>`.
@@ -1497,6 +1606,21 @@ fn parse_class_count(flag: &str, value: &str) -> Result<(u32, u32), String> {
         return Err(format!("`{flag} {value}`: a count of 0 posts nothing and measures nothing"));
     }
     Ok((class, count))
+}
+
+/// Parse `--executor`'s value: one of the two backend names, and nothing else.
+///
+/// A typo must not fall back to the default: the whole point of this switch is to
+/// pair a guest with the *other* executor, so silently choosing the expected one
+/// would make a mismatch test pass by testing nothing.
+fn parse_executor(value: &str) -> Result<tension_core::fiber::Backend, String> {
+    match value {
+        "fiber" => Ok(tension_core::fiber::Backend::Fiber),
+        "continuation" => Ok(tension_core::fiber::Backend::Continuation),
+        other => Err(format!(
+            "`--executor {other}`: expected `fiber` or `continuation`"
+        )),
+    }
 }
 
 /// Parse `--executors`'s value: a worker count, bounded by what an `i32` id
@@ -1957,6 +2081,49 @@ fn main() -> anyhow::Result<()> {
         }
     }
 
+    // ── which executor ──────────────────────────────────────────────────────
+    //
+    // **Read out of the artifact, not chosen by a flag** (DL36 §1.3). The module's
+    // `tension.stackful-backend` section says which backend built it, and the two
+    // are not interchangeable: a continuation guest parks inside wasm `suspend` and
+    // a fiber guest parks by calling the host, so running one on the other's
+    // executor is a module that cannot make progress.
+    //
+    // So the pairing is checked **before the module is instantiated** and a
+    // mismatch is refused by name, in the same sentence in both directions. The
+    // bytes are read here and again by `GuestHost::new`; a second `read` of a file
+    // the OS has already cached is cheaper than threading the bytes through a
+    // constructor whose whole point is that it owns the load.
+    let module_bytes = std::fs::read(&config.guest_path)
+        .map_err(|error| anyhow::anyhow!("{}: {error}", config.guest_path))?;
+    let guest_backend = tension_core::fiber::Backend::of(&module_bytes);
+    // `--executor` forces the pairing, for tests. The default path never reads it.
+    let executor = cli
+        .executor
+        .unwrap_or(guest_backend);
+    if executor != guest_backend {
+        // Exit 2, like every other load-time refusal: the command line and the
+        // artifact disagree, nothing about the guest was wrong.
+        eprintln!(
+            "tension-core: {}",
+            tension_core::fiber::Mismatch { guest: guest_backend, executor }
+        );
+        std::process::exit(2);
+    }
+    logging::log(
+        logging::Level::Info,
+        "core",
+        &format!("executor: {}", executor.label()),
+    );
+    // The completions a fiber guest's parks wait for, in the order the flag gave
+    // them. Empty for the continuation backend, whose parks are resolved by the
+    // promise path's own delivery.
+    let fiber_completions: Vec<(u32, u32, i32)> = if executor == tension_core::fiber::Backend::Fiber {
+        cli.post_completion.into_iter().collect()
+    } else {
+        Vec::new()
+    };
+
     // One guest: engine handle, module, store, linker, session. The session is
     // created but not installed — the capabilities' region requirements have to
     // be known first, and they are not loaded until below.
@@ -2194,7 +2361,7 @@ fn main() -> anyhow::Result<()> {
     // An ordinary guest exports no `__threadInit` and takes none of these steps;
     // it keeps the `__start` call below exactly as it was.
     if store.data().executors.is_some() {
-        thread_boot(&mut store, &instance)?;
+        thread_boot(&mut store, &instance, executor, fiber_completions)?;
     }
 
     // TensionScript's runtime initializer, when the guest exports one.
@@ -2344,7 +2511,11 @@ fn main() -> anyhow::Result<()> {
     // (§4.3's sticky half). Posted through the same face `--post-test-events`
     // uses, so it reaches `scheduler::deliver` and — through the pool's fallback
     // — a worker's park.
-    if let Some((class, key)) = config.post_completion {
+    // **Not for a fiber guest.** Its park is resolved by the fiber executor's own
+    // producer (the staged completion handed to `thread_boot`), so posting here as
+    // well would resolve the same park twice — once through the promise path's
+    // `__taskWake`, which this backend does not use.
+    if let Some((class, key, payload)) = config.post_completion.filter(|_| executor != tension_core::fiber::Backend::Fiber) {
         // **Straight to the pool's ledger, not through the posting ring.** The
         // ring's completions are collected by an epoch publish, and a plain guest
         // like this one never pumps an epoch — so a ring post would sit unread and
@@ -2357,12 +2528,12 @@ fn main() -> anyhow::Result<()> {
         // shorter door for a test producer.
         match store.data().executors.clone() {
             Some(pool) => {
-                let owner = pool.deliver(class, key, 0);
+                let owner = pool.deliver(class, key, payload);
                 logging::log(
                     Level::Info,
                     "core",
                     &format!(
-                        "--post-completion: class {class} key {key} -> {}",
+                        "--post-completion: class {class} key {key} value {payload} -> {}",
                         match owner {
                             Some(owner) => format!("matched a park on executor {owner}"),
                             None => "buffered (no park yet: sticky)".to_string(),
@@ -3613,6 +3784,9 @@ mod host_option_table_tests {
                     HostOptionKind::PostCompletionAfterParks => "4,7,2",
                     HostOptionKind::PostCompletionEachPark => "4,100",
                     HostOptionKind::DeliverForeign => "4,7,9999",
+                    // An **enumerated** value, so `value` is refused by design and
+                    // would be a parse disagreement rather than a table one.
+                    HostOptionKind::Executor => "fiber",
                     _ => "value",
                 };
                 let mut argv = vec![spelling.to_string()];

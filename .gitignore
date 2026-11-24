@@ -71,6 +71,11 @@ tension-audio.wav
 # line and the `Wake path guard` step failed by name — the negation is what makes
 # the fixture travel, not the `git add`.
 !tension-core/tests/programs/fixtures/thread/*.wasm
+# … and the fiber guest the fiber executor's tests load (DL36). Same reason: the
+# CI job that runs those tests has no compiler, and the artifact **is** the
+# compiler behaviour under test (the `tension.stackful-backend` record). Its
+# `.build.json` sidecar records the sha256 and flags that produced it.
+!tension-core/tests/programs/fixtures/fiber/*.wasm
 
 # TensionScript-emitted declarations (tension-framework/index.d.ts is tracked
 # and hand-written; ignore rules do not apply to already-tracked files)

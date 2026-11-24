@@ -1,0 +1,25 @@
+{
+  "compiler": "a1ccac356de5ddb5eb9a0fbc29af40f0cfe2f61f443e8cbe6e1164c3ab0c50d5",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "source": "fiber/i70-fiber.ts",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--sharedMemory",
+    "--importMemory",
+    "--initialMemory",
+    "2",
+    "--maximumMemory",
+    "256",
+    "--enable",
+    "threads",
+    "--enable",
+    "stack-switching",
+    "--optimizeLevel",
+    "0",
+    "--stackful-backend",
+    "fiber"
+  ]
+}

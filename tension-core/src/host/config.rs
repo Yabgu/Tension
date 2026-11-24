@@ -79,7 +79,7 @@ pub struct HostConfig {
     /// `--post-completion <class>[,<key>]`: one completion for a chosen pair,
     /// posted before the entry runs so a park can claim it (§4.3's sticky half).
     /// `None` posts nothing.
-    pub post_completion: Option<(u32, u32)>,
+    pub post_completion: Option<(u32, u32, i32)>,
     /// `--post-completion-after-parks <class>,<key>,<count>`: one completion for a
     /// chosen pair, posted **once `count` parks have landed on it** — the later
     /// ordering, which is what a real producer does and what DL22's defect needs.

@@ -18,6 +18,11 @@
 // refuses a continuation module by name. In the library so integration tests
 // gate on the same capability the host uses, not a second platform rule.
 pub mod async_backend;
+// The fiber executor: one suspended stackful task per OS thread. In the library
+// because the *binary* chooses it by reading the artifact (so the choice is the
+// host's, not an embedder's), and because `tests/fiber-runner.rs` drives it
+// directly for the two-thread case — a process the binary cannot express.
+pub mod fiber;
 pub mod logging;
 pub mod pipeline;
 pub mod pipeline_default;

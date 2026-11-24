@@ -455,6 +455,17 @@ pub fn scheduler_park(caller: &mut Caller<'_, HostState>, task_id: i64, class: i
             .queue_refusal(task_id, refusal.status());
         return;
     }
+    // **A fiber guest suspends here** (DL36). The record above is kept — it is what
+    // a strand refusal reads — and then control leaves the guest entirely: the
+    // executor's loop resumes this call when it has a completion for the pair.
+    //
+    // `false` means no fiber is running, i.e. a continuation guest, and the promise
+    // path below is unchanged for it. The two paths cannot both fire: a fiber is
+    // published for exactly one wasm call, and only the fiber executor publishes
+    // one.
+    if tension_core::fiber::suspend_current(tension_core::fiber::Park { task: task_id, class, key }) {
+        return;
+    }
     // A completion that arrived before this park (§4.9): hand it over now. The
     // task is already in the guest's slot table — `__taskPark` wrote it before
     // calling — so the wake has somewhere to land, and the next host-loop
@@ -489,6 +500,24 @@ pub fn link_scheduler(linker: &mut Linker<HostState>) -> anyhow::Result<()> {
         "park",
         |mut caller: Caller<'_, HostState>, task_id: i64, class: i32, key: i32| {
             scheduler_park(&mut caller, task_id, class, key)
+        },
+    )?;
+    // **The fiber backend's other half** (DL36): the payload the wake carried,
+    // asked for by the task that was just resumed.
+    //
+    // A separate import rather than a return value on `park`, because `park`'s
+    // signature is the contract's (`void(i64,i32,i32)` — a void import has nowhere
+    // to return a value, which is why a refusal is a completion). The guest calls
+    // this immediately after the park returns, which the compiler emits; the answer
+    // is a thread-local, because exactly one fiber is suspended per thread (DL24).
+    //
+    // Registered for **every** guest, like `park`: an import a module does not
+    // reference is never resolved, so this costs a continuation guest nothing.
+    linker.func_wrap(
+        "scheduler",
+        "completion",
+        |_caller: Caller<'_, HostState>, _task_id: i64| -> i32 {
+            tension_core::fiber::completion_value()
         },
     )?;
     Ok(())
