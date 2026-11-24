@@ -11,17 +11,30 @@
 //!   instruction anywhere in the module, so **running it needs no continuation
 //!   table and the engine never executes a suspension**.
 //!
-//! That last sentence is deliberately narrower than it was when this round
-//! started, because the wider one was measured false: a fiber artifact **still
-//! declares the shell's continuation types and tags** (two `cont` types, three
-//! tags in `tests/programs/fixtures/fiber/i70-fiber.wasm`), and an engine with
-//! `wasm_stack_switching` off refuses to *parse* those — "cannot define
-//! continuation types when stack switching is disabled". So the mechanism is
-//! fiber-only and the type section is not: a stackful guest still cannot load on
-//! the Windows target (I16), and dropping the unused types is a lowering change
-//! this round did not make (I85). What *is* true — and what `tests/fiber-runner.rs`
-//! asserts — is that the run's suspension is the host's, one suspended fiber per
-//! OS thread, with no `suspend` in the artifact at all.
+//! That last sentence is measured at both ends now. The **mechanism** was always
+//! fiber-only. Since DL37 the **type section** is too: a
+//! `--stackful-backend=fiber` build declares no `cont` type and no tag section,
+//! and asks for no continuation feature, so a stock engine — stack switching
+//! off — parses it. Measured on the committed fixture
+//! (`tests/programs/fixtures/fiber/i70-fiber.wasm`, built by
+//! `dist/assemblyscript.js` `1065f81c4a54`): zero `0x5d` bytes in the type
+//! section, zero tag sections, `tension.stackful-backend` = `fiber`. The older
+//! claim that a fiber artifact "still declares the shell's continuation types
+//! and tags" (two `cont` types, three tags) described the pre-DL37 lowering and
+//! is no longer true of this fixture; I85 is what removed it.
+//!
+//! The remaining question was **this module's**, and it is answered: the executor
+//! runs on the Windows target (measured there 2026-11-24). The fixture parks on
+//! (class 4, key 7), the host's `--post-completion 4,7,500` answers *after* the
+//! park, the task resumes and reads `value=500` — the producer's word, not a zero
+//! — and the run exits 0. So a stackful guest built for this executor both loads
+//! **and runs** on Windows. I16 is unchanged and narrower than it was read: it is
+//! the *continuation* backend that wasmtime will not run on this target.
+//!
+//! The suite that asserts these five claims is `tests/fiber-runner.rs`. At this
+//! HEAD its tests carry `#![cfg(target_os = "linux")]`, so on Windows it compiles
+//! to zero tests; the Windows measurement above was made by invoking the binary
+//! with the suite's own arguments. Un-gating it is a separate decision.
 //!
 //! The suspension then lives here. `scheduler::park` calls [`suspend_current`],
 //! which hands control back to the loop below; the loop decides what the task is
