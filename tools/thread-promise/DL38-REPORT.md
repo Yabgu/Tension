@@ -385,6 +385,30 @@ rather than from this one. Everything else in this report is measured here.
 
 `npm run check` (a2: tsc + eslint) exit 0.
 
+### CI, and one thing the new gate does **not** get
+
+| repo | run | result |
+|---|---|---|
+| Tension | `45474661203` on `1083724` | **success** |
+| TensionScript-a2 | `45474846757` on `2d210696` | **success** |
+
+**The new gate is not in CI, and cannot be yet.** Every Tension workflow job that
+runs runtime suites runs without a compiler — `e2e-debug.yml` says so at line 36
+(*"No `npm install`, and no compiler"*). `guest(name)` calls the builder, so
+`--test async_on_main` needs a compiler; the thread suites avoid that by loading
+**committed fixtures** (`fixtures/thread/*.wasm`) through
+`guest_thread_fixture`. `async-on-main` has no committed fixture, so the test
+runs in any checkout that has a compiler (every local run, and this round) and is
+skipped by CI's absence rather than by a skip — which is how DL36's
+`fiber-runner` sat "in the suite" without ever executing.
+
+Making it CI-runnable is a fixture pair (`async-on-main.wasm` +
+`async-on-main-fiber.wasm`), a `.gitignore` exemption and a
+`guest_*` accessor that falls back to them — the exact shape the thread fixtures
+already have. That is **not** in this round's scope (it adds committed artifacts
+and touches the skip policy), so I am reporting it rather than doing it. It is
+also the one way this round's deliverable is still half a gate.
+
 ---
 
 ## 9. Commits and final state
