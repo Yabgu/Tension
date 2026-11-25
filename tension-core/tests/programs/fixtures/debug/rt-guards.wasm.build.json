@@ -1,0 +1,15 @@
+{
+  "compiler": "7db1bb6d34a995d3737f73017f31ed17da5078d3040e7038283ea0f3a4f08f1e",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
+  "source": "async/rt-guards.ts",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--optimizeLevel",
+    "0",
+    "--debug",
+    "--sourceMap"
+  ]
+}
