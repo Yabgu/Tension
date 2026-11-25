@@ -28,11 +28,20 @@
 //    repo replaced a fresh `45b3535e` with the tarball's `66e6932e` and printed
 //    "up to date". No `npm run` in either repository would have told you.
 //
-// 3. **`std/` → installed `std/`.** The compiler's library is not one file. A
-//    `dist/`-only copy is a known defect: the installed `assemblyscript.js` and
-//    the installed `std/` can come from different commits and nothing fails —
-//    the guest compiles against the wrong library. So this compares every file,
-//    not the directory's existence.
+// 3. **`std/` → installed `std/`, as a mirror and nothing more** (DL43, I102).
+//    The compiler's library is not one file, and the installed copy sits beside
+//    `dist/` — but **no compile reads it.** The library a guest compiles against is
+//    embedded in `dist/asc.js`, the bundle `bin/tensionscript.js` imports, and that
+//    bundle is inside the identity. Measured: appending a syntax error to the
+//    installed `std/assembly/task-rt.ts` still compiled a guest, exit 0.
+//
+//    So this row no longer claims what it used to claim ("the guest compiles
+//    against the wrong library") — that was wrong, and a green row over a file
+//    nothing loads is worse than no row. It now states what it checks: that the
+//    **install step** left the package's on-disk sources in step with the tree they
+//    were copied from, which is what a reader of the installed package sees. The
+//    load-bearing guarantee — that a `std/` edit reaches the guests — moved to the
+//    identity (`toolchain.mjs`'s `COMPILER_BUNDLES`).
 //
 // 4. **`tension-core/src` → the binary.** `cargo build` refreshes the binary
 //    only when someone runs it, and nothing runs it for you after a pull. A
@@ -75,7 +84,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, realpathSync, rmSync, st
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { REPO, capture, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
+import { REPO, capture, compilerBundleDigest, compilerIdentity, readBuildRecord, run } from './lib/toolchain.mjs';
 import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
 import {
   readBuildRecord as readArtifactRecord,
@@ -432,27 +441,26 @@ async function verify() {
       );
     }
 
-    const installed = join(INSTALLED, 'dist', 'assemblyscript.js');
-    if (!existsSync(dist) || !existsSync(installed)) {
-      row(
-        'compiler: dist → installed',
-        'both present',
-        `${existsSync(dist) ? '' : 'dist missing '}${existsSync(installed) ? '' : 'installed missing'}`.trim(),
-        existsSync(dist) && existsSync(installed) ? 'PASS' : 'STALE',
-      );
-    } else {
-      const expected = captureHash(dist);
-      const actual = captureHash(installed);
-      row(
-        'compiler: dist → installed',
-        `${expected.slice(0, 12)} (tree)`,
-        `${actual.slice(0, 12)} (installed)`,
-        expected === actual ? 'PASS' : 'STALE',
-      );
-    }
+    // **Every bundle a compile loads** (DL43, I102), not just `assemblyscript.js`:
+    // `dist/asc.js` carries the embedded std, so a std-only rebuild moves it and
+    // leaves `assemblyscript.js` byte-identical — which is exactly the pair this row
+    // used to call equal. Both sides are digested through
+    // `toolchain.mjs`'s `compilerBundleDigest`, the same function `compilerIdentity`
+    // uses for a guest's record, so the row and the records cannot disagree.
+    const installedDir = join(INSTALLED, 'dist');
+    const treeDigest = compilerBundleDigest(join(COMPILER_DIR, 'dist'));
+    const installedDigest = compilerBundleDigest(installedDir);
+    row(
+      'compiler: dist → installed',
+      treeDigest === null ? 'dist missing' : `${short(treeDigest)} (tree)`,
+      installedDigest === null ? 'installed dist missing' : `${short(installedDigest)} (installed)`,
+      treeDigest !== null && treeDigest === installedDigest ? 'PASS' : 'STALE',
+    );
 
+    // Named for what it checks, not for a load that does not happen: `std/` on disk
+    // is a mirror of the tree's, and the compile-time library lives in `dist/asc.js`.
     const std = compareTrees(join(COMPILER_DIR, 'std'), join(INSTALLED, 'std'));
-    row('compiler: std → installed std', std.expected, std.actual, std.ok ? 'PASS' : 'STALE');
+    row('compiler: std mirror (no compile reads it)', std.expected, std.actual, std.ok ? 'PASS' : 'STALE');
   }
 
   // The runtime, one row per profile: the release payload and the debug binary

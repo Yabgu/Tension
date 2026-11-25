@@ -538,21 +538,39 @@ export function resolveCompiler(...dirs) {
 /**
  * **Which compiler this tree will run**, as an identity a build record can carry.
  *
- * `{ hash, path }` — `hash` is the sha256 of the compiler's own
- * `dist/assemblyscript.js`; `path` is that file. Both are `null` when no
- * compiler is installed, which is a fact a caller must handle rather than an
- * empty string that compares equal to something.
+ * `{ hash, path }` — `hash` covers **every bundle a compile loads**; `path` names
+ * the primary one. Both are `null` when no compiler is installed, which is a fact
+ * a caller must handle rather than an empty string that compares equal to
+ * something.
  *
- * # Why `dist/`, and why here
+ * # Why two bundles, and how that was established (DL43, I102)
  *
- * The digest is of `dist/assemblyscript.js` rather than of the bin entry,
- * because that bundle **is** the compiler: `bin/tensionscript.js` is a loader,
- * and two builds of the same sources that differ only in their `dist/` differ in
- * everything that matters. It is also the file `rebuild.mjs` compares on its
- * `dist → installed` link, so a guest's build record and the check that reads it
- * compare **the same bytes**. One definition, two callers — a second copy is how
- * the two would drift, and a record that disagrees with the check is worse than
- * no record.
+ * The identity used to be the sha256 of `dist/assemblyscript.js` alone, on the
+ * reasoning that "that bundle **is** the compiler". It is not: measured, a compile
+ * loads two modules, and the std that compiles a guest lives in the *other* one.
+ *
+ * - `bin/tensionscript.js` → `await import("../dist/asc.js")` — the CLI.
+ * - `dist/asc.js` → `from "@yabgu_gm/tensionscript"` → the package's own
+ *   `exports` map → `./dist/assemblyscript.js`.
+ *
+ * Proven by breaking each file and compiling: appending a `throw` to either one
+ * fails the compile (exit 1), and the `asc.js` failure surfaces from
+ * `assemblyscript.js`'s module body, which is what shows the second load. Proven
+ * the other way too: `dist/asc.js` contains the embedded `libraryFiles` (the std)
+ * and `dist/assemblyscript.js` contains none of it, so a `std/` edit moves the
+ * *first* file and not the second — which is exactly the hole I102 found, where a
+ * std change moved the sources' digest, rebuilt `dist/`, and left the identity
+ * unchanged so every guest was skipped.
+ *
+ * So the digest is over **both files' bytes, concatenated in a fixed order**
+ * (`COMPILER_BUNDLES`). That is the same primitive as before — sha256 of bytes —
+ * with no structured form to agree about, and it moves when either loaded module
+ * moves, which is the property the record needs.
+ *
+ * It is also the file `rebuild.mjs` compares on its `dist → installed` link, so a
+ * guest's build record and the check that reads it compare **the same bytes**. One
+ * definition, two callers — a second copy is how the two would drift, and a record
+ * that disagrees with the check is worse than no record.
  *
  * The escape hatch is honoured: `$TENSIONSCRIPT` wins for the invocation, so its
  * neighbouring `dist/` is what gets hashed. A record of a build made with
@@ -565,11 +583,15 @@ export function compilerIdentity(...dirs) {
   } catch {
     return { hash: null, path: null };
   }
-  // `<pkg>/bin/tensionscript.js` → `<pkg>/dist/assemblyscript.js`. A resolved
-  // path with no `dist/` beside it (a shim, or a hand-pointed file) falls back to
-  // itself: less specific, still an identity, and `path` in the record says which.
-  const dist = join(dirname(resolved.path), '..', 'dist', 'assemblyscript.js');
-  const file = existsSync(dist) ? dist : resolved.path;
+  // `<pkg>/bin/tensionscript.js` → `<pkg>/dist/<bundle>`. A resolved path with no
+  // `dist/` beside it (a shim, or a hand-pointed file) falls back to itself: less
+  // specific, still an identity, and `path` in the record says which.
+  const distDir = join(dirname(resolved.path), '..', 'dist');
+  const bundles = COMPILER_BUNDLES.map((name) => join(distDir, name)).filter((file) => existsSync(file));
+  // The fallback is the resolved entry itself, so a layout with no `dist/` still
+  // answers something that changes when the thing being run changes.
+  const files = bundles.length > 0 ? bundles : [resolved.path];
+  const file = files[0];
   // A build record is committed for a committed fixture, so the path it carries
   // must not be one machine's home directory: repo-relative when it is inside the
   // repo, absolute only when it genuinely is not (the escape hatch pointing
@@ -578,10 +600,47 @@ export function compilerIdentity(...dirs) {
   const rel = relative(REPO, file);
   const path = rel.startsWith('..') ? file : rel.split('\\').join('/');
   try {
-    return { hash: createHash('sha256').update(readFileSync(file)).digest('hex'), path, absolute: file };
+    const digest = compilerBundleDigest(distDir) ?? createHash('sha256').update(readFileSync(file)).digest('hex');
+    return { hash: digest, path, absolute: file };
   } catch {
     return { hash: null, path, absolute: file };
   }
+}
+
+/**
+ * The bundles a compile loads, in the order the digest hashes them.
+ *
+ * `asc.js` is the CLI entry `bin/tensionscript.js` imports and the file that
+ * carries the embedded std; `assemblyscript.js` is the library it resolves through
+ * the package's own `exports` map. Both are read on every compile (DL43 measured
+ * each by breaking it), so both belong in the identity. Listed rather than globbed
+ * so an unrelated file dropped into `dist/` cannot move the identity — an identity
+ * that moves on everything identifies nothing.
+ *
+ * **Exported, and the only list of its kind**: `rebuild.mjs`'s `dist → installed`
+ * row walks this same list, so the row cannot pass on a pair of bundles the
+ * identity would call different.
+ */
+export const COMPILER_BUNDLES = ['asc.js', 'assemblyscript.js'];
+
+/**
+ * sha256 over the bundles a compile loads, in {@link COMPILER_BUNDLES} order.
+ *
+ * One primitive — hash these bytes — with no structured form to agree about, so
+ * this is not a second canonical form beside `build-record.mjs`'s: it is the same
+ * "sha256 of file bytes" applied to a short fixed list. Returns `null` when none of
+ * the bundles is present, which is "no compiler here" rather than an empty digest.
+ */
+export function compilerBundleDigest(distDir) {
+  const digest = createHash('sha256');
+  let found = 0;
+  for (const name of COMPILER_BUNDLES) {
+    const file = join(distDir, name);
+    if (!existsSync(file)) continue;
+    digest.update(readFileSync(file));
+    found += 1;
+  }
+  return found === 0 ? null : digest.digest('hex');
 }
 
 /**

@@ -688,6 +688,37 @@ diagnostics re-emitted per invocation, plus test-target-only ones — and the re
 come from other suites' build steps. A *single* `cargo build --release` of
 `tension-core` prints twelve; the two numbers differ by scope, not by regression.
 
+### 6.3 The rebuild chain, and what its identity covers
+
+`node scripts/rebuild.mjs --check` answers "is this tree built from itself?" in nine
+rows. Three of them are about the compiler, and one is about what the guests were
+built by.
+
+**The compiler's identity is the bundles a compile loads** (DL43, I102). Two files:
+`dist/asc.js` — the CLI `bin/tensionscript.js` imports, and the file that carries the
+embedded `std/` library — and `dist/assemblyscript.js`, which `asc.js` resolves
+through the package's own `exports` map. Established by breaking each one and
+watching the compile fail; the identity is the sha256 of both, in that order.
+
+This matters because the identity also decides whether a guest is rebuilt: a record
+whose compiler differs from the installed one is stale, and `build-test-programs.mjs`
+rebuilds it. Before DL43 the identity was `assemblyscript.js` alone, so **a `std/`
+edit moved neither the identity nor the guests** — measured: the chain reported
+`0 built, 35 up to date` and `--check` read 9/9 over guests built from a library that
+no longer existed. `--force` was the answer then.
+
+**It is not the answer now.** A `std/` edit moves `asc.js`, so it moves the identity,
+so the next `node scripts/rebuild.mjs` rebuilds every guest without `--force`. The
+one case that still wants `--force` is a guest whose *record* is correct but whose
+bytes you want regenerated anyway — a fixture copy that has drifted outside the
+record, say. `--check` is what tells you whether you need it.
+
+**`compiler: std mirror (no compile reads it)`** is the fourth compiler row and it is
+a mirror check, not a load check: nothing at compile time reads the installed
+`std/` directory. That was established the same way (a syntax error in the installed
+`task-rt.ts` still compiled a guest, exit 0), and the row's label says so rather than
+claiming a guarantee it does not have.
+
 ## 7. The ABI doc generator
 
 `scripts/gen-abi-doc.mjs` renders `docs/abi/adapter.md` and `docs/abi/guest.md`

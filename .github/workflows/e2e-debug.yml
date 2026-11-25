@@ -230,8 +230,9 @@ jobs:
       # No `TENSION_TEST_ALLOW_SKIP` here either: a deleted fixture must fail the
       # job, not skip it.
       #
-      # **Seven filters, all by name** (DL28 added the third, DL40 the fourth, DL41
-      # the sixth, DL42 the seventh). The fourth is the fiber pair: the three cross-store programs built for both
+      # **Ten filters, all by name** (DL28 added the third, DL40 the fourth, DL41
+      # the sixth, DL42 the seventh, DL43 the eighth to tenth — the served-park pair
+      # on both backends and both orderings). The fourth is the fiber pair: the three cross-store programs built for both
       # backends, compared key by key. Its six artifacts are committed, so it runs
       # on the same fixture path as the others.
       #
@@ -251,6 +252,9 @@ jobs:
               an_async_worker_entry_is_served_as_its_spawn_entry \
               the_cross_store_programs_print_the_same_values_on_the_fiber_backend \
               a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber \
+              a_served_body_that_parks_is_resumed_by_the_producers_word_on_continuation \
+              a_served_body_that_parks_is_resumed_by_a_late_completion_on_continuation \
+              a_served_body_that_parks_is_resumed_by_a_late_completion_on_fiber \
               a_woken_task_reads_the_producers_word_on_the_continuation_backend
 
       # **The stackful proofs (I61).** Two targets that existed and passed and that no

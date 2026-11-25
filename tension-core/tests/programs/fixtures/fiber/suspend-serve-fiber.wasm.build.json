@@ -1,6 +1,6 @@
 {
-  "compiler": "6edd95979ae409959d8501e8417fdee5073bb542c89259b2fc5a876cbd071b14",
-  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "compiler": "3d6941da8d7d1688cb791a9ace70853ece3532348e5933cb09e9ffaafd6767a7",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "thread/suspend-serve.ts",
   "flags": [
     "--runtime",

@@ -32,11 +32,24 @@
 //   main: spawning
 //   main: index=<i>                      the served entry resolved
 //   main: spawn=0                        the worker took it
-//   worker: BEFORE the await             the served body ran in the worker
 //   inner: AFTER the await, value=<v>    the parked task RESUMED
 //   worker: AFTER the await, value=<v>   and the served body continued
+//   main: wakes served=<n>               the host served exactly one wake
 //   main: join=0                         the worker exited because its body ran
 //   main: done
+//
+// **`worker: BEFORE the await` is on stderr, not stdout** (DL43, I101). It is the
+// one line the worker emits *before* its park, so on stdout it raced main's
+// `main: spawn=0` — measured in CI (DL41's run 45518298844) with the two lines
+// swapped. The transcript is a contract, so the racing line left it; it stays on
+// stderr, where a hang is still diagnosable (`TENSION_LOG_LEVEL=info` shows it)
+// and where nothing asserts its position.
+//
+// **The `go` word is what makes the rest ordered by construction, not by luck.**
+// The worker's first act is to wait for main to publish `main: spawn=0`; only then
+// does it run the served body. So every main line precedes every worker line, in
+// both orderings and on both backends, without either side guessing a wall clock
+// (I101).
 //
 // The join cannot return before the two `AFTER` lines, because the body only
 // returns once the park has been resumed: the ordering is the join, not a clock.
@@ -83,9 +96,36 @@ function line(text: string): void {
   hostPrint(changetype<usize>(newline), newline.byteLength);
 }
 
+@external("tension::io", "log")
+declare function hostLog(level: i32, namePtr: usize, nameLen: i32, msgPtr: usize, msgLen: i32): void;
+
+/**
+ * A diagnostic line, to **stderr**, through the host logger.
+ *
+ * The pre-park marker goes here rather than to stdout because it is the one line
+ * that would print before the worker's park — and a stdout line whose position
+ * depends on how fast the host starts a thread is not a contract (I101). On stderr
+ * it costs the transcript nothing and a hang is still diagnosable.
+ */
+function diag(text: string): void {
+  let name = String.UTF8.encode("worker");
+  let message = String.UTF8.encode(text);
+  hostLog(2, changetype<usize>(name), name.byteLength, changetype<usize>(message), message.byteLength);
+}
+
 const CLASS_JOB_DONE: i32 = 4; // session/arena.rs:222
 /** Header word 6: wakes this session has served (host-written, `bump_served`). */
 const HEADER_SERVED: usize = 6;
+
+/**
+ * Header word 7: main's `go`. `0..=4` are the carve's own words, `5` is `H_STOP`
+ * and `6` is the served count, so this is the next free one.
+ *
+ * A second ordering fact in the same block, for the reason the first one is there:
+ * a `--sharedMemory` guest's heap is its own arena, so an ordinary global cannot
+ * carry it between stores (measured, DL20 A1).
+ */
+const HEADER_GO: usize = 7;
 /** The pair the host's `--post-completion 4,7` names. */
 const KEY: i32 = 7;
 
@@ -118,7 +158,14 @@ async function awaited(): i32 {
 /** The served entry: runs in the worker's store, parks on the host's pair. */
 async function workerEntry(): i32 {
   __taskBindTable(16);
-  line("worker: BEFORE the await");
+  // **Wait for main.** Everything the worker prints must come after main's own
+  // lines, and this is the only thing that guarantees it rather than making it
+  // likely (I101): the worker is started inside `__spawnThread`, so without this
+  // it can reach its park — and on a sticky completion, its resume — before main
+  // has printed `main: spawn=`.
+  let go = <usize>__controlBase + HEADER_GO * 4;
+  while (atomicLoad<i32>(go) == 0) atomicWait<i32>(go, 0, -1);
+  diag("BEFORE the await");
   let v: i32 = await awaited();
   line("worker: AFTER the await, value=" + v.toString());
   // **The worker stops itself, after it has printed.** The executor's state word is
@@ -146,6 +193,14 @@ export function _start_game(): void {
   let index = __spawnIndexOf(workerEntry);
   line("main: index=" + index.toString());
   line("main: spawn=" + __spawnThread(1, index, 0).toString());
+  // **The go word, published after the line it protects** (I101). The worker is
+  // already started and waiting on this; setting it here is what makes every main
+  // line precede every worker line by construction.
+  {
+    let go = <usize>__controlBase + HEADER_GO * 4;
+    atomicStore<i32>(go, 1);
+    atomicNotify(go, -1);
+  }
 
   // **The join is the only wait, and it is enough.** The worker stops itself after
   // printing, so `join=0` means every worker line is already written and the park

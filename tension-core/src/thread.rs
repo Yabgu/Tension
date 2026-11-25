@@ -761,6 +761,20 @@ pub struct ExecutorPool {
     /// the artifact says which backend it wants and the worker does what it is
     /// told. Nothing has to be threaded through `ExecutorPool::new`'s callers.
     fiber_backend: bool,
+    /// Whether the module runs the **stackful shell's own loop** (DL43).
+    ///
+    /// The two shells have two worker shapes, and the difference decides who delivers
+    /// a host completion. A plain worker's `__workerMain` serves its entry and
+    /// returns, so the host's `service_wakes` runs and drives the wake path. A
+    /// stackful worker's `__workerMain` *is* a loop that blocks in `atomicWait`, so
+    /// the host never gets the thread back and `service_wakes` never runs for that
+    /// store — the park seam is the only moment the host holds it.
+    ///
+    /// Detected from the module's exports, the same way `fiber_backend` is detected
+    /// from its imports: `__asyncPump` is emitted only by the stackful shell
+    /// (`prepareAsyncShell`), and a plain build does not export it. Measured on this
+    /// tree — `suspend-serve` exports it, `wake-on-worker` does not.
+    runs_own_loop: bool,
     /// The threads that have been started. `BTreeMap` for deterministic teardown
     /// order, which is what a log line about a live worker should read like.
     workers: Mutex<BTreeMap<i32, JoinHandle<i32>>>,
@@ -829,6 +843,11 @@ impl ExecutorPool {
         self.fiber_backend
     }
 
+    /// Whether the guest's own loop owns the store's thread (see the field).
+    pub fn runs_own_loop(&self) -> bool {
+        self.runs_own_loop
+    }
+
     /// Build a pool for a module whose memory import is shared.
     ///
     /// `count` is main plus the worker threads; it is what `__executorCount`
@@ -847,12 +866,16 @@ impl ExecutorPool {
         let fiber_backend = module
             .imports()
             .any(|import| import.module() == "scheduler" && import.name() == "completion");
+        let runs_own_loop = module
+            .exports()
+            .any(|export| export.name() == "__asyncPump");
         Ok(Arc::new(ExecutorPool {
             engine,
             module,
             memory,
             count,
             fiber_backend,
+            runs_own_loop,
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
             failures: Mutex::new(Vec::new()),
@@ -1674,7 +1697,81 @@ impl ExecutorPool {
                             park.class, park.key
                         ),
                     );
-                } else if pool.is_fiber_backend()
+                } else if !pool.is_fiber_backend()
+                    && pool.claim_early(park.class, park.key, owner, park.task_id)
+                {
+                    // §4.3's other order, and the one the deterministic test uses:
+                    // the completion was already waiting, so this park never
+                    // suspends for real — the owner is told immediately.
+                    logging::log(
+                        Level::Debug,
+                        "thread",
+                        &format!(
+                            "executor {owner}: park on class {} key {} claimed a completion \
+                             that had already arrived (sticky wake)",
+                            park.class, park.key
+                        ),
+                    );
+                }
+                // ── the producers ───────────────────────────────────────────────
+                //
+                // **Before any suspension** (DL43). These used to sit at the end of
+                // the seam, which the fiber arm never reached: it suspends inside the
+                // `if` above, so `--post-completion-after-parks` armed a watch that
+                // could never fire on that backend and the fiber test exited 1 with
+                // `no completion arrived`. Measured. The plain path is unchanged —
+                // `claim_early` still runs first, so a sticky completion is claimed
+                // before a producer can post — and only the *suspension* moved.
+                if recorded {
+                    if let Some(foreign_task) =
+                        pool.note_park_for_foreign_delivery(park.class, park.key)
+                    {
+                        logging::log(
+                            Level::Info,
+                            "core",
+                            &format!(
+                                "--deliver-foreign: injected class {} key {} for task {foreign_task} \
+                                 straight onto the executor's queue — the ledger never matched it",
+                                park.class,
+                                park.key
+                            ),
+                        );
+                    }
+                    if let Some(class) = pool.note_each_park(park.class) {
+                        let matched = pool.deliver(class, park.key, 0);
+                        logging::log(
+                            Level::Debug,
+                            "core",
+                            &format!(
+                                "--post-completion-each-park: class {class} key {} -> {}",
+                                park.key,
+                                match matched {
+                                    Some(owner) => format!("matched a park on executor {owner}"),
+                                    None => "buffered (no park yet: sticky)".to_string(),
+                                }
+                            ),
+                        );
+                    }
+                    if pool.note_park(park.class, park.key) {
+                        let matched = pool.deliver(park.class, park.key, 0);
+                        logging::log(
+                            Level::Info,
+                            "core",
+                            &format!(
+                                "--post-completion-after-parks: class {} key {} -> {}",
+                                park.class,
+                                park.key,
+                                match matched {
+                                    Some(owner) => format!("matched a park on executor {owner}"),
+                                    None => "buffered (no park yet: sticky)".to_string(),
+                                }
+                            ),
+                        );
+                    }
+                }
+                // ── the fiber suspension, now that its producer has fired ───────
+                if recorded
+                    && pool.is_fiber_backend()
                     && crate::fiber::suspend_current(crate::fiber::Park {
                         task: park.task_id,
                         class: park.class,
@@ -1724,82 +1821,85 @@ impl ExecutorPool {
                         let memory = caller.data().pool.memory().clone();
                         bump_served(&memory, base as usize, served);
                     }
-                } else if pool.claim_early(park.class, park.key, owner, park.task_id) {
-                    // §4.3's other order, and the one the deterministic test uses:
-                    // the completion was already waiting, so this park never
-                    // suspends for real — the owner is told immediately.
-                    logging::log(
-                        Level::Debug,
-                        "thread",
-                        &format!(
-                            "executor {owner}: park on class {} key {} claimed a completion \
-                             that had already arrived (sticky wake)",
-                            park.class, park.key
-                        ),
-                    );
                 }
-                // **DL28's instrument**: if a foreign delivery is armed for this pair, hand
-                // the owner's queue a delivery the ledger never matched. Placed *after*
-                // `claim_early` and after the each-park post, so a run that arms both gets
-                // the legitimate delivery first and the guest resumes before the refusal —
-                // which is the ordering the test asserts on.
-                if recorded {
-                    if let Some(foreign_task) =
-                        pool.note_park_for_foreign_delivery(park.class, park.key)
-                    {
-                        logging::log(
+                // (The producers and the sticky claim now run above, before any
+                // suspension — DL43. This brace closes the fiber arm's `if`.)
+                // ── the continuation hand-back (DL43, I99) ──────────────────
+                //
+                // **Last in the seam, on purpose.** Every producer that can answer
+                // this park has fired by now — the sticky claim above, the
+                // each-park producer, and the after-parks watch, which posts from
+                // *this* line. So a completion that is going to exist for this pair
+                // already does, and the wait below is a wait for something already
+                // queued in every ordering the tests use.
+                //
+                // Why the park and not the session loop: on the continuation shell
+                // the worker **owns its thread** — `__workerMain` runs the guest's
+                // own loop and blocks in `atomicWait`, so `service_wakes` never
+                // runs for this store and a delivery would sit in the queue forever.
+                // Measured before this existed: `suspend-serve` on continuation
+                // printed `worker: BEFORE the await` and stopped (exit 124), with no
+                // park in the log at all, because `policy.await` posted nothing.
+                //
+                // **The route is the existing one** — the wake cell and this store's
+                // own `__taskWake` — so this is not a second completion path. What
+                // changes is only *when* the host is in a position to call it.
+                if recorded && !pool.is_fiber_backend() && pool.runs_own_loop() && park.class != 0 {
+                    /// How long a park waits for its own completion before giving the
+                    /// thread back. Bounded because an unbounded wait would turn a
+                    /// missing producer into a hang with no sentence in it, and the
+                    /// strand refusal is the sentence this project uses.
+                    const PARK_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+                    const SLICE: std::time::Duration = std::time::Duration::from_millis(50);
+                    let deadline = std::time::Instant::now() + PARK_WAIT;
+                    let payload = loop {
+                        if let Some(delivery) =
+                            pool.take_delivery(owner, park.task_id, park.class, park.key)
+                        {
+                            break Some(delivery.payload);
+                        }
+                        // The sticky half: a completion that arrived before this park
+                        // is in the shared buffer, and claiming it moves it into this
+                        // store's queue — where the `take_delivery` above finds it.
+                        if pool.claim_early(park.class, park.key, owner, park.task_id) {
+                            continue;
+                        }
+                        if std::time::Instant::now() >= deadline {
+                            break None;
+                        }
+                        pool.wait_for_work(owner, SLICE);
+                    };
+                    match payload {
+                        Some(payload) => {
+                            let taken = hand_back_completion(
+                                &mut caller,
+                                owner as i32,
+                                park.task_id,
+                                payload,
+                            );
+                            logging::log(
+                                Level::Debug,
+                                "thread",
+                                &format!(
+                                    "executor {owner}: park on class {} key {} handed the \
+                                     completion back through __taskWake ({taken})",
+                                    park.class, park.key
+                                ),
+                            );
+                        }
+                        None => logging::log(
                             Level::Info,
-                            "core",
+                            "thread",
                             &format!(
-                                "--deliver-foreign: injected class {} key {} for task {foreign_task} \
-                                 straight onto the executor's queue — the ledger never matched it",
-                                park.class, park.key
-                            ),
-                        );
-                    }
-                }
-                // **DL27's producer**: with `--post-completion-each-park` armed, post a
-                // completion for *this* park's key. The seam is the producer, which is
-                // the tightest cadence a producer can have — see the flag's doc.
-                if recorded {
-                    if let Some(class) = pool.note_each_park(park.class) {
-                        let matched = pool.deliver(class, park.key, 0);
-                        logging::log(
-                            Level::Debug,
-                            "core",
-                            &format!(
-                                "--post-completion-each-park: class {class} key {} -> {}",
+                                "executor {owner}: parked on class {} key {} and no completion \
+                                 arrived within {}s; the task stays parked and the strand \
+                                 refusal will name it",
+                                park.class,
                                 park.key,
-                                match matched {
-                                    Some(owner) => format!("matched a park on executor {owner}"),
-                                    None => "buffered (no park yet: sticky)".to_string(),
-                                }
+                                PARK_WAIT.as_secs()
                             ),
-                        );
-                    }
-                }
-                // **The other ordering, as a test instrument (DL22).** Only when
-                // `--post-completion-after-parks` armed a watch, and only on the
-                // park that reaches its target. The post goes through `deliver`,
-                // the same door every producer uses, so it can wake exactly what a
-                // completion arriving at that instant would wake — no more, no
-                // less. `seen` counts parks on the pair, which the ledger cannot
-                // (one entry per key), and this is why the counter lives here.
-                if recorded && pool.note_park(park.class, park.key) {
-                    let matched = pool.deliver(park.class, park.key, 0);
-                    logging::log(
-                        Level::Info,
-                        "core",
-                        &format!(
-                            "--post-completion-after-parks: class {} key {} -> {}",
-                            park.class,
-                            park.key,
-                            match matched {
-                                Some(owner) => format!("matched a park on executor {owner}"),
-                                None => "buffered (no park yet: sticky)".to_string(),
-                            }
                         ),
-                    );
+                    }
                 }
             },
         )?;
@@ -1967,6 +2067,119 @@ fn bump_served(memory: &wasmtime::SharedMemory, control_base: usize, served: u64
             *base.add(at + offset) = *byte;
         }
     }
+}
+
+/// The 8-byte wake cell of executor `id`: the spawn record's dead `entry`/`arg`
+/// words, `sig + 16`, which is `record + stride - 8`.
+///
+/// **One definition, two callers** (DL43): the session loop's `__taskWake` call and
+/// the park seam's hand-back below both address it, and `__taskWake`'s guest half
+/// reads it. `__controlBase`/`__controlStride` are guest globals, so this has to ask
+/// the instance rather than count bytes from a constant.
+fn wake_cell(caller: &mut Caller<'_, WorkerState>, id: i32) -> Option<usize> {
+    const HEADER_BYTES: usize = 64;
+    const ENTRY_IN_SIGNAL: usize = 16;
+    if id < 0 {
+        return None;
+    }
+    let base = caller
+        .get_export("__controlBase")
+        .and_then(|export| export.into_global())
+        .and_then(|global| global.get(&mut *caller).i32())
+        .filter(|base| *base > 0)?;
+    let stride = caller
+        .get_export("__controlStride")
+        .and_then(|export| export.into_global())
+        .and_then(|global| global.get(&mut *caller).i32())
+        .filter(|stride| *stride > 0)?;
+    let record = base as usize + HEADER_BYTES + (id as usize) * (stride as usize);
+    let cell = record + stride as usize - 24 + ENTRY_IN_SIGNAL;
+    if cell + 8 <= caller.data().pool.memory().data_size() {
+        Some(cell)
+    } else {
+        None
+    }
+}
+
+/// Hand a matched completion back to the task that parked in this store, **without a
+/// session loop** (DL43, I99).
+///
+/// The continuation shell's worker owns its thread: `__workerMain` runs the guest's
+/// own loop and blocks in `atomicWait`, so the host's `service_wakes` never runs and
+/// a delivery for this store is never picked up. The park seam is the one moment the
+/// host has the store in hand, so it is where the completion is delivered — through
+/// exactly the route the session loop uses, the wake cell plus this store's own
+/// `__taskWake`, so there is one completion path and not two.
+///
+/// True when the guest took it. False leaves the park unresolved, and the strand
+/// refusal reports it rather than the run exiting 0 over a task nobody woke.
+fn hand_back_completion(
+    caller: &mut Caller<'_, WorkerState>,
+    id: i32,
+    task_id: u64,
+    payload: i32,
+) -> bool {
+    let Some(cell) = wake_cell(caller, id) else {
+        return false;
+    };
+    let memory = caller.data().pool.memory().clone();
+    {
+        // The same two words `service_wakes` writes: the id, then the producer's
+        // value (DL42, I98). Written before the call for the same reason there — the
+        // resumed task asks for it on the very next line it runs.
+        let cells = memory.data();
+        let base = cells.as_ptr() as *mut u8;
+        let words = [task_id as u32, payload as u32];
+        for (word, value) in words.iter().enumerate() {
+            for (offset, byte) in value.to_le_bytes().iter().enumerate() {
+                // SAFETY: `wake_cell` checked that the cell and its second word are
+                // inside the memory, and this thread is the only writer of it.
+                unsafe { *base.add(cell + word * 4 + offset) = *byte };
+            }
+        }
+    }
+    // §2.2: this store's own `__taskWake`, on this store's own thread.
+    let Some(func) = caller
+        .get_export("__taskWake")
+        .and_then(|export| export.into_func())
+    else {
+        return false;
+    };
+    let Ok(wake) = func.typed::<(i32, i32), ()>(&caller) else {
+        return false;
+    };
+    if wake.call(&mut *caller, (cell as i32, 1)).is_err() {
+        return false;
+    }
+    // **Resolved, at the moment the owner resumed it** — the same bookkeeping the
+    // fiber park does after `suspend_current` returns, and the same one
+    // `service_wakes` does after its call.
+    {
+        let mut parks = caller
+            .data()
+            .parks
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(last) = parks.iter_mut().rev().find(|park| park.resolved == false) {
+            last.resolved = true;
+        }
+    }
+    // Header word 6, written where the session loop writes it, so `main: wakes
+    // served=` answers the same on both backends.
+    if let Some(base) = caller
+        .get_export("__controlBase")
+        .and_then(|export| export.into_global())
+        .and_then(|global| global.get(&mut *caller).i32())
+        .filter(|base| *base > 0)
+    {
+        let served = caller
+            .data()
+            .served
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        bump_served(&memory, base as usize, served);
+    }
+    true
 }
 
 /// The worker's session loop: wait for a matched task, then call the guest's

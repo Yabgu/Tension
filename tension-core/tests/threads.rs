@@ -949,23 +949,21 @@ fn the_cross_store_programs_print_the_same_values_on_the_fiber_backend() {
 /// the producer is the host's `--post-completion 4,7,500`, and the resumed body
 /// prints the word it was given.
 ///
-/// # Why this is not a continuation/fiber pair
+/// # It is a pair now (DL43, I99)
 ///
-/// DL40's three rows are pairs because the same program prints the same values on
-/// both backends. This one cannot be, and the reason is measured, not stylistic:
+/// When this test was written it could not be one, and the reason was measured: a
+/// bare `await` on a stamped handle completes on the continuation backend and has no
+/// suspension site on a fiber build, while `policy.await` — the only shape lowered to
+/// a real suspension on fiber — parked on continuation and was never resumed. The
+/// continuation control then was `wake-on-worker`.
 ///
-///   * a bare `await` on a stamped handle completes on the continuation backend and
-///     has **no suspension site at all** on a fiber build (the artifact imports no
-///     `scheduler::park`), so as a fiber row it proves nothing;
-///   * `policy.await` — the only shape lowered to a real suspension on the fiber
-///     backend — **does not complete on the continuation backend** (it parks and is
-///     never resumed; that is the DL29/DL30 serve split the brief excludes).
-///
-/// So the continuation control for this behaviour is `wake-on-worker`, which is
-/// already a green test: it parks, the session loop resumes it, and it joins. The
-/// row asserted here is the fiber half, and the asymmetry is recorded as I98 in
-/// `DL41-REPORT.md` rather than papered over by an exclusion in a shared
-/// expectation.
+/// DL43 closed that: `policy.await`'s continuation arm now registers the park (the
+/// `(class, key)` through `scheduler::park`, the slot and record through a registry
+/// `__taskWake` reads), so the same source prints the same transcript on both
+/// backends. The three tests below this one are the other halves of the pair — the
+/// continuation sticky, and the live ordering on each backend — and all four assert
+/// the **same** transcript through [`assert_suspend_serve_transcript`], which is what
+/// makes the pair a pair rather than two tests that happen to pass.
 ///
 /// # The red case
 ///
@@ -978,90 +976,116 @@ fn the_cross_store_programs_print_the_same_values_on_the_fiber_backend() {
 fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
     let fiber = support_programs::guest_fiber_fixture("suspend-serve-fiber");
     let run = run_artifact(&fiber, &["--post-completion", "4,7,500"]);
+    assert_suspend_serve_transcript("suspend-serve-fiber (sticky)", &run, 500);
+}
 
+/// **The same program on the continuation backend, the completion posted first**
+/// (DL43, I99). The pairing DL42 could not make: one source, two builds, one
+/// transcript.
+///
+/// On this backend `policy.await` suspends a *continuation* in wasm, so the park has
+/// to register with the host before it suspends — `(class, key)` through
+/// `scheduler::park`, and the slot plus the record through a registry the host's
+/// `__taskWake` reads. Before DL43 the suspension happened and the host was told
+/// nothing, so this run printed `worker: BEFORE the await` and stopped (exit 124,
+/// no park in the log).
+///
+/// **Sticky**: `--post-completion` posts before the program's entry runs, so the
+/// completion is waiting when the park is recorded.
+#[test]
+fn a_served_body_that_parks_is_resumed_by_the_producers_word_on_continuation() {
+    let guest = support_programs::guest_thread_fixture("suspend-serve");
+    let run = run_artifact(&guest, &["--post-completion", "4,7,500"]);
+    assert_suspend_serve_transcript("suspend-serve (sticky)", &run, 500);
+}
+
+/// **The live half, continuation**: the completion is posted *by the park that
+/// reaches the watch's count*, so it cannot be in the ledger before the park.
+///
+/// This is the ordering that exercises the wait: the guest's own loop owns the
+/// worker thread on this backend, so the host's session loop never runs there and
+/// the park seam is the only moment the host holds the store. The producer fires
+/// from that seam (that is what `--post-completion-after-parks` arms), and the
+/// completion is handed back through the same `__taskWake` the plain backend uses.
+///
+/// The value is `0` because the flag posts no payload — `4,7,1` is `<class>,<key>,
+/// <park count>`. Its control is the sticky test above, where `4,7,500` prints 500
+/// from the same artifact.
+#[test]
+fn a_served_body_that_parks_is_resumed_by_a_late_completion_on_continuation() {
+    let guest = support_programs::guest_thread_fixture("suspend-serve");
+    let run = run_artifact(&guest, &["--post-completion-after-parks", "4,7,1"]);
+    assert_suspend_serve_transcript("suspend-serve (live)", &run, 0);
+}
+
+/// **The live half, fiber.** The mirror of the test above on the other backend.
+///
+/// It failed on the way in, and that is why it is here: the armed producer used to
+/// fire at the *end* of the park seam, which the fiber arm never reached — it
+/// suspends inside its own `if` — so the fiber run exited 1 with
+/// `no completion arrived`. The producers now fire before any suspension.
+#[test]
+fn a_served_body_that_parks_is_resumed_by_a_late_completion_on_fiber() {
+    let fiber = support_programs::guest_fiber_fixture("suspend-serve-fiber");
+    let run = run_artifact(&fiber, &["--post-completion-after-parks", "4,7,1"]);
+    assert_suspend_serve_transcript("suspend-serve-fiber (live)", &run, 0);
+}
+
+/// **The transcript both backends print, asserted whole** (DL43, I101).
+///
+/// One expectation, no excluded line. `main: index=` is matched by prefix because
+/// its value is a `$starts` position — a fact of this module's table, not a value
+/// the contract fixes (DL40's rule). Every other line is exact and in order.
+///
+/// The program is deterministic by construction rather than by tolerance: the
+/// worker's first act is to wait for a `go` word main publishes *after* printing
+/// `main: spawn=`, and its one pre-park line goes to stderr. So there is no line
+/// here whose position depends on which thread the scheduler runs first, and a CI
+/// machine cannot see a different transcript from this host.
+fn assert_suspend_serve_transcript(label: &str, run: &Run, value: i32) {
     assert!(
         run.status.is_some(),
-        "suspend-serve-fiber: did not finish in 30 s — the served body parked and nothing \
-         resumed it.\nstdout:\n{}\nstderr:\n{}",
+        "{label}: did not finish in 30 s — the served body parked and nothing resumed it.\n\
+         stdout:\n{}\nstderr:\n{}",
         run.stdout,
         run.stderr
     );
     assert_eq!(
         run.status,
         Some(0),
-        "suspend-serve-fiber: exit was not 0.\nstdout:\n{}\nstderr:\n{}",
+        "{label}: exit was not 0.\nstdout:\n{}\nstderr:\n{}",
         run.stdout,
         run.stderr
     );
-
     let printed: Vec<&str> = run
         .stdout
         .lines()
         .map(str::trim_end)
         .filter(|line| !line.is_empty())
         // The host's own log lines are `2026-… LEVEL module: message`; the guest's
-        // transcripts are the ones without the timestamp.
+        // transcript is the ones without the timestamp.
         .filter(|line| !line.starts_with("20"))
         .collect();
-
-    // **Two lines are not position-asserted, and both are the program's doing.**
-    //
-    // `main: index=<i>` is a `$starts` position — a fact of this module's table, not
-    // a value the contract fixes (DL40's rule).
-    //
-    // `main: spawn=0` is printed *after* `__spawnThread` returns, and that call has
-    // already started the worker: whether main's line or the worker's `BEFORE` lands
-    // first is a race in the program, not in the backend (measured — it went one way
-    // on this host and the other way in CI, run `45518298844`). It is still required
-    // **exactly once** below, and every other line is exact and in order.
-    let spawn_line = printed
+    let index = printed
         .iter()
-        .position(|line| line.starts_with("main: spawn="))
-        .unwrap_or_else(|| panic!("no `main: spawn=` line in:\n{}", run.stdout));
-    assert_eq!(
-        printed.iter().filter(|line| line.starts_with("main: spawn=")).count(),
-        1,
-        "suspend-serve-fiber: `main: spawn=` must appear exactly once:\n{}",
-        run.stdout
-    );
-    assert_eq!(
-        printed[spawn_line], "main: spawn=0",
-        "suspend-serve-fiber: the worker did not take the request:\n{}",
-        run.stdout
-    );
-    let ordered: Vec<&str> = printed
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| *index != spawn_line)
-        .map(|(_, line)| *line)
-        .collect();
-
-    let mut expected: Vec<String> = vec![
-        "main: spawning".into(),
-        format!(
-            "main: index={}",
-            printed
-                .iter()
-                .find_map(|line| line.strip_prefix("main: index="))
-                .unwrap_or_else(|| panic!("no `main: index=` line in:\n{}", run.stdout))
-        ),
-        "worker: BEFORE the await".into(),
-        // **The producer's word, not 0.** This is the half DL40 could not deliver: the
-        // park suspended, the producer answered, and the resumed body read 500.
-        "inner: AFTER the await, value=500".into(),
-        "worker: AFTER the await, value=500".into(),
-        // Header word 6: the host served exactly one wake. A run that resumed the body
-        // without serving it (the inline fall-through before DL41) cannot print this.
-        "main: wakes served=1".into(),
-        "main: join=0".into(),
-        "main: done".into(),
+        .find_map(|line| line.strip_prefix("main: index="))
+        .unwrap_or_else(|| panic!("{label}: no `main: index=` line in:\n{}", run.stdout));
+    let expected = [
+        "main: spawning".to_string(),
+        format!("main: index={index}"),
+        "main: spawn=0".to_string(),
+        format!("inner: AFTER the await, value={value}"),
+        format!("worker: AFTER the await, value={value}"),
+        // Header word 6: the host served exactly one wake. A run that resumed the
+        // body without serving one cannot print this.
+        "main: wakes served=1".to_string(),
+        "main: join=0".to_string(),
+        "main: done".to_string(),
     ];
-    expected.dedup();
-
     assert_eq!(
-        ordered,
+        printed,
         expected.iter().map(String::as_str).collect::<Vec<_>>(),
-        "suspend-serve-fiber: the transcript is not the contract.\nfull stdout:\n{}\nstderr:\n{}",
+        "{label}: the transcript is not the contract.\nfull stdout:\n{}\nstderr:\n{}",
         run.stdout,
         run.stderr
     );
