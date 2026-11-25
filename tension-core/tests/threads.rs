@@ -945,8 +945,38 @@ fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
         .filter(|line| !line.starts_with("20"))
         .collect();
 
+    // **Two lines are not position-asserted, and both are the program's doing.**
+    //
     // `main: index=<i>` is a `$starts` position — a fact of this module's table, not
-    // a value the contract fixes (DL40's rule). Everything else is exact.
+    // a value the contract fixes (DL40's rule).
+    //
+    // `main: spawn=0` is printed *after* `__spawnThread` returns, and that call has
+    // already started the worker: whether main's line or the worker's `BEFORE` lands
+    // first is a race in the program, not in the backend (measured — it went one way
+    // on this host and the other way in CI, run `45518298844`). It is still required
+    // **exactly once** below, and every other line is exact and in order.
+    let spawn_line = printed
+        .iter()
+        .position(|line| line.starts_with("main: spawn="))
+        .unwrap_or_else(|| panic!("no `main: spawn=` line in:\n{}", run.stdout));
+    assert_eq!(
+        printed.iter().filter(|line| line.starts_with("main: spawn=")).count(),
+        1,
+        "suspend-serve-fiber: `main: spawn=` must appear exactly once:\n{}",
+        run.stdout
+    );
+    assert_eq!(
+        printed[spawn_line], "main: spawn=0",
+        "suspend-serve-fiber: the worker did not take the request:\n{}",
+        run.stdout
+    );
+    let ordered: Vec<&str> = printed
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != spawn_line)
+        .map(|(_, line)| *line)
+        .collect();
+
     let mut expected: Vec<String> = vec![
         "main: spawning".into(),
         format!(
@@ -956,7 +986,6 @@ fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
                 .find_map(|line| line.strip_prefix("main: index="))
                 .unwrap_or_else(|| panic!("no `main: index=` line in:\n{}", run.stdout))
         ),
-        "main: spawn=0".into(),
         "worker: BEFORE the await".into(),
         // **The producer's word, not 0.** This is the half DL40 could not deliver: the
         // park suspended, the producer answered, and the resumed body read 500.
@@ -971,7 +1000,7 @@ fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
     expected.dedup();
 
     assert_eq!(
-        printed,
+        ordered,
         expected.iter().map(String::as_str).collect::<Vec<_>>(),
         "suspend-serve-fiber: the transcript is not the contract.\nfull stdout:\n{}\nstderr:\n{}",
         run.stdout,
