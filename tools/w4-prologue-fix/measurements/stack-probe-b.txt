@@ -1,0 +1,23 @@
+tensionscript: 0.14.1 from C:\work\Tension\node_modules\@yabgu_gm\tensionscript\bin\tensionscript.js (vendored yabgu_gm-tensionscript-0.14.1-g41b8721bc4f0.tar)
+
+▌ Whoops, the TensionScript compiler has crashed during compile :-(
+▌ 
+▌ Here is the stack trace hinting at the problem, perhaps it's useful?
+▌ 
+▌ RuntimeError: memory access out of bounds
+▌     at wasm://wasm/025aefca:wasm-function[97]:0xde97
+▌     at wasm://wasm/025aefca:wasm-function[6243]:0x42e53e
+▌     at n.resume_with_handlers (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\module.ts:2587:24)
+▌     at nC (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\builtins.ts:12661:48)
+▌     at n.compileCallExpressionBuiltin (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:10252:55)
+▌     at n.compileCallExpression (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:9996:23)
+▌     at n.compileExpression (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:6638:21)
+▌     at n.compileVariableStatement (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:6204:25)
+▌     at n.compileStatement (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:5238:21)
+▌     at n.compileStatements (C:\work\Tension\node_modules\@yabgu_gm\tensionscript\src\compiler.ts:5281:23)
+▌ 
+▌ If you see where the error is, feel free to send us a pull request. If not,
+▌ please let us know: https://github.com/Yabgu/TensionScript/issues
+▌ 
+▌ Thank you!
+

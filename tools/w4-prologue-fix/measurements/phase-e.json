@@ -1,0 +1,50 @@
+[
+  {
+    "program": "rt-guards",
+    "file": "rt-guards.ts",
+    "line": 92,
+    "verdict": "exact",
+    "resolved": 1,
+    "locations": 1,
+    "stopFile": null,
+    "stopLine": 92,
+    "stopFunction": "async/rt-guards/_start_game",
+    "rowCountForFile": 204
+  },
+  {
+    "program": "rt-guards",
+    "file": "rt-guards.ts",
+    "line": 95,
+    "verdict": "exact",
+    "resolved": 1,
+    "locations": 1,
+    "stopFile": null,
+    "stopLine": 95,
+    "stopFunction": "async/rt-guards/_start_game",
+    "rowCountForFile": 204
+  },
+  {
+    "program": "spawn-join",
+    "file": "spawn-join.ts",
+    "line": 122,
+    "verdict": "no stop",
+    "resolved": 0,
+    "locations": 0,
+    "stopFile": null,
+    "stopLine": null,
+    "stopFunction": null,
+    "rowCountForFile": 0
+  },
+  {
+    "program": "two-workers",
+    "file": "two-workers.ts",
+    "line": 110,
+    "verdict": "no stop",
+    "resolved": 0,
+    "locations": 0,
+    "stopFile": null,
+    "stopLine": null,
+    "stopFunction": null,
+    "rowCountForFile": 0
+  }
+]

@@ -1,0 +1,1111 @@
+{
+  "module": "examples\\async-on-main\\build\\game-promise.wasm",
+  "section": ".debug_line",
+  "version": 4,
+  "headerLength": 3087,
+  "minInstLength": 1,
+  "maxOpsPerInst": 1,
+  "defaultIsStmt": true,
+  "lineBase": -5,
+  "lineRange": 14,
+  "opcodeBase": 13,
+  "declaredStandardOpcodeLengths": {
+    "DW_LNS_copy": 0,
+    "DW_LNS_advance_pc": 1,
+    "DW_LNS_advance_line": 1,
+    "DW_LNS_set_file": 1,
+    "DW_LNS_set_column": 1,
+    "DW_LNS_negate_stmt": 0,
+    "DW_LNS_set_basic_block": 0,
+    "DW_LNS_const_add_pc": 0,
+    "DW_LNS_fixed_advance_pc": 1,
+    "DW_LNS_set_prologue_end": 0,
+    "DW_LNS_set_epilogue_begin": 0,
+    "DW_LNS_set_isa": 1
+  },
+  "declaredLengthsThatDifferFromDwarf4Spec": [],
+  "includeDirectories": [
+    "C:\\work\\Tension\\examples\\async-on-main"
+  ],
+  "fileCount": 65,
+  "fileNames": [
+    {
+      "index": 1,
+      "name": "node_modules/rt/common.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 2,
+      "name": "node_modules/rt/tlsf.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 3,
+      "name": "node_modules/shared/typeinfo.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 4,
+      "name": "node_modules/rt/itcms.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 5,
+      "name": "node_modules/tension-framework/assembly/time.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 6,
+      "name": "node_modules/tension-framework/assembly/log.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 7,
+      "name": "node_modules/util/error.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 8,
+      "name": "node_modules/shared/runtime.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 9,
+      "name": "node_modules/util/number.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 10,
+      "name": "node_modules/util/math.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 11,
+      "name": "node_modules/util/string.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 12,
+      "name": "node_modules/rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 13,
+      "name": "node_modules/arraybuffer.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 14,
+      "name": "node_modules/util/hash.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 15,
+      "name": "node_modules/map.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 16,
+      "name": "node_modules/tension-framework/assembly/ai.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 17,
+      "name": "node_modules/tension-framework/assembly/res.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 18,
+      "name": "node_modules/tension-framework/assembly/solver.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 19,
+      "name": "node_modules/tension-framework/assembly/runtime/wire.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 20,
+      "name": "node_modules/tension-framework/assembly/runtime/manifest.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 21,
+      "name": "node_modules/tension-framework/assembly/runtime/layout.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 22,
+      "name": "node_modules/tension-framework/assembly/runtime/arena.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 23,
+      "name": "node_modules/tension-framework/assembly/runtime/tlv.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 24,
+      "name": "node_modules/tension-framework/assembly/runtime/config.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 25,
+      "name": "node_modules/util/sort.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 26,
+      "name": "node_modules/array.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 27,
+      "name": "node_modules/builtins.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 28,
+      "name": "node_modules/task.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 29,
+      "name": "node_modules/task-rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 30,
+      "name": "node_modules/tension-framework/assembly/runtime/rt.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 31,
+      "name": "node_modules/tension-framework/assembly/ogre/wire.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 32,
+      "name": "node_modules/tension-framework/assembly/runtime/strings.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 33,
+      "name": "node_modules/tension-framework/assembly/platform.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 34,
+      "name": "node_modules/tension-framework/assembly/ogre/mesh.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 35,
+      "name": "node_modules/tension-framework/assembly/ogre/index.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 36,
+      "name": "node_modules/tension-framework/assembly/input.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 37,
+      "name": "node_modules/tension-framework/assembly/anim/key.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 38,
+      "name": "node_modules/tension-framework/assembly/anim/animation.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 39,
+      "name": "node_modules/tension-framework/assembly/anim/skeleton.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 40,
+      "name": "node_modules/tension-framework/assembly/anim/matrix.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 41,
+      "name": "node_modules/tension-framework/assembly/physics.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 42,
+      "name": "node_modules/tension-framework/assembly/2d/types.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 43,
+      "name": "node_modules/tension-framework/assembly/2d/iwi.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 44,
+      "name": "node_modules/tension-framework/assembly/2d/constants.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 45,
+      "name": "node_modules/tension-framework/assembly/2d/canvas.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 46,
+      "name": "node_modules/tension-framework/assembly/2d/scene.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 47,
+      "name": "node_modules/tension-framework/assembly/dev.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 48,
+      "name": "node_modules/tension-framework/assembly/ui/theme.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 49,
+      "name": "node_modules/tension-framework/assembly/ui/fonts.generated.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 50,
+      "name": "node_modules/tension-framework/assembly/ui/fonts.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 51,
+      "name": "node_modules/tension-framework/assembly/ui/hit.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 52,
+      "name": "node_modules/tension-framework/assembly/ui/painter.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 53,
+      "name": "node_modules/tension-framework/assembly/ui/event-def.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 54,
+      "name": "node_modules/tension-framework/assembly/ui/behavior.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 55,
+      "name": "node_modules/tension-framework/assembly/ui/events.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 56,
+      "name": "node_modules/tension-framework/assembly/ui/builder.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 57,
+      "name": "node_modules/tension-framework/assembly/ui/layout.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 58,
+      "name": "node_modules/tension-framework/assembly/editor/document.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 59,
+      "name": "node_modules/tension-framework/assembly/editor/command.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 60,
+      "name": "node_modules/tension-framework/assembly/app/shell.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 61,
+      "name": "game.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 62,
+      "name": "node_modules/tension-framework/assembly/io.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 63,
+      "name": "node_modules/string.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 64,
+      "name": "node_modules/number.ts",
+      "directoryIndex": 1
+    },
+    {
+      "index": 65,
+      "name": "node_modules/function.ts",
+      "directoryIndex": 1
+    }
+  ],
+  "totalRows": 4185,
+  "sequenceCount": 122,
+  "opcodeCounts": {
+    "DW_LNE_set_address": 122,
+    "DW_LNS_set_file": 160,
+    "DW_LNS_advance_line": 1054,
+    "DW_LNS_set_column": 3528,
+    "DW_LNS_set_prologue_end": 122,
+    "DW_LNS_copy": 4063,
+    "DW_LNS_advance_pc": 3941,
+    "DW_LNE_end_sequence": 122
+  },
+  "prologueEnd": {
+    "emitted": 122,
+    "rows": [
+      {
+        "address": "0x0000000000000017",
+        "file": 4,
+        "line": 55,
+        "column": 2
+      },
+      {
+        "address": "0x0000000000000031",
+        "file": 4,
+        "line": 94,
+        "column": 30
+      },
+      {
+        "address": "0x000000000000003f",
+        "file": 4,
+        "line": 104,
+        "column": 15
+      },
+      {
+        "address": "0x000000000000004a",
+        "file": 4,
+        "line": 156,
+        "column": 18
+      },
+      {
+        "address": "0x0000000000000099",
+        "file": 4,
+        "line": 109,
+        "column": 4
+      },
+      {
+        "address": "0x00000000000000b5",
+        "file": 4,
+        "line": 99,
+        "column": 4
+      },
+      {
+        "address": "0x00000000000000c6",
+        "file": 4,
+        "line": 126,
+        "column": 15
+      },
+      {
+        "address": "0x0000000000000139",
+        "file": 12,
+        "line": 20,
+        "column": 12
+      },
+      {
+        "address": "0x0000000000000169",
+        "file": 4,
+        "line": 119,
+        "column": 15
+      },
+      {
+        "address": "0x000000000000018a",
+        "file": 4,
+        "line": 139,
+        "column": 15
+      },
+      {
+        "address": "0x00000000000001b0",
+        "file": 4,
+        "line": 148,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000001f0",
+        "file": 4,
+        "line": 323,
+        "column": 45
+      },
+      {
+        "address": "0x000000000000021b",
+        "file": 4,
+        "line": 168,
+        "column": 12
+      },
+      {
+        "address": "0x000000000000024e",
+        "file": 4,
+        "line": 114,
+        "column": 11
+      },
+      {
+        "address": "0x00000000000002a0",
+        "file": 2,
+        "line": 267,
+        "column": 18
+      },
+      {
+        "address": "0x0000000000000425",
+        "file": 2,
+        "line": 201,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000687",
+        "file": 2,
+        "line": 381,
+        "column": 12
+      },
+      {
+        "address": "0x00000000000007a7",
+        "file": 2,
+        "line": 467,
+        "column": 6
+      },
+      {
+        "address": "0x000000000000089d",
+        "file": 2,
+        "line": 561,
+        "column": 32
+      },
+      {
+        "address": "0x00000000000008dc",
+        "file": 2,
+        "line": 554,
+        "column": 6
+      },
+      {
+        "address": "0x00000000000008f3",
+        "file": 2,
+        "line": 589,
+        "column": 35
+      },
+      {
+        "address": "0x0000000000000910",
+        "file": 4,
+        "line": 244,
+        "column": 54
+      },
+      {
+        "address": "0x000000000000093d",
+        "file": 4,
+        "line": 182,
+        "column": 2
+      },
+      {
+        "address": "0x0000000000000a82",
+        "file": 4,
+        "line": 399,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000aed",
+        "file": 2,
+        "line": 454,
+        "column": 9
+      },
+      {
+        "address": "0x0000000000000b0d",
+        "file": 2,
+        "line": 461,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000b2e",
+        "file": 2,
+        "line": 314,
+        "column": 9
+      },
+      {
+        "address": "0x0000000000000b51",
+        "file": 2,
+        "line": 325,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000c8b",
+        "file": 2,
+        "line": 430,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000d14",
+        "file": 2,
+        "line": 360,
+        "column": 18
+      },
+      {
+        "address": "0x0000000000000dc5",
+        "file": 2,
+        "line": 494,
+        "column": 32
+      },
+      {
+        "address": "0x0000000000000e37",
+        "file": 2,
+        "line": 572,
+        "column": 7
+      },
+      {
+        "address": "0x0000000000000e60",
+        "file": 4,
+        "line": 261,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000000ec4",
+        "file": 4,
+        "line": 294,
+        "column": 55
+      },
+      {
+        "address": "0x0000000000000f7f",
+        "file": 6,
+        "line": 44,
+        "column": 49
+      },
+      {
+        "address": "0x0000000000000fac",
+        "file": 17,
+        "line": 127,
+        "column": 32
+      },
+      {
+        "address": "0x0000000000000fc0",
+        "file": 12,
+        "line": 28,
+        "column": 21
+      },
+      {
+        "address": "0x0000000000000ff1",
+        "file": 55,
+        "line": 118,
+        "column": 30
+      },
+      {
+        "address": "0x0000000000001060",
+        "file": 29,
+        "line": 543,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000001255",
+        "file": 63,
+        "line": 672,
+        "column": 19
+      },
+      {
+        "address": "0x0000000000001305",
+        "file": 63,
+        "line": 51,
+        "column": 30
+      },
+      {
+        "address": "0x0000000000001314",
+        "file": 63,
+        "line": 706,
+        "column": 19
+      },
+      {
+        "address": "0x00000000000014cf",
+        "file": 13,
+        "line": 61,
+        "column": 30
+      },
+      {
+        "address": "0x00000000000014da",
+        "file": 9,
+        "line": 134,
+        "column": 6
+      },
+      {
+        "address": "0x000000000000153e",
+        "file": 9,
+        "line": 185,
+        "column": 2
+      },
+      {
+        "address": "0x000000000000163c",
+        "file": 9,
+        "line": 253,
+        "column": 2
+      },
+      {
+        "address": "0x0000000000001696",
+        "file": 9,
+        "line": 168,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000001718",
+        "file": 9,
+        "line": 329,
+        "column": 13
+      },
+      {
+        "address": "0x00000000000017b0",
+        "file": 64,
+        "line": 79,
+        "column": 18
+      },
+      {
+        "address": "0x00000000000018d9",
+        "file": 4,
+        "line": 277,
+        "column": 34
+      },
+      {
+        "address": "0x0000000000001927",
+        "file": 14,
+        "line": 2,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000002230",
+        "file": 15,
+        "line": 60,
+        "column": 49
+      },
+      {
+        "address": "0x0000000000002311",
+        "file": 26,
+        "line": 374,
+        "column": 14
+      },
+      {
+        "address": "0x0000000000002400",
+        "file": 26,
+        "line": 373,
+        "column": 21
+      },
+      {
+        "address": "0x0000000000002544",
+        "file": 29,
+        "line": 91,
+        "column": 14
+      },
+      {
+        "address": "0x00000000000025d0",
+        "file": 61,
+        "line": 76,
+        "column": 0
+      },
+      {
+        "address": "0x0000000000002722",
+        "file": 28,
+        "line": 185,
+        "column": 14
+      },
+      {
+        "address": "0x00000000000028b7",
+        "file": 28,
+        "line": 22,
+        "column": 16
+      },
+      {
+        "address": "0x00000000000029a2",
+        "file": 26,
+        "line": 84,
+        "column": 11
+      },
+      {
+        "address": "0x00000000000029da",
+        "file": 26,
+        "line": 270,
+        "column": 14
+      },
+      {
+        "address": "0x0000000000002a60",
+        "file": 26,
+        "line": 114,
+        "column": 8
+      },
+      {
+        "address": "0x0000000000002aed",
+        "file": 29,
+        "line": 383,
+        "column": 13
+      },
+      {
+        "address": "0x0000000000002c97",
+        "file": 29,
+        "line": 416,
+        "column": 9
+      },
+      {
+        "address": "0x0000000000002cdd",
+        "file": 63,
+        "line": 698,
+        "column": 64
+      },
+      {
+        "address": "0x0000000000002d3f",
+        "file": 63,
+        "line": 697,
+        "column": 63
+      },
+      {
+        "address": "0x0000000000002d9b",
+        "file": 62,
+        "line": 67,
+        "column": 35
+      },
+      {
+        "address": "0x0000000000002df3",
+        "file": 62,
+        "line": 73,
+        "column": 8
+      },
+      {
+        "address": "0x0000000000002e2e",
+        "file": 63,
+        "line": 90,
+        "column": 26
+      },
+      {
+        "address": "0x0000000000002ec7",
+        "file": 63,
+        "line": 86,
+        "column": 11
+      },
+      {
+        "address": "0x0000000000002f0e",
+        "file": 61,
+        "line": 68,
+        "column": 0
+      },
+      {
+        "address": "0x000000000000300f",
+        "file": 61,
+        "line": 59,
+        "column": 0
+      },
+      {
+        "address": "0x0000000000003110",
+        "file": 61,
+        "line": 53,
+        "column": 0
+      },
+      {
+        "address": "0x00000000000031b1",
+        "file": 26,
+        "line": 84,
+        "column": 11
+      },
+      {
+        "address": "0x00000000000031e9",
+        "file": 26,
+        "line": 17,
+        "column": 27
+      },
+      {
+        "address": "0x00000000000032c8",
+        "file": 26,
+        "line": 207,
+        "column": 17
+      },
+      {
+        "address": "0x0000000000003346",
+        "file": 29,
+        "line": 319,
+        "column": 16
+      },
+      {
+        "address": "0x0000000000003429",
+        "file": 29,
+        "line": 421,
+        "column": 13
+      },
+      {
+        "address": "0x0000000000003487",
+        "file": 15,
+        "line": 88,
+        "column": 24
+      },
+      {
+        "address": "0x0000000000003523",
+        "file": 15,
+        "line": 99,
+        "column": 11
+      },
+      {
+        "address": "0x0000000000003585",
+        "file": 15,
+        "line": 104,
+        "column": 16
+      },
+      {
+        "address": "0x0000000000003601",
+        "file": 26,
+        "line": 84,
+        "column": 11
+      },
+      {
+        "address": "0x000000000000363a",
+        "file": 26,
+        "line": 70,
+        "column": 8
+      },
+      {
+        "address": "0x0000000000003768",
+        "file": 26,
+        "line": 114,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000037f7",
+        "file": 26,
+        "line": 207,
+        "column": 17
+      },
+      {
+        "address": "0x000000000000387f",
+        "file": 26,
+        "line": 88,
+        "column": 19
+      },
+      {
+        "address": "0x00000000000038c0",
+        "file": 29,
+        "line": 489,
+        "column": 17
+      },
+      {
+        "address": "0x0000000000003a07",
+        "file": 29,
+        "line": 556,
+        "column": 15
+      },
+      {
+        "address": "0x0000000000003a88",
+        "file": 29,
+        "line": 574,
+        "column": 15
+      },
+      {
+        "address": "0x0000000000003aed",
+        "file": 61,
+        "line": 54,
+        "column": 2
+      },
+      {
+        "address": "0x0000000000003b85",
+        "file": 61,
+        "line": 53,
+        "column": 0
+      },
+      {
+        "address": "0x0000000000003c95",
+        "file": 29,
+        "line": 436,
+        "column": 9
+      },
+      {
+        "address": "0x0000000000003cd1",
+        "file": 15,
+        "line": 60,
+        "column": 49
+      },
+      {
+        "address": "0x0000000000003db8",
+        "file": 15,
+        "line": 163,
+        "column": 35
+      },
+      {
+        "address": "0x0000000000003f75",
+        "file": 15,
+        "line": 111,
+        "column": 27
+      },
+      {
+        "address": "0x0000000000004179",
+        "file": 29,
+        "line": 207,
+        "column": 16
+      },
+      {
+        "address": "0x0000000000004284",
+        "file": 29,
+        "line": 459,
+        "column": 17
+      },
+      {
+        "address": "0x000000000000439f",
+        "file": 61,
+        "line": 59,
+        "column": 19
+      },
+      {
+        "address": "0x00000000000045b4",
+        "file": 61,
+        "line": 59,
+        "column": 19
+      },
+      {
+        "address": "0x00000000000046c7",
+        "file": 61,
+        "line": 68,
+        "column": 21
+      },
+      {
+        "address": "0x00000000000048de",
+        "file": 61,
+        "line": 68,
+        "column": 21
+      },
+      {
+        "address": "0x00000000000049f1",
+        "file": 61,
+        "line": 80,
+        "column": 6
+      },
+      {
+        "address": "0x0000000000004fe6",
+        "file": 61,
+        "line": 76,
+        "column": 0
+      },
+      {
+        "address": "0x00000000000050f6",
+        "file": 15,
+        "line": 234,
+        "column": 30
+      },
+      {
+        "address": "0x00000000000051bd",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000051f8",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x0000000000005287",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000052c1",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x00000000000052f8",
+        "file": 15,
+        "line": 234,
+        "column": 30
+      },
+      {
+        "address": "0x000000000000534c",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000053dc",
+        "file": 15,
+        "line": 234,
+        "column": 30
+      },
+      {
+        "address": "0x00000000000054a4",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x0000000000005531",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x000000000000556c",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000055fc",
+        "file": 26,
+        "line": 515,
+        "column": 8
+      },
+      {
+        "address": "0x000000000000568b",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x00000000000056c2",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x00000000000056f9",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x0000000000005730",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x0000000000005767",
+        "file": 65,
+        "line": 36,
+        "column": 12
+      },
+      {
+        "address": "0x000000000000579e",
+        "file": 13,
+        "line": 52,
+        "column": 8
+      },
+      {
+        "address": "0x00000000000057f4",
+        "file": 12,
+        "line": 36,
+        "column": 19
+      },
+      {
+        "address": "0x00000000000058e8",
+        "file": 9,
+        "line": 372,
+        "column": 6
+      }
+    ]
+  },
+  "epilogueBegin": {
+    "emitted": 0,
+    "rows": []
+  }
+}

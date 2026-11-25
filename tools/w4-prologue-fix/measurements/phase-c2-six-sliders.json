@@ -1,0 +1,507 @@
+[
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\io\\build\\game.wasm",
+    "file": "game.ts",
+    "requestedLine": 10,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x213487c9f00",
+      "line": 10,
+      "column": 8,
+      "function": "game/_start_game"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x213487c9f00",
+        "line": 10,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x213487c9fa2",
+        "line": 10,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x213487c9fad",
+        "line": 10,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x213487ca220",
+        "line": 10,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x213487ca24e",
+        "line": 10,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x213487ca250",
+        "line": 10,
+        "column": 8
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x213487c9f00",
+      "line": 10,
+      "column": 8,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x213487c9fa2",
+      "line": 10,
+      "column": 8
+    },
+    "rowAfterRequestedLine": null,
+    "rowCountForFile": 40,
+    "jit": {
+      "name": "JIT(0x213488a9040)",
+      "num_compile_units": 3
+    }
+  },
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\log\\build\\game.wasm",
+    "file": "game.ts",
+    "requestedLine": 32,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x25645f9b080",
+      "line": 32,
+      "column": 26,
+      "function": "game/_start_game"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x25645f9b080",
+        "line": 32,
+        "column": 26
+      },
+      {
+        "addr_hex": "0x25645f9b100",
+        "line": 32,
+        "column": 26
+      },
+      {
+        "addr_hex": "0x25645f9b10b",
+        "line": 32,
+        "column": 15
+      },
+      {
+        "addr_hex": "0x25645f9b2d0",
+        "line": 32,
+        "column": 26
+      },
+      {
+        "addr_hex": "0x25645f9b2dc",
+        "line": 32,
+        "column": 26
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x25645f9b080",
+      "line": 32,
+      "column": 26,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x25645f9b100",
+      "line": 32,
+      "column": 26
+    },
+    "rowAfterRequestedLine": null,
+    "rowCountForFile": 43,
+    "jit": {
+      "name": "JIT(0x25646751040)",
+      "num_compile_units": 3
+    }
+  },
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\async-io\\build\\game.wasm",
+    "file": "game.ts",
+    "requestedLine": 48,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x271c3a692a0",
+      "line": 48,
+      "column": 6,
+      "function": "game/pipeline$resume"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x271c3a692a0",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a69336",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a69347",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a6934c",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a6935a",
+        "line": 48,
+        "column": 21
+      },
+      {
+        "addr_hex": "0x271c3a69373",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693a3",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693ad",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693b6",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693c1",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693d9",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693e6",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693ec",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a693fb",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a69404",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a69411",
+        "line": 48,
+        "column": 15
+      },
+      {
+        "addr_hex": "0x271c3a6941b",
+        "line": 48,
+        "column": 15
+      },
+      {
+        "addr_hex": "0x271c3a69594",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a6959f",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a695e3",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a695e9",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a695f3",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a69601",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a69605",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a69610",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a6962d",
+        "line": 48,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x271c3a69661",
+        "line": 48,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x271c3a6968f",
+        "line": 48,
+        "column": 6
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x271c3a692a0",
+      "line": 48,
+      "column": 6,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x271c3a69336",
+      "line": 48,
+      "column": 6
+    },
+    "rowAfterRequestedLine": {
+      "addr_hex": "0x271c3a697a0",
+      "line": 41,
+      "column": 23
+    },
+    "rowCountForFile": 228,
+    "jit": {
+      "name": "JIT(0x271c3b5c040)",
+      "num_compile_units": 3
+    }
+  },
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\async-io\\build\\game.wasm",
+    "file": "game.ts",
+    "requestedLine": 60,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x20ba7c98960",
+      "line": 60,
+      "column": 6,
+      "function": "game/run$resume"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x20ba7c98960",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c98a16",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c98a2b",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c98a35",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c991bc",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c991c6",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c9922e",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c99285",
+        "line": 60,
+        "column": 6
+      },
+      {
+        "addr_hex": "0x20ba7c99298",
+        "line": 60,
+        "column": 6
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x20ba7c98960",
+      "line": 60,
+      "column": 6,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x20ba7c98a16",
+      "line": 60,
+      "column": 6
+    },
+    "rowAfterRequestedLine": {
+      "addr_hex": "0x20ba7c992a0",
+      "line": 48,
+      "column": 6
+    },
+    "rowCountForFile": 228,
+    "jit": {
+      "name": "JIT(0x20ba7d80040)",
+      "num_compile_units": 3
+    }
+  },
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\io\\build\\game.wasm",
+    "file": "io.ts",
+    "requestedLine": 73,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x1043b629840",
+      "line": 73,
+      "column": 8,
+      "function": "~lib/tension-framework/assembly/io/print"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x1043b629840",
+        "line": 73,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x1043b6298a5",
+        "line": 73,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x1043b6298ae",
+        "line": 73,
+        "column": 2
+      },
+      {
+        "addr_hex": "0x1043b6298df",
+        "line": 73,
+        "column": 8
+      },
+      {
+        "addr_hex": "0x1043b6298eb",
+        "line": 73,
+        "column": 8
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x1043b629840",
+      "line": 73,
+      "column": 8,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x1043b6298a5",
+      "line": 73,
+      "column": 8
+    },
+    "rowAfterRequestedLine": {
+      "addr_hex": "0x1043b62bb00",
+      "line": 101,
+      "column": 23
+    },
+    "rowCountForFile": 61,
+    "jit": {
+      "name": "JIT(0x1043be10040)",
+      "num_compile_units": 3
+    }
+  },
+  {
+    "guest": "game.wasm",
+    "guestPath": "C:\\work\\Tension\\examples\\io\\build\\game.wasm",
+    "file": "io.ts",
+    "requestedLine": 101,
+    "verdict": "exact",
+    "breakpointLocations": 1,
+    "breakpointResolved": 1,
+    "stop": {
+      "pc_hex": "0x1aa5fc6bb00",
+      "line": 101,
+      "column": 23,
+      "function": "~lib/tension-framework/assembly/io/arg"
+    },
+    "requestedLineRows": [
+      {
+        "addr_hex": "0x1aa5fc6bb00",
+        "line": 101,
+        "column": 23
+      },
+      {
+        "addr_hex": "0x1aa5fc6bb7e",
+        "line": 101,
+        "column": 15
+      },
+      {
+        "addr_hex": "0x1aa5fc6bc9d",
+        "line": 101,
+        "column": 23
+      },
+      {
+        "addr_hex": "0x1aa5fc6bca9",
+        "line": 101,
+        "column": 23
+      }
+    ],
+    "stopRow": {
+      "addr_hex": "0x1aa5fc6bb00",
+      "line": 101,
+      "column": 23,
+      "cu": 1
+    },
+    "rowAfterStopRow": {
+      "addr_hex": "0x1aa5fc6bb7e",
+      "line": 101,
+      "column": 15
+    },
+    "rowAfterRequestedLine": {
+      "addr_hex": "0x1aa5fc6bcc0",
+      "line": 80,
+      "column": 28
+    },
+    "rowCountForFile": 61,
+    "jit": {
+      "name": "JIT(0x1aa61a24040)",
+      "num_compile_units": 3
+    }
+  }
+]
