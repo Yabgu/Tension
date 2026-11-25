@@ -376,7 +376,8 @@ Red cases:
 | `45518298844` | `00fbc5e` | **failure**, and it was worth having: see below |
 | `45519246318` | `fcb41b9` | failure, same cause; that commit is the report only |
 | **`45520074681`** | **`b44641b`** | **success** — `Wake path guard`: `running 6 tests`, `test a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber ... ok`, `6 passed; 0 failed; … 5 filtered out` |
-| **`45521099302`** | **`b58afe9`** | **success** — the report commit; the same step ran on the branch tip |
+| **`45521099302`** | **`b58afe9`** | **success** — the report commit; the same step ran |
+| **`45521584832`** | **`a071d30`** | **success** — the branch tip at the time of writing |
 
 **CI caught a race this host did not.** On `45518298844` the transcript came back with
 `main: spawn=0` *after* the worker's lines:
