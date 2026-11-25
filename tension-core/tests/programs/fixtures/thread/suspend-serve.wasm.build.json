@@ -1,6 +1,6 @@
 {
-  "compiler": "9ad55da6699ebdab585c1f172eadaa69159e98ce17483c17b79c1234b999e099",
-  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
+  "compiler": "7db1bb6d34a995d3737f73017f31ed17da5078d3040e7038283ea0f3a4f08f1e",
+  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "thread/suspend-serve.ts",
   "flags": [
     "--runtime",

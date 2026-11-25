@@ -1,5 +1,5 @@
 {
-  "compiler": "5d78d7220229ef77e40904ae0a9b950307d65ce2edd5e2608cc0641ab26a896e",
+  "compiler": "7db1bb6d34a995d3737f73017f31ed17da5078d3040e7038283ea0f3a4f08f1e",
   "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/asc.js",
   "source": "thread/wake-on-worker.ts",
   "flags": [

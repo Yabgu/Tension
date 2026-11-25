@@ -92,8 +92,8 @@ export function _start_game(): void {
   line("start: ok");
 
   let handle: Task<u32> = rt.job(7);
-  line("job-class: " + handle._record!.class_.toString());
-  line("job-key: " + handle._record!.key.toString());
+  line("job-class: " + handle._record.class_.toString());
+  line("job-key: " + handle._record.key.toString());
   line("job-settled: " + (handle.settled ? "1" : "0"));
   line("has-runnable-before: " + (rt.hasRunnable() ? "1" : "0"));
 
