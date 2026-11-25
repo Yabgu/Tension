@@ -340,7 +340,7 @@ developer's build.
 workflow ran on the push and passed (**`45596224092` success**), so the std change is
 proven on the compiler's own suite as well as through Tension's guests.
 
-Report commit follows; its CI is a docs-only tip.
+Report commit `25c95ae` — CI **`45599201320` success**, the same step on the branch tip.
 
 ---
 
