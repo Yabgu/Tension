@@ -35,7 +35,7 @@ import {
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { writeStamp } from './build-stamp.mjs';
-import { writeRuntimeRecord } from './lib/build-record.mjs';
+import { verifyRuntimeRecord } from './lib/build-record.mjs';
 import { ensureSubmodules } from './lib/submodules.mjs';
 import { ensureOgre } from './ensure-ogre.mjs';
 import { readElfDynamic, runpathEntries } from './lib/elf.mjs';
@@ -916,12 +916,15 @@ function buildCore() {
   if (!existsSync(coreBin)) {
     fail(`cargo reported success but ${coreBin} is missing`);
   }
-  // **What this build consumed, beside what it produced** (DL37, I86). Written
-  // here — by the step that ran cargo — because a record written anywhere else
-  // would be a claim about someone else's build. `--check` only reads it.
+  // **The record beside the binary was written by cargo, not by this script**
+  // (DL42, I100): `tension-core/build.rs` writes it on every run of the build, so a
+  // wrapper is no longer the thing that decides whether it exists. Verified here — a
+  // wrapper that has just run cargo should be able to say the record is current — but
+  // never written.
   {
-    const record = writeRuntimeRecord(repo, 'release', coreBin);
-    note(`core: record ${record.inputFiles} inputs → ${basename(coreBin)}.build.json (${record.inputs.slice(0, 12)})`);
+    const verdict = verifyRuntimeRecord(repo, coreBin);
+    if (!verdict.ok) fail(`the release build left no current record: ${verdict.reason}`);
+    note(`core: record ${verdict.files} inputs → ${basename(coreBin)}.build.json (${verdict.hash.slice(0, 12)})`);
   }
 
   const destination = join(payload('core'), 'bin');

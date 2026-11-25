@@ -142,12 +142,12 @@ adapter that tries to register here is refused at load (`tension-core/src/adapte
 
 | import | signature | registered at |
 |---|---|---|
-| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2507`, `tension-core/src/host/io.rs:59` |
-| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2522`, `tension-core/src/host/io.rs:109` |
+| `print` | `(i32, i32)` | `tension-core/src/thread.rs:2522`, `tension-core/src/host/io.rs:59` |
+| `log` | `(i32, i32, i32, i32, i32)` | `tension-core/src/thread.rs:2537`, `tension-core/src/host/io.rs:109` |
 | `log_structured` | `(i32, i32, i32, i32, i32)` | `tension-core/src/host/io.rs:124` |
-| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2550`, `tension-core/src/host/io.rs:139` |
-| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2546`, `tension-core/src/host/io.rs:192` |
-| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2547`, `tension-core/src/host/io.rs:198` |
+| `read_line` | `(i32, i32) → i32` | `tension-core/src/thread.rs:2565`, `tension-core/src/host/io.rs:139` |
+| `arg_count` | `(void) → i32` | `tension-core/src/thread.rs:2561`, `tension-core/src/host/io.rs:192` |
+| `arg` | `(i32, i32, i32) → i32` | `tension-core/src/thread.rs:2562`, `tension-core/src/host/io.rs:198` |
 
 ## `tension::platform`
 

@@ -51,6 +51,21 @@ fn main() {
     println!("cargo:rerun-if-changed={}", res_dir.join("src").display());
     println!("cargo:rerun-if-changed={}", res_dir.join("include").display());
 
+    // **The build record, written by the build** (DL42, I100).
+    //
+    // "./check" asked "is this binary current?" by comparing a content digest of the
+    // sources against a record — and the record was written by a *wrapper*
+    // (`scripts/build-native.mjs`, `scripts/rebuild.mjs`), so a bare `cargo build
+    // --release` produced a current binary with a stale record. Measured three times
+    // (DL41 §7): the record predated the source commit, the later rebuild was a bare
+    // cargo build, and `--check` read 7/9 for a tree that was in fact current.
+    //
+    // **The fix is placement, not bookkeeping.** build.rs runs exactly when its inputs
+    // change, so it is the one step that cannot be skipped by building the crate: it
+    // writes the record beside the artifact it describes, for whichever profile cargo
+    // is building. Nothing else writes it.
+    record::write(&manifest);
+
     check_zig_version();
 
     let target = std::env::var("TARGET").unwrap_or_default();
@@ -513,6 +528,242 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+/// The build record: **what this binary was built from**, written by the build.
+///
+/// # Why it lives here (DL42, I100)
+///
+/// The record used to be written by a wrapper script, so `cargo build --release` on
+/// its own left a current binary beside a record that named older sources. That is
+/// not a bookkeeping slip: `--check`'s whole question is "was this artifact built
+/// from these sources?", and a record a round can forget to write answers it wrongly
+/// in the direction that hides staleness. Three rounds in a row hit it (DL41 §7).
+///
+/// # One definition of the digest
+///
+/// The *canonical form* used to be defined once, in JavaScript
+/// (`scripts/lib/build-record.mjs`), which meant the writer and the checker were the
+/// same language. Moving the writer into the build would have duplicated the rule in
+/// Rust — so the rule changed shape instead: the record now carries **one sha256 per
+/// input file**, and `--check` verifies those directly rather than recomputing an
+/// aggregate. A per-file digest is the same algorithm on both sides (sha256 of a
+/// file, nothing else), so there is no canonical *form* left for two languages to
+/// disagree about. The aggregate is still written, for a reader who wants one short
+/// label, but nothing depends on it.
+///
+/// # The input set
+///
+/// The same set `--check` enumerates: every `.rs` under `tension-core/src`, every
+/// `.zig` under `tension-res/src`, `Cargo.toml` and this script. It is emitted as a
+/// `cargo:rerun-if-changed` for each file, which is also what makes a `.rs` edit
+/// re-run this script — cargo's package-wide default is off as soon as a script emits
+/// any `rerun-if-changed`, and this one always has.
+mod record {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Writes `<profile>/tension-core.build.json` beside the artifact cargo is
+    /// building, and asks cargo to re-run this script when any input changes.
+    pub fn write(manifest: &Path) {
+        let repo = match manifest.parent() {
+            Some(repo) => repo,
+            None => return,
+        };
+        let inputs = collect(repo);
+        // **Before the early exits below**, so cargo always re-runs on an input edit
+        // even if writing the record fails on an unusual layout.
+        for rel in &inputs {
+            println!("cargo:rerun-if-changed={}", repo.join(rel).display());
+        }
+        let Some(profile) = profile_dir() else { return };
+        // `CARGO_CFG_WINDOWS`, not `cfg!(windows)`: the artifact's name belongs to
+        // the *target*, and this script may be cross-compiling.
+        let windows = std::env::var("CARGO_CFG_WINDOWS").is_ok();
+        let artifact = profile.join(if windows { "tension-core.exe" } else { "tension-core" });
+        let mut per_file: Vec<String> = Vec::new();
+        let mut stream = String::new();
+        for rel in &inputs {
+            let Ok(bytes) = fs::read(repo.join(rel)) else { return };
+            let digest = sha256_hex(&bytes);
+            per_file.push(format!(
+                "    {{ \"path\": {}, \"sha256\": {} }}",
+                json(rel),
+                json(&digest)
+            ));
+            stream.push_str(rel);
+            stream.push('\0');
+            stream.push_str(&digest);
+            stream.push('\n');
+        }
+        let aggregate = sha256_hex(stream.as_bytes());
+        let built = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let body = format!(
+            "{{\n  \"format\": 2,\n  \"inputs\": {},\n  \"inputFiles\": {},\n  \
+             \"profile\": {},\n  \"artifact\": {},\n  \"built_unix\": {},\n  \
+             \"inputsDescription\": \"tension-core/src/**/*.rs, tension-res/src/**/*.zig, Cargo.toml, build.rs\",\n  \
+             \"files\": [\n{}\n  ]\n}}\n",
+            json(&aggregate),
+            inputs.len(),
+            json(&profile_name(&profile)),
+            json(&artifact.display().to_string()),
+            built,
+            per_file.join(",\n")
+        );
+        let _ = fs::write(format!("{}.build.json", artifact.display()), body);
+    }
+
+    /// The input set, repo-relative and sorted the way `--check` enumerates it.
+    fn collect(repo: &Path) -> Vec<String> {
+        let mut out = Vec::new();
+        walk(repo, "tension-core/src", &mut out, |name| name.ends_with(".rs"));
+        walk(repo, "tension-res/src", &mut out, |name| name.ends_with(".zig"));
+        for rel in ["tension-core/Cargo.toml", "tension-core/build.rs"] {
+            if repo.join(rel).is_file() {
+                out.push(rel.to_string());
+            }
+        }
+        out.sort();
+        out
+    }
+
+    fn walk(repo: &Path, rel: &str, out: &mut Vec<String>, include: fn(&str) -> bool) {
+        let Ok(entries) = fs::read_dir(repo.join(rel)) else { return };
+        let mut names: Vec<_> = entries.flatten().collect();
+        names.sort_by_key(|entry| entry.file_name());
+        for entry in names {
+            let child = format!("{rel}/{}", entry.file_name().to_string_lossy());
+            let path = repo.join(&child);
+            if path.is_dir() {
+                walk(repo, &child, out, include);
+            } else if path.is_file() && include(&entry.file_name().to_string_lossy()) {
+                out.push(child);
+            }
+        }
+    }
+
+    /// `target/<profile>` — the directory the artifact is written to.
+    ///
+    /// **Found by name, not by counting**, because the depth is not a promise:
+    /// `OUT_DIR` is `<target>/<profile>/build/<pkg>-<hash>/out` for a package with
+    /// no `links` key, and a counting rule (`ancestors().nth(3)`) put the record in
+    /// `target/<profile>/build/` — measured, first run (DL42). So: the nearest
+    /// ancestor named `build`, and the artifact directory is its parent.
+    fn profile_dir() -> Option<PathBuf> {
+        let out = PathBuf::from(std::env::var("OUT_DIR").ok()?);
+        out.ancestors()
+            .find(|dir| dir.file_name().map(|name| name == "build").unwrap_or(false))
+            .and_then(|build| build.parent())
+            .map(|dir| dir.to_path_buf())
+    }
+
+    fn profile_name(profile: &Path) -> String {
+        profile
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// A JSON string literal. Only paths and hex digests go through this, so the
+    /// escapes are the two that can occur.
+    fn json(text: &str) -> String {
+        let mut out = String::with_capacity(text.len() + 2);
+        out.push('"');
+        for ch in text.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    // ── sha256 (FIPS 180-4) ─────────────────────────────────────────────────
+    //
+    // Hand-written rather than pulled in: a build dependency for `tension-core`
+    // would be a Cargo.toml change for one function, and this script already links
+    // C and Fortran toolchains — it does not need a Rust crate to hash a file. The
+    // constants are the standard first-32-bits-of-the-fractional-parts table.
+
+    const K: [u32; 64] = [
+        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+        0xc67178f2,
+    ];
+
+    pub fn sha256_hex(input: &[u8]) -> String {
+        let mut h: [u32; 8] = [
+            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+            0x5be0cd19,
+        ];
+        let bit_len = (input.len() as u64).wrapping_mul(8);
+        let mut message = input.to_vec();
+        message.push(0x80);
+        while message.len() % 64 != 56 {
+            message.push(0);
+        }
+        message.extend_from_slice(&bit_len.to_be_bytes());
+
+        for chunk in message.chunks(64) {
+            let mut w = [0u32; 64];
+            for (index, word) in chunk.chunks(4).enumerate() {
+                w[index] = u32::from_be_bytes([word[0], word[1], word[2], word[3]]);
+            }
+            for index in 16..64 {
+                let s0 = w[index - 15].rotate_right(7)
+                    ^ w[index - 15].rotate_right(18)
+                    ^ (w[index - 15] >> 3);
+                let s1 = w[index - 2].rotate_right(17)
+                    ^ w[index - 2].rotate_right(19)
+                    ^ (w[index - 2] >> 10);
+                w[index] = w[index - 16]
+                    .wrapping_add(s0)
+                    .wrapping_add(w[index - 7])
+                    .wrapping_add(s1);
+            }
+            let mut v = h;
+            for index in 0..64 {
+                let s1 = v[4].rotate_right(6) ^ v[4].rotate_right(11) ^ v[4].rotate_right(25);
+                let ch = (v[4] & v[5]) ^ ((!v[4]) & v[6]);
+                let temp1 = v[7]
+                    .wrapping_add(s1)
+                    .wrapping_add(ch)
+                    .wrapping_add(K[index])
+                    .wrapping_add(w[index]);
+                let s0 = v[0].rotate_right(2) ^ v[0].rotate_right(13) ^ v[0].rotate_right(22);
+                let maj = (v[0] & v[1]) ^ (v[0] & v[2]) ^ (v[1] & v[2]);
+                let temp2 = s0.wrapping_add(maj);
+                v[7] = v[6];
+                v[6] = v[5];
+                v[5] = v[4];
+                v[4] = v[3].wrapping_add(temp1);
+                v[3] = v[2];
+                v[2] = v[1];
+                v[1] = v[0];
+                v[0] = temp1.wrapping_add(temp2);
+            }
+            for index in 0..8 {
+                h[index] = h[index].wrapping_add(v[index]);
+            }
+        }
+        let mut hex = String::with_capacity(64);
+        for word in h {
+            hex.push_str(&format!("{word:08x}"));
+        }
+        hex
     }
 }
 

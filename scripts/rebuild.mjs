@@ -80,7 +80,7 @@ import { PROGRAM_ALIASES } from './lib/program-aliases.mjs';
 import {
   readBuildRecord as readArtifactRecord,
   runtimeInputDigest,
-  writeRuntimeRecord,
+  verifyRuntimeRecord,
 } from './lib/build-record.mjs';
 
 const CHECK_ONLY = process.argv.includes('--check');
@@ -374,17 +374,9 @@ function build() {
         (ai ? ' — this is the `ai` feature; build-native.mjs turns it on only for TENSION_AI=1' : ''),
     );
   }
-  // **The dev binary's record, written by the step that built it** (DL37, I86).
-  // `build-native.mjs` writes the release one because it runs that cargo; this is
-  // the only place the dev binary is produced, so it writes its own. `--check`
-  // below never writes.
-  {
-    const dev = join(CORE, 'target', 'debug', process.platform === 'win32' ? 'tension-core.exe' : 'tension-core');
-    if (existsSync(dev)) {
-      const record = writeRuntimeRecord(REPO, 'debug', dev);
-      say(`runtime: record ${record.inputFiles} inputs → ${basename(dev)}.build.json (${record.inputs.slice(0, 12)})`);
-    }
-  }
+  // **Nothing writes the dev binary's record here any more** (DL42, I100). `cargo
+  // build` writes it — `tension-core/build.rs` — whichever wrapper or hand typed the
+  // command, so there is one writer and no step a round can skip.
 
   // 4. the guests the suites run
   say('guests: scripts/build-test-programs.mjs (and --debug)');
@@ -472,6 +464,11 @@ async function verify() {
   // mtime answered "was it touched after the source", which is not the question:
   // a checkout, a rebase or a `touch` all move it without changing what the
   // binary was built from, and a compiler-only edit moves nothing at all.
+  // **Verified per file, against a record the build wrote** (DL42, I100). The row's
+  // label is still `<n> inputs → <aggregate>`; the verdict comes from
+  // `verifyRuntimeRecord`, which recomputes one sha256 per input and names the first
+  // file that moved. An aggregate compared between two implementations would pass a
+  // build that forgot a file; a per-file list cannot.
   const digest = runtimeInputDigest(REPO);
   for (const profile of ['release', 'debug']) {
     const binary = join(CORE, 'target', profile, 'tension-core.exe');
@@ -481,16 +478,12 @@ async function verify() {
       row(`runtime: src → ${profile}`, `${digest.files} inputs → ${short(digest.hash)}`, 'binary missing', 'STALE');
       continue;
     }
-    const record = readArtifactRecord(found);
+    const verdict = verifyRuntimeRecord(REPO, found);
     row(
       `runtime: src → ${profile}`,
       `${digest.files} inputs → ${short(digest.hash)}`,
-      record === null
-        ? 'no build record beside the binary'
-        : record.inputs === digest.hash
-          ? `recorded ${short(record.inputs)}`
-          : `built from ${short(record.inputs)}`,
-      record !== null && record.inputs === digest.hash ? 'PASS' : 'STALE',
+      verdict.ok ? `recorded ${short(verdict.hash)}` : verdict.reason,
+      verdict.ok ? 'PASS' : 'STALE',
     );
   }
 

@@ -271,6 +271,65 @@ fn at(haystack: &str, needle: &str) -> usize {
 /// can print two lines, and a wake path that resumed *everything* unconditionally
 /// would pass this file. The pair is one test so that neither half can be dropped
 /// without the other going red.
+/// **The producer's word reaches the resumed task on the continuation backend**
+/// (DL42, I98).
+///
+/// The fiber backend carries a completion's payload through
+/// `scheduler::completion`: `__parkHost` writes it onto the awaited record after the
+/// park returns, so a resumed task reads the producer's value. The continuation
+/// backend had no such path — its session loop resumed tasks with
+/// `__taskWake(idsPtr, count)`, which names ids and nothing else, so the record was
+/// never settled and `await job` read `0` whatever `--post-completion` had posted.
+///
+/// The assertion is **one artifact, two flags**, because that is the only shape that
+/// can prove the value comes from the producer rather than from a constant: `4,7`
+/// posts the pair with no payload and must still read `0`, `4,7,500` must read `500`.
+/// A test that only ran the second would pass on a build that hard-coded 500.
+///
+/// The wake cell is where it travels (`thread.rs`, `service_wakes`): the id and the
+/// payload are two words of the spawn record's dead `entry`/`arg`, so no ABI import
+/// and no record layout changed.
+#[test]
+fn a_woken_task_reads_the_producers_word_on_the_continuation_backend() {
+    let posted = run_with(&["--post-completion", "4,7,500"]);
+    for line in [
+        "inner: AFTER the await, value=500",
+        "worker: AFTER the await, value=500",
+    ] {
+        assert!(
+            posted.stdout.contains(line),
+            "`{line}` is missing — the resumed task did not read the payload the host \
+             delivered:\nstdout: {}\nstderr: {}",
+            posted.stdout,
+            posted.stderr
+        );
+    }
+    assert_eq!(
+        posted.status,
+        Some(0),
+        "the run must still finish clean:\nstdout: {}\nstderr: {}",
+        posted.stdout,
+        posted.stderr
+    );
+
+    // -- the control: the same artifact, a producer that posts no payload ----
+    let bare = run_with(&["--post-completion", "4,7"]);
+    for line in [
+        "inner: AFTER the await, value=0",
+        "worker: AFTER the await, value=0",
+    ] {
+        assert!(
+            bare.stdout.contains(line),
+            "`{line}` is missing — a completion with no payload must resume the task \
+             with `0`, or the first half proves nothing about where the value came \
+             from:\nstdout: {}\nstderr: {}",
+            bare.stdout,
+            bare.stderr
+        );
+    }
+    assert_eq!(bare.status, Some(0), "the control must finish clean:\n{}", bare.stderr);
+}
+
 #[test]
 fn a_task_parked_on_a_worker_is_resumed_by_a_sticky_wake() {
     // -- the proof ---------------------------------------------------------

@@ -2097,11 +2097,26 @@ fn service_wakes(
                 // a shortcut around a rule.
                 let cells = memory.data();
                 let base = cells.as_ptr() as *mut u8;
-                let bytes = delivery.task_id.to_le_bytes();
-                for (offset, byte) in bytes.iter().enumerate() {
-                    // SAFETY: `scratch + 8 <= memory_size` was checked above, and
-                    // this thread is the only writer of this address.
-                    unsafe { *base.add(scratch + offset) = *byte };
+                // **The wake cell is two words: the id, then the producer's value**
+                // (DL42, I98). It used to be one `u64` holding the id, of which the
+                // guest read the low `i32` and dropped the high one — the ids are
+                // store-local slot indices, so the half `__taskWake` threw away was
+                // always zero. That half now carries the payload, which is what makes
+                // this backend settle a resumed record with the producer's word
+                // exactly as the fiber backend does through `scheduler::completion`.
+                //
+                // Eight bytes still, so the record does not grow and no artifact
+                // moves for a reason other than the one this round declares.
+                let cell = [
+                    delivery.task_id as u32,
+                    delivery.payload as u32,
+                ];
+                for (word, value) in cell.iter().enumerate() {
+                    for (offset, byte) in value.to_le_bytes().iter().enumerate() {
+                        // SAFETY: `scratch + 8 <= memory_size` was checked above, and
+                        // this thread is the only writer of this address.
+                        unsafe { *base.add(scratch + word * 4 + offset) = *byte };
+                    }
                 }
             }
 
