@@ -872,6 +872,25 @@ fn the_cross_store_programs_print_the_same_values_on_the_fiber_backend() {
         let plain = run_artifact(&continuation, &[]);
         let on_fiber = run_artifact(&fiber, &[]);
 
+        // **On a target without stack switching there is no pair to compare** (I16,
+        // DL44): the continuation twin is refused by name and the fiber twin still
+        // runs. Both halves are asserted — the refusal, and that the fiber backend
+        // does not depend on the feature the target lacks.
+        if refused_for_want_of_continuations(&format!("{name} (continuation twin)"), &plain) {
+            assert_eq!(
+                on_fiber.status, Some(0),
+                "{twin}: the fiber twin must still run on a target that lacks stack \
+                 switching — that is the property DL37's type-section removal bought. \
+                 stdout:\n{}\nstderr:\n{}",
+                on_fiber.stdout, on_fiber.stderr
+            );
+            assert!(
+                !on_fiber.stdout.trim().is_empty(),
+                "{twin}: the fiber twin printed nothing, so this run measured nothing"
+            );
+            continue;
+        }
+
         assert_eq!(
             plain.status, Some(0),
             "{name}: the continuation build failed; stdout:\n{}\nstderr:\n{}",
@@ -996,6 +1015,12 @@ fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
 fn a_served_body_that_parks_is_resumed_by_the_producers_word_on_continuation() {
     let guest = support_programs::guest_thread_fixture("suspend-serve");
     let run = run_artifact(&guest, &["--post-completion", "4,7,500"]);
+    // **Where this target has no stack switching, the refusal is the assertion**
+    // (I16, DL44): the same test then measures the platform's answer rather than
+    // panicking on a guest that cannot load.
+    if refused_for_want_of_continuations("suspend-serve (sticky)", &run) {
+        return;
+    }
     assert_suspend_serve_transcript("suspend-serve (sticky)", &run, 500);
 }
 
@@ -1015,6 +1040,12 @@ fn a_served_body_that_parks_is_resumed_by_the_producers_word_on_continuation() {
 fn a_served_body_that_parks_is_resumed_by_a_late_completion_on_continuation() {
     let guest = support_programs::guest_thread_fixture("suspend-serve");
     let run = run_artifact(&guest, &["--post-completion-after-parks", "4,7,1"]);
+    // **Where this target has no stack switching, the refusal is the assertion**
+    // (I16, DL44): the same test then measures the platform's answer rather than
+    // panicking on a guest that cannot load.
+    if refused_for_want_of_continuations("suspend-serve (live)", &run) {
+        return;
+    }
     assert_suspend_serve_transcript("suspend-serve (live)", &run, 0);
 }
 
@@ -1089,6 +1120,56 @@ fn assert_suspend_serve_transcript(label: &str, run: &Run, value: i32) {
         run.stdout,
         run.stderr
     );
+}
+
+/// **A continuation guest on a target that cannot run one** (I16; DL44).
+///
+/// Answers `true` when the host refused the guest **by name** because this target has
+/// no stack switching — and in that case the refusal *is* what the test asserts, so
+/// the caller returns. Answers `false` on a target that runs continuations, where the
+/// caller goes on to assert the backend's contract. Both branches assert something;
+/// neither is a skip.
+///
+/// **Why a runtime check and not `#[cfg]`** on the test: which targets lack stack
+/// switching is the engine's answer (`wasmtime`'s `check_compatible_features` marks it
+/// unsupported on everything but x86-64 Linux/Darwin, and `AsyncBackend::Promise`
+/// records the rest — `src/async_backend.rs`), and the host states it in one sentence
+/// with the platform in it. Asserting that sentence keeps the test honest on any
+/// target, including one this project has never run.
+///
+/// The Windows half is asserted *positively*: a continuation guest cannot load there,
+/// so a run that did not report the refusal fails here rather than passing quietly.
+fn refused_for_want_of_continuations(label: &str, run: &Run) -> bool {
+    const SENTENCE: &str =
+        "this guest uses continuations, which wasmtime does not support on this target";
+    if !run.stderr.contains(SENTENCE) {
+        assert!(
+            !cfg!(windows),
+            "{label}: Windows has no stack switching, so a continuation guest must be \
+             refused by name — this run did not report the refusal.\nstdout:\n{}\nstderr:\n{}",
+            run.stdout,
+            run.stderr
+        );
+        return false;
+    }
+    assert_eq!(
+        run.status,
+        Some(1),
+        "{label}: a refused guest must exit 1.\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stdout.trim().is_empty(),
+        "{label}: a refused guest must print nothing on stdout, got:\n{}",
+        run.stdout
+    );
+    assert!(
+        run.stderr.contains(&format!("({})", std::env::consts::OS)),
+        "{label}: the refusal must name the platform it was refused on.\nstderr:\n{}",
+        run.stderr
+    );
+    true
 }
 
 /// One run of an artifact by path, with the log level the thread suites use — and

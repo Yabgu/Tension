@@ -1,6 +1,6 @@
 {
-  "compiler": "1065f81c4a5452dfe2e03301e961581111ccf24bc89ef8afcd78f9e9fbb0bd5b",
-  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "compiler": "9ad55da6699ebdab585c1f172eadaa69159e98ce17483c17b79c1234b999e099",
+  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
   "source": "fiber/i70-fiber.ts",
   "flags": [
     "--runtime",

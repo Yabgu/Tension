@@ -1,0 +1,21 @@
+{
+  "compiler": "9ad55da6699ebdab585c1f172eadaa69159e98ce17483c17b79c1234b999e099",
+  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
+  "source": "thread/two-waiters-late.ts",
+  "flags": [
+    "--runtime",
+    "incremental",
+    "--target",
+    "release",
+    "--sharedMemory",
+    "--importMemory",
+    "--initialMemory",
+    "2",
+    "--maximumMemory",
+    "256",
+    "--enable",
+    "threads",
+    "--optimizeLevel",
+    "0"
+  ]
+}

@@ -1,6 +1,6 @@
 {
-  "compiler": "6edd95979ae409959d8501e8417fdee5073bb542c89259b2fc5a876cbd071b14",
-  "compilerPath": "node_modules/@yabgu_gm/tensionscript/dist/assemblyscript.js",
+  "compiler": "9ad55da6699ebdab585c1f172eadaa69159e98ce17483c17b79c1234b999e099",
+  "compilerPath": "/home/acakar/work/TensionScript-a2/dist/asc.js",
   "source": "thread/spawn-entry-async.ts",
   "flags": [
     "--runtime",

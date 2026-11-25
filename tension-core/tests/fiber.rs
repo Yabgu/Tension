@@ -621,15 +621,50 @@ fn q3_two_parked_fibers_on_one_thread_are_refused() {
 // ---------------------------------------------------------------------------
 
 /// Proves a bound by requiring it: this compiles only if the type satisfies it.
+///
+/// Only the non-Windows half of this file can state `Fiber: Send` — see
+/// [`_fiber_is_send`] and its Windows twin below.
+#[cfg(unix)]
 fn require_send<T: Send>(_: &T) {}
 
 /// **Q4.** Is a suspended fiber resumable from a different OS thread?
 ///
 /// # The bounds, asked of the compiler
 ///
-/// `Fiber` **is** `Send` — this line would not build otherwise:
+/// `Fiber` **is** `Send` on the targets this branch measures — this line would not
+/// build otherwise:
+#[cfg(unix)]
 fn _fiber_is_send() {
     require_send(&None::<Fiber<'static, Resume, Yield, i32>>);
+}
+
+/// **`Fiber` is not `Send` on Windows** (I107).
+///
+/// `wasmtime_internal_fiber::windows::Fiber` owns a `*mut c_void` from
+/// `CreateFiber`, which is a raw pointer and therefore `!Send`; the POSIX and
+/// `nostd` implementations carry it differently. So the platform halves of Q4 are
+/// genuinely different and neither is a narrowing:
+///
+/// - **unix**: a parked fiber *can* be handed to another OS thread, and
+///   [`q4_thread_affinity`] measures whether resuming it there works.
+/// - **Windows**: that step does not exist to try — it is not expressible — so the
+///   property that holds there is the one the executor's model already declares
+///   (one parked fiber per OS thread, DL24/DL25), and that is what the Windows
+///   [`q4_thread_affinity`] asserts.
+///
+/// Nothing is skipped and no count changes: this file reports **6** tests on both
+/// platforms, and the same test name means "Q4, answered for this target".
+///
+/// The Windows declaration is a *documented* fact, not an asserted one: stable Rust
+/// cannot state a negative bound, and a `trybuild` compile-fail test would add a
+/// dev-dependency to say what this comment says. It is tracked as I107.
+#[cfg(windows)]
+fn _fiber_is_not_send() {
+    eprintln!(
+        "Q4 on Windows: Fiber is !Send (wasmtime_internal_fiber::windows holds a raw \
+         fiber handle), so cross-thread resume is not expressible and the executor's \
+         one-thread-per-parked-fiber model is a platform requirement here, not a choice"
+    );
 }
 ///
 /// `Suspend` is **not**, and the compiler names the reason:
@@ -651,6 +686,7 @@ fn _fiber_is_send() {
 /// measurement is whether resuming it there actually works, given that the trap
 /// handler's activation was pushed on the creating thread and the handle had to be
 /// republished process-wide.
+#[cfg(unix)]
 #[test]
 fn q4_thread_affinity() {
     let (engine, module) = engine_and_module();
@@ -699,5 +735,70 @@ fn q4_thread_affinity() {
     assert!(
         lines(&log).iter().any(|l| l.contains("thread 2")),
         "the resuming side must have reported"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Q4 on Windows — the same question, answered for a target where `Fiber: !Send`
+// ---------------------------------------------------------------------------
+
+/// **Q4 on Windows** (I107): the fiber suspends and resumes **on the thread that
+/// created it**, and the parked handle never leaves that thread — because on this
+/// target it *cannot*, `Fiber` being `!Send` (see [`_fiber_is_not_send`]).
+///
+/// This is the same test name as the unix half, and it is a measurement, not a
+/// skip: the fiber really is built, resumed, parked and resumed again, and the
+/// guest's frame really does survive the suspension. What it cannot do here is the
+/// second half of the unix test — hand the parked fiber to a fresh OS thread — and
+/// that is the platform's constraint rather than the harness's choice. The
+/// executor's one-suspended-fiber-per-OS-thread rule (DL24, DL25) is therefore a
+/// requirement on Windows and a design decision elsewhere.
+#[cfg(windows)]
+#[test]
+fn q4_thread_affinity() {
+    let (engine, module) = engine_and_module();
+    let log: Log = Arc::new(Mutex::new(Vec::new()));
+    let fiber = guest_fiber(&engine, &module, &log, 512 * 1024);
+
+    // First resume: the guest runs to its suspension and hands control back.
+    assert!(fiber.resume(()).is_err(), "the fiber suspends on this thread");
+    assert!(!fiber.done(), "a suspended fiber is not done");
+    note(&log, "host loop (this thread): the fiber is suspended here");
+
+    // **The parked handle stays on this thread.** There is no transfer step to
+    // exercise, so the assertion is that the *same* thread can finish the work —
+    // which is what a Windows pool has to be built around.
+    let resumed = fiber.resume(());
+    note(
+        &log,
+        format!(
+            "host loop (this thread): resume returned {}",
+            match &resumed {
+                Ok(value) => format!("Ok({value})"),
+                Err(reason) => format!("Err({reason})"),
+            }
+        ),
+    );
+
+    eprintln!("--- Q4 on Windows, same-thread resume, verbatim ---");
+    for line in lines(&log) {
+        eprintln!("{line}");
+    }
+
+    assert!(
+        lines(&log)
+            .iter()
+            .any(|l| l.contains("the fiber is suspended here")),
+        "the suspension must have been observed"
+    );
+    // Formatted through the same match the unix half uses, so this needs no `Debug`
+    // on the resume error — which is a bound a Windows-only body cannot check here.
+    let described = match &resumed {
+        Ok(value) => format!("Ok({value})"),
+        Err(reason) => format!("Err({reason})"),
+    };
+    assert!(
+        resumed.is_ok() || fiber.done(),
+        "the second resume must either complete the fiber or leave it finished: {described}"
     );
 }
