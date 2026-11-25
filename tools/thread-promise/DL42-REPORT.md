@@ -322,8 +322,25 @@ fixture path proves the fix.
 
 ## 7. CI
 
-_Pending — this section is filled with the run id, job and `test result:` line once the
-branch is pushed._
+**`45596235984` success** (`aadf269`), job **`E2E debug`**, step **`Wake path guard`**:
+
+```
+running 7 tests
+test a_woken_task_reads_the_producers_word_on_the_continuation_backend ... ok
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out; finished in 6.79s
+```
+
+That is the gate the brief asks for: the new assertion executed **in CI**, on the branch,
+in the step that runs the wake path — and it ran on the **committed-fixture path**, since
+this job installs no compiler. The refreshed `fixtures/thread/wake-on-worker.wasm` is what
+it measured, which is why the fixture had to be regenerated rather than left to a
+developer's build.
+
+`~/work/TensionScript-a2` branch **`feat/dl42-completion-contract`** @ `c93ecdf` — its Test
+workflow ran on the push and passed (**`45596224092` success**), so the std change is
+proven on the compiler's own suite as well as through Tension's guests.
+
+Report commit follows; its CI is a docs-only tip.
 
 ---
 
