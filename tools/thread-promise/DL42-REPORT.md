@@ -340,7 +340,9 @@ developer's build.
 workflow ran on the push and passed (**`45596224092` success**), so the std change is
 proven on the compiler's own suite as well as through Tension's guests.
 
-Report commit `25c95ae` — CI **`45599201320` success**, the same step on the branch tip.
+Report commit `25c95ae` — CI **`45599201320` success**, and every docs-only tip after it
+runs the same step and passes (`45599940836` on `717e029`). The gate is
+`45596235984`, which is the run that executed the new assertions.
 
 ---
 
