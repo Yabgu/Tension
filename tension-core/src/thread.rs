@@ -103,6 +103,23 @@ pub const ERR_SPAWN_FAILED: i32 = -6;
 pub struct WorkerState {
     pool: Arc<ExecutorPool>,
     parks: Mutex<Vec<WorkerPark>>,
+    /// **The word each delivery carried, by task id** (DL41).
+    ///
+    /// `scheduler::completion(task_id)` asks "what did the producer say when you
+    /// resumed me?", and on a worker store the only honest answer is the payload
+    /// of the delivery the *session loop* applied to that task. The channel already
+    /// carries it (`Delivery::payload`); before this the loop used only the id, so
+    /// the word was dropped on the floor for a worker-resumed task.
+    ///
+    /// Bounded by construction: one entry per task the store has resumed, and a
+    /// store's task table is the guest's own (16 slots in every program here). A
+    /// later delivery for the same id replaces the word, because the task that
+    /// consumed the first one has already resumed.
+    delivered: Mutex<Vec<(u64, i32)>>,
+    /// Wakes this store has served by resuming a suspended park (DL41). Header word
+    /// 6 is what the guest reads; the session loop keeps its own count in
+    /// `service_wakes`, and the two never apply the same delivery.
+    served: std::sync::atomic::AtomicU64,
     /// **Which executor this store is.** The ledger's `owner` is routing, and this
     /// is where a worker learns its own, so a park it records names the store that
     /// must later call `__taskWake`. It is the id the host gave `__workerMain`.
@@ -736,12 +753,25 @@ pub struct ExecutorPool {
     memory: SharedMemory,
     /// Main **plus** the workers: the value `__executorCount` answers.
     count: i32,
+    /// **Whether this module was built for the fiber backend** (DL41).
+    ///
+    /// Read from the module's own import list, not from a flag: a fiber build is
+    /// the only one that imports `scheduler::completion` (measured — the
+    /// continuation shape imports `scheduler::park` and never `completion`), so
+    /// the artifact says which backend it wants and the worker does what it is
+    /// told. Nothing has to be threaded through `ExecutorPool::new`'s callers.
+    fiber_backend: bool,
     /// The threads that have been started. `BTreeMap` for deterministic teardown
     /// order, which is what a log line about a live worker should read like.
     workers: Mutex<BTreeMap<i32, JoinHandle<i32>>>,
     /// Workers that finished with a task parked and never resumed, in the order
     /// they finished. Read by [`ExecutorPool::take_strands`] on main.
     strands: Mutex<Vec<Strand>>,
+    /// **Workers that could not run at all** (DL41): the message each one refused
+    /// with. Separate from `strands`, because a worker that never instantiated made
+    /// no parks — counting it as a strand would be a wrong number in a right
+    /// sentence. Taken, like the strands, so one failure refuses one run.
+    failures: Mutex<Vec<String>>,
     /// DL27's probe: post for every park (see [`ExecutorPool::arm_post_each_park`]).
     /// `None` in an ordinary run.
     each_park: Mutex<Option<EachParkWatch>>,
@@ -794,6 +824,11 @@ pub struct ExecutorPool {
 }
 
 impl ExecutorPool {
+    /// Whether the module was built for the fiber backend (see the field).
+    pub fn is_fiber_backend(&self) -> bool {
+        self.fiber_backend
+    }
+
     /// Build a pool for a module whose memory import is shared.
     ///
     /// `count` is main plus the worker threads; it is what `__executorCount`
@@ -809,13 +844,18 @@ impl ExecutorPool {
     ) -> anyhow::Result<Arc<Self>> {
         let count = i32::try_from(count.max(1))
             .map_err(|_| anyhow::anyhow!("the executor count does not fit in an i32"))?;
+        let fiber_backend = module
+            .imports()
+            .any(|import| import.module() == "scheduler" && import.name() == "completion");
         Ok(Arc::new(ExecutorPool {
             engine,
             module,
             memory,
             count,
+            fiber_backend,
             workers: Mutex::new(BTreeMap::new()),
             strands: Mutex::new(Vec::new()),
+            failures: Mutex::new(Vec::new()),
             refused_deliveries: Mutex::new(Vec::new()),
             each_park: Mutex::new(None),
             foreign: Mutex::new(None),
@@ -965,6 +1005,25 @@ impl ExecutorPool {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         std::mem::take(&mut *strands)
+    }
+
+    /// Record that a worker never started. Read by [`ExecutorPool::take_failures`].
+    pub fn note_failure(&self, message: String) {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        failures.push(message);
+    }
+
+    /// Take the failures, emptying the list: the caller turns them into the run's
+    /// outcome, and a second caller must not be able to refuse the same run twice.
+    pub fn take_failures(&self) -> Vec<String> {
+        let mut failures = self
+            .failures
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut *failures)
     }
 
     /// A completion arrived for `(class, key)`: match it against the session's
@@ -1195,6 +1254,27 @@ impl ExecutorPool {
     }
 
     /// Take every delivery addressed to `owner`, in arrival order (§4.5).
+    /// Take **one** delivery for `owner` naming `(task, class, key)`, leaving the
+    /// rest in place.
+    ///
+    /// `take_deliveries` drains the whole inbox, which is right for the session
+    /// loop (it applies them all) and wrong for a fiber's producer, which is
+    /// answering exactly one park and must not swallow deliveries meant for later
+    /// ones (DL41).
+    pub fn take_delivery(&self, owner: u32, task_id: u64, class: u32, key: u32) -> Option<Delivery> {
+        let mut inboxes = self
+            .inboxes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let index = inboxes.iter().position(|delivery| {
+            delivery.owner == owner
+                && delivery.task_id == task_id
+                && delivery.class == class
+                && delivery.key == key
+        })?;
+        Some(inboxes.remove(index))
+    }
+
     pub fn take_deliveries(&self, owner: u32) -> Vec<Delivery> {
         let mut inboxes = self
             .inboxes
@@ -1476,10 +1556,51 @@ impl ExecutorPool {
         // the guest returning to its executor). There is no host loop on this
         // store and no channel to hand it ids, so the record is where a future
         // round's wake would start — not a wake that exists.
+        // **`scheduler::completion(task_id)` on a worker store** (DL41, I96).
+        //
+        // A fiber guest imports it unconditionally: `__parkHost` calls `hostPark`
+        // and then `hostCompletion` to learn what the wake carried, so a module
+        // built for the fiber backend references both names even if the program
+        // never parks. Without a definition here the worker never instantiated —
+        // `unknown import: scheduler::completion` — and the run went on as if it
+        // had.
+        //
+        // The honest answer, and why: **the payload of the delivery this store's
+        // session loop last applied to that task, or `0` when it has applied
+        // none.** That is not a guess — `Delivery::payload` is the producer's word
+        // and the loop is the only thing that resumes a task in this store, so the
+        // map it fills is the store's own record of what it was told. Nothing is
+        // invented and no channel is added: the value already crossed.
+        linker.func_wrap(
+            "scheduler",
+            "completion",
+            |caller: Caller<'_, WorkerState>, task_id: i64| -> i32 {
+                // **Two answers, and which one is asked is a fact of this
+                // thread, not a choice.** Inside a fiber the park *suspended* and
+                // the producer's word came back through `fiber::run`, so that is
+                // the answer — the same thread-local main's `scheduler` uses.
+                // Outside a fiber the park returned to the guest and was served
+                // later by this store's session loop, so the word is the one that
+                // loop applied (the map below).
+                if crate::fiber::running() {
+                    return crate::fiber::completion_value();
+                }
+                let words = caller
+                    .data()
+                    .delivered
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                words
+                    .iter()
+                    .find(|(id, _)| *id == task_id as u64)
+                    .map(|(_, payload)| *payload)
+                    .unwrap_or(0)
+            },
+        )?;
         linker.func_wrap(
             "scheduler",
             "park",
-            |caller: Caller<'_, WorkerState>, task_id: i64, class: i32, key: i32| {
+            |mut caller: Caller<'_, WorkerState>, task_id: i64, class: i32, key: i32| {
                 let (park, pool) = {
                     let data = caller.data();
                     (
@@ -1553,6 +1674,56 @@ impl ExecutorPool {
                             park.class, park.key
                         ),
                     );
+                } else if pool.is_fiber_backend()
+                    && crate::fiber::suspend_current(crate::fiber::Park {
+                        task: park.task_id,
+                        class: park.class,
+                        key: park.key,
+                    })
+                {
+                    // **The park suspended and has now been resumed** (DL41, I97).
+                    // Before this, the worker's park recorded the task and then
+                    // returned to the guest — `suspend_current` was never called
+                    // here — so a served body that parked ran straight through
+                    // with a zero, and the record it left behind turned the run
+                    // into a strand refusal.
+                    //
+                    // The record is resolved *here*, on the store's own thread,
+                    // because `fiber::run`'s producer cannot reach the `Store`
+                    // (its signature is `FnMut(Park) -> Option<i32>`). That is the
+                    // same seam `service_wakes` writes at the wake; the two are
+                    // disjoint by construction, since a fiber park returns here
+                    // and never through the loop.
+                    let mut parks = caller
+                        .data()
+                        .parks
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    if let Some(last) = parks.last_mut() {
+                        last.resolved = true;
+                    }
+                    drop(parks);
+                    // **Header word 6, written where `service_wakes` writes it.** The
+                    // session loop bumps it per delivery; this path consumes the
+                    // delivery instead, so it bumps here. Doing it from the fiber's
+                    // producer was wrong twice over: the producer cannot reach this
+                    // `Store`, and a worker's `__controlBase` is 0 until
+                    // `__workerMain` binds it — measured, the transcript said
+                    // `wakes served=0` for a run that had resumed.
+                    let base = caller
+                        .get_export("__controlBase")
+                        .and_then(|export| export.into_global())
+                        .and_then(|global| global.get(&mut caller).i32())
+                        .filter(|base| *base > 0);
+                    if let Some(base) = base {
+                        let served = caller
+                            .data()
+                            .served
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            + 1;
+                        let memory = caller.data().pool.memory().clone();
+                        bump_served(&memory, base as usize, served);
+                    }
                 } else if pool.claim_early(park.class, park.key, owner, park.task_id) {
                     // §4.3's other order, and the one the deterministic test uses:
                     // the completion was already waiting, so this park never
@@ -1652,11 +1823,13 @@ fn run_worker(pool: Arc<ExecutorPool>, id: i32) -> i32 {
     let status = match worker_main(&pool, id) {
         Ok(status) => status,
         Err(error) => {
-            logging::log(
-                Level::Error,
-                "thread",
-                &format!("executor {id} could not run: {error}"),
-            );
+            let message = format!("executor {id} could not run: {error}");
+            logging::log(Level::Error, "thread", &message);
+            // **Named, and released** (DL41). The message is kept for the run's own
+            // refusal — logged alone it was a fact nobody acted on — and the state
+            // word is written so a guest waiting in `__threadJoin` gets out.
+            pool.note_failure(message);
+            stop_executor(&pool.memory(), id);
             ERR_INSTANTIATE
         }
     };
@@ -1681,6 +1854,97 @@ fn run_worker(pool: Arc<ExecutorPool>, id: i32) -> i32 {
 /// `H_CAPACITY`, `H_REQUESTS`), `5` is `H_STOP`, so `6` is free. Written through
 /// the `SharedMemory`'s `UnsafeCell` for the reason every shared write is: it is
 /// shared by construction, so there is no `&mut` to take.
+/// Write one `i32` word of the shared memory, or `false` when it would leave it.
+fn write_word(memory: &wasmtime::SharedMemory, at: usize, value: i32) -> bool {
+    if at.checked_add(4).map_or(true, |end| end > memory.data_size()) {
+        return false;
+    }
+    let cells = memory.data();
+    let base = cells.as_ptr() as *mut u8;
+    for (offset, byte) in value.to_le_bytes().iter().enumerate() {
+        // SAFETY: the bound was checked above. `SharedMemory` has no `&mut` to
+        // take — it is shared with every instance by construction — so the write
+        // goes through its `UnsafeCell`, as `bump_served` does for its own word.
+        unsafe { *base.add(at + offset) = *byte };
+    }
+    true
+}
+
+/// The control block's address, found the way the guest finds it (DL41).
+///
+/// `std/assembly/thread.ts:controlBlockBase` computes it as `__heap_base` rounded
+/// up to a page and confirms it with a magic word, because a worker's copy of the
+/// global is zero. The host has the same problem and no `__heap_base` to read, so it
+/// looks for the same magic at the same boundaries — at most one read per 64 KiB of
+/// a memory that is 16 MiB at most. `None` means main never carved a block, which is
+/// the ordinary case for a guest with no shared memory.
+fn control_block_base(memory: &wasmtime::SharedMemory) -> Option<usize> {
+    const CONTROL_MAGIC: i32 = 0x5448_5244;
+    const PAGE: usize = 65536;
+    let mut at = 0usize;
+    while at < memory.data_size() {
+        if read_word(memory, at) == Some(CONTROL_MAGIC) {
+            return Some(at);
+        }
+        at += PAGE;
+    }
+    None
+}
+
+/// **Publish "this executor has stopped"** so that a guest waiting in
+/// `__threadJoin` returns instead of waiting for a worker that will never answer
+/// (DL41, I96).
+///
+/// Before this, a worker that could not instantiate logged the reason and ended; the
+/// guest's join then blocked on a state word nobody would ever write, so the run hung
+/// — not the exit 0 the brief recorded, because a program that waits for a wake waits
+/// forever. Writing the word and notifying is what turns "the worker failed" into a
+/// run that finishes and can be refused by name.
+///
+/// The layout is the guest's own (`docs/thread-abis`): `rec = base + 64 + id*stride`,
+/// and the state word sits 12 bytes before the end of `sig` (`rec + stride - 24 + 12`).
+fn stop_executor(memory: &wasmtime::SharedMemory, id: i32) {
+    const HEADER_BYTES: usize = 64;
+    const STATE_IN_SIGNAL: usize = 12;
+    let Some(base) = control_block_base(memory) else {
+        return;
+    };
+    let Some(stride) = read_word(memory, base + 8) else {
+        return;
+    };
+    if stride <= 0 || id < 0 {
+        return;
+    }
+    let stride = stride as usize;
+    let record = base + HEADER_BYTES + (id as usize) * stride;
+    let state = record + stride - 24 + STATE_IN_SIGNAL;
+    if !write_word(memory, state, 2) {
+        return;
+    }
+    // A waiter already blocked has to be woken, or the write is invisible to it.
+    let _ = memory.atomic_notify(state as u64, u32::MAX);
+}
+
+/// One `i32` word of the shared memory, or `None` when the read would leave it.
+///
+/// The read side of [`bump_served`], and it exists for the same reason: the host
+/// addresses the control block by arithmetic on a guest constant, so every read has
+/// to be bounded before it happens (DL41).
+fn read_word(memory: &wasmtime::SharedMemory, at: usize) -> Option<i32> {
+    if at.checked_add(4)? > memory.data_size() {
+        return None;
+    }
+    let cells = memory.data();
+    let base = cells.as_ptr() as *const u8;
+    let mut bytes = [0u8; 4];
+    for (offset, slot) in bytes.iter_mut().enumerate() {
+        // SAFETY: the bound was checked above, and a shared memory has no `&mut`
+        // to take; every reader of the control block reads it the same way.
+        *slot = unsafe { *base.add(at + offset) };
+    }
+    Some(i32::from_le_bytes(bytes))
+}
+
 fn bump_served(memory: &wasmtime::SharedMemory, control_base: usize, served: u64) {
     /// Header word 6.
     const WORD: usize = 6;
@@ -1842,6 +2106,21 @@ fn service_wakes(
             }
 
             // §2.2: this store's own `__taskWake`, on this store's own thread.
+            // **The word this delivery carries, kept for `scheduler::completion`**
+            // (DL41). Recorded *before* the wake: the resumed task asks for it on
+            // the very next line it runs, and a guest that asked first and was
+            // written to afterwards would read the previous task's word.
+            {
+                let mut words = store
+                    .data()
+                    .delivered
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                match words.iter_mut().find(|(id, _)| *id == delivery.task_id) {
+                    Some(slot) => slot.1 = delivery.payload,
+                    None => words.push((delivery.task_id, delivery.payload)),
+                }
+            }
             let before_call = std::time::Instant::now();
             wake.call(&mut *store, (scratch as i32, 1))?;
             let after_call = std::time::Instant::now();
@@ -2001,6 +2280,8 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
         WorkerState {
             pool: Arc::clone(pool),
             parks: Mutex::new(Vec::new()),
+            delivered: Mutex::new(Vec::new()),
+            served: std::sync::atomic::AtomicU64::new(0),
             id,
         },
     );
@@ -2047,9 +2328,59 @@ fn worker_main(pool: &Arc<ExecutorPool>, id: i32) -> anyhow::Result<i32> {
     let worker_main = instance
         .get_typed_func::<i32, i32>(&mut store, "__workerMain")
         .map_err(|_| anyhow::anyhow!("the module exports no `__workerMain`"))?;
-    let status = worker_main.call(&mut store, id).map_err(|error| {
-        anyhow::anyhow!("the worker's `__workerMain({id})` failed: {error}")
-    })?;
+    // ── the served entry, on a fiber, when the artifact asks for one (DL41) ──
+    //
+    // **This is I97's other half.** `scheduler::park` now suspends when a fiber is
+    // running, so the served entry has to *be* on one — otherwise the park records
+    // itself, returns to the guest, and leaves the record stranded. The entry is
+    // the same call either way; only what happens at a park differs.
+    //
+    // The producer is the pool, not the session loop, and that is not a second
+    // mechanism: `claim_early` is the same door the loop's `service_wakes` uses to
+    // learn that a completion had already arrived, and it answers the word the
+    // producer carried. It runs here, on this thread, between the park and the
+    // resume — which is exactly the ordering `Delivery` was built for.
+    let status = if pool.is_fiber_backend() {
+        match crate::fiber::run(
+            &mut store,
+            instance,
+            |store, instance| {
+                let entry = instance
+                    .get_typed_func::<i32, i32>(&mut *store, "__workerMain")
+                    .expect("__workerMain was resolved above");
+                Ok(entry.call(store, id)?)
+            },
+            |park| {
+                // **Two places a completion can be, and both are the pool's.** The
+                // inbox holds one that matched this park in the ledger (a producer
+                // that arrived after the park); `claim_early` holds one that
+                // arrived before it (the sticky half, §4.3). The old loop path
+                // handled both — inbox in `take_deliveries`, sticky in
+                // `claim_early` — so the producer checks them in the same order.
+                let take = |pool: &Arc<ExecutorPool>, task: u64, class: u32, key: u32| {
+                    pool.take_delivery(id as u32, task, class, key)
+                };
+                let delivery = take(&pool, park.task, park.class, park.key).or_else(|| {
+                    pool.claim_early(park.class, park.key, id as u32, park.task);
+                    take(&pool, park.task, park.class, park.key)
+                });
+                let delivery = delivery?;
+                Some(delivery.payload)
+            },
+        )? {
+            crate::fiber::Outcome::Done(status) => status,
+            // **Refused, not hung** — the same sentence the plain-guest path uses.
+            // A served task nobody completes is a reported fact, and the stranded
+            // fiber is leaked because a suspended fiber cannot be dropped.
+            crate::fiber::Outcome::Stranded(stranded) => {
+                anyhow::bail!("fiber executor: {stranded}")
+            }
+        }
+    } else {
+        worker_main.call(&mut store, id).map_err(|error| {
+            anyhow::anyhow!("the worker's `__workerMain({id})` failed: {error}")
+        })?
+    };
     let mut loop_error: Option<anyhow::Error> = None;
 
     // ── the session loop (DL20) ───────────────────────────────────────────

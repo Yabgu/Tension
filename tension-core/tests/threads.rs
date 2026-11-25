@@ -882,6 +882,103 @@ fn the_cross_store_programs_print_the_same_values_on_the_fiber_backend() {
     }
 }
 
+/// **A served body that parks is resumed on the fiber backend** (DL41, I96 + I97).
+///
+/// This is the case DL39 could not see and DL40 declared open: every DL40 row serves
+/// an entry that awaits an already-settled task, so none of them ever parks *inside*
+/// a served body. Here the body parks on `(class 4, key 7)` through `policy.await`,
+/// the producer is the host's `--post-completion 4,7,500`, and the resumed body
+/// prints the word it was given.
+///
+/// # Why this is not a continuation/fiber pair
+///
+/// DL40's three rows are pairs because the same program prints the same values on
+/// both backends. This one cannot be, and the reason is measured, not stylistic:
+///
+///   * a bare `await` on a stamped handle completes on the continuation backend and
+///     has **no suspension site at all** on a fiber build (the artifact imports no
+///     `scheduler::park`), so as a fiber row it proves nothing;
+///   * `policy.await` — the only shape lowered to a real suspension on the fiber
+///     backend — **does not complete on the continuation backend** (it parks and is
+///     never resumed; that is the DL29/DL30 serve split the brief excludes).
+///
+/// So the continuation control for this behaviour is `wake-on-worker`, which is
+/// already a green test: it parks, the session loop resumes it, and it joins. The
+/// row asserted here is the fiber half, and the asymmetry is recorded as I98 in
+/// `DL41-REPORT.md` rather than papered over by an exclusion in a shared
+/// expectation.
+///
+/// # The red case
+///
+/// Pre-DL41 the worker could not even instantiate this artifact (`unknown import:
+/// scheduler::completion`), the failure was logged and then ignored, and the run
+/// exited 0 with `wakes served=0`. Post-DL41 a worker that cannot instantiate fails
+/// the run by name, and a park that nobody completes strands it — so this test also
+/// asserts the transcript, not just the exit code.
+#[test]
+fn a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber() {
+    let fiber = support_programs::guest_fiber_fixture("suspend-serve-fiber");
+    let run = run_artifact(&fiber, &["--post-completion", "4,7,500"]);
+
+    assert!(
+        run.status.is_some(),
+        "suspend-serve-fiber: did not finish in 30 s — the served body parked and nothing \
+         resumed it.\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert_eq!(
+        run.status,
+        Some(0),
+        "suspend-serve-fiber: exit was not 0.\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+
+    let printed: Vec<&str> = run
+        .stdout
+        .lines()
+        .map(str::trim_end)
+        .filter(|line| !line.is_empty())
+        // The host's own log lines are `2026-… LEVEL module: message`; the guest's
+        // transcripts are the ones without the timestamp.
+        .filter(|line| !line.starts_with("20"))
+        .collect();
+
+    // `main: index=<i>` is a `$starts` position — a fact of this module's table, not
+    // a value the contract fixes (DL40's rule). Everything else is exact.
+    let mut expected: Vec<String> = vec![
+        "main: spawning".into(),
+        format!(
+            "main: index={}",
+            printed
+                .iter()
+                .find_map(|line| line.strip_prefix("main: index="))
+                .unwrap_or_else(|| panic!("no `main: index=` line in:\n{}", run.stdout))
+        ),
+        "main: spawn=0".into(),
+        "worker: BEFORE the await".into(),
+        // **The producer's word, not 0.** This is the half DL40 could not deliver: the
+        // park suspended, the producer answered, and the resumed body read 500.
+        "inner: AFTER the await, value=500".into(),
+        "worker: AFTER the await, value=500".into(),
+        // Header word 6: the host served exactly one wake. A run that resumed the body
+        // without serving it (the inline fall-through before DL41) cannot print this.
+        "main: wakes served=1".into(),
+        "main: join=0".into(),
+        "main: done".into(),
+    ];
+    expected.dedup();
+
+    assert_eq!(
+        printed,
+        expected.iter().map(String::as_str).collect::<Vec<_>>(),
+        "suspend-serve-fiber: the transcript is not the contract.\nfull stdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
 /// One run of an artifact by path, with the log level the thread suites use — and
 /// **bounded**, because the failure this pair test exists to catch is a hang.
 ///

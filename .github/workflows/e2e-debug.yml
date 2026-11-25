@@ -218,7 +218,9 @@ jobs:
       # would go red on a missing compiler, not on a missing wake.
       #
       # `wake-on-worker` needs no compiler here because its artifact is committed
-      # at `tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm`.
+      # at `tension-core/tests/programs/fixtures/thread/wake-on-worker.wasm`, and
+      # DL41's `suspend-serve-fiber` for the same reason — its artifact is committed
+      # at `tension-core/tests/programs/fixtures/fiber/`.
       # `tests/support/programs.rs` builds from source when a checkout has a
       # compiler and uses that fixture when it does not, so this job takes the
       # fixture path and a developer's run takes the source path. Both run the
@@ -247,7 +249,8 @@ jobs:
               a_second_waiter_is_refused_when_the_completion_arrives_after_both_parks \
               a_foreign_delivery_fails_the_run_by_name \
               an_async_worker_entry_is_served_as_its_spawn_entry \
-              the_cross_store_programs_print_the_same_values_on_the_fiber_backend
+              the_cross_store_programs_print_the_same_values_on_the_fiber_backend \
+              a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber
 
       # **The stackful proofs (I61).** Two targets that existed and passed and that no
       # job ran — the vacuous-gate class, with six receipts on this project already.

@@ -232,6 +232,17 @@ thread_local! {
     static COMPLETION: Cell<i32> = const { Cell::new(0) };
 }
 
+/// **Whether a park here can suspend** — i.e. whether this thread is inside
+/// [`run`]'s fiber.
+///
+/// A predicate beside `suspend_current` rather than a flag on it, because the two
+/// questions differ: `suspend_current` *acts* (it suspends this stack), and
+/// `scheduler::completion` needs to *ask* without acting. Answering both from the
+/// same thread-local is what keeps them from disagreeing (DL41).
+pub fn running() -> bool {
+    !SUSPEND.with(|slot| slot.get()).is_null()
+}
+
 /// **The park import's last line.** Suspends the current thread's fiber and
 /// answers `true`, or answers `false` when no fiber is running — which is a host
 /// bug in a fiber-mode run, not a guest event, so the caller decides what to say.

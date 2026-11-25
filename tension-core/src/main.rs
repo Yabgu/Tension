@@ -527,6 +527,19 @@ fn read_as_string(caller: &mut Caller<'_, HostState>, ptr: i32) -> String {
 fn strand_refusal(
     pool: &std::sync::Arc<tension_core::thread::ExecutorPool>,
 ) -> Option<wasmtime::Error> {
+    // **A worker that never started refuses the run first** (DL41, I96). It made
+    // no parks, so it is not a strand and the counts below cannot see it; before
+    // this it was a log line and the run went on to exit 0 — the DL26/DL28
+    // silent-refusal class. Taken before the strand check because the two are
+    // different facts and this one is upstream of the other.
+    let failures = pool.take_failures();
+    if !failures.is_empty() {
+        return Some(wasmtime::Error::msg(format!(
+            "{} worker(s) could not run, so the run is refused rather than reported as a success: {}",
+            failures.len(),
+            failures.join("; ")
+        )));
+    }
     let strands = pool.take_strands();
     let refused = pool.take_refused_deliveries();
     if strands.is_empty() && refused.is_empty() {
@@ -2552,11 +2565,20 @@ fn main() -> anyhow::Result<()> {
     // (§4.3's sticky half). Posted through the same face `--post-test-events`
     // uses, so it reaches `scheduler::deliver` and — through the pool's fallback
     // — a worker's park.
-    // **Not for a fiber guest.** Its park is resolved by the fiber executor's own
-    // producer (the staged completion handed to `thread_boot`), so posting here as
-    // well would resolve the same park twice — once through the promise path's
-    // `__taskWake`, which this backend does not use.
-    if let Some((class, key, payload)) = config.post_completion.filter(|_| executor != tension_core::fiber::Backend::Fiber) {
+    // **Not for a fiber guest with no pool** — that is the case the original
+    // exclusion was about. Such a guest's park is resolved by the fiber executor's
+    // own producer (the staged completion handed to `thread_boot`), so posting here
+    // as well would resolve the same park twice.
+    //
+    // **A fiber guest *with* a pool is a different animal** (DL41), and the
+    // exclusion used to swallow it. Its workers are separate stores whose parks are
+    // resumed by the pool — `fiber::run` on main's entry never sees them, and the
+    // staged vector is main's. Posting to the pool is the only way a worker's park
+    // can be completed at all, which is what a suspending served body needs
+    // (`suspend-serve.ts`).
+    let fiber_without_pool =
+        executor == tension_core::fiber::Backend::Fiber && store.data().executors.is_none();
+    if let Some((class, key, payload)) = config.post_completion.filter(|_| !fiber_without_pool) {
         // **Straight to the pool's ledger, not through the posting ring.** The
         // ring's completions are collected by an epoch publish, and a plain guest
         // like this one never pumps an epoch — so a ring post would sit unread and

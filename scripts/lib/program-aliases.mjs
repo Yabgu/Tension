@@ -23,4 +23,11 @@ export const PROGRAM_ALIASES = {
   "spawn-join-fiber": "thread/spawn-join.ts",
   "two-workers-fiber": "thread/two-workers.ts",
   "spawn-entry-async-fiber": "thread/spawn-entry-async.ts",
+  // DL41: the served body that actually suspends. **Fiber only**, and that is the
+  // round's finding rather than an oversight — see the program's own header: the
+  // shape that goes on to complete on the continuation backend (a bare `await` on
+  // a stamped handle) has no suspension site on a fiber build at all, and this one
+  // cannot complete on the continuation backend. A pair would assert a capability
+  // one of the two does not have.
+  "suspend-serve-fiber": "thread/suspend-serve.ts",
 };

@@ -266,6 +266,8 @@ const PROGRAMS = {
   "spawn-join-fiber": FIBER_FLAGS,
   "two-workers-fiber": FIBER_FLAGS,
   "spawn-entry-async-fiber": FIBER_FLAGS,
+  // DL41: a served body that parks, on the fiber backend.
+  "suspend-serve-fiber": FIBER_FLAGS,
   "rt-guards": PLAIN_FLAGS,
   "main-policy": ASYNC_ON_MAIN_FLAGS,
   "fallback-loop": ASYNC_ON_MAIN_FLAGS,
