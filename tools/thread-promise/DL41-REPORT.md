@@ -12,7 +12,7 @@ backend, and a worker that cannot start refuses the run instead of leaving it si
 | `--check` | **9/9 PASS**; guests **34 → 35**, artifacts **68 → 70** |
 | census | **71/82**, 0 skipped, 11 no-source, run alone |
 | threads | **10 → 11** (declared before the run) |
-| CI | run **`45518215598`** (`83ee68e`) and **`45518298844`** (`00fbc5e`) — §8 |
+| CI | **`45520074681` success** (`b44641b`) — `Wake path guard`: `6 passed; 5 filtered out` |
 
 ---
 
@@ -370,12 +370,32 @@ Red cases:
 
 ## 8. CI
 
-- run **`45518215598`** (`83ee68e`, before the filter was extended) and run
-  **`45518298844`** (`00fbc5e`, with the new test in the `Wake path guard` filter).
-- Branch `feat/dl41-suspend-serve` on `Yabgu/Tension`. `main` untouched; nothing
-  pushed to `main` in either repo.
+| run | commit | what it says |
+|---|---|---|
+| `45518215598` | `83ee68e` | before the filter was extended — the new test did not run |
+| `45518298844` | `00fbc5e` | **failure**, and it was worth having: see below |
+| `45519246318` | `fcb41b9` | failure, same cause; that commit is the report only |
+| **`45520074681`** | **`b44641b`** | **success** — `Wake path guard`: `running 6 tests`, `test a_served_body_that_parks_is_resumed_with_the_producers_word_on_fiber ... ok`, `6 passed; 0 failed; … 5 filtered out` |
 
-<!-- CI RESULT APPENDED BELOW -->
+**CI caught a race this host did not.** On `45518298844` the transcript came back with
+`main: spawn=0` *after* the worker's lines:
+
+```
+left:  ["main: spawning", "main: index=1", "worker: BEFORE the await", …,
+        "main: spawn=0", "main: wakes served=1", …]
+right: ["main: spawning", "main: index=1", "main: spawn=0", "worker: BEFORE the await", …]
+```
+
+That is the program, not the backend: `main: spawn=0` is printed *after*
+`__spawnThread` returns, and that call has already started the worker, so which line
+lands first is a race. Locally main always won it; on CI it lost. The assertion now
+requires the line **exactly once** with the value `0` and does not fix its position —
+the only line whose position is not asserted, with the reason stated beside it. Every
+other line is exact and in order, and mutating the fiber suspension out still fails
+the test (re-measured after the tolerance was added).
+
+Branch `feat/dl41-suspend-serve` on `Yabgu/Tension`. `main` untouched; nothing pushed
+to `main` in either repo.
 
 ---
 
